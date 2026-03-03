@@ -1,0 +1,131 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "eip-mmdpp"
+version = "0.1.0"
+description = "Multi-modal document processing and retrieval platform for defense/military use cases"
+requires-python = ">=3.11"
+dependencies = [
+    # API framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "python-multipart>=0.0.20",
+
+    # Database
+    "sqlalchemy>=2.0.36",
+    "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.10",
+    "alembic>=1.14.0",
+
+    # Celery / task queue
+    "celery[redis]>=5.4.0",
+    "redis>=5.2.0",
+
+    # Object storage (MinIO / S3)
+    "aiobotocore>=2.15.0",
+    "boto3>=1.35.0",
+
+    # Document parsing
+    "pdfplumber>=0.11.4",
+    "pymupdf>=1.24.14",
+    "python-docx>=1.1.2",
+    "python-pptx>=1.0.2",
+    "python-magic>=0.4.27",
+
+    # OCR
+    "pytesseract>=0.3.13",
+    "easyocr>=1.7.2",
+    "Pillow>=11.0.0",
+    "opencv-python-headless>=4.10.0",
+
+    # Embeddings
+    "sentence-transformers>=3.3.1",
+    "open-clip-torch>=2.26.1",
+    "torch>=2.5.0",
+
+    # Observability
+    "structlog>=24.4.0",
+    "prometheus-client>=0.21.0",
+
+    # Utilities
+    "httpx>=0.28.0",
+    "jsonpatch>=1.33",
+    "cachetools>=5.5.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+
+    # Cognee knowledge graph engine
+    "cognee>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pytest-timeout>=2.3.1",
+    "httpx>=0.28.0",
+    "hypothesis>=6.119.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "types-redis>=4.6.0",
+    "types-cachetools>=5.5.0",
+    "moto[s3]>=5.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ---------------------------------------------------------------------------
+# Ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TCH"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--tb=short -q"
+markers = [
+    "unit: pure unit tests, no external dependencies",
+    "integration: tests requiring real Postgres/Redis/MinIO",
+    "e2e: end-to-end tests requiring full stack",
+    "gpu: tests requiring a GPU",
+    "slow: slow tests",
+]
+timeout = 120
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/workers/celery_app.py", "alembic/*"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

@@ -1,0 +1,261 @@
+"""Sources, document upload, artifacts, and watch directory endpoints."""
+
+import hashlib
+import uuid
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_async_session
+from app.models.ingest import Artifact, Document, Source, WatchDir
+from app.schemas.common import CursorPage
+from app.schemas.sources import (
+    ArtifactResponse,
+    DocumentResponse,
+    DocumentStatusResponse,
+    SourceCreate,
+    SourceResponse,
+    WatchDirCreate,
+    WatchDirResponse,
+)
+from app.services.storage import stream_upload_async
+from app.config import get_settings
+
+settings = get_settings()
+router = APIRouter(tags=["sources"])
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sources", response_model=SourceResponse, status_code=status.HTTP_201_CREATED)
+async def create_source(
+    body: SourceCreate,
+    db: AsyncSession = Depends(get_async_session),
+) -> SourceResponse:
+    """Create a named collection (source) for documents."""
+    # TODO(Phase 3): replace with actual authenticated user
+    system_user = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+    existing = await db.execute(select(Source).where(Source.name == body.name))
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Source with name '{body.name}' already exists.",
+        )
+
+    source = Source(
+        name=body.name,
+        description=body.description,
+        created_by=system_user,
+    )
+    db.add(source)
+    await db.flush()
+    await db.refresh(source)
+    return SourceResponse.model_validate(source)
+
+
+@router.get("/sources", response_model=list[SourceResponse])
+async def list_sources(
+    db: AsyncSession = Depends(get_async_session),
+) -> list[SourceResponse]:
+    """List all sources."""
+    result = await db.execute(select(Source).order_by(Source.created_at.desc()))
+    sources = result.scalars().all()
+    return [SourceResponse.model_validate(s) for s in sources]
+
+
+# ---------------------------------------------------------------------------
+# Documents — upload
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/sources/{source_id}/documents",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document(
+    source_id: uuid.UUID,
+    file: UploadFile,
+    db: AsyncSession = Depends(get_async_session),
+) -> DocumentResponse:
+    """Upload a single document to a source. Streams directly to MinIO."""
+    source = await db.get(Source, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found.")
+
+    # TODO(Phase 3): replace with actual authenticated user
+    system_user = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+    doc_id = uuid.uuid4()
+    object_key = f"sources/{source_id}/{doc_id}/{file.filename}"
+
+    # Stream the upload to MinIO (no in-memory buffering for large files)
+    key, total_bytes, file_hash = await stream_upload_async(
+        file,
+        bucket=settings.minio_bucket_raw,
+        key=object_key,
+        content_type=file.content_type or "application/octet-stream",
+    )
+
+    document = Document(
+        id=doc_id,
+        source_id=source_id,
+        filename=file.filename or "unknown",
+        mime_type=file.content_type,
+        file_size_bytes=total_bytes,
+        file_hash=file_hash,
+        storage_bucket=settings.minio_bucket_raw,
+        storage_key=object_key,
+        pipeline_status="PENDING",
+        uploaded_by=system_user,
+    )
+    db.add(document)
+    await db.flush()
+    await db.refresh(document)
+
+    # Enqueue ingest pipeline (fire and forget)
+    from app.workers.pipeline import start_ingest_pipeline
+
+    task_id = start_ingest_pipeline(str(document.id))
+
+    from sqlalchemy import update
+    await db.execute(
+        update(Document).where(Document.id == document.id).values(celery_task_id=task_id)
+    )
+
+    return DocumentResponse.model_validate(document)
+
+
+@router.get("/sources/{source_id}/documents", response_model=list[DocumentResponse])
+async def list_documents(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+) -> list[DocumentResponse]:
+    """List all documents in a source."""
+    source = await db.get(Source, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found.")
+
+    result = await db.execute(
+        select(Document)
+        .where(Document.source_id == source_id)
+        .order_by(Document.created_at.desc())
+    )
+    docs = result.scalars().all()
+    return [DocumentResponse.model_validate(d) for d in docs]
+
+
+@router.get("/documents/{document_id}/status", response_model=DocumentStatusResponse)
+async def get_document_status(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+) -> DocumentStatusResponse:
+    """Get the pipeline processing status of a document."""
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return DocumentStatusResponse.model_validate(doc)
+
+
+# ---------------------------------------------------------------------------
+# Artifacts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/documents/{document_id}/artifacts", response_model=list[ArtifactResponse])
+async def list_artifacts(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+) -> list[ArtifactResponse]:
+    """List all extracted artifacts for a document."""
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    result = await db.execute(
+        select(Artifact)
+        .where(Artifact.document_id == document_id)
+        .order_by(Artifact.page_number.asc().nulls_last(), Artifact.created_at.asc())
+    )
+    artifacts = result.scalars().all()
+    return [ArtifactResponse.model_validate(a) for a in artifacts]
+
+
+@router.get("/artifacts/{artifact_id}", response_model=ArtifactResponse)
+async def get_artifact(
+    artifact_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+) -> ArtifactResponse:
+    """Get a single artifact by ID."""
+    artifact = await db.get(Artifact, artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    return ArtifactResponse.model_validate(artifact)
+
+
+# ---------------------------------------------------------------------------
+# Watch Directories
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/watch-dirs",
+    response_model=WatchDirResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_watch_dir(
+    body: WatchDirCreate,
+    db: AsyncSession = Depends(get_async_session),
+) -> WatchDirResponse:
+    """Register a directory for automatic document ingestion."""
+    system_user = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+    source = await db.get(Source, body.source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found.")
+
+    existing = await db.execute(select(WatchDir).where(WatchDir.path == body.path))
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Watch directory '{body.path}' already registered.",
+        )
+
+    watch_dir = WatchDir(
+        source_id=body.source_id,
+        path=body.path,
+        poll_interval_seconds=body.poll_interval_seconds,
+        file_patterns=body.file_patterns,
+        created_by=system_user,
+    )
+    db.add(watch_dir)
+    await db.flush()
+    await db.refresh(watch_dir)
+    return WatchDirResponse.model_validate(watch_dir)
+
+
+@router.get("/watch-dirs", response_model=list[WatchDirResponse])
+async def list_watch_dirs(
+    db: AsyncSession = Depends(get_async_session),
+) -> list[WatchDirResponse]:
+    """List all registered watch directories."""
+    result = await db.execute(select(WatchDir).order_by(WatchDir.created_at.desc()))
+    dirs = result.scalars().all()
+    return [WatchDirResponse.model_validate(d) for d in dirs]
+
+
+@router.delete("/watch-dirs/{watch_dir_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_watch_dir(
+    watch_dir_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+) -> None:
+    """Remove a watch directory registration."""
+    watch_dir = await db.get(WatchDir, watch_dir_id)
+    if not watch_dir:
+        raise HTTPException(status_code=404, detail="Watch directory not found.")
+    await db.delete(watch_dir)

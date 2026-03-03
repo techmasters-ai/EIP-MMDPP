@@ -1,0 +1,58 @@
+version: "3.9"
+
+# Test overrides — used with: docker compose -f docker-compose.yml -f docker-compose.test.yml
+# Isolates test services on different ports so they don't conflict with dev.
+
+services:
+  postgres:
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: eip_test
+      POSTGRES_USER: eip_test
+      POSTGRES_PASSWORD: eip_test_secret
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eip_test -d eip_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_test_data:/data
+
+  minio:
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    environment:
+      MINIO_ROOT_USER: testadmin
+      MINIO_ROOT_PASSWORD: testadmin
+    volumes:
+      - minio_test_data:/data
+
+  minio-init:
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 testadmin testadmin;
+        mc mb --ignore-existing local/eip-test-raw;
+        mc mb --ignore-existing local/eip-test-derived;
+        exit 0;
+      "
+
+  # Don't start api/worker/beat in test mode — tests connect directly
+  api:
+    profiles: ["disabled"]
+  worker:
+    profiles: ["disabled"]
+  beat:
+    profiles: ["disabled"]
+
+volumes:
+  postgres_test_data:
+  redis_test_data:
+  minio_test_data:

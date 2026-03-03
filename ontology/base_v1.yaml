@@ -1,0 +1,226 @@
+# EIP-MMDPP Military Equipment Knowledge Graph Ontology
+# Version: 1.0.0
+# Format: JSON-LD compatible, stored in PostgreSQL, mirrored as Apache AGE graph nodes.
+
+version: "1.0.0"
+
+entity_types:
+  - name: EQUIPMENT_SYSTEM
+    label: "Equipment System"
+    description: "Top-level integrated weapon or defense system (e.g., Patriot PAC-3, THAAD)"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        designation: {type: string}
+        program_office: {type: string}
+        status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        prime_contractor: {type: string}
+        service_branch: {type: string}
+
+  - name: SUBSYSTEM
+    label: "Subsystem"
+    description: "Major functional component that is part of an EQUIPMENT_SYSTEM"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        function: {type: string}
+        part_number: {type: string}
+
+  - name: COMPONENT
+    label: "Component"
+    description: "Individual physical part within a subsystem or assembly"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        part_number: {type: string}
+        nsn: {type: string, description: "National Stock Number"}
+        cage_code: {type: string}
+        material: {type: string}
+        weight_kg: {type: number}
+
+  - name: ASSEMBLY
+    label: "Assembly"
+    description: "Grouping of components that function together as a unit"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        assembly_number: {type: string}
+
+  - name: SPECIFICATION
+    label: "Specification"
+    description: "Measurable performance characteristic (e.g., max range, CEP, operating temperature)"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        parameter: {type: string}
+        value: {type: string}
+        unit: {type: string}
+        condition: {type: string}
+        source_document: {type: string}
+
+  - name: CAPABILITY
+    label: "Capability"
+    description: "Functional ability of a system (e.g., terminal phase guidance, ECM resistance)"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        category: {type: string}
+        trl: {type: integer, description: "Technology Readiness Level 1-9"}
+
+  - name: STANDARD
+    label: "Standard / Specification Document"
+    description: "Reference standard or specification (e.g., MIL-STD-1553, MIL-DTL-38999)"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        designation: {type: string, description: "e.g., MIL-STD-1553B"}
+        title: {type: string}
+        issuing_org: {type: string}
+        version: {type: string}
+        supersedes: {type: string}
+
+  - name: DOCUMENT
+    label: "Source Document"
+    description: "Technical manual, specification sheet, drawing, or other source document"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        title: {type: string}
+        document_number: {type: string}
+        revision: {type: string}
+        classification: {type: string}
+        issuing_org: {type: string}
+        date: {type: string}
+
+  - name: ORGANIZATION
+    label: "Organization"
+    description: "Contractor, program office, military branch, or other organization"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        type: {type: string, enum: [PRIME_CONTRACTOR, SUBCONTRACTOR, PROGRAM_OFFICE, MILITARY_BRANCH, GOVERNMENT_AGENCY]}
+        cage_code: {type: string}
+        location: {type: string}
+
+  - name: PROCEDURE
+    label: "Procedure"
+    description: "Maintenance, operational, or test procedure"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        type: {type: string, enum: [MAINTENANCE, OPERATIONAL, TEST, CALIBRATION, INSPECTION]}
+        periodicity: {type: string}
+        skill_level: {type: string}
+
+  - name: FAILURE_MODE
+    label: "Failure Mode"
+    description: "Known failure mode of a component or subsystem"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        fmeca_severity: {type: integer, description: "MIL-STD-1629 severity 1-4"}
+        detection_method: {type: string}
+
+  - name: TEST_EVENT
+    label: "Test Event"
+    description: "A test or evaluation event with recorded outcomes"
+    is_abstract: false
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        date: {type: string}
+        location: {type: string}
+        test_type: {type: string, enum: [DT, OT, IOT, LFT, DEVELOPMENTAL]}
+        outcome: {type: string, enum: [PASS, FAIL, PARTIAL, INCONCLUSIVE]}
+
+relationship_types:
+  - name: IS_SUBSYSTEM_OF
+    label: "Is Subsystem Of"
+    description: "A subsystem is a functional part of an equipment system"
+    source_type: SUBSYSTEM
+    target_type: EQUIPMENT_SYSTEM
+    cardinality: many_to_one
+
+  - name: CONTAINS
+    label: "Contains"
+    description: "An assembly or subsystem contains a component"
+    source_type: null  # ASSEMBLY or SUBSYSTEM
+    target_type: COMPONENT
+    cardinality: one_to_many
+
+  - name: IMPLEMENTS
+    label: "Implements"
+    description: "A system or subsystem implements a capability"
+    source_type: null  # EQUIPMENT_SYSTEM or SUBSYSTEM
+    target_type: CAPABILITY
+    cardinality: many_to_many
+
+  - name: MEETS_STANDARD
+    label: "Meets Standard"
+    description: "A component or system meets a standard or specification"
+    source_type: null
+    target_type: STANDARD
+    cardinality: many_to_many
+
+  - name: SPECIFIED_BY
+    label: "Specified By"
+    description: "A system or component is specified by a performance specification"
+    source_type: null
+    target_type: SPECIFICATION
+    cardinality: many_to_many
+
+  - name: DESCRIBED_IN
+    label: "Described In"
+    description: "An entity is described in a source document"
+    source_type: null
+    target_type: DOCUMENT
+    cardinality: many_to_many
+
+  - name: PERFORMED_BY
+    label: "Performed By"
+    description: "A procedure is performed by or for an organization"
+    source_type: PROCEDURE
+    target_type: ORGANIZATION
+    cardinality: many_to_many
+
+  - name: AFFECTS
+    label: "Affects"
+    description: "A failure mode affects a component or subsystem"
+    source_type: FAILURE_MODE
+    target_type: null
+    cardinality: many_to_many
+
+  - name: SUPERSEDES
+    label: "Supersedes"
+    description: "A newer document or standard supersedes an older one"
+    source_type: null
+    target_type: null
+    cardinality: many_to_one
+
+  - name: TESTED_IN
+    label: "Tested In"
+    description: "A system or component was tested in a test event"
+    source_type: null
+    target_type: TEST_EVENT
+    cardinality: many_to_many
