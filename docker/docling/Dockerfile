@@ -51,14 +51,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download model for air-gapped deployment
+# Pre-download model for air-gapped deployment.
+# Place under /opt/docling-models so the docker-compose volume mount
+# on /models (used for HF_HOME cache) does not shadow the baked-in model.
 RUN python3 -c "\
 from huggingface_hub import snapshot_download; \
-snapshot_download('ibm-granite/granite-docling-258M', local_dir='/models/granite-docling-258M')"
+snapshot_download('ibm-granite/granite-docling-258M', local_dir='/opt/docling-models/granite-docling-258M')"
 
 ENV HF_HOME=/models
+ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
-ENV DOCLING_MODEL_PATH=/models/granite-docling-258M
+ENV DOCLING_MODEL_PATH=/opt/docling-models/granite-docling-258M
 
 COPY app/ ./app/
 

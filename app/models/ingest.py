@@ -140,7 +140,7 @@ class WatchDir(Base, TimestampMixin):
     file_patterns: Mapped[list] = mapped_column(
         ARRAY(String),
         nullable=False,
-        default=["*.pdf", "*.docx", "*.png", "*.jpg", "*.tiff"],
+        default=["*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"],
     )
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
 

@@ -118,15 +118,18 @@ async def upload_document(
     await db.flush()
     await db.refresh(document)
 
-    # Enqueue ingest pipeline (fire and forget)
+    # Commit the document BEFORE dispatching the Celery task
+    # so the worker's sync session can see the row.
+    await db.commit()
+
+    # Dispatch ingest pipeline (document is now visible to workers)
     from app.workers.pipeline import start_ingest_pipeline
 
     task_id = start_ingest_pipeline(str(document.id))
 
-    from sqlalchemy import update
-    await db.execute(
-        update(Document).where(Document.id == document.id).values(celery_task_id=task_id)
-    )
+    # Update celery_task_id via ORM (not raw UPDATE) to avoid
+    # expiring updated_at and triggering MissingGreenlet.
+    document.celery_task_id = task_id
 
     return DocumentResponse.model_validate(document)
 

@@ -75,3 +75,4 @@ RUN rm -f /usr/local/lib/libfips_bypass.so
 
 # Copy initialization SQL (runs in alphabetical order on first start)
 COPY init/ /docker-entrypoint-initdb.d/
+RUN chmod 644 /docker-entrypoint-initdb.d/*.sql

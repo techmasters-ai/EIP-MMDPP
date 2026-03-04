@@ -212,24 +212,38 @@ def convert_document(self, document_id: str) -> None:
         file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
 
         # Try Docling service first
-        if check_health_sync():
-            result = convert_document_sync(file_bytes, doc.filename or "document")
-            logger.info(
-                "convert_document: docling returned %d elements, %d pages, %.0fms",
-                len(result.elements),
-                result.num_pages,
-                result.processing_time_ms,
-            )
-            _persist_extraction_results(db, document_id, result.elements)
-        elif settings.docling_fallback_enabled:
-            logger.warning(
-                "convert_document: Docling service unavailable, falling back to "
-                "legacy extraction for document_id=%s",
-                document_id,
-            )
-            _legacy_extract(db, document_id, doc, file_bytes)
-        else:
-            raise RuntimeError("Docling service unavailable and fallback is disabled")
+        docling_healthy = check_health_sync()
+        docling_succeeded = False
+
+        if docling_healthy:
+            try:
+                result = convert_document_sync(file_bytes, doc.filename or "document")
+                logger.info(
+                    "convert_document: docling returned %d elements, %d pages, %.0fms",
+                    len(result.elements),
+                    result.num_pages,
+                    result.processing_time_ms,
+                )
+                _persist_extraction_results(db, document_id, result.elements)
+                docling_succeeded = True
+            except Exception as docling_exc:
+                logger.warning(
+                    "convert_document: Docling conversion failed for document_id=%s: %s",
+                    document_id,
+                    docling_exc,
+                )
+                if not settings.docling_fallback_enabled:
+                    raise
+
+        if not docling_succeeded:
+            if settings.docling_fallback_enabled:
+                logger.warning(
+                    "convert_document: falling back to legacy extraction for document_id=%s",
+                    document_id,
+                )
+                _legacy_extract(db, document_id, doc, file_bytes)
+            else:
+                raise RuntimeError("Docling service unavailable and fallback is disabled")
 
         db.commit()
     except Exception as exc:
@@ -283,7 +297,7 @@ def _persist_extraction_results(db, document_id: str, chunks) -> None:
 
 def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
     """Fallback: run legacy extraction (pdfplumber/pymupdf/tesseract) inline."""
-    from app.services.extraction import extract_pdf, extract_docx, extract_image
+    from app.services.extraction import extract_pdf, extract_docx, extract_image, extract_txt
 
     mime = doc.mime_type or ""
     chunks = []
@@ -294,6 +308,8 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
         chunks = extract_docx(file_bytes)
     elif "image" in mime:
         chunks = extract_image(file_bytes)
+    elif "text" in mime:
+        chunks = extract_txt(file_bytes)
 
     _persist_extraction_results(db, document_id, chunks)
 

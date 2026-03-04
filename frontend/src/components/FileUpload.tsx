@@ -255,7 +255,7 @@ export function FileUpload() {
             ? "Click to select a directory, or drag & drop files here"
             : "Click to select files, or drag & drop here"}
         </div>
-        <div className="drop-zone-sub">PDF, DOCX, PNG, JPG, TIFF supported</div>
+        <div className="drop-zone-sub">PDF, DOCX, TXT, PNG, JPG, TIFF supported</div>
 
         <input
           ref={fileInputRef}
@@ -265,7 +265,7 @@ export function FileUpload() {
           webkitdirectory={directoryMode ? "" : undefined}
           style={{ display: "none" }}
           onChange={onFileInput}
-          accept=".pdf,.docx,.doc,.pptx,.ppt,.png,.jpg,.jpeg,.tiff,.tif"
+          accept=".pdf,.docx,.doc,.pptx,.ppt,.txt,.png,.jpg,.jpeg,.tiff,.tif"
         />
       </div>
 

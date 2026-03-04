@@ -134,6 +134,50 @@ def extract_docx(docx_bytes: bytes) -> list[ExtractedChunk]:
     return chunks
 
 
+def extract_txt(file_bytes: bytes) -> list[ExtractedChunk]:
+    """Extract text content from a plain text file.
+
+    Decodes as UTF-8 (falling back to latin-1), then splits into
+    paragraph-based chunks suitable for embedding.
+    """
+    try:
+        text = file_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        text = file_bytes.decode("latin-1")
+
+    text = text.strip()
+    if not text:
+        return []
+
+    # Split on double newlines into paragraphs, then re-join small paragraphs
+    # into chunks that respect the embedding token window.
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        return [ExtractedChunk(chunk_text=text, modality="text")]
+
+    chunks: list[ExtractedChunk] = []
+    current: list[str] = []
+    current_len = 0
+    max_chars = 2000  # ~512 tokens at ~4 chars/token
+
+    for para in paragraphs:
+        if current_len + len(para) > max_chars and current:
+            chunks.append(
+                ExtractedChunk(chunk_text="\n\n".join(current), modality="text")
+            )
+            current = []
+            current_len = 0
+        current.append(para)
+        current_len += len(para)
+
+    if current:
+        chunks.append(
+            ExtractedChunk(chunk_text="\n\n".join(current), modality="text")
+        )
+
+    return chunks
+
+
 def extract_image(
     image_bytes: bytes,
     tesseract_threshold: float = 0.75,

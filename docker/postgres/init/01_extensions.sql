@@ -11,5 +11,8 @@ CREATE EXTENSION IF NOT EXISTS "pg_stat_statements";
 LOAD 'age';
 ALTER DATABASE eip SET search_path = ag_catalog, "$user", public;
 
+-- Set search_path for THIS session (ALTER DATABASE only affects future connections)
+SET search_path = ag_catalog, "$user", public;
+
 -- Create the military equipment knowledge graph
 SELECT create_graph('eip_kg');

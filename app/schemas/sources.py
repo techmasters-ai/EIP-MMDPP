@@ -82,7 +82,7 @@ class WatchDirCreate(APIModel):
     path: str = Field(..., min_length=1)
     poll_interval_seconds: int = Field(default=30, ge=5, le=3600)
     file_patterns: list[str] = Field(
-        default=["*.pdf", "*.docx", "*.png", "*.jpg", "*.tiff"]
+        default=["*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"]
     )
 
 

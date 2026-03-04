@@ -60,7 +60,7 @@ def _scan_directory(db, watch_dir) -> None:
             continue
 
         # Check against file patterns (fnmatch)
-        patterns = watch_dir.file_patterns or ["*.pdf", "*.docx", "*.png", "*.jpg", "*.tiff"]
+        patterns = watch_dir.file_patterns or ["*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"]
         if not any(fnmatch.fnmatch(file_path.name, pattern) for pattern in patterns):
             continue
 

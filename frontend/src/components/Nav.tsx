@@ -7,30 +7,26 @@ export function Nav({ page, onNavigate }: NavProps) {
   return (
     <nav className="nav">
       <div className="nav-brand">
-        {/* TecMasters wordmark — inline SVG so no asset path needed */}
+        {/* Tec-Masters globe icon — inline SVG */}
         <svg
-          width="32"
-          height="32"
-          viewBox="0 0 32 32"
+          width="36"
+          height="36"
+          viewBox="0 0 36 36"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
-          aria-label="TecMasters logo"
+          aria-label="Tec-Masters Inc. logo"
         >
-          <rect width="32" height="32" rx="6" fill="#7B6B52" />
-          <text
-            x="16"
-            y="22"
-            textAnchor="middle"
-            fontFamily="system-ui, sans-serif"
-            fontSize="16"
-            fontWeight="700"
-            fill="#F5F0E8"
-          >
-            T
-          </text>
+          {/* Globe outline */}
+          <circle cx="18" cy="18" r="15" stroke="#3D3426" strokeWidth="1.5" fill="none" />
+          {/* Vertical meridian (ellipse) */}
+          <ellipse cx="18" cy="18" rx="7" ry="15" stroke="#3D3426" strokeWidth="1.2" fill="none" />
+          {/* Horizontal parallels */}
+          <ellipse cx="18" cy="10" rx="13.5" ry="2" stroke="#3D3426" strokeWidth="1" fill="none" />
+          <line x1="3" y1="18" x2="33" y2="18" stroke="#3D3426" strokeWidth="1.2" />
+          <ellipse cx="18" cy="26" rx="13.5" ry="2" stroke="#3D3426" strokeWidth="1" fill="none" />
         </svg>
         <span>
-          TecMasters
+          Tec-Masters Inc.
           <span className="nav-brand-sub">EIP Multi-Modal Data Platform</span>
         </span>
       </div>
