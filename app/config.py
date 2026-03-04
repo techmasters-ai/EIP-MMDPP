@@ -80,9 +80,14 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"
     openai_api_key: str = ""
 
-    # Ollama (local VLM for schematics + Cognee when llm_provider=ollama)
+    # Docling document conversion service (granite-docling-258M VLM)
+    docling_service_url: str = "http://docling:8001"
+    docling_timeout_seconds: float = 300.0
+    docling_fallback_enabled: bool = True  # fall back to legacy extraction if Docling is down
+
+    # Ollama (Cognee when llm_provider=ollama; VLM deprecated in favor of Docling)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_vlm_model: str = "llava"
+    ollama_vlm_model: str = "llava"  # DEPRECATED: replaced by Docling service
     ollama_llm_model: str = "llama3.2"
     ollama_embedding_model: str = "nomic-embed-text"
 

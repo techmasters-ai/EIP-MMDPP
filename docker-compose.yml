@@ -77,30 +77,34 @@ services:
       "
 
   # ---------------------------------------------------------------------------
-  # Ollama — local VLM inference for schematic processing (llava)
-  # Air-gapped: pull the model image once, cache in ollama_data volume.
+  # Docling — document conversion service (granite-docling-258M VLM)
   # ---------------------------------------------------------------------------
-  ollama:
-    image: ollama/ollama:latest
+  docling:
+    build:
+      context: ./docker/docling
+      dockerfile: Dockerfile
     restart: unless-stopped
+    environment:
+      DOCLING_MODEL_PATH: /models/granite-docling-258M
+      DOCLING_DEVICE: ${DOCLING_DEVICE:-cuda}
+      DOCLING_DTYPE: ${DOCLING_DTYPE:-bfloat16}
     ports:
-      - "11434:11434"
+      - "${DOCLING_PORT:-8001}:8001"
     volumes:
-      - ollama_data:/root/.ollama
-    # GPU passthrough (uncomment for NVIDIA hosts with nvidia-docker2)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+      - docling_model_cache:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
-      interval: 30s
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 30s
+      retries: 10
+      start_period: 120s
 
   # ---------------------------------------------------------------------------
   # API — FastAPI application
@@ -116,8 +120,6 @@ services:
       redis:
         condition: service_healthy
       minio:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     env_file:
       - .env
@@ -155,7 +157,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      ollama:
+      docling:
         condition: service_healthy
     env_file:
       - .env
@@ -166,11 +168,10 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       MINIO_ENDPOINT: minio:9000
-      OLLAMA_BASE_URL: http://ollama:11434
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
-        --queues=ingest,extract,embed,graph,vision
+        --queues=ingest,extract,embed,graph
         --concurrency=4
     volumes:
       - ./app:/app/app
@@ -208,7 +209,12 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
-  ollama_data:
+  docling_model_cache:
   model_cache:
   watch_dirs:
   celerybeat_data:
+
+networks:
+  default:
+    name: ${DOCKER_NETWORK:-prod_network}
+    external: true

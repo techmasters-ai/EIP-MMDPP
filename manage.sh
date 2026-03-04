@@ -201,7 +201,7 @@ cmd_logs() {
 
 cmd_blow_away() {
   header "DESTROY all EIP-MMDPP services, volumes, and data"
-  warn "This will delete ALL Docker volumes (postgres, redis, minio, ollama, model_cache, watch_dirs, celerybeat)."
+  warn "This will delete ALL Docker volumes (postgres, redis, minio, docling_model_cache, watch_dirs, celerybeat)."
   warn "This action is IRREVERSIBLE."
   echo
 
@@ -304,7 +304,7 @@ ${CYAN}Service Lifecycle:${NC}
   --stop               Stop all services gracefully (preserves data)
   --restart            Restart without rebuilding images
   --status             Show service status and health checks
-  --logs [service]     Stream logs (optionally: api, worker, beat, postgres, redis, minio, ollama)
+  --logs [service]     Stream logs (optionally: api, worker, beat, postgres, redis, minio, docling)
   --blow-away          Destroy everything: containers, volumes, data (confirms first)
 
 ${CYAN}Database:${NC}

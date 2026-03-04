@@ -1,17 +1,12 @@
 """Multi-modal ingest pipeline.
 
-Phase 1: Linear chain (validate → extract_text → chunk_and_embed → finalize)
-Phase 2: Parallel chord with all modalities + graph extraction
-
 Task graph for a single document:
 
     validate_and_store
         ↓
     detect_modalities
         ↓
-    chord([extract_text, extract_images, run_ocr, process_schematics])
-        ↓ (callback)
-    collect_metadata
+    convert_document  (Docling service — replaces legacy extraction chord)
         ↓
     chunk_and_embed
         ↓
@@ -20,6 +15,8 @@ Task graph for a single document:
     import_graph
         ↓
     finalize_artifact
+        ↓
+    ingest_to_cognee
 """
 
 import hashlib
@@ -90,8 +87,7 @@ def start_ingest_pipeline(document_id: str) -> str:
     pipeline = chain(
         validate_and_store.si(document_id),
         detect_modalities.si(document_id),
-        _build_extraction_chord(document_id),
-        # collect_metadata is the chord callback — do NOT repeat it here
+        convert_document.si(document_id),
         chunk_and_embed.si(document_id),
         extract_graph_entities.si(document_id),
         import_graph.si(document_id),
@@ -100,23 +96,6 @@ def start_ingest_pipeline(document_id: str) -> str:
     )
     result = pipeline.apply_async()
     return result.id
-
-
-def _build_extraction_chord(document_id: str):
-    """Build the parallel extraction chord.
-
-    The chord callback (collect_metadata) receives the group task results as
-    its first positional argument, followed by document_id via .s().
-    """
-    return chord(
-        group(
-            extract_text.si(document_id),
-            extract_images.si(document_id),
-            run_ocr.si(document_id),
-            process_schematics.si(document_id),
-        ),
-        collect_metadata.s(document_id),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +187,124 @@ def detect_modalities(self, document_id: str) -> None:
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+def convert_document(self, document_id: str) -> None:
+    """Convert document via the Docling service (granite-docling-258M VLM).
+
+    Replaces the legacy extraction chord (extract_text, extract_images,
+    run_ocr, process_schematics) with a single Docling API call.
+    Falls back to legacy extraction if the Docling service is unavailable
+    and docling_fallback_enabled is True.
+    """
+    import uuid as uuid_mod
+    from app.models.ingest import Document, Artifact
+    from app.services.storage import download_bytes_sync, upload_bytes_sync
+    from app.services.docling_client import convert_document_sync, check_health_sync
+
+    logger.info("convert_document: document_id=%s", document_id)
+    _update_document_status(document_id, STATUS_PROCESSING, stage="convert_document")
+
+    db = _get_db()
+    try:
+        doc = db.get(Document, uuid.UUID(document_id))
+        if not doc:
+            raise ValueError(f"Document not found: {document_id}")
+
+        file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
+
+        # Try Docling service first
+        if check_health_sync():
+            result = convert_document_sync(file_bytes, doc.filename or "document")
+            logger.info(
+                "convert_document: docling returned %d elements, %d pages, %.0fms",
+                len(result.elements),
+                result.num_pages,
+                result.processing_time_ms,
+            )
+            _persist_extraction_results(db, document_id, result.elements)
+        elif settings.docling_fallback_enabled:
+            logger.warning(
+                "convert_document: Docling service unavailable, falling back to "
+                "legacy extraction for document_id=%s",
+                document_id,
+            )
+            _legacy_extract(db, document_id, doc, file_bytes)
+        else:
+            raise RuntimeError("Docling service unavailable and fallback is disabled")
+
+        db.commit()
+    except Exception as exc:
+        logger.error("convert_document failed for %s: %s", document_id, exc)
+        db.rollback()
+        _update_document_status(
+            document_id, STATUS_FAILED, stage="convert_document", error=str(exc)
+        )
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+def _persist_extraction_results(db, document_id: str, chunks) -> None:
+    """Persist ExtractedChunk list as Artifact rows. Stores images in MinIO."""
+    import uuid as uuid_mod
+    from app.models.ingest import Artifact
+    from app.services.storage import upload_bytes_sync
+
+    for chunk in chunks:
+        storage_bucket = None
+        storage_key = None
+
+        if chunk.raw_image_bytes:
+            ext = chunk.metadata.get("ext", "png")
+            img_key = f"artifacts/{document_id}/images/{uuid_mod.uuid4()}.{ext}"
+            upload_bytes_sync(
+                chunk.raw_image_bytes,
+                settings.minio_bucket_derived,
+                img_key,
+                content_type=f"image/{ext}",
+            )
+            storage_bucket = settings.minio_bucket_derived
+            storage_key = img_key
+
+        artifact = Artifact(
+            document_id=uuid.UUID(document_id),
+            artifact_type=chunk.modality,
+            content_text=chunk.chunk_text,
+            content_metadata=chunk.metadata,
+            storage_bucket=storage_bucket,
+            storage_key=storage_key,
+            page_number=chunk.page_number,
+            bounding_box=chunk.bounding_box,
+            ocr_confidence=chunk.ocr_confidence,
+            ocr_engine=chunk.ocr_engine,
+            requires_human_review=chunk.requires_human_review,
+        )
+        db.add(artifact)
+
+
+def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
+    """Fallback: run legacy extraction (pdfplumber/pymupdf/tesseract) inline."""
+    from app.services.extraction import extract_pdf, extract_docx, extract_image
+
+    mime = doc.mime_type or ""
+    chunks = []
+
+    if "pdf" in mime:
+        chunks = extract_pdf(file_bytes)
+    elif "word" in mime or "docx" in mime or "officedocument" in mime:
+        chunks = extract_docx(file_bytes)
+    elif "image" in mime:
+        chunks = extract_image(file_bytes)
+
+    _persist_extraction_results(db, document_id, chunks)
+
+
+# ---------------------------------------------------------------------------
+# DEPRECATED: Legacy extraction tasks (kept for _legacy_extract fallback path)
+# ---------------------------------------------------------------------------
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
 def extract_text(self, document_id: str) -> dict:
-    """Extract text content from the document."""
+    """DEPRECATED: Extract text content from the document. Use convert_document instead."""
     from app.models.ingest import Document, Artifact
     from app.services.storage import download_bytes_sync
     from app.services.extraction import extract_pdf, extract_docx

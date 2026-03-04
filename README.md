@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, images, and technical drawings → extracts text, performs OCR, embeds into a vector DB, and builds a military equipment knowledge graph. Supports semantic, graph, hybrid, cross-modal, and Cognee-powered retrieval. Includes a user feedback → curator patch approval workflow and a React web UI.
+Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds into a vector DB, and builds a military equipment knowledge graph. Supports semantic, graph, hybrid, cross-modal, and Cognee-powered retrieval. Includes a user feedback → curator patch approval workflow and a React web UI.
 
 ## Architecture
 
@@ -14,8 +14,7 @@ Ingests PDFs, DOCX, images, and technical drawings → extracts text, performs O
 | Object Storage | MinIO |
 | Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, fully local) |
 | Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
-| OCR | Tesseract 5 → EasyOCR fallback |
-| Schematics | llava via Ollama (local VLM) |
+| Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM (text, tables, images, equations, schematics in one pass) |
 | Knowledge Graph AI | Cognee (NetworkX graph + LanceDB vector, no extra services) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
@@ -46,7 +45,7 @@ All service lifecycle, database, worker, and test operations are available throu
 ./manage.sh --stop               # Stop all services (preserves data)
 ./manage.sh --restart            # Restart without rebuilding images
 ./manage.sh --status             # Show service status and health checks
-./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, ollama)
+./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, docling)
 ./manage.sh --blow-away          # Destroy everything: containers, volumes, data
 
 # Database
@@ -151,14 +150,15 @@ All Apache AGE graph mutations (node/edge create, update, delete) require **dual
 ```
 validate_and_store
   → detect_modalities
-  → [chord: extract_text | extract_images | run_ocr | process_schematics]
-  → collect_metadata
+  → convert_document        (Docling + granite-docling-258M — unified extraction)
   → chunk_and_embed
   → extract_graph_entities
   → import_graph
   → finalize_artifact
-  → ingest_to_cognee   (non-fatal: failure logs a warning, does not affect pipeline status)
+  → ingest_to_cognee        (non-fatal: failure logs a warning, does not affect pipeline status)
 ```
+
+The `convert_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction (pdfplumber, Tesseract, EasyOCR).
 
 ## Implementation Phases
 
@@ -180,13 +180,16 @@ app/
 │   └── _agent_helpers.py  # Pure helpers (no DB imports — unit-testable)
 ├── services/
 │   ├── cognee_service.py  # Cognee async wrapper
+│   ├── docling_client.py  # HTTP client for Docling conversion service
 │   ├── ner.py             # Military NER (offline regex)
 │   └── graph.py           # Apache AGE Cypher helpers
 ├── workers/
-│   ├── pipeline.py        # Celery multi-modal ingest pipeline
+│   ├── pipeline.py        # Celery ingest pipeline (Docling-based extraction)
 │   └── watcher.py         # Celery Beat directory watcher
 ├── models/            # SQLAlchemy ORM (ingest, retrieval, governance, auth)
 └── schemas/           # Pydantic request/response schemas
+docker/
+└── docling/           # Docling VLM conversion service (granite-docling-258M)
 frontend/
 ├── src/components/    # React components (FileUpload, QueryPage, DirectoryMonitor, Nav)
 └── src/api/client.ts  # Typed API client

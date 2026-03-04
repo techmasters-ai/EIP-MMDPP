@@ -44,6 +44,14 @@ services:
         exit 0;
       "
 
+  docling:
+    environment:
+      DOCLING_DEVICE: cpu
+      DOCLING_DTYPE: float32
+    deploy: {}
+    ports:
+      - "8003:8001"
+
   # Don't start api/worker/beat in test mode — tests connect directly
   api:
     profiles: ["disabled"]
