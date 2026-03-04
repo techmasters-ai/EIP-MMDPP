@@ -28,12 +28,40 @@ All ML inference runs **fully locally** — no cloud API calls required (air-gap
 cp .env.example .env
 # Edit .env — at minimum set LLM_PROVIDER and (if openai) OPENAI_API_KEY
 
-# 2. Start all services (builds Postgres image with pgvector + AGE on first run)
-docker compose up -d
+# 2. Start all services (builds images, runs migrations, waits for health)
+./manage.sh --start
 
 # 3. API + web UI
 #    Web UI:  http://localhost:8000/
 #    API docs: http://localhost:8000/docs
+```
+
+## manage.sh — Project Management CLI
+
+All service lifecycle, database, worker, and test operations are available through `./manage.sh`:
+
+```bash
+# Service lifecycle
+./manage.sh --start              # Build and start all services; wait for health
+./manage.sh --stop               # Stop all services (preserves data)
+./manage.sh --restart            # Restart without rebuilding images
+./manage.sh --status             # Show service status and health checks
+./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, ollama)
+./manage.sh --blow-away          # Destroy everything: containers, volumes, data
+
+# Database
+./manage.sh --migrate            # Run alembic upgrade head
+./manage.sh --seed               # Run ontology seeder
+./manage.sh --db-shell           # Open interactive psql shell
+
+# Workers
+./manage.sh --worker-status      # Show Celery worker/beat task info
+
+# Testing (delegates to scripts/run_tests.sh)
+./manage.sh --test               # Full suite
+./manage.sh --test unit          # Unit tests only
+./manage.sh --test integration   # Integration tests
+./manage.sh --test e2e           # End-to-end tests
 ```
 
 ### LLM Provider Configuration
