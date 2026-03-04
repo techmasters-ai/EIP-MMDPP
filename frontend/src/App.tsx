@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { Nav } from "./components/Nav";
 import { IngestPage } from "./components/IngestPage";
 import { QueryPage } from "./components/QueryPage";

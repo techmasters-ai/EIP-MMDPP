@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Test overrides — used with: docker compose -f docker-compose.yml -f docker-compose.test.yml
 # Isolates test services on different ports so they don't conflict with dev.
 

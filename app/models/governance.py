@@ -139,7 +139,7 @@ class PatchEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     actor_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    event_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

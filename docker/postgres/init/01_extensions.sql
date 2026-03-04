@@ -9,7 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "pg_stat_statements";
 
 -- Load AGE into the search path for Cypher queries
 LOAD 'age';
-ALTER DATABASE postgres SET search_path = ag_catalog, "$user", public;
+ALTER DATABASE eip SET search_path = ag_catalog, "$user", public;
 
 -- Create the military equipment knowledge graph
-SELECT create_graph('kg');
+SELECT create_graph('eip_kg');

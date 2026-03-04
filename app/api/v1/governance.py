@@ -131,7 +131,7 @@ async def submit_feedback(
         patch_id=patch.id,
         event_type="CREATED",
         actor_id=system_user,
-        metadata={"feedback_type": feedback.feedback_type},
+        event_metadata={"feedback_type": feedback.feedback_type},
     )
     db.add(event)
 
@@ -223,7 +223,7 @@ async def approve_patch(
         patch_id=patch_id,
         event_type="APPROVED",
         actor_id=curator_id,
-        metadata={"new_state": patch.state},
+        event_metadata={"new_state": patch.state},
     )
     db.add(event)
     await db.flush()

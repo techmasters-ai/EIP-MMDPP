@@ -132,7 +132,7 @@ async def _graph_query(
     try:
         result = await db.execute(
             text(f"""
-                SELECT * FROM cypher('kg', $${cypher}$$, :params::agtype)
+                SELECT * FROM cypher('eip_kg', $${cypher}$$, :params::agtype)
                 AS (entity agtype, rel_type agtype, neighbor agtype)
             """),
             {"params": params_json},

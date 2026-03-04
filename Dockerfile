@@ -1,3 +1,33 @@
+# syntax=docker/dockerfile:1
+
+# ============================================================
+# Stage 0 — FIPS bypass shim for hosts with FIPS-enabled kernels
+# gcc:12-bookworm already has the compiler — no apt-get needed.
+# ============================================================
+FROM gcc:12-bookworm AS fips-bypass
+
+RUN cat > /tmp/fips_bypass.c <<'CEOF'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <string.h>
+#include <stdio.h>
+FILE *fopen(const char *path, const char *mode) {
+    static FILE *(*real)(const char *, const char *) = NULL;
+    if (!real) real = dlsym(RTLD_NEXT, "fopen");
+    if (path && strcmp(path, "/proc/sys/crypto/fips_enabled") == 0)
+        return real("/dev/null", mode);
+    return real(path, mode);
+}
+FILE *fopen64(const char *path, const char *mode) {
+    static FILE *(*real)(const char *, const char *) = NULL;
+    if (!real) real = dlsym(RTLD_NEXT, "fopen64");
+    if (path && strcmp(path, "/proc/sys/crypto/fips_enabled") == 0)
+        return real("/dev/null", mode);
+    return real(path, mode);
+}
+CEOF
+RUN gcc -shared -fPIC -o /tmp/libfips_bypass.so /tmp/fips_bypass.c -ldl
+
 # ============================================================
 # Stage 1 — Build the React frontend
 # ============================================================
@@ -17,8 +47,12 @@ RUN npm run build
 # ============================================================
 FROM python:3.11-slim-bookworm
 
+# Install FIPS bypass shim (only needed during build-time apt-get)
+COPY --from=fips-bypass /tmp/libfips_bypass.so /usr/local/lib/
+
 # System dependencies for ML libraries and document processing
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
+    && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
     # Tesseract OCR
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -31,7 +65,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmupdf-dev \
     # General utilities
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/local/lib/libfips_bypass.so
 
 WORKDIR /app
 

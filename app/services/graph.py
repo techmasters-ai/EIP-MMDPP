@@ -1,7 +1,7 @@
 """Apache AGE graph operations.
 
 Provides synchronous helpers for Celery workers and async helpers for
-FastAPI routes. All Cypher queries target the 'kg' graph created during
+FastAPI routes. All Cypher queries target the 'eip_kg' graph created during
 database initialization.
 
 AGE requires:
@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-GRAPH_NAME = "kg"
+GRAPH_NAME = "eip_kg"
 
 
 # ---------------------------------------------------------------------------

@@ -50,10 +50,7 @@ class Chunk(Base, TimestampMixin):
         String(100), nullable=False, default="UNCLASSIFIED"
     )
 
-    artifact: Mapped["Artifact"] = relationship(
-        back_populates="chunks",
-        primaryjoin="Chunk.artifact_id == foreign(Artifact.id)",
-    )
+    artifact: Mapped["Artifact"] = relationship(back_populates="chunks")
 
 
 # Import Artifact here to resolve circular reference

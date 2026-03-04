@@ -1,5 +1,3 @@
-import React from "react";
-
 interface NavProps {
   page: "ingest" | "query";
   onNavigate: (page: "ingest" | "query") => void;

@@ -90,7 +90,7 @@ def seed(session: Session) -> None:
                     INSERT INTO ontology.entity_types
                         (id, name, label, description, properties, version_id, is_abstract)
                     VALUES
-                        (:id, :name, :label, :description, :properties::jsonb, :version_id, :is_abstract)
+                        (:id, :name, :label, :description, CAST(:properties AS jsonb), :version_id, :is_abstract)
                     ON CONFLICT (name) DO UPDATE SET
                         label = EXCLUDED.label,
                         description = EXCLUDED.description,
