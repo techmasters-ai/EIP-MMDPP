@@ -1,11 +1,16 @@
 import React, { useState } from "react";
-import { query, type QueryMode, type QueryResultItem } from "../api/client";
+import { unifiedQuery, type QueryMode, type QueryResultItem, type SectionResults } from "../api/client";
 
 const MODES: { value: QueryMode; label: string; description: string }[] = [
   {
-    value: "semantic",
-    label: "Semantic",
-    description: "Vector similarity search (BGE-large embeddings)",
+    value: "text_semantic",
+    label: "Text",
+    description: "BGE vector similarity search on text chunks",
+  },
+  {
+    value: "image_semantic",
+    label: "Images",
+    description: "CLIP vector search on image chunks (text-to-image or image-to-image)",
   },
   {
     value: "graph",
@@ -13,19 +18,14 @@ const MODES: { value: QueryMode; label: string; description: string }[] = [
     description: "Entity + relationship traversal via Apache AGE",
   },
   {
-    value: "hybrid",
-    label: "Hybrid",
-    description: "Semantic results boosted by graph entity co-occurrence",
-  },
-  {
     value: "cross_modal",
-    label: "Cross-modal",
-    description: "CLIP text→image retrieval",
+    label: "Cross-Modal",
+    description: "Text-to-image or image-to-text via graph bridging",
   },
   {
-    value: "cognee_graph",
-    label: "Cognee Graph",
-    description: "LLM-enhanced knowledge graph reasoning via Cognee",
+    value: "memory",
+    label: "Memory",
+    description: "Search Cognee approved memory",
   },
 ];
 
@@ -38,7 +38,6 @@ function scoreColor(score: number): string {
 function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const [expanded, setExpanded] = useState(false);
 
-  // For graph_node items, derive display text from context
   let displayText = item.content_text;
   let entityName = "";
   let relInfo = "";
@@ -53,7 +52,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
       if (neighbor) {
         const nProps = neighbor["properties"] as Record<string, unknown> | undefined;
         const nName = String(nProps?.["name"] ?? neighbor["name"] ?? "");
-        if (relType && nName) relInfo = `${relType} → ${nName}`;
+        if (relType && nName) relInfo = `${relType} -> ${nName}`;
       }
     }
   }
@@ -64,10 +63,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
     <div className="result-card">
       <div className="result-card-header">
         <span className="text-xs text-muted">#{index + 1}</span>
-        <span
-          className="result-score"
-          style={{ color: scoreColor(item.score) }}
-        >
+        <span className="result-score" style={{ color: scoreColor(item.score) }}>
           {(item.score * 100).toFixed(0)}%
         </span>
         <span className="badge badge-info">{item.modality}</span>
@@ -93,7 +89,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
       {displayText && (
         <>
           <p className="result-text">
-            {truncated ? displayText.slice(0, 400) + "…" : displayText}
+            {truncated ? displayText.slice(0, 400) + "\u2026" : displayText}
           </p>
           {displayText.length > 400 && (
             <button
@@ -107,8 +103,8 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
       )}
 
       <div className="result-meta">
-        {item.chunk_id && <span>Chunk: {String(item.chunk_id).slice(0, 8)}…</span>}
-        {item.artifact_id && <span>Artifact: {String(item.artifact_id).slice(0, 8)}…</span>}
+        {item.chunk_id && <span>Chunk: {String(item.chunk_id).slice(0, 8)}\u2026</span>}
+        {item.artifact_id && <span>Artifact: {String(item.artifact_id).slice(0, 8)}\u2026</span>}
       </div>
     </div>
   );
@@ -116,12 +112,24 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
 
 export function QueryPage() {
   const [queryText, setQueryText] = useState("");
-  const [mode, setMode] = useState<QueryMode>("hybrid");
+  const [selectedModes, setSelectedModes] = useState<Set<QueryMode>>(new Set(["text_semantic"]));
   const [topK, setTopK] = useState(10);
-  const [results, setResults] = useState<QueryResultItem[] | null>(null);
+  const [sections, setSections] = useState<Record<string, SectionResults> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
+
+  const toggleMode = (mode: QueryMode) => {
+    setSelectedModes((prev) => {
+      const next = new Set(prev);
+      if (next.has(mode)) {
+        if (next.size > 1) next.delete(mode); // keep at least one
+      } else {
+        next.add(mode);
+      }
+      return next;
+    });
+  };
 
   const handleQuery = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,13 +138,18 @@ export function QueryPage() {
 
     setLoading(true);
     setError(null);
-    setResults(null);
+    setSections(null);
     setElapsed(null);
     const t0 = performance.now();
 
     try {
-      const res = await query({ query: q, mode, top_k: topK, include_context: true });
-      setResults(res.results);
+      const res = await unifiedQuery({
+        query_text: q,
+        modes: Array.from(selectedModes),
+        top_k: topK,
+        include_context: true,
+      });
+      setSections(res.sections);
       setElapsed(Math.round(performance.now() - t0));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
@@ -145,20 +158,24 @@ export function QueryPage() {
     }
   };
 
+  const totalResults = sections
+    ? Object.values(sections).reduce((sum, s) => sum + s.total, 0)
+    : 0;
+
   return (
     <div>
       <div className="card card-body">
         <form onSubmit={(e) => void handleQuery(e)}>
           <div className="field">
-            <label>Query mode</label>
+            <label>Query modes (select one or more)</label>
             <div className="mode-selector" style={{ marginBottom: "1rem" }}>
               {MODES.map((m) => (
                 <button
                   key={m.value}
                   type="button"
-                  className={`mode-btn${mode === m.value ? " active" : ""}`}
+                  className={`mode-btn${selectedModes.has(m.value) ? " active" : ""}`}
                   title={m.description}
-                  onClick={() => setMode(m.value)}
+                  onClick={() => toggleMode(m.value)}
                 >
                   {m.label}
                 </button>
@@ -184,7 +201,7 @@ export function QueryPage() {
                 id="top-k"
                 type="number"
                 min={1}
-                max={50}
+                max={100}
                 value={topK}
                 onChange={(e) => setTopK(parseInt(e.target.value, 10) || 10)}
               />
@@ -195,7 +212,7 @@ export function QueryPage() {
                 className="btn btn-primary"
                 disabled={loading || !queryText.trim()}
               >
-                {loading ? <><span className="spinner" /> Searching…</> : "Search"}
+                {loading ? <><span className="spinner" /> Searching&hellip;</> : "Search"}
               </button>
             </div>
           </div>
@@ -204,28 +221,41 @@ export function QueryPage() {
 
       {error && <div className="alert alert-error" style={{ marginTop: "1rem" }}>{error}</div>}
 
-      {results !== null && (
+      {sections !== null && (
         <div className="results">
           <div className="flex-center gap-sm" style={{ marginBottom: "0.5rem" }}>
             <span className="text-sm text-muted">
-              {results.length === 0
+              {totalResults === 0
                 ? "No results found."
-                : `${results.length} result${results.length !== 1 ? "s" : ""}`}
-              {elapsed != null && ` — ${elapsed}ms`}
+                : `${totalResults} result${totalResults !== 1 ? "s" : ""} across ${Object.keys(sections).length} mode${Object.keys(sections).length !== 1 ? "s" : ""}`}
+              {elapsed != null && ` \u2014 ${elapsed}ms`}
             </span>
           </div>
 
-          {results.length === 0 ? (
+          {totalResults === 0 ? (
             <div className="empty-state">
-              <div className="empty-state-icon">🔍</div>
               <div className="empty-state-title">No matching documents</div>
               <div className="text-muted text-sm">
                 Try a different query or upload documents first.
               </div>
             </div>
           ) : (
-            results.map((item, i) => (
-              <ResultCard key={i} item={item} index={i} />
+            Object.entries(sections).map(([mode, section]) => (
+              <div key={mode} style={{ marginBottom: "1.5rem" }}>
+                <h3 style={{ marginBottom: "0.5rem", textTransform: "capitalize" }}>
+                  {mode.replace(/_/g, " ")}
+                  <span className="text-sm text-muted" style={{ marginLeft: "0.5rem" }}>
+                    ({section.total} result{section.total !== 1 ? "s" : ""})
+                  </span>
+                </h3>
+                {section.results.length === 0 ? (
+                  <p className="text-sm text-muted">No results for this mode.</p>
+                ) : (
+                  section.results.map((item, i) => (
+                    <ResultCard key={`${mode}-${i}`} item={item} index={i} />
+                  ))
+                )}
+              </div>
             ))
           )}
         </div>
@@ -233,7 +263,7 @@ export function QueryPage() {
 
       <div className="api-info mt-md">
         <strong>LangGraph tool endpoint:</strong>{" "}
-        <code>GET /v1/agent/context?query=…&amp;mode=hybrid&amp;top_k=10</code>
+        <code>GET /v1/agent/context?query=&hellip;&amp;mode=text_semantic&amp;top_k=10</code>
         <br />
         Returns a pre-formatted markdown context string ready for LLM prompt injection.
       </div>

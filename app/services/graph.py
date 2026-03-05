@@ -286,6 +286,137 @@ def get_graph_stats(session: Session) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Document/Chunk structural graph operations
+# ---------------------------------------------------------------------------
+
+def upsert_document_node(
+    session: Session,
+    document_id: str,
+    title: str,
+    properties: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """Create or update a DOCUMENT node in the knowledge graph."""
+    setup_age_session(session)
+
+    props = properties or {}
+    props.update({"document_id": document_id, "title": title})
+    params_json = json.dumps({"props": props, "doc_id": document_id})
+
+    cypher = """
+        MERGE (d:DOCUMENT {document_id: $doc_id})
+        ON CREATE SET d = $props
+        ON MATCH SET d.title = $props.title
+        RETURN d.document_id AS doc_id
+    """
+
+    try:
+        session.execute(
+            text(f"""
+                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
+                    :params::agtype) AS (doc_id agtype)
+            """),
+            {"params": params_json},
+        )
+        return document_id
+    except Exception as e:
+        logger.warning("upsert_document_node failed for %s: %s", document_id, e)
+        return None
+
+
+def upsert_chunk_ref_node(
+    session: Session,
+    chunk_id: str,
+    chunk_type: str,
+) -> Optional[str]:
+    """Create or update a CHUNK_REF node linking to a text_chunk or image_chunk."""
+    setup_age_session(session)
+
+    params_json = json.dumps({"chunk_id": chunk_id, "chunk_type": chunk_type})
+
+    cypher = """
+        MERGE (c:CHUNK_REF {chunk_id: $chunk_id})
+        ON CREATE SET c.chunk_type = $chunk_type
+        RETURN c.chunk_id AS cid
+    """
+
+    try:
+        session.execute(
+            text(f"""
+                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
+                    :params::agtype) AS (cid agtype)
+            """),
+            {"params": params_json},
+        )
+        return chunk_id
+    except Exception as e:
+        logger.warning("upsert_chunk_ref_node failed for %s: %s", chunk_id, e)
+        return None
+
+
+def create_structural_edge(
+    session: Session,
+    from_id: str,
+    to_id: str,
+    edge_type: str,
+) -> bool:
+    """Create a structural edge between DOCUMENT/CHUNK_REF nodes.
+
+    Supports: CONTAINS_TEXT, CONTAINS_IMAGE, SAME_PAGE.
+    These are deterministic edges and do NOT require dual-curator approval.
+    """
+    setup_age_session(session)
+
+    label = _sanitize_label(edge_type)
+    params_json = json.dumps({"from_id": from_id, "to_id": to_id})
+
+    # Determine which node types to match based on edge type
+    if edge_type == "CONTAINS_TEXT":
+        cypher = f"""
+            MATCH (d:DOCUMENT {{document_id: $from_id}})
+            MATCH (c:CHUNK_REF {{chunk_id: $to_id}})
+            MERGE (d)-[r:{label}]->(c)
+            RETURN count(r) AS cnt
+        """
+    elif edge_type == "CONTAINS_IMAGE":
+        cypher = f"""
+            MATCH (d:DOCUMENT {{document_id: $from_id}})
+            MATCH (c:CHUNK_REF {{chunk_id: $to_id}})
+            MERGE (d)-[r:{label}]->(c)
+            RETURN count(r) AS cnt
+        """
+    elif edge_type == "SAME_PAGE":
+        cypher = f"""
+            MATCH (a:CHUNK_REF {{chunk_id: $from_id}})
+            MATCH (b:CHUNK_REF {{chunk_id: $to_id}})
+            MERGE (a)-[r:{label}]->(b)
+            RETURN count(r) AS cnt
+        """
+    else:
+        # Generic: match any node with id properties
+        cypher = f"""
+            MATCH (a {{chunk_id: $from_id}})
+            MATCH (b {{chunk_id: $to_id}})
+            MERGE (a)-[r:{label}]->(b)
+            RETURN count(r) AS cnt
+        """
+
+    try:
+        session.execute(
+            text(f"""
+                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
+                    :params::agtype) AS (cnt agtype)
+            """),
+            {"params": params_json},
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "create_structural_edge failed %s→%s [%s]: %s", from_id, to_id, edge_type, e
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Async versions (FastAPI context)
 # ---------------------------------------------------------------------------
 

@@ -1,7 +1,18 @@
+export type Page = "ingest" | "query" | "text" | "images" | "graph" | "memory";
+
 interface NavProps {
-  page: "ingest" | "query";
-  onNavigate: (page: "ingest" | "query") => void;
+  page: Page;
+  onNavigate: (page: Page) => void;
 }
+
+const NAV_ITEMS: { value: Page; label: string }[] = [
+  { value: "ingest", label: "Upload" },
+  { value: "query", label: "Search" },
+  { value: "text", label: "Text Store" },
+  { value: "images", label: "Image Store" },
+  { value: "graph", label: "Graph" },
+  { value: "memory", label: "Memory" },
+];
 
 export function Nav({ page, onNavigate }: NavProps) {
   return (
@@ -30,18 +41,15 @@ export function Nav({ page, onNavigate }: NavProps) {
       </div>
 
       <div className="nav-links">
-        <button
-          className={`nav-link${page === "ingest" ? " active" : ""}`}
-          onClick={() => onNavigate("ingest")}
-        >
-          Ingest
-        </button>
-        <button
-          className={`nav-link${page === "query" ? " active" : ""}`}
-          onClick={() => onNavigate("query")}
-        >
-          Query
-        </button>
+        {NAV_ITEMS.map((item) => (
+          <button
+            key={item.value}
+            className={`nav-link${page === item.value ? " active" : ""}`}
+            onClick={() => onNavigate(item.value)}
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
     </nav>
   );

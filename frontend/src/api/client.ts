@@ -37,6 +37,7 @@ export interface WatchDir {
 export interface QueryResultItem {
   chunk_id?: string;
   artifact_id?: string;
+  document_id?: string;
   score: number;
   modality: string;
   content_text?: string;
@@ -45,11 +46,16 @@ export interface QueryResultItem {
   context?: Record<string, unknown>;
 }
 
-export interface QueryResponse {
-  query: string;
-  mode: string;
+export interface SectionResults {
   results: QueryResultItem[];
-  total_results: number;
+  total: number;
+}
+
+export interface UnifiedQueryResponse {
+  query_text?: string;
+  query_image?: string;
+  modes: string[];
+  sections: Record<string, SectionResults>;
 }
 
 export interface AgentSource {
@@ -67,7 +73,39 @@ export interface AgentContextResponse {
   sources: AgentSource[];
 }
 
-export type QueryMode = "semantic" | "graph" | "hybrid" | "cross_modal" | "cognee_graph";
+export type QueryMode = "text_semantic" | "image_semantic" | "graph" | "cross_modal" | "memory";
+
+export interface TextIngestResponse {
+  chunk_ids: string[];
+  chunks_created: number;
+}
+
+export interface ImageIngestResponse {
+  chunk_id: string;
+}
+
+export interface GraphIngestResponse {
+  status: string;
+  node_id?: string;
+}
+
+export interface MemoryProposal {
+  id: string;
+  content: string;
+  source_context?: Record<string, unknown>;
+  confidence: number;
+  status: string;
+  proposed_by?: string;
+  reviewed_by?: string;
+  review_notes?: string;
+  created_at: string;
+}
+
+export interface MemoryQueryResponse {
+  query: string;
+  results: QueryResultItem[];
+  total: number;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,14 +152,6 @@ export async function getDocumentStatus(documentId: string): Promise<Document> {
   return handleResponse<Document>(res);
 }
 
-/**
- * Upload a single file with XHR so we can track upload progress.
- *
- * @param sourceId  The source to attach this document to.
- * @param file      The File object from the input / drop zone.
- * @param onProgress  Called with upload progress 0–100.
- * @returns  The created Document record.
- */
 export function uploadFile(
   sourceId: string,
   file: File,
@@ -197,25 +227,133 @@ export async function deleteWatchDir(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Retrieval
+// Unified Retrieval
 // ---------------------------------------------------------------------------
 
-export async function query(params: {
-  query: string;
-  mode: QueryMode;
+export async function unifiedQuery(params: {
+  query_text?: string;
+  query_image?: string;
+  modes: QueryMode[];
   top_k?: number;
   include_context?: boolean;
-}): Promise<QueryResponse> {
+}): Promise<UnifiedQueryResponse> {
   const res = await fetch("/v1/retrieval/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ top_k: 10, include_context: true, ...params }),
   });
-  return handleResponse<QueryResponse>(res);
+  return handleResponse<UnifiedQueryResponse>(res);
 }
 
 // ---------------------------------------------------------------------------
-// LangGraph agent context (for demonstration / testing)
+// Text Store
+// ---------------------------------------------------------------------------
+
+export async function ingestText(params: {
+  text: string;
+  modality?: string;
+  classification?: string;
+}): Promise<TextIngestResponse> {
+  const res = await fetch("/v1/text/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<TextIngestResponse>(res);
+}
+
+// ---------------------------------------------------------------------------
+// Image Store
+// ---------------------------------------------------------------------------
+
+export async function ingestImage(params: {
+  image: string;
+  alt_text?: string;
+  classification?: string;
+}): Promise<ImageIngestResponse> {
+  const res = await fetch("/v1/images/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<ImageIngestResponse>(res);
+}
+
+// ---------------------------------------------------------------------------
+// Graph Store
+// ---------------------------------------------------------------------------
+
+export async function ingestGraphEntity(params: {
+  entity_type: string;
+  name: string;
+  properties?: Record<string, unknown>;
+}): Promise<GraphIngestResponse> {
+  const res = await fetch("/v1/graph/ingest/entity", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<GraphIngestResponse>(res);
+}
+
+export async function ingestGraphRelationship(params: {
+  from_entity: string;
+  from_type: string;
+  to_entity: string;
+  to_type: string;
+  relationship_type: string;
+}): Promise<GraphIngestResponse> {
+  const res = await fetch("/v1/graph/ingest/relationship", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<GraphIngestResponse>(res);
+}
+
+// ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+
+export async function proposeMemory(params: {
+  content: string;
+  source_context?: Record<string, unknown>;
+  confidence?: number;
+}): Promise<MemoryProposal> {
+  const res = await fetch("/v1/memory/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<MemoryProposal>(res);
+}
+
+export async function listMemoryProposals(status?: string): Promise<MemoryProposal[]> {
+  const url = status ? `/v1/memory/proposals?status=${status}` : "/v1/memory/proposals";
+  const res = await fetch(url);
+  return handleResponse<MemoryProposal[]>(res);
+}
+
+export async function approveMemory(id: string, notes?: string): Promise<MemoryProposal> {
+  const res = await fetch(`/v1/memory/proposals/${id}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes }),
+  });
+  return handleResponse<MemoryProposal>(res);
+}
+
+export async function rejectMemory(id: string, notes?: string): Promise<MemoryProposal> {
+  const res = await fetch(`/v1/memory/proposals/${id}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes }),
+  });
+  return handleResponse<MemoryProposal>(res);
+}
+
+// ---------------------------------------------------------------------------
+// LangGraph agent context
 // ---------------------------------------------------------------------------
 
 export async function getAgentContext(params: {
@@ -225,7 +363,7 @@ export async function getAgentContext(params: {
 }): Promise<AgentContextResponse> {
   const search = new URLSearchParams({
     query: params.query,
-    mode: params.mode ?? "hybrid",
+    mode: params.mode ?? "text_semantic",
     top_k: String(params.top_k ?? 10),
   });
   const res = await fetch(`/v1/agent/context?${search}`);

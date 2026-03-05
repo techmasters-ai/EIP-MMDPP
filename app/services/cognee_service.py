@@ -5,7 +5,7 @@ returns results in EIP's QueryResultItem format.
 
 Configuration is driven by LLM_PROVIDER env var:
 - openai: uses OpenAI API (requires OPENAI_API_KEY)
-- ollama: uses local Ollama server (requires OLLAMA_BASE_URL + OLLAMA_LLM_MODEL)
+- ollama: uses local Ollama server (requires OLLAMA_BASE_URL + COGNEE_MODEL)
 - mock: skips Cognee entirely, returns [] (for tests / no-LLM environments)
 
 Storage backends (no extra services needed):
@@ -64,7 +64,7 @@ async def _configure_cognee() -> None:
                     {
                         "provider": "ollama",
                         "endpoint": settings.ollama_base_url,
-                        "model": settings.ollama_llm_model,
+                        "model": settings.cognee_model,
                     }
                 )
 

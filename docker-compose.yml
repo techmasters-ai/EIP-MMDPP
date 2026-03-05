@@ -83,14 +83,10 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      DOCLING_MODEL_PATH: /opt/docling-models/granite-docling-258M
-      HF_HUB_OFFLINE: "1"
       DOCLING_DEVICE: ${DOCLING_DEVICE:-cuda}
       DOCLING_DTYPE: ${DOCLING_DTYPE:-bfloat16}
     ports:
       - "${DOCLING_PORT:-8001}:8001"
-    volumes:
-      - docling_model_cache:/models
     deploy:
       resources:
         reservations:
@@ -210,7 +206,6 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
-  docling_model_cache:
   model_cache:
   watch_dirs:
   celerybeat_data:

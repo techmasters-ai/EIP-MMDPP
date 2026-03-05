@@ -30,18 +30,18 @@ celery_app.conf.update(
         "app.workers.pipeline.validate_and_store": {"queue": "ingest"},
         "app.workers.pipeline.detect_modalities": {"queue": "ingest"},
         "app.workers.pipeline.convert_document": {"queue": "extract"},
+        "app.workers.pipeline.embed_text_chunks": {"queue": "embed"},
+        "app.workers.pipeline.embed_image_chunks": {"queue": "embed"},
+        "app.workers.pipeline.collect_embeddings": {"queue": "ingest"},
+        "app.workers.pipeline.extract_graph": {"queue": "graph"},
+        "app.workers.pipeline.import_graph": {"queue": "graph"},
+        "app.workers.pipeline.connect_document_elements": {"queue": "graph"},
+        "app.workers.pipeline.finalize_artifact": {"queue": "ingest"},
+        "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
+        # DEPRECATED: kept for backwards compatibility
         "app.workers.pipeline.chunk_and_embed": {"queue": "embed"},
         "app.workers.pipeline.extract_graph_entities": {"queue": "graph"},
-        "app.workers.pipeline.import_graph": {"queue": "graph"},
-        "app.workers.pipeline.finalize_artifact": {"queue": "ingest"},
         "app.workers.pipeline.ingest_to_cognee": {"queue": "ingest"},
-        "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
-        # DEPRECATED: legacy extraction tasks (kept for fallback)
-        # "app.workers.pipeline.extract_text": {"queue": "extract"},
-        # "app.workers.pipeline.extract_images": {"queue": "extract"},
-        # "app.workers.pipeline.run_ocr": {"queue": "extract"},
-        # "app.workers.pipeline.process_schematics": {"queue": "vision"},
-        # "app.workers.pipeline.collect_metadata": {"queue": "ingest"},
     },
     # Task result expiry
     result_expires=86400,  # 24 hours

@@ -20,6 +20,9 @@ from sqlalchemy.orm import Session
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("TEXT_EMBEDDING_MODEL", "paraphrase-MiniLM-L6-v2")
 os.environ.setdefault("TEXT_EMBEDDING_DIM", "384")
+os.environ.setdefault("IMAGE_EMBEDDING_DIM", "128")
+os.environ.setdefault("LLM_PROVIDER", "mock")
+os.environ.setdefault("MEMORY_ENABLED", "true")
 
 
 # ---------------------------------------------------------------------------
@@ -165,22 +168,94 @@ def mock_celery(monkeypatch):
 
 @pytest.fixture
 def mock_embeddings(monkeypatch):
-    """Mock embedding model calls with deterministic zero vectors."""
+    """Mock all embedding model calls with deterministic vectors."""
     import random
 
+    text_dim = int(os.environ.get("TEXT_EMBEDDING_DIM", "384"))
+    image_dim = int(os.environ.get("IMAGE_EMBEDDING_DIM", "128"))
+
     def fake_embed_texts(texts, batch_size=64):
-        # Return deterministic pseudo-random 384-dim vectors (test model dim)
         result = []
-        for text in texts:
-            rng = random.Random(hash(text) % (2**31))
-            result.append([rng.uniform(-1, 1) for _ in range(384)])
+        for t in texts:
+            rng = random.Random(hash(t) % (2**31))
+            result.append([rng.uniform(-1, 1) for _ in range(text_dim)])
         return result
 
     def fake_embed_query(query):
         return fake_embed_texts([query])[0]
 
+    def fake_embed_images(images):
+        result = []
+        for img in images:
+            rng = random.Random(42)
+            result.append([rng.uniform(-1, 1) for _ in range(image_dim)])
+        return result
+
+    def fake_embed_text_for_clip(text_input):
+        rng = random.Random(hash(text_input) % (2**31))
+        return [rng.uniform(-1, 1) for _ in range(image_dim)]
+
     monkeypatch.setattr("app.services.embedding.embed_texts", fake_embed_texts)
     monkeypatch.setattr("app.services.embedding.embed_query", fake_embed_query)
+    monkeypatch.setattr("app.services.embedding.embed_images", fake_embed_images)
+    monkeypatch.setattr("app.services.embedding.embed_text_for_clip", fake_embed_text_for_clip)
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_cognee(monkeypatch):
+    """Mock Cognee service calls."""
+    async def fake_search(query, top_k=10):
+        return []
+
+    async def fake_add(text, dataset_name):
+        return None
+
+    async def fake_cognify(dataset_name):
+        return None
+
+    monkeypatch.setattr("app.services.cognee_service.cognee_search", fake_search)
+    monkeypatch.setattr("app.services.cognee_service.cognee_add", fake_add)
+    monkeypatch.setattr("app.services.cognee_service.cognee_cognify", fake_cognify)
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_docling_graph(monkeypatch):
+    """Mock docling-graph extraction to return a canned NetworkX graph."""
+    import networkx as nx
+
+    def fake_extract(text, document_id, *, ontology_path=None):
+        G = nx.DiGraph()
+        G.add_node(
+            "EQUIPMENT_SYSTEM:Test System",
+            entity_type="EQUIPMENT_SYSTEM",
+            name="Test System",
+            properties={"designation": "TS-001"},
+            confidence=0.9,
+            document_id=document_id,
+        )
+        G.add_node(
+            "COMPONENT:Test Component",
+            entity_type="COMPONENT",
+            name="Test Component",
+            properties={"part_number": "TC-001"},
+            confidence=0.85,
+            document_id=document_id,
+        )
+        G.add_edge(
+            "EQUIPMENT_SYSTEM:Test System",
+            "COMPONENT:Test Component",
+            relationship_type="CONTAINS",
+            confidence=0.8,
+            document_id=document_id,
+        )
+        return G
+
+    monkeypatch.setattr(
+        "app.services.docling_graph_service.extract_graph_from_text",
+        fake_extract,
+    )
     return MagicMock()
 
 

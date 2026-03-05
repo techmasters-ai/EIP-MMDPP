@@ -18,7 +18,7 @@ from app.schemas import ConvertedElement, ConvertResponse
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = os.environ.get("DOCLING_MODEL_PATH", "/models/granite-docling-258M")
+MODEL_PATH = os.environ.get("DOCLING_MODEL_PATH", "ibm-granite/granite-docling-258M")
 DEVICE = os.environ.get("DOCLING_DEVICE", "cuda")
 DTYPE = os.environ.get("DOCLING_DTYPE", "bfloat16")
 

@@ -65,8 +65,11 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     libmupdf-dev \
     # General utilities
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -f /usr/local/lib/libfips_bypass.so
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep FIPS bypass shim at runtime — pymupdf/pdfplumber call into OpenSSL
+# which aborts on FIPS-enabled host kernels without this.
+ENV LD_PRELOAD=/usr/local/lib/libfips_bypass.so
 
 WORKDIR /app
 

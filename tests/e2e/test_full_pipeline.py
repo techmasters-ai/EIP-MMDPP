@@ -1,4 +1,4 @@
-"""End-to-end tests: upload → parse → embed → query → feedback → patch.
+"""End-to-end tests: upload -> parse -> embed -> query -> feedback -> patch.
 
 These tests require the full Docker Compose stack to be running with real
 Postgres, Redis, and MinIO services.
@@ -35,9 +35,9 @@ async def test_full_ingest_and_retrieval_pipeline(async_client):
     1. Create source
     2. Upload a PDF
     3. Wait for pipeline to complete
-    4. Semantic query returns results
-    5. Submit feedback → patch is created
-    6. Approve patch → state transitions correctly
+    4. Unified query returns results
+    5. Submit feedback -> patch is created
+    6. Approve patch -> state transitions correctly
     """
     # 1. Create source
     src_resp = await async_client.post(
@@ -63,15 +63,20 @@ async def test_full_ingest_and_retrieval_pipeline(async_client):
         "PARTIAL_COMPLETE",
     ), f"Pipeline ended with unexpected status: {final_status}"
 
-    # 4. Semantic query
+    # 4. Unified query (text_semantic mode)
     query_resp = await async_client.post(
         "/v1/retrieval/query",
-        json={"query": "test document content", "mode": "semantic", "top_k": 5},
+        json={
+            "query_text": "test document content",
+            "modes": ["text_semantic"],
+            "top_k": 5,
+        },
     )
     assert query_resp.status_code == 200
     query_data = query_resp.json()
-    assert query_data["mode"] == "semantic"
-    assert isinstance(query_data["results"], list)
+    assert "sections" in query_data
+    assert "text_semantic" in query_data["sections"]
+    assert isinstance(query_data["sections"]["text_semantic"]["results"], list)
 
     # 5. Submit feedback (always valid even if no results)
     feedback_resp = await async_client.post(

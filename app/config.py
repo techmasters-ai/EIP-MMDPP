@@ -75,26 +75,36 @@ class Settings(BaseSettings):
     image_embedding_pretrained: str = "openai"
     image_embedding_dim: int = 512
 
-    # LLM provider (openai | ollama | mock)
-    # Controls which LLM backend is used for Cognee and future LLM features.
-    llm_provider: str = "openai"
+    # LLM provider — system-wide control (openai | ollama | mock)
+    # Controls which LLM backend is used for ALL LLM-dependent features:
+    # docling-graph entity extraction, Cognee memory, and future LLM features.
+    llm_provider: str = "ollama"
     openai_api_key: str = ""
+
+    # Ollama connection (shared by all features when llm_provider=ollama)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_vlm_model: str = "llava"  # DEPRECATED: replaced by Docling service
+    ollama_embedding_model: str = "nomic-embed-text"
+
+    # Per-feature model selection — each feature can use a different model
+    docling_graph_model: str = "llama3.2"  # Model for graph entity/relationship extraction
+    cognee_model: str = "llama3.2"         # Model for Cognee memory operations
+
+    # docling-graph extraction settings
+    docling_graph_timeout: float = 120.0
 
     # Docling document conversion service (granite-docling-258M VLM)
     docling_service_url: str = "http://docling:8001"
     docling_timeout_seconds: float = 300.0
     docling_fallback_enabled: bool = True  # fall back to legacy extraction if Docling is down
 
-    # Ollama (Cognee when llm_provider=ollama; VLM deprecated in favor of Docling)
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_vlm_model: str = "llava"  # DEPRECATED: replaced by Docling service
-    ollama_llm_model: str = "llama3.2"
-    ollama_embedding_model: str = "nomic-embed-text"
-
     # Cognee storage (networkx/lancedb require no extra services — air-gapped safe)
     cognee_graph_engine: str = "networkx"   # networkx | neo4j
     cognee_vector_engine: str = "lancedb"   # lancedb | pgvector
     cognee_data_dir: str = "/app/data/cognee"
+
+    # Memory layer
+    memory_enabled: bool = True
 
     # OCR thresholds
     ocr_tesseract_confidence_threshold: float = 0.75

@@ -2,9 +2,36 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds into a vector DB, and builds a military equipment knowledge graph. Supports semantic, graph, hybrid, cross-modal, and Cognee-powered retrieval. Includes a user feedback → curator patch approval workflow and a React web UI.
+Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into separate vector stores, builds a military equipment knowledge graph (Apache AGE), and maintains governed memory (Cognee). Supports 5 retrieval modes: text semantic, image semantic, graph traversal, cross-modal (graph-bridged), and memory search. Includes a user feedback → curator patch approval workflow and a React web UI.
 
 ## Architecture
+
+### Knowledge Layers
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │          Apache AGE Graph (eip_kg)        │
+                    │   DOCUMENT ←→ CHUNK_REF nodes             │
+                    │   Ontology entities (LLM-extracted)       │
+                    │   CONTAINS_TEXT / CONTAINS_IMAGE /         │
+                    │   SAME_PAGE / ontology edges              │
+                    └──────────┬───────────────┬────────────────┘
+                               │               │
+                    ┌──────────▼──────┐ ┌──────▼──────────┐
+                    │ retrieval.      │ │ retrieval.       │
+                    │ text_chunks     │ │ image_chunks     │
+                    │ BGE 1024-dim    │ │ CLIP 512-dim     │
+                    │ HNSW index      │ │ HNSW index       │
+                    └─────────────────┘ └─────────────────┘
+
+                    ┌──────────────────────────────────────────┐
+                    │         Cognee Memory Layer               │
+                    │   NetworkX + LanceDB (separate store)     │
+                    │   Governed: PROPOSED → APPROVED/REJECTED  │
+                    └──────────────────────────────────────────┘
+```
+
+### Technology Stack
 
 | Component | Technology |
 |---|---|
@@ -14,8 +41,9 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 | Object Storage | MinIO |
 | Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, fully local) |
 | Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
-| Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM (text, tables, images, equations, schematics in one pass) |
-| Knowledge Graph AI | Cognee (NetworkX graph + LanceDB vector, no extra services) |
+| Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
+| Graph Extraction | docling-graph + LLM (ontology-driven entity/relationship extraction) |
+| Memory | Cognee (NetworkX graph + LanceDB vector, governed approval workflow) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
@@ -63,21 +91,24 @@ All service lifecycle, database, worker, and test operations are available throu
 ./manage.sh --test e2e           # End-to-end tests
 ```
 
-### LLM Provider Configuration
+## LLM Provider Configuration
 
-The `LLM_PROVIDER` setting controls the backend for Cognee's knowledge graph AI:
+A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, Cognee memory). Each feature specifies its own model via a dedicated env var.
 
 | Value | Description |
 |---|---|
+| `ollama` | Uses local Ollama server. Fully air-gapped. Requires `OLLAMA_BASE_URL`. |
 | `openai` | Uses OpenAI API. Requires `OPENAI_API_KEY`. |
-| `ollama` | Uses local Ollama server. Requires `OLLAMA_BASE_URL` and `OLLAMA_LLM_MODEL`. Fully air-gapped. |
-| `mock` | Disables all LLM/Cognee calls. Used in tests and environments without an LLM. |
+| `mock` | Disables all LLM calls. Used in tests and environments without an LLM. |
 
 ```bash
 # Air-gapped (Ollama) setup
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_LLM_MODEL=llama3.2
+
+# Per-feature model selection
+DOCLING_GRAPH_MODEL=llama3.2       # Model for graph entity/relationship extraction
+COGNEE_MODEL=llama3.2              # Model for Cognee memory operations
 ```
 
 ## Running Tests
@@ -97,46 +128,86 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 
 ## API Endpoints (v1)
 
-### Sources & Ingest
+### Sources & Document Upload
 - `POST /v1/sources` — create a document collection
-- `POST /v1/sources/{id}/documents` — upload a document (streams to MinIO)
+- `POST /v1/sources/{id}/documents` — upload a document (streams to MinIO, triggers pipeline)
 - `GET /v1/documents/{id}/status` — poll pipeline status
 
 ### Directory Watcher
 - `POST /v1/watch-dirs` — register a directory for auto-ingest
 - `DELETE /v1/watch-dirs/{id}` — remove watch directory
 
-### Retrieval
+### Text Vector Store
+- `POST /v1/text/ingest` — embed and store a text chunk directly (BGE)
+- `POST /v1/text/query` — semantic search on text_chunks
+
+### Image Vector Store
+- `POST /v1/images/ingest` — embed and store an image directly (CLIP)
+- `POST /v1/images/query` — semantic search on image_chunks (text-to-image or image-to-image)
+
+### Graph Store (Apache AGE)
+- `POST /v1/graph/ingest/entity` — create an entity node
+- `POST /v1/graph/ingest/relationship` — create a relationship edge
+- `POST /v1/graph/query` — Cypher traversal query
+
+### Memory (Cognee)
+- `POST /v1/memory/ingest` — propose knowledge (status: PROPOSED)
+- `GET /v1/memory/proposals` — list proposals (filterable by status)
+- `POST /v1/memory/proposals/{id}/approve` — curator approves → writes to Cognee
+- `POST /v1/memory/proposals/{id}/reject` — curator rejects
+- `POST /v1/memory/query` — search approved Cognee memory
+
+### Unified Retrieval (multi-mode)
+
 ```json
 POST /v1/retrieval/query
 {
-  "query": "Patriot PAC-3 guidance computer specifications",
-  "mode": "hybrid",
-  "top_k": 10
+  "query_text": "Patriot PAC-3 guidance computer specifications",
+  "modes": ["text_semantic", "graph"],
+  "top_k": 10,
+  "include_context": true
 }
 ```
-Modes: `semantic` | `graph` | `hybrid` | `cross_modal`
+
+Response returns structured sections per mode:
+
+```json
+{
+  "sections": {
+    "text_semantic": { "results": [...], "total": 5 },
+    "graph": { "results": [...], "total": 3 }
+  }
+}
+```
+
+Query modes:
+
+| Mode | Description |
+|---|---|
+| `text_semantic` | BGE vector search on `text_chunks` |
+| `image_semantic` | CLIP vector search on `image_chunks` (text-to-image or image-to-image) |
+| `graph` | Entity + relationship traversal via Apache AGE |
+| `cross_modal` | Text→graph→image or image→graph→text via graph bridging |
+| `memory` | Search Cognee approved memory |
 
 ### Agent / LangGraph Context
 
 ```
 GET /v1/agent/context
   ?query=Patriot+PAC-3+guidance+computer
-  &mode=hybrid
+  &mode=text_semantic
   &top_k=10
   &include_sources=true
 ```
 
-Returns a pre-formatted markdown context string for direct injection into an LLM prompt. Modes: `semantic` | `graph` | `hybrid` | `cross_modal` | `cognee_graph`.
+Returns a pre-formatted markdown context string for direct injection into an LLM prompt. Supports all 5 query modes.
 
 ```python
 # LangGraph usage example
 resp = requests.get("http://localhost:8000/v1/agent/context",
-                    params={"query": query, "mode": "hybrid"})
+                    params={"query": query, "mode": "text_semantic"})
 system_msg = f"Use this context:\n\n{resp.json()['context']}"
 ```
-
-The `cognee_graph` mode runs LLM-enhanced knowledge graph reasoning via Cognee across four search strategies (GRAPH_COMPLETION, RAG_COMPLETION, CHUNKS, SUMMARIES) in parallel. Cognee is also fed documents automatically during ingest.
 
 ### Governance
 - `POST /v1/feedback` — submit a correction on a retrieved result
@@ -150,15 +221,18 @@ All Apache AGE graph mutations (node/edge create, update, delete) require **dual
 ```
 validate_and_store
   → detect_modalities
-  → convert_document        (Docling + granite-docling-258M — unified extraction)
-  → chunk_and_embed
-  → extract_graph_entities
-  → import_graph
+  → convert_document          (Docling + granite-docling-258M — unified extraction)
+  → embed_text_chunks         ┐
+  → embed_image_chunks        ┘ (parallel via Celery chord)
+  → extract_graph             (docling-graph + LLM entity/relationship extraction)
+  → import_graph              (NetworkX → Apache AGE)
+  → connect_document_elements (DOCUMENT/CHUNK_REF/SAME_PAGE structural edges)
   → finalize_artifact
-  → ingest_to_cognee        (non-fatal: failure logs a warning, does not affect pipeline status)
 ```
 
-The `convert_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction (pdfplumber, Tesseract, EasyOCR).
+The `convert_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
+
+Text and image embedding run in parallel. Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction, with regex NER as fallback when LLM is unavailable.
 
 ## Implementation Phases
 
@@ -167,7 +241,8 @@ The `convert_document` task calls the dedicated Docling service which extracts t
 | 1 | Core data pipeline: upload → text extract → embed → semantic query | Complete |
 | 2 | Multi-modal pipeline, graph extraction, all query modes, directory watcher | Complete |
 | 2.5 | React web UI (upload, directory monitor, query), LangGraph agent endpoint | Complete |
-| 2.6 | Cognee integration: `cognee_graph` query mode, dual-ingest pipeline step | Complete |
+| 2.6 | Cognee integration: memory query mode, dual-ingest pipeline step | Complete |
+| 2.7 | Knowledge restructure: split vector tables, per-layer endpoints, unified query, docling-graph, memory governance, UI overhaul | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -176,25 +251,44 @@ The `convert_document` task calls the dedicated Docling service which extracts t
 
 ```
 app/
-├── api/v1/           # FastAPI routers (retrieval, agent, governance, sources, watch-dirs)
-│   └── _agent_helpers.py  # Pure helpers (no DB imports — unit-testable)
+├── api/v1/               # FastAPI routers
+│   ├── retrieval.py      #   Unified multi-mode query endpoint
+│   ├── text_store.py     #   Text vector store ingest + query
+│   ├── image_store.py    #   Image vector store ingest + query
+│   ├── graph_store.py    #   Graph entity/relationship ingest + query
+│   ├── memory.py         #   Memory proposals + approval + search
+│   ├── agent.py          #   LangGraph agent context endpoint
+│   ├── governance.py     #   Feedback + patch state machine
+│   └── sources.py        #   Sources CRUD, document upload, watch dirs
 ├── services/
-│   ├── cognee_service.py  # Cognee async wrapper
-│   ├── docling_client.py  # HTTP client for Docling conversion service
-│   ├── ner.py             # Military NER (offline regex)
-│   └── graph.py           # Apache AGE Cypher helpers
+│   ├── cognee_service.py       # Cognee async wrapper
+│   ├── docling_client.py       # HTTP client for Docling conversion service
+│   ├── docling_graph_service.py # LLM-powered graph extraction (docling-graph)
+│   ├── ontology_templates.py   # YAML → Pydantic extraction templates
+│   ├── ner.py                  # Military NER (offline regex, fallback)
+│   └── graph.py                # Apache AGE Cypher helpers
 ├── workers/
-│   ├── pipeline.py        # Celery ingest pipeline (Docling-based extraction)
-│   └── watcher.py         # Celery Beat directory watcher
-├── models/            # SQLAlchemy ORM (ingest, retrieval, governance, auth)
-└── schemas/           # Pydantic request/response schemas
+│   ├── pipeline.py       # Celery ingest pipeline (parallel text/image embed)
+│   └── watcher.py        # Celery Beat directory watcher
+├── models/               # SQLAlchemy ORM (ingest, retrieval, governance, auth, memory)
+└── schemas/              # Pydantic request/response schemas
 docker/
-└── docling/           # Docling VLM conversion service (granite-docling-258M)
+└── docling/              # Docling VLM conversion service (granite-docling-258M)
 frontend/
-├── src/components/    # React components (FileUpload, QueryPage, DirectoryMonitor, Nav)
-└── src/api/client.ts  # Typed API client
+├── src/components/       # React components
+│   ├── QueryPage.tsx     #   Multi-mode search with sectioned results
+│   ├── FileUpload.tsx    #   Document upload
+│   ├── TextIngest.tsx    #   Direct text chunk ingest
+│   ├── ImageIngest.tsx   #   Direct image ingest with drag-drop
+│   ├── GraphExplorer.tsx #   Graph search + entity/relationship creation
+│   ├── MemoryPanel.tsx   #   Memory proposals + approval + search
+│   ├── DirectoryMonitor.tsx # Watch directory management
+│   └── Nav.tsx           #   Navigation (6 pages)
+└── src/api/client.ts     # Typed API client (all endpoints)
 tests/
-├── unit/              # Pure-logic tests (no DB required)
-├── integration/       # API tests against real Postgres/Redis/MinIO stack
-└── fixtures/          # Sample documents for test pipelines
+├── unit/                 # Pure-logic tests (no DB required)
+├── integration/          # API tests against real Postgres/Redis/MinIO stack
+├── pipeline/             # Pipeline task tests
+├── e2e/                  # End-to-end workflow tests
+└── fixtures/             # Sample documents for test pipelines
 ```

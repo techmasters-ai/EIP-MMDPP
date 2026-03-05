@@ -20,9 +20,14 @@ class Feedback(Base, TimestampMixin):
     )
     # What the user was doing
     query_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    chunk_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    text_chunk_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("retrieval.chunks.id", ondelete="SET NULL"),
+        ForeignKey("retrieval.text_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    image_chunk_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("retrieval.image_chunks.id", ondelete="SET NULL"),
         nullable=True,
     )
     artifact_id: Mapped[Optional[uuid.UUID]] = mapped_column(

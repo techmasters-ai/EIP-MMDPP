@@ -61,6 +61,11 @@ dependencies = [
 
     # Cognee knowledge graph engine
     "cognee>=0.1.0",
+
+    # Knowledge graph extraction (docling-graph + LiteLLM for provider routing)
+    "docling-graph>=0.1.0",
+    "litellm>=1.40.0",
+    "networkx>=3.0",
 ]
 
 [project.optional-dependencies]

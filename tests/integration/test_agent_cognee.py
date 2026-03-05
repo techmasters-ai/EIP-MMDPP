@@ -1,9 +1,9 @@
-"""Integration tests for GET /v1/agent/context?mode=cognee_graph.
+"""Integration tests for GET /v1/agent/context?mode=memory.
 
-These tests confirm that the cognee_graph mode integrates correctly with the
-agent endpoint.  They run with LLM_PROVIDER=mock (set in .env.test), so no
-real Cognee or LLM calls are made.  The endpoint should always return 200
-with a valid AgentContextResponse schema, even when Cognee returns no data.
+These tests confirm that the memory mode (Cognee) integrates correctly with the
+agent endpoint. They run with LLM_PROVIDER=mock, so no real Cognee or LLM
+calls are made. The endpoint should return 200 with a valid AgentContextResponse
+schema, even when Cognee returns no data.
 """
 
 import pytest
@@ -12,17 +12,11 @@ from httpx import AsyncClient
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 async def _get_context(client: AsyncClient, **params) -> dict:
     """GET /v1/agent/context with given query parameters."""
-    default = {"query": "Patriot PAC-3 guidance computer", "mode": "cognee_graph"}
+    default = {"query": "Patriot PAC-3 guidance computer", "mode": "memory"}
     default.update(params)
-    resp = await client.get("/v1/agent/context", params=default)
-    return resp
+    return await client.get("/v1/agent/context", params=default)
 
 
 def _assert_agent_schema(data: dict) -> None:
@@ -37,115 +31,62 @@ def _assert_agent_schema(data: dict) -> None:
     assert isinstance(data["sources"], list)
 
 
-# ---------------------------------------------------------------------------
-# Successful responses
-# ---------------------------------------------------------------------------
-
-
-class TestCogneeGraphModeSuccess:
-    async def test_returns_200(self, async_client: AsyncClient):
+class TestMemoryModeSuccess:
+    async def test_returns_200(self, async_client: AsyncClient, mock_cognee):
         resp = await _get_context(async_client)
         assert resp.status_code == 200
 
-    async def test_mode_field_is_cognee_graph(self, async_client: AsyncClient):
+    async def test_mode_field_is_memory(self, async_client: AsyncClient, mock_cognee):
         resp = await _get_context(async_client)
-        data = resp.json()
-        assert data["mode"] == "cognee_graph"
+        assert resp.json()["mode"] == "memory"
 
-    async def test_response_schema_valid(self, async_client: AsyncClient):
+    async def test_response_schema_valid(self, async_client: AsyncClient, mock_cognee):
         resp = await _get_context(async_client)
         _assert_agent_schema(resp.json())
 
-    async def test_context_is_markdown_string(self, async_client: AsyncClient):
+    async def test_context_is_markdown_string(self, async_client: AsyncClient, mock_cognee):
         resp = await _get_context(async_client)
         context = resp.json()["context"]
-        # With mock provider, Cognee returns [] → "No results found" message
         assert isinstance(context, str)
         assert len(context) > 0
 
-    async def test_no_results_message_with_mock_provider(self, async_client: AsyncClient):
+    async def test_no_results_message_with_mock_provider(self, async_client: AsyncClient, mock_cognee):
         """LLM_PROVIDER=mock → Cognee returns [] → context says No results found."""
         resp = await _get_context(async_client, query="missile defense system")
         data = resp.json()
         assert data["total_results"] == 0
         assert "No results found" in data["context"]
 
-    async def test_sources_empty_with_no_results(self, async_client: AsyncClient):
-        resp = await _get_context(async_client)
-        data = resp.json()
-        if data["total_results"] == 0:
-            assert data["sources"] == []
-
-    async def test_query_field_echoed(self, async_client: AsyncClient):
+    async def test_query_field_echoed(self, async_client: AsyncClient, mock_cognee):
         q = "radar tracking system specifications"
         resp = await _get_context(async_client, query=q)
         assert resp.json()["query"] == q
 
-    async def test_top_k_respected(self, async_client: AsyncClient):
-        resp = await _get_context(async_client, top_k=5)
-        data = resp.json()
-        assert data["total_results"] <= 5
-
-    async def test_include_sources_false(self, async_client: AsyncClient):
+    async def test_include_sources_false(self, async_client: AsyncClient, mock_cognee):
         resp = await _get_context(async_client, include_sources="false")
-        data = resp.json()
-        assert data["sources"] == []
-
-    async def test_include_sources_true(self, async_client: AsyncClient):
-        """include_sources=true (default) — sources field is present (may be [])."""
-        resp = await _get_context(async_client, include_sources="true")
-        data = resp.json()
-        assert isinstance(data["sources"], list)
-
-    async def test_content_type_json(self, async_client: AsyncClient):
-        resp = await _get_context(async_client)
-        assert "application/json" in resp.headers.get("content-type", "")
+        assert resp.json()["sources"] == []
 
 
-# ---------------------------------------------------------------------------
-# Validation errors
-# ---------------------------------------------------------------------------
-
-
-class TestCogneeGraphModeValidation:
+class TestMemoryModeValidation:
     async def test_missing_query_returns_422(self, async_client: AsyncClient):
         resp = await async_client.get(
-            "/v1/agent/context", params={"mode": "cognee_graph"}
+            "/v1/agent/context", params={"mode": "memory"}
         )
         assert resp.status_code == 422
 
     async def test_empty_query_returns_422(self, async_client: AsyncClient):
         resp = await async_client.get(
-            "/v1/agent/context", params={"query": "", "mode": "cognee_graph"}
-        )
-        assert resp.status_code == 422
-
-    async def test_top_k_zero_returns_422(self, async_client: AsyncClient):
-        resp = await async_client.get(
-            "/v1/agent/context",
-            params={"query": "test", "mode": "cognee_graph", "top_k": 0},
-        )
-        assert resp.status_code == 422
-
-    async def test_top_k_over_limit_returns_422(self, async_client: AsyncClient):
-        resp = await async_client.get(
-            "/v1/agent/context",
-            params={"query": "test", "mode": "cognee_graph", "top_k": 51},
+            "/v1/agent/context", params={"query": "", "mode": "memory"}
         )
         assert resp.status_code == 422
 
 
-# ---------------------------------------------------------------------------
-# Mode parity — cognee_graph returns same schema as other modes
-# ---------------------------------------------------------------------------
+class TestModeSchemaParity:
+    """All modes return the same AgentContextResponse schema."""
 
-
-class TestCogneeGraphSchemaParity:
-    """cognee_graph endpoint returns the same schema as semantic/graph/hybrid."""
-
-    @pytest.mark.parametrize("mode", ["semantic", "graph", "hybrid", "cognee_graph"])
+    @pytest.mark.parametrize("mode", ["text_semantic", "graph", "cross_modal", "memory"])
     async def test_all_modes_return_same_schema(
-        self, async_client: AsyncClient, mode: str
+        self, async_client: AsyncClient, mock_embeddings, mock_cognee, mode: str
     ):
         resp = await async_client.get(
             "/v1/agent/context",

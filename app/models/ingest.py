@@ -71,6 +71,14 @@ class Document(Base, TimestampMixin):
 
     source: Mapped["Source"] = relationship(back_populates="documents")
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="document")
+    text_chunks: Mapped[list["TextChunk"]] = relationship(
+        back_populates="document",
+        primaryjoin="Document.id == foreign(TextChunk.document_id)",
+    )
+    image_chunks: Mapped[list["ImageChunk"]] = relationship(
+        back_populates="document",
+        primaryjoin="Document.id == foreign(ImageChunk.document_id)",
+    )
 
 
 class Artifact(Base, TimestampMixin):
@@ -116,9 +124,13 @@ class Artifact(Base, TimestampMixin):
     )
 
     document: Mapped["Document"] = relationship(back_populates="artifacts")
-    chunks: Mapped[list["Chunk"]] = relationship(
+    text_chunks: Mapped[list["TextChunk"]] = relationship(
         back_populates="artifact",
-        primaryjoin="Artifact.id == foreign(Chunk.artifact_id)",
+        primaryjoin="Artifact.id == foreign(TextChunk.artifact_id)",
+    )
+    image_chunks: Mapped[list["ImageChunk"]] = relationship(
+        back_populates="artifact",
+        primaryjoin="Artifact.id == foreign(ImageChunk.artifact_id)",
     )
 
 
@@ -181,5 +193,5 @@ class WatchLog(Base):
     watch_dir: Mapped["WatchDir"] = relationship(back_populates="watch_logs")
 
 
-# Import Chunk here to resolve forward reference
-from app.models.retrieval import Chunk  # noqa: E402
+# Import to resolve forward references
+from app.models.retrieval import TextChunk, ImageChunk  # noqa: E402

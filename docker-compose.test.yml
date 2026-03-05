@@ -4,7 +4,7 @@
 services:
   postgres:
     ports:
-      - "5433:5432"
+      - "5435:5432"
     environment:
       POSTGRES_DB: eip_test
       POSTGRES_USER: eip_test

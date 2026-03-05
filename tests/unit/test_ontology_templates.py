@@ -1,0 +1,156 @@
+"""Unit tests for ontology template generation.
+
+All tests are pure (no DB, no network) — they exercise YAML loading and
+Pydantic model generation.
+"""
+
+import pytest
+
+pytestmark = pytest.mark.unit
+
+
+class TestLoadOntology:
+    def test_loads_ontology_yaml(self):
+        from app.services.ontology_templates import load_ontology
+
+        ontology = load_ontology()
+        assert "version" in ontology
+        assert "entity_types" in ontology
+        assert "relationship_types" in ontology
+
+    def test_entity_types_present(self):
+        from app.services.ontology_templates import load_ontology
+
+        ontology = load_ontology()
+        names = [et["name"] for et in ontology["entity_types"]]
+        assert "EQUIPMENT_SYSTEM" in names
+        assert "COMPONENT" in names
+        assert "STANDARD" in names
+
+    def test_relationship_types_present(self):
+        from app.services.ontology_templates import load_ontology
+
+        ontology = load_ontology()
+        names = [rt["name"] for rt in ontology["relationship_types"]]
+        assert "IS_SUBSYSTEM_OF" in names
+        assert "CONTAINS" in names
+        assert "MEETS_STANDARD" in names
+
+
+class TestGenerateEntityTemplates:
+    def test_generates_models_for_all_entity_types(self):
+        from app.services.ontology_templates import generate_entity_templates, load_ontology
+
+        ontology = load_ontology()
+        templates = generate_entity_templates(ontology)
+        entity_names = [et["name"] for et in ontology["entity_types"]]
+
+        assert len(templates) == len(entity_names)
+        for name in entity_names:
+            assert name in templates
+
+    def test_generated_model_has_expected_fields(self):
+        from app.services.ontology_templates import generate_entity_templates, load_ontology
+
+        ontology = load_ontology()
+        templates = generate_entity_templates(ontology)
+
+        equip = templates["EQUIPMENT_SYSTEM"]
+        fields = equip.model_fields
+        assert "name" in fields
+        assert "designation" in fields
+        assert "status" in fields
+
+    def test_generated_model_is_instantiable(self):
+        from app.services.ontology_templates import generate_entity_templates, load_ontology
+
+        ontology = load_ontology()
+        templates = generate_entity_templates(ontology)
+
+        instance = templates["EQUIPMENT_SYSTEM"](
+            name="Patriot PAC-3", designation="MIM-104F"
+        )
+        assert instance.name == "Patriot PAC-3"
+        assert instance.designation == "MIM-104F"
+
+    def test_generated_model_has_entity_metadata(self):
+        from app.services.ontology_templates import generate_entity_templates, load_ontology
+
+        ontology = load_ontology()
+        templates = generate_entity_templates(ontology)
+
+        config = templates["COMPONENT"].model_config
+        extra = config.get("json_schema_extra", {})
+        assert extra.get("is_entity") is True
+        assert extra.get("entity_type") == "COMPONENT"
+
+    def test_fields_are_optional(self):
+        from app.services.ontology_templates import generate_entity_templates, load_ontology
+
+        ontology = load_ontology()
+        templates = generate_entity_templates(ontology)
+
+        # All fields should default to None
+        instance = templates["COMPONENT"]()
+        assert instance.name is None
+        assert instance.part_number is None
+
+
+class TestRelationshipTemplates:
+    def test_generates_relationship_dicts(self):
+        from app.services.ontology_templates import generate_relationship_templates, load_ontology
+
+        ontology = load_ontology()
+        rels = generate_relationship_templates(ontology)
+        assert len(rels) > 0
+        names = [r["name"] for r in rels]
+        assert "IS_SUBSYSTEM_OF" in names
+
+    def test_relationship_has_required_keys(self):
+        from app.services.ontology_templates import generate_relationship_templates, load_ontology
+
+        ontology = load_ontology()
+        rels = generate_relationship_templates(ontology)
+        for rel in rels:
+            assert "name" in rel
+            assert "description" in rel
+            assert "source_type" in rel
+            assert "target_type" in rel
+            assert "cardinality" in rel
+
+
+class TestExtractionPrompt:
+    def test_build_extraction_prompt(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology
+
+        ontology = load_ontology()
+        prompt = build_extraction_prompt(ontology, "The Patriot PAC-3 system uses MIL-STD-1553B.")
+        assert "EQUIPMENT_SYSTEM" in prompt
+        assert "IS_SUBSYSTEM_OF" in prompt
+        assert "Patriot PAC-3" in prompt
+
+    def test_prompt_truncates_long_text(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology
+
+        ontology = load_ontology()
+        long_text = "A" * 20000
+        prompt = build_extraction_prompt(ontology, long_text, max_text_length=100)
+        assert "[...truncated...]" in prompt
+
+
+class TestHelpers:
+    def test_build_entity_type_names(self):
+        from app.services.ontology_templates import build_entity_type_names
+
+        names = build_entity_type_names()
+        assert isinstance(names, list)
+        assert "EQUIPMENT_SYSTEM" in names
+        assert len(names) >= 10
+
+    def test_build_relationship_type_names(self):
+        from app.services.ontology_templates import build_relationship_type_names
+
+        names = build_relationship_type_names()
+        assert isinstance(names, list)
+        assert "CONTAINS" in names
+        assert len(names) >= 5
