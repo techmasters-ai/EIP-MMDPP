@@ -131,7 +131,8 @@ cmd_start() {
 
   divider
   info "All services started."
-  info "  API:           http://localhost:${api_port}"
+  info "  UI:            http://localhost:${api_port}"
+  info "  API:           http://localhost:${api_port}/v1"
   info "  API docs:      http://localhost:${api_port}/docs"
   info "  MinIO console: http://localhost:${MINIO_CONSOLE_PORT:-9001}"
 }

@@ -7,23 +7,21 @@ export function Nav({ page, onNavigate }: NavProps) {
   return (
     <nav className="nav">
       <div className="nav-brand">
-        {/* Tec-Masters globe icon — inline SVG */}
         <svg
+          className="nav-brand-icon"
           width="36"
           height="36"
-          viewBox="0 0 36 36"
+          viewBox="0 0 40 40"
           fill="none"
-          xmlns="http://www.w3.org/2000/svg"
+          stroke="currentColor"
+          strokeWidth="1.5"
           aria-label="Tec-Masters Inc. logo"
         >
-          {/* Globe outline */}
-          <circle cx="18" cy="18" r="15" stroke="#3D3426" strokeWidth="1.5" fill="none" />
-          {/* Vertical meridian (ellipse) */}
-          <ellipse cx="18" cy="18" rx="7" ry="15" stroke="#3D3426" strokeWidth="1.2" fill="none" />
-          {/* Horizontal parallels */}
-          <ellipse cx="18" cy="10" rx="13.5" ry="2" stroke="#3D3426" strokeWidth="1" fill="none" />
-          <line x1="3" y1="18" x2="33" y2="18" stroke="#3D3426" strokeWidth="1.2" />
-          <ellipse cx="18" cy="26" rx="13.5" ry="2" stroke="#3D3426" strokeWidth="1" fill="none" />
+          <circle cx="20" cy="20" r="18" />
+          <ellipse cx="20" cy="20" rx="8" ry="18" />
+          <line x1="2" y1="14" x2="38" y2="14" />
+          <line x1="2" y1="26" x2="38" y2="26" />
+          <line x1="20" y1="2" x2="20" y2="38" />
         </svg>
         <span>
           Tec-Masters Inc.
