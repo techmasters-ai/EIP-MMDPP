@@ -2,6 +2,7 @@
 
 import logging
 import os
+from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
@@ -40,6 +41,30 @@ logging.basicConfig(
 # Application factory
 # ---------------------------------------------------------------------------
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log = structlog.get_logger()
+    log.info("EIP-MMDPP API starting", env=settings.app_env)
+
+    # Bootstrap external stores — fail fast if unavailable
+    from app.services.qdrant_store import ensure_collections
+    from app.db.session import get_qdrant_client
+    client = get_qdrant_client()
+    ensure_collections(client)
+    log.info("Qdrant collections ensured")
+
+    from app.services.neo4j_graph import ensure_indexes
+    from app.db.session import get_neo4j_driver
+    driver = get_neo4j_driver()
+    ensure_indexes(driver)
+    log.info("Neo4j indexes ensured")
+
+    yield
+
+    from app.db.session import async_engine
+    await async_engine.dispose()
+
+
 def create_app() -> FastAPI:
     application = FastAPI(
         title="EIP-MMDPP",
@@ -51,6 +76,7 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     application.add_middleware(
@@ -74,16 +100,6 @@ def create_app() -> FastAPI:
             application.mount("/assets", StaticFiles(directory=_assets), name="assets")
         # Catch-all: serve index.html for any unmatched path (client-side routing)
         application.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="spa")
-
-    @application.on_event("startup")
-    async def on_startup() -> None:
-        log = structlog.get_logger()
-        log.info("EIP-MMDPP API starting", env=settings.app_env)
-
-    @application.on_event("shutdown")
-    async def on_shutdown() -> None:
-        from app.db.session import async_engine
-        await async_engine.dispose()
 
     return application
 

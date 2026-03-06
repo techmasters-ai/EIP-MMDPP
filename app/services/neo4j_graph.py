@@ -516,3 +516,38 @@ def create_alias_edge(
             canonical_name, alias_name, e,
         )
         return False
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap — indexes and constraints
+# ---------------------------------------------------------------------------
+
+def ensure_indexes(driver) -> None:
+    """Create required Neo4j indexes and constraints if they don't exist.
+
+    Called at API startup to ensure the graph is ready for queries.
+    Raises on failure so the startup health check can catch it.
+    """
+    statements = [
+        # Fulltext index for entity name search (canonicalization + retrieval)
+        """
+        CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS
+        FOR (n:Entity) ON EACH [n.name]
+        """,
+        # Uniqueness constraint on Document node
+        """
+        CREATE CONSTRAINT document_id_unique IF NOT EXISTS
+        FOR (d:Document) REQUIRE d.document_id IS UNIQUE
+        """,
+        # Index on ChunkRef.chunk_id for fast lookups
+        """
+        CREATE INDEX chunk_ref_chunk_id IF NOT EXISTS
+        FOR (c:ChunkRef) ON (c.chunk_id)
+        """,
+    ]
+
+    with driver.session() as session:
+        for stmt in statements:
+            session.run(stmt.strip())
+
+    logger.info("Neo4j indexes and constraints ensured")

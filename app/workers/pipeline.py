@@ -76,13 +76,30 @@ def _update_document_status(
         db.close()
 
 
-def _persist_extraction_results(db, document_id: str, chunks) -> None:
-    """Persist ExtractedChunk list as Artifact rows. Stores images in MinIO."""
+def _deterministic_artifact_id(document_id: str, element_uid: str) -> uuid.UUID:
+    """Generate a deterministic artifact UUID from document_id + element_uid.
+
+    Uses uuid5 with URL namespace so the same (document_id, element_uid)
+    pair always produces the same artifact ID.  This replaces the old
+    positional zip-linking approach.
+    """
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"{document_id}:{element_uid}")
+
+
+def _persist_extraction_results(db, document_id: str, chunks, element_uids: list[str] | None = None) -> list[uuid.UUID]:
+    """Persist ExtractedChunk list as Artifact rows. Stores images in MinIO.
+
+    If *element_uids* is provided (one per chunk, same order), each Artifact
+    gets a deterministic ID derived from document_id + element_uid.
+
+    Returns the list of artifact IDs (in chunk order).
+    """
     import uuid as uuid_mod
     from app.models.ingest import Artifact
     from app.services.storage import upload_bytes_sync
 
-    for chunk in chunks:
+    artifact_ids: list[uuid.UUID] = []
+    for idx, chunk in enumerate(chunks):
         storage_bucket = None
         storage_key = None
 
@@ -98,7 +115,14 @@ def _persist_extraction_results(db, document_id: str, chunks) -> None:
             storage_bucket = settings.minio_bucket_derived
             storage_key = img_key
 
+        artifact_id = (
+            _deterministic_artifact_id(document_id, element_uids[idx])
+            if element_uids
+            else uuid_mod.uuid4()
+        )
+
         artifact = Artifact(
+            id=artifact_id,
             document_id=uuid.UUID(document_id),
             artifact_type=chunk.modality,
             content_text=chunk.chunk_text,
@@ -112,6 +136,9 @@ def _persist_extraction_results(db, document_id: str, chunks) -> None:
             requires_human_review=chunk.requires_human_review,
         )
         db.add(artifact)
+        artifact_ids.append(artifact_id)
+
+    return artifact_ids
 
 
 def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
@@ -135,14 +162,19 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
     elif "text" in mime:
         chunks = extract_txt(file_bytes)
 
-    _persist_extraction_results(db, document_id, chunks)
-
-    # Also create DocumentElement rows for downstream derivation tasks
+    # Build element_uids first, then persist Artifacts with deterministic IDs
+    element_uids: list[str] = []
     for idx, chunk in enumerate(chunks):
         content_hash = hashlib.sha256(
             (chunk.chunk_text or "").encode("utf-8", errors="replace")
         ).hexdigest()[:8]
-        element_uid = f"legacy-{idx}-{chunk.modality}-{content_hash}"
+        element_uids.append(f"legacy-{idx}-{chunk.modality}-{content_hash}")
+
+    artifact_ids = _persist_extraction_results(db, document_id, chunks, element_uids=element_uids)
+
+    # Create DocumentElement rows with artifact_id linked inline
+    for idx, chunk in enumerate(chunks):
+        element_uid = element_uids[idx]
         element_hash = hashlib.sha256(
             f"{document_id}:{element_uid}:{chunk.chunk_text or ''}".encode()
         ).hexdigest()
@@ -157,25 +189,34 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
             content_text=chunk.chunk_text,
             element_metadata=chunk.metadata or {},
             element_hash=element_hash,
+            artifact_id=artifact_ids[idx],
         )
         db.add(elem)
 
 
 def start_ingest_pipeline(document_id: str) -> str:
     """Enqueue the ingest pipeline for a document. Returns Celery task ID."""
+    # Create PipelineRun before enqueuing so all stages share the same run_id
+    db = _get_db()
+    try:
+        run_id = _create_pipeline_run(db, document_id)
+        db.commit()
+    finally:
+        db.close()
+
     pipeline = chain(
-        prepare_document.si(document_id),
+        prepare_document.si(document_id, run_id),
         chord(
             group(
-                derive_text_chunks_and_embeddings.si(document_id),
-                derive_image_embeddings.si(document_id),
-                derive_ontology_graph.si(document_id),
+                derive_text_chunks_and_embeddings.si(document_id, run_id),
+                derive_image_embeddings.si(document_id, run_id),
+                derive_ontology_graph.si(document_id, run_id),
             ),
-            collect_derivations.s(document_id),
+            collect_derivations.s(document_id, run_id),
         ),
-        derive_structure_links.si(document_id),
-        derive_canonicalization.si(document_id),
-        finalize_document.si(document_id),
+        derive_structure_links.si(document_id, run_id),
+        derive_canonicalization.si(document_id, run_id),
+        finalize_document.si(document_id, run_id),
     )
     result = pipeline.apply_async()
     return result.id
@@ -247,7 +288,7 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
-def prepare_document(self, document_id: str) -> str:
+def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     """Validate + detect + Docling convert + persist document_elements.
 
     Creates canonical DocumentElement rows from Docling output, with backward-
@@ -260,13 +301,15 @@ def prepare_document(self, document_id: str) -> str:
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     import magic
 
-    logger.info("prepare_document: document_id=%s", document_id)
+    logger.info("prepare_document: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="prepare_document")
 
     db = _get_db()
     try:
-        # 1. Create PipelineRun
-        run_id = _create_pipeline_run(db, document_id)
+        # Use passed run_id or create one (backward compat)
+        if not run_id:
+            run_id = _create_pipeline_run(db, document_id)
+            db.commit()
         _update_stage_run(db, run_id, "prepare_document", "RUNNING")
         db.commit()
 
@@ -309,21 +352,30 @@ def prepare_document(self, document_id: str) -> str:
             len(result.elements), result.num_pages, result.processing_time_ms,
         )
 
-        # 4. Persist canonical DocumentElement rows (upsert by document_id + element_uid)
+        # 4. Build element_uids, then persist Artifacts with deterministic IDs
+        element_uids: list[str] = []
         elements_created = 0
         for chunk in result.elements:
             element_uid = (chunk.metadata or {}).get("element_uid")
             if not element_uid:
-                # Generate a fallback uid
                 content_hash = hashlib.sha256(
                     (chunk.chunk_text or "").encode("utf-8", errors="replace")
                 ).hexdigest()[:8]
                 element_uid = f"{chunk.page_number or 0}-{elements_created}-{chunk.modality}-{content_hash}"
+            element_uids.append(element_uid)
+            elements_created += 1
+
+        # 5. Dual-write Artifact rows with deterministic IDs
+        artifact_ids = _persist_extraction_results(db, document_id, result.elements, element_uids=element_uids)
+
+        # 6. Persist canonical DocumentElement rows with artifact_id linked inline
+        elements_created = 0
+        for idx, chunk in enumerate(result.elements):
+            element_uid = element_uids[idx]
 
             storage_bucket = None
             storage_key = None
 
-            # Store image bytes in MinIO
             if chunk.raw_image_bytes:
                 ext = (chunk.metadata or {}).get("ext", "png")
                 img_key = f"artifacts/{document_id}/images/{uuid_mod.uuid4()}.{ext}"
@@ -336,7 +388,6 @@ def prepare_document(self, document_id: str) -> str:
                 storage_bucket = settings.minio_bucket_derived
                 storage_key = img_key
 
-            # Element hash for idempotency
             element_hash = hashlib.sha256(
                 f"{document_id}:{element_uid}:{chunk.chunk_text or ''}".encode()
             ).hexdigest()
@@ -355,6 +406,7 @@ def prepare_document(self, document_id: str) -> str:
                 "storage_key": storage_key,
                 "element_metadata": chunk.metadata or {},
                 "element_hash": element_hash,
+                "artifact_id": artifact_ids[idx],
             }
 
             stmt = pg_insert(DocumentElement).values(**element_values)
@@ -368,30 +420,12 @@ def prepare_document(self, document_id: str) -> str:
                     "storage_key": stmt.excluded.storage_key,
                     "metadata": stmt.excluded.metadata,
                     "element_hash": stmt.excluded.element_hash,
+                    "artifact_id": stmt.excluded.artifact_id,
                 },
             )
             db.execute(stmt)
             elements_created += 1
 
-        # 5. Dual-write Artifact rows for backward compatibility
-        _persist_extraction_results(db, document_id, result.elements)
-
-        db.commit()
-
-        # 6. Link DocumentElements → Artifacts by matching order
-        from sqlalchemy import select as sa_select
-        doc_elements = db.execute(
-            sa_select(DocumentElement)
-            .where(DocumentElement.document_id == uuid.UUID(document_id))
-            .order_by(DocumentElement.element_order)
-        ).scalars().all()
-        artifacts = db.execute(
-            sa_select(Artifact)
-            .where(Artifact.document_id == uuid.UUID(document_id))
-            .order_by(Artifact.created_at)
-        ).scalars().all()
-        for elem, art in zip(doc_elements, artifacts):
-            elem.artifact_id = art.id
         db.commit()
 
         _update_stage_run(
@@ -426,7 +460,7 @@ def prepare_document(self, document_id: str) -> str:
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
-def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
+def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
 
     Uses deterministic chunk keys for idempotent retries.
@@ -438,12 +472,13 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_text_chunks_and_embeddings: document_id=%s", document_id)
+    logger.info("derive_text_chunks_and_embeddings: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_text_embeddings")
 
     db = _get_db()
     try:
-        run_id = _get_pipeline_run_id(db, document_id)
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
             _update_stage_run(db, run_id, "derive_text_embeddings", "RUNNING")
             db.commit()
@@ -565,7 +600,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
-def derive_image_embeddings(self, document_id: str) -> dict:
+def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read image document_elements → CLIP embed → upsert image_chunks.
 
     Uses deterministic chunk keys for idempotent retries.
@@ -578,12 +613,13 @@ def derive_image_embeddings(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_image_embeddings: document_id=%s", document_id)
+    logger.info("derive_image_embeddings: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_image_embeddings")
 
     db = _get_db()
     try:
-        run_id = _get_pipeline_run_id(db, document_id)
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
             _update_stage_run(db, run_id, "derive_image_embeddings", "RUNNING")
             db.commit()
@@ -704,7 +740,7 @@ def derive_image_embeddings(self, document_id: str) -> dict:
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph")
-def derive_ontology_graph(self, document_id: str) -> dict:
+def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
     """Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to Neo4j.
 
     Stores graph extraction once per document (not per artifact).
@@ -715,12 +751,13 @@ def derive_ontology_graph(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_ontology_graph: document_id=%s", document_id)
+    logger.info("derive_ontology_graph: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_ontology_graph")
 
     db = _get_db()
     try:
-        run_id = _get_pipeline_run_id(db, document_id)
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
             _update_stage_run(db, run_id, "derive_ontology_graph", "RUNNING")
             db.commit()
@@ -793,6 +830,25 @@ def derive_ontology_graph(self, document_id: str) -> dict:
                     for r in relationships
                 ],
             }
+
+            # Build mentions: map each entity back to the element(s) whose
+            # content_text contains the entity source_text.
+            mentions: list[dict] = []
+            seen_mentions: set[tuple[str, str]] = set()
+            for entity in entities:
+                for elem in elements:
+                    if not elem.content_text:
+                        continue
+                    if entity.source_text in elem.content_text:
+                        key = (entity.name, elem.element_uid)
+                        if key not in seen_mentions:
+                            seen_mentions.add(key)
+                            mentions.append({
+                                "entity_name": entity.name,
+                                "entity_type": entity.entity_type,
+                                "element_uid": elem.element_uid,
+                            })
+            graph_data["mentions"] = mentions
 
         # Upsert into document_graph_extractions (one row per document)
         extraction_values = {
@@ -878,7 +934,7 @@ def derive_ontology_graph(self, document_id: str) -> dict:
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph")
-def derive_structure_links(self, document_id: str) -> dict:
+def derive_structure_links(self, document_id: str, run_id: str | None = None) -> dict:
     """Generate chunk_links and structural AGE edges.
 
     Creates:
@@ -893,12 +949,13 @@ def derive_structure_links(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_structure_links: document_id=%s", document_id)
+    logger.info("derive_structure_links: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_structure_links")
 
     db = _get_db()
     try:
-        run_id = _get_pipeline_run_id(db, document_id)
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
             _update_stage_run(db, run_id, "derive_structure_links", "RUNNING")
             db.commit()
@@ -1076,39 +1133,76 @@ def derive_structure_links(self, document_id: str) -> dict:
 
         # Entity-chunk EXTRACTED_FROM edges
         entity_links = 0
-        artifacts_with_entities = db.execute(
-            select(Artifact).where(
-                Artifact.document_id == uuid.UUID(document_id),
-                Artifact.content_metadata.isnot(None),
-            )
-        ).scalars().all()
 
-        artifact_chunk_map: dict[str, list[str]] = {}
+        # Build element_uid → chunk_ids map (via artifact_id)
+        element_uid_chunk_map: dict[str, list[str]] = {}
+        artifact_id_to_element_uid: dict[str, str] = {}
+        for elem in elements:
+            if elem.artifact_id and elem.element_uid:
+                artifact_id_to_element_uid[str(elem.artifact_id)] = elem.element_uid
         for tc in text_chunks:
-            artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
+            if tc.artifact_id:
+                euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
+                if euid:
+                    element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
 
-        for artifact in artifacts_with_entities:
-            metadata = artifact.content_metadata or {}
-            chunk_ids = artifact_chunk_map.get(str(artifact.id), [])
-            if not chunk_ids:
-                continue
+        # Try graph_json mentions path first (new pipeline)
+        from app.models.ingest import DocumentGraphExtraction
+        graph_extraction = db.execute(
+            select(DocumentGraphExtraction).where(
+                DocumentGraphExtraction.document_id == uuid.UUID(document_id),
+            )
+        ).scalars().first()
 
-            entities_list: list[tuple[str, str]] = []
-            graph_data = metadata.get("docling_graph_data")
-            if graph_data:
-                for node in graph_data.get("nodes", []):
-                    entities_list.append((
-                        node.get("name", node.get("id", "")),
-                        node.get("entity_type", "UNKNOWN"),
-                    ))
-            else:
-                for ent in metadata.get("extracted_entities", []):
-                    entities_list.append((ent["name"], ent["entity_type"]))
+        used_mentions_path = False
+        if graph_extraction and graph_extraction.graph_json:
+            mentions = graph_extraction.graph_json.get("mentions", [])
+            if mentions:
+                used_mentions_path = True
+                for mention in mentions:
+                    name = mention.get("entity_name", "")
+                    etype = mention.get("entity_type", "UNKNOWN")
+                    euid = mention.get("element_uid", "")
+                    chunk_ids = element_uid_chunk_map.get(euid, [])
+                    for chunk_id in chunk_ids:
+                        if create_entity_chunk_edge(neo4j_driver, name, etype, chunk_id):
+                            entity_links += 1
 
-            for (name, etype) in entities_list:
-                for chunk_id in chunk_ids:
-                    if create_entity_chunk_edge(neo4j_driver, name, etype, chunk_id):
-                        entity_links += 1
+        # Fallback: Artifact.content_metadata path (backward compat)
+        if not used_mentions_path:
+            artifact_chunk_map: dict[str, list[str]] = {}
+            for tc in text_chunks:
+                artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
+
+            artifacts_with_entities = db.execute(
+                select(Artifact).where(
+                    Artifact.document_id == uuid.UUID(document_id),
+                    Artifact.content_metadata.isnot(None),
+                )
+            ).scalars().all()
+
+            for artifact in artifacts_with_entities:
+                metadata = artifact.content_metadata or {}
+                chunk_ids = artifact_chunk_map.get(str(artifact.id), [])
+                if not chunk_ids:
+                    continue
+
+                entities_list: list[tuple[str, str]] = []
+                graph_data = metadata.get("docling_graph_data")
+                if graph_data:
+                    for node in graph_data.get("nodes", []):
+                        entities_list.append((
+                            node.get("name", node.get("id", "")),
+                            node.get("entity_type", "UNKNOWN"),
+                        ))
+                else:
+                    for ent in metadata.get("extracted_entities", []):
+                        entities_list.append((ent["name"], ent["entity_type"]))
+
+                for (name, etype) in entities_list:
+                    for chunk_id in chunk_ids:
+                        if create_entity_chunk_edge(neo4j_driver, name, etype, chunk_id):
+                            entity_links += 1
 
         db.commit()
 
@@ -1146,7 +1240,7 @@ def derive_structure_links(self, document_id: str) -> dict:
 
 
 @celery_app.task(bind=True)
-def collect_derivations(self, derivation_results: list[dict], document_id: str) -> None:
+def collect_derivations(self, derivation_results: list[dict], document_id: str, run_id: str | None = None) -> None:
     """Chord callback: aggregate derivation stage statuses."""
     logger.info(
         "collect_derivations: document_id=%s results=%s",
@@ -1167,7 +1261,7 @@ def collect_derivations(self, derivation_results: list[dict], document_id: str) 
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph")
-def derive_canonicalization(self, document_id: str) -> dict:
+def derive_canonicalization(self, document_id: str, run_id: str | None = None) -> dict:
     """Post-extraction entity canonicalization pass.
 
     Resolves entity aliases to canonical names via Neo4j fulltext search
@@ -1176,12 +1270,13 @@ def derive_canonicalization(self, document_id: str) -> dict:
     from app.db.session import get_neo4j_driver
     from app.services.canonicalization import canonicalize_document_entities
 
-    logger.info("derive_canonicalization: document_id=%s", document_id)
+    logger.info("derive_canonicalization: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_canonicalization")
 
     db = _get_db()
     try:
-        run_id = _get_pipeline_run_id(db, document_id)
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
             _update_stage_run(db, run_id, "derive_canonicalization", "RUNNING")
             db.commit()
@@ -1214,16 +1309,17 @@ def derive_canonicalization(self, document_id: str) -> dict:
 
 
 @celery_app.task(bind=True)
-def finalize_document(self, document_id: str) -> None:
+def finalize_document(self, document_id: str, run_id: str | None = None) -> None:
     """Mark pipeline COMPLETE if all required stages succeeded."""
     from app.models.ingest import PipelineRun, StageRun
     from sqlalchemy import select, update as sql_update
     import datetime
 
-    logger.info("finalize_document: document_id=%s", document_id)
+    logger.info("finalize_document: document_id=%s run_id=%s", document_id, run_id)
     db = _get_db()
     try:
-        run_id = _get_pipeline_run_id(db, document_id)
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
         if not run_id:
             _update_document_status(document_id, STATUS_COMPLETE, stage=None)
             return

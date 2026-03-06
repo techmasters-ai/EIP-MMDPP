@@ -303,11 +303,12 @@ def _build_qdrant_filters(body: UnifiedQueryRequest) -> dict[str, Any] | None:
     if body.filters.classification:
         filters["classification"] = body.filters.classification
     if body.filters.document_ids:
-        # Qdrant filter supports single value; for multi-doc, use first
-        # (full list filtering handled via multiple conditions in qdrant_store)
-        filters["document_id"] = str(body.filters.document_ids[0])
-    if body.filters.modalities and len(body.filters.modalities) == 1:
-        filters["modality"] = body.filters.modalities[0]
+        filters["document_id"] = [str(d) for d in body.filters.document_ids]
+    if body.filters.modalities:
+        if len(body.filters.modalities) == 1:
+            filters["modality"] = body.filters.modalities[0]
+        else:
+            filters["modality"] = list(body.filters.modalities)
 
     return filters if filters else None
 
@@ -420,25 +421,22 @@ async def _expand_via_cross_modal(
 
     items: list[QueryResultItem] = []
     decay = get_cross_modal_decay()
-    for record in records:
-        target_id = record["target_chunk_id"]
-        target_type = record.get("target_chunk_type", "text_chunk")
 
-        # Look up chunk metadata from Postgres (chunk data stays there)
-        from app.db.session import get_async_session as _get_session
-        # We need a db session — use the module-level async engine
-        from app.db.session import AsyncSessionFactory
-        async with AsyncSessionFactory() as db_session:
+    from app.db.session import AsyncSessionFactory
+    async with AsyncSessionFactory() as db_session:
+        for record in records:
+            target_id = record["target_chunk_id"]
+            target_type = record.get("target_chunk_type", "text_chunk")
             chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
 
-        if chunk_data:
-            chunk_data.score = source_score * decay
-            chunk_data.context = {
-                "source": "cross_modal",
-                "source_chunk_id": chunk_id,
-                "degraded": True,
-            }
-            items.append(chunk_data)
+            if chunk_data:
+                chunk_data.score = source_score * decay
+                chunk_data.context = {
+                    "source": "cross_modal",
+                    "source_chunk_id": chunk_id,
+                    "degraded": True,
+                }
+                items.append(chunk_data)
 
     return items
 

@@ -16,6 +16,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -281,10 +282,19 @@ def delete_by_document_id(client, document_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _build_filter(filters: dict[str, Any]) -> Filter:
-    """Build a Qdrant Filter from a simple {field: value} dict."""
+    """Build a Qdrant Filter from a simple {field: value} dict.
+
+    Scalar values use MatchValue; list values use MatchAny (OR semantics).
+    """
     conditions = []
     for key, value in filters.items():
-        if value is not None:
+        if value is None:
+            continue
+        if isinstance(value, list):
+            conditions.append(
+                FieldCondition(key=key, match=MatchAny(any=value))
+            )
+        else:
             conditions.append(
                 FieldCondition(key=key, match=MatchValue(value=str(value)))
             )

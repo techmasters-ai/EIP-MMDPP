@@ -4,7 +4,7 @@ import asyncio
 import os
 from collections.abc import AsyncGenerator
 from typing import Generator
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -218,6 +218,59 @@ def mock_cognee(monkeypatch):
     monkeypatch.setattr("app.services.cognee_service.cognee_add", fake_add)
     monkeypatch.setattr("app.services.cognee_service.cognee_cognify", fake_cognify)
     return MagicMock()
+
+
+@pytest.fixture
+def mock_neo4j_driver():
+    """Mock Neo4j sync driver with session context manager.
+
+    Usage:
+        driver, session = mock_neo4j_driver
+        session.run.return_value = ...
+    """
+    mock_session = MagicMock()
+    mock_session.run.return_value = MagicMock()
+
+    mock_driver = MagicMock()
+    mock_driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
+    return mock_driver, mock_session
+
+
+@pytest.fixture
+def mock_neo4j_async_driver():
+    """Mock Neo4j async driver with async session context manager.
+
+    Usage:
+        driver, session = mock_neo4j_async_driver
+        session.run.return_value = ...
+    """
+    mock_result = AsyncMock()
+    mock_result.data = AsyncMock(return_value=[])
+    mock_result.single = AsyncMock(return_value=None)
+
+    mock_session = AsyncMock()
+    mock_session.run = AsyncMock(return_value=mock_result)
+
+    mock_driver = MagicMock()
+    mock_driver.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+    return mock_driver, mock_session, mock_result
+
+
+@pytest.fixture
+def mock_qdrant_client():
+    """Mock Qdrant sync client.
+
+    Usage:
+        client = mock_qdrant_client
+        client.query_points.return_value = ...
+    """
+    client = MagicMock()
+    collections_response = MagicMock()
+    collections_response.collections = []
+    client.get_collections.return_value = collections_response
+    return client
 
 
 @pytest.fixture
