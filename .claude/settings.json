@@ -9,7 +9,14 @@
       "Bash(curl -s \"http://localhost:8000/v1/documents/$DOC_ID/status\")",
       "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml logs worker --tail=30)",
       "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml logs docling --tail=10)",
-      "Bash(echo \"$RESP\")"
+      "Bash(echo \"$RESP\")",
+      "WebFetch(domain:microsoft.github.io)",
+      "Bash(python3 -m pytest tests/unit/test_retrieval_schemas.py tests/unit/test_retrieval_helpers.py tests/unit/test_graph_service.py tests/unit/test_docling_graph_service.py tests/unit/test_ner.py -m \"unit\" --tb=short -v)",
+      "Bash(python3 -m pytest tests/unit/test_docling_graph_service.py -m \"unit\" --tb=short -v)",
+      "Bash(python3 -c \"from app.services.neo4j_graph import _sanitize_label; print\\(''neo4j_graph OK''\\)\")",
+      "Bash(python3 -c \"from app.services.qdrant_store import QDRANT_TEXT_COLLECTION; print\\(''qdrant_store OK''\\)\")",
+      "Bash(python3 -c \"from app.schemas.retrieval import QueryMode; print\\(f''QueryMode has {len\\(QueryMode\\)} members: {[m.value for m in QueryMode]}''\\)\")",
+      "Bash(python3 -c \"from app.api.v1._retrieval_helpers import get_ontology_relation_weights; w = get_ontology_relation_weights\\(\\); print\\(f''Ontology weights: {len\\(w\\)} entries''\\)\")"
     ]
   }
 }

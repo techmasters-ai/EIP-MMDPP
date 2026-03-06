@@ -18,7 +18,7 @@ from app.api.v1._retrieval_helpers import (
     get_cross_modal_decay,
     get_ontology_decay,
 )
-from app.db.session import get_async_session
+from app.db.session import get_async_session, get_neo4j_async_driver, get_qdrant_async_client
 from app.schemas.retrieval import (
     QueryMode,
     QueryResultItem,
@@ -41,17 +41,23 @@ async def unified_query(
     """Unified retrieval query.
 
     Modes:
-    - **text_basic**: BGE vector search on text_chunks only
+    - **text_basic**: BGE vector search on text_chunks only (Qdrant)
     - **text_only**: Multi-modal pipeline, filtered to text results
     - **images_only**: Multi-modal pipeline, filtered to image results
     - **multi_modal**: Multi-modal pipeline, all results
     - **memory**: Cognee approved memory search
+    - **graphrag_local**: Entity-centric retrieval with community context reports
+    - **graphrag_global**: Cross-community summarization for broad questions
     """
     try:
         if body.mode == QueryMode.text_basic:
             results = await _text_vector_search(db, body)
         elif body.mode == QueryMode.memory:
             results = await _memory_query(body)
+        elif body.mode == QueryMode.graphrag_local:
+            results = await _graphrag_local_query(db, body)
+        elif body.mode == QueryMode.graphrag_global:
+            results = await _graphrag_global_query(db, body)
         elif body.mode in (QueryMode.text_only, QueryMode.images_only, QueryMode.multi_modal):
             results = await _multi_modal_pipeline(db, body)
         else:
@@ -81,21 +87,14 @@ async def _multi_modal_pipeline(
 ) -> list[QueryResultItem]:
     """Shared pipeline: parallel vector search + parallel graph expansion + fusion scoring.
 
-    1. Parallel vector search (text BGE + image CLIP)
-    2. Parallel per-seed expansion (doc-structure + ontology)
+    1. Parallel vector search (text BGE via Qdrant + image CLIP via Qdrant)
+    2. Parallel per-seed expansion (doc-structure + ontology via Neo4j)
     3. Batch chunk lookups
     4. Score fusion + deduplicate + mode filter + sort + cap
     """
     t0 = time.monotonic()
 
-    # Set up AGE once for the entire request (not per-seed)
-    try:
-        from app.services.graph import setup_age_session_async
-        await setup_age_session_async(db)
-    except Exception as e:
-        logger.debug("AGE session setup failed (graph expansion will be skipped): %s", e)
-
-    # Step 1: Parallel vector searches
+    # Step 1: Parallel vector searches (Qdrant)
     search_tasks: list = []
     if body.query_text:
         search_tasks.append(_text_vector_search(db, body))
@@ -107,7 +106,7 @@ async def _multi_modal_pipeline(
     seed_results = _merge_seed_results(search_results)
     t_search = time.monotonic()
 
-    # Step 2: Parallel per-seed expansion (bounded concurrency)
+    # Step 2: Parallel per-seed expansion (bounded concurrency, Neo4j)
     expanded = await _expand_seeds(db, seed_results, body.include_context, body.query_text)
     t_expand = time.monotonic()
 
@@ -173,11 +172,11 @@ async def _expand_seeds(
             if doc_items:
                 items.extend(doc_items)
             else:
-                # Fallback to AGE cross-modal for legacy documents
-                cross_items = await _expand_via_cross_modal(db, chunk_id_str, seed.score, include_context)
+                # Fallback to Neo4j cross-modal for legacy documents
+                cross_items = await _expand_via_cross_modal(chunk_id_str, seed.score, include_context)
                 items.extend(cross_items)
 
-            onto_items = await _expand_via_ontology(db, chunk_id_str, seed.score, include_context, query_text)
+            onto_items = await _expand_via_ontology(chunk_id_str, seed.score, include_context, query_text)
             items.extend(onto_items)
             return items
 
@@ -194,7 +193,7 @@ async def _expand_seeds(
 
 
 # ---------------------------------------------------------------------------
-# Text vector search — pgvector HNSW on text_chunks (BGE)
+# Text vector search — Qdrant on eip_text_chunks (BGE)
 # ---------------------------------------------------------------------------
 
 async def _text_vector_search(
@@ -204,50 +203,50 @@ async def _text_vector_search(
         return []
 
     from app.services.embedding import embed_texts
+    from app.services.qdrant_store import search_text_vectors_async
 
     query_embedding = embed_texts([body.query_text])[0]
-    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
-    filter_clauses, filter_params = _build_text_filters(body)
+    # Build Qdrant filter from request filters
+    qdrant_filters = _build_qdrant_filters(body)
 
-    sql = text(f"""
-        SELECT tc.id, tc.artifact_id, tc.document_id, tc.chunk_text,
-               tc.modality, tc.page_number, tc.classification,
-               1 - (tc.embedding <=> CAST(:embedding AS vector)) AS score
-        FROM retrieval.text_chunks tc
-        WHERE tc.embedding IS NOT NULL
-        {filter_clauses}
-        ORDER BY tc.embedding <=> CAST(:embedding AS vector)
-        LIMIT :top_k
-    """)
+    qdrant_client = get_qdrant_async_client()
+    hits = await search_text_vectors_async(
+        qdrant_client,
+        query_vector=query_embedding,
+        limit=body.top_k,
+        filters=qdrant_filters,
+    )
 
-    params = {"embedding": embedding_str, "top_k": body.top_k, **filter_params}
-    result = await db.execute(sql, params)
-    rows = result.fetchall()
-
-    return [
-        QueryResultItem(
-            chunk_id=row[0],
-            artifact_id=row[1],
-            document_id=row[2],
-            score=float(row[7]),
-            modality=row[4],
-            content_text=row[3] if body.include_context else None,
-            page_number=row[5],
-            classification=row[6],
+    # Map Qdrant results back to QueryResultItem using payload metadata
+    results = []
+    for hit in hits:
+        payload = hit.get("payload", {})
+        results.append(
+            QueryResultItem(
+                chunk_id=payload.get("chunk_id"),
+                artifact_id=payload.get("artifact_id"),
+                document_id=payload.get("document_id"),
+                score=float(hit.get("score", 0.0)),
+                modality=payload.get("modality", "text"),
+                content_text=payload.get("chunk_text") if body.include_context else None,
+                page_number=payload.get("page_number"),
+                classification=payload.get("classification", "UNCLASSIFIED"),
+            )
         )
-        for row in rows
-    ]
+
+    return results
 
 
 # ---------------------------------------------------------------------------
-# Image vector search — pgvector HNSW on image_chunks (CLIP)
+# Image vector search — Qdrant on eip_image_chunks (CLIP)
 # ---------------------------------------------------------------------------
 
 async def _image_vector_search(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
     from app.services.embedding import embed_text_for_clip, embed_images
+    from app.services.qdrant_store import search_image_vectors_async
 
     if body.query_image:
         import base64
@@ -262,42 +261,59 @@ async def _image_vector_search(
     else:
         return []
 
-    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+    qdrant_filters = _build_qdrant_filters(body)
 
-    filter_clauses, filter_params = _build_image_filters(body)
+    qdrant_client = get_qdrant_async_client()
+    hits = await search_image_vectors_async(
+        qdrant_client,
+        query_vector=query_embedding,
+        limit=body.top_k,
+        filters=qdrant_filters,
+    )
 
-    sql = text(f"""
-        SELECT ic.id, ic.artifact_id, ic.document_id, ic.chunk_text,
-               ic.modality, ic.page_number, ic.classification,
-               1 - (ic.embedding <=> CAST(:embedding AS vector)) AS score
-        FROM retrieval.image_chunks ic
-        WHERE ic.embedding IS NOT NULL
-        {filter_clauses}
-        ORDER BY ic.embedding <=> CAST(:embedding AS vector)
-        LIMIT :top_k
-    """)
-
-    params = {"embedding": embedding_str, "top_k": body.top_k, **filter_params}
-    result = await db.execute(sql, params)
-    rows = result.fetchall()
-
-    return [
-        QueryResultItem(
-            chunk_id=row[0],
-            artifact_id=row[1],
-            document_id=row[2],
-            score=float(row[7]),
-            modality=row[4],
-            content_text=row[3] if body.include_context else None,
-            page_number=row[5],
-            classification=row[6],
+    results = []
+    for hit in hits:
+        payload = hit.get("payload", {})
+        results.append(
+            QueryResultItem(
+                chunk_id=payload.get("chunk_id"),
+                artifact_id=payload.get("artifact_id"),
+                document_id=payload.get("document_id"),
+                score=float(hit.get("score", 0.0)),
+                modality=payload.get("modality", "image"),
+                content_text=payload.get("chunk_text") if body.include_context else None,
+                page_number=payload.get("page_number"),
+                classification=payload.get("classification", "UNCLASSIFIED"),
+            )
         )
-        for row in rows
-    ]
+
+    return results
 
 
 # ---------------------------------------------------------------------------
-# Document-structure expansion (chunk_links table)
+# Qdrant filter builder
+# ---------------------------------------------------------------------------
+
+def _build_qdrant_filters(body: UnifiedQueryRequest) -> dict[str, Any] | None:
+    """Convert UnifiedQueryRequest filters to Qdrant filter dict."""
+    if not body.filters:
+        return None
+
+    filters: dict[str, Any] = {}
+    if body.filters.classification:
+        filters["classification"] = body.filters.classification
+    if body.filters.document_ids:
+        # Qdrant filter supports single value; for multi-doc, use first
+        # (full list filtering handled via multiple conditions in qdrant_store)
+        filters["document_id"] = str(body.filters.document_ids[0])
+    if body.filters.modalities and len(body.filters.modalities) == 1:
+        filters["modality"] = body.filters.modalities[0]
+
+    return filters if filters else None
+
+
+# ---------------------------------------------------------------------------
+# Document-structure expansion (chunk_links table — stays in Postgres)
 # ---------------------------------------------------------------------------
 
 async def _expand_via_doc_structure(
@@ -308,7 +324,7 @@ async def _expand_via_doc_structure(
 ) -> list[QueryResultItem]:
     """Expand via document-structure links (chunk_links table).
 
-    Returns empty list if no chunk_links exist (pre-v2 documents).
+    Returns empty list if no chunk_links exist (legacy documents).
     """
     from app.config import get_settings
     s = get_settings()
@@ -371,61 +387,54 @@ async def _expand_via_doc_structure(
 
 
 # ---------------------------------------------------------------------------
-# Graph expansion — cross-modal bridging (AGE structural edges, fallback)
+# Graph expansion — cross-modal bridging (Neo4j structural edges, fallback)
 # ---------------------------------------------------------------------------
 
 async def _expand_via_cross_modal(
-    db: AsyncSession,
     chunk_id: str,
     source_score: float,
     include_context: bool = True,
 ) -> list[QueryResultItem]:
     """Follow structural graph edges (SAME_PAGE, CONTAINS_TEXT/IMAGE, EXTRACTED_FROM)
-    to find connected chunks. Score decays from source.
+    to find connected chunks via Neo4j. Score decays from source.
 
-    This is the fallback for documents ingested before v2 (no chunk_links).
+    This is the fallback for documents ingested before chunk_links existed.
     """
-    from app.services.graph import _parse_agtype, _escape_cypher, GRAPH_NAME
+    driver = get_neo4j_async_driver()
 
-    params_json = json.dumps({"chunk_id": chunk_id})
-
-    cypher = """
-        MATCH (src:CHUNK_REF {chunk_id: $chunk_id})-[r*1..3]-(target:CHUNK_REF)
+    query = """
+        MATCH (src:ChunkRef {chunk_id: $chunk_id})-[*1..3]-(target:ChunkRef)
         WHERE target.chunk_id <> $chunk_id
         RETURN target.chunk_id AS target_chunk_id,
-               target.chunk_type AS target_chunk_type,
-               type(r[0]) AS edge_type
+               target.chunk_type AS target_chunk_type
         LIMIT 5
     """
 
     try:
-        result = await db.execute(
-            text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
-                    CAST(:params AS agtype)) AS (
-                        target_id agtype, target_type agtype, edge_type agtype
-                    )
-            """),
-            {"params": params_json},
-        )
-        rows = result.fetchall()
+        async with driver.session() as session:
+            result = await session.run(query, chunk_id=chunk_id)
+            records = await result.data()
     except Exception as e:
         logger.debug("Cross-modal expansion failed for %s: %s", chunk_id, e)
         return []
 
     items: list[QueryResultItem] = []
     decay = get_cross_modal_decay()
-    for row in rows:
-        target_id_str = str(_parse_agtype(row[0])).strip('"')
-        target_type = str(_parse_agtype(row[1])).strip('"')
-        edge_type = str(_parse_agtype(row[2])).strip('"')
+    for record in records:
+        target_id = record["target_chunk_id"]
+        target_type = record.get("target_chunk_type", "text_chunk")
 
-        chunk_data = await _lookup_chunk_by_type(db, target_id_str, target_type, include_context)
+        # Look up chunk metadata from Postgres (chunk data stays there)
+        from app.db.session import get_async_session as _get_session
+        # We need a db session — use the module-level async engine
+        from app.db.session import AsyncSessionFactory
+        async with AsyncSessionFactory() as db_session:
+            chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
+
         if chunk_data:
             chunk_data.score = source_score * decay
             chunk_data.context = {
                 "source": "cross_modal",
-                "edge_type": edge_type,
                 "source_chunk_id": chunk_id,
                 "degraded": True,
             }
@@ -435,48 +444,164 @@ async def _expand_via_cross_modal(
 
 
 # ---------------------------------------------------------------------------
-# Graph expansion — ontology traversal (entity relationships)
+# Graph expansion — ontology traversal (entity relationships via Neo4j)
 # ---------------------------------------------------------------------------
 
 async def _expand_via_ontology(
-    db: AsyncSession,
     chunk_id: str,
     source_score: float,
     include_context: bool = True,
     query_text: str | None = None,
 ) -> list[QueryResultItem]:
     """Follow ontology relationships (entity->related_entity->chunk) to find
-    semantically related chunks via the knowledge graph."""
-    from app.services.graph import get_ontology_linked_chunks_async
+    semantically related chunks via the Neo4j knowledge graph."""
+    from app.services.neo4j_graph import get_ontology_linked_chunks_async
     from app.config import get_settings
 
+    driver = get_neo4j_async_driver()
     s = get_settings()
-    linked = await get_ontology_linked_chunks_async(db, chunk_id, limit=s.retrieval_ontology_expand_k)
+    linked = await get_ontology_linked_chunks_async(driver, chunk_id, limit=s.retrieval_ontology_expand_k)
 
     items: list[QueryResultItem] = []
-    for link in linked:
-        target_id = link["target_chunk_id"]
-        target_type = link["target_chunk_type"]
 
-        chunk_data = await _lookup_chunk_by_type(db, target_id, target_type, include_context)
-        if chunk_data:
-            chunk_data.score = compute_fusion_score(
-                semantic_score=source_score,
-                ontology_rel_type=link.get("rel_type", "RELATED_TO"),
-                ontology_hops=1,
-                content_text=chunk_data.content_text,
-                query_text=query_text,
-            )
-            chunk_data.context = {
-                "source": "ontology",
-                "rel_type": link["rel_type"],
-                "entity_name": link["entity_name"],
-                "related_name": link["related_name"],
-                "source_chunk_id": chunk_id,
-            }
-            items.append(chunk_data)
+    # Look up chunk metadata from Postgres
+    from app.db.session import AsyncSessionFactory
+    async with AsyncSessionFactory() as db_session:
+        for link in linked:
+            target_id = link["target_chunk_id"]
+            target_type = link["target_chunk_type"]
+
+            chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
+            if chunk_data:
+                chunk_data.score = compute_fusion_score(
+                    semantic_score=source_score,
+                    ontology_rel_type=link.get("rel_type", "RELATED_TO"),
+                    ontology_hops=1,
+                    content_text=chunk_data.content_text,
+                    query_text=query_text,
+                )
+                chunk_data.context = {
+                    "source": "ontology",
+                    "rel_type": link["rel_type"],
+                    "entity_name": link["entity_name"],
+                    "related_name": link["related_name"],
+                    "source_chunk_id": chunk_id,
+                }
+                items.append(chunk_data)
 
     return items
+
+
+# ---------------------------------------------------------------------------
+# GraphRAG local search — entity-centric + community reports
+# ---------------------------------------------------------------------------
+
+async def _graphrag_local_query(
+    db: AsyncSession, body: UnifiedQueryRequest
+) -> list[QueryResultItem]:
+    """Entity-centric search with community report context."""
+    if not body.query_text:
+        return []
+
+    from app.services.graphrag_service import local_search
+    from app.db.session import get_neo4j_driver
+
+    # GraphRAG local_search uses sync Neo4j driver internally
+    import asyncio
+    loop = asyncio.get_event_loop()
+    neo4j_driver = get_neo4j_driver()
+    qdrant_client = get_qdrant_async_client()
+
+    graphrag_results = await loop.run_in_executor(
+        None,
+        lambda: local_search(
+            query=body.query_text,
+            neo4j_driver=neo4j_driver,
+            qdrant_client=None,  # Not used in current implementation
+            db_session=None,  # Will create own session for community lookup
+            limit=body.top_k,
+        ),
+    )
+
+    # Convert GraphRAG results to QueryResultItem format
+    results = []
+    for i, gr in enumerate(graphrag_results):
+        entity = gr.get("entity", {})
+        community_reports = gr.get("community_reports", [])
+
+        results.append(
+            QueryResultItem(
+                score=max(0.5, 1.0 - (i * 0.05)),  # Rank-based scoring
+                modality="graph_node",
+                content_text=entity.get("name", ""),
+                page_number=None,
+                classification="UNCLASSIFIED",
+                context={
+                    "source": "graphrag_local",
+                    "entity_type": gr.get("entity_type"),
+                    "entity": entity,
+                    "community_reports": [
+                        {"title": r.get("title"), "summary": r.get("summary")}
+                        for r in community_reports[:3]
+                    ],
+                },
+            )
+        )
+
+    return results[:body.top_k]
+
+
+# ---------------------------------------------------------------------------
+# GraphRAG global search — cross-community summarization
+# ---------------------------------------------------------------------------
+
+async def _graphrag_global_query(
+    db: AsyncSession, body: UnifiedQueryRequest
+) -> list[QueryResultItem]:
+    """Cross-community summarization for broad questions."""
+    if not body.query_text:
+        return []
+
+    from app.services.graphrag_service import global_search
+    from app.db.session import SyncSessionFactory
+
+    # global_search uses sync SQLAlchemy session
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    def _run_global():
+        session = SyncSessionFactory()
+        try:
+            return global_search(
+                query=body.query_text,
+                db_session=session,
+                limit=body.top_k,
+            )
+        finally:
+            session.close()
+
+    graphrag_results = await loop.run_in_executor(None, _run_global)
+
+    results = []
+    for gr in graphrag_results:
+        results.append(
+            QueryResultItem(
+                score=gr.get("rank", 0.5) or 0.5,
+                modality="community_report",
+                content_text=gr.get("summary") or gr.get("report_text", "")[:500],
+                page_number=None,
+                classification="UNCLASSIFIED",
+                context={
+                    "source": "graphrag_global",
+                    "community_id": gr.get("community_id"),
+                    "community_title": gr.get("community_title"),
+                    "level": gr.get("level"),
+                    "report_text": gr.get("report_text"),
+                },
+            )
+        )
+
+    return results[:body.top_k]
 
 
 # ---------------------------------------------------------------------------

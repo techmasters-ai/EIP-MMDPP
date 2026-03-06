@@ -1,7 +1,7 @@
 """Integration tests for the graph store endpoints.
 
-POST /v1/graph/ingest/entity — create entity in AGE
-POST /v1/graph/ingest/relationship — create relationship in AGE
+POST /v1/graph/ingest/entity — create entity in Neo4j
+POST /v1/graph/ingest/relationship — create relationship in Neo4j
 POST /v1/graph/query — Cypher traversal query
 """
 

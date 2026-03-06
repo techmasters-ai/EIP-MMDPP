@@ -130,6 +130,103 @@ _RE_PROCEDURE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# EM/RF domain patterns
+# ---------------------------------------------------------------------------
+
+# ELNOT codes: 2-4 uppercase letters (e.g. "BA", "FIRE", "BELL")
+# Only match when preceded by "ELNOT" keyword for disambiguation
+_RE_ELNOT = re.compile(
+    r"\bELNOT\s*:?\s*([A-Z]{2,20}(?:\s+[A-Z]{2,20})*)\b",
+)
+
+# DIEQP identifiers: alphanumeric+dash patterns after DIEQP keyword
+_RE_DIEQP = re.compile(
+    r"\bDIEQP\s*:?\s*([A-Z0-9][-A-Z0-9]{2,20})\b",
+    re.IGNORECASE,
+)
+
+# Frequency values with band designations
+# e.g. "9.4 GHz", "2700-2900 MHz", "S-band", "X-band"
+_RE_FREQUENCY = re.compile(
+    r"\b(-?[0-9]+(?:\.[0-9]+)?(?:\s*[-–]\s*[0-9]+(?:\.[0-9]+)?)?)\s*"
+    r"(GHz|MHz|kHz|Hz)\b",
+    re.IGNORECASE,
+)
+
+# NATO frequency band letters: S-band, X-band, C-band, L-band, etc.
+_RE_FREQ_BAND = re.compile(
+    r"\b([A-Z])-?band\b",
+    re.IGNORECASE,
+)
+
+# PRI/PRF values: "PRI 1500 μs", "PRF 300-500 Hz"
+_RE_PRI_PRF = re.compile(
+    r"\b(PRI|PRF)\s*:?\s*(-?[0-9]+(?:\.[0-9]+)?(?:\s*[-–]\s*[0-9]+(?:\.[0-9]+)?)?)\s*"
+    r"(μs|us|ms|ns|Hz|kHz|pps)\b",
+    re.IGNORECASE,
+)
+
+# Radar mode keywords
+_RADAR_MODES = [
+    "search mode", "track mode", "acquisition mode", "burn-through mode",
+    "TWS", "track-while-scan", "STT", "single target track",
+    "pulse doppler", "pulse compression", "CW", "continuous wave",
+    "FMCW", "MTI", "moving target indicator", "ECCM",
+    "HPRF", "MPRF", "LPRF",
+]
+_RE_RADAR_MODE = re.compile(
+    r"\b(" + "|".join(re.escape(m) for m in _RADAR_MODES) + r")\b",
+    re.IGNORECASE,
+)
+
+# Waveform families
+_WAVEFORM_FAMILIES = [
+    "linear FM", "LFM", "NLFM", "Barker", "polyphase",
+    "Frank code", "P1", "P2", "P3", "P4",
+    "Costas", "frequency hopping", "chirp",
+    "pulse burst", "stagger", "jitter",
+]
+_RE_WAVEFORM = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _WAVEFORM_FAMILIES) + r")\b",
+    re.IGNORECASE,
+)
+
+# Guidance type keywords
+_GUIDANCE_TYPES = [
+    "semi-active radar", "SARH", "active radar", "ARH",
+    "infrared", "IR homing", "command guidance", "CLOS",
+    "beam riding", "TVM", "track-via-missile",
+    "INS", "inertial navigation", "GPS", "GPS/INS",
+    "millimeter wave", "MMW", "imaging infrared", "IIR",
+    "dual-mode", "tri-mode",
+]
+_RE_GUIDANCE = re.compile(
+    r"\b(" + "|".join(re.escape(g) for g in _GUIDANCE_TYPES) + r")\b",
+    re.IGNORECASE,
+)
+
+# AAA caliber patterns: "23mm", "30 mm", "57-mm", "40mm L/70"
+_RE_AAA_CALIBER = re.compile(
+    r"\b(\d{2,3})\s*[-]?\s*mm\b",
+    re.IGNORECASE,
+)
+
+# EW technique keywords
+_EW_TECHNIQUES = [
+    "jamming", "barrage jamming", "spot jamming", "deception jamming",
+    "noise jamming", "DRFM", "digital RF memory",
+    "chaff", "flare", "decoy", "towed decoy",
+    "ESM", "electronic support measures", "ELINT",
+    "SIGINT", "COMINT", "MASINT",
+    "RWR", "radar warning receiver",
+    "ARM", "anti-radiation missile", "HARM",
+]
+_RE_EW_TECHNIQUE = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _EW_TECHNIQUES) + r")\b",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Relationship extraction patterns
@@ -267,6 +364,128 @@ def extract_entities(text: str) -> list[EntityCandidate]:
             source_text=m.group(0),
             confidence=0.78,
             properties={"parameter": param, "value": value, "unit": unit},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # --- EM/RF domain entities ---
+
+    # ELNOT codes
+    for m in _RE_ELNOT.finditer(text):
+        elnot = m.group(1).strip()
+        candidates.append(EntityCandidate(
+            entity_type="RADAR_SYSTEM",
+            name=f"ELNOT {elnot}",
+            source_text=m.group(0),
+            confidence=0.92,
+            properties={"elnot": elnot},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # DIEQP identifiers
+    for m in _RE_DIEQP.finditer(text):
+        dieqp = m.group(1).upper()
+        candidates.append(EntityCandidate(
+            entity_type="RADAR_SYSTEM",
+            name=f"DIEQP {dieqp}",
+            source_text=m.group(0),
+            confidence=0.90,
+            properties={"dieqp": dieqp},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # Frequency values
+    for m in _RE_FREQUENCY.finditer(text):
+        freq_val = m.group(1)
+        freq_unit = m.group(2)
+        candidates.append(EntityCandidate(
+            entity_type="RF_EMISSION",
+            name=f"{freq_val} {freq_unit}",
+            source_text=m.group(0),
+            confidence=0.75,
+            properties={"frequency": freq_val, "unit": freq_unit},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # Frequency band designations
+    for m in _RE_FREQ_BAND.finditer(text):
+        band = m.group(1).upper()
+        candidates.append(EntityCandidate(
+            entity_type="FREQUENCY_BAND",
+            name=f"{band}-band",
+            source_text=m.group(0),
+            confidence=0.85,
+            properties={"band_letter": band},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # PRI/PRF values
+    for m in _RE_PRI_PRF.finditer(text):
+        param_type = m.group(1).upper()
+        value = m.group(2)
+        unit = m.group(3)
+        candidates.append(EntityCandidate(
+            entity_type="WAVEFORM",
+            name=f"{param_type} {value} {unit}",
+            source_text=m.group(0),
+            confidence=0.80,
+            properties={param_type.lower(): value, "unit": unit},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # Radar modes
+    for m in _RE_RADAR_MODE.finditer(text):
+        mode = m.group(1)
+        candidates.append(EntityCandidate(
+            entity_type="SCAN_PATTERN",
+            name=mode.title(),
+            source_text=m.group(0),
+            confidence=0.72,
+            properties={"mode": mode},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # Waveform families
+    for m in _RE_WAVEFORM.finditer(text):
+        wf = m.group(1)
+        candidates.append(EntityCandidate(
+            entity_type="WAVEFORM",
+            name=wf.upper() if len(wf) <= 4 else wf.title(),
+            source_text=m.group(0),
+            confidence=0.78,
+            properties={"waveform_family": wf},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # Guidance types
+    for m in _RE_GUIDANCE.finditer(text):
+        guidance = m.group(1)
+        candidates.append(EntityCandidate(
+            entity_type="GUIDANCE_METHOD",
+            name=guidance.upper() if len(guidance) <= 4 else guidance.title(),
+            source_text=m.group(0),
+            confidence=0.80,
+            properties={"guidance_type": guidance},
+            span_start=m.start(),
+            span_end=m.end(),
+        ))
+
+    # EW techniques
+    for m in _RE_EW_TECHNIQUE.finditer(text):
+        technique = m.group(1)
+        candidates.append(EntityCandidate(
+            entity_type="ELECTRONIC_WARFARE_SYSTEM",
+            name=technique.upper() if len(technique) <= 5 else technique.title(),
+            source_text=m.group(0),
+            confidence=0.75,
+            properties={"technique": technique},
             span_start=m.start(),
             span_end=m.end(),
         ))

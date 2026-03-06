@@ -137,17 +137,17 @@ class TestBuildNetworkxGraph:
         assert G.nodes["A:X"]["confidence"] == 0.3  # low confidence for implicit nodes
 
 
-class TestNetworkxToAgeImport:
-    def test_converts_graph_to_age_format(self):
+class TestNetworkxToNeo4jImport:
+    def test_converts_graph_to_neo4j_format(self):
         import networkx as nx
-        from app.services.docling_graph_service import networkx_to_age_import
+        from app.services.docling_graph_service import networkx_to_neo4j_import
 
         G = nx.DiGraph()
         G.add_node("A:Sys", entity_type="A", name="Sys", properties={}, confidence=0.9)
         G.add_node("B:Part", entity_type="B", name="Part", properties={}, confidence=0.8)
         G.add_edge("A:Sys", "B:Part", relationship_type="HAS", confidence=0.7)
 
-        result = networkx_to_age_import(G, "artifact-1")
+        result = networkx_to_neo4j_import(G, "artifact-1")
         assert len(result["nodes"]) == 2
         assert len(result["edges"]) == 1
         assert result["nodes"][0]["artifact_id"] == "artifact-1"

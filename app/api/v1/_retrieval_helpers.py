@@ -70,6 +70,7 @@ def get_fusion_weights() -> tuple[float, float, float]:
 def get_ontology_relation_weights() -> dict[str, float]:
     s = _settings()
     return {
+        # Legacy weights
         "IS_VARIANT_OF": s.retrieval_onto_weight_is_variant_of,
         "USES_COMPONENT": s.retrieval_onto_weight_uses_component,
         "IS_SUBSYSTEM_OF": s.retrieval_onto_weight_is_subsystem_of,
@@ -79,6 +80,25 @@ def get_ontology_relation_weights() -> dict[str, float]:
         "OPERATES_ON": s.retrieval_onto_weight_operates_on,
         "MEETS_STANDARD": s.retrieval_onto_weight_meets_standard,
         "RELATED_TO": s.retrieval_onto_weight_related_to,
+        # New ontology relation weights
+        "associated_with": s.retrieval_onto_weight_associated_with,
+        "installed_on": s.retrieval_onto_weight_installed_on,
+        "deployed_on": s.retrieval_onto_weight_deployed_on,
+        "uses_waveform": s.retrieval_onto_weight_uses_waveform,
+        "operates_in_band": s.retrieval_onto_weight_operates_in_band,
+        "has_antenna": s.retrieval_onto_weight_has_antenna,
+        "has_receiver": s.retrieval_onto_weight_has_receiver,
+        "has_transmitter": s.retrieval_onto_weight_has_transmitter,
+        "cues": s.retrieval_onto_weight_cues,
+        "guides": s.retrieval_onto_weight_guides,
+        "tracks": s.retrieval_onto_weight_tracks,
+        "emits": s.retrieval_onto_weight_emits,
+        "has_signature": s.retrieval_onto_weight_has_signature,
+        "has_performance": s.retrieval_onto_weight_has_performance,
+        "has_processing_chain": s.retrieval_onto_weight_has_processing_chain,
+        "supported_by": s.retrieval_onto_weight_supported_by,
+        "mentioned_in": s.retrieval_onto_weight_mentioned_in,
+        "alias_of": s.retrieval_onto_weight_alias_of,
     }
 
 
@@ -164,6 +184,9 @@ MIL_ID_PATTERNS = [
     re.compile(r'\b\d{4}-\d{2}-\d{3}-\d{4}\b'),  # NSN
     re.compile(r'\bMIL-[A-Z]+-\d+[A-Z]?\b'),       # MIL-STD
     re.compile(r'\bPN-\d{4,}\b'),                    # Part number
+    re.compile(r'\b[A-Z]{2}\d{4}\b'),                # ELNOT codes
+    re.compile(r'\b\d{4}-[A-Z]{2}-\d{3}-\d{4}\b'),  # DIEQP identifiers
+    re.compile(r'\bAN/[A-Z]{3}-\d+[A-Z]?(?:\(V\)\d*)?\b'),  # AN/ designators
 ]
 
 

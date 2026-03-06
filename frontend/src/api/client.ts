@@ -70,7 +70,7 @@ export interface AgentContextResponse {
   sources: AgentSource[];
 }
 
-export type QueryMode = "text_basic" | "text_only" | "images_only" | "multi_modal" | "memory";
+export type QueryMode = "text_basic" | "text_only" | "images_only" | "multi_modal" | "memory" | "graphrag_local" | "graphrag_global";
 
 export interface TextIngestResponse {
   chunk_ids: string[];

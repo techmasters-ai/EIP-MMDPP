@@ -27,6 +27,16 @@ const MODES: { value: QueryMode; label: string; description: string }[] = [
     label: "Trusted Data",
     description: "Search approved trusted data",
   },
+  {
+    value: "graphrag_local",
+    label: "GraphRAG Local",
+    description: "Entity-centric retrieval with community context reports",
+  },
+  {
+    value: "graphrag_global",
+    label: "GraphRAG Global",
+    description: "Cross-community summarization for broad questions",
+  },
 ];
 
 const IMAGE_MODES: Set<QueryMode> = new Set(["text_only", "images_only", "multi_modal"]);
@@ -58,6 +68,12 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   } else if (ctx?.source === "cross_modal") {
     const edge = ctx.edge_type as string | undefined;
     if (edge) provenanceLabel = `Via graph bridge: ${edge}`;
+  } else if (ctx?.source === "graphrag_local") {
+    const entityType = ctx.entity_type as string | undefined;
+    provenanceLabel = `GraphRAG Local: ${entityType || "entity"} match`;
+  } else if (ctx?.source === "graphrag_global") {
+    const title = ctx.community_title as string | undefined;
+    provenanceLabel = `GraphRAG Global: ${title || "community report"}`;
   }
 
   const truncated = displayText && displayText.length > 400 && !expanded;

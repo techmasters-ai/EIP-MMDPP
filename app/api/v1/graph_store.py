@@ -1,11 +1,10 @@
-"""Graph (AGE) — direct entity/relationship ingest and Cypher query endpoints."""
+"""Graph (Neo4j) — direct entity/relationship ingest and Cypher query endpoints."""
 
 import logging
 
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter
 
-from app.db.session import get_async_session
+from app.db.session import get_neo4j_async_driver
 from app.schemas.graph_store import (
     GraphEntityIngest,
     GraphIngestResponse,
@@ -21,27 +20,33 @@ logger = logging.getLogger(__name__)
 @router.post("/graph/ingest/entity", response_model=GraphIngestResponse)
 async def ingest_entity(
     body: GraphEntityIngest,
-    db: AsyncSession = Depends(get_async_session),
 ) -> GraphIngestResponse:
-    """Create or update an entity node in the AGE knowledge graph.
+    """Create or update an entity node in the Neo4j knowledge graph.
 
     Note: Graph entity mutations require dual-curator approval via governance.
     This endpoint creates the node directly for authorized users.
     """
-    from app.services.graph import upsert_node
+    from app.services.neo4j_graph import upsert_node
 
-    # Run sync graph operation via async session's sync connection
-    def _upsert(sync_session):
-        return upsert_node(
-            session=sync_session,
+    driver = get_neo4j_async_driver()
+
+    # Neo4j async driver uses its own sessions — run sync upsert in executor
+    import asyncio
+    from app.db.session import get_neo4j_driver
+
+    sync_driver = get_neo4j_driver()
+    loop = asyncio.get_event_loop()
+    node_id = await loop.run_in_executor(
+        None,
+        lambda: upsert_node(
+            sync_driver,
             entity_type=body.entity_type,
             name=body.name,
             artifact_id="direct_ingest",
             confidence=1.0,
             properties=body.properties,
-        )
-
-    node_id = await db.run_sync(lambda s: _upsert(s))
+        ),
+    )
 
     if node_id:
         return GraphIngestResponse(status="created", node_id=node_id)
@@ -51,14 +56,19 @@ async def ingest_entity(
 @router.post("/graph/ingest/relationship", response_model=GraphIngestResponse)
 async def ingest_relationship(
     body: GraphRelationshipIngest,
-    db: AsyncSession = Depends(get_async_session),
 ) -> GraphIngestResponse:
-    """Create or update a relationship edge in the AGE knowledge graph."""
-    from app.services.graph import upsert_relationship
+    """Create or update a relationship edge in the Neo4j knowledge graph."""
+    from app.services.neo4j_graph import upsert_relationship
 
-    def _upsert(sync_session):
-        return upsert_relationship(
-            session=sync_session,
+    import asyncio
+    from app.db.session import get_neo4j_driver
+
+    sync_driver = get_neo4j_driver()
+    loop = asyncio.get_event_loop()
+    ok = await loop.run_in_executor(
+        None,
+        lambda: upsert_relationship(
+            sync_driver,
             from_name=body.from_entity,
             from_type=body.from_type,
             to_name=body.to_entity,
@@ -66,9 +76,8 @@ async def ingest_relationship(
             rel_type=body.relationship_type,
             artifact_id="direct_ingest",
             confidence=1.0,
-        )
-
-    ok = await db.run_sync(lambda s: _upsert(s))
+        ),
+    )
 
     if ok:
         return GraphIngestResponse(status="created")
@@ -78,13 +87,14 @@ async def ingest_relationship(
 @router.post("/graph/query", response_model=list[QueryResultItem])
 async def query_graph(
     body: GraphQueryRequest,
-    db: AsyncSession = Depends(get_async_session),
 ) -> list[QueryResultItem]:
-    """Search the AGE knowledge graph by entity name and return neighborhood."""
-    from app.services.graph import search_nodes_async, get_neighborhood_async
+    """Search the Neo4j knowledge graph by entity name and return neighborhood."""
+    from app.services.neo4j_graph import search_nodes_async, get_neighborhood_async
+
+    driver = get_neo4j_async_driver()
 
     # Search for matching nodes
-    matches = await search_nodes_async(db, body.query, limit=body.top_k)
+    matches = await search_nodes_async(driver, body.query, limit=body.top_k)
 
     results: list[QueryResultItem] = []
 
@@ -98,7 +108,7 @@ async def query_graph(
 
         # Get neighborhood for each matched entity
         neighbors = await get_neighborhood_async(
-            db, name, hop_count=body.hop_count, limit=10
+            driver, name, hop_count=body.hop_count, limit=10
         )
 
         results.append(

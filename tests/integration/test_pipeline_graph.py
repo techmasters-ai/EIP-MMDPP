@@ -4,7 +4,7 @@ These tests call derive_ontology_graph directly (bypassing Celery), using a
 real test database session. They verify that:
   1. NER extraction produces entities/relationships from text elements
   2. Graph data is stored in document_graph_extractions
-  3. upsert_node/upsert_relationship are called for AGE import
+  3. upsert_node/upsert_relationship are called for Neo4j import
 """
 
 import uuid
@@ -93,8 +93,9 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
-            patch("app.services.graph.upsert_node", return_value="mock-node-id") as mock_node,
-            patch("app.services.graph.upsert_relationship", return_value=True) as mock_rel,
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_node", return_value="mock-node-id") as mock_node,
+            patch("app.services.neo4j_graph.upsert_relationship", return_value=True) as mock_rel,
         ):
             result = derive_ontology_graph.run(sample_document_id)
 
@@ -114,8 +115,9 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
-            patch("app.services.graph.upsert_node", return_value="mock-id"),
-            patch("app.services.graph.upsert_relationship", return_value=True),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
+            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
         ):
             derive_ontology_graph.run(sample_document_id)
 
@@ -145,8 +147,9 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
-            patch("app.services.graph.upsert_node", return_value="mock-id"),
-            patch("app.services.graph.upsert_relationship", return_value=True),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
+            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
         ):
             derive_ontology_graph.run(sample_document_id)
 
@@ -169,6 +172,7 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
         ):
             result = derive_ontology_graph.run(sample_document_id)
 
@@ -186,8 +190,9 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
-            patch("app.services.graph.upsert_node", return_value="mock-id"),
-            patch("app.services.graph.upsert_relationship", return_value=True) as mock_rel,
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
+            patch("app.services.neo4j_graph.upsert_relationship", return_value=True) as mock_rel,
         ):
             result = derive_ontology_graph.run(sample_document_id)
 

@@ -39,7 +39,13 @@ class TextChunk(Base, TimestampMixin):
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Text embedding (BGE-large: 1024-dim; controlled by TEXT_EMBEDDING_DIM env var)
+    # Kept during transition — vectors migrate to Qdrant (drop in 0006)
     embedding: Mapped[Optional[list]] = mapped_column(Vector(_TEXT_DIM), nullable=True)
+
+    # Qdrant point ID (set after vector upsert to Qdrant)
+    qdrant_point_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
 
     # Modality and provenance
     modality: Mapped[str] = mapped_column(
@@ -89,7 +95,13 @@ class ImageChunk(Base, TimestampMixin):
     chunk_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Image embedding (CLIP ViT-B/32: 512-dim; controlled by IMAGE_EMBEDDING_DIM)
+    # Kept during transition — vectors migrate to Qdrant (drop in 0006)
     embedding: Mapped[Optional[list]] = mapped_column(Vector(_IMAGE_DIM), nullable=True)
+
+    # Qdrant point ID (set after vector upsert to Qdrant)
+    qdrant_point_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
 
     # Modality and provenance
     modality: Mapped[str] = mapped_column(

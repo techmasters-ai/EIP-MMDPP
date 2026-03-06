@@ -3,6 +3,8 @@
 Uses LiteLLM for provider-agnostic routing (Ollama, OpenAI, etc.) controlled
 by the system-wide LLM_PROVIDER setting.  Falls back to regex NER
 (app.services.ner) when the LLM is unavailable.
+
+Extraction results are imported directly into Neo4j (replaces AGE).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from app.services.ontology_templates import (
     ExtractedRelationship,
     build_extraction_prompt,
     load_ontology,
+    load_validation_matrix,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +59,70 @@ def extract_graph_from_text(
         logger.warning("LLM extraction failed, falling back to regex NER: %s", e)
         extraction = _fallback_regex_extraction(text)
 
+    # Validate triples against ontology
+    extraction = _validate_triples(extraction, ontology_path)
+
     return _build_networkx_graph(extraction, document_id)
+
+
+def extract_and_import_to_neo4j(
+    text: str,
+    document_id: str,
+    artifact_id: str,
+    driver,
+    *,
+    ontology_path=None,
+) -> dict[str, Any]:
+    """Extract entities/relationships and import directly into Neo4j.
+
+    Returns import stats: {nodes_upserted, edges_upserted, nodes_failed, edges_failed}.
+    """
+    from app.services.neo4j_graph import upsert_node, upsert_relationship
+
+    graph = extract_graph_from_text(text, document_id, ontology_path=ontology_path)
+    import_data = networkx_to_neo4j_import(graph, artifact_id)
+
+    stats = {"nodes_upserted": 0, "edges_upserted": 0, "nodes_failed": 0, "edges_failed": 0}
+
+    for node in import_data["nodes"]:
+        result = upsert_node(
+            driver,
+            entity_type=node["entity_type"],
+            name=node["name"],
+            artifact_id=node["artifact_id"],
+            confidence=node["confidence"],
+            properties=node["properties"],
+        )
+        if result:
+            stats["nodes_upserted"] += 1
+        else:
+            stats["nodes_failed"] += 1
+
+    for edge in import_data["edges"]:
+        success = upsert_relationship(
+            driver,
+            from_name=edge["from_name"],
+            from_type=edge["from_type"],
+            to_name=edge["to_name"],
+            to_type=edge["to_type"],
+            rel_type=edge["rel_type"],
+            artifact_id=edge["artifact_id"],
+            confidence=edge["confidence"],
+        )
+        if success:
+            stats["edges_upserted"] += 1
+        else:
+            stats["edges_failed"] += 1
+
+    logger.info(
+        "Neo4j import for document %s: %d nodes, %d edges (%d/%d failed)",
+        document_id,
+        stats["nodes_upserted"],
+        stats["edges_upserted"],
+        stats["nodes_failed"],
+        stats["edges_failed"],
+    )
+    return stats
 
 
 def _call_llm(prompt: str, settings) -> str:
@@ -98,11 +164,9 @@ def _call_llm(prompt: str, settings) -> str:
 
 def _parse_llm_response(response_text: str) -> DocumentExtractionResult:
     """Parse LLM JSON output into a DocumentExtractionResult."""
-    # Strip markdown fences if the LLM included them despite instructions
     cleaned = response_text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        # Remove first and last fence lines
         lines = [l for l in lines if not l.strip().startswith("```")]
         cleaned = "\n".join(lines)
 
@@ -142,11 +206,37 @@ def _fallback_regex_extraction(text: str) -> DocumentExtractionResult:
     return DocumentExtractionResult(entities=entities, relationships=relationships)
 
 
+def _validate_triples(
+    extraction: DocumentExtractionResult,
+    ontology_path=None,
+) -> DocumentExtractionResult:
+    """Filter out relationships that violate the ontology validation matrix."""
+    matrix = load_validation_matrix(ontology_path)
+    if not matrix:
+        return extraction
+
+    valid_rels = []
+    for rel in extraction.relationships:
+        triple = (rel.from_type, rel.relationship_type, rel.to_type)
+        if triple in matrix:
+            valid_rels.append(rel)
+        else:
+            logger.debug(
+                "Rejected invalid triple: %s -[%s]-> %s",
+                rel.from_type, rel.relationship_type, rel.to_type,
+            )
+
+    return DocumentExtractionResult(
+        entities=extraction.entities,
+        relationships=valid_rels,
+    )
+
+
 def _build_networkx_graph(
     extraction: DocumentExtractionResult,
     document_id: str,
 ) -> nx.DiGraph:
-    """Convert extraction results into a NetworkX DiGraph for AGE import."""
+    """Convert extraction results into a NetworkX DiGraph."""
     G = nx.DiGraph()
 
     for entity in extraction.entities:
@@ -164,8 +254,6 @@ def _build_networkx_graph(
         from_id = f"{rel.from_type}:{rel.from_name}"
         to_id = f"{rel.to_type}:{rel.to_name}"
 
-        # Ensure source/target nodes exist (LLM might reference entities
-        # not in the entities list)
         if from_id not in G:
             G.add_node(
                 from_id,
@@ -196,14 +284,14 @@ def _build_networkx_graph(
     return G
 
 
-def networkx_to_age_import(
+def networkx_to_neo4j_import(
     graph: nx.DiGraph,
     artifact_id: str,
 ) -> dict[str, Any]:
-    """Convert NetworkX graph to AGE-compatible import format.
+    """Convert NetworkX graph to Neo4j import format.
 
-    Returns a dict with 'nodes' and 'edges' lists ready for the
-    graph.py upsert_node() / upsert_relationship() helpers.
+    Returns a dict with 'nodes' and 'edges' lists ready for
+    neo4j_graph.upsert_node() / upsert_relationship().
     """
     nodes = []
     for node_id, data in graph.nodes(data=True):

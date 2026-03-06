@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into separate vector stores, builds a military equipment knowledge graph (Apache AGE), and maintains governed trusted data (Cognee). Supports 5 retrieval modes: text basic, text only, images only, multi-modal, and trusted data search. Includes a user feedback → curator patch approval workflow and a React web UI.
+Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into Qdrant vector collections, builds a military equipment knowledge graph (Neo4j), runs GraphRAG community detection and reporting, and maintains governed trusted data (Cognee). Supports 7 retrieval modes: text basic, text only, images only, multi-modal, trusted data, GraphRAG local, and GraphRAG global. Includes a user feedback → curator patch approval workflow and a React web UI.
 
 ## Architecture
 
@@ -10,19 +10,27 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 
 ```
                     ┌──────────────────────────────────────────┐
-                    │          Apache AGE Graph (eip_kg)        │
-                    │   DOCUMENT ←→ CHUNK_REF nodes             │
-                    │   Ontology entities (LLM-extracted)       │
-                    │   CONTAINS_TEXT / CONTAINS_IMAGE /         │
-                    │   SAME_PAGE / EXTRACTED_FROM / ontology    │
+                    │           Neo4j Knowledge Graph           │
+                    │   Document ←→ ChunkRef nodes              │
+                    │   Entity nodes (LLM + regex extracted)    │
+                    │   Ontology relations (44 predicates)      │
+                    │   Alias nodes (entity canonicalization)   │
+                    │   Fulltext index (fuzzy entity search)    │
                     └──────────┬───────────────┬────────────────┘
                                │               │
                     ┌──────────▼──────┐ ┌──────▼──────────┐
-                    │ retrieval.      │ │ retrieval.       │
-                    │ text_chunks     │ │ image_chunks     │
+                    │ Qdrant:         │ │ Qdrant:          │
+                    │ eip_text_chunks │ │ eip_image_chunks │
                     │ BGE 1024-dim    │ │ CLIP 512-dim     │
-                    │ HNSW index      │ │ HNSW index       │
+                    │ Cosine distance │ │ Cosine distance  │
                     └─────────────────┘ └─────────────────┘
+
+                    ┌──────────────────────────────────────────┐
+                    │       GraphRAG Community Layer             │
+                    │   Leiden/Louvain community detection       │
+                    │   LLM-generated community reports          │
+                    │   Local + Global search modes              │
+                    └──────────────────────────────────────────┘
 
                     ┌──────────────────────────────────────────┐
                     │       Cognee Trusted Data Layer            │
@@ -37,22 +45,39 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 |---|---|
 | API | FastAPI (Python 3.11) |
 | Processing | Celery + Redis |
-| Database | PostgreSQL 16 with pgvector (HNSW) + Apache AGE (openCypher graph) |
+| Database | PostgreSQL 16 (metadata, chunk_links, governance) |
+| Graph Database | Neo4j Community Edition (knowledge graph, ontology, canonicalization) |
+| Vector Database | Qdrant OSS (text + image embeddings) |
 | Object Storage | MinIO |
 | Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, fully local) |
 | Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
 | Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
 | Graph Extraction | docling-graph + LLM (ontology-driven entity/relationship extraction) |
+| GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
 | Trusted Data | Cognee (NetworkX graph + LanceDB vector, governed approval workflow) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
 
+### Docker Services (9 containers)
+
+| Service | Purpose |
+|---|---|
+| `api` | FastAPI application server |
+| `worker` | Celery worker (ingest pipeline) |
+| `beat` | Celery Beat (periodic tasks, GraphRAG indexing) |
+| `postgres` | PostgreSQL 16 (metadata, chunk_links, governance) |
+| `redis` | Celery broker + result backend |
+| `minio` | S3-compatible object storage |
+| `docling` | Document conversion service (granite-docling-258M VLM) |
+| `neo4j` | Neo4j Community Edition (knowledge graph) |
+| `qdrant` | Qdrant OSS (vector search) |
+
 ## Quickstart
 
 ```bash
 # 1. Copy environment config and set required values
-cp .env.example .env
+cp env.example .env
 # Edit .env — at minimum set LLM_PROVIDER and (if openai) OPENAI_API_KEY
 
 # 2. Start all services (builds images, runs migrations, waits for health)
@@ -61,6 +86,8 @@ cp .env.example .env
 # 3. API + web UI
 #    Web UI:  http://localhost:8000/
 #    API docs: http://localhost:8000/docs
+#    Neo4j Browser: http://localhost:7474/
+#    Qdrant Dashboard: http://localhost:6333/dashboard
 ```
 
 ## manage.sh — Project Management CLI
@@ -73,16 +100,12 @@ All service lifecycle, database, worker, and test operations are available throu
 ./manage.sh --stop               # Stop all services (preserves data)
 ./manage.sh --restart            # Restart without rebuilding images
 ./manage.sh --status             # Show service status and health checks
-./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, docling)
+./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, docling, neo4j, qdrant)
 ./manage.sh --blow-away          # Destroy everything: containers, volumes, data
 
 # Database
 ./manage.sh --migrate            # Run alembic upgrade head
 ./manage.sh --seed               # Run ontology seeder
-./manage.sh --db-shell           # Open interactive psql shell
-
-# Workers
-./manage.sh --worker-status      # Show Celery worker/beat task info
 
 # Testing (delegates to scripts/run_tests.sh)
 ./manage.sh --test               # Full suite
@@ -93,7 +116,7 @@ All service lifecycle, database, worker, and test operations are available throu
 
 ## LLM Provider Configuration
 
-A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, Cognee trusted data). Each feature specifies its own model via a dedicated env var.
+A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, GraphRAG reports, Cognee trusted data). Each feature specifies its own model via a dedicated env var.
 
 | Value | Description |
 |---|---|
@@ -108,6 +131,7 @@ OLLAMA_BASE_URL=http://ollama:11434
 
 # Per-feature model selection
 DOCLING_GRAPH_MODEL=llama3.2       # Model for graph entity/relationship extraction
+GRAPHRAG_MODEL=llama3.2            # Model for GraphRAG community report generation
 COGNEE_MODEL=llama3.2              # Model for Cognee trusted data operations
 ```
 
@@ -140,14 +164,14 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 - `DELETE /v1/watch-dirs/{id}` — remove watch directory
 
 ### Text Vector Store
-- `POST /v1/text/ingest` — embed and store a text chunk directly (BGE)
+- `POST /v1/text/ingest` — embed and store a text chunk directly (BGE → Qdrant)
 - `POST /v1/text/query` — semantic search on text_chunks
 
 ### Image Vector Store
-- `POST /v1/images/ingest` — embed and store an image directly (CLIP)
+- `POST /v1/images/ingest` — embed and store an image directly (CLIP → Qdrant)
 - `POST /v1/images/query` — semantic search on image_chunks (text-to-image or image-to-image)
 
-### Graph Store (Apache AGE)
+### Graph Store (Neo4j)
 - `POST /v1/graph/ingest/entity` — create an entity node
 - `POST /v1/graph/ingest/relationship` — create a relationship edge
 - `POST /v1/graph/query` — Cypher traversal query
@@ -188,17 +212,19 @@ Query modes:
 
 | Mode | Input | Pipeline | Output |
 |---|---|---|---|
-| `text_basic` | Text only | BGE vector search | Text chunks |
+| `text_basic` | Text only | BGE vector search (Qdrant) | Text chunks |
 | `text_only` | Text or image | Full multi-modal pipeline | Filtered to text |
 | `images_only` | Text or image | Full multi-modal pipeline | Filtered to images |
 | `multi_modal` | Text or image | Full multi-modal pipeline | All results |
 | `memory` | Text | Cognee search | Approved trusted data |
+| `graphrag_local` | Text | Entity-centric + community reports | Entity matches with community context |
+| `graphrag_global` | Text | Cross-community summarization | Community reports ranked by relevance |
 
-The multi-modal pipeline (modes 2-4) runs: parallel vector search (BGE + CLIP via `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (entity relationships, 4 hops) → weighted fusion scoring → deduplicate → rank → filter by mode.
+The multi-modal pipeline (modes 2-4) runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → weighted fusion scoring → deduplicate → rank → filter by mode.
 
 Image-modality results include a presigned `image_url` for inline display in the UI.
 
-**Weighted Fusion Scoring**: `final = 0.65*semantic + 0.20*doc_structure + 0.15*ontology + MIL-ID bonus`. All weights are configurable via environment variables (see `env.example`).
+**Weighted Fusion Scoring**: `final = 0.65*semantic + 0.20*doc_structure + 0.15*ontology + MIL-ID bonus`. MIL-ID bonus matches NSN, MIL-STD, ELNOT, DIEQP, and AN/ designators. All weights are configurable via environment variables (see `env.example`).
 
 ### Agent / LangGraph Context
 
@@ -210,7 +236,7 @@ GET /v1/agent/context
   &include_sources=true
 ```
 
-Returns a pre-formatted markdown context string for direct injection into an LLM prompt. Supports all 5 query modes.
+Returns a pre-formatted markdown context string for direct injection into an LLM prompt. Supports all 7 query modes.
 
 ```python
 # LangGraph usage example
@@ -224,7 +250,29 @@ system_msg = f"Use this context:\n\n{resp.json()['context']}"
 - `POST /v1/patches/{id}/approve` — curator approves a patch
 - `POST /v1/patches/{id}/apply` — apply an approved patch
 
-All Apache AGE graph mutations (node/edge create, update, delete) require **dual-curator approval**. Text and classification corrections require a single curator.
+All Neo4j graph mutations (node/edge create, update, delete) require **dual-curator approval**. Text and classification corrections require a single curator.
+
+## Ontology
+
+The knowledge graph uses a 5-layer ontology grounded in DoDAF DM2 concepts:
+
+1. **Reference & Provenance** — Documents, sections, figures, tables, assertions
+2. **Military Equipment** — Platforms, systems, subsystems, components
+3. **EM/RF Signal & Radar** — Emissions, waveforms, modulation, antennas, receivers, processing
+4. **Weapon / Missile / AAA** — Missiles, seekers, guidance, propulsion, artillery
+5. **Operational / Capability** — Capabilities, engagement timelines, performance measures
+
+~35 entity types, 44 relationship predicates, enforced via validation matrix at graph write time.
+
+See `ontology/base.yaml` for the full schema.
+
+## GraphRAG
+
+Community detection and cross-community search powered by Microsoft's `graphrag` library:
+
+- **Indexing**: Celery Beat runs Leiden/Louvain community detection on the Neo4j graph, then generates LLM community reports (configurable interval via `GRAPHRAG_INDEXING_INTERVAL_MINUTES`)
+- **Local search**: Entity-centric retrieval with community report context — finds relevant entities and enriches results with their community summaries
+- **Global search**: Cross-community summarization — retrieves and ranks community reports for broad analytical questions
 
 ## Ingest Pipeline
 
@@ -241,6 +289,8 @@ collect_derivations  (chord callback)
     ↓
 derive_structure_links  (needs embedding output committed)
     ↓
+derive_canonicalization  (entity resolution pass)
+    ↓
 finalize_document
 ```
 
@@ -248,13 +298,38 @@ Key features:
 - **Canonical element store** (`document_elements` table) — parse once, derive many
 - **Parallel derivations** — embedding and graph extraction run concurrently via Celery chord
 - **Sequential structure links** — runs after embeddings are committed (avoids race condition)
+- **Entity canonicalization** — post-extraction alias resolution (exact → alias → fuzzy match → new)
 - **Idempotent writes** — deterministic chunk keys with `ON CONFLICT DO UPDATE`
+- **Dual vector store** — embeddings upserted to Qdrant with `qdrant_point_id` cross-reference in Postgres
 - **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
 - **Worker split** — optional queue isolation: `docker compose --profile split up`
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction, with regex NER as fallback when LLM is unavailable. Graph data is stored once per document (`document_graph_extractions`), not per artifact.
+Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation, with regex NER as fallback when LLM is unavailable. Extracted entities and relationships are imported directly to Neo4j. Graph data is stored once per document (`document_graph_extractions`), not per artifact.
+
+## Data Migration (from AGE/pgvector)
+
+For existing installations migrating from Apache AGE + pgvector:
+
+```bash
+# 1. Deploy Neo4j + Qdrant (empty)
+docker compose up -d neo4j qdrant
+
+# 2. Initialize Qdrant collections
+python scripts/init_qdrant_collections.py
+
+# 3. Migrate graph data: AGE → Neo4j
+python scripts/migrate_age_to_neo4j.py
+
+# 4. Migrate vectors: pgvector → Qdrant
+python scripts/migrate_pgvector_to_qdrant.py
+
+# 5. Run Alembic migration (adds qdrant_point_id columns)
+./manage.sh --migrate
+```
+
+All migration scripts are idempotent (MERGE/upsert).
 
 ## Implementation Phases
 
@@ -266,6 +341,7 @@ Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relati
 | 2.6 | Cognee integration: trusted data query mode, dual-ingest pipeline step | Complete |
 | 2.7 | Knowledge restructure: split vector tables, per-layer endpoints, unified query, docling-graph, trusted data governance, UI overhaul | Complete |
 | 2.8 | Pipeline consolidation (manifest-first, parallel derivations, idempotent) + Retrieval upgrades (weighted fusion, chunk_links, image display) | Complete |
+| 2.9 | Architecture upgrade: Neo4j + Qdrant + GraphRAG + expanded ontology + entity canonicalization | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -275,10 +351,10 @@ Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relati
 ```
 app/
 ├── api/v1/               # FastAPI routers
-│   ├── retrieval.py      #   Unified multi-mode query endpoint
+│   ├── retrieval.py      #   Unified multi-mode query endpoint (7 modes)
 │   ├── text_store.py     #   Text vector store ingest + query
 │   ├── image_store.py    #   Image vector store ingest + query
-│   ├── graph_store.py    #   Graph entity/relationship ingest + query
+│   ├── graph_store.py    #   Graph entity/relationship ingest + query (Neo4j)
 │   ├── memory.py         #   Trusted data proposals + approval + search
 │   ├── agent.py          #   LangGraph agent context endpoint
 │   ├── governance.py     #   Feedback + patch state machine
@@ -286,31 +362,43 @@ app/
 ├── services/
 │   ├── cognee_service.py       # Cognee async wrapper
 │   ├── docling_client.py       # HTTP client for Docling conversion service
-│   ├── docling_graph_service.py # LLM-powered graph extraction (docling-graph)
-│   ├── ontology_templates.py   # YAML → Pydantic extraction templates
-│   ├── ner.py                  # Military NER (offline regex, fallback)
-│   └── graph.py                # Apache AGE Cypher helpers
+│   ├── docling_graph_service.py # LLM-powered graph extraction → Neo4j import
+│   ├── graphrag_service.py     # GraphRAG community detection, reports, search
+│   ├── neo4j_graph.py          # Neo4j Cypher operations (sync + async)
+│   ├── qdrant_store.py         # Qdrant vector upsert/search
+│   ├── canonicalization.py     # Entity alias resolution + fuzzy match
+│   ├── chunking.py             # Structure-aware document chunking
+│   ├── ontology_templates.py   # YAML → Pydantic extraction templates + validation
+│   └── ner.py                  # Military NER (offline regex, EM/RF patterns, fallback)
 ├── workers/
 │   ├── pipeline.py       # Celery ingest pipeline (parallel text/image embed)
 │   └── watcher.py        # Celery Beat directory watcher
 ├── models/               # SQLAlchemy ORM (ingest, retrieval, governance, auth, trusted_data)
 └── schemas/              # Pydantic request/response schemas
 docker/
-└── docling/              # Docling VLM conversion service (granite-docling-258M)
+├── docling/              # Docling VLM conversion service (granite-docling-258M)
+├── neo4j/                # Neo4j init scripts (constraints, indexes)
+└── postgres/             # Custom Postgres (pgvector)
+ontology/
+└── base.yaml             # Military equipment ontology (5 layers, 35+ types, 44 predicates)
+scripts/
+├── init_qdrant_collections.py    # Create Qdrant collections with indexes
+├── migrate_age_to_neo4j.py       # One-time AGE → Neo4j migration
+└── migrate_pgvector_to_qdrant.py # One-time pgvector → Qdrant migration
 frontend/
 ├── src/components/       # React components
-│   ├── QueryPage.tsx     #   Multi-mode search with flat ranked results
+│   ├── QueryPage.tsx     #   Multi-mode search (7 modes) with flat ranked results
 │   ├── FileUpload.tsx    #   Document upload
 │   ├── TextIngest.tsx    #   Direct text chunk ingest
 │   ├── ImageIngest.tsx   #   Direct image ingest with drag-drop
-│   ├── GraphExplorer.tsx #   Graph search + entity/relationship creation
+│   ├── GraphExplorer.tsx #   Graph search + entity/relationship creation (full ontology)
 │   ├── MemoryPanel.tsx   #   Trusted data proposals + approval + search
 │   ├── DirectoryMonitor.tsx # Watch directory management
 │   └── Nav.tsx           #   Navigation (6 pages)
 └── src/api/client.ts     # Typed API client (all endpoints)
 tests/
 ├── unit/                 # Pure-logic tests (no DB required)
-├── integration/          # API tests against real Postgres/Redis/MinIO stack
+├── integration/          # API tests against real Postgres/Redis/MinIO/Neo4j/Qdrant stack
 ├── pipeline/             # Pipeline task tests
 ├── e2e/                  # End-to-end workflow tests
 └── fixtures/             # Sample documents for test pipelines

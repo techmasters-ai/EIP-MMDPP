@@ -49,7 +49,7 @@ async def get_agent_context(
     Query parameters
     ----------------
     - **query**: Search query string
-    - **mode**: `text_basic` | `text_only` | `images_only` | `multi_modal` | `memory`
+    - **mode**: `text_basic` | `text_only` | `images_only` | `multi_modal` | `memory` | `graphrag_local` | `graphrag_global`
     - **top_k**: Number of results to include (1–50, default: 10)
     - **include_sources**: Whether to include the `sources` list (default: true)
     """
@@ -61,6 +61,8 @@ async def get_agent_context(
     )
 
     from app.api.v1.retrieval import (
+        _graphrag_global_query,
+        _graphrag_local_query,
         _memory_query,
         _multi_modal_pipeline,
         _text_vector_search,
@@ -72,6 +74,10 @@ async def get_agent_context(
         results = await _text_vector_search(db, body)
     elif mode in (QueryMode.text_only, QueryMode.images_only, QueryMode.multi_modal):
         results = await _multi_modal_pipeline(db, body)
+    elif mode == QueryMode.graphrag_local:
+        results = await _graphrag_local_query(db, body)
+    elif mode == QueryMode.graphrag_global:
+        results = await _graphrag_global_query(db, body)
     else:
         results = await _text_vector_search(db, body)
 

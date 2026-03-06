@@ -18,13 +18,16 @@ pytestmark = pytest.mark.unit
 class TestQueryMode:
     def test_all_mode_values_exist(self):
         from app.schemas.retrieval import QueryMode
-        expected = {"text_basic", "text_only", "images_only", "multi_modal", "memory"}
+        expected = {
+            "text_basic", "text_only", "images_only", "multi_modal",
+            "memory", "graphrag_local", "graphrag_global",
+        }
         actual = {m.value for m in QueryMode}
         assert actual == expected
 
-    def test_has_five_members(self):
+    def test_has_seven_members(self):
         from app.schemas.retrieval import QueryMode
-        assert len(QueryMode) == 5
+        assert len(QueryMode) == 7
 
     def test_mode_string_values(self):
         from app.schemas.retrieval import QueryMode
@@ -33,6 +36,8 @@ class TestQueryMode:
         assert QueryMode.images_only.value == "images_only"
         assert QueryMode.multi_modal.value == "multi_modal"
         assert QueryMode.memory.value == "memory"
+        assert QueryMode.graphrag_local.value == "graphrag_local"
+        assert QueryMode.graphrag_global.value == "graphrag_global"
 
     def test_mode_is_str_enum(self):
         from app.schemas.retrieval import QueryMode

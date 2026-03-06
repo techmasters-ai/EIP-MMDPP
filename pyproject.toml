@@ -22,6 +22,15 @@ dependencies = [
     "alembic>=1.14.0",
     "pgvector>=0.3.6",
 
+    # Neo4j (knowledge graph)
+    "neo4j>=5.25.0",
+
+    # Qdrant (vector search)
+    "qdrant-client>=1.13.0",
+
+    # GraphRAG (community detection + reports)
+    "graphrag>=1.0.0",
+
     # Celery / task queue
     "celery[redis]>=5.4.0",
     "redis>=5.2.0",

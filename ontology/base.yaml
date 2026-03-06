@@ -1,0 +1,1213 @@
+# EIP-MMDPP Unified Military Equipment & EM/RF Knowledge Graph Ontology
+# Grounded in DoDAF DM2 concepts (type-instance, whole-part, performer-resource-capability)
+# Derived from EW Parametrics field inventory, RADAR/MISSILE MDE checklists,
+# and NATO standardization vocabulary.
+#
+# 5 Layers:
+#   1. Reference & Provenance
+#   2. Military Equipment (DoDAF backbone)
+#   3. EM/RF Signal & Radar
+#   4. Weapon / Missile / AAA
+#   5. Operational / Capability
+
+version: "2.0.0"
+
+# =============================================================================
+# ENTITY TYPES
+# =============================================================================
+entity_types:
+
+  # ---------------------------------------------------------------------------
+  # Layer 1: Reference & Provenance
+  # ---------------------------------------------------------------------------
+  - name: DOCUMENT
+    label: "Source Document"
+    description: "Technical manual, specification, report, drawing, or other source artifact"
+    parent: DocumentResource
+    properties:
+      type: object
+      properties:
+        title: {type: string}
+        document_id: {type: string}
+        document_number: {type: string}
+        classification: {type: string}
+        publication_date: {type: string}
+        source_type: {type: string, enum: [MANUAL, REPORT, BRIEFING, NOTE, SCHEMATIC, DRAWING, SPECIFICATION, CHECKLIST]}
+        issuing_org: {type: string}
+        language: {type: string}
+
+  - name: SECTION
+    label: "Document Section"
+    description: "A section or heading within a document"
+    parent: DocumentResource
+    properties:
+      type: object
+      properties:
+        heading: {type: string}
+        page_start: {type: integer}
+        page_end: {type: integer}
+
+  - name: FIGURE
+    label: "Figure"
+    description: "A figure, diagram, or image within a document"
+    parent: DocumentResource
+    properties:
+      type: object
+      properties:
+        figure_id: {type: string}
+        caption: {type: string}
+        page: {type: integer}
+        figure_type: {type: string, enum: [BLOCK_DIAGRAM, SCHEMATIC, PHOTO, SPECTRUM_PLOT, WIRING_DIAGRAM, FLOWCHART]}
+
+  - name: TABLE
+    label: "Table"
+    description: "A data table within a document"
+    parent: DocumentResource
+    properties:
+      type: object
+      properties:
+        table_id: {type: string}
+        caption: {type: string}
+        page: {type: integer}
+
+  - name: SPREADSHEET
+    label: "Spreadsheet"
+    description: "A spreadsheet workbook or sheet (MDE checklist, parametric data)"
+    parent: DocumentResource
+    properties:
+      type: object
+      properties:
+        workbook_name: {type: string}
+        sheet_name: {type: string}
+
+  - name: ASSERTION
+    label: "Assertion"
+    description: "A source-backed claim extracted from a document"
+    parent: DocumentResource
+    properties:
+      type: object
+      properties:
+        assertion_text: {type: string}
+        confidence: {type: number}
+        extraction_method: {type: string, enum: [LLM, NER, MANUAL, RULE]}
+        review_status: {type: string, enum: [UNREVIEWED, APPROVED, REJECTED]}
+
+  # ---------------------------------------------------------------------------
+  # Layer 2: Military Equipment (DoDAF backbone)
+  # ---------------------------------------------------------------------------
+  - name: PLATFORM
+    label: "Platform"
+    description: "Vehicle, vessel, aircraft, or installation that hosts military systems"
+    parent: MilitaryAsset
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        platform_designation: {type: string}
+        platform_type: {type: string, enum: [AIRCRAFT, SHIP, GROUND_VEHICLE, FIXED_SITE, SPACE, MOBILE_LAUNCHER, AIR_DEFENSE_BATTERY]}
+        country: {type: string}
+        service_branch: {type: string}
+        platform_status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+
+  - name: RADAR_SYSTEM
+    label: "Radar System"
+    description: "Active or passive radar system (search, track, fire control, SAR, AESA, PESA)"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        system_name: {type: string}
+        nomenclature: {type: string}
+        ELNOT: {type: string}
+        DIEQP: {type: string}
+        radar_type: {type: string, enum: [SEARCH, FIRE_CONTROL, TRACKING, WEATHER, SAR, GMTI, MULTI_FUNCTION, AESA, PESA, MPAR]}
+        emitter_function: {type: string}
+        system_status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        responsible_agency: {type: string}
+        nominal_frequency: {type: string}
+        frequency_limits: {type: string}
+        radar_waveform: {type: string}
+        nominal_PRI: {type: string}
+        PRI_limits: {type: string}
+        PRF_limits: {type: string}
+        nominal_pulse_duration: {type: string}
+        pulse_duration_limits: {type: string}
+        ERP: {type: string}
+        tx_peak_power: {type: string}
+        duty_cycle: {type: number}
+        gain: {type: number}
+        scan_type: {type: string}
+        scan_period: {type: string}
+        detection_to_designate_time: {type: string}
+        designation_to_launch_time: {type: string}
+
+  - name: MISSILE_SYSTEM
+    label: "Missile System"
+    description: "Guided missile weapon system with seeker, guidance, and propulsion"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        system_name: {type: string}
+        nomenclature: {type: string}
+        DIEQP: {type: string}
+        system_status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        guidance_type: {type: string}
+        seeker_nomenclature: {type: string}
+        seeker_ELNOT: {type: string}
+        seeker_DIEQP: {type: string}
+
+  - name: AIR_DEFENSE_ARTILLERY_SYSTEM
+    label: "Air Defense Artillery System"
+    description: "Gun-based air defense system (AAA)"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        system_name: {type: string}
+        DIEQP: {type: string}
+        caliber: {type: string}
+        max_tactical_range: {type: string}
+        max_vertical_range: {type: string}
+        min_vertical_range: {type: string}
+        max_horizontal_range: {type: string}
+        min_horizontal_range: {type: string}
+        acquisition_delay: {type: string}
+        handoff_delay: {type: string}
+        track_delay: {type: string}
+        muzzle_velocity: {type: string}
+        maximum_rate_of_fire: {type: string}
+
+  - name: ELECTRONIC_WARFARE_SYSTEM
+    label: "Electronic Warfare System"
+    description: "EA, ES, or EP system (jammer, receiver, self-protection suite)"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        system_name: {type: string}
+        nomenclature: {type: string}
+        ELNOT: {type: string}
+        ew_role: {type: string, enum: [EA, ES, EP, SIGINT, ELINT, COMINT]}
+        coverage: {type: string}
+        power_output: {type: string}
+
+  - name: FIRE_CONTROL_SYSTEM
+    label: "Fire Control System"
+    description: "System that provides targeting and engagement control"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        system_name: {type: string}
+        nomenclature: {type: string}
+
+  - name: INTEGRATED_AIR_DEFENSE_SYSTEM
+    label: "Integrated Air Defense System"
+    description: "System-of-systems combining radar, missile, AAA, and C2 for area defense"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED]}
+        doctrine: {type: string}
+
+  - name: LAUNCHER_SYSTEM
+    label: "Launcher System"
+    description: "Missile or rocket launcher platform"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        system_name: {type: string}
+        launcher_type: {type: string}
+        capacity: {type: integer}
+
+  - name: WEAPON_SYSTEM
+    label: "Weapon System"
+    description: "Generic weapon system (not radar, missile, or AAA specifically)"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        system_name: {type: string}
+        nomenclature: {type: string}
+        weapon_type: {type: string}
+
+  - name: SUBSYSTEM
+    label: "Subsystem"
+    description: "Major functional component within a military system"
+    parent: MilitaryAsset
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        subsystem_role: {type: string}
+        part_number: {type: string}
+
+  - name: COMPONENT
+    label: "Component"
+    description: "Individual physical or logical part within a subsystem or assembly"
+    parent: MilitaryAsset
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        component_type: {type: string}
+        part_number: {type: string}
+        nsn: {type: string, description: "National Stock Number"}
+        cage_code: {type: string}
+        manufacturer: {type: string}
+        material: {type: string}
+        weight_kg: {type: number}
+
+  - name: ORGANIZATION
+    label: "Organization"
+    description: "Contractor, program office, military branch, or government agency"
+    parent: MilitaryAsset
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        org_type: {type: string, enum: [PRIME_CONTRACTOR, SUBCONTRACTOR, PROGRAM_OFFICE, MILITARY_BRANCH, GOVERNMENT_AGENCY]}
+        cage_code: {type: string}
+        country: {type: string}
+        location: {type: string}
+
+  # ---------------------------------------------------------------------------
+  # Layer 3: EM/RF Signal & Radar
+  # ---------------------------------------------------------------------------
+  - name: FREQUENCY_BAND
+    label: "Frequency Band"
+    description: "IEEE/NATO frequency band designation"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        band_name: {type: string}
+        designation: {type: string, enum: [HF, VHF, UHF, L, S, C, X, Ku, K, Ka, V, W, mm]}
+        freq_min_mhz: {type: number}
+        freq_max_mhz: {type: number}
+        standard_family: {type: string}
+
+  - name: RF_EMISSION
+    label: "RF Emission"
+    description: "Observed or catalogued RF emission with power and spectral characteristics"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        emitter_id: {type: string}
+        center_frequency_mhz: {type: number}
+        bandwidth_mhz: {type: number}
+        ERP_kw: {type: number}
+        tx_peak_power_kw: {type: number}
+        duty_cycle: {type: number}
+        polarization: {type: string}
+        radome_loss_db: {type: number}
+        total_system_losses_db: {type: number}
+
+  - name: WAVEFORM
+    label: "Waveform"
+    description: "Radar or communications waveform with pulse/timing characteristics"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        waveform_name: {type: string}
+        waveform_family: {type: string, enum: [PULSE_DOPPLER, FMCW, CW, LFM_CHIRP, PHASE_CODED, BURST, PULSE]}
+        nominal_pulse_duration_us: {type: number}
+        pulse_duration_limits: {type: string}
+        nominal_PRI_us: {type: number}
+        PRI_limits: {type: string}
+        PRF_limits: {type: string}
+        duty_cycle: {type: number}
+
+  - name: MODULATION
+    label: "Modulation"
+    description: "Intra-pulse or inter-pulse modulation characteristics"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        intra_pulse_modulation: {type: string}
+        inter_pulse_modulation: {type: string}
+        frequency_excursion: {type: string}
+        code_bits: {type: integer}
+        pulse_compression_ratio: {type: number}
+        pulse_compression_gain_db: {type: number}
+        pulse_compression_weighting_function: {type: string}
+
+  - name: RF_SIGNATURE
+    label: "RF Signature"
+    description: "Composite RF fingerprint for emitter identification"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        nominal_RF: {type: string}
+        nominal_PRI: {type: string}
+        nominal_PD: {type: string}
+        scan_type: {type: string}
+        scan_period: {type: string}
+        modulation_pattern: {type: string}
+        frequency_agility: {type: string}
+        beam_characteristics: {type: string}
+        dwell_time: {type: string}
+        pulses_per_dwell: {type: integer}
+
+  - name: SCAN_PATTERN
+    label: "Scan Pattern"
+    description: "Antenna scan type and timing"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        scan_type: {type: string}
+        scan_period_limits: {type: string}
+        slew_rate: {type: string}
+        illumination_time: {type: string}
+        dwell_time: {type: string}
+        pulses_per_dwell: {type: integer}
+
+  - name: ANTENNA
+    label: "Antenna"
+    description: "Antenna system with polarization, beamwidth, gain, and geometry"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        antenna_type: {type: string, enum: [PHASED_ARRAY, DISH, DIPOLE, HORN, PATCH, YAGI, CONFORMAL, SLOTTED_ARRAY, ESA]}
+        tx_polarization: {type: string}
+        rx_polarization: {type: string}
+        number_of_beams: {type: integer}
+        beamwidth_az_deg: {type: number}
+        beamwidth_el_deg: {type: number}
+        aperture_distribution_az: {type: string}
+        aperture_distribution_el: {type: string}
+        gain_dbi: {type: number}
+        backlobe_level_db: {type: number}
+        dimension_horizontal_m: {type: number}
+        dimension_vertical_m: {type: number}
+        height_m: {type: number}
+        min_elevation_deg: {type: number}
+        max_elevation_deg: {type: number}
+        first_sidelobe_level_az_db: {type: number}
+        first_sidelobe_level_el_db: {type: number}
+
+  - name: TRANSMITTER
+    label: "Transmitter"
+    description: "Radar or communications transmitter with power and loss characteristics"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        peak_power_ERP_kw: {type: number}
+        peak_power_at_transmitter_kw: {type: number}
+        duty_cycle: {type: number}
+        tx_line_loss_db: {type: number}
+        other_system_losses_db: {type: number}
+        total_system_losses_db: {type: number}
+
+  - name: RECEIVER
+    label: "Receiver"
+    description: "Radar or communications receiver with noise and sensitivity characteristics"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        radome_loss_db: {type: number}
+        clutter_improvement_factor_db: {type: number}
+        noise_figure_db: {type: number}
+        minimum_discernible_signal_dbm: {type: number}
+        receive_line_loss_db: {type: number}
+        peak_power_noise_bandwidth_mhz: {type: number}
+        average_power_noise_bandwidth_mhz: {type: number}
+
+  - name: IF_AMPLIFIER
+    label: "IF Amplifier"
+    description: "Intermediate frequency amplifier stage"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        stage_number: {type: integer}
+        bandwidth_3db_mhz: {type: number}
+
+  - name: SIGNAL_PROCESSING_CHAIN
+    label: "Signal Processing Chain"
+    description: "Signal processing subsystem with detection, integration, and Doppler parameters"
+    parent: EMEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        matched_filter_detection_loss_db: {type: number}
+        STC: {type: string}
+        pulse_compression_ratio: {type: number}
+        pulse_compression_gain_db: {type: number}
+        pulse_compression_weighting_function: {type: string}
+        coherent_processing_interval: {type: string}
+        filter_response_type: {type: string}
+        doppler_filter_bandwidth_hz: {type: number}
+        approaching_doppler_coverage: {type: string}
+        pulses_on_target: {type: integer}
+        predetection_pulses: {type: integer}
+        predetection_integration_gain_db: {type: number}
+        postdetection_pulses: {type: integer}
+        postdetection_integration_gain_db: {type: number}
+        effective_number_of_pulses_integrated: {type: integer}
+        minimum_snr_required_db: {type: number}
+        MTI_improvement_factor_db: {type: number}
+        drop_track_threshold_improvement_db: {type: number}
+
+  # ---------------------------------------------------------------------------
+  # Layer 4: Weapon / Missile / AAA
+  # ---------------------------------------------------------------------------
+  - name: SEEKER
+    label: "Seeker"
+    description: "Missile terminal guidance seeker head"
+    parent: WeaponEntity
+    properties:
+      type: object
+      properties:
+        seeker_nomenclature: {type: string}
+        seeker_ELNOT: {type: string}
+        seeker_DIEQP: {type: string}
+        seeker_type: {type: string, enum: [ACTIVE_RADAR, SEMI_ACTIVE_RADAR, IR, DUAL_MODE, ARM, GPS_INS, COMMAND]}
+
+  - name: GUIDANCE_METHOD
+    label: "Guidance Method"
+    description: "Missile guidance scheme (command, beam-riding, homing)"
+    parent: WeaponEntity
+    properties:
+      type: object
+      properties:
+        guidance_type: {type: string, enum: [COMMAND, SARH, ARH, IR, BEAM_RIDING, TVM, GPS_INS, DUAL_MODE]}
+        firing_doctrine: {type: string}
+        track_quality: {type: string}
+
+  - name: MISSILE_PERFORMANCE
+    label: "Missile Performance"
+    description: "Missile kinematic and engagement performance envelope"
+    parent: WeaponEntity
+    properties:
+      type: object
+      properties:
+        maximum_range_km: {type: number}
+        minimum_range_km: {type: number}
+        maximum_intercept_range_km: {type: number}
+        maximum_recommended_intercept_range_km: {type: number}
+        maximum_altitude_km: {type: number}
+        minimum_altitude_m: {type: number}
+        maximum_launch_angle_deg: {type: number}
+        intercept_assessment_time_s: {type: number}
+        time_to_go_s: {type: number}
+        acquisition_delay_s: {type: number}
+        handoff_delay_s: {type: number}
+        track_delay_s: {type: number}
+        launch_delay_s: {type: number}
+        intra_salvo_time_s: {type: number}
+        coast_time_s: {type: number}
+        average_missile_speed_mach: {type: number}
+        maximum_missile_speed_mach: {type: number}
+        maximum_flyout_time_s: {type: number}
+        maximum_offset_deg: {type: number}
+
+  - name: MISSILE_PHYSICAL_CHARACTERISTICS
+    label: "Missile Physical Characteristics"
+    description: "Missile body dimensions and mass"
+    parent: WeaponEntity
+    properties:
+      type: object
+      properties:
+        body_diameter_m: {type: number}
+        overall_length_m: {type: number}
+        total_mass_kg: {type: number}
+
+  - name: PROPULSION_STACK
+    label: "Propulsion Stack"
+    description: "Complete missile propulsion system (may contain multiple stages)"
+    parent: WeaponEntity
+    properties:
+      type: object
+      properties:
+        total_burntime_s: {type: number}
+
+  - name: PROPULSION_STAGE
+    label: "Propulsion Stage"
+    description: "Individual propulsion stage (ejector, booster, sustainer)"
+    parent: WeaponEntity
+    properties:
+      type: object
+      properties:
+        stage_type: {type: string, enum: [EJECTOR, BOOSTER, SUSTAINER]}
+        burn_time_s: {type: number}
+        thrust_kn: {type: number}
+        mass_kg: {type: number}
+        diameter_m: {type: number}
+        length_m: {type: number}
+
+  # ---------------------------------------------------------------------------
+  # Layer 5: Operational / Capability
+  # ---------------------------------------------------------------------------
+  - name: CAPABILITY
+    label: "Capability"
+    description: "Operational effect or function achievable by a system (DoDAF DM2)"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        capability_name: {type: string}
+        capability_class: {type: string, enum: [DETECTION, TRACKING, DESIGNATION, ENGAGEMENT, FIRE_CONTROL, AIR_DEFENSE, ELECTRONIC_ATTACK, ELECTRONIC_SUPPORT, SURVEILLANCE, COMMUNICATIONS]}
+        trl: {type: integer, description: "Technology Readiness Level 1-9"}
+
+  - name: RADAR_PERFORMANCE
+    label: "Radar Performance"
+    description: "Radar detection, range, and velocity performance envelope"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        max_detection_range_1sqm_km: {type: number}
+        min_effective_range_km: {type: number}
+        max_unambiguous_range_km: {type: number}
+        maximum_scope_limit_km: {type: number}
+        maximum_processing_range_km: {type: number}
+        max_unambiguous_velocity_mps: {type: number}
+        min_range_of_velocity_response_mps: {type: number}
+        max_range_of_velocity_response_mps: {type: number}
+        minimum_detectable_velocity_mps: {type: number}
+        maximum_detectable_velocity_mps: {type: number}
+
+  - name: ENGAGEMENT_TIMELINE
+    label: "Engagement Timeline"
+    description: "Time sequence from detection through engagement"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        detection_to_designate_time_s: {type: number}
+        designation_to_launch_time_s: {type: number}
+        acquisition_delay_s: {type: number}
+        handoff_delay_s: {type: number}
+        track_delay_s: {type: number}
+        launch_delay_s: {type: number}
+        intercept_assessment_time_s: {type: number}
+        time_to_go_s: {type: number}
+
+  - name: FORCE_STRUCTURE
+    label: "Force Structure"
+    description: "Military organizational unit or echelon"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        echelon: {type: string}
+        service: {type: string}
+
+  # ---------------------------------------------------------------------------
+  # Legacy types retained for backward compatibility
+  # ---------------------------------------------------------------------------
+  - name: EQUIPMENT_SYSTEM
+    label: "Equipment System"
+    description: "Top-level integrated weapon or defense system (generic)"
+    parent: MilitarySystem
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        designation: {type: string}
+        program_office: {type: string}
+        status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        prime_contractor: {type: string}
+        service_branch: {type: string}
+
+  - name: ASSEMBLY
+    label: "Assembly"
+    description: "Grouping of components that function together as a unit"
+    parent: MilitaryAsset
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        assembly_number: {type: string}
+
+  - name: SPECIFICATION
+    label: "Specification"
+    description: "Measurable performance characteristic"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        parameter: {type: string}
+        value: {type: string}
+        unit: {type: string}
+        condition: {type: string}
+        source_document: {type: string}
+
+  - name: STANDARD
+    label: "Standard / Specification Document"
+    description: "Reference standard (MIL-STD, MIL-DTL, etc.)"
+    parent: DocumentResource
+    properties:
+      type: object
+      properties:
+        designation: {type: string}
+        title: {type: string}
+        issuing_org: {type: string}
+        version: {type: string}
+        supersedes: {type: string}
+
+  - name: PROCEDURE
+    label: "Procedure"
+    description: "Maintenance, operational, or test procedure"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        type: {type: string, enum: [MAINTENANCE, OPERATIONAL, TEST, CALIBRATION, INSPECTION]}
+        periodicity: {type: string}
+        skill_level: {type: string}
+
+  - name: FAILURE_MODE
+    label: "Failure Mode"
+    description: "Known failure mode with FMECA severity"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        description: {type: string}
+        fmeca_severity: {type: integer}
+        detection_method: {type: string}
+
+  - name: TEST_EVENT
+    label: "Test Event"
+    description: "Test or evaluation event with outcomes"
+    parent: OperationalEntity
+    properties:
+      type: object
+      properties:
+        name: {type: string}
+        date: {type: string}
+        location: {type: string}
+        test_type: {type: string, enum: [DT, OT, IOT, LFT, DEVELOPMENTAL]}
+        outcome: {type: string, enum: [PASS, FAIL, PARTIAL, INCONCLUSIVE]}
+
+# =============================================================================
+# RELATIONSHIP TYPES
+# =============================================================================
+relationship_types:
+
+  # --- Identity / Typing ---
+  - name: IS_A
+    label: "Is A"
+    description: "Type hierarchy (subclass relationship)"
+    source_type: null
+    target_type: null
+
+  - name: INSTANCE_OF
+    label: "Instance Of"
+    description: "Type-instance relationship"
+    source_type: null
+    target_type: null
+
+  - name: ALIAS_OF
+    label: "Alias Of"
+    description: "Alternative name for the same entity"
+    source_type: null
+    target_type: null
+
+  # --- Whole-Part (DoDAF DM2) ---
+  - name: PART_OF
+    label: "Part Of"
+    description: "Component or subsystem is part of a larger system"
+    source_type: null
+    target_type: null
+    cardinality: many_to_one
+
+  - name: CONTAINS
+    label: "Contains"
+    description: "System or assembly contains a component or subsystem"
+    source_type: null
+    target_type: null
+    cardinality: one_to_many
+
+  - name: HAS_SUBSYSTEM
+    label: "Has Subsystem"
+    description: "System has a major functional subsystem"
+    source_type: null
+    target_type: SUBSYSTEM
+    cardinality: one_to_many
+
+  - name: HAS_COMPONENT
+    label: "Has Component"
+    description: "System or subsystem has a physical component"
+    source_type: null
+    target_type: COMPONENT
+    cardinality: one_to_many
+
+  - name: HAS_STAGE
+    label: "Has Stage"
+    description: "Propulsion stack has a propulsion stage"
+    source_type: PROPULSION_STACK
+    target_type: PROPULSION_STAGE
+    cardinality: one_to_many
+
+  # --- Installation / Association ---
+  - name: INSTALLED_ON
+    label: "Installed On"
+    description: "System is installed on a platform"
+    source_type: null
+    target_type: PLATFORM
+    cardinality: many_to_one
+
+  - name: DEPLOYED_ON
+    label: "Deployed On"
+    description: "System or unit is deployed on a platform or at a site"
+    source_type: null
+    target_type: PLATFORM
+    cardinality: many_to_one
+
+  - name: ASSOCIATED_WITH
+    label: "Associated With"
+    description: "System association (radar↔missile, radar↔AAA)"
+    source_type: null
+    target_type: null
+    cardinality: many_to_many
+
+  - name: OPERATED_BY
+    label: "Operated By"
+    description: "Platform or system is operated by an organization"
+    source_type: null
+    target_type: ORGANIZATION
+    cardinality: many_to_many
+
+  - name: MANUFACTURED_BY
+    label: "Manufactured By"
+    description: "System or component is manufactured by an organization"
+    source_type: null
+    target_type: ORGANIZATION
+    cardinality: many_to_many
+
+  # --- EM/RF Technical ---
+  - name: OPERATES_IN_BAND
+    label: "Operates In Band"
+    description: "System operates in a frequency band"
+    source_type: null
+    target_type: FREQUENCY_BAND
+    cardinality: many_to_many
+
+  - name: USES_WAVEFORM
+    label: "Uses Waveform"
+    description: "Radar uses a specific waveform"
+    source_type: RADAR_SYSTEM
+    target_type: WAVEFORM
+    cardinality: many_to_many
+
+  - name: USES_MODULATION
+    label: "Uses Modulation"
+    description: "Waveform uses a modulation scheme"
+    source_type: WAVEFORM
+    target_type: MODULATION
+    cardinality: many_to_many
+
+  - name: EMITS
+    label: "Emits"
+    description: "System generates an RF emission"
+    source_type: null
+    target_type: RF_EMISSION
+    cardinality: one_to_many
+
+  - name: RADIATES
+    label: "Radiates"
+    description: "Antenna radiates an RF emission"
+    source_type: ANTENNA
+    target_type: RF_EMISSION
+    cardinality: one_to_many
+
+  - name: RECEIVES
+    label: "Receives"
+    description: "Receiver processes incoming signals"
+    source_type: RECEIVER
+    target_type: RF_EMISSION
+    cardinality: many_to_many
+
+  - name: PROCESSES
+    label: "Processes"
+    description: "Signal processing chain processes signals"
+    source_type: SIGNAL_PROCESSING_CHAIN
+    target_type: RF_EMISSION
+    cardinality: many_to_many
+
+  - name: HAS_SIGNATURE
+    label: "Has Signature"
+    description: "Emission or system has an RF signature"
+    source_type: null
+    target_type: RF_SIGNATURE
+    cardinality: many_to_many
+
+  - name: HAS_SCAN
+    label: "Has Scan"
+    description: "Radar has a scan pattern"
+    source_type: RADAR_SYSTEM
+    target_type: SCAN_PATTERN
+    cardinality: one_to_many
+
+  - name: HAS_RECEIVER
+    label: "Has Receiver"
+    description: "Radar has a receiver subsystem"
+    source_type: RADAR_SYSTEM
+    target_type: RECEIVER
+    cardinality: one_to_many
+
+  - name: HAS_TRANSMITTER
+    label: "Has Transmitter"
+    description: "Radar has a transmitter subsystem"
+    source_type: RADAR_SYSTEM
+    target_type: TRANSMITTER
+    cardinality: one_to_many
+
+  - name: HAS_ANTENNA
+    label: "Has Antenna"
+    description: "Radar has an antenna"
+    source_type: RADAR_SYSTEM
+    target_type: ANTENNA
+    cardinality: one_to_many
+
+  - name: HAS_PROCESSING_CHAIN
+    label: "Has Processing Chain"
+    description: "Radar has a signal processing chain"
+    source_type: RADAR_SYSTEM
+    target_type: SIGNAL_PROCESSING_CHAIN
+    cardinality: one_to_one
+
+  - name: HAS_PERFORMANCE
+    label: "Has Performance"
+    description: "System has performance characteristics"
+    source_type: null
+    target_type: null
+    cardinality: one_to_one
+
+  # --- Weapon / Engagement ---
+  - name: CUES
+    label: "Cues"
+    description: "Radar cues a missile system for engagement"
+    source_type: RADAR_SYSTEM
+    target_type: MISSILE_SYSTEM
+    cardinality: many_to_many
+
+  - name: GUIDES
+    label: "Guides"
+    description: "System guides a missile to target"
+    source_type: null
+    target_type: MISSILE_SYSTEM
+    cardinality: many_to_many
+
+  - name: TRACKS
+    label: "Tracks"
+    description: "System tracks a target"
+    source_type: null
+    target_type: null
+    cardinality: many_to_many
+
+  - name: ENGAGES
+    label: "Engages"
+    description: "System engages a target"
+    source_type: null
+    target_type: null
+    cardinality: many_to_many
+
+  - name: DEFENDS
+    label: "Defends"
+    description: "System defends a platform or area"
+    source_type: null
+    target_type: PLATFORM
+    cardinality: many_to_many
+
+  - name: DETECTS
+    label: "Detects"
+    description: "System detects targets"
+    source_type: null
+    target_type: null
+    cardinality: many_to_many
+
+  - name: DESIGNATES
+    label: "Designates"
+    description: "System designates targets for engagement"
+    source_type: null
+    target_type: null
+    cardinality: many_to_many
+
+  - name: LAUNCHES
+    label: "Launches"
+    description: "Launcher launches a missile"
+    source_type: LAUNCHER_SYSTEM
+    target_type: MISSILE_SYSTEM
+    cardinality: many_to_many
+
+  - name: SUPPORTS_ENGAGEMENT_OF
+    label: "Supports Engagement Of"
+    description: "System supports engagement of a target type"
+    source_type: null
+    target_type: null
+    cardinality: many_to_many
+
+  - name: HAS_GUIDANCE
+    label: "Has Guidance"
+    description: "Missile uses a guidance method"
+    source_type: MISSILE_SYSTEM
+    target_type: GUIDANCE_METHOD
+    cardinality: many_to_one
+
+  - name: HAS_PROPULSION
+    label: "Has Propulsion"
+    description: "Missile has a propulsion stack"
+    source_type: MISSILE_SYSTEM
+    target_type: PROPULSION_STACK
+    cardinality: one_to_one
+
+  - name: HAS_SEEKER
+    label: "Has Seeker"
+    description: "Missile has a terminal guidance seeker"
+    source_type: MISSILE_SYSTEM
+    target_type: SEEKER
+    cardinality: one_to_one
+
+  # --- Capability ---
+  - name: PROVIDES
+    label: "Provides"
+    description: "System provides a capability (DoDAF DM2)"
+    source_type: null
+    target_type: CAPABILITY
+    cardinality: many_to_many
+
+  - name: HAS_TIMELINE
+    label: "Has Timeline"
+    description: "Weapon system has an engagement timeline"
+    source_type: null
+    target_type: ENGAGEMENT_TIMELINE
+    cardinality: one_to_one
+
+  # --- Provenance ---
+  - name: SUPPORTED_BY
+    label: "Supported By"
+    description: "Assertion is supported by a document resource"
+    source_type: ASSERTION
+    target_type: null
+    cardinality: many_to_many
+
+  - name: MENTIONED_IN
+    label: "Mentioned In"
+    description: "Entity is mentioned in a document"
+    source_type: null
+    target_type: DOCUMENT
+    cardinality: many_to_many
+
+  - name: DERIVED_FROM
+    label: "Derived From"
+    description: "Entity or assertion is derived from another source"
+    source_type: null
+    target_type: null
+    cardinality: many_to_many
+
+  - name: REVIEWED_BY
+    label: "Reviewed By"
+    description: "Assertion or entity was reviewed by an organization or person"
+    source_type: null
+    target_type: ORGANIZATION
+    cardinality: many_to_many
+
+  - name: ABOUT
+    label: "About"
+    description: "Assertion is about an entity"
+    source_type: ASSERTION
+    target_type: null
+    cardinality: many_to_many
+
+  # --- Legacy relationships retained for backward compatibility ---
+  - name: IS_SUBSYSTEM_OF
+    label: "Is Subsystem Of"
+    description: "A subsystem is a functional part of an equipment system"
+    source_type: SUBSYSTEM
+    target_type: null
+    cardinality: many_to_one
+
+  - name: IMPLEMENTS
+    label: "Implements"
+    description: "A system or subsystem implements a capability"
+    source_type: null
+    target_type: CAPABILITY
+    cardinality: many_to_many
+
+  - name: MEETS_STANDARD
+    label: "Meets Standard"
+    description: "A component or system meets a standard"
+    source_type: null
+    target_type: STANDARD
+    cardinality: many_to_many
+
+  - name: SPECIFIED_BY
+    label: "Specified By"
+    description: "A system is specified by a performance specification"
+    source_type: null
+    target_type: SPECIFICATION
+    cardinality: many_to_many
+
+  - name: DESCRIBED_IN
+    label: "Described In"
+    description: "An entity is described in a source document"
+    source_type: null
+    target_type: DOCUMENT
+    cardinality: many_to_many
+
+  - name: PERFORMED_BY
+    label: "Performed By"
+    description: "A procedure is performed by an organization"
+    source_type: PROCEDURE
+    target_type: ORGANIZATION
+    cardinality: many_to_many
+
+  - name: AFFECTS
+    label: "Affects"
+    description: "A failure mode affects a component or subsystem"
+    source_type: FAILURE_MODE
+    target_type: null
+    cardinality: many_to_many
+
+  - name: SUPERSEDES
+    label: "Supersedes"
+    description: "A newer document or standard supersedes an older one"
+    source_type: null
+    target_type: null
+    cardinality: many_to_one
+
+  - name: TESTED_IN
+    label: "Tested In"
+    description: "A system was tested in a test event"
+    source_type: null
+    target_type: TEST_EVENT
+    cardinality: many_to_many
+
+# =============================================================================
+# ONTOLOGY VALIDATION MATRIX
+# Allowed (source_type, relationship, target_type) triples.
+# Triples not in this matrix are rejected before graph write.
+# null in source/target means "any entity type is allowed".
+# =============================================================================
+validation_matrix:
+  # Radar system relations
+  - {source: RADAR_SYSTEM, relationship: INSTALLED_ON, target: PLATFORM}
+  - {source: RADAR_SYSTEM, relationship: ASSOCIATED_WITH, target: MISSILE_SYSTEM}
+  - {source: RADAR_SYSTEM, relationship: ASSOCIATED_WITH, target: AIR_DEFENSE_ARTILLERY_SYSTEM}
+  - {source: RADAR_SYSTEM, relationship: USES_WAVEFORM, target: WAVEFORM}
+  - {source: RADAR_SYSTEM, relationship: EMITS, target: RF_EMISSION}
+  - {source: RADAR_SYSTEM, relationship: HAS_ANTENNA, target: ANTENNA}
+  - {source: RADAR_SYSTEM, relationship: HAS_RECEIVER, target: RECEIVER}
+  - {source: RADAR_SYSTEM, relationship: HAS_TRANSMITTER, target: TRANSMITTER}
+  - {source: RADAR_SYSTEM, relationship: HAS_SCAN, target: SCAN_PATTERN}
+  - {source: RADAR_SYSTEM, relationship: HAS_PROCESSING_CHAIN, target: SIGNAL_PROCESSING_CHAIN}
+  - {source: RADAR_SYSTEM, relationship: HAS_PERFORMANCE, target: RADAR_PERFORMANCE}
+  - {source: RADAR_SYSTEM, relationship: OPERATES_IN_BAND, target: FREQUENCY_BAND}
+  - {source: RADAR_SYSTEM, relationship: PROVIDES, target: CAPABILITY}
+  - {source: RADAR_SYSTEM, relationship: CUES, target: MISSILE_SYSTEM}
+  - {source: RADAR_SYSTEM, relationship: HAS_SIGNATURE, target: RF_SIGNATURE}
+  - {source: RADAR_SYSTEM, relationship: HAS_TIMELINE, target: ENGAGEMENT_TIMELINE}
+
+  # Missile system relations
+  - {source: MISSILE_SYSTEM, relationship: ASSOCIATED_WITH, target: RADAR_SYSTEM}
+  - {source: MISSILE_SYSTEM, relationship: HAS_GUIDANCE, target: GUIDANCE_METHOD}
+  - {source: MISSILE_SYSTEM, relationship: HAS_SEEKER, target: SEEKER}
+  - {source: MISSILE_SYSTEM, relationship: HAS_PROPULSION, target: PROPULSION_STACK}
+  - {source: MISSILE_SYSTEM, relationship: HAS_PERFORMANCE, target: MISSILE_PERFORMANCE}
+  - {source: MISSILE_SYSTEM, relationship: INSTALLED_ON, target: PLATFORM}
+  - {source: MISSILE_SYSTEM, relationship: PROVIDES, target: CAPABILITY}
+  - {source: MISSILE_SYSTEM, relationship: DEFENDS, target: PLATFORM}
+
+  # AAA relations
+  - {source: AIR_DEFENSE_ARTILLERY_SYSTEM, relationship: ASSOCIATED_WITH, target: RADAR_SYSTEM}
+  - {source: AIR_DEFENSE_ARTILLERY_SYSTEM, relationship: INSTALLED_ON, target: PLATFORM}
+  - {source: AIR_DEFENSE_ARTILLERY_SYSTEM, relationship: PROVIDES, target: CAPABILITY}
+
+  # IADS relations
+  - {source: INTEGRATED_AIR_DEFENSE_SYSTEM, relationship: CONTAINS, target: RADAR_SYSTEM}
+  - {source: INTEGRATED_AIR_DEFENSE_SYSTEM, relationship: CONTAINS, target: MISSILE_SYSTEM}
+  - {source: INTEGRATED_AIR_DEFENSE_SYSTEM, relationship: CONTAINS, target: AIR_DEFENSE_ARTILLERY_SYSTEM}
+  - {source: INTEGRATED_AIR_DEFENSE_SYSTEM, relationship: DEPLOYED_ON, target: PLATFORM}
+  - {source: INTEGRATED_AIR_DEFENSE_SYSTEM, relationship: PROVIDES, target: CAPABILITY}
+
+  # EM/RF internal relations
+  - {source: WAVEFORM, relationship: USES_MODULATION, target: MODULATION}
+  - {source: WAVEFORM, relationship: HAS_SIGNATURE, target: RF_SIGNATURE}
+  - {source: TRANSMITTER, relationship: PART_OF, target: RADAR_SYSTEM}
+  - {source: ANTENNA, relationship: PART_OF, target: RADAR_SYSTEM}
+  - {source: ANTENNA, relationship: RADIATES, target: RF_EMISSION}
+  - {source: RECEIVER, relationship: PART_OF, target: RADAR_SYSTEM}
+  - {source: RECEIVER, relationship: RECEIVES, target: RF_EMISSION}
+  - {source: SIGNAL_PROCESSING_CHAIN, relationship: PART_OF, target: RADAR_SYSTEM}
+  - {source: SIGNAL_PROCESSING_CHAIN, relationship: PROCESSES, target: RF_EMISSION}
+  - {source: IF_AMPLIFIER, relationship: PART_OF, target: RECEIVER}
+  - {source: RF_EMISSION, relationship: HAS_SIGNATURE, target: RF_SIGNATURE}
+
+  # Weapon relations
+  - {source: PROPULSION_STACK, relationship: CONTAINS, target: PROPULSION_STAGE}
+  - {source: PROPULSION_STACK, relationship: HAS_STAGE, target: PROPULSION_STAGE}
+  - {source: LAUNCHER_SYSTEM, relationship: LAUNCHES, target: MISSILE_SYSTEM}
+  - {source: LAUNCHER_SYSTEM, relationship: INSTALLED_ON, target: PLATFORM}
+  - {source: FIRE_CONTROL_SYSTEM, relationship: CUES, target: MISSILE_SYSTEM}
+  - {source: FIRE_CONTROL_SYSTEM, relationship: GUIDES, target: MISSILE_SYSTEM}
+  - {source: FIRE_CONTROL_SYSTEM, relationship: INSTALLED_ON, target: PLATFORM}
+
+  # EW relations
+  - {source: ELECTRONIC_WARFARE_SYSTEM, relationship: INSTALLED_ON, target: PLATFORM}
+  - {source: ELECTRONIC_WARFARE_SYSTEM, relationship: OPERATES_IN_BAND, target: FREQUENCY_BAND}
+  - {source: ELECTRONIC_WARFARE_SYSTEM, relationship: PROVIDES, target: CAPABILITY}
+
+  # Platform relations
+  - {source: PLATFORM, relationship: OPERATED_BY, target: ORGANIZATION}
+
+  # Provenance relations
+  - {source: ASSERTION, relationship: SUPPORTED_BY, target: DOCUMENT}
+  - {source: ASSERTION, relationship: SUPPORTED_BY, target: SECTION}
+  - {source: ASSERTION, relationship: SUPPORTED_BY, target: FIGURE}
+  - {source: ASSERTION, relationship: SUPPORTED_BY, target: TABLE}
+  - {source: ASSERTION, relationship: SUPPORTED_BY, target: SPREADSHEET}
+  - {source: ASSERTION, relationship: ABOUT, target: null}
+
+  # Generic relations (any source type allowed)
+  - {source: null, relationship: MENTIONED_IN, target: DOCUMENT}
+  - {source: null, relationship: PART_OF, target: null}
+  - {source: null, relationship: CONTAINS, target: null}
+  - {source: null, relationship: HAS_SUBSYSTEM, target: SUBSYSTEM}
+  - {source: null, relationship: HAS_COMPONENT, target: COMPONENT}
+  - {source: null, relationship: INSTALLED_ON, target: PLATFORM}
+  - {source: null, relationship: PROVIDES, target: CAPABILITY}
+  - {source: null, relationship: ASSOCIATED_WITH, target: null}
+  - {source: null, relationship: MANUFACTURED_BY, target: ORGANIZATION}
+  - {source: null, relationship: DESCRIBED_IN, target: DOCUMENT}
+  - {source: null, relationship: DERIVED_FROM, target: null}
+  - {source: null, relationship: IS_A, target: null}
+  - {source: null, relationship: INSTANCE_OF, target: null}
+  - {source: null, relationship: ALIAS_OF, target: null}
+  - {source: null, relationship: SUPERSEDES, target: null}
+
+  # Legacy relations
+  - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: EQUIPMENT_SYSTEM}
+  - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: RADAR_SYSTEM}
+  - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: MISSILE_SYSTEM}
+  - {source: null, relationship: IMPLEMENTS, target: CAPABILITY}
+  - {source: null, relationship: MEETS_STANDARD, target: STANDARD}
+  - {source: null, relationship: SPECIFIED_BY, target: SPECIFICATION}
+  - {source: PROCEDURE, relationship: PERFORMED_BY, target: ORGANIZATION}
+  - {source: FAILURE_MODE, relationship: AFFECTS, target: null}
+  - {source: null, relationship: TESTED_IN, target: TEST_EVENT}

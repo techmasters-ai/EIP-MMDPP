@@ -15,6 +15,8 @@ class QueryMode(str, Enum):
     images_only = "images_only"
     multi_modal = "multi_modal"
     memory = "memory"
+    graphrag_local = "graphrag_local"
+    graphrag_global = "graphrag_global"
 
 
 class QueryFilters(APIModel):

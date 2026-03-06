@@ -2,9 +2,19 @@ import React, { useState } from "react";
 import { ingestGraphEntity, ingestGraphRelationship, queryGraph, type QueryResultItem } from "../api/client";
 
 const ENTITY_TYPES = [
-  "EQUIPMENT_SYSTEM", "SUBSYSTEM", "COMPONENT", "ASSEMBLY",
-  "SPECIFICATION", "CAPABILITY", "STANDARD", "DOCUMENT",
-  "ORGANIZATION", "PROCEDURE", "FAILURE_MODE", "TEST_EVENT",
+  // Military assets
+  "RadarSystem", "MissileSystem", "AirDefenseArtillerySystem",
+  "IntegratedAirDefenseSystem", "ElectronicWarfareSystem", "FireControlSystem",
+  "LauncherSystem", "WeaponSystem", "Platform", "Subsystem", "Component",
+  // EM/RF
+  "FrequencyBand", "Waveform", "Modulation", "RFEmission", "RFSignature",
+  "Antenna", "Transmitter", "Receiver", "SignalProcessingChain", "ScanPattern",
+  // Weapon
+  "Seeker", "GuidanceMethod", "MissilePerformance", "PropulsionStack",
+  // Operational
+  "Capability", "EngagementTimeline", "RadarPerformance",
+  // Reference
+  "Organization", "Document", "Assertion",
 ];
 
 type Tab = "search" | "entity" | "relationship";
@@ -195,9 +205,21 @@ function RelationshipForm() {
   const [error, setError] = useState<string | null>(null);
 
   const REL_TYPES = [
-    "IS_SUBSYSTEM_OF", "CONTAINS", "IMPLEMENTS", "MEETS_STANDARD",
-    "SPECIFIED_BY", "DESCRIBED_IN", "PERFORMED_BY", "AFFECTS",
-    "SUPERSEDES", "TESTED_IN",
+    // Identity/Typing
+    "is_a", "instance_of", "subclass_of", "alias_of",
+    // Whole-Part (DoDAF DM2)
+    "part_of", "contains", "has_subsystem", "has_component", "has_stage",
+    // Installation/Association
+    "installed_on", "deployed_on", "associated_with", "operated_by", "manufactured_by",
+    // EM/RF Technical
+    "operates_in_band", "uses_waveform", "uses_modulation", "emits", "radiates",
+    "receives", "processes", "has_signature", "has_scan", "has_receiver",
+    "has_transmitter", "has_antenna", "has_processing_chain", "has_performance",
+    // Weapon/Engagement
+    "cues", "guides", "tracks", "engages", "defends", "detects", "designates",
+    "launches", "supports_engagement_of", "has_guidance", "has_propulsion", "has_seeker",
+    // Provenance
+    "supported_by", "mentioned_in", "derived_from", "reviewed_by", "about",
   ];
 
   const handleSubmit = async (e: React.FormEvent) => {

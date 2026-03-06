@@ -12,6 +12,8 @@ Task graph (manifest-first, parallel derivations, idempotent):
         ↓
     derive_structure_links  (needs embedding output committed)
         ↓
+    derive_canonicalization  (entity alias resolution)
+        ↓
     finalize_document
 """
 
@@ -172,6 +174,7 @@ def start_ingest_pipeline(document_id: str) -> str:
             collect_derivations.s(document_id),
         ),
         derive_structure_links.si(document_id),
+        derive_canonicalization.si(document_id),
         finalize_document.si(document_id),
     )
     result = pipeline.apply_async()
@@ -477,14 +480,22 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
             embeddings = embed_texts(all_texts)
             model_version = settings.text_embedding_model
 
+            # Get Qdrant client for vector upsert
+            from app.db.session import get_qdrant_client
+            from app.services.qdrant_store import upsert_text_vector
+            qdrant = get_qdrant_client()
+
             for (elem, idx), text, embedding in zip(all_element_refs, all_texts, embeddings):
                 # Deterministic chunk key
                 chunk_key = hashlib.sha256(
                     f"{document_id}:{elem.element_uid}:{idx}:{model_version}".encode()
                 ).hexdigest()
 
+                chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+                qdrant_point_id = chunk_id  # Use same UUID for Qdrant
+
                 chunk_values = {
-                    "id": uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest()),
+                    "id": chunk_id,
                     "artifact_id": elem.artifact_id,
                     "document_id": uuid.UUID(document_id),
                     "chunk_index": idx,
@@ -493,6 +504,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
                     "modality": elem.element_type if elem.element_type != "heading" else "text",
                     "page_number": elem.page_number,
                     "bounding_box": elem.bounding_box,
+                    "qdrant_point_id": qdrant_point_id,
                 }
 
                 stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
@@ -501,9 +513,25 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
                         "chunk_text": chunk_values["chunk_text"],
                         "embedding": chunk_values["embedding"],
                         "modality": chunk_values["modality"],
+                        "qdrant_point_id": qdrant_point_id,
                     },
                 )
                 db.execute(stmt)
+
+                # Upsert vector to Qdrant
+                upsert_text_vector(
+                    qdrant,
+                    point_id=qdrant_point_id,
+                    vector=embedding,
+                    payload={
+                        "chunk_id": str(chunk_id),
+                        "document_id": document_id,
+                        "artifact_id": str(elem.artifact_id),
+                        "modality": elem.element_type if elem.element_type != "heading" else "text",
+                        "page_number": elem.page_number,
+                        "classification": "UNCLASSIFIED",
+                    },
+                )
                 chunks_created += 1
 
         db.commit()
@@ -593,13 +621,21 @@ def derive_image_embeddings(self, document_id: str) -> dict:
                 image_embeddings = embed_images(pil_images)
                 model_version = settings.image_embedding_model
 
+                # Get Qdrant client for vector upsert
+                from app.db.session import get_qdrant_client
+                from app.services.qdrant_store import upsert_image_vector
+                qdrant = get_qdrant_client()
+
                 for elem, img_embedding in zip(valid_elements, image_embeddings):
                     chunk_key = hashlib.sha256(
                         f"{document_id}:{elem.element_uid}:{model_version}".encode()
                     ).hexdigest()
 
+                    chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+                    qdrant_point_id = chunk_id
+
                     chunk_values = {
-                        "id": uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest()),
+                        "id": chunk_id,
                         "artifact_id": elem.artifact_id,
                         "document_id": uuid.UUID(document_id),
                         "chunk_index": 0,
@@ -608,6 +644,7 @@ def derive_image_embeddings(self, document_id: str) -> dict:
                         "modality": "image",
                         "page_number": elem.page_number,
                         "bounding_box": elem.bounding_box,
+                        "qdrant_point_id": qdrant_point_id,
                     }
 
                     stmt = pg_insert(ImageChunk).values(**chunk_values).on_conflict_do_update(
@@ -615,9 +652,25 @@ def derive_image_embeddings(self, document_id: str) -> dict:
                         set_={
                             "chunk_text": chunk_values["chunk_text"],
                             "embedding": chunk_values["embedding"],
+                            "qdrant_point_id": qdrant_point_id,
                         },
                     )
                     db.execute(stmt)
+
+                    # Upsert vector to Qdrant
+                    upsert_image_vector(
+                        qdrant,
+                        point_id=qdrant_point_id,
+                        vector=img_embedding,
+                        payload={
+                            "chunk_id": str(chunk_id),
+                            "document_id": document_id,
+                            "artifact_id": str(elem.artifact_id),
+                            "modality": "image",
+                            "page_number": elem.page_number,
+                            "classification": "UNCLASSIFIED",
+                        },
+                    )
                     chunks_created += 1
 
         db.commit()
@@ -652,12 +705,13 @@ def derive_image_embeddings(self, document_id: str) -> dict:
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph")
 def derive_ontology_graph(self, document_id: str) -> dict:
-    """Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to AGE.
+    """Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to Neo4j.
 
     Stores graph extraction once per document (not per artifact).
     """
     from app.models.ingest import DocumentElement, DocumentGraphExtraction
-    from app.services.graph import upsert_node, upsert_relationship
+    from app.services.neo4j_graph import upsert_node, upsert_relationship
+    from app.db.session import get_neo4j_driver
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -762,16 +816,17 @@ def derive_ontology_graph(self, document_id: str) -> dict:
         )
         db.execute(stmt)
 
-        # Import into AGE
+        # Import into Neo4j
+        neo4j_driver = get_neo4j_driver()
         nodes_created = 0
         edges_created = 0
 
         for node in graph_data.get("nodes", []):
             node_id = upsert_node(
-                session=db,
+                driver=neo4j_driver,
                 entity_type=node.get("entity_type", "UNKNOWN"),
                 name=node.get("name", node.get("id", "")),
-                artifact_id=document_id,  # use document_id as provenance
+                artifact_id=document_id,
                 confidence=node.get("confidence", 0.8),
                 properties={k: v for k, v in node.items() if k not in ("id", "entity_type", "name", "confidence", "properties")},
             )
@@ -780,7 +835,7 @@ def derive_ontology_graph(self, document_id: str) -> dict:
 
         for edge in graph_data.get("edges", []):
             ok = upsert_relationship(
-                session=db,
+                driver=neo4j_driver,
                 from_name=edge.get("from", ""),
                 from_type=edge.get("from_type", "UNKNOWN"),
                 to_name=edge.get("to", ""),
@@ -988,34 +1043,36 @@ def derive_structure_links(self, document_id: str) -> dict:
 
         db.commit()
 
-        # Create AGE structural edges
-        from app.services.graph import (
+        # Create Neo4j structural edges
+        from app.services.neo4j_graph import (
             upsert_document_node,
             upsert_chunk_ref_node,
             create_structural_edge,
             create_entity_chunk_edge,
         )
+        from app.db.session import get_neo4j_driver
+        neo4j_driver = get_neo4j_driver()
 
         upsert_document_node(
-            session=db,
+            driver=neo4j_driver,
             document_id=document_id,
             title=doc.filename,
             properties={"source_id": str(doc.source_id)},
         )
 
         for tc in text_chunks:
-            upsert_chunk_ref_node(db, str(tc.id), "text_chunk")
-            create_structural_edge(db, document_id, str(tc.id), "CONTAINS_TEXT")
+            upsert_chunk_ref_node(neo4j_driver, str(tc.id), "text_chunk")
+            create_structural_edge(neo4j_driver, document_id, str(tc.id), "CONTAINS_TEXT")
 
         for ic in image_chunks:
-            upsert_chunk_ref_node(db, str(ic.id), "image_chunk")
-            create_structural_edge(db, document_id, str(ic.id), "CONTAINS_IMAGE")
+            upsert_chunk_ref_node(neo4j_driver, str(ic.id), "image_chunk")
+            create_structural_edge(neo4j_driver, document_id, str(ic.id), "CONTAINS_IMAGE")
 
         for page_num, ics in page_image_map.items():
             tcs = page_text_map.get(page_num, [])
             for ic in ics:
                 for tc in tcs:
-                    create_structural_edge(db, str(tc.id), str(ic.id), "SAME_PAGE")
+                    create_structural_edge(neo4j_driver, str(tc.id), str(ic.id), "SAME_PAGE")
 
         # Entity-chunk EXTRACTED_FROM edges
         entity_links = 0
@@ -1050,7 +1107,7 @@ def derive_structure_links(self, document_id: str) -> dict:
 
             for (name, etype) in entities_list:
                 for chunk_id in chunk_ids:
-                    if create_entity_chunk_edge(db, name, etype, chunk_id):
+                    if create_entity_chunk_edge(neo4j_driver, name, etype, chunk_id):
                         entity_links += 1
 
         db.commit()
@@ -1109,6 +1166,53 @@ def collect_derivations(self, derivation_results: list[dict], document_id: str) 
         _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
 
 
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph")
+def derive_canonicalization(self, document_id: str) -> dict:
+    """Post-extraction entity canonicalization pass.
+
+    Resolves entity aliases to canonical names via Neo4j fulltext search
+    and creates HAS_ALIAS edges for discovered matches.
+    """
+    from app.db.session import get_neo4j_driver
+    from app.services.canonicalization import canonicalize_document_entities
+
+    logger.info("derive_canonicalization: document_id=%s", document_id)
+    _update_document_status(document_id, STATUS_PROCESSING, stage="derive_canonicalization")
+
+    db = _get_db()
+    try:
+        run_id = _get_pipeline_run_id(db, document_id)
+        if run_id:
+            _update_stage_run(db, run_id, "derive_canonicalization", "RUNNING")
+            db.commit()
+
+        neo4j_driver = get_neo4j_driver()
+        stats = canonicalize_document_entities(neo4j_driver, document_id)
+
+        if run_id:
+            _update_stage_run(
+                db, run_id, "derive_canonicalization", "COMPLETE",
+                metrics=stats,
+            )
+            db.commit()
+
+        logger.info(
+            "derive_canonicalization: document_id=%s resolved=%d/%d",
+            document_id, stats["resolved"], stats["total"],
+        )
+        return {"stage": "derive_canonicalization", "status": "ok", **stats}
+
+    except Exception as exc:
+        logger.error("derive_canonicalization failed for %s: %s", document_id, exc)
+        db.rollback()
+        if run_id:
+            _update_stage_run(db, run_id, "derive_canonicalization", "FAILED", error=str(exc))
+            db.commit()
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
 @celery_app.task(bind=True)
 def finalize_document(self, document_id: str) -> None:
     """Mark pipeline COMPLETE if all required stages succeeded."""
@@ -1131,6 +1235,7 @@ def finalize_document(self, document_id: str) -> None:
             "derive_image_embeddings",
             "derive_ontology_graph",
             "derive_structure_links",
+            "derive_canonicalization",
         }
 
         all_stages = db.execute(

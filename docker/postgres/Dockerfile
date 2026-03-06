@@ -65,7 +65,7 @@ CEOF
 RUN gcc -shared -fPIC -o /tmp/libfips_bypass.so /tmp/fips_bypass.c -ldl
 
 # ============================================================
-# Stage 2: Postgres 16 + pgvector + Apache AGE
+# Stage 2: Postgres 16 + pgvector
 # ============================================================
 FROM postgres:16-bookworm
 
@@ -73,17 +73,13 @@ FROM postgres:16-bookworm
 COPY --from=fips-bypass /tmp/libfips_bypass.so /usr/local/lib/
 COPY --from=fips-bypass /tmp/fips_disabled /usr/local/lib/fips_disabled
 
-# Build-time dependencies for compiling pgvector and Apache AGE
+# Build-time dependencies for compiling pgvector
 RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
     build-essential \
     git \
     ca-certificates \
     postgresql-server-dev-16 \
-    libreadline-dev \
-    zlib1g-dev \
-    flex \
-    bison \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pgvector (v0.8.0)
@@ -92,13 +88,6 @@ RUN git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git
     && make \
     && make install \
     && rm -rf /tmp/pgvector
-
-# Install Apache AGE (PG16 / v1.6.0)
-RUN git clone --branch release/PG16/1.6.0 --depth 1 https://github.com/apache/age.git /tmp/age \
-    && cd /tmp/age \
-    && make \
-    && make install \
-    && rm -rf /tmp/age
 
 # Clean up build shim — not needed at runtime
 RUN rm -f /usr/local/lib/libfips_bypass.so

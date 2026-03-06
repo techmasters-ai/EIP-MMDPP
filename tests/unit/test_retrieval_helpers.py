@@ -279,6 +279,24 @@ class TestFusionWeights:
         assert w["USES_COMPONENT"] >= w["INTERFACES_WITH"]
         assert w["INTERFACES_WITH"] >= w["RELATED_TO"]
 
+    def test_new_ontology_relation_weights_present(self):
+        """New EM/RF ontology relation weights should be in the dict."""
+        from app.api.v1._retrieval_helpers import get_ontology_relation_weights
+        w = get_ontology_relation_weights()
+        for key in ("associated_with", "installed_on", "uses_waveform",
+                     "operates_in_band", "has_antenna", "emits",
+                     "has_performance", "alias_of"):
+            assert key in w, f"Missing weight for {key}"
+            assert 0 < w[key] <= 1.0
+
+    def test_new_ontology_weights_ordering(self):
+        """New weights should follow signal-strength ordering."""
+        from app.api.v1._retrieval_helpers import get_ontology_relation_weights
+        w = get_ontology_relation_weights()
+        assert w["associated_with"] >= w["installed_on"]
+        assert w["installed_on"] >= w["emits"]
+        assert w["emits"] >= w["supported_by"]
+
     def test_get_doc_link_weights_returns_dict(self):
         from app.api.v1._retrieval_helpers import get_doc_link_weights
         weights = get_doc_link_weights()
@@ -368,6 +386,20 @@ class TestComputeFusionScore:
             query_text="NSN 1234-56-789-0123",
         )
         assert score <= 1.0
+
+    def test_mil_id_bonus_an_designator(self):
+        """AN/ designator match should boost score."""
+        base = self._call(
+            semantic_score=0.8,
+            content_text="The AN/MPQ-53 radar provides target tracking",
+            query_text="AN/MPQ-53 specifications",
+        )
+        no_match = self._call(
+            semantic_score=0.8,
+            content_text="No designators here",
+            query_text="AN/MPQ-53 specifications",
+        )
+        assert base > no_match
 
     def test_returns_rounded_to_six_decimals(self):
         score = self._call(semantic_score=0.33333333333)

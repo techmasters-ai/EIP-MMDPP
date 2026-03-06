@@ -42,6 +42,22 @@ services:
         exit 0;
       "
 
+  neo4j:
+    ports:
+      - "7688:7687"
+      - "7475:7474"
+    environment:
+      NEO4J_AUTH: neo4j/test_neo4j_secret
+    volumes:
+      - neo4j_test_data:/data
+
+  qdrant:
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    volumes:
+      - qdrant_test_data:/qdrant/storage
+
   docling:
     environment:
       DOCLING_DEVICE: cpu
@@ -62,3 +78,5 @@ volumes:
   postgres_test_data:
   redis_test_data:
   minio_test_data:
+  neo4j_test_data:
+  qdrant_test_data:

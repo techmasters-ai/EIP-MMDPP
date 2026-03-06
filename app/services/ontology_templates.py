@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, create_model
 
 logger = logging.getLogger(__name__)
 
-_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent / "ontology" / "base_v1.yaml"
+_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent / "ontology" / "base.yaml"
 
 # Python type mapping from YAML schema types
 _TYPE_MAP: dict[str, type] = {
@@ -182,6 +182,24 @@ Return ONLY valid JSON, no markdown fences or extra text.
 {text}
 """
     return prompt
+
+
+def load_validation_matrix(
+    path: Path | None = None,
+) -> set[tuple[str, str, str]]:
+    """Load the ontology validation matrix as a set of (source, rel, target) triples.
+
+    Returns an empty set if the ontology doesn't define a validation_matrix.
+    """
+    ontology = load_ontology(path)
+    matrix: set[tuple[str, str, str]] = set()
+    for entry in ontology.get("validation_matrix", []):
+        source = entry.get("source_type", "")
+        rel = entry.get("relationship", "")
+        target = entry.get("target_type", "")
+        if source and rel and target:
+            matrix.add((source, rel, target))
+    return matrix
 
 
 def build_entity_type_names(ontology: dict[str, Any] | None = None) -> list[str]:

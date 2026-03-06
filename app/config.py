@@ -94,6 +94,22 @@ class Settings(BaseSettings):
     # docling-graph extraction settings
     docling_graph_timeout: float = 120.0
 
+    # Neo4j (knowledge graph — replaces Apache AGE)
+    neo4j_uri: str = "bolt://neo4j:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "eip_neo4j_secret"
+
+    # Qdrant (vector search — replaces pgvector)
+    qdrant_url: str = "http://qdrant:6333"
+    qdrant_text_collection: str = "eip_text_chunks"
+    qdrant_image_collection: str = "eip_image_chunks"
+
+    # GraphRAG (community detection + reports)
+    graphrag_model: str = "llama3.2"
+    graphrag_indexing_enabled: bool = True
+    graphrag_indexing_interval_minutes: int = 60
+    graphrag_max_cluster_size: int = 10
+
     # Docling document conversion service (granite-docling-258M VLM)
     docling_service_url: str = "http://docling:8001"
     docling_timeout_seconds: float = 300.0
@@ -117,6 +133,26 @@ class Settings(BaseSettings):
 
     # Directory watcher
     watch_dir_poll_interval_seconds: int = 30
+
+    # --- Retrieval scoring — new ontology relation weights ---
+    retrieval_onto_weight_associated_with: float = 0.95
+    retrieval_onto_weight_installed_on: float = 0.92
+    retrieval_onto_weight_deployed_on: float = 0.92
+    retrieval_onto_weight_uses_waveform: float = 0.92
+    retrieval_onto_weight_operates_in_band: float = 0.92
+    retrieval_onto_weight_has_antenna: float = 0.90
+    retrieval_onto_weight_has_receiver: float = 0.90
+    retrieval_onto_weight_has_transmitter: float = 0.90
+    retrieval_onto_weight_cues: float = 0.90
+    retrieval_onto_weight_guides: float = 0.90
+    retrieval_onto_weight_tracks: float = 0.90
+    retrieval_onto_weight_emits: float = 0.88
+    retrieval_onto_weight_has_signature: float = 0.88
+    retrieval_onto_weight_has_performance: float = 0.85
+    retrieval_onto_weight_has_processing_chain: float = 0.85
+    retrieval_onto_weight_supported_by: float = 0.80
+    retrieval_onto_weight_mentioned_in: float = 0.80
+    retrieval_onto_weight_alias_of: float = 0.95
 
     # --- Retrieval scoring (env-var configurable) ---
     # Expansion limits
