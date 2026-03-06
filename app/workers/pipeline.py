@@ -354,16 +354,17 @@ def prepare_document(self, document_id: str) -> str:
                 "element_hash": element_hash,
             }
 
-            stmt = pg_insert(DocumentElement).values(**element_values).on_conflict_do_update(
+            stmt = pg_insert(DocumentElement).values(**element_values)
+            stmt = stmt.on_conflict_do_update(
                 constraint="document_elements_document_id_element_uid_key",
                 set_={
-                    "element_type": element_values["element_type"],
-                    "element_order": element_values["element_order"],
-                    "content_text": element_values["content_text"],
-                    "storage_bucket": element_values["storage_bucket"],
-                    "storage_key": element_values["storage_key"],
-                    "element_metadata": element_values["element_metadata"],
-                    "element_hash": element_values["element_hash"],
+                    "element_type": stmt.excluded.element_type,
+                    "element_order": stmt.excluded.element_order,
+                    "content_text": stmt.excluded.content_text,
+                    "storage_bucket": stmt.excluded.storage_bucket,
+                    "storage_key": stmt.excluded.storage_key,
+                    "metadata": stmt.excluded.metadata,
+                    "element_hash": stmt.excluded.element_hash,
                 },
             )
             db.execute(stmt)

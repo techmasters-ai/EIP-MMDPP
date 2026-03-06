@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml exec docling python3 -c \":*)",
+      "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml up -d)",
+      "Bash(curl -s http://localhost:8000/v1/health)",
+      "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml restart worker)",
+      "Bash(then)",
+      "Bash(curl -s \"http://localhost:8000/v1/documents/$DOC_ID/status\")",
+      "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml logs worker --tail=30)",
+      "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml logs docling --tail=10)",
+      "Bash(echo \"$RESP\")"
+    ]
+  }
+}

@@ -134,6 +134,23 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
         Path(tmp_path).unlink(missing_ok=True)
 
 
+def _get_item_text(item) -> str:
+    """Get text from a Docling item, handling API differences across versions.
+
+    docling-core >=2.60 removed export_to_markdown() from TextItem-based types
+    (TextItem, SectionHeaderItem, TitleItem, FormulaItem) in favor of a .text field.
+    TableItem and PictureItem still have export_to_markdown().
+    """
+    # Prefer .text attribute (new API)
+    text = getattr(item, "text", None)
+    if text is not None:
+        return text
+    # Fallback to export_to_markdown (TableItem, PictureItem, older versions)
+    if hasattr(item, "export_to_markdown"):
+        return item.export_to_markdown()
+    return ""
+
+
 def _extract_elements(doc) -> list[ConvertedElement]:
     """Iterate Docling document items and map to ConvertedElement list."""
     import hashlib
@@ -157,7 +174,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
             DocItemLabel.PAGE_HEADER,
             DocItemLabel.PAGE_FOOTER,
         ):
-            text = item.export_to_markdown()
+            text = _get_item_text(item)
             if text.strip():
                 heading_level = level if level and level > 0 else 1
                 if label == DocItemLabel.TITLE:
@@ -184,7 +201,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                 order_counter += 1
 
         elif label == DocItemLabel.TABLE:
-            md_table = item.export_to_markdown()
+            md_table = _get_item_text(item)
             section_path = " > ".join(s[1] for s in section_stack) if section_stack else None
             uid = _make_element_uid(page_no, order_counter, "table", md_table)
             elements.append(
@@ -213,7 +230,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                 pass
 
             try:
-                caption_text = item.export_to_markdown().strip()
+                caption_text = (getattr(item, "caption_text", None) or _get_item_text(item)).strip()
             except Exception:
                 pass
 
@@ -234,7 +251,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
             order_counter += 1
 
         elif label == DocItemLabel.FORMULA:
-            text = item.export_to_markdown()
+            text = _get_item_text(item)
             if text.strip():
                 section_path = " > ".join(s[1] for s in section_stack) if section_stack else None
                 uid = _make_element_uid(page_no, order_counter, "equation", text.strip())
@@ -252,7 +269,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                 order_counter += 1
 
         else:
-            text = item.export_to_markdown()
+            text = _get_item_text(item)
             if text and text.strip():
                 section_path = " > ".join(s[1] for s in section_stack) if section_stack else None
                 uid = _make_element_uid(page_no, order_counter, "text", text.strip())
