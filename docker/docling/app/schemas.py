@@ -15,6 +15,11 @@ class ConvertedElement(BaseModel):
     confidence: float | None = None
     metadata: dict = {}
     image_base64: str | None = None
+    # Structural metadata (v2)
+    element_uid: str | None = None  # deterministic ID
+    element_order: int | None = None  # sequential position in document
+    heading_level: int | None = None  # 1-6 for headings
+    section_path: str | None = None  # accumulated heading path
 
 
 class ConvertResponse(BaseModel):

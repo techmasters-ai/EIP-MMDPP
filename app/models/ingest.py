@@ -193,5 +193,136 @@ class WatchLog(Base):
     watch_dir: Mapped["WatchDir"] = relationship(back_populates="watch_logs")
 
 
+class PipelineRun(Base):
+    """Tracks a single execution of the ingest pipeline for a document."""
+
+    __tablename__ = "pipeline_runs"
+    __table_args__ = {"schema": "ingest"}
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pipeline_version: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="v2"
+    )
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="PROCESSING"
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    stage_runs: Mapped[list["StageRun"]] = relationship(back_populates="pipeline_run")
+
+
+class StageRun(Base):
+    """Tracks individual stage executions within a pipeline run."""
+
+    __tablename__ = "stage_runs"
+    __table_args__ = (
+        UniqueConstraint("pipeline_run_id", "stage_name", "attempt", name="uq_stage_run"),
+        {"schema": "ingest"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    pipeline_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.pipeline_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stage_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="PENDING"
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    pipeline_run: Mapped["PipelineRun"] = relationship(back_populates="stage_runs")
+
+
+class DocumentElement(Base):
+    """Canonical representation of a Docling-extracted element from a document."""
+
+    __tablename__ = "document_elements"
+    __table_args__ = (
+        UniqueConstraint("document_id", "element_uid", name="uq_doc_element_uid"),
+        {"schema": "ingest"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    element_uid: Mapped[str] = mapped_column(String(255), nullable=False)
+    element_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # text|heading|table|image|equation|schematic
+    element_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bounding_box: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    section_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    heading_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    parent_element_uid: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    content_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    storage_bucket: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    storage_key: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    element_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+
+class DocumentGraphExtraction(Base):
+    """Stores LLM-extracted graph data for a document (one per document)."""
+
+    __tablename__ = "document_graph_extractions"
+    __table_args__ = {"schema": "ingest"}
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    extraction_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    graph_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="PENDING"
+    )
+    metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # Import to resolve forward references
 from app.models.retrieval import TextChunk, ImageChunk  # noqa: E402

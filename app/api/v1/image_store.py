@@ -1,11 +1,11 @@
-"""Image vector store — direct ingest and semantic query endpoints."""
+"""Image vector store — direct ingest, semantic query, and presigned URL endpoints."""
 
 import base64
 import io
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
@@ -78,6 +78,32 @@ async def query_images(
     return results
 
 
+@router.get("/images/{chunk_id}/url")
+async def get_image_url(
+    chunk_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get a presigned URL for an image chunk's underlying artifact."""
+    from sqlalchemy import text
+
+    sql = text("""
+        SELECT a.storage_bucket, a.storage_key
+        FROM retrieval.image_chunks ic
+        JOIN ingest.artifacts a ON a.id = ic.artifact_id
+        WHERE ic.id = :chunk_id
+          AND a.storage_key IS NOT NULL
+    """)
+    result = await db.execute(sql, {"chunk_id": str(chunk_id)})
+    row = result.fetchone()
+
+    if not row or not row[1]:
+        raise HTTPException(status_code=404, detail="Image not found or no storage key")
+
+    from app.services.storage import generate_presigned_url_async
+    url = await generate_presigned_url_async(row[0], row[1])
+    return {"chunk_id": str(chunk_id), "image_url": url}
+
+
 async def _image_semantic_search(
     db: AsyncSession,
     query_embedding: list[float],
@@ -90,12 +116,14 @@ async def _image_semantic_search(
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
     filter_clauses = ""
+    params: dict = {"embedding": embedding_str, "top_k": top_k}
     if filters:
         if filters.classification:
-            filter_clauses += f" AND ic.classification = '{filters.classification}'"
+            filter_clauses += " AND ic.classification = :filter_classification"
+            params["filter_classification"] = filters.classification
         if filters.document_ids:
-            doc_ids = ",".join(f"'{d}'" for d in filters.document_ids)
-            filter_clauses += f" AND ic.document_id IN ({doc_ids})"
+            filter_clauses += " AND ic.document_id = ANY(:filter_doc_ids)"
+            params["filter_doc_ids"] = [str(d) for d in filters.document_ids]
 
     sql = text(f"""
         SELECT ic.id, ic.artifact_id, ic.document_id, ic.chunk_text,
@@ -108,7 +136,7 @@ async def _image_semantic_search(
         LIMIT :top_k
     """)
 
-    result = await db.execute(sql, {"embedding": embedding_str, "top_k": top_k})
+    result = await db.execute(sql, params)
     rows = result.fetchall()
 
     return [

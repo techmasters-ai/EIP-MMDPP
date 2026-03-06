@@ -131,7 +131,9 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 ### Sources & Document Upload
 - `POST /v1/sources` — create a document collection
 - `POST /v1/sources/{id}/documents` — upload a document (streams to MinIO, triggers pipeline; 409 on duplicate file within same source)
-- `GET /v1/documents/{id}/status` — poll pipeline status
+- `GET /v1/documents/{id}/status` — poll pipeline status (includes v2 stage summary when `INGEST_V2_ENABLED=true`)
+- `GET /v1/documents/{id}/stages` — detailed v2 pipeline stage diagnostics
+- `POST /v1/documents/{id}/reingest` — re-run pipeline (`{"mode": "full|embeddings_only|graph_only"}`)
 
 ### Directory Watcher
 - `POST /v1/watch-dirs` — register a directory for auto-ingest
@@ -192,7 +194,11 @@ Query modes:
 | `multi_modal` | Text or image | Full multi-modal pipeline | All results |
 | `memory` | Text | Cognee search | Approved trusted data |
 
-The multi-modal pipeline (modes 2-4) runs: vector search (BGE + CLIP) → cross-modal graph bridging (structural edges) → ontology traversal (entity relationships, 4 hops) → deduplicate → rank by score → filter by mode.
+The multi-modal pipeline (modes 2-4) runs: parallel vector search (BGE + CLIP via `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (entity relationships, 4 hops) → weighted fusion scoring → deduplicate → rank → filter by mode.
+
+Image-modality results include a presigned `image_url` for inline display in the UI.
+
+**Weighted Fusion Scoring**: `final = 0.65*semantic + 0.20*doc_structure + 0.15*ontology + MIL-ID bonus`. All weights are configurable via environment variables (see `env.example`).
 
 ### Agent / LangGraph Context
 
@@ -222,21 +228,40 @@ All Apache AGE graph mutations (node/edge create, update, delete) require **dual
 
 ## Ingest Pipeline
 
+### V1 Pipeline (default, `INGEST_V2_ENABLED=false`)
+
 ```
-validate_and_store
-  → detect_modalities
-  → convert_document          (Docling + granite-docling-258M — unified extraction)
-  → embed_text_chunks         ┐
-  → embed_image_chunks        ┘ (parallel via Celery chord)
-  → extract_graph             (docling-graph + LLM entity/relationship extraction)
-  → import_graph              (NetworkX → Apache AGE)
-  → connect_document_elements (DOCUMENT/CHUNK_REF/SAME_PAGE + EXTRACTED_FROM edges)
-  → finalize_artifact
+validate_and_store → detect_modalities → convert_document (Docling VLM)
+  → embed_text_chunks ┐
+  → embed_image_chunks ┘ (parallel chord)
+  → extract_graph → import_graph → connect_document_elements → finalize_artifact
 ```
 
-The `convert_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
+### V2 Pipeline (`INGEST_V2_ENABLED=true`)
 
-Text and image embedding run in parallel. Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction, with regex NER as fallback when LLM is unavailable.
+Manifest-first architecture with parallel derivation stages and idempotent writes:
+
+```
+prepare_document  (validate + detect + Docling convert + persist document_elements)
+    ↓
+┌── derive_text_chunks_and_embeddings ──┐
+│── derive_image_embeddings             │  (parallel Celery chord)
+│── derive_ontology_graph               │
+└── derive_structure_links ─────────────┘
+    ↓
+collect_derivations → finalize_document_v2
+```
+
+Key improvements:
+- **Canonical element store** (`document_elements` table) — parse once, derive many
+- **Parallel derivations** — embedding, graph extraction, and structure linking run concurrently
+- **Idempotent writes** — deterministic chunk keys with `ON CONFLICT DO UPDATE`
+- **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
+- **Worker split** — optional queue isolation: `docker compose --profile split up`
+
+The `convert_document`/`prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
+
+Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction, with regex NER as fallback when LLM is unavailable. V2 stores graph data once per document (`document_graph_extractions`), not per artifact.
 
 ## Implementation Phases
 
@@ -247,6 +272,7 @@ Text and image embedding run in parallel. Graph extraction uses LLM (via `LLM_PR
 | 2.5 | React web UI (upload, directory monitor, query), LangGraph agent endpoint | Complete |
 | 2.6 | Cognee integration: trusted data query mode, dual-ingest pipeline step | Complete |
 | 2.7 | Knowledge restructure: split vector tables, per-layer endpoints, unified query, docling-graph, trusted data governance, UI overhaul | Complete |
+| 2.8 | Ingest v2 (manifest-first, parallel derivations, idempotent) + Retrieval v2 (weighted fusion, chunk_links, image display) | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

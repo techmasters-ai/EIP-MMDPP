@@ -2,7 +2,7 @@ import os
 import uuid
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Integer, SmallInteger, String, Text, DateTime, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
@@ -110,6 +110,36 @@ class ImageChunk(Base, TimestampMixin):
     document: Mapped["Document"] = relationship(
         back_populates="image_chunks",
         primaryjoin="ImageChunk.document_id == Document.id",
+    )
+
+
+class ChunkLink(Base):
+    """Document-structure link between chunks (NEXT_CHUNK, SAME_PAGE, etc.)."""
+
+    __tablename__ = "chunk_links"
+    __table_args__ = {"schema": "retrieval"}
+
+    source_chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True
+    )
+    target_chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True
+    )
+    link_type: Mapped[str] = mapped_column(
+        String(50), primary_key=True
+    )
+    hop: Mapped[int] = mapped_column(
+        SmallInteger, primary_key=True, default=1
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.85)
+    evidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[Optional[str]] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

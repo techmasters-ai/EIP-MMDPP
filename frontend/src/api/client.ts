@@ -44,6 +44,7 @@ export interface QueryResultItem {
   page_number?: number;
   classification: string;
   context?: Record<string, unknown>;
+  image_url?: string;
 }
 
 export interface UnifiedQueryResponse {

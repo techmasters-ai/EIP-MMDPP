@@ -38,10 +38,14 @@ celery_app.conf.update(
         "app.workers.pipeline.connect_document_elements": {"queue": "graph"},
         "app.workers.pipeline.finalize_artifact": {"queue": "ingest"},
         "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
-        # DEPRECATED: kept for backwards compatibility
-        "app.workers.pipeline.chunk_and_embed": {"queue": "embed"},
-        "app.workers.pipeline.extract_graph_entities": {"queue": "graph"},
-        "app.workers.pipeline.ingest_to_cognee": {"queue": "ingest"},
+        # V2 pipeline tasks
+        "app.workers.pipeline.prepare_document": {"queue": "ingest"},
+        "app.workers.pipeline.derive_text_chunks_and_embeddings": {"queue": "embed"},
+        "app.workers.pipeline.derive_image_embeddings": {"queue": "embed"},
+        "app.workers.pipeline.derive_ontology_graph": {"queue": "graph"},
+        "app.workers.pipeline.derive_structure_links": {"queue": "graph"},
+        "app.workers.pipeline.collect_derivations": {"queue": "ingest"},
+        "app.workers.pipeline.finalize_document_v2": {"queue": "ingest"},
     },
     # Task result expiry
     result_expires=86400,  # 24 hours

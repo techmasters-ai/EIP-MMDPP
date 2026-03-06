@@ -137,9 +137,12 @@ async def upload_document(
     await db.commit()
 
     # Dispatch ingest pipeline (document is now visible to workers)
-    from app.workers.pipeline import start_ingest_pipeline
-
-    task_id = start_ingest_pipeline(str(document.id))
+    if settings.ingest_v2_enabled:
+        from app.workers.pipeline import start_ingest_pipeline_v2
+        task_id = start_ingest_pipeline_v2(str(document.id))
+    else:
+        from app.workers.pipeline import start_ingest_pipeline
+        task_id = start_ingest_pipeline(str(document.id))
 
     # Update celery_task_id via ORM (not raw UPDATE) to avoid
     # expiring updated_at and triggering MissingGreenlet.
@@ -176,7 +179,137 @@ async def get_document_status(
     doc = await db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
-    return DocumentStatusResponse.model_validate(doc)
+
+    resp = DocumentStatusResponse.model_validate(doc)
+
+    # Populate v2 fields if available
+    if settings.ingest_v2_enabled:
+        from app.models.ingest import PipelineRun, StageRun
+
+        run_result = await db.execute(
+            select(PipelineRun)
+            .where(PipelineRun.document_id == document_id)
+            .order_by(PipelineRun.started_at.desc())
+            .limit(1)
+        )
+        run = run_result.scalar_one_or_none()
+        if run:
+            resp.pipeline_version = run.pipeline_version
+            resp.current_run_id = run.id
+            stage_result = await db.execute(
+                select(StageRun)
+                .where(StageRun.pipeline_run_id == run.id)
+                .order_by(StageRun.started_at.nullslast())
+            )
+            stages = stage_result.scalars().all()
+            resp.stage_summary = [
+                {
+                    "stage": s.stage_name,
+                    "status": s.status,
+                    "attempt": s.attempt,
+                    "metrics": s.metrics or {},
+                }
+                for s in stages
+            ]
+
+    return resp
+
+
+@router.get("/documents/{document_id}/stages")
+async def get_document_stages(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get detailed stage diagnostics for a v2 pipeline run."""
+    from app.models.ingest import PipelineRun, StageRun
+
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    run_result = await db.execute(
+        select(PipelineRun)
+        .where(PipelineRun.document_id == document_id)
+        .order_by(PipelineRun.started_at.desc())
+        .limit(1)
+    )
+    run = run_result.scalar_one_or_none()
+    if not run:
+        return {"document_id": str(document_id), "pipeline_version": "v1", "stages": []}
+
+    stage_result = await db.execute(
+        select(StageRun)
+        .where(StageRun.pipeline_run_id == run.id)
+        .order_by(StageRun.started_at.nullslast())
+    )
+    stages = stage_result.scalars().all()
+
+    return {
+        "document_id": str(document_id),
+        "pipeline_version": run.pipeline_version,
+        "run_id": str(run.id),
+        "run_status": run.status,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "stages": [
+            {
+                "stage": s.stage_name,
+                "status": s.status,
+                "attempt": s.attempt,
+                "started_at": s.started_at.isoformat() if s.started_at else None,
+                "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+                "metrics": s.metrics or {},
+                "error": s.error_message,
+            }
+            for s in stages
+        ],
+    }
+
+
+@router.post("/documents/{document_id}/reingest")
+async def reingest_document(
+    document_id: uuid.UUID,
+    body: dict = None,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Re-run the ingest pipeline for an existing document.
+
+    Body (optional):
+        {"mode": "full" | "embeddings_only" | "graph_only"}
+    """
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    mode = (body or {}).get("mode", "full")
+
+    if settings.ingest_v2_enabled:
+        if mode == "full":
+            from app.workers.pipeline import start_ingest_pipeline_v2
+            task_id = start_ingest_pipeline_v2(str(document_id))
+        elif mode == "embeddings_only":
+            from app.workers.pipeline import derive_text_chunks_and_embeddings, derive_image_embeddings
+            from celery import group
+            result = group(
+                derive_text_chunks_and_embeddings.si(str(document_id)),
+                derive_image_embeddings.si(str(document_id)),
+            ).apply_async()
+            task_id = result.id
+        elif mode == "graph_only":
+            from app.workers.pipeline import derive_ontology_graph, derive_structure_links
+            from celery import chain as celery_chain
+            result = celery_chain(
+                derive_ontology_graph.si(str(document_id)),
+                derive_structure_links.si(str(document_id)),
+            ).apply_async()
+            task_id = result.id
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown reingest mode: {mode}")
+    else:
+        from app.workers.pipeline import start_ingest_pipeline
+        task_id = start_ingest_pipeline(str(document_id))
+
+    return {"document_id": str(document_id), "mode": mode, "task_id": task_id}
 
 
 # ---------------------------------------------------------------------------

@@ -97,6 +97,17 @@ def _map_elements_to_chunks(elements: list[dict]) -> list[ExtractedChunk]:
         if elem.get("image_base64"):
             raw_image_bytes = base64.b64decode(elem["image_base64"])
 
+        # Preserve structural metadata from v2 Docling output
+        meta = dict(elem.get("metadata", {}))
+        if elem.get("element_uid"):
+            meta["element_uid"] = elem["element_uid"]
+        if elem.get("element_order") is not None:
+            meta["element_order"] = elem["element_order"]
+        if elem.get("heading_level") is not None:
+            meta["heading_level"] = elem["heading_level"]
+        if elem.get("section_path"):
+            meta["section_path"] = elem["section_path"]
+
         chunk = ExtractedChunk(
             chunk_text=elem.get("content_text", ""),
             modality=modality,
@@ -106,7 +117,7 @@ def _map_elements_to_chunks(elements: list[dict]) -> list[ExtractedChunk]:
             ocr_confidence=elem.get("confidence"),
             ocr_engine="docling-granite" if elem.get("confidence") else None,
             requires_human_review=False,
-            metadata=elem.get("metadata", {}),
+            metadata=meta,
         )
         chunks.append(chunk)
 

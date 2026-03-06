@@ -53,6 +53,10 @@ class DocumentStatusResponse(APIModel):
     error_message: Optional[str]
     celery_task_id: Optional[str]
     updated_at: datetime
+    # V2 optional fields
+    pipeline_version: Optional[str] = None
+    current_run_id: Optional[uuid.UUID] = None
+    stage_summary: Optional[list[dict]] = None
 
 
 # ---------------------------------------------------------------------------

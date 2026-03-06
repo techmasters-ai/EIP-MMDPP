@@ -194,3 +194,17 @@ class TestQueryResultItem:
         for mod in ("text", "image", "table", "schematic"):
             item = QueryResultItem(score=0.5, modality=mod)
             assert item.modality == mod
+
+    def test_image_url_default_none(self):
+        from app.schemas.retrieval import QueryResultItem
+        item = QueryResultItem(score=0.5, modality="image")
+        assert item.image_url is None
+
+    def test_image_url_accepts_string(self):
+        from app.schemas.retrieval import QueryResultItem
+        item = QueryResultItem(
+            score=0.5, modality="image",
+            image_url="https://minio:9000/eip-derived/artifacts/test.png?X-Amz-Signature=abc",
+        )
+        assert item.image_url is not None
+        assert "minio" in item.image_url

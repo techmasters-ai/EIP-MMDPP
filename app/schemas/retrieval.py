@@ -34,6 +34,7 @@ class QueryResultItem(APIModel):
     page_number: Optional[int] = None
     classification: str = "UNCLASSIFIED"
     context: Optional[dict[str, Any]] = None  # graph neighbors, source info, etc.
+    image_url: Optional[str] = None  # presigned MinIO URL for image-modality results
 
 
 class UnifiedQueryRequest(APIModel):

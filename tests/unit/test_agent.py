@@ -96,6 +96,32 @@ class TestBuildMarkdown:
         assert "Patriot PAC-3" in md
         assert "Via ontology" in md
 
+    def test_doc_structure_context_shown(self):
+        item = _make_item(
+            content_text="A linked chunk",
+            context={
+                "source": "doc_structure",
+                "link_type": "NEXT_CHUNK",
+                "hops": 1,
+            },
+        )
+        md = self._call("test", [item])
+        assert "NEXT_CHUNK" in md
+        assert "Via document structure" in md
+
+    def test_doc_structure_context_multi_hop(self):
+        item = _make_item(
+            content_text="A linked chunk",
+            context={
+                "source": "doc_structure",
+                "link_type": "SAME_SECTION",
+                "hops": 3,
+            },
+        )
+        md = self._call("test", [item])
+        assert "SAME_SECTION" in md
+        assert "3 hops" in md
+
     def test_cross_modal_context_shown(self):
         item = _make_item(
             content_text="A bridged chunk",

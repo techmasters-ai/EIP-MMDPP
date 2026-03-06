@@ -51,6 +51,12 @@ def build_markdown(query: str, results: list[QueryResultItem]) -> str:
             if entity_name and rel_type and related_name:
                 lines.append(f"**Via ontology**: {entity_name} --[{rel_type}]--> {related_name}")
             lines.append("")
+        elif item.context and item.context.get("source") == "doc_structure":
+            link_type = item.context.get("link_type", "")
+            hops = item.context.get("hops", 1)
+            hop_str = f" ({hops} hops)" if hops and int(hops) > 1 else ""
+            lines.append(f"**Via document structure**: {link_type}{hop_str}")
+            lines.append("")
         elif item.context and item.context.get("source") == "cross_modal":
             edge_type = item.context.get("edge_type", "")
             if edge_type:

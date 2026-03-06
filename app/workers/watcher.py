@@ -8,11 +8,9 @@ Files that are still being written are skipped (size-stability check).
 import fnmatch
 import hashlib
 import logging
-import os
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from app.workers.celery_app import celery_app
 
@@ -25,7 +23,6 @@ def scan_watch_directories(self) -> None:
     from sqlalchemy import select
     from app.db.session import get_sync_session
     from app.models.ingest import WatchDir, WatchLog, Document, Source
-    from app.workers.pipeline import start_ingest_pipeline
 
     db = get_sync_session()
     try:
@@ -47,7 +44,7 @@ def _scan_directory(db, watch_dir) -> None:
     """Scan a single watch directory for new files."""
     from sqlalchemy import select
     from app.models.ingest import WatchLog, Document, Source
-    from app.workers.pipeline import start_ingest_pipeline
+    from app.config import get_settings
     import magic
 
     dir_path = Path(watch_dir.path)
@@ -107,7 +104,6 @@ def _scan_directory(db, watch_dir) -> None:
             except Exception:
                 pass
 
-            from app.config import get_settings
             settings = get_settings()
 
             object_key = f"sources/{watch_dir.source_id}/watch/{uuid.uuid4()}/{file_path.name}"
@@ -146,8 +142,13 @@ def _scan_directory(db, watch_dir) -> None:
             db.add(watch_log)
             db.commit()
 
-            # Enqueue ingest pipeline
-            task_id = start_ingest_pipeline(str(document.id))
+            # Enqueue ingest pipeline (v1 or v2 based on feature flag)
+            if settings.ingest_v2_enabled:
+                from app.workers.pipeline import start_ingest_pipeline_v2
+                task_id = start_ingest_pipeline_v2(str(document.id))
+            else:
+                from app.workers.pipeline import start_ingest_pipeline
+                task_id = start_ingest_pipeline(str(document.id))
 
             # Update document with task ID
             from sqlalchemy import update
@@ -182,7 +183,3 @@ def _is_file_stable(file_path: Path, wait_seconds: float = 2.0) -> bool:
         return size_before == size_after and size_after > 0
     except (FileNotFoundError, OSError):
         return False
-
-
-# Import Document here to avoid circular import issues
-from app.models.ingest import Document  # noqa: E402

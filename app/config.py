@@ -117,6 +117,46 @@ class Settings(BaseSettings):
     # Directory watcher
     watch_dir_poll_interval_seconds: int = 30
 
+    # --- Ingest v2 ---
+    ingest_v2_enabled: bool = False
+
+    # --- Retrieval scoring (env-var configurable) ---
+    # Expansion limits
+    retrieval_doc_expand_k: int = 5
+    retrieval_doc_max_hops: int = 2
+    retrieval_ontology_expand_k: int = 5
+
+    # Document-structure link weights
+    retrieval_weight_next_chunk: float = 0.90
+    retrieval_weight_same_section: float = 0.88
+    retrieval_weight_same_artifact: float = 0.82
+    retrieval_weight_same_page: float = 0.78
+
+    # Score fusion weights (should sum to 1.0)
+    retrieval_semantic_weight: float = 0.65
+    retrieval_doc_structure_weight: float = 0.20
+    retrieval_ontology_weight: float = 0.15
+
+    # Ontology relation-specific weights
+    retrieval_onto_weight_is_variant_of: float = 0.95
+    retrieval_onto_weight_uses_component: float = 0.92
+    retrieval_onto_weight_is_subsystem_of: float = 0.90
+    retrieval_onto_weight_contains: float = 0.90
+    retrieval_onto_weight_part_of: float = 0.90
+    retrieval_onto_weight_interfaces_with: float = 0.85
+    retrieval_onto_weight_operates_on: float = 0.85
+    retrieval_onto_weight_meets_standard: float = 0.80
+    retrieval_onto_weight_related_to: float = 0.75
+    retrieval_onto_weight_default: float = 0.70
+
+    # Hop penalty and bonuses
+    retrieval_hop_penalty_base: float = 0.92
+    retrieval_mil_id_bonus: float = 0.03
+
+    # Legacy decay (fallback when chunk_links unavailable)
+    retrieval_cross_modal_decay: float = 0.85
+    retrieval_ontology_decay: float = 0.75
+
 
 @lru_cache
 def get_settings() -> Settings:

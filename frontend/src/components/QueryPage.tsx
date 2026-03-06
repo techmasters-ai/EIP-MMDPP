@@ -51,6 +51,10 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
     if (entity && rel && related) {
       provenanceLabel = `Via ontology: ${entity} --[${rel}]--> ${related}`;
     }
+  } else if (ctx?.source === "doc_structure") {
+    const linkType = ctx.link_type as string | undefined;
+    const hops = (ctx.hops as number) || 1;
+    provenanceLabel = `Via document structure: ${linkType || "link"}${hops > 1 ? ` (${hops} hops)` : ""}`;
   } else if (ctx?.source === "cross_modal") {
     const edge = ctx.edge_type as string | undefined;
     if (edge) provenanceLabel = `Via graph bridge: ${edge}`;
@@ -77,6 +81,23 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
       {provenanceLabel && (
         <div className="text-sm text-muted" style={{ marginBottom: "0.25rem" }}>
           {provenanceLabel}
+        </div>
+      )}
+
+      {item.image_url && (
+        <div className="result-image" style={{ margin: "0.5rem 0" }}>
+          <img
+            src={item.image_url}
+            alt={item.content_text || "Retrieved image"}
+            loading="lazy"
+            style={{
+              maxHeight: "300px",
+              maxWidth: "100%",
+              objectFit: "contain",
+              borderRadius: "4px",
+              border: "1px solid var(--color-border, #e0e0e0)",
+            }}
+          />
         </div>
       )}
 

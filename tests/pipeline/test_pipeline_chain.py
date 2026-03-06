@@ -67,16 +67,49 @@ class TestCollectEmbeddingsTask:
         assert collect_embeddings.name == "app.workers.pipeline.collect_embeddings"
 
 
-class TestDeprecatedTasksExist:
-    """Deprecated tasks still exist for backwards compatibility."""
+class TestStartIngestPipelineV2:
+    def test_creates_celery_chain(self):
+        """start_ingest_pipeline_v2 returns a chain of the expected tasks."""
+        from app.workers.pipeline import start_ingest_pipeline_v2
 
-    def test_chunk_and_embed_exists(self):
-        from app.workers.pipeline import chunk_and_embed
-        assert chunk_and_embed.name == "app.workers.pipeline.chunk_and_embed"
+        doc_id = str(uuid.uuid4())
+        with patch("app.workers.pipeline.chain") as mock_chain:
+            mock_chain.return_value.apply_async.return_value = MagicMock(id="v2-task-123")
+            result = start_ingest_pipeline_v2(doc_id)
+            assert result == "v2-task-123"
+            mock_chain.assert_called_once()
 
-    def test_extract_graph_entities_exists(self):
-        from app.workers.pipeline import extract_graph_entities
-        assert extract_graph_entities.name == "app.workers.pipeline.extract_graph_entities"
+
+class TestV2TasksRegistered:
+    """Verify all v2 pipeline tasks are registered."""
+
+    def test_prepare_document(self):
+        from app.workers.pipeline import prepare_document
+        assert prepare_document.name == "app.workers.pipeline.prepare_document"
+
+    def test_derive_text_chunks_and_embeddings(self):
+        from app.workers.pipeline import derive_text_chunks_and_embeddings
+        assert derive_text_chunks_and_embeddings.name == "app.workers.pipeline.derive_text_chunks_and_embeddings"
+
+    def test_derive_image_embeddings(self):
+        from app.workers.pipeline import derive_image_embeddings
+        assert derive_image_embeddings.name == "app.workers.pipeline.derive_image_embeddings"
+
+    def test_derive_ontology_graph(self):
+        from app.workers.pipeline import derive_ontology_graph
+        assert derive_ontology_graph.name == "app.workers.pipeline.derive_ontology_graph"
+
+    def test_derive_structure_links(self):
+        from app.workers.pipeline import derive_structure_links
+        assert derive_structure_links.name == "app.workers.pipeline.derive_structure_links"
+
+    def test_collect_derivations(self):
+        from app.workers.pipeline import collect_derivations
+        assert collect_derivations.name == "app.workers.pipeline.collect_derivations"
+
+    def test_finalize_document_v2(self):
+        from app.workers.pipeline import finalize_document_v2
+        assert finalize_document_v2.name == "app.workers.pipeline.finalize_document_v2"
 
 
 class TestTaskRouting:

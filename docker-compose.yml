@@ -138,13 +138,17 @@ services:
       - model_cache:/root/.cache
 
   # ---------------------------------------------------------------------------
-  # Worker — Celery worker (all queues)
+  # Worker — single Celery worker (all queues, default mode)
+  # Use WORKER_SPLIT_ENABLED=true to run split workers instead.
   # ---------------------------------------------------------------------------
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    profiles:
+      - ""
+      - default
     depends_on:
       postgres:
         condition: service_healthy
@@ -166,12 +170,121 @@ services:
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
-        --queues=ingest,extract,embed,graph
+        --queues=celery,ingest,extract,embed,graph
         --concurrency=${WORKER_CONCURRENCY:-4}
     volumes:
       - ./app:/app/app
       - model_cache:/root/.cache
       - watch_dirs:/watch
+    extra_hosts:
+      - "ollama:host-gateway"
+
+  # ---------------------------------------------------------------------------
+  # Split workers (v2) — activate with: docker compose --profile split up
+  # ---------------------------------------------------------------------------
+  worker-ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles:
+      - split
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      docling:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      MINIO_ENDPOINT: minio:9000
+    command: >
+      celery -A app.workers.celery_app worker
+        --loglevel=info
+        --queues=celery,ingest,extract
+        --concurrency=${WORKER_INGEST_CONCURRENCY:-4}
+        --hostname=worker-ingest@%h
+    volumes:
+      - ./app:/app/app
+      - model_cache:/root/.cache
+      - watch_dirs:/watch
+    extra_hosts:
+      - "ollama:host-gateway"
+
+  worker-embed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles:
+      - split
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      MINIO_ENDPOINT: minio:9000
+    command: >
+      celery -A app.workers.celery_app worker
+        --loglevel=info
+        --queues=embed
+        --concurrency=${WORKER_EMBED_CONCURRENCY:-2}
+        --hostname=worker-embed@%h
+    volumes:
+      - ./app:/app/app
+      - model_cache:/root/.cache
+    extra_hosts:
+      - "ollama:host-gateway"
+
+  worker-graph:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles:
+      - split
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      MINIO_ENDPOINT: minio:9000
+    command: >
+      celery -A app.workers.celery_app worker
+        --loglevel=info
+        --queues=graph
+        --concurrency=${WORKER_GRAPH_CONCURRENCY:-2}
+        --hostname=worker-graph@%h
+    volumes:
+      - ./app:/app/app
+      - model_cache:/root/.cache
     extra_hosts:
       - "ollama:host-gateway"
 

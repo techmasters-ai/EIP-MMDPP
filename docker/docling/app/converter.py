@@ -136,14 +136,18 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
 
 def _extract_elements(doc) -> list[ConvertedElement]:
     """Iterate Docling document items and map to ConvertedElement list."""
+    import hashlib
     from docling_core.types.doc import (
         DocItemLabel,
         ImageRefMode,
     )
 
     elements: list[ConvertedElement] = []
+    order_counter = 0
+    # Track current section path for heading hierarchy
+    section_stack: list[tuple[int, str]] = []  # (level, heading_text)
 
-    for item, _level in doc.iterate_items():
+    for item, level in doc.iterate_items():
         label = getattr(item, "label", None)
         page_no = _get_page_number(item)
 
@@ -155,27 +159,48 @@ def _extract_elements(doc) -> list[ConvertedElement]:
         ):
             text = item.export_to_markdown()
             if text.strip():
+                heading_level = level if level and level > 0 else 1
+                if label == DocItemLabel.TITLE:
+                    heading_level = 1
+
+                # Update section stack
+                while section_stack and section_stack[-1][0] >= heading_level:
+                    section_stack.pop()
+                section_stack.append((heading_level, text.strip()))
+                section_path = " > ".join(s[1] for s in section_stack)
+
+                uid = _make_element_uid(page_no, order_counter, "heading", text.strip())
                 elements.append(
                     ConvertedElement(
                         element_type="heading",
                         content_text=text.strip(),
                         page_number=page_no,
+                        element_uid=uid,
+                        element_order=order_counter,
+                        heading_level=heading_level,
+                        section_path=section_path,
                     )
                 )
+                order_counter += 1
 
         elif label == DocItemLabel.TABLE:
             md_table = item.export_to_markdown()
+            section_path = " > ".join(s[1] for s in section_stack) if section_stack else None
+            uid = _make_element_uid(page_no, order_counter, "table", md_table)
             elements.append(
                 ConvertedElement(
                     element_type="table",
                     content_text=md_table,
                     page_number=page_no,
                     metadata={"label": "table"},
+                    element_uid=uid,
+                    element_order=order_counter,
+                    section_path=section_path,
                 )
             )
+            order_counter += 1
 
         elif label == DocItemLabel.PICTURE:
-            # Try to get image bytes
             image_b64 = None
             caption_text = ""
             try:
@@ -192,6 +217,8 @@ def _extract_elements(doc) -> list[ConvertedElement]:
             except Exception:
                 pass
 
+            section_path = " > ".join(s[1] for s in section_stack) if section_stack else None
+            uid = _make_element_uid(page_no, order_counter, "image", caption_text)
             elements.append(
                 ConvertedElement(
                     element_type="image",
@@ -199,34 +226,56 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                     page_number=page_no,
                     image_base64=image_b64,
                     metadata={"label": "picture", "ext": "png"},
+                    element_uid=uid,
+                    element_order=order_counter,
+                    section_path=section_path,
                 )
             )
+            order_counter += 1
 
         elif label == DocItemLabel.FORMULA:
             text = item.export_to_markdown()
             if text.strip():
+                section_path = " > ".join(s[1] for s in section_stack) if section_stack else None
+                uid = _make_element_uid(page_no, order_counter, "equation", text.strip())
                 elements.append(
                     ConvertedElement(
                         element_type="equation",
                         content_text=text.strip(),
                         page_number=page_no,
                         metadata={"label": "formula"},
+                        element_uid=uid,
+                        element_order=order_counter,
+                        section_path=section_path,
                     )
                 )
+                order_counter += 1
 
         else:
-            # Default: treat as text (paragraphs, lists, captions, etc.)
             text = item.export_to_markdown()
             if text and text.strip():
+                section_path = " > ".join(s[1] for s in section_stack) if section_stack else None
+                uid = _make_element_uid(page_no, order_counter, "text", text.strip())
                 elements.append(
                     ConvertedElement(
                         element_type="text",
                         content_text=text.strip(),
                         page_number=page_no,
+                        element_uid=uid,
+                        element_order=order_counter,
+                        section_path=section_path,
                     )
                 )
+                order_counter += 1
 
     return elements
+
+
+def _make_element_uid(page_number: int | None, order: int, element_type: str, content: str) -> str:
+    """Generate a deterministic element UID from position and content."""
+    import hashlib
+    content_hash = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:8]
+    return f"{page_number or 0}-{order}-{element_type}-{content_hash}"
 
 
 def _get_page_number(item) -> int | None:
