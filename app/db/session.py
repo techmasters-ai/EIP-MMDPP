@@ -18,7 +18,7 @@ async_engine = create_async_engine(
     pool_timeout=30,
     pool_recycle=3600,
     pool_pre_ping=True,
-    echo=settings.app_env == "development",
+    echo=settings.sql_echo,
 )
 
 AsyncSessionFactory = async_sessionmaker(

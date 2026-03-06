@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     api_port: int = 8000
     log_level: str = "INFO"
+    sql_echo: bool = False
     secret_key: str = "change-me"
 
     # JWT

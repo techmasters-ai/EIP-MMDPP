@@ -447,7 +447,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
         # Advisory lock to prevent concurrent runs for same document
         db.execute(
             __import__("sqlalchemy").text(
-                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || ':text_embed'))"
+                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || '_text_embed'))"
             ),
             {"doc_id": document_id},
         )
@@ -561,7 +561,7 @@ def derive_image_embeddings(self, document_id: str) -> dict:
 
         db.execute(
             __import__("sqlalchemy").text(
-                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || ':image_embed'))"
+                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || '_image_embed'))"
             ),
             {"doc_id": document_id},
         )
@@ -672,7 +672,7 @@ def derive_ontology_graph(self, document_id: str) -> dict:
 
         db.execute(
             __import__("sqlalchemy").text(
-                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || ':ontology_graph'))"
+                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || '_ontology_graph'))"
             ),
             {"doc_id": document_id},
         )
@@ -849,7 +849,7 @@ def derive_structure_links(self, document_id: str) -> dict:
 
         db.execute(
             __import__("sqlalchemy").text(
-                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || ':structure_links'))"
+                "SELECT pg_advisory_xact_lock(hashtext(:doc_id || '_structure_links'))"
             ),
             {"doc_id": document_id},
         )
