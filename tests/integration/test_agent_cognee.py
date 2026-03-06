@@ -84,7 +84,7 @@ class TestMemoryModeValidation:
 class TestModeSchemaParity:
     """All modes return the same AgentContextResponse schema."""
 
-    @pytest.mark.parametrize("mode", ["text_semantic", "graph", "cross_modal", "memory"])
+    @pytest.mark.parametrize("mode", ["text_basic", "text_only", "images_only", "multi_modal", "memory"])
     async def test_all_modes_return_same_schema(
         self, async_client: AsyncClient, mock_embeddings, mock_cognee, mode: str
     ):

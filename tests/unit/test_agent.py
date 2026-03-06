@@ -80,38 +80,34 @@ class TestBuildMarkdown:
         md = self._call("test", [_make_item(page_number=None)])
         assert "Page" not in md
 
-    def test_graph_node_entity_name_shown(self):
+    def test_ontology_context_shown(self):
         item = _make_item(
-            modality="graph_node",
-            content_text=None,
+            content_text="Some related chunk text",
             context={
-                "entity": {
-                    "properties": {"name": "Patriot PAC-3"},
-                    "labels": ["EQUIPMENT_SYSTEM"],
-                },
+                "source": "ontology",
                 "rel_type": "IS_SUBSYSTEM_OF",
-                "neighbor": {
-                    "properties": {"name": "MK-4 Guidance Computer"},
-                    "labels": ["SUBSYSTEM"],
-                },
-            },
-        )
-        md = self._call("test", [item])
-        assert "Patriot PAC-3" in md
-
-    def test_graph_node_relationship_shown(self):
-        item = _make_item(
-            modality="graph_node",
-            content_text=None,
-            context={
-                "entity": {"properties": {"name": "MK-4 Guidance Computer"}},
-                "rel_type": "IS_SUBSYSTEM_OF",
-                "neighbor": {"properties": {"name": "Patriot PAC-3"}},
+                "entity_name": "MK-4 Guidance Computer",
+                "related_name": "Patriot PAC-3",
             },
         )
         md = self._call("test", [item])
         assert "IS_SUBSYSTEM_OF" in md
+        assert "MK-4 Guidance Computer" in md
         assert "Patriot PAC-3" in md
+        assert "Via ontology" in md
+
+    def test_cross_modal_context_shown(self):
+        item = _make_item(
+            content_text="A bridged chunk",
+            context={
+                "source": "cross_modal",
+                "edge_type": "SAME_PAGE",
+                "source_chunk_id": "abc123",
+            },
+        )
+        md = self._call("test", [item])
+        assert "SAME_PAGE" in md
+        assert "Via graph bridge" in md
 
     def test_multiple_results_all_present(self):
         items = [_make_item(content_text=f"chunk {i}") for i in range(5)]
@@ -122,6 +118,32 @@ class TestBuildMarkdown:
     def test_modality_shown_in_header(self):
         md = self._call("test", [_make_item(modality="schematic")])
         assert "schematic" in md
+
+    def test_ontology_context_partial_fields(self):
+        """Ontology context with missing entity_name should not crash or show Via ontology."""
+        item = _make_item(
+            context={"source": "ontology", "rel_type": "IS_SUBSYSTEM_OF"},
+        )
+        md = self._call("test", [item])
+        assert "Via ontology" not in md
+
+    def test_cross_modal_context_without_edge_type(self):
+        """Cross-modal context without edge_type should not show Via graph bridge."""
+        item = _make_item(
+            context={"source": "cross_modal", "source_chunk_id": "abc"},
+        )
+        md = self._call("test", [item])
+        assert "Via graph bridge" not in md
+
+    def test_no_content_text_and_no_context(self):
+        """Item with no content_text and no context should still render header."""
+        item = _make_item(content_text=None, context=None)
+        md = self._call("test", [item])
+        assert "### Result 1" in md
+
+    def test_image_modality_result(self):
+        md = self._call("test", [_make_item(modality="image")])
+        assert "image" in md
 
 
 # ---------------------------------------------------------------------------
@@ -170,3 +192,19 @@ class TestBuildSources:
         item.chunk_id = uid
         sources = self._call([item])
         assert sources[0].chunk_id == str(uid)
+
+    def test_mixed_modalities(self):
+        items = [
+            _make_item(modality="text"),
+            _make_item(modality="image"),
+            _make_item(modality="schematic"),
+        ]
+        sources = self._call(items)
+        modalities = [s.modality for s in sources]
+        assert modalities == ["text", "image", "schematic"]
+
+    def test_context_field_not_propagated(self):
+        """AgentSource has no context field — context should not carry over."""
+        item = _make_item(context={"source": "ontology", "rel_type": "CONTAINS"})
+        sources = self._call([item])
+        assert not hasattr(sources[0], "context")

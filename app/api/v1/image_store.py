@@ -100,11 +100,11 @@ async def _image_semantic_search(
     sql = text(f"""
         SELECT ic.id, ic.artifact_id, ic.document_id, ic.chunk_text,
                ic.modality, ic.page_number, ic.classification,
-               1 - (ic.embedding <=> :embedding::vector) AS score
+               1 - (ic.embedding <=> CAST(:embedding AS vector)) AS score
         FROM retrieval.image_chunks ic
         WHERE ic.embedding IS NOT NULL
         {filter_clauses}
-        ORDER BY ic.embedding <=> :embedding::vector
+        ORDER BY ic.embedding <=> CAST(:embedding AS vector)
         LIMIT :top_k
     """)
 

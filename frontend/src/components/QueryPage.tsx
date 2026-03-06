@@ -1,33 +1,35 @@
-import React, { useState } from "react";
-import { unifiedQuery, type QueryMode, type QueryResultItem, type SectionResults } from "../api/client";
+import React, { useState, useCallback } from "react";
+import { unifiedQuery, type QueryMode, type QueryResultItem } from "../api/client";
 
 const MODES: { value: QueryMode; label: string; description: string }[] = [
   {
-    value: "text_semantic",
-    label: "Text",
-    description: "BGE vector similarity search on text chunks",
+    value: "text_basic",
+    label: "Text Basic",
+    description: "Simple BGE vector RAG search on text chunks",
   },
   {
-    value: "image_semantic",
-    label: "Images",
-    description: "CLIP vector search on image chunks (text-to-image or image-to-image)",
+    value: "text_only",
+    label: "Text Only",
+    description: "Full multi-modal pipeline, filtered to text results",
   },
   {
-    value: "graph",
-    label: "Graph",
-    description: "Entity + relationship traversal via Apache AGE",
+    value: "images_only",
+    label: "Images Only",
+    description: "Full multi-modal pipeline, filtered to image results",
   },
   {
-    value: "cross_modal",
-    label: "Cross-Modal",
-    description: "Text-to-image or image-to-text via graph bridging",
+    value: "multi_modal",
+    label: "Multi-Modal",
+    description: "Full multi-modal pipeline, all results unfiltered",
   },
   {
     value: "memory",
-    label: "Memory",
-    description: "Search Cognee approved memory",
+    label: "Trusted Data",
+    description: "Search approved trusted data",
   },
 ];
+
+const IMAGE_MODES: Set<QueryMode> = new Set(["text_only", "images_only", "multi_modal"]);
 
 function scoreColor(score: number): string {
   if (score >= 0.85) return "var(--color-success)";
@@ -38,23 +40,20 @@ function scoreColor(score: number): string {
 function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const [expanded, setExpanded] = useState(false);
 
-  let displayText = item.content_text;
-  let entityName = "";
-  let relInfo = "";
+  const displayText = item.content_text;
+  const ctx = item.context as Record<string, unknown> | undefined;
 
-  if (!displayText && item.context) {
-    const entity = item.context["entity"] as Record<string, unknown> | undefined;
-    if (entity) {
-      const props = entity["properties"] as Record<string, unknown> | undefined;
-      entityName = String(props?.["name"] ?? entity["name"] ?? "");
-      const relType = item.context["rel_type"] as string | undefined;
-      const neighbor = item.context["neighbor"] as Record<string, unknown> | undefined;
-      if (neighbor) {
-        const nProps = neighbor["properties"] as Record<string, unknown> | undefined;
-        const nName = String(nProps?.["name"] ?? neighbor["name"] ?? "");
-        if (relType && nName) relInfo = `${relType} -> ${nName}`;
-      }
+  let provenanceLabel = "";
+  if (ctx?.source === "ontology") {
+    const entity = ctx.entity_name as string | undefined;
+    const rel = ctx.rel_type as string | undefined;
+    const related = ctx.related_name as string | undefined;
+    if (entity && rel && related) {
+      provenanceLabel = `Via ontology: ${entity} --[${rel}]--> ${related}`;
     }
+  } else if (ctx?.source === "cross_modal") {
+    const edge = ctx.edge_type as string | undefined;
+    if (edge) provenanceLabel = `Via graph bridge: ${edge}`;
   }
 
   const truncated = displayText && displayText.length > 400 && !expanded;
@@ -75,14 +74,9 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         )}
       </div>
 
-      {entityName && (
-        <div className="text-bold" style={{ marginBottom: "0.25rem" }}>
-          {entityName}
-        </div>
-      )}
-      {relInfo && (
+      {provenanceLabel && (
         <div className="text-sm text-muted" style={{ marginBottom: "0.25rem" }}>
-          {relInfo}
+          {provenanceLabel}
         </div>
       )}
 
@@ -103,8 +97,8 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
       )}
 
       <div className="result-meta">
-        {item.chunk_id && <span>Chunk: {String(item.chunk_id).slice(0, 8)}\u2026</span>}
-        {item.artifact_id && <span>Artifact: {String(item.artifact_id).slice(0, 8)}\u2026</span>}
+        {item.chunk_id && <span>Chunk: {String(item.chunk_id).slice(0, 8)}&hellip;</span>}
+        {item.artifact_id && <span>Artifact: {String(item.artifact_id).slice(0, 8)}&hellip;</span>}
       </div>
     </div>
   );
@@ -112,44 +106,65 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
 
 export function QueryPage() {
   const [queryText, setQueryText] = useState("");
-  const [selectedModes, setSelectedModes] = useState<Set<QueryMode>>(new Set(["text_semantic"]));
+  const [queryImage, setQueryImage] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [selectedMode, setSelectedMode] = useState<QueryMode>("text_basic");
   const [topK, setTopK] = useState(10);
-  const [sections, setSections] = useState<Record<string, SectionResults> | null>(null);
+  const [results, setResults] = useState<QueryResultItem[] | null>(null);
+  const [totalResults, setTotalResults] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
 
-  const toggleMode = (mode: QueryMode) => {
-    setSelectedModes((prev) => {
-      const next = new Set(prev);
-      if (next.has(mode)) {
-        if (next.size > 1) next.delete(mode); // keep at least one
-      } else {
-        next.add(mode);
-      }
-      return next;
-    });
+  const showImageInput = IMAGE_MODES.has(selectedMode);
+
+  const handleImageFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      setImagePreview(dataUrl);
+      setQueryImage(dataUrl.split(",")[1]);
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (file && file.type.startsWith("image/")) handleImageFile(file);
+    },
+    [handleImageFile],
+  );
+
+  const clearImage = () => {
+    setQueryImage(null);
+    setImagePreview(null);
   };
+
+  const hasQuery = queryText.trim() || queryImage;
 
   const handleQuery = async (e: React.FormEvent) => {
     e.preventDefault();
-    const q = queryText.trim();
-    if (!q) return;
+    if (!hasQuery) return;
 
     setLoading(true);
     setError(null);
-    setSections(null);
+    setResults(null);
+    setTotalResults(0);
     setElapsed(null);
     const t0 = performance.now();
 
     try {
       const res = await unifiedQuery({
-        query_text: q,
-        modes: Array.from(selectedModes),
+        query_text: queryText.trim() || undefined,
+        query_image: queryImage || undefined,
+        mode: selectedMode,
         top_k: topK,
         include_context: true,
       });
-      setSections(res.sections);
+      setResults(res.results);
+      setTotalResults(res.total);
       setElapsed(Math.round(performance.now() - t0));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
@@ -158,30 +173,72 @@ export function QueryPage() {
     }
   };
 
-  const totalResults = sections
-    ? Object.values(sections).reduce((sum, s) => sum + s.total, 0)
-    : 0;
-
   return (
     <div>
       <div className="card card-body">
         <form onSubmit={(e) => void handleQuery(e)}>
           <div className="field">
-            <label>Query modes (select one or more)</label>
+            <label>Query mode</label>
             <div className="mode-selector" style={{ marginBottom: "1rem" }}>
               {MODES.map((m) => (
                 <button
                   key={m.value}
                   type="button"
-                  className={`mode-btn${selectedModes.has(m.value) ? " active" : ""}`}
+                  className={`mode-btn${selectedMode === m.value ? " active" : ""}`}
                   title={m.description}
-                  onClick={() => toggleMode(m.value)}
+                  onClick={() => setSelectedMode(m.value)}
                 >
                   {m.label}
                 </button>
               ))}
             </div>
           </div>
+
+          {showImageInput && (
+            <div className="field" style={{ marginBottom: "1rem" }}>
+              <label>Query image (optional &mdash; for image-based search)</label>
+              {imagePreview ? (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "1rem" }}>
+                  <img
+                    src={imagePreview}
+                    alt="Query preview"
+                    style={{ maxWidth: "160px", maxHeight: "120px", borderRadius: "4px", border: "1px solid var(--color-border)" }}
+                  />
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={clearImage}>
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <div
+                  className="drop-zone"
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDrop}
+                  onClick={() => document.getElementById("query-image-input")?.click()}
+                  style={{
+                    cursor: "pointer",
+                    textAlign: "center",
+                    padding: "1.5rem",
+                    border: "2px dashed var(--color-border)",
+                    borderRadius: "6px",
+                  }}
+                >
+                  <div className="text-muted text-sm">
+                    Drop an image here or click to select &mdash; text-only queries also work for text-to-image search
+                  </div>
+                  <input
+                    id="query-image-input"
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleImageFile(file);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="field-row" style={{ alignItems: "flex-end" }}>
             <div className="field" style={{ flex: 1 }}>
@@ -210,7 +267,7 @@ export function QueryPage() {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={loading || !queryText.trim()}
+                disabled={loading || !hasQuery}
               >
                 {loading ? <><span className="spinner" /> Searching&hellip;</> : "Search"}
               </button>
@@ -221,13 +278,13 @@ export function QueryPage() {
 
       {error && <div className="alert alert-error" style={{ marginTop: "1rem" }}>{error}</div>}
 
-      {sections !== null && (
+      {results !== null && (
         <div className="results">
           <div className="flex-center gap-sm" style={{ marginBottom: "0.5rem" }}>
             <span className="text-sm text-muted">
               {totalResults === 0
                 ? "No results found."
-                : `${totalResults} result${totalResults !== 1 ? "s" : ""} across ${Object.keys(sections).length} mode${Object.keys(sections).length !== 1 ? "s" : ""}`}
+                : `${totalResults} result${totalResults !== 1 ? "s" : ""}`}
               {elapsed != null && ` \u2014 ${elapsed}ms`}
             </span>
           </div>
@@ -240,22 +297,8 @@ export function QueryPage() {
               </div>
             </div>
           ) : (
-            Object.entries(sections).map(([mode, section]) => (
-              <div key={mode} style={{ marginBottom: "1.5rem" }}>
-                <h3 style={{ marginBottom: "0.5rem", textTransform: "capitalize" }}>
-                  {mode.replace(/_/g, " ")}
-                  <span className="text-sm text-muted" style={{ marginLeft: "0.5rem" }}>
-                    ({section.total} result{section.total !== 1 ? "s" : ""})
-                  </span>
-                </h3>
-                {section.results.length === 0 ? (
-                  <p className="text-sm text-muted">No results for this mode.</p>
-                ) : (
-                  section.results.map((item, i) => (
-                    <ResultCard key={`${mode}-${i}`} item={item} index={i} />
-                  ))
-                )}
-              </div>
+            results.map((item: QueryResultItem, i: number) => (
+              <ResultCard key={`result-${i}`} item={item} index={i} />
             ))
           )}
         </div>
@@ -263,7 +306,7 @@ export function QueryPage() {
 
       <div className="api-info mt-md">
         <strong>LangGraph tool endpoint:</strong>{" "}
-        <code>GET /v1/agent/context?query=&hellip;&amp;mode=text_semantic&amp;top_k=10</code>
+        <code>GET /v1/agent/context?query=&hellip;&amp;mode=text_basic&amp;top_k=10</code>
         <br />
         Returns a pre-formatted markdown context string ready for LLM prompt injection.
       </div>

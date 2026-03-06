@@ -20,7 +20,7 @@ from app.schemas.sources import (
     WatchDirCreate,
     WatchDirResponse,
 )
-from app.services.storage import stream_upload_async
+from app.services.storage import stream_upload_async, delete_object_async
 from app.config import get_settings
 
 settings = get_settings()
@@ -101,6 +101,20 @@ async def upload_document(
         key=object_key,
         content_type=file.content_type or "application/octet-stream",
     )
+
+    # Check for duplicate within the same source
+    existing_doc = await db.execute(
+        select(Document).where(
+            Document.source_id == source_id,
+            Document.file_hash == file_hash,
+        )
+    )
+    if existing_doc.scalar_one_or_none():
+        await delete_object_async(settings.minio_bucket_raw, key)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Duplicate Document Upload",
+        )
 
     document = Document(
         id=doc_id,

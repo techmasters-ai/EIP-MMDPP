@@ -43,26 +43,20 @@ def build_markdown(query: str, results: list[QueryResultItem]) -> str:
 
         if item.content_text:
             lines.append(f"\n{item.content_text.strip()}\n")
-        elif item.context and isinstance(item.context.get("entity"), dict):
-            entity = item.context["entity"]
-            name = (
-                entity.get("properties", {}).get("name", "")
-                or entity.get("name", "")
-            )
+
+        if item.context and item.context.get("source") == "ontology":
             rel_type = item.context.get("rel_type", "")
-            neighbor = item.context.get("neighbor")
-            neighbor_name = ""
-            if isinstance(neighbor, dict):
-                neighbor_name = (
-                    neighbor.get("properties", {}).get("name", "")
-                    or neighbor.get("name", "")
-                )
-            if name:
-                lines.append(f"\n**Entity**: {name}")
-            if rel_type and neighbor_name:
-                lines.append(f"**Relationship**: {name} \u2013[{rel_type}]\u2192 {neighbor_name}")
+            entity_name = item.context.get("entity_name", "")
+            related_name = item.context.get("related_name", "")
+            if entity_name and rel_type and related_name:
+                lines.append(f"**Via ontology**: {entity_name} --[{rel_type}]--> {related_name}")
             lines.append("")
-        else:
+        elif item.context and item.context.get("source") == "cross_modal":
+            edge_type = item.context.get("edge_type", "")
+            if edge_type:
+                lines.append(f"**Via graph bridge**: {edge_type}")
+            lines.append("")
+        elif not item.content_text:
             lines.append("")
 
     return "\n".join(lines)

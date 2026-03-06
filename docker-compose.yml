@@ -167,7 +167,7 @@ services:
       celery -A app.workers.celery_app worker
         --loglevel=info
         --queues=ingest,extract,embed,graph
-        --concurrency=4
+        --concurrency=${WORKER_CONCURRENCY:-4}
     volumes:
       - ./app:/app/app
       - model_cache:/root/.cache

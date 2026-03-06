@@ -12,6 +12,15 @@ before any Cypher function can be called in a session.
 Parameter binding: AGE accepts a third agtype argument to cypher() for
 named parameters accessed via $param_name in Cypher. We use this to avoid
 SQL injection from entity names extracted by the NER pipeline.
+
+Driver-specific syntax for the agtype parameter:
+  - psycopg2 (sync/Celery):  :params::agtype  → sends $1::agtype server-side
+  - asyncpg  (async/FastAPI): CAST(:params AS agtype) → asyncpg can't parse ::
+
+Colon escaping: Cypher uses colons for label syntax (n:LABEL) and map
+keys ({key: $val}). SQLAlchemy's text() treats :word as a bind parameter.
+We escape colons inside the Cypher $$...$$ block with \\: so SQLAlchemy
+passes them through as literal colons to PostgreSQL.
 """
 
 from __future__ import annotations
@@ -27,6 +36,64 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 GRAPH_NAME = "eip_kg"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _escape_cypher(cypher: str) -> str:
+    r"""Escape colons in Cypher text so SQLAlchemy text() doesn't mis-parse them.
+
+    Cypher uses colons for label syntax (n:LABEL) and map literals
+    ({key: $val}). SQLAlchemy's text() interprets :word as a named bind
+    parameter. Replacing : with \: tells SQLAlchemy to emit a literal colon.
+    The real bind parameter (:params outside $$...$$) is unaffected.
+    """
+    return cypher.replace(":", r"\:")
+
+
+def _sanitize_label(label: str) -> str:
+    """Sanitize a string for use as an AGE node/edge label.
+
+    Allows only alphanumeric characters and underscores. AGE labels must
+    match [A-Za-z_][A-Za-z0-9_]*.
+    """
+    import re
+    sanitized = re.sub(r"[^A-Za-z0-9_]", "_", label)
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "_" + sanitized
+    return sanitized or "UNKNOWN"
+
+
+def _parse_agtype(value: Any) -> Any:
+    """Parse an agtype value returned from PostgreSQL.
+
+    AGE returns agtype values as strings. This helper handles the common cases:
+    - JSON objects/arrays → parsed dict/list
+    - Quoted strings → stripped string
+    - Null → None
+    - Numbers → int/float
+    """
+    if value is None:
+        return None
+
+    s = str(value).strip()
+
+    if s == "null":
+        return None
+
+    # Try JSON parse first (handles objects, arrays, numbers, booleans)
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Strip surrounding quotes from plain strings
+    if s.startswith('"') and s.endswith('"'):
+        return s[1:-1]
+
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +123,6 @@ def upsert_node(
     Uses MERGE on (entity_type {name, artifact_id}) to be idempotent.
     Returns the node's id property (UUID string), or None on failure.
     """
-    setup_age_session(session)
-
     node_id = str(uuid.uuid4())
     props = properties or {}
     props.update({
@@ -67,10 +132,8 @@ def upsert_node(
         "confidence": confidence,
     })
 
-    # Escape properties as a JSON string for the agtype parameter
     params_json = json.dumps({"props": props, "name": name})
 
-    # AGE Cypher: MERGE on name + artifact_id, update properties on match
     cypher = f"""
         MERGE (n:{_sanitize_label(entity_type)} {{name: $props.name}})
         ON CREATE SET
@@ -88,16 +151,17 @@ def upsert_node(
     """
 
     try:
-        result = session.execute(
-            text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (node_id agtype)
-            """),
-            {"params": params_json},
-        )
-        row = result.fetchone()
+        setup_age_session(session)
+        with session.begin_nested():
+            result = session.execute(
+                text(f"""
+                    SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                        :params::agtype) AS (node_id agtype)
+                """),
+                {"params": params_json},
+            )
+            row = result.fetchone()
         if row:
-            # agtype returns JSON strings with quotes; strip them
             returned_id = str(row[0]).strip('"')
             return returned_id if returned_id != "null" else node_id
         return node_id
@@ -120,8 +184,6 @@ def upsert_relationship(
 
     Matches source and target by name+label. Returns True on success.
     """
-    setup_age_session(session)
-
     params_json = json.dumps({
         "from_name": from_name,
         "to_name": to_name,
@@ -145,13 +207,15 @@ def upsert_relationship(
     """
 
     try:
-        session.execute(
-            text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (count agtype)
-            """),
-            {"params": params_json},
-        )
+        setup_age_session(session)
+        with session.begin_nested():
+            session.execute(
+                text(f"""
+                    SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                        :params::agtype) AS (count agtype)
+                """),
+                {"params": params_json},
+            )
         return True
     except Exception as e:
         logger.warning(
@@ -184,7 +248,7 @@ def search_nodes_by_name(
     try:
         result = session.execute(
             text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
+                SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
                     :params::agtype) AS (node agtype, entity_type agtype)
             """),
             {"params": params_json},
@@ -233,7 +297,7 @@ def get_node_neighborhood(
     try:
         result = session.execute(
             text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
+                SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
                     :params::agtype) AS (node agtype, rel_type agtype, neighbor agtype)
             """),
             {"params": params_json},
@@ -296,8 +360,6 @@ def upsert_document_node(
     properties: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
     """Create or update a DOCUMENT node in the knowledge graph."""
-    setup_age_session(session)
-
     props = properties or {}
     props.update({"document_id": document_id, "title": title})
     params_json = json.dumps({"props": props, "doc_id": document_id})
@@ -310,13 +372,15 @@ def upsert_document_node(
     """
 
     try:
-        session.execute(
-            text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (doc_id agtype)
-            """),
-            {"params": params_json},
-        )
+        setup_age_session(session)
+        with session.begin_nested():
+            session.execute(
+                text(f"""
+                    SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                        :params::agtype) AS (doc_id agtype)
+                """),
+                {"params": params_json},
+            )
         return document_id
     except Exception as e:
         logger.warning("upsert_document_node failed for %s: %s", document_id, e)
@@ -329,8 +393,6 @@ def upsert_chunk_ref_node(
     chunk_type: str,
 ) -> Optional[str]:
     """Create or update a CHUNK_REF node linking to a text_chunk or image_chunk."""
-    setup_age_session(session)
-
     params_json = json.dumps({"chunk_id": chunk_id, "chunk_type": chunk_type})
 
     cypher = """
@@ -340,13 +402,15 @@ def upsert_chunk_ref_node(
     """
 
     try:
-        session.execute(
-            text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (cid agtype)
-            """),
-            {"params": params_json},
-        )
+        setup_age_session(session)
+        with session.begin_nested():
+            session.execute(
+                text(f"""
+                    SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                        :params::agtype) AS (cid agtype)
+                """),
+                {"params": params_json},
+            )
         return chunk_id
     except Exception as e:
         logger.warning("upsert_chunk_ref_node failed for %s: %s", chunk_id, e)
@@ -364,8 +428,6 @@ def create_structural_edge(
     Supports: CONTAINS_TEXT, CONTAINS_IMAGE, SAME_PAGE.
     These are deterministic edges and do NOT require dual-curator approval.
     """
-    setup_age_session(session)
-
     label = _sanitize_label(edge_type)
     params_json = json.dumps({"from_id": from_id, "to_id": to_id})
 
@@ -401,17 +463,62 @@ def create_structural_edge(
         """
 
     try:
-        session.execute(
-            text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (cnt agtype)
-            """),
-            {"params": params_json},
-        )
+        setup_age_session(session)
+        with session.begin_nested():
+            session.execute(
+                text(f"""
+                    SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                        :params::agtype) AS (cnt agtype)
+                """),
+                {"params": params_json},
+            )
         return True
     except Exception as e:
         logger.warning(
             "create_structural_edge failed %s→%s [%s]: %s", from_id, to_id, edge_type, e
+        )
+        return False
+
+
+def create_entity_chunk_edge(
+    session: Session,
+    entity_name: str,
+    entity_type: str,
+    chunk_id: str,
+) -> bool:
+    """Create an EXTRACTED_FROM edge from an ontology entity to a CHUNK_REF node.
+
+    Links entities discovered during graph extraction back to the text chunks
+    they were extracted from, enabling chunk-level provenance traversal.
+    """
+    label = _sanitize_label(entity_type)
+    params_json = json.dumps({
+        "entity_name": entity_name,
+        "chunk_id": chunk_id,
+    })
+
+    cypher = f"""
+        MATCH (e:{label} {{name: $entity_name}})
+        MATCH (c:CHUNK_REF {{chunk_id: $chunk_id}})
+        MERGE (e)-[r:EXTRACTED_FROM]->(c)
+        RETURN count(r) AS cnt
+    """
+
+    try:
+        setup_age_session(session)
+        with session.begin_nested():
+            session.execute(
+                text(f"""
+                    SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                        :params::agtype) AS (cnt agtype)
+                """),
+                {"params": params_json},
+            )
+        return True
+    except Exception as e:
+        logger.warning(
+            "create_entity_chunk_edge failed %s[%s]→%s: %s",
+            entity_name, entity_type, chunk_id, e,
         )
         return False
 
@@ -446,8 +553,8 @@ async def search_nodes_async(
     try:
         result = await session.execute(
             text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (node agtype, entity_type agtype)
+                SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                    CAST(:params AS agtype)) AS (node agtype, entity_type agtype)
             """),
             {"params": params_json},
         )
@@ -486,8 +593,8 @@ async def get_neighborhood_async(
     try:
         result = await session.execute(
             text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (node agtype, rel_type agtype, neighbor agtype)
+                SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                    CAST(:params AS agtype)) AS (node agtype, rel_type agtype, neighbor agtype)
             """),
             {"params": params_json},
         )
@@ -504,48 +611,57 @@ async def get_neighborhood_async(
         return []
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+async def get_ontology_linked_chunks_async(
+    session,
+    chunk_id: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Find chunks linked via ontology relationships.
 
-def _sanitize_label(label: str) -> str:
-    """Sanitize a string for use as an AGE node/edge label.
+    Path: CHUNK_REF <-[EXTRACTED_FROM]- Entity -[ontology_rel]- RelatedEntity
+          -[EXTRACTED_FROM]-> CHUNK_REF
 
-    Allows only alphanumeric characters and underscores. AGE labels must
-    match [A-Za-z_][A-Za-z0-9_]*.
+    Returns list of dicts with keys:
+        target_chunk_id, target_chunk_type, rel_type, entity_name, related_name
     """
-    import re
-    sanitized = re.sub(r"[^A-Za-z0-9_]", "_", label)
-    if sanitized and sanitized[0].isdigit():
-        sanitized = "_" + sanitized
-    return sanitized or "UNKNOWN"
+    await setup_age_session_async(session)
 
+    params_json = json.dumps({"chunk_id": chunk_id, "limit": limit})
 
-def _parse_agtype(value: Any) -> Any:
-    """Parse an agtype value returned from PostgreSQL.
-
-    AGE returns agtype values as strings. This helper handles the common cases:
-    - JSON objects/arrays → parsed dict/list
-    - Quoted strings → stripped string
-    - Null → None
-    - Numbers → int/float
+    cypher = """
+        MATCH (src:CHUNK_REF {chunk_id: $chunk_id})<-[:EXTRACTED_FROM]-(entity)-[r]-(related)-[:EXTRACTED_FROM]->(target:CHUNK_REF)
+        WHERE target.chunk_id <> $chunk_id
+        RETURN target.chunk_id, target.chunk_type, type(r), entity.name, related.name
+        LIMIT $limit
     """
-    if value is None:
-        return None
 
-    s = str(value).strip()
-
-    if s == "null":
-        return None
-
-    # Try JSON parse first (handles objects, arrays, numbers, booleans)
     try:
-        return json.loads(s)
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Strip surrounding quotes from plain strings
-    if s.startswith('"') and s.endswith('"'):
-        return s[1:-1]
-
-    return s
+        result = await session.execute(
+            text(f"""
+                SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                    CAST(:params AS agtype)) AS (
+                        target_chunk_id agtype,
+                        target_chunk_type agtype,
+                        rel_type agtype,
+                        entity_name agtype,
+                        related_name agtype
+                    )
+            """),
+            {"params": params_json},
+        )
+        return [
+            {
+                "target_chunk_id": str(_parse_agtype(row[0])).strip('"'),
+                "target_chunk_type": str(_parse_agtype(row[1])).strip('"'),
+                "rel_type": str(_parse_agtype(row[2])).strip('"'),
+                "entity_name": str(_parse_agtype(row[3])).strip('"'),
+                "related_name": str(_parse_agtype(row[4])).strip('"'),
+            }
+            for row in result.fetchall()
+        ]
+    except Exception as e:
+        logger.warning(
+            "get_ontology_linked_chunks_async failed for chunk %s: %s",
+            chunk_id, e,
+        )
+        return []

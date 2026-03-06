@@ -1,4 +1,4 @@
-"""Unified retrieval endpoint — queries any combination of knowledge layers."""
+"""Unified retrieval endpoint — single multi-modal pipeline with mode-based filtering."""
 
 import json
 import logging
@@ -8,11 +8,17 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1._retrieval_helpers import (
+    CROSS_MODAL_DECAY,
+    ONTOLOGY_DECAY,
+    build_image_filters as _build_image_filters,
+    build_text_filters as _build_text_filters,
+    deduplicate_results as _deduplicate_results,
+)
 from app.db.session import get_async_session
 from app.schemas.retrieval import (
     QueryMode,
     QueryResultItem,
-    SectionResults,
     UnifiedQueryRequest,
     UnifiedQueryResponse,
 )
@@ -26,52 +32,103 @@ async def unified_query(
     body: UnifiedQueryRequest,
     db: AsyncSession = Depends(get_async_session),
 ) -> UnifiedQueryResponse:
-    """Unified multi-mode retrieval query.
-
-    Accepts text and/or image input, queries any combination of knowledge
-    layers, returns structured sections per mode.
+    """Unified retrieval query.
 
     Modes:
-    - **text_semantic**: BGE vector search on text_chunks
-    - **image_semantic**: CLIP vector search on image_chunks
-    - **graph**: AGE Cypher traversal with ontology relationships
-    - **cross_modal**: Text→graph→images or Image→graph→text
-    - **memory**: Search Cognee approved memory
+    - **text_basic**: BGE vector search on text_chunks only
+    - **text_only**: Multi-modal pipeline, filtered to text results
+    - **images_only**: Multi-modal pipeline, filtered to image results
+    - **multi_modal**: Multi-modal pipeline, all results
+    - **memory**: Cognee approved memory search
     """
-    sections: dict[str, SectionResults] = {}
-
-    for mode in body.modes:
-        try:
-            if mode == QueryMode.text_semantic:
-                results = await _text_semantic_query(db, body)
-            elif mode == QueryMode.image_semantic:
-                results = await _image_semantic_query(db, body)
-            elif mode == QueryMode.graph:
-                results = await _graph_query(db, body)
-            elif mode == QueryMode.cross_modal:
-                results = await _cross_modal_query(db, body)
-            elif mode == QueryMode.memory:
-                results = await _memory_query(body)
-            else:
-                results = []
-            sections[mode.value] = SectionResults(results=results, total=len(results))
-        except Exception as e:
-            logger.warning("Mode %s failed: %s", mode, e)
-            sections[mode.value] = SectionResults(results=[], total=0)
+    try:
+        if body.mode == QueryMode.text_basic:
+            results = await _text_vector_search(db, body)
+        elif body.mode == QueryMode.memory:
+            results = await _memory_query(body)
+        elif body.mode in (QueryMode.text_only, QueryMode.images_only, QueryMode.multi_modal):
+            results = await _multi_modal_pipeline(db, body)
+        else:
+            results = []
+    except Exception as e:
+        logger.warning("Query mode %s failed: %s", body.mode, e)
+        results = []
 
     return UnifiedQueryResponse(
         query_text=body.query_text,
         query_image=body.query_image[:100] if body.query_image else None,
-        modes=[m.value for m in body.modes],
-        sections=sections,
+        mode=body.mode.value,
+        results=results,
+        total=len(results),
     )
 
 
 # ---------------------------------------------------------------------------
-# Text semantic query — pgvector HNSW on text_chunks
+# Multi-modal pipeline (shared by text_only, images_only, multi_modal)
 # ---------------------------------------------------------------------------
 
-async def _text_semantic_query(
+async def _multi_modal_pipeline(
+    db: AsyncSession, body: UnifiedQueryRequest
+) -> list[QueryResultItem]:
+    """Shared pipeline: vector search + cross-modal bridging + ontology traversal.
+
+    1. Vector search (text BGE + image CLIP as appropriate)
+    2. For each seed chunk: cross-modal graph bridging (structural edges)
+    3. For each seed chunk: ontology traversal (entity relationships)
+    4. Combine, deduplicate, rank, filter by mode
+    """
+    seed_results: list[QueryResultItem] = []
+
+    # Step 1: Vector searches
+    if body.query_text:
+        text_results = await _text_vector_search(db, body)
+        seed_results.extend(text_results)
+
+        image_results = await _image_vector_search(db, body)
+        seed_results.extend(image_results)
+
+    if body.query_image:
+        image_results = await _image_vector_search(db, body)
+        # Avoid duplicating if both query_text and query_image provided
+        existing_ids = {str(r.chunk_id) for r in seed_results if r.chunk_id}
+        for r in image_results:
+            if str(r.chunk_id) not in existing_ids:
+                seed_results.append(r)
+
+    # Steps 2+3: Expand each seed chunk via graph
+    expanded: list[QueryResultItem] = []
+    for seed in seed_results:
+        if not seed.chunk_id:
+            continue
+        chunk_id_str = str(seed.chunk_id)
+
+        cross_modal = await _expand_via_cross_modal(db, chunk_id_str, seed.score)
+        expanded.extend(cross_modal)
+
+        ontology = await _expand_via_ontology(db, chunk_id_str, seed.score)
+        expanded.extend(ontology)
+
+    all_results = seed_results + expanded
+
+    # Step 4: Deduplicate by chunk_id, keep highest score
+    deduped = _deduplicate_results(all_results)
+
+    # Step 5: Filter by mode
+    if body.mode == QueryMode.text_only:
+        deduped = [r for r in deduped if r.modality in ("text", "table")]
+    elif body.mode == QueryMode.images_only:
+        deduped = [r for r in deduped if r.modality in ("image", "schematic")]
+
+    # Sort by score descending, cap at top_k
+    deduped.sort(key=lambda x: x.score, reverse=True)
+    return deduped[:body.top_k]
+
+
+# ---------------------------------------------------------------------------
+# Text vector search — pgvector HNSW on text_chunks (BGE)
+# ---------------------------------------------------------------------------
+
+async def _text_vector_search(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
     if not body.query_text:
@@ -87,11 +144,11 @@ async def _text_semantic_query(
     sql = text(f"""
         SELECT tc.id, tc.artifact_id, tc.document_id, tc.chunk_text,
                tc.modality, tc.page_number, tc.classification,
-               1 - (tc.embedding <=> :embedding::vector) AS score
+               1 - (tc.embedding <=> CAST(:embedding AS vector)) AS score
         FROM retrieval.text_chunks tc
         WHERE tc.embedding IS NOT NULL
         {filter_clauses}
-        ORDER BY tc.embedding <=> :embedding::vector
+        ORDER BY tc.embedding <=> CAST(:embedding AS vector)
         LIMIT :top_k
     """)
 
@@ -114,10 +171,10 @@ async def _text_semantic_query(
 
 
 # ---------------------------------------------------------------------------
-# Image semantic query — pgvector HNSW on image_chunks
+# Image vector search — pgvector HNSW on image_chunks (CLIP)
 # ---------------------------------------------------------------------------
 
-async def _image_semantic_query(
+async def _image_vector_search(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
     from app.services.embedding import embed_text_for_clip, embed_images
@@ -142,11 +199,11 @@ async def _image_semantic_query(
     sql = text(f"""
         SELECT ic.id, ic.artifact_id, ic.document_id, ic.chunk_text,
                ic.modality, ic.page_number, ic.classification,
-               1 - (ic.embedding <=> :embedding::vector) AS score
+               1 - (ic.embedding <=> CAST(:embedding AS vector)) AS score
         FROM retrieval.image_chunks ic
         WHERE ic.embedding IS NOT NULL
         {filter_clauses}
-        ORDER BY ic.embedding <=> :embedding::vector
+        ORDER BY ic.embedding <=> CAST(:embedding AS vector)
         LIMIT :top_k
     """)
 
@@ -169,147 +226,110 @@ async def _image_semantic_query(
 
 
 # ---------------------------------------------------------------------------
-# Graph query — AGE Cypher traversal
+# Graph expansion — cross-modal bridging (structural edges)
 # ---------------------------------------------------------------------------
 
-async def _graph_query(
-    db: AsyncSession, body: UnifiedQueryRequest
-) -> list[QueryResultItem]:
-    query = body.query_text or ""
-    if not query.strip():
-        return []
-
-    from app.services.graph import search_nodes_async, get_neighborhood_async
-
-    matches = await search_nodes_async(db, query, limit=body.top_k)
-
-    results: list[QueryResultItem] = []
-    for match in matches:
-        node = match.get("node", {})
-        if not isinstance(node, dict):
-            continue
-
-        entity_type = match.get("entity_type", "UNKNOWN")
-        name = node.get("name", "") or node.get("properties", {}).get("name", "")
-
-        neighbors = await get_neighborhood_async(db, name, hop_count=2, limit=10)
-
-        results.append(
-            QueryResultItem(
-                score=node.get("confidence", 0.5) if isinstance(node.get("confidence"), (int, float)) else 0.5,
-                modality="graph_node",
-                content_text=name if body.include_context else None,
-                page_number=None,
-                classification="UNCLASSIFIED",
-                context={
-                    "entity_type": entity_type,
-                    "entity": node,
-                    "neighbors": neighbors[:5],
-                },
-            )
-        )
-
-    return results[:body.top_k]
-
-
-# ---------------------------------------------------------------------------
-# Cross-modal query — graph-bridged text↔image traversal
-# ---------------------------------------------------------------------------
-
-async def _cross_modal_query(
-    db: AsyncSession, body: UnifiedQueryRequest
-) -> list[QueryResultItem]:
-    """Cross-modal search via graph bridging.
-
-    Text → text_chunks → graph edges → connected image_chunks
-    Image → image_chunks → graph edges → connected text_chunks
-    """
-    from app.services.graph import setup_age_session_async, _parse_agtype
-
-    results: list[QueryResultItem] = []
-
-    # Text → Image path
-    if body.query_text:
-        text_results = await _text_semantic_query(
-            db, body.model_copy(update={"top_k": 5})
-        )
-        for tr in text_results:
-            if tr.chunk_id:
-                connected = await _get_connected_chunks(
-                    db, str(tr.chunk_id), "image_chunk"
-                )
-                results.extend(connected)
-
-    # Image → Text path
-    if body.query_image:
-        image_results = await _image_semantic_query(
-            db, body.model_copy(update={"top_k": 5})
-        )
-        for ir in image_results:
-            if ir.chunk_id:
-                connected = await _get_connected_chunks(
-                    db, str(ir.chunk_id), "text_chunk"
-                )
-                results.extend(connected)
-
-    # Deduplicate and sort by score
-    seen: set[str] = set()
-    unique: list[QueryResultItem] = []
-    for r in sorted(results, key=lambda x: x.score, reverse=True):
-        key = str(r.chunk_id)
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-    return unique[:body.top_k]
-
-
-async def _get_connected_chunks(
+async def _expand_via_cross_modal(
     db: AsyncSession,
     chunk_id: str,
-    target_chunk_type: str,
+    source_score: float,
 ) -> list[QueryResultItem]:
-    """Follow graph edges from a CHUNK_REF to find connected chunks of the target type."""
-    from app.services.graph import setup_age_session_async, _parse_agtype, GRAPH_NAME
+    """Follow structural graph edges (SAME_PAGE, CONTAINS_TEXT/IMAGE, EXTRACTED_FROM)
+    to find connected chunks. Score decays from source."""
+    from app.services.graph import setup_age_session_async, _parse_agtype, _escape_cypher, GRAPH_NAME
 
     await setup_age_session_async(db)
-
-    params_json = json.dumps({"chunk_id": chunk_id, "target_type": target_chunk_type})
+    params_json = json.dumps({"chunk_id": chunk_id})
 
     cypher = """
-        MATCH (src:CHUNK_REF {chunk_id: $chunk_id})-[r*1..3]-(target:CHUNK_REF {chunk_type: $target_type})
-        RETURN target.chunk_id AS target_chunk_id, type(r[0]) AS edge_type
-        LIMIT 10
+        MATCH (src:CHUNK_REF {chunk_id: $chunk_id})-[r*1..3]-(target:CHUNK_REF)
+        WHERE target.chunk_id <> $chunk_id
+        RETURN target.chunk_id AS target_chunk_id,
+               target.chunk_type AS target_chunk_type,
+               type(r[0]) AS edge_type
+        LIMIT 5
     """
 
     try:
         result = await db.execute(
             text(f"""
-                SELECT * FROM cypher('{GRAPH_NAME}', $${cypher}$$,
-                    :params::agtype) AS (target_id agtype, edge_type agtype)
+                SELECT * FROM cypher('{GRAPH_NAME}', $${_escape_cypher(cypher)}$$,
+                    CAST(:params AS agtype)) AS (
+                        target_id agtype, target_type agtype, edge_type agtype
+                    )
             """),
             {"params": params_json},
         )
         rows = result.fetchall()
     except Exception as e:
-        logger.debug("Cross-modal graph traversal failed: %s", e)
+        logger.debug("Cross-modal expansion failed for %s: %s", chunk_id, e)
         return []
 
     items: list[QueryResultItem] = []
     for row in rows:
         target_id_str = str(_parse_agtype(row[0])).strip('"')
-        edge_type = str(_parse_agtype(row[1])).strip('"')
+        target_type = str(_parse_agtype(row[1])).strip('"')
+        edge_type = str(_parse_agtype(row[2])).strip('"')
 
-        # Look up the actual chunk data
-        if target_chunk_type == "image_chunk":
-            chunk_data = await _lookup_image_chunk(db, target_id_str)
-        else:
-            chunk_data = await _lookup_text_chunk(db, target_id_str)
-
+        chunk_data = await _lookup_chunk_by_type(db, target_id_str, target_type)
         if chunk_data:
-            chunk_data.context = {"cross_modal_edge": edge_type, "source_chunk_id": chunk_id}
+            chunk_data.score = source_score * CROSS_MODAL_DECAY
+            chunk_data.context = {
+                "source": "cross_modal",
+                "edge_type": edge_type,
+                "source_chunk_id": chunk_id,
+            }
             items.append(chunk_data)
 
     return items
+
+
+# ---------------------------------------------------------------------------
+# Graph expansion — ontology traversal (entity relationships)
+# ---------------------------------------------------------------------------
+
+async def _expand_via_ontology(
+    db: AsyncSession,
+    chunk_id: str,
+    source_score: float,
+) -> list[QueryResultItem]:
+    """Follow ontology relationships (entity->related_entity->chunk) to find
+    semantically related chunks via the knowledge graph."""
+    from app.services.graph import get_ontology_linked_chunks_async
+
+    linked = await get_ontology_linked_chunks_async(db, chunk_id, limit=5)
+
+    items: list[QueryResultItem] = []
+    for link in linked:
+        target_id = link["target_chunk_id"]
+        target_type = link["target_chunk_type"]
+
+        chunk_data = await _lookup_chunk_by_type(db, target_id, target_type)
+        if chunk_data:
+            chunk_data.score = source_score * ONTOLOGY_DECAY
+            chunk_data.context = {
+                "source": "ontology",
+                "rel_type": link["rel_type"],
+                "entity_name": link["entity_name"],
+                "related_name": link["related_name"],
+                "source_chunk_id": chunk_id,
+            }
+            items.append(chunk_data)
+
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Chunk lookups
+# ---------------------------------------------------------------------------
+
+async def _lookup_chunk_by_type(
+    db: AsyncSession, chunk_id: str, chunk_type: str
+) -> QueryResultItem | None:
+    """Route to the correct lookup based on chunk_type."""
+    if chunk_type == "image_chunk":
+        return await _lookup_image_chunk(db, chunk_id)
+    return await _lookup_text_chunk(db, chunk_id)
 
 
 async def _lookup_text_chunk(db: AsyncSession, chunk_id: str) -> QueryResultItem | None:
@@ -324,7 +344,7 @@ async def _lookup_text_chunk(db: AsyncSession, chunk_id: str) -> QueryResultItem
         return None
     return QueryResultItem(
         chunk_id=row[0], artifact_id=row[1], document_id=row[2],
-        score=0.8, modality=row[4], content_text=row[3],
+        score=0.0, modality=row[4], content_text=row[3],
         page_number=row[5], classification=row[6],
     )
 
@@ -341,13 +361,13 @@ async def _lookup_image_chunk(db: AsyncSession, chunk_id: str) -> QueryResultIte
         return None
     return QueryResultItem(
         chunk_id=row[0], artifact_id=row[1], document_id=row[2],
-        score=0.8, modality=row[4], content_text=row[3],
+        score=0.0, modality=row[4], content_text=row[3],
         page_number=row[5], classification=row[6],
     )
 
 
 # ---------------------------------------------------------------------------
-# Memory query — Cognee search
+# Memory query — Cognee search (unchanged)
 # ---------------------------------------------------------------------------
 
 async def _memory_query(body: UnifiedQueryRequest) -> list[QueryResultItem]:
@@ -359,27 +379,5 @@ async def _memory_query(body: UnifiedQueryRequest) -> list[QueryResultItem]:
     return await cognee_search(body.query_text, body.top_k)
 
 
-# ---------------------------------------------------------------------------
-# Filter helpers
-# ---------------------------------------------------------------------------
-
-def _build_text_filters(body: UnifiedQueryRequest) -> str:
-    clauses = ""
-    if body.filters:
-        if body.filters.classification:
-            clauses += f" AND tc.classification = '{body.filters.classification}'"
-        if body.filters.document_ids:
-            doc_ids = ",".join(f"'{d}'" for d in body.filters.document_ids)
-            clauses += f" AND tc.document_id IN ({doc_ids})"
-    return clauses
-
-
-def _build_image_filters(body: UnifiedQueryRequest) -> str:
-    clauses = ""
-    if body.filters:
-        if body.filters.classification:
-            clauses += f" AND ic.classification = '{body.filters.classification}'"
-        if body.filters.document_ids:
-            doc_ids = ",".join(f"'{d}'" for d in body.filters.document_ids)
-            clauses += f" AND ic.document_id IN ({doc_ids})"
-    return clauses
+# Helpers (_deduplicate_results, _build_text_filters, _build_image_filters)
+# are imported from _retrieval_helpers.py at the top of this file.

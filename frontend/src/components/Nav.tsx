@@ -10,8 +10,8 @@ const NAV_ITEMS: { value: Page; label: string }[] = [
   { value: "query", label: "Search" },
   { value: "text", label: "Text Store" },
   { value: "images", label: "Image Store" },
-  { value: "graph", label: "Graph" },
-  { value: "memory", label: "Memory" },
+  { value: "graph", label: "Ontology" },
+  { value: "memory", label: "Trusted Data" },
 ];
 
 export function Nav({ page, onNavigate }: NavProps) {

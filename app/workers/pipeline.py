@@ -745,8 +745,9 @@ def connect_document_elements(self, document_id: str) -> None:
     - CONTAINS_TEXT edges: DOCUMENT → text CHUNK_REF
     - CONTAINS_IMAGE edges: DOCUMENT → image CHUNK_REF
     - SAME_PAGE edges: text CHUNK_REF ↔ image CHUNK_REF on same page
+    - EXTRACTED_FROM edges: ontology entity → CHUNK_REF (provenance)
     """
-    from app.models.ingest import Document
+    from app.models.ingest import Document, Artifact
     from app.models.retrieval import TextChunk, ImageChunk
     from sqlalchemy import select
 
@@ -766,6 +767,7 @@ def connect_document_elements(self, document_id: str) -> None:
             upsert_document_node,
             upsert_chunk_ref_node,
             create_structural_edge,
+            create_entity_chunk_edge,
         )
 
         # 1. Create DOCUMENT node
@@ -805,12 +807,51 @@ def connect_document_elements(self, document_id: str) -> None:
                 for tc_id in page_text_map[ic.page_number]:
                     create_structural_edge(db, tc_id, str(ic.id), "SAME_PAGE")
 
+        # 5. Link ontology entities to their source chunks (EXTRACTED_FROM)
+        entity_links = 0
+        artifacts_with_entities = db.execute(
+            select(Artifact).where(
+                Artifact.document_id == uuid.UUID(document_id),
+                Artifact.content_metadata.isnot(None),
+            )
+        ).scalars().all()
+
+        # Build artifact_id → [chunk_id] map from already-loaded text_chunks
+        artifact_chunk_map: dict[str, list[str]] = {}
+        for tc in text_chunks:
+            artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
+
+        for artifact in artifacts_with_entities:
+            metadata = artifact.content_metadata or {}
+            chunk_ids = artifact_chunk_map.get(str(artifact.id), [])
+            if not chunk_ids:
+                continue
+
+            # Collect entity (name, type) from either format
+            entities: list[tuple[str, str]] = []
+            graph_data = metadata.get("docling_graph_data")
+            if graph_data:
+                for node in graph_data.get("nodes", []):
+                    entities.append((
+                        node.get("name", node.get("id", "")),
+                        node.get("entity_type", "UNKNOWN"),
+                    ))
+            else:
+                for ent in metadata.get("extracted_entities", []):
+                    entities.append((ent["name"], ent["entity_type"]))
+
+            for (name, etype) in entities:
+                for chunk_id in chunk_ids:
+                    if create_entity_chunk_edge(db, name, etype, chunk_id):
+                        entity_links += 1
+
         db.commit()
         logger.info(
-            "connect_document_elements: document_id=%s text=%d image=%d",
+            "connect_document_elements: document_id=%s text=%d image=%d entity_links=%d",
             document_id,
             len(text_chunks),
             len(image_chunks),
+            entity_links,
         )
     except Exception as exc:
         logger.error("connect_document_elements failed for %s: %s", document_id, exc)

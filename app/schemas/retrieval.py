@@ -10,10 +10,10 @@ from app.schemas.common import APIModel
 
 
 class QueryMode(str, Enum):
-    text_semantic = "text_semantic"
-    image_semantic = "image_semantic"
-    graph = "graph"
-    cross_modal = "cross_modal"
+    text_basic = "text_basic"
+    text_only = "text_only"
+    images_only = "images_only"
+    multi_modal = "multi_modal"
     memory = "memory"
 
 
@@ -36,15 +36,10 @@ class QueryResultItem(APIModel):
     context: Optional[dict[str, Any]] = None  # graph neighbors, source info, etc.
 
 
-class SectionResults(APIModel):
-    results: list[QueryResultItem]
-    total: int
-
-
 class UnifiedQueryRequest(APIModel):
     query_text: Optional[str] = Field(None, max_length=4096)
     query_image: Optional[str] = None  # base64-encoded image or artifact reference
-    modes: list[QueryMode] = Field(default=[QueryMode.text_semantic])
+    mode: QueryMode = Field(default=QueryMode.text_basic)
     filters: Optional[QueryFilters] = None
     top_k: int = Field(default=10, ge=1, le=100)
     include_context: bool = True
@@ -59,14 +54,15 @@ class UnifiedQueryRequest(APIModel):
 class UnifiedQueryResponse(APIModel):
     query_text: Optional[str] = None
     query_image: Optional[str] = None
-    modes: list[str]
-    sections: dict[str, SectionResults]
+    mode: str
+    results: list[QueryResultItem]
+    total: int
 
 
 # Legacy aliases for backwards compatibility
 class QueryRequest(APIModel):
     query: str = Field(..., min_length=1, max_length=4096)
-    mode: QueryMode = QueryMode.text_semantic
+    mode: QueryMode = QueryMode.text_basic
     filters: Optional[QueryFilters] = None
     top_k: int = Field(default=10, ge=1, le=100)
     include_context: bool = True

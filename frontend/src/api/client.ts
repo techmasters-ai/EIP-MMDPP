@@ -46,16 +46,12 @@ export interface QueryResultItem {
   context?: Record<string, unknown>;
 }
 
-export interface SectionResults {
-  results: QueryResultItem[];
-  total: number;
-}
-
 export interface UnifiedQueryResponse {
   query_text?: string;
   query_image?: string;
-  modes: string[];
-  sections: Record<string, SectionResults>;
+  mode: string;
+  results: QueryResultItem[];
+  total: number;
 }
 
 export interface AgentSource {
@@ -73,7 +69,7 @@ export interface AgentContextResponse {
   sources: AgentSource[];
 }
 
-export type QueryMode = "text_semantic" | "image_semantic" | "graph" | "cross_modal" | "memory";
+export type QueryMode = "text_basic" | "text_only" | "images_only" | "multi_modal" | "memory";
 
 export interface TextIngestResponse {
   chunk_ids: string[];
@@ -233,7 +229,7 @@ export async function deleteWatchDir(id: string): Promise<void> {
 export async function unifiedQuery(params: {
   query_text?: string;
   query_image?: string;
-  modes: QueryMode[];
+  mode: QueryMode;
   top_k?: number;
   include_context?: boolean;
 }): Promise<UnifiedQueryResponse> {
@@ -311,6 +307,19 @@ export async function ingestGraphRelationship(params: {
   return handleResponse<GraphIngestResponse>(res);
 }
 
+export async function queryGraph(params: {
+  query: string;
+  top_k?: number;
+}): Promise<{ results: QueryResultItem[] }> {
+  const res = await fetch("/v1/graph/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: params.query, top_k: params.top_k ?? 20, hop_count: 2 }),
+  });
+  const data = await handleResponse<QueryResultItem[]>(res);
+  return { results: data };
+}
+
 // ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
@@ -363,7 +372,7 @@ export async function getAgentContext(params: {
 }): Promise<AgentContextResponse> {
   const search = new URLSearchParams({
     query: params.query,
-    mode: params.mode ?? "text_semantic",
+    mode: params.mode ?? "text_basic",
     top_k: String(params.top_k ?? 10),
   });
   const res = await fetch(`/v1/agent/context?${search}`);

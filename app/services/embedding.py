@@ -120,7 +120,7 @@ def embed_image(pil_image) -> list[float]:
     return embed_images([pil_image])[0]
 
 
-def embed_text_for_image_search(text: str) -> list[float]:
+def embed_text_for_clip(text: str) -> list[float]:
     """Embed a text string in the CLIP image embedding space for cross-modal queries."""
     import torch
     import open_clip

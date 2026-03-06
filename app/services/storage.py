@@ -123,6 +123,12 @@ async def stream_upload_async(
         return key, total_bytes, hasher.hexdigest()
 
 
+async def delete_object_async(bucket: str, key: str) -> None:
+    """Delete an object from MinIO."""
+    async with get_async_s3_client() as client:
+        await client.delete_object(Bucket=bucket, Key=key)
+
+
 async def download_bytes_async(bucket: str, key: str) -> bytes:
     """Download an object from MinIO and return its content as bytes."""
     async with get_async_s3_client() as client:

@@ -21,7 +21,7 @@ export function MemoryPanel() {
         {([
           ["proposals", "Proposals"],
           ["propose", "Propose Knowledge"],
-          ["search", "Search Memory"],
+          ["search", "Search Trusted Data"],
         ] as [Tab, string][]).map(([t, label]) => (
           <button
             key={t}
@@ -226,7 +226,7 @@ function ProposalsList() {
           <div className="empty-state-title">No proposals</div>
           <div className="text-muted text-sm">
             {filter === "all"
-              ? "No memory proposals yet. Use the \"Propose Knowledge\" tab to add one."
+              ? "No trusted data proposals yet. Use the \"Propose Knowledge\" tab to add one."
               : `No ${filter} proposals found.`}
           </div>
         </div>
@@ -306,10 +306,10 @@ function MemorySearch() {
     try {
       const res = await unifiedQuery({
         query_text: query.trim(),
-        modes: ["memory"],
+        mode: "memory",
         top_k: 20,
       });
-      setResults(res.sections["memory"]?.results ?? []);
+      setResults(res.results ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
@@ -323,7 +323,7 @@ function MemorySearch() {
         <form onSubmit={(e) => void handleSearch(e)}>
           <div className="field-row" style={{ alignItems: "flex-end" }}>
             <div className="field" style={{ flex: 1 }}>
-              <label htmlFor="memory-query">Search approved memory</label>
+              <label htmlFor="memory-query">Search approved trusted data</label>
               <input
                 id="memory-query"
                 type="search"
@@ -344,7 +344,7 @@ function MemorySearch() {
       {results !== null && (
         <div className="results mt-md">
           {results.length === 0 ? (
-            <p className="text-muted">No memory results found.</p>
+            <p className="text-muted">No trusted data results found.</p>
           ) : (
             results.map((item, i) => (
               <div key={i} className="result-card">

@@ -20,7 +20,7 @@ export function App() {
             <h1 className="page-title">Search Documents</h1>
             <p className="page-subtitle">
               Query across all knowledge layers: text vectors, image vectors,
-              ontology graph, cross-modal bridging, and approved memory.
+              ontology graph, cross-modal bridging, and approved trusted data.
             </p>
             <QueryPage />
           </div>
@@ -54,9 +54,9 @@ export function App() {
         )}
         {page === "memory" && (
           <div className="page">
-            <h1 className="page-title">Memory</h1>
+            <h1 className="page-title">Trusted Data</h1>
             <p className="page-subtitle">
-              Propose, review, and search governed knowledge in the Cognee memory layer.
+              Propose, review, and search governed knowledge in the trusted data layer.
             </p>
             <MemoryPanel />
           </div>

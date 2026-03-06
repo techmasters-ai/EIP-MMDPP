@@ -87,11 +87,11 @@ async def _text_semantic_search(
     sql = text(f"""
         SELECT tc.id, tc.artifact_id, tc.document_id, tc.chunk_text,
                tc.modality, tc.page_number, tc.classification,
-               1 - (tc.embedding <=> :embedding::vector) AS score
+               1 - (tc.embedding <=> CAST(:embedding AS vector)) AS score
         FROM retrieval.text_chunks tc
         WHERE tc.embedding IS NOT NULL
         {filter_clauses}
-        ORDER BY tc.embedding <=> :embedding::vector
+        ORDER BY tc.embedding <=> CAST(:embedding AS vector)
         LIMIT :top_k
     """)
 

@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into separate vector stores, builds a military equipment knowledge graph (Apache AGE), and maintains governed memory (Cognee). Supports 5 retrieval modes: text semantic, image semantic, graph traversal, cross-modal (graph-bridged), and memory search. Includes a user feedback → curator patch approval workflow and a React web UI.
+Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into separate vector stores, builds a military equipment knowledge graph (Apache AGE), and maintains governed trusted data (Cognee). Supports 5 retrieval modes: text basic, text only, images only, multi-modal, and trusted data search. Includes a user feedback → curator patch approval workflow and a React web UI.
 
 ## Architecture
 
@@ -14,7 +14,7 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
                     │   DOCUMENT ←→ CHUNK_REF nodes             │
                     │   Ontology entities (LLM-extracted)       │
                     │   CONTAINS_TEXT / CONTAINS_IMAGE /         │
-                    │   SAME_PAGE / ontology edges              │
+                    │   SAME_PAGE / EXTRACTED_FROM / ontology    │
                     └──────────┬───────────────┬────────────────┘
                                │               │
                     ┌──────────▼──────┐ ┌──────▼──────────┐
@@ -25,7 +25,7 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
                     └─────────────────┘ └─────────────────┘
 
                     ┌──────────────────────────────────────────┐
-                    │         Cognee Memory Layer               │
+                    │       Cognee Trusted Data Layer            │
                     │   NetworkX + LanceDB (separate store)     │
                     │   Governed: PROPOSED → APPROVED/REJECTED  │
                     └──────────────────────────────────────────┘
@@ -43,7 +43,7 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 | Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
 | Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
 | Graph Extraction | docling-graph + LLM (ontology-driven entity/relationship extraction) |
-| Memory | Cognee (NetworkX graph + LanceDB vector, governed approval workflow) |
+| Trusted Data | Cognee (NetworkX graph + LanceDB vector, governed approval workflow) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
@@ -93,7 +93,7 @@ All service lifecycle, database, worker, and test operations are available throu
 
 ## LLM Provider Configuration
 
-A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, Cognee memory). Each feature specifies its own model via a dedicated env var.
+A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, Cognee trusted data). Each feature specifies its own model via a dedicated env var.
 
 | Value | Description |
 |---|---|
@@ -108,7 +108,7 @@ OLLAMA_BASE_URL=http://ollama:11434
 
 # Per-feature model selection
 DOCLING_GRAPH_MODEL=llama3.2       # Model for graph entity/relationship extraction
-COGNEE_MODEL=llama3.2              # Model for Cognee memory operations
+COGNEE_MODEL=llama3.2              # Model for Cognee trusted data operations
 ```
 
 ## Running Tests
@@ -130,7 +130,7 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 
 ### Sources & Document Upload
 - `POST /v1/sources` — create a document collection
-- `POST /v1/sources/{id}/documents` — upload a document (streams to MinIO, triggers pipeline)
+- `POST /v1/sources/{id}/documents` — upload a document (streams to MinIO, triggers pipeline; 409 on duplicate file within same source)
 - `GET /v1/documents/{id}/status` — poll pipeline status
 
 ### Directory Watcher
@@ -150,52 +150,56 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 - `POST /v1/graph/ingest/relationship` — create a relationship edge
 - `POST /v1/graph/query` — Cypher traversal query
 
-### Memory (Cognee)
+### Trusted Data (Cognee)
 - `POST /v1/memory/ingest` — propose knowledge (status: PROPOSED)
 - `GET /v1/memory/proposals` — list proposals (filterable by status)
 - `POST /v1/memory/proposals/{id}/approve` — curator approves → writes to Cognee
 - `POST /v1/memory/proposals/{id}/reject` — curator rejects
-- `POST /v1/memory/query` — search approved Cognee memory
+- `POST /v1/memory/query` — search approved trusted data
 
-### Unified Retrieval (multi-mode)
+### Unified Retrieval
 
 ```json
 POST /v1/retrieval/query
 {
   "query_text": "Patriot PAC-3 guidance computer specifications",
-  "modes": ["text_semantic", "graph"],
+  "mode": "multi_modal",
   "top_k": 10,
   "include_context": true
 }
 ```
 
-Response returns structured sections per mode:
+Response returns a flat ranked results list:
 
 ```json
 {
-  "sections": {
-    "text_semantic": { "results": [...], "total": 5 },
-    "graph": { "results": [...], "total": 3 }
-  }
+  "mode": "multi_modal",
+  "results": [
+    { "chunk_id": "...", "score": 0.92, "modality": "text", "content_text": "..." },
+    { "chunk_id": "...", "score": 0.78, "modality": "image", "content_text": "..." }
+  ],
+  "total": 2
 }
 ```
 
 Query modes:
 
-| Mode | Description |
-|---|---|
-| `text_semantic` | BGE vector search on `text_chunks` |
-| `image_semantic` | CLIP vector search on `image_chunks` (text-to-image or image-to-image) |
-| `graph` | Entity + relationship traversal via Apache AGE |
-| `cross_modal` | Text→graph→image or image→graph→text via graph bridging |
-| `memory` | Search Cognee approved memory |
+| Mode | Input | Pipeline | Output |
+|---|---|---|---|
+| `text_basic` | Text only | BGE vector search | Text chunks |
+| `text_only` | Text or image | Full multi-modal pipeline | Filtered to text |
+| `images_only` | Text or image | Full multi-modal pipeline | Filtered to images |
+| `multi_modal` | Text or image | Full multi-modal pipeline | All results |
+| `memory` | Text | Cognee search | Approved trusted data |
+
+The multi-modal pipeline (modes 2-4) runs: vector search (BGE + CLIP) → cross-modal graph bridging (structural edges) → ontology traversal (entity relationships, 4 hops) → deduplicate → rank by score → filter by mode.
 
 ### Agent / LangGraph Context
 
 ```
 GET /v1/agent/context
   ?query=Patriot+PAC-3+guidance+computer
-  &mode=text_semantic
+  &mode=text_basic
   &top_k=10
   &include_sources=true
 ```
@@ -205,7 +209,7 @@ Returns a pre-formatted markdown context string for direct injection into an LLM
 ```python
 # LangGraph usage example
 resp = requests.get("http://localhost:8000/v1/agent/context",
-                    params={"query": query, "mode": "text_semantic"})
+                    params={"query": query, "mode": "text_basic"})
 system_msg = f"Use this context:\n\n{resp.json()['context']}"
 ```
 
@@ -226,7 +230,7 @@ validate_and_store
   → embed_image_chunks        ┘ (parallel via Celery chord)
   → extract_graph             (docling-graph + LLM entity/relationship extraction)
   → import_graph              (NetworkX → Apache AGE)
-  → connect_document_elements (DOCUMENT/CHUNK_REF/SAME_PAGE structural edges)
+  → connect_document_elements (DOCUMENT/CHUNK_REF/SAME_PAGE + EXTRACTED_FROM edges)
   → finalize_artifact
 ```
 
@@ -241,8 +245,8 @@ Text and image embedding run in parallel. Graph extraction uses LLM (via `LLM_PR
 | 1 | Core data pipeline: upload → text extract → embed → semantic query | Complete |
 | 2 | Multi-modal pipeline, graph extraction, all query modes, directory watcher | Complete |
 | 2.5 | React web UI (upload, directory monitor, query), LangGraph agent endpoint | Complete |
-| 2.6 | Cognee integration: memory query mode, dual-ingest pipeline step | Complete |
-| 2.7 | Knowledge restructure: split vector tables, per-layer endpoints, unified query, docling-graph, memory governance, UI overhaul | Complete |
+| 2.6 | Cognee integration: trusted data query mode, dual-ingest pipeline step | Complete |
+| 2.7 | Knowledge restructure: split vector tables, per-layer endpoints, unified query, docling-graph, trusted data governance, UI overhaul | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -256,7 +260,7 @@ app/
 │   ├── text_store.py     #   Text vector store ingest + query
 │   ├── image_store.py    #   Image vector store ingest + query
 │   ├── graph_store.py    #   Graph entity/relationship ingest + query
-│   ├── memory.py         #   Memory proposals + approval + search
+│   ├── memory.py         #   Trusted data proposals + approval + search
 │   ├── agent.py          #   LangGraph agent context endpoint
 │   ├── governance.py     #   Feedback + patch state machine
 │   └── sources.py        #   Sources CRUD, document upload, watch dirs
@@ -270,18 +274,18 @@ app/
 ├── workers/
 │   ├── pipeline.py       # Celery ingest pipeline (parallel text/image embed)
 │   └── watcher.py        # Celery Beat directory watcher
-├── models/               # SQLAlchemy ORM (ingest, retrieval, governance, auth, memory)
+├── models/               # SQLAlchemy ORM (ingest, retrieval, governance, auth, trusted_data)
 └── schemas/              # Pydantic request/response schemas
 docker/
 └── docling/              # Docling VLM conversion service (granite-docling-258M)
 frontend/
 ├── src/components/       # React components
-│   ├── QueryPage.tsx     #   Multi-mode search with sectioned results
+│   ├── QueryPage.tsx     #   Multi-mode search with flat ranked results
 │   ├── FileUpload.tsx    #   Document upload
 │   ├── TextIngest.tsx    #   Direct text chunk ingest
 │   ├── ImageIngest.tsx   #   Direct image ingest with drag-drop
 │   ├── GraphExplorer.tsx #   Graph search + entity/relationship creation
-│   ├── MemoryPanel.tsx   #   Memory proposals + approval + search
+│   ├── MemoryPanel.tsx   #   Trusted data proposals + approval + search
 │   ├── DirectoryMonitor.tsx # Watch directory management
 │   └── Nav.tsx           #   Navigation (6 pages)
 └── src/api/client.ts     # Typed API client (all endpoints)

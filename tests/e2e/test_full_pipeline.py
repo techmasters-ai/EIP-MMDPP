@@ -63,20 +63,20 @@ async def test_full_ingest_and_retrieval_pipeline(async_client):
         "PARTIAL_COMPLETE",
     ), f"Pipeline ended with unexpected status: {final_status}"
 
-    # 4. Unified query (text_semantic mode)
+    # 4. Unified query (text_basic mode)
     query_resp = await async_client.post(
         "/v1/retrieval/query",
         json={
             "query_text": "test document content",
-            "modes": ["text_semantic"],
+            "mode": "text_basic",
             "top_k": 5,
         },
     )
     assert query_resp.status_code == 200
     query_data = query_resp.json()
-    assert "sections" in query_data
-    assert "text_semantic" in query_data["sections"]
-    assert isinstance(query_data["sections"]["text_semantic"]["results"], list)
+    assert "results" in query_data
+    assert query_data["mode"] == "text_basic"
+    assert isinstance(query_data["results"], list)
 
     # 5. Submit feedback (always valid even if no results)
     feedback_resp = await async_client.post(
