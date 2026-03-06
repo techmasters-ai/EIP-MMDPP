@@ -99,8 +99,8 @@ async def _multi_modal_pipeline(
     search_tasks: list = []
     if body.query_text:
         search_tasks.append(_text_vector_search(db, body))
-        search_tasks.append(_image_vector_search(db, body))
-    if body.query_image:
+    # Image search: prefer image-to-image when query_image is present, text-to-CLIP otherwise
+    if body.query_image or body.query_text:
         search_tasks.append(_image_vector_search(db, body))
 
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
@@ -108,7 +108,7 @@ async def _multi_modal_pipeline(
     t_search = time.monotonic()
 
     # Step 2: Parallel per-seed expansion (bounded concurrency)
-    expanded = await _expand_seeds(db, seed_results, body.include_context)
+    expanded = await _expand_seeds(db, seed_results, body.include_context, body.query_text)
     t_expand = time.monotonic()
 
     all_results = seed_results + expanded
@@ -141,25 +141,24 @@ async def _multi_modal_pipeline(
 
 
 def _merge_seed_results(results_lists: list) -> list[QueryResultItem]:
-    """Merge multiple search result lists, deduplicating by chunk_id."""
-    seen: set[str] = set()
-    merged: list[QueryResultItem] = []
+    """Merge multiple search result lists, keeping highest score per chunk_id."""
+    best: dict[str, QueryResultItem] = {}
     for result in results_lists:
         if isinstance(result, Exception):
             logger.debug("Search task failed: %s", result)
             continue
         for r in result:
             key = str(r.chunk_id) if r.chunk_id else str(id(r))
-            if key not in seen:
-                seen.add(key)
-                merged.append(r)
-    return merged
+            if key not in best or r.score > best[key].score:
+                best[key] = r
+    return list(best.values())
 
 
 async def _expand_seeds(
     db: AsyncSession,
     seeds: list[QueryResultItem],
     include_context: bool,
+    query_text: str | None = None,
 ) -> list[QueryResultItem]:
     """Parallel per-seed expansion with bounded concurrency."""
     sem = asyncio.Semaphore(_EXPAND_CONCURRENCY)
@@ -174,11 +173,11 @@ async def _expand_seeds(
             if doc_items:
                 items.extend(doc_items)
             else:
-                # Fallback to AGE cross-modal for pre-v2 documents
+                # Fallback to AGE cross-modal for legacy documents
                 cross_items = await _expand_via_cross_modal(db, chunk_id_str, seed.score, include_context)
                 items.extend(cross_items)
 
-            onto_items = await _expand_via_ontology(db, chunk_id_str, seed.score, include_context)
+            onto_items = await _expand_via_ontology(db, chunk_id_str, seed.score, include_context, query_text)
             items.extend(onto_items)
             return items
 
@@ -298,7 +297,7 @@ async def _image_vector_search(
 
 
 # ---------------------------------------------------------------------------
-# Document-structure expansion (chunk_links table — v2 ingest)
+# Document-structure expansion (chunk_links table)
 # ---------------------------------------------------------------------------
 
 async def _expand_via_doc_structure(
@@ -444,6 +443,7 @@ async def _expand_via_ontology(
     chunk_id: str,
     source_score: float,
     include_context: bool = True,
+    query_text: str | None = None,
 ) -> list[QueryResultItem]:
     """Follow ontology relationships (entity->related_entity->chunk) to find
     semantically related chunks via the knowledge graph."""
@@ -454,14 +454,19 @@ async def _expand_via_ontology(
     linked = await get_ontology_linked_chunks_async(db, chunk_id, limit=s.retrieval_ontology_expand_k)
 
     items: list[QueryResultItem] = []
-    decay = get_ontology_decay()
     for link in linked:
         target_id = link["target_chunk_id"]
         target_type = link["target_chunk_type"]
 
         chunk_data = await _lookup_chunk_by_type(db, target_id, target_type, include_context)
         if chunk_data:
-            chunk_data.score = source_score * decay
+            chunk_data.score = compute_fusion_score(
+                semantic_score=source_score,
+                ontology_rel_type=link.get("rel_type", "RELATED_TO"),
+                ontology_hops=1,
+                content_text=chunk_data.content_text,
+                query_text=query_text,
+            )
             chunk_data.context = {
                 "source": "ontology",
                 "rel_type": link["rel_type"],

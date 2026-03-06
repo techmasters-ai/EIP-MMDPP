@@ -1,25 +1,18 @@
 """Multi-modal ingest pipeline.
 
-V1 task graph (sequential chain):
-
-    validate_and_store → detect_modalities → convert_document
-        → chord(embed_text_chunks, embed_image_chunks) → collect_embeddings
-        → extract_graph → import_graph → connect_document_elements → finalize_artifact
-
-V2 task graph (manifest-first, parallel derivations, idempotent):
+Task graph (manifest-first, parallel derivations, idempotent):
 
     prepare_document  (validate + detect + Docling convert + persist document_elements)
         ↓
     ┌── derive_text_chunks_and_embeddings ──┐
     │── derive_image_embeddings             │  (parallel chord)
-    │── derive_ontology_graph               │
-    └── derive_structure_links ─────────────┘
+    └── derive_ontology_graph ──────────────┘
         ↓
     collect_derivations  (chord callback)
         ↓
-    finalize_document_v2
-
-Selected via INGEST_V2_ENABLED env var (default: false).
+    derive_structure_links  (needs embedding output committed)
+        ↓
+    finalize_document
 """
 
 import hashlib
@@ -81,191 +74,6 @@ def _update_document_status(
         db.close()
 
 
-# ---------------------------------------------------------------------------
-# Entry point — called by the API after upload
-# ---------------------------------------------------------------------------
-
-def start_ingest_pipeline(document_id: str) -> str:
-    """Enqueue the full ingest pipeline for a document. Returns Celery task ID."""
-    pipeline = chain(
-        validate_and_store.si(document_id),
-        detect_modalities.si(document_id),
-        convert_document.si(document_id),
-        chord(
-            group(
-                embed_text_chunks.si(document_id),
-                embed_image_chunks.si(document_id),
-            ),
-            collect_embeddings.s(document_id),
-        ),
-        extract_graph.si(document_id),
-        import_graph.si(document_id),
-        connect_document_elements.si(document_id),
-        finalize_artifact.si(document_id),
-    )
-    result = pipeline.apply_async()
-    return result.id
-
-
-# ---------------------------------------------------------------------------
-# Pipeline tasks
-# ---------------------------------------------------------------------------
-
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
-def validate_and_store(self, document_id: str) -> None:
-    """Validate the uploaded file and confirm it is stored in MinIO."""
-    from app.models.ingest import Document
-    from app.services.storage import download_bytes_sync
-
-    logger.info("validate_and_store: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_PROCESSING, stage="validate_and_store")
-
-    db = _get_db()
-    try:
-        doc = db.get(Document, uuid.UUID(document_id))
-        if not doc:
-            raise ValueError(f"Document not found: {document_id}")
-
-        # Verify the file exists in MinIO and compute hash if not set
-        file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
-        file_hash = hashlib.sha256(file_bytes).hexdigest()
-
-        from sqlalchemy import update
-        from app.models.ingest import Document as Doc
-
-        db.execute(
-            update(Doc)
-            .where(Doc.id == uuid.UUID(document_id))
-            .values(
-                file_size_bytes=len(file_bytes),
-                file_hash=file_hash,
-            )
-        )
-        db.commit()
-        logger.info(
-            "validate_and_store: document_id=%s hash=%s size=%d",
-            document_id,
-            file_hash,
-            len(file_bytes),
-        )
-    except Exception as exc:
-        logger.error("validate_and_store failed for %s: %s", document_id, exc)
-        _update_document_status(
-            document_id, STATUS_FAILED, stage="validate_and_store", error=str(exc)
-        )
-        raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
-def detect_modalities(self, document_id: str) -> None:
-    """Detect file type/modalities to determine which extraction tasks to run."""
-    import magic
-    from app.models.ingest import Document
-    from app.services.storage import download_bytes_sync
-
-    logger.info("detect_modalities: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_PROCESSING, stage="detect_modalities")
-
-    db = _get_db()
-    try:
-        doc = db.get(Document, uuid.UUID(document_id))
-        if not doc:
-            raise ValueError(f"Document not found: {document_id}")
-
-        file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
-        mime_type = magic.from_buffer(file_bytes, mime=True)
-
-        from sqlalchemy import update
-        from app.models.ingest import Document as Doc
-
-        db.execute(
-            update(Doc)
-            .where(Doc.id == uuid.UUID(document_id))
-            .values(mime_type=mime_type)
-        )
-        db.commit()
-        logger.info("detect_modalities: document_id=%s mime_type=%s", document_id, mime_type)
-    except Exception as exc:
-        logger.error("detect_modalities failed for %s: %s", document_id, exc)
-        # Non-fatal — continue pipeline
-        _update_document_status(document_id, STATUS_PROCESSING, stage="detect_modalities")
-    finally:
-        db.close()
-
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
-def convert_document(self, document_id: str) -> None:
-    """Convert document via the Docling service (granite-docling-258M VLM).
-
-    Replaces the legacy extraction chord (extract_text, extract_images,
-    run_ocr, process_schematics) with a single Docling API call.
-    Falls back to legacy extraction if the Docling service is unavailable
-    and docling_fallback_enabled is True.
-    """
-    import uuid as uuid_mod
-    from app.models.ingest import Document, Artifact
-    from app.services.storage import download_bytes_sync, upload_bytes_sync
-    from app.services.docling_client import convert_document_sync, check_health_sync
-
-    logger.info("convert_document: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_PROCESSING, stage="convert_document")
-
-    db = _get_db()
-    try:
-        doc = db.get(Document, uuid.UUID(document_id))
-        if not doc:
-            raise ValueError(f"Document not found: {document_id}")
-
-        file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
-
-        # Try Docling service first
-        docling_healthy = check_health_sync()
-        docling_succeeded = False
-
-        if docling_healthy:
-            try:
-                result = convert_document_sync(file_bytes, doc.filename or "document")
-                logger.info(
-                    "convert_document: docling returned %d elements, %d pages, %.0fms",
-                    len(result.elements),
-                    result.num_pages,
-                    result.processing_time_ms,
-                )
-                _persist_extraction_results(db, document_id, result.elements)
-                docling_succeeded = True
-            except Exception as docling_exc:
-                logger.warning(
-                    "convert_document: Docling conversion failed for document_id=%s: %s",
-                    document_id,
-                    docling_exc,
-                )
-                if not settings.docling_fallback_enabled:
-                    raise
-
-        if not docling_succeeded:
-            if settings.docling_fallback_enabled:
-                logger.warning(
-                    "convert_document: falling back to legacy extraction for document_id=%s",
-                    document_id,
-                )
-                _legacy_extract(db, document_id, doc, file_bytes)
-            else:
-                raise RuntimeError("Docling service unavailable and fallback is disabled")
-
-        db.commit()
-    except Exception as exc:
-        logger.error("convert_document failed for %s: %s", document_id, exc)
-        db.rollback()
-        _update_document_status(
-            document_id, STATUS_FAILED, stage="convert_document", error=str(exc)
-        )
-        raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-
 def _persist_extraction_results(db, document_id: str, chunks) -> None:
     """Persist ExtractedChunk list as Artifact rows. Stores images in MinIO."""
     import uuid as uuid_mod
@@ -305,8 +113,13 @@ def _persist_extraction_results(db, document_id: str, chunks) -> None:
 
 
 def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
-    """Fallback: run legacy extraction (pdfplumber/pymupdf/tesseract) inline."""
+    """Fallback: run legacy extraction (pdfplumber/pymupdf/tesseract) inline.
+
+    Creates both Artifact and DocumentElement rows so downstream derivation
+    tasks (embedding, graph, structure links) have input to work with.
+    """
     from app.services.extraction import extract_pdf, extract_docx, extract_image, extract_txt
+    from app.models.ingest import DocumentElement
 
     mime = doc.mime_type or ""
     chunks = []
@@ -322,582 +135,32 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
 
     _persist_extraction_results(db, document_id, chunks)
 
+    # Also create DocumentElement rows for downstream derivation tasks
+    for idx, chunk in enumerate(chunks):
+        content_hash = hashlib.sha256(
+            (chunk.chunk_text or "").encode("utf-8", errors="replace")
+        ).hexdigest()[:8]
+        element_uid = f"legacy-{idx}-{chunk.modality}-{content_hash}"
+        element_hash = hashlib.sha256(
+            f"{document_id}:{element_uid}:{chunk.chunk_text or ''}".encode()
+        ).hexdigest()
 
-# ---------------------------------------------------------------------------
-# Embedding tasks (run in parallel via chord)
-# ---------------------------------------------------------------------------
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
-def embed_text_chunks(self, document_id: str) -> dict:
-    """Split text artifacts into chunks, embed with BGE, write to retrieval.text_chunks."""
-    from app.models.ingest import Document, Artifact
-    from app.models.retrieval import TextChunk
-    from app.services.extraction import chunk_text
-    from app.services.embedding import embed_texts
-    from sqlalchemy import select
-
-    logger.info("embed_text_chunks: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_PROCESSING, stage="embed_text_chunks")
-    db = _get_db()
-    try:
-        doc = db.get(Document, uuid.UUID(document_id))
-        if not doc:
-            return {"stage": "embed_text_chunks", "status": "skipped", "reason": "not found"}
-
-        result = db.execute(
-            select(Artifact).where(
-                Artifact.document_id == uuid.UUID(document_id),
-                Artifact.artifact_type.in_(["text", "table", "ocr", "schematic"]),
-                Artifact.content_text.isnot(None),
-            )
+        elem = DocumentElement(
+            document_id=uuid.UUID(document_id),
+            element_uid=element_uid,
+            element_type=chunk.modality,
+            element_order=idx,
+            page_number=chunk.page_number,
+            bounding_box=chunk.bounding_box,
+            content_text=chunk.chunk_text,
+            metadata=chunk.metadata or {},
+            element_hash=element_hash,
         )
-        text_artifacts = result.scalars().all()
+        db.add(elem)
 
-        all_texts = []
-        all_artifact_refs = []
 
-        for artifact in text_artifacts:
-            if not artifact.content_text:
-                continue
-            text_chunks_list = chunk_text(artifact.content_text)
-            for idx, chunk_str in enumerate(text_chunks_list):
-                all_texts.append(chunk_str)
-                all_artifact_refs.append((artifact, idx))
-
-        chunks_created = 0
-        if all_texts:
-            embeddings = embed_texts(all_texts)
-            for (artifact, idx), text, embedding in zip(
-                all_artifact_refs, all_texts, embeddings
-            ):
-                chunk = TextChunk(
-                    artifact_id=artifact.id,
-                    document_id=uuid.UUID(document_id),
-                    chunk_index=idx,
-                    chunk_text=text,
-                    embedding=embedding,
-                    modality=artifact.artifact_type,
-                    page_number=artifact.page_number,
-                    bounding_box=artifact.bounding_box,
-                    classification=artifact.classification,
-                )
-                db.add(chunk)
-                chunks_created += 1
-
-        db.commit()
-        logger.info(
-            "embed_text_chunks: document_id=%s chunks=%d", document_id, chunks_created
-        )
-        return {"stage": "embed_text_chunks", "status": "ok", "chunks": chunks_created}
-
-    except Exception as exc:
-        logger.error("embed_text_chunks failed for %s: %s", document_id, exc)
-        db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE, stage="embed_text_chunks", error=str(exc)
-        )
-        raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
-def embed_image_chunks(self, document_id: str) -> dict:
-    """Embed image artifacts with CLIP, write to retrieval.image_chunks."""
-    import io
-    from app.models.ingest import Document, Artifact
-    from app.models.retrieval import ImageChunk
-    from app.services.embedding import embed_images
-    from app.services.storage import download_bytes_sync
-    from sqlalchemy import select
-
-    logger.info("embed_image_chunks: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_PROCESSING, stage="embed_image_chunks")
-    db = _get_db()
-    try:
-        doc = db.get(Document, uuid.UUID(document_id))
-        if not doc:
-            return {"stage": "embed_image_chunks", "status": "skipped", "reason": "not found"}
-
-        image_result = db.execute(
-            select(Artifact).where(
-                Artifact.document_id == uuid.UUID(document_id),
-                Artifact.artifact_type == "image",
-                Artifact.storage_key.isnot(None),
-            )
-        )
-        image_artifacts = image_result.scalars().all()
-
-        chunks_created = 0
-        if image_artifacts:
-            from PIL import Image
-
-            pil_images = []
-            valid_image_artifacts = []
-            for artifact in image_artifacts:
-                try:
-                    img_bytes = download_bytes_sync(
-                        artifact.storage_bucket, artifact.storage_key
-                    )
-                    pil_images.append(Image.open(io.BytesIO(img_bytes)))
-                    valid_image_artifacts.append(artifact)
-                except Exception as e:
-                    logger.warning("Could not load image for embedding: %s", e)
-
-            if pil_images:
-                image_embeddings = embed_images(pil_images)
-                for artifact, img_embedding in zip(valid_image_artifacts, image_embeddings):
-                    chunk = ImageChunk(
-                        artifact_id=artifact.id,
-                        document_id=uuid.UUID(document_id),
-                        chunk_index=0,
-                        chunk_text=artifact.content_text or None,
-                        embedding=img_embedding,
-                        modality="image",
-                        page_number=artifact.page_number,
-                        bounding_box=artifact.bounding_box,
-                        classification=artifact.classification,
-                    )
-                    db.add(chunk)
-                    chunks_created += 1
-
-        db.commit()
-        logger.info(
-            "embed_image_chunks: document_id=%s chunks=%d", document_id, chunks_created
-        )
-        return {"stage": "embed_image_chunks", "status": "ok", "chunks": chunks_created}
-
-    except Exception as exc:
-        logger.error("embed_image_chunks failed for %s: %s", document_id, exc)
-        db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE, stage="embed_image_chunks", error=str(exc)
-        )
-        raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-
-@celery_app.task(bind=True)
-def collect_embeddings(self, embedding_results: list[dict], document_id: str) -> None:
-    """Chord callback: collect results from parallel embedding tasks."""
-    logger.info(
-        "collect_embeddings: document_id=%s results=%s", document_id, embedding_results
-    )
-    failed = [r["stage"] for r in (embedding_results or []) if r.get("status") == "error"]
-    if failed:
-        logger.warning(
-            "collect_embeddings: document_id=%s failed_stages=%s", document_id, failed
-        )
-    _update_document_status(document_id, STATUS_PROCESSING, stage="collect_embeddings")
-
-
-# ---------------------------------------------------------------------------
-# Graph extraction & import
-# ---------------------------------------------------------------------------
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph")
-def extract_graph(self, document_id: str) -> None:
-    """Extract entities and relationships from text artifacts.
-
-    Uses docling-graph + LLM (Phase 5) with fallback to regex NER.
-    Results are stored in artifact content_metadata for import_graph.
-    """
-    from app.models.ingest import Artifact
-    from sqlalchemy import select
-
-    logger.info("extract_graph: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_PROCESSING, stage="extract_graph")
-    db = _get_db()
-    try:
-        result = db.execute(
-            select(Artifact).where(
-                Artifact.document_id == uuid.UUID(document_id),
-                Artifact.artifact_type.in_(["text", "table", "ocr", "schematic"]),
-                Artifact.content_text.isnot(None),
-            )
-        )
-        text_artifacts = result.scalars().all()
-
-        # Try docling-graph first (Phase 5 implementation)
-        docling_graph_succeeded = False
-        if settings.llm_provider != "mock":
-            try:
-                from app.services.docling_graph_service import extract_graph_from_text
-
-                # Concatenate all text for whole-document extraction
-                full_text = "\n\n".join(
-                    a.content_text for a in text_artifacts if a.content_text
-                )
-                if full_text.strip():
-                    nx_graph = extract_graph_from_text(full_text, document_id)
-                    if nx_graph and nx_graph.number_of_nodes() > 0:
-                        # Store graph data in first artifact's metadata
-                        import json
-                        graph_data = {
-                            "nodes": [
-                                {"id": n, **nx_graph.nodes[n]}
-                                for n in nx_graph.nodes
-                            ],
-                            "edges": [
-                                {"from": u, "to": v, **d}
-                                for u, v, d in nx_graph.edges(data=True)
-                            ],
-                        }
-                        # Store graph_data on first artifact only; others reference it
-                        if text_artifacts:
-                            first_meta = dict(text_artifacts[0].content_metadata or {})
-                            first_meta["docling_graph_data"] = graph_data
-                            text_artifacts[0].content_metadata = first_meta
-                            for artifact in text_artifacts[1:]:
-                                ref_meta = dict(artifact.content_metadata or {})
-                                ref_meta["docling_graph_source_artifact_id"] = str(text_artifacts[0].id)
-                                artifact.content_metadata = ref_meta
-                        docling_graph_succeeded = True
-                        logger.info(
-                            "extract_graph: docling-graph extracted %d nodes, %d edges",
-                            nx_graph.number_of_nodes(),
-                            nx_graph.number_of_edges(),
-                        )
-            except ImportError:
-                logger.debug("docling-graph not available, falling back to NER")
-            except Exception as exc:
-                logger.warning("docling-graph extraction failed: %s — falling back to NER", exc)
-
-        # Fallback to regex NER
-        if not docling_graph_succeeded:
-            _extract_graph_ner_fallback(db, document_id, text_artifacts)
-
-        db.commit()
-    except Exception as exc:
-        logger.error("extract_graph failed for %s: %s", document_id, exc)
-        db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE, stage="extract_graph", error=str(exc)
-        )
-        raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-
-def _extract_graph_ner_fallback(db, document_id: str, text_artifacts) -> None:
-    """Fallback: use regex NER for entity/relationship extraction."""
-    from app.services.ner import extract_entities, extract_relationships
-
-    total_entities = 0
-    total_relationships = 0
-
-    for artifact in text_artifacts:
-        if not artifact.content_text:
-            continue
-
-        entities = extract_entities(artifact.content_text)
-        relationships = extract_relationships(artifact.content_text, entities)
-
-        entity_dicts = [
-            {
-                "entity_type": e.entity_type,
-                "name": e.name,
-                "confidence": e.confidence,
-                "properties": e.properties,
-            }
-            for e in entities
-        ]
-        rel_dicts = [
-            {
-                "rel_type": r.rel_type,
-                "from_name": r.from_name,
-                "from_type": r.from_type,
-                "to_name": r.to_name,
-                "to_type": r.to_type,
-                "confidence": r.confidence,
-            }
-            for r in relationships
-        ]
-
-        metadata = dict(artifact.content_metadata or {})
-        metadata["extracted_entities"] = entity_dicts
-        metadata["extracted_relationships"] = rel_dicts
-        artifact.content_metadata = metadata
-
-        total_entities += len(entities)
-        total_relationships += len(relationships)
-
-    logger.info(
-        "extract_graph (NER fallback): document_id=%s entities=%d relationships=%d",
-        document_id,
-        total_entities,
-        total_relationships,
-    )
-
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph")
-def import_graph(self, document_id: str) -> None:
-    """Import extracted entity/relation candidates into the Apache AGE graph.
-
-    Handles both docling-graph format (docling_graph_data) and legacy
-    NER format (extracted_entities / extracted_relationships).
-    """
-    from app.models.ingest import Artifact
-    from app.services.graph import upsert_node, upsert_relationship
-    from sqlalchemy import select
-
-    logger.info("import_graph: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_PROCESSING, stage="import_graph")
-    db = _get_db()
-    try:
-        result = db.execute(
-            select(Artifact).where(
-                Artifact.document_id == uuid.UUID(document_id),
-                Artifact.content_metadata.isnot(None),
-            )
-        )
-        artifacts = result.scalars().all()
-
-        nodes_created = 0
-        edges_created = 0
-
-        for artifact in artifacts:
-            metadata = artifact.content_metadata or {}
-            artifact_id_str = str(artifact.id)
-
-            # Handle docling-graph format
-            graph_data = metadata.get("docling_graph_data")
-            if graph_data:
-                for node in graph_data.get("nodes", []):
-                    node_id = upsert_node(
-                        session=db,
-                        entity_type=node.get("entity_type", "UNKNOWN"),
-                        name=node.get("name", node.get("id", "")),
-                        artifact_id=artifact_id_str,
-                        confidence=node.get("confidence", 0.8),
-                        properties={
-                            k: v for k, v in node.items()
-                            if k not in ("id", "entity_type", "name", "confidence")
-                        },
-                    )
-                    if node_id:
-                        nodes_created += 1
-
-                for edge in graph_data.get("edges", []):
-                    ok = upsert_relationship(
-                        session=db,
-                        from_name=edge.get("from", ""),
-                        from_type=edge.get("from_type", "UNKNOWN"),
-                        to_name=edge.get("to", ""),
-                        to_type=edge.get("to_type", "UNKNOWN"),
-                        rel_type=edge.get("rel_type", edge.get("type", "RELATED_TO")),
-                        artifact_id=artifact_id_str,
-                        confidence=edge.get("confidence", 0.8),
-                    )
-                    if ok:
-                        edges_created += 1
-                continue  # Skip legacy format for this artifact
-
-            # Handle legacy NER format
-            for entity in metadata.get("extracted_entities", []):
-                node_id = upsert_node(
-                    session=db,
-                    entity_type=entity["entity_type"],
-                    name=entity["name"],
-                    artifact_id=artifact_id_str,
-                    confidence=entity["confidence"],
-                    properties=entity.get("properties"),
-                )
-                if node_id:
-                    nodes_created += 1
-
-            for rel in metadata.get("extracted_relationships", []):
-                ok = upsert_relationship(
-                    session=db,
-                    from_name=rel["from_name"],
-                    from_type=rel["from_type"],
-                    to_name=rel["to_name"],
-                    to_type=rel["to_type"],
-                    rel_type=rel["rel_type"],
-                    artifact_id=artifact_id_str,
-                    confidence=rel["confidence"],
-                )
-                if ok:
-                    edges_created += 1
-
-        db.commit()
-        logger.info(
-            "import_graph: document_id=%s nodes=%d edges=%d",
-            document_id,
-            nodes_created,
-            edges_created,
-        )
-    except Exception as exc:
-        logger.error("import_graph failed for %s: %s", document_id, exc)
-        db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE, stage="import_graph", error=str(exc)
-        )
-        raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-
-@celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph")
-def connect_document_elements(self, document_id: str) -> None:
-    """Create structural graph edges connecting text/image chunks from the same document.
-
-    Creates:
-    - DOCUMENT node for this document
-    - CHUNK_REF nodes for each text_chunk and image_chunk
-    - CONTAINS_TEXT edges: DOCUMENT → text CHUNK_REF
-    - CONTAINS_IMAGE edges: DOCUMENT → image CHUNK_REF
-    - SAME_PAGE edges: text CHUNK_REF ↔ image CHUNK_REF on same page
-    - EXTRACTED_FROM edges: ontology entity → CHUNK_REF (provenance)
-    """
-    from app.models.ingest import Document, Artifact
-    from app.models.retrieval import TextChunk, ImageChunk
-    from sqlalchemy import select
-
-    logger.info("connect_document_elements: document_id=%s", document_id)
-    _update_document_status(
-        document_id, STATUS_PROCESSING, stage="connect_document_elements"
-    )
-    db = _get_db()
-    try:
-        doc = db.get(Document, uuid.UUID(document_id))
-        if not doc:
-            logger.warning("connect_document_elements: document %s not found", document_id)
-            return
-
-        # Import graph helpers
-        from app.services.graph import (
-            upsert_document_node,
-            upsert_chunk_ref_node,
-            create_structural_edge,
-            create_entity_chunk_edge,
-        )
-
-        # 1. Create DOCUMENT node
-        upsert_document_node(
-            session=db,
-            document_id=document_id,
-            title=doc.filename,
-            properties={"source_id": str(doc.source_id)},
-        )
-
-        # 2. Get all text and image chunks for this document
-        text_chunks = db.execute(
-            select(TextChunk).where(TextChunk.document_id == uuid.UUID(document_id))
-        ).scalars().all()
-
-        image_chunks = db.execute(
-            select(ImageChunk).where(ImageChunk.document_id == uuid.UUID(document_id))
-        ).scalars().all()
-
-        # 3. Create CHUNK_REF nodes and CONTAINS edges
-        for tc in text_chunks:
-            upsert_chunk_ref_node(db, str(tc.id), "text_chunk")
-            create_structural_edge(db, document_id, str(tc.id), "CONTAINS_TEXT")
-
-        for ic in image_chunks:
-            upsert_chunk_ref_node(db, str(ic.id), "image_chunk")
-            create_structural_edge(db, document_id, str(ic.id), "CONTAINS_IMAGE")
-
-        # 4. Create SAME_PAGE edges between text and image chunks
-        page_text_map: dict[int, list[str]] = {}
-        for tc in text_chunks:
-            if tc.page_number is not None:
-                page_text_map.setdefault(tc.page_number, []).append(str(tc.id))
-
-        for ic in image_chunks:
-            if ic.page_number is not None and ic.page_number in page_text_map:
-                for tc_id in page_text_map[ic.page_number]:
-                    create_structural_edge(db, tc_id, str(ic.id), "SAME_PAGE")
-
-        # 5. Link ontology entities to their source chunks (EXTRACTED_FROM)
-        entity_links = 0
-        artifacts_with_entities = db.execute(
-            select(Artifact).where(
-                Artifact.document_id == uuid.UUID(document_id),
-                Artifact.content_metadata.isnot(None),
-            )
-        ).scalars().all()
-
-        # Build artifact_id → [chunk_id] map from already-loaded text_chunks
-        artifact_chunk_map: dict[str, list[str]] = {}
-        for tc in text_chunks:
-            artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
-
-        for artifact in artifacts_with_entities:
-            metadata = artifact.content_metadata or {}
-            chunk_ids = artifact_chunk_map.get(str(artifact.id), [])
-            if not chunk_ids:
-                continue
-
-            # Collect entity (name, type) from either format
-            entities: list[tuple[str, str]] = []
-            graph_data = metadata.get("docling_graph_data")
-            if graph_data:
-                for node in graph_data.get("nodes", []):
-                    entities.append((
-                        node.get("name", node.get("id", "")),
-                        node.get("entity_type", "UNKNOWN"),
-                    ))
-            else:
-                for ent in metadata.get("extracted_entities", []):
-                    entities.append((ent["name"], ent["entity_type"]))
-
-            for (name, etype) in entities:
-                for chunk_id in chunk_ids:
-                    if create_entity_chunk_edge(db, name, etype, chunk_id):
-                        entity_links += 1
-
-        db.commit()
-        logger.info(
-            "connect_document_elements: document_id=%s text=%d image=%d entity_links=%d",
-            document_id,
-            len(text_chunks),
-            len(image_chunks),
-            entity_links,
-        )
-    except Exception as exc:
-        logger.error("connect_document_elements failed for %s: %s", document_id, exc)
-        db.rollback()
-        _update_document_status(
-            document_id,
-            STATUS_PARTIAL_COMPLETE,
-            stage="connect_document_elements",
-            error=str(exc),
-        )
-        raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-
-@celery_app.task(bind=True)
-def finalize_artifact(self, document_id: str) -> None:
-    """Mark the document pipeline as COMPLETE."""
-    logger.info("finalize_artifact: document_id=%s", document_id)
-    _update_document_status(document_id, STATUS_COMPLETE, stage=None)
-    logger.info("finalize_artifact: document_id=%s — pipeline COMPLETE", document_id)
-
-
-# ===========================================================================
-# V2 Ingest Pipeline — manifest-first, parallel derivations, idempotent
-# ===========================================================================
-
-def start_ingest_pipeline_v2(document_id: str) -> str:
-    """Enqueue the v2 ingest pipeline. Returns Celery task ID.
-
-    DAG:
-        prepare_document
-            ↓
-        ┌── derive_text_chunks_and_embeddings ──┐
-        │── derive_image_embeddings             │  (parallel chord)
-        │── derive_ontology_graph               │
-        └── derive_structure_links ─────────────┘
-            ↓
-        collect_derivations  (chord callback)
-            ↓
-        finalize_document_v2
-    """
+def start_ingest_pipeline(document_id: str) -> str:
+    """Enqueue the ingest pipeline for a document. Returns Celery task ID."""
     pipeline = chain(
         prepare_document.si(document_id),
         chord(
@@ -905,11 +168,11 @@ def start_ingest_pipeline_v2(document_id: str) -> str:
                 derive_text_chunks_and_embeddings.si(document_id),
                 derive_image_embeddings.si(document_id),
                 derive_ontology_graph.si(document_id),
-                derive_structure_links.si(document_id),
             ),
             collect_derivations.s(document_id),
         ),
-        finalize_document_v2.si(document_id),
+        derive_structure_links.si(document_id),
+        finalize_document.si(document_id),
     )
     result = pipeline.apply_async()
     return result.id
@@ -922,7 +185,7 @@ def _create_pipeline_run(db, document_id: str) -> str:
 
     run = PipelineRun(
         document_id=uuid.UUID(document_id),
-        pipeline_version="v2",
+        pipeline_version="1.0",
         status="PROCESSING",
     )
     db.add(run)
@@ -963,7 +226,7 @@ def _update_stage_run(
 
 
 def _get_pipeline_run_id(db, document_id: str) -> str | None:
-    """Get the latest v2 pipeline run id for a document."""
+    """Get the latest pipeline run id for a document."""
     from app.models.ingest import PipelineRun
     from sqlalchemy import select
 
@@ -971,7 +234,7 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
         select(PipelineRun.id)
         .where(
             PipelineRun.document_id == uuid.UUID(document_id),
-            PipelineRun.pipeline_version == "v2",
+            PipelineRun.pipeline_version == "1.0",
         )
         .order_by(PipelineRun.started_at.desc())
         .limit(1)
@@ -982,7 +245,7 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
 def prepare_document(self, document_id: str) -> str:
-    """V2 entry point: validate + detect + Docling convert + persist document_elements.
+    """Validate + detect + Docling convert + persist document_elements.
 
     Creates canonical DocumentElement rows from Docling output, with backward-
     compatible Artifact dual-write.
@@ -994,7 +257,7 @@ def prepare_document(self, document_id: str) -> str:
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     import magic
 
-    logger.info("prepare_document [v2]: document_id=%s", document_id)
+    logger.info("prepare_document: document_id=%s", document_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="prepare_document")
 
     db = _get_db()
@@ -1111,6 +374,22 @@ def prepare_document(self, document_id: str) -> str:
 
         db.commit()
 
+        # 6. Link DocumentElements → Artifacts by matching order
+        from sqlalchemy import select as sa_select
+        doc_elements = db.execute(
+            sa_select(DocumentElement)
+            .where(DocumentElement.document_id == uuid.UUID(document_id))
+            .order_by(DocumentElement.element_order)
+        ).scalars().all()
+        artifacts = db.execute(
+            sa_select(Artifact)
+            .where(Artifact.document_id == uuid.UUID(document_id))
+            .order_by(Artifact.created_at)
+        ).scalars().all()
+        for elem, art in zip(doc_elements, artifacts):
+            elem.artifact_id = art.id
+        db.commit()
+
         _update_stage_run(
             db, run_id, "prepare_document", "COMPLETE",
             metrics={
@@ -1122,7 +401,7 @@ def prepare_document(self, document_id: str) -> str:
         db.commit()
 
         logger.info(
-            "prepare_document [v2]: document_id=%s elements=%d pages=%d",
+            "prepare_document: document_id=%s elements=%d pages=%d",
             document_id, elements_created, result.num_pages,
         )
         return document_id
@@ -1144,7 +423,7 @@ def prepare_document(self, document_id: str) -> str:
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
 def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
-    """V2: Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
+    """Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
 
     Uses deterministic chunk keys for idempotent retries.
     """
@@ -1155,7 +434,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_text_chunks_and_embeddings [v2]: document_id=%s", document_id)
+    logger.info("derive_text_chunks_and_embeddings: document_id=%s", document_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_text_embeddings")
 
     db = _get_db()
@@ -1236,7 +515,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
             db.commit()
 
         logger.info(
-            "derive_text_chunks_and_embeddings [v2]: document_id=%s chunks=%d",
+            "derive_text_chunks_and_embeddings: document_id=%s chunks=%d",
             document_id, chunks_created,
         )
         return {"stage": "derive_text_embeddings", "status": "ok", "chunks": chunks_created}
@@ -1258,7 +537,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str) -> dict:
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
 def derive_image_embeddings(self, document_id: str) -> dict:
-    """V2: Read image document_elements → CLIP embed → upsert image_chunks.
+    """Read image document_elements → CLIP embed → upsert image_chunks.
 
     Uses deterministic chunk keys for idempotent retries.
     """
@@ -1270,7 +549,7 @@ def derive_image_embeddings(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_image_embeddings [v2]: document_id=%s", document_id)
+    logger.info("derive_image_embeddings: document_id=%s", document_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_image_embeddings")
 
     db = _get_db()
@@ -1350,7 +629,7 @@ def derive_image_embeddings(self, document_id: str) -> dict:
             db.commit()
 
         logger.info(
-            "derive_image_embeddings [v2]: document_id=%s chunks=%d",
+            "derive_image_embeddings: document_id=%s chunks=%d",
             document_id, chunks_created,
         )
         return {"stage": "derive_image_embeddings", "status": "ok", "chunks": chunks_created}
@@ -1372,7 +651,7 @@ def derive_image_embeddings(self, document_id: str) -> dict:
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph")
 def derive_ontology_graph(self, document_id: str) -> dict:
-    """V2: Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to AGE.
+    """Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to AGE.
 
     Stores graph extraction once per document (not per artifact).
     """
@@ -1381,7 +660,7 @@ def derive_ontology_graph(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_ontology_graph [v2]: document_id=%s", document_id)
+    logger.info("derive_ontology_graph: document_id=%s", document_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_ontology_graph")
 
     db = _get_db()
@@ -1426,10 +705,20 @@ def derive_ontology_graph(self, document_id: str) -> dict:
                 if nx_graph and nx_graph.number_of_nodes() > 0:
                     graph_data = {
                         "nodes": [{"id": n, **nx_graph.nodes[n]} for n in nx_graph.nodes],
-                        "edges": [{"from": u, "to": v, **d} for u, v, d in nx_graph.edges(data=True)],
+                        "edges": [
+                            {
+                                "from": nx_graph.nodes[u].get("name", str(u)),
+                                "to": nx_graph.nodes[v].get("name", str(v)),
+                                "from_type": nx_graph.nodes[u].get("entity_type", "UNKNOWN"),
+                                "to_type": nx_graph.nodes[v].get("entity_type", "UNKNOWN"),
+                                "rel_type": d.get("relationship_type", d.get("rel_type", "RELATED_TO")),
+                                "confidence": d.get("confidence", 0.5),
+                            }
+                            for u, v, d in nx_graph.edges(data=True)
+                        ],
                     }
                     provider = "docling-graph"
-                    model_name = settings.llm_model_name
+                    model_name = settings.docling_graph_model
             except ImportError:
                 logger.debug("docling-graph not available, falling back to NER")
             except Exception as exc:
@@ -1455,7 +744,7 @@ def derive_ontology_graph(self, document_id: str) -> dict:
             "document_id": uuid.UUID(document_id),
             "provider": provider,
             "model_name": model_name,
-            "extraction_version": "v2",
+            "extraction_version": "1.0",
             "graph_json": graph_data,
             "status": "COMPLETE",
             "metrics": {"nodes": len(graph_data["nodes"]), "edges": len(graph_data["edges"])},
@@ -1512,7 +801,7 @@ def derive_ontology_graph(self, document_id: str) -> dict:
             db.commit()
 
         logger.info(
-            "derive_ontology_graph [v2]: document_id=%s nodes=%d edges=%d provider=%s",
+            "derive_ontology_graph: document_id=%s nodes=%d edges=%d provider=%s",
             document_id, nodes_created, edges_created, provider,
         )
         return {"stage": "derive_ontology_graph", "status": "ok", "nodes": nodes_created, "edges": edges_created}
@@ -1534,7 +823,7 @@ def derive_ontology_graph(self, document_id: str) -> dict:
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph")
 def derive_structure_links(self, document_id: str) -> dict:
-    """V2: Generate chunk_links and structural AGE edges.
+    """Generate chunk_links and structural AGE edges.
 
     Creates:
     - NEXT_CHUNK links between consecutive text_chunks
@@ -1548,7 +837,7 @@ def derive_structure_links(self, document_id: str) -> dict:
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-    logger.info("derive_structure_links [v2]: document_id=%s", document_id)
+    logger.info("derive_structure_links: document_id=%s", document_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_structure_links")
 
     db = _get_db()
@@ -1698,7 +987,7 @@ def derive_structure_links(self, document_id: str) -> dict:
 
         db.commit()
 
-        # Create AGE structural edges (reuse existing v1 logic)
+        # Create AGE structural edges
         from app.services.graph import (
             upsert_document_node,
             upsert_chunk_ref_node,
@@ -1778,7 +1067,7 @@ def derive_structure_links(self, document_id: str) -> dict:
             db.commit()
 
         logger.info(
-            "derive_structure_links [v2]: document_id=%s chunk_links=%d entity_links=%d",
+            "derive_structure_links: document_id=%s chunk_links=%d entity_links=%d",
             document_id, links_created, entity_links,
         )
         return {"stage": "derive_structure_links", "status": "ok", "links": links_created}
@@ -1802,7 +1091,7 @@ def derive_structure_links(self, document_id: str) -> dict:
 def collect_derivations(self, derivation_results: list[dict], document_id: str) -> None:
     """Chord callback: aggregate derivation stage statuses."""
     logger.info(
-        "collect_derivations [v2]: document_id=%s results=%s",
+        "collect_derivations: document_id=%s results=%s",
         document_id, derivation_results,
     )
     failed = [r["stage"] for r in (derivation_results or []) if r.get("status") not in ("ok", "skipped")]
@@ -1820,13 +1109,13 @@ def collect_derivations(self, derivation_results: list[dict], document_id: str) 
 
 
 @celery_app.task(bind=True)
-def finalize_document_v2(self, document_id: str) -> None:
-    """V2 finalization: mark pipeline COMPLETE if all required stages succeeded."""
+def finalize_document(self, document_id: str) -> None:
+    """Mark pipeline COMPLETE if all required stages succeeded."""
     from app.models.ingest import PipelineRun, StageRun
     from sqlalchemy import select, update as sql_update
     import datetime
 
-    logger.info("finalize_document_v2 [v2]: document_id=%s", document_id)
+    logger.info("finalize_document: document_id=%s", document_id)
     db = _get_db()
     try:
         run_id = _get_pipeline_run_id(db, document_id)
@@ -1834,20 +1123,29 @@ def finalize_document_v2(self, document_id: str) -> None:
             _update_document_status(document_id, STATUS_COMPLETE, stage=None)
             return
 
-        # Check for any failed stages
-        failed_stages = db.execute(
-            select(StageRun.stage_name)
-            .where(
-                StageRun.pipeline_run_id == uuid.UUID(run_id),
-                StageRun.status == "FAILED",
-            )
-        ).scalars().all()
+        # Check for failed, missing, or stuck stages
+        REQUIRED_STAGES = {
+            "prepare_document",
+            "derive_text_embeddings",
+            "derive_image_embeddings",
+            "derive_ontology_graph",
+            "derive_structure_links",
+        }
 
-        if failed_stages:
+        all_stages = db.execute(
+            select(StageRun).where(StageRun.pipeline_run_id == uuid.UUID(run_id))
+        ).scalars().all()
+        stage_statuses = {s.stage_name: s.status for s in all_stages}
+
+        failed = [n for n, s in stage_statuses.items() if s == "FAILED"]
+        missing = REQUIRED_STAGES - set(stage_statuses.keys())
+        stuck = [n for n, s in stage_statuses.items() if s in ("RUNNING", "PENDING")]
+
+        if failed or missing or stuck:
             final_status = STATUS_PARTIAL_COMPLETE
             logger.warning(
-                "finalize_document_v2: document_id=%s has failed stages: %s",
-                document_id, failed_stages,
+                "finalize_document: document_id=%s failed=%s missing=%s stuck=%s",
+                document_id, failed, list(missing), stuck,
             )
         else:
             final_status = STATUS_COMPLETE
@@ -1866,11 +1164,11 @@ def finalize_document_v2(self, document_id: str) -> None:
         db.commit()
 
         logger.info(
-            "finalize_document_v2 [v2]: document_id=%s — pipeline %s",
+            "finalize_document: document_id=%s — pipeline %s",
             document_id, final_status,
         )
     except Exception as exc:
-        logger.error("finalize_document_v2 failed for %s: %s", document_id, exc)
+        logger.error("finalize_document failed for %s: %s", document_id, exc)
         db.rollback()
     finally:
         db.close()

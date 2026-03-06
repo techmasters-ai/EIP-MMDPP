@@ -27,25 +27,14 @@ celery_app.conf.update(
     enable_utc=True,
     # Task routing to dedicated queues
     task_routes={
-        "app.workers.pipeline.validate_and_store": {"queue": "ingest"},
-        "app.workers.pipeline.detect_modalities": {"queue": "ingest"},
-        "app.workers.pipeline.convert_document": {"queue": "extract"},
-        "app.workers.pipeline.embed_text_chunks": {"queue": "embed"},
-        "app.workers.pipeline.embed_image_chunks": {"queue": "embed"},
-        "app.workers.pipeline.collect_embeddings": {"queue": "ingest"},
-        "app.workers.pipeline.extract_graph": {"queue": "graph"},
-        "app.workers.pipeline.import_graph": {"queue": "graph"},
-        "app.workers.pipeline.connect_document_elements": {"queue": "graph"},
-        "app.workers.pipeline.finalize_artifact": {"queue": "ingest"},
-        "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
-        # V2 pipeline tasks
         "app.workers.pipeline.prepare_document": {"queue": "ingest"},
         "app.workers.pipeline.derive_text_chunks_and_embeddings": {"queue": "embed"},
         "app.workers.pipeline.derive_image_embeddings": {"queue": "embed"},
         "app.workers.pipeline.derive_ontology_graph": {"queue": "graph"},
         "app.workers.pipeline.derive_structure_links": {"queue": "graph"},
         "app.workers.pipeline.collect_derivations": {"queue": "ingest"},
-        "app.workers.pipeline.finalize_document_v2": {"queue": "ingest"},
+        "app.workers.pipeline.finalize_document": {"queue": "ingest"},
+        "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
     },
     # Task result expiry
     result_expires=86400,  # 24 hours

@@ -1,6 +1,6 @@
-"""Unit tests for v2 ingest pipeline tasks and helpers.
+"""Unit tests for ingest pipeline tasks and helpers.
 
-Tests task registration, v2 DAG construction, deterministic key generation,
+Tests task registration, DAG construction, deterministic key generation,
 and stage state machine logic — all without DB dependencies.
 """
 
@@ -16,8 +16,8 @@ pytestmark = pytest.mark.unit
 # Task registration
 # ---------------------------------------------------------------------------
 
-class TestV2TaskRegistration:
-    """Verify all v2 tasks are registered with the correct names."""
+class TestTaskRegistration:
+    """Verify all pipeline tasks are registered with the correct names."""
 
     def test_prepare_document_registered(self):
         from app.workers.pipeline import prepare_document
@@ -43,13 +43,13 @@ class TestV2TaskRegistration:
         from app.workers.pipeline import collect_derivations
         assert collect_derivations.name == "app.workers.pipeline.collect_derivations"
 
-    def test_finalize_document_v2_registered(self):
-        from app.workers.pipeline import finalize_document_v2
-        assert finalize_document_v2.name == "app.workers.pipeline.finalize_document_v2"
+    def test_finalize_document_registered(self):
+        from app.workers.pipeline import finalize_document
+        assert finalize_document.name == "app.workers.pipeline.finalize_document"
 
 
-class TestV2TaskRouting:
-    """Verify v2 derivation tasks are routed to correct queues."""
+class TestTaskRouting:
+    """Verify derivation tasks are routed to correct queues."""
 
     def test_derive_text_embed_queue(self):
         from app.workers.pipeline import derive_text_chunks_and_embeddings
@@ -69,13 +69,13 @@ class TestV2TaskRouting:
 
 
 # ---------------------------------------------------------------------------
-# V2 DAG construction
+# DAG construction
 # ---------------------------------------------------------------------------
 
-class TestV2DAGConstruction:
-    """Verify start_ingest_pipeline_v2 constructs a proper Celery chain."""
+class TestDAGConstruction:
+    """Verify start_ingest_pipeline constructs a proper Celery chain."""
 
-    def test_v2_pipeline_returns_task_id(self):
+    def test_pipeline_returns_task_id(self):
         from unittest.mock import patch, MagicMock
 
         with patch("app.workers.pipeline.prepare_document") as mock_prep, \
@@ -84,11 +84,10 @@ class TestV2DAGConstruction:
              patch("app.workers.pipeline.derive_ontology_graph") as mock_onto, \
              patch("app.workers.pipeline.derive_structure_links") as mock_links, \
              patch("app.workers.pipeline.collect_derivations") as mock_collect, \
-             patch("app.workers.pipeline.finalize_document_v2") as mock_final:
+             patch("app.workers.pipeline.finalize_document") as mock_final:
 
-            # Mock the chain result
             mock_chain_result = MagicMock()
-            mock_chain_result.id = "mock-v2-task-id"
+            mock_chain_result.id = "mock-task-id"
 
             mock_prep.si.return_value = MagicMock()
             mock_text.si.return_value = MagicMock()
@@ -101,10 +100,10 @@ class TestV2DAGConstruction:
             with patch("app.workers.pipeline.chain") as mock_chain_fn:
                 mock_chain_fn.return_value.apply_async.return_value = mock_chain_result
 
-                from app.workers.pipeline import start_ingest_pipeline_v2
-                task_id = start_ingest_pipeline_v2("test-doc-id")
+                from app.workers.pipeline import start_ingest_pipeline
+                task_id = start_ingest_pipeline("test-doc-id")
 
-                assert task_id == "mock-v2-task-id"
+                assert task_id == "mock-task-id"
                 mock_chain_fn.return_value.apply_async.assert_called_once()
 
 

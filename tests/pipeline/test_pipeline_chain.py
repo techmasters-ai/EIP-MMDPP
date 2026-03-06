@@ -1,4 +1,4 @@
-"""Pipeline task tests — verifying the new task chain structure.
+"""Pipeline task tests — verifying the task chain structure.
 
 These tests mock external services (DB, MinIO, embeddings, LLM) and verify
 that each task calls the correct dependencies.
@@ -25,63 +25,8 @@ class TestStartIngestPipeline:
             mock_chain.assert_called_once()
 
 
-class TestEmbedTextChunksTask:
-    def test_task_is_registered(self):
-        """embed_text_chunks is a registered Celery task."""
-        from app.workers.pipeline import embed_text_chunks
-        assert embed_text_chunks.name == "app.workers.pipeline.embed_text_chunks"
-
-
-class TestEmbedImageChunksTask:
-    def test_task_is_registered(self):
-        """embed_image_chunks is a registered Celery task."""
-        from app.workers.pipeline import embed_image_chunks
-        assert embed_image_chunks.name == "app.workers.pipeline.embed_image_chunks"
-
-
-class TestExtractGraphTask:
-    def test_task_is_registered(self):
-        """extract_graph is a registered Celery task."""
-        from app.workers.pipeline import extract_graph
-        assert extract_graph.name == "app.workers.pipeline.extract_graph"
-
-
-class TestImportGraphTask:
-    def test_task_is_registered(self):
-        """import_graph is a registered Celery task."""
-        from app.workers.pipeline import import_graph
-        assert import_graph.name == "app.workers.pipeline.import_graph"
-
-
-class TestConnectDocumentElementsTask:
-    def test_task_is_registered(self):
-        """connect_document_elements is a registered Celery task."""
-        from app.workers.pipeline import connect_document_elements
-        assert connect_document_elements.name == "app.workers.pipeline.connect_document_elements"
-
-
-class TestCollectEmbeddingsTask:
-    def test_task_is_registered(self):
-        """collect_embeddings is a registered Celery task."""
-        from app.workers.pipeline import collect_embeddings
-        assert collect_embeddings.name == "app.workers.pipeline.collect_embeddings"
-
-
-class TestStartIngestPipelineV2:
-    def test_creates_celery_chain(self):
-        """start_ingest_pipeline_v2 returns a chain of the expected tasks."""
-        from app.workers.pipeline import start_ingest_pipeline_v2
-
-        doc_id = str(uuid.uuid4())
-        with patch("app.workers.pipeline.chain") as mock_chain:
-            mock_chain.return_value.apply_async.return_value = MagicMock(id="v2-task-123")
-            result = start_ingest_pipeline_v2(doc_id)
-            assert result == "v2-task-123"
-            mock_chain.assert_called_once()
-
-
-class TestV2TasksRegistered:
-    """Verify all v2 pipeline tasks are registered."""
+class TestTasksRegistered:
+    """Verify all pipeline tasks are registered."""
 
     def test_prepare_document(self):
         from app.workers.pipeline import prepare_document
@@ -107,28 +52,38 @@ class TestV2TasksRegistered:
         from app.workers.pipeline import collect_derivations
         assert collect_derivations.name == "app.workers.pipeline.collect_derivations"
 
-    def test_finalize_document_v2(self):
-        from app.workers.pipeline import finalize_document_v2
-        assert finalize_document_v2.name == "app.workers.pipeline.finalize_document_v2"
+    def test_finalize_document(self):
+        from app.workers.pipeline import finalize_document
+        assert finalize_document.name == "app.workers.pipeline.finalize_document"
 
 
 class TestTaskRouting:
-    def test_embed_text_chunks_routed_to_embed_queue(self):
+    def test_prepare_document_routed_to_ingest_queue(self):
         from app.workers.celery_app import celery_app
         routes = celery_app.conf.task_routes
-        assert routes["app.workers.pipeline.embed_text_chunks"]["queue"] == "embed"
+        assert routes["app.workers.pipeline.prepare_document"]["queue"] == "ingest"
 
-    def test_embed_image_chunks_routed_to_embed_queue(self):
+    def test_derive_text_embeddings_routed_to_embed_queue(self):
         from app.workers.celery_app import celery_app
         routes = celery_app.conf.task_routes
-        assert routes["app.workers.pipeline.embed_image_chunks"]["queue"] == "embed"
+        assert routes["app.workers.pipeline.derive_text_chunks_and_embeddings"]["queue"] == "embed"
 
-    def test_extract_graph_routed_to_graph_queue(self):
+    def test_derive_image_embeddings_routed_to_embed_queue(self):
         from app.workers.celery_app import celery_app
         routes = celery_app.conf.task_routes
-        assert routes["app.workers.pipeline.extract_graph"]["queue"] == "graph"
+        assert routes["app.workers.pipeline.derive_image_embeddings"]["queue"] == "embed"
 
-    def test_connect_document_elements_routed_to_graph_queue(self):
+    def test_derive_ontology_graph_routed_to_graph_queue(self):
         from app.workers.celery_app import celery_app
         routes = celery_app.conf.task_routes
-        assert routes["app.workers.pipeline.connect_document_elements"]["queue"] == "graph"
+        assert routes["app.workers.pipeline.derive_ontology_graph"]["queue"] == "graph"
+
+    def test_derive_structure_links_routed_to_graph_queue(self):
+        from app.workers.celery_app import celery_app
+        routes = celery_app.conf.task_routes
+        assert routes["app.workers.pipeline.derive_structure_links"]["queue"] == "graph"
+
+    def test_finalize_document_routed_to_ingest_queue(self):
+        from app.workers.celery_app import celery_app
+        routes = celery_app.conf.task_routes
+        assert routes["app.workers.pipeline.finalize_document"]["queue"] == "ingest"

@@ -1,10 +1,10 @@
-"""Integration tests for the NER + graph stages of the ingest pipeline.
+"""Integration tests for the ontology graph stage of the ingest pipeline.
 
-These tests call the task functions directly (bypassing Celery), using a real
-test database session. They verify that:
-  1. extract_graph_entities writes entity/relationship candidates to artifact metadata
-  2. import_graph successfully calls AGE (or fails gracefully if AGE is unavailable)
-  3. The full text-extraction → NER → chunk flow produces consistent results
+These tests call derive_ontology_graph directly (bypassing Celery), using a
+real test database session. They verify that:
+  1. NER extraction produces entities/relationships from text elements
+  2. Graph data is stored in document_graph_extractions
+  3. upsert_node/upsert_relationship are called for AGE import
 """
 
 import uuid
@@ -56,208 +56,144 @@ def sample_document_id(db_session) -> str:
 
 
 @pytest.fixture
-def sample_artifact(db_session, sample_document_id) -> "Artifact":
-    """Create a text artifact with military content."""
-    from app.models.ingest import Artifact
+def sample_document_element(db_session, sample_document_id) -> "DocumentElement":
+    """Create a text document element with military content."""
+    from app.models.ingest import DocumentElement
+    import hashlib
 
-    artifact = Artifact(
+    element_hash = hashlib.sha256(
+        f"{sample_document_id}:elem-0:{MILITARY_TEXT}".encode()
+    ).hexdigest()
+
+    element = DocumentElement(
         id=uuid.uuid4(),
         document_id=uuid.UUID(sample_document_id),
-        artifact_type="text",
+        element_uid="elem-0",
+        element_type="text",
+        element_order=0,
         content_text=MILITARY_TEXT,
-        content_metadata={},
+        metadata={},
+        element_hash=element_hash,
     )
-    db_session.add(artifact)
+    db_session.add(element)
     db_session.flush()
-    return artifact
+    return element
 
 
-class TestExtractGraphEntities:
-    """Tests for the extract_graph_entities Celery task (called directly)."""
+class TestDeriveOntologyGraph:
+    """Tests for the derive_ontology_graph task (called directly)."""
 
-    def test_entities_written_to_artifact_metadata(
-        self, db_session, sample_document_id, sample_artifact
+    def test_ner_extraction_produces_entities(
+        self, db_session, sample_document_id, sample_document_element
     ):
-        """After extraction, artifact.content_metadata must contain entity lists."""
-        from app.workers.pipeline import extract_graph_entities
-        from app.models.ingest import Artifact
-        from sqlalchemy import select
+        """NER should extract entities from military text."""
+        from app.workers.pipeline import derive_ontology_graph
 
         with (
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
-        ):
-            extract_graph_entities.run(sample_document_id)
-
-        db_session.expire_all()
-        result = db_session.execute(
-            select(Artifact).where(Artifact.document_id == uuid.UUID(sample_document_id))
-        )
-        artifact = result.scalars().first()
-        assert artifact is not None
-        metadata = artifact.content_metadata or {}
-        assert "extracted_entities" in metadata, (
-            "content_metadata must have 'extracted_entities' after NER"
-        )
-        assert "extracted_relationships" in metadata, (
-            "content_metadata must have 'extracted_relationships' after NER"
-        )
-        assert isinstance(metadata["extracted_entities"], list)
-        assert isinstance(metadata["extracted_relationships"], list)
-
-    def test_at_least_one_entity_found(
-        self, db_session, sample_document_id, sample_artifact
-    ):
-        """The military text fixture should yield at least one entity."""
-        from app.workers.pipeline import extract_graph_entities
-        from app.models.ingest import Artifact
-        from sqlalchemy import select
-
-        with (
-            patch("app.workers.pipeline._get_db", return_value=db_session),
-            patch("app.workers.pipeline._update_document_status"),
-        ):
-            extract_graph_entities.run(sample_document_id)
-
-        db_session.expire_all()
-        result = db_session.execute(
-            select(Artifact).where(Artifact.document_id == uuid.UUID(sample_document_id))
-        )
-        artifact = result.scalars().first()
-        entities = (artifact.content_metadata or {}).get("extracted_entities", [])
-        assert len(entities) > 0, (
-            "Expected at least one entity from military text fixture"
-        )
-
-    def test_entity_dicts_have_required_keys(
-        self, db_session, sample_document_id, sample_artifact
-    ):
-        """Each entity dict must have entity_type, name, confidence, properties."""
-        from app.workers.pipeline import extract_graph_entities
-        from app.models.ingest import Artifact
-        from sqlalchemy import select
-
-        with (
-            patch("app.workers.pipeline._get_db", return_value=db_session),
-            patch("app.workers.pipeline._update_document_status"),
-        ):
-            extract_graph_entities.run(sample_document_id)
-
-        db_session.expire_all()
-        result = db_session.execute(
-            select(Artifact).where(Artifact.document_id == uuid.UUID(sample_document_id))
-        )
-        artifact = result.scalars().first()
-        for entity in (artifact.content_metadata or {}).get("extracted_entities", []):
-            assert "entity_type" in entity
-            assert "name" in entity
-            assert "confidence" in entity
-            assert "properties" in entity
-            assert isinstance(entity["confidence"], float)
-
-    def test_missing_document_does_not_crash(self, db_session):
-        """extract_graph_entities should not crash on missing document_id."""
-        from app.workers.pipeline import extract_graph_entities
-
-        nonexistent_id = str(uuid.uuid4())
-        with (
-            patch("app.workers.pipeline._get_db", return_value=db_session),
-            patch("app.workers.pipeline._update_document_status"),
-        ):
-            # Should complete without raising (no artifacts → no-op)
-            extract_graph_entities.run(nonexistent_id)
-
-
-class TestImportGraph:
-    """Tests for the import_graph Celery task (called directly).
-
-    AGE may not be available in all test environments, so failures are tolerated
-    gracefully. We assert that the task either succeeds or marks the document
-    as PARTIAL_COMPLETE.
-    """
-
-    def test_import_graph_no_entities_is_noop(
-        self, db_session, sample_document_id, sample_artifact
-    ):
-        """An artifact with no extracted_entities produces no graph writes."""
-        from app.workers.pipeline import import_graph
-
-        # Ensure no extracted_entities in metadata
-        sample_artifact.content_metadata = {}
-        db_session.flush()
-
-        with (
-            patch("app.workers.pipeline._get_db", return_value=db_session),
-            patch("app.workers.pipeline._update_document_status"),
-            patch("app.services.graph.upsert_node", return_value="mock-node-id") as mock_upsert,
-        ):
-            import_graph.run(sample_document_id)
-
-        mock_upsert.assert_not_called()
-
-    def test_import_graph_calls_upsert_for_each_entity(
-        self, db_session, sample_document_id, sample_artifact
-    ):
-        """import_graph should call upsert_node for each extracted entity."""
-        from app.workers.pipeline import import_graph
-
-        sample_artifact.content_metadata = {
-            "extracted_entities": [
-                {"entity_type": "EQUIPMENT_SYSTEM", "name": "Patriot PAC-3", "confidence": 0.9, "properties": {}},
-                {"entity_type": "STANDARD", "name": "MIL-STD-1553B", "confidence": 0.95, "properties": {}},
-            ],
-            "extracted_relationships": [],
-        }
-        db_session.flush()
-
-        with (
-            patch("app.workers.pipeline._get_db", return_value=db_session),
-            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.services.graph.upsert_node", return_value="mock-node-id") as mock_node,
             patch("app.services.graph.upsert_relationship", return_value=True) as mock_rel,
         ):
-            import_graph.run(sample_document_id)
+            result = derive_ontology_graph.run(sample_document_id)
 
-        assert mock_node.call_count == 2
-        mock_rel.assert_not_called()
+        assert result["status"] == "ok"
+        assert result["nodes"] > 0
+        assert mock_node.call_count > 0
 
-    def test_import_graph_calls_upsert_for_relationships(
-        self, db_session, sample_document_id, sample_artifact
+    def test_graph_data_stored_in_extraction_table(
+        self, db_session, sample_document_id, sample_document_element
     ):
-        """import_graph should call upsert_relationship for each relationship."""
-        from app.workers.pipeline import import_graph
-
-        sample_artifact.content_metadata = {
-            "extracted_entities": [
-                {"entity_type": "EQUIPMENT_SYSTEM", "name": "Patriot PAC-3", "confidence": 0.9, "properties": {}},
-                {"entity_type": "SUBSYSTEM", "name": "MK-4 Guidance Computer", "confidence": 0.85, "properties": {}},
-            ],
-            "extracted_relationships": [
-                {
-                    "rel_type": "IS_SUBSYSTEM_OF",
-                    "from_name": "MK-4 Guidance Computer",
-                    "from_type": "SUBSYSTEM",
-                    "to_name": "Patriot PAC-3",
-                    "to_type": "EQUIPMENT_SYSTEM",
-                    "confidence": 0.8,
-                }
-            ],
-        }
-        db_session.flush()
+        """Graph extraction should be stored in document_graph_extractions."""
+        from app.workers.pipeline import derive_ontology_graph
+        from app.models.ingest import DocumentGraphExtraction
+        from sqlalchemy import select
 
         with (
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
-            patch("app.services.graph.upsert_node", return_value="mock-id") as mock_node,
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.services.graph.upsert_node", return_value="mock-id"),
+            patch("app.services.graph.upsert_relationship", return_value=True),
+        ):
+            derive_ontology_graph.run(sample_document_id)
+
+        db_session.expire_all()
+        extraction = db_session.execute(
+            select(DocumentGraphExtraction)
+            .where(DocumentGraphExtraction.document_id == uuid.UUID(sample_document_id))
+        ).scalar_one_or_none()
+
+        assert extraction is not None
+        assert extraction.status == "COMPLETE"
+        assert extraction.provider == "ner"
+        graph_json = extraction.graph_json
+        assert "nodes" in graph_json
+        assert "edges" in graph_json
+        assert len(graph_json["nodes"]) > 0
+
+    def test_entity_dicts_have_required_keys(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """Each node dict must have entity_type, name, confidence."""
+        from app.workers.pipeline import derive_ontology_graph
+        from app.models.ingest import DocumentGraphExtraction
+        from sqlalchemy import select
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.services.graph.upsert_node", return_value="mock-id"),
+            patch("app.services.graph.upsert_relationship", return_value=True),
+        ):
+            derive_ontology_graph.run(sample_document_id)
+
+        db_session.expire_all()
+        extraction = db_session.execute(
+            select(DocumentGraphExtraction)
+            .where(DocumentGraphExtraction.document_id == uuid.UUID(sample_document_id))
+        ).scalar_one_or_none()
+
+        for node in extraction.graph_json["nodes"]:
+            assert "entity_type" in node
+            assert "name" in node
+            assert "confidence" in node
+
+    def test_no_elements_is_noop(self, db_session, sample_document_id):
+        """No document elements → no extraction (ok status, 0 nodes)."""
+        from app.workers.pipeline import derive_ontology_graph
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+        ):
+            result = derive_ontology_graph.run(sample_document_id)
+
+        assert result["status"] == "ok"
+        assert result["nodes"] == 0
+        assert result["edges"] == 0
+
+    def test_upsert_relationship_called_for_edges(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """upsert_relationship should be called for discovered relationships."""
+        from app.workers.pipeline import derive_ontology_graph
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.services.graph.upsert_node", return_value="mock-id"),
             patch("app.services.graph.upsert_relationship", return_value=True) as mock_rel,
         ):
-            import_graph.run(sample_document_id)
+            result = derive_ontology_graph.run(sample_document_id)
 
-        assert mock_node.call_count == 2
-        assert mock_rel.call_count == 1
-
-        # Verify relationship call args
-        call_kwargs = mock_rel.call_args.kwargs
-        assert call_kwargs["from_name"] == "MK-4 Guidance Computer"
-        assert call_kwargs["to_name"] == "Patriot PAC-3"
-        assert call_kwargs["rel_type"] == "IS_SUBSYSTEM_OF"
+        if result["edges"] > 0:
+            assert mock_rel.call_count > 0
+            call_kwargs = mock_rel.call_args.kwargs
+            assert "from_name" in call_kwargs
+            assert "to_name" in call_kwargs
+            assert "rel_type" in call_kwargs

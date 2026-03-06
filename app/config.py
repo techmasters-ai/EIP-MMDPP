@@ -117,9 +117,6 @@ class Settings(BaseSettings):
     # Directory watcher
     watch_dir_poll_interval_seconds: int = 30
 
-    # --- Ingest v2 ---
-    ingest_v2_enabled: bool = False
-
     # --- Retrieval scoring (env-var configurable) ---
     # Expansion limits
     retrieval_doc_expand_k: int = 5

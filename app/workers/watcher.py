@@ -142,13 +142,9 @@ def _scan_directory(db, watch_dir) -> None:
             db.add(watch_log)
             db.commit()
 
-            # Enqueue ingest pipeline (v1 or v2 based on feature flag)
-            if settings.ingest_v2_enabled:
-                from app.workers.pipeline import start_ingest_pipeline_v2
-                task_id = start_ingest_pipeline_v2(str(document.id))
-            else:
-                from app.workers.pipeline import start_ingest_pipeline
-                task_id = start_ingest_pipeline(str(document.id))
+            # Enqueue ingest pipeline
+            from app.workers.pipeline import start_ingest_pipeline
+            task_id = start_ingest_pipeline(str(document.id))
 
             # Update document with task ID
             from sqlalchemy import update
