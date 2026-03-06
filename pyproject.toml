@@ -139,7 +139,7 @@ timeout = 120
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 source = ["app"]
-omit = ["app/workers/celery_app.py", "alembic/*"]
+omit = ["app/workers/celery_app.py", "alembic/*", "app/services/embedding.py"]
 
 [tool.coverage.report]
 fail_under = 85

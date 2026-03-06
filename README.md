@@ -138,13 +138,16 @@ COGNEE_MODEL=llama3.2              # Model for Cognee trusted data operations
 ## Running Tests
 
 ```bash
-# Full suite (unit → integration → contract → E2E)
+# Full suite (unit → integration → E2E)
 ./scripts/run_tests.sh
 
 # Individual layers
 ./scripts/run_tests.sh unit
 ./scripts/run_tests.sh integration
 ./scripts/run_tests.sh e2e
+
+# Skip coverage instrumentation (faster, lower RAM)
+SKIP_COV=1 ./scripts/run_tests.sh unit
 
 # Keep stack running after tests
 KEEP_STACK=1 ./scripts/run_tests.sh
@@ -162,14 +165,6 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 ### Directory Watcher
 - `POST /v1/watch-dirs` — register a directory for auto-ingest
 - `DELETE /v1/watch-dirs/{id}` — remove watch directory
-
-### Text Vector Store
-- `POST /v1/text/ingest` — embed and store a text chunk directly (BGE → Qdrant)
-- `POST /v1/text/query` — semantic search on text_chunks
-
-### Image Vector Store
-- `POST /v1/images/ingest` — embed and store an image directly (CLIP → Qdrant)
-- `POST /v1/images/query` — semantic search on image_chunks (text-to-image or image-to-image)
 
 ### Graph Store (Neo4j)
 - `POST /v1/graph/ingest/entity` — create an entity node
@@ -189,7 +184,8 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 POST /v1/retrieval/query
 {
   "query_text": "Patriot PAC-3 guidance computer specifications",
-  "mode": "multi_modal",
+  "strategy": "hybrid",
+  "modality_filter": "all",
   "top_k": 10,
   "include_context": true
 }
@@ -199,7 +195,8 @@ Response returns a flat ranked results list:
 
 ```json
 {
-  "mode": "multi_modal",
+  "strategy": "hybrid",
+  "modality_filter": "all",
   "results": [
     { "chunk_id": "...", "score": 0.92, "modality": "text", "content_text": "..." },
     { "chunk_id": "...", "score": 0.78, "modality": "image", "content_text": "..." }
@@ -208,19 +205,21 @@ Response returns a flat ranked results list:
 }
 ```
 
-Query modes:
+Query strategies:
 
-| Mode | Input | Pipeline | Output |
-|---|---|---|---|
-| `text_basic` | Text only | BGE vector search (Qdrant) | Text chunks |
-| `text_only` | Text or image | Full multi-modal pipeline | Filtered to text |
-| `images_only` | Text or image | Full multi-modal pipeline | Filtered to images |
-| `multi_modal` | Text or image | Full multi-modal pipeline | All results |
-| `memory` | Text | Cognee search | Approved trusted data |
-| `graphrag_local` | Text | Entity-centric + community reports | Entity matches with community context |
-| `graphrag_global` | Text | Cross-community summarization | Community reports ranked by relevance |
+| Strategy | Modality Filter | Input | Pipeline | Output |
+|---|---|---|---|---|
+| `basic` | `all` | Text only | BGE vector search (Qdrant) | Text chunks |
+| `hybrid` | `text` | Text or image | Full multi-modal pipeline | Filtered to text |
+| `hybrid` | `image` | Text or image | Full multi-modal pipeline | Filtered to images |
+| `hybrid` | `all` | Text or image | Full multi-modal pipeline | All results |
+| `memory` | `all` | Text | Cognee search | Approved trusted data |
+| `graphrag_local` | `all` | Text | Entity-centric + community reports | Entity matches with community context |
+| `graphrag_global` | `all` | Text | Cross-community summarization | Community reports ranked by relevance |
 
-The multi-modal pipeline (modes 2-4) runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → weighted fusion scoring → deduplicate → rank → filter by mode.
+> **Backward compatibility**: The legacy `mode` field (e.g. `"mode": "text_only"`) is still accepted and maps to the corresponding `strategy` + `modality_filter` combination.
+
+The hybrid pipeline runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → weighted fusion scoring → deduplicate → rank → filter by modality.
 
 Image-modality results include a presigned `image_url` for inline display in the UI.
 
@@ -231,17 +230,17 @@ Image-modality results include a presigned `image_url` for inline display in the
 ```
 GET /v1/agent/context
   ?query=Patriot+PAC-3+guidance+computer
-  &mode=text_basic
+  &strategy=basic
   &top_k=10
   &include_sources=true
 ```
 
-Returns a pre-formatted markdown context string for direct injection into an LLM prompt. Supports all 7 query modes.
+Returns a pre-formatted markdown context string for direct injection into an LLM prompt. Supports all query strategies. Accepts `strategy` + `modality_filter` params (and the deprecated `mode` param for backward compatibility).
 
 ```python
 # LangGraph usage example
 resp = requests.get("http://localhost:8000/v1/agent/context",
-                    params={"query": query, "mode": "text_basic"})
+                    params={"query": query, "strategy": "basic"})
 system_msg = f"Use this context:\n\n{resp.json()['context']}"
 ```
 
@@ -308,9 +307,9 @@ The `prepare_document` task calls the dedicated Docling service which extracts t
 
 Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation, with regex NER as fallback when LLM is unavailable. Extracted entities and relationships are imported directly to Neo4j. Graph data is stored once per document (`document_graph_extractions`), not per artifact.
 
-## Data Migration (from AGE/pgvector)
+## Data Migration (from AGE)
 
-For existing installations migrating from Apache AGE + pgvector:
+For existing installations migrating from Apache AGE:
 
 ```bash
 # 1. Deploy Neo4j + Qdrant (empty)
@@ -322,10 +321,7 @@ python scripts/init_qdrant_collections.py
 # 3. Migrate graph data: AGE → Neo4j
 python scripts/migrate_age_to_neo4j.py
 
-# 4. Migrate vectors: pgvector → Qdrant
-python scripts/migrate_pgvector_to_qdrant.py
-
-# 5. Run Alembic migration (adds qdrant_point_id columns)
+# 4. Run Alembic migration (adds qdrant_point_id columns)
 ./manage.sh --migrate
 ```
 
@@ -351,14 +347,15 @@ All migration scripts are idempotent (MERGE/upsert).
 ```
 app/
 ├── api/v1/               # FastAPI routers
-│   ├── retrieval.py      #   Unified multi-mode query endpoint (7 modes)
-│   ├── text_store.py     #   Text vector store ingest + query
-│   ├── image_store.py    #   Image vector store ingest + query
+│   ├── retrieval.py      #   Unified query endpoint (strategy + modality_filter)
+│   ├── _retrieval_helpers.py #   Retrieval pipeline helpers
+│   ├── agent.py          #   LangGraph agent context endpoint
+│   ├── _agent_helpers.py #   Agent response formatting
 │   ├── graph_store.py    #   Graph entity/relationship ingest + query (Neo4j)
 │   ├── memory.py         #   Trusted data proposals + approval + search
-│   ├── agent.py          #   LangGraph agent context endpoint
 │   ├── governance.py     #   Feedback + patch state machine
-│   └── sources.py        #   Sources CRUD, document upload, watch dirs
+│   ├── sources.py        #   Sources CRUD, document upload, watch dirs
+│   └── health.py         #   Health check endpoint
 ├── services/
 │   ├── cognee_service.py       # Cognee async wrapper
 │   ├── docling_client.py       # HTTP client for Docling conversion service
@@ -384,17 +381,16 @@ ontology/
 scripts/
 ├── init_qdrant_collections.py    # Create Qdrant collections with indexes
 ├── migrate_age_to_neo4j.py       # One-time AGE → Neo4j migration
-└── migrate_pgvector_to_qdrant.py # One-time pgvector → Qdrant migration
+└── seed_ontology.py              # Seed ontology types from YAML
 frontend/
 ├── src/components/       # React components
-│   ├── QueryPage.tsx     #   Multi-mode search (7 modes) with flat ranked results
+│   ├── QueryPage.tsx     #   Multi-strategy search with flat ranked results
 │   ├── FileUpload.tsx    #   Document upload
-│   ├── TextIngest.tsx    #   Direct text chunk ingest
-│   ├── ImageIngest.tsx   #   Direct image ingest with drag-drop
+│   ├── IngestPage.tsx    #   Unified ingest page
 │   ├── GraphExplorer.tsx #   Graph search + entity/relationship creation (full ontology)
 │   ├── MemoryPanel.tsx   #   Trusted data proposals + approval + search
 │   ├── DirectoryMonitor.tsx # Watch directory management
-│   └── Nav.tsx           #   Navigation (6 pages)
+│   └── Nav.tsx           #   Navigation
 └── src/api/client.ts     # Typed API client (all endpoints)
 tests/
 ├── unit/                 # Pure-logic tests (no DB required)

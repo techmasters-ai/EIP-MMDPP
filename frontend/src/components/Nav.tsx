@@ -1,4 +1,4 @@
-export type Page = "ingest" | "query" | "text" | "images" | "graph" | "memory";
+export type Page = "ingest" | "query" | "graph" | "memory";
 
 interface NavProps {
   page: Page;
@@ -8,8 +8,6 @@ interface NavProps {
 const NAV_ITEMS: { value: Page; label: string }[] = [
   { value: "ingest", label: "Upload" },
   { value: "query", label: "Search" },
-  { value: "text", label: "Text Store" },
-  { value: "images", label: "Image Store" },
   { value: "graph", label: "Ontology" },
   { value: "memory", label: "Trusted Data" },
 ];

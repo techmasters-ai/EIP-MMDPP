@@ -137,9 +137,9 @@ services:
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
+      interval: 30s
+      timeout: 15s
+      retries: 20
       start_period: 120s
 
   # ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ services:
       minio:
         condition: service_healthy
       docling:
-        condition: service_healthy
+        condition: service_started
       neo4j:
         condition: service_healthy
       qdrant:
@@ -246,7 +246,7 @@ services:
       minio:
         condition: service_healthy
       docling:
-        condition: service_healthy
+        condition: service_started
       neo4j:
         condition: service_healthy
       qdrant:

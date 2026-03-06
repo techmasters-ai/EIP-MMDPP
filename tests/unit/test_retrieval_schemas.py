@@ -1,8 +1,8 @@
 """Unit tests for retrieval Pydantic schemas.
 
-Tests QueryMode enum values, UnifiedQueryRequest validation (defaults,
-boundaries, model_validator), UnifiedQueryResponse shape, and
-QueryResultItem defaults.
+Tests QueryStrategy/ModalityFilter enums, UnifiedQueryRequest validation
+(defaults, boundaries, model_validator, backward-compat mode mapping),
+UnifiedQueryResponse shape, and QueryResultItem defaults.
 """
 
 import pytest
@@ -12,37 +12,48 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# QueryMode enum
+# QueryStrategy enum
 # ---------------------------------------------------------------------------
 
-class TestQueryMode:
-    def test_all_mode_values_exist(self):
-        from app.schemas.retrieval import QueryMode
-        expected = {
-            "text_basic", "text_only", "images_only", "multi_modal",
-            "memory", "graphrag_local", "graphrag_global",
-        }
-        actual = {m.value for m in QueryMode}
+class TestQueryStrategy:
+    def test_all_strategy_values_exist(self):
+        from app.schemas.retrieval import QueryStrategy
+        expected = {"basic", "hybrid", "memory", "graphrag_local", "graphrag_global"}
+        actual = {m.value for m in QueryStrategy}
         assert actual == expected
 
-    def test_has_seven_members(self):
-        from app.schemas.retrieval import QueryMode
-        assert len(QueryMode) == 7
+    def test_has_five_members(self):
+        from app.schemas.retrieval import QueryStrategy
+        assert len(QueryStrategy) == 5
 
-    def test_mode_string_values(self):
-        from app.schemas.retrieval import QueryMode
-        assert QueryMode.text_basic.value == "text_basic"
-        assert QueryMode.text_only.value == "text_only"
-        assert QueryMode.images_only.value == "images_only"
-        assert QueryMode.multi_modal.value == "multi_modal"
-        assert QueryMode.memory.value == "memory"
-        assert QueryMode.graphrag_local.value == "graphrag_local"
-        assert QueryMode.graphrag_global.value == "graphrag_global"
+    def test_strategy_string_values(self):
+        from app.schemas.retrieval import QueryStrategy
+        assert QueryStrategy.basic.value == "basic"
+        assert QueryStrategy.hybrid.value == "hybrid"
+        assert QueryStrategy.memory.value == "memory"
+        assert QueryStrategy.graphrag_local.value == "graphrag_local"
+        assert QueryStrategy.graphrag_global.value == "graphrag_global"
 
-    def test_mode_is_str_enum(self):
-        from app.schemas.retrieval import QueryMode
-        assert isinstance(QueryMode.text_basic, str)
-        assert QueryMode.text_basic == "text_basic"
+    def test_strategy_is_str_enum(self):
+        from app.schemas.retrieval import QueryStrategy
+        assert isinstance(QueryStrategy.basic, str)
+        assert QueryStrategy.basic == "basic"
+
+
+# ---------------------------------------------------------------------------
+# ModalityFilter enum
+# ---------------------------------------------------------------------------
+
+class TestModalityFilter:
+    def test_all_modality_values(self):
+        from app.schemas.retrieval import ModalityFilter
+        expected = {"all", "text", "image"}
+        actual = {m.value for m in ModalityFilter}
+        assert actual == expected
+
+    def test_has_three_members(self):
+        from app.schemas.retrieval import ModalityFilter
+        assert len(ModalityFilter) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +65,15 @@ class TestUnifiedQueryRequest:
         from app.schemas.retrieval import UnifiedQueryRequest
         return UnifiedQueryRequest(**kwargs)
 
-    def test_default_mode_is_text_basic(self):
-        from app.schemas.retrieval import QueryMode
+    def test_default_strategy_is_basic(self):
+        from app.schemas.retrieval import QueryStrategy
         req = self._make(query_text="test")
-        assert req.mode == QueryMode.text_basic
+        assert req.strategy == QueryStrategy.basic
+
+    def test_default_modality_filter_is_all(self):
+        from app.schemas.retrieval import ModalityFilter
+        req = self._make(query_text="test")
+        assert req.modality_filter == ModalityFilter.all
 
     def test_default_top_k_is_10(self):
         req = self._make(query_text="test")
@@ -114,14 +130,54 @@ class TestUnifiedQueryRequest:
         req = self._make(query_text="test")
         assert req.filters is None
 
-    def test_mode_accepts_valid_string(self):
-        from app.schemas.retrieval import QueryMode
-        req = self._make(query_text="test", mode="multi_modal")
-        assert req.mode == QueryMode.multi_modal
+    def test_strategy_accepts_valid_string(self):
+        from app.schemas.retrieval import QueryStrategy
+        req = self._make(query_text="test", strategy="hybrid")
+        assert req.strategy == QueryStrategy.hybrid
 
-    def test_mode_rejects_invalid_string(self):
+    def test_strategy_rejects_invalid_string(self):
         with pytest.raises(ValidationError):
-            self._make(query_text="test", mode="invalid_mode")
+            self._make(query_text="test", strategy="invalid_strategy")
+
+    # Backward-compat: legacy mode field
+    def test_legacy_mode_text_basic_maps_to_basic(self):
+        from app.schemas.retrieval import QueryStrategy, ModalityFilter
+        req = self._make(query_text="test", mode="text_basic")
+        assert req.strategy == QueryStrategy.basic
+        assert req.modality_filter == ModalityFilter.all
+
+    def test_legacy_mode_text_only_maps_to_hybrid_text(self):
+        from app.schemas.retrieval import QueryStrategy, ModalityFilter
+        req = self._make(query_text="test", mode="text_only")
+        assert req.strategy == QueryStrategy.hybrid
+        assert req.modality_filter == ModalityFilter.text
+
+    def test_legacy_mode_images_only_maps_to_hybrid_image(self):
+        from app.schemas.retrieval import QueryStrategy, ModalityFilter
+        req = self._make(query_text="test", mode="images_only")
+        assert req.strategy == QueryStrategy.hybrid
+        assert req.modality_filter == ModalityFilter.image
+
+    def test_legacy_mode_multi_modal_maps_to_hybrid_all(self):
+        from app.schemas.retrieval import QueryStrategy, ModalityFilter
+        req = self._make(query_text="test", mode="multi_modal")
+        assert req.strategy == QueryStrategy.hybrid
+        assert req.modality_filter == ModalityFilter.all
+
+    def test_legacy_mode_memory(self):
+        from app.schemas.retrieval import QueryStrategy
+        req = self._make(query_text="test", mode="memory")
+        assert req.strategy == QueryStrategy.memory
+
+    def test_legacy_mode_graphrag_local(self):
+        from app.schemas.retrieval import QueryStrategy
+        req = self._make(query_text="test", mode="graphrag_local")
+        assert req.strategy == QueryStrategy.graphrag_local
+
+    def test_legacy_mode_graphrag_global(self):
+        from app.schemas.retrieval import QueryStrategy
+        req = self._make(query_text="test", mode="graphrag_global")
+        assert req.strategy == QueryStrategy.graphrag_global
 
 
 # ---------------------------------------------------------------------------
@@ -131,27 +187,28 @@ class TestUnifiedQueryRequest:
 class TestUnifiedQueryResponse:
     def test_response_has_required_fields(self):
         from app.schemas.retrieval import UnifiedQueryResponse
-        resp = UnifiedQueryResponse(mode="text_basic", results=[], total=0)
-        assert resp.mode == "text_basic"
+        resp = UnifiedQueryResponse(strategy="basic", modality_filter="all", results=[], total=0)
+        assert resp.strategy == "basic"
+        assert resp.modality_filter == "all"
         assert resp.results == []
         assert resp.total == 0
 
     def test_response_accepts_results_list(self):
         from app.schemas.retrieval import UnifiedQueryResponse, QueryResultItem
         item = QueryResultItem(score=0.9, modality="text")
-        resp = UnifiedQueryResponse(mode="multi_modal", results=[item], total=1)
+        resp = UnifiedQueryResponse(strategy="hybrid", modality_filter="all", results=[item], total=1)
         assert len(resp.results) == 1
         assert resp.total == 1
 
     def test_response_no_sections_attribute(self):
         from app.schemas.retrieval import UnifiedQueryResponse
-        resp = UnifiedQueryResponse(mode="text_basic", results=[], total=0)
+        resp = UnifiedQueryResponse(strategy="basic", modality_filter="all", results=[], total=0)
         assert not hasattr(resp, "sections")
 
     def test_response_optional_query_fields(self):
         from app.schemas.retrieval import UnifiedQueryResponse
         resp = UnifiedQueryResponse(
-            mode="text_basic", results=[], total=0,
+            strategy="basic", modality_filter="all", results=[], total=0,
             query_text="test", query_image="img",
         )
         assert resp.query_text == "test"

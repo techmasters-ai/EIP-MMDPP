@@ -1,7 +1,7 @@
 """Integration tests for the unified retrieval endpoint.
 
-Tests all five query modes: text_basic, text_only, images_only, multi_modal, memory.
-The tests mock embeddings so no actual ML model loading is required.
+Tests all query strategies via both new (strategy+modality_filter) and
+legacy (mode) API fields.  Embeddings are mocked so no ML model is needed.
 """
 
 import pytest
@@ -22,7 +22,8 @@ async def test_text_basic_returns_200(async_client, mock_embeddings):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["mode"] == "text_basic"
+    assert data["strategy"] == "basic"
+    assert data["modality_filter"] == "all"
     assert isinstance(data["results"], list)
     assert isinstance(data["total"], int)
 
@@ -40,7 +41,8 @@ async def test_text_only_returns_200(async_client, mock_embeddings):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["mode"] == "text_only"
+    assert data["strategy"] == "hybrid"
+    assert data["modality_filter"] == "text"
     assert isinstance(data["results"], list)
 
 
@@ -57,7 +59,8 @@ async def test_images_only_returns_200(async_client, mock_embeddings):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["mode"] == "images_only"
+    assert data["strategy"] == "hybrid"
+    assert data["modality_filter"] == "image"
 
 
 @pytest.mark.asyncio
@@ -73,7 +76,8 @@ async def test_multi_modal_returns_200(async_client, mock_embeddings):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["mode"] == "multi_modal"
+    assert data["strategy"] == "hybrid"
+    assert data["modality_filter"] == "all"
 
 
 @pytest.mark.asyncio
@@ -89,7 +93,7 @@ async def test_memory_returns_200(async_client, mock_cognee):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["mode"] == "memory"
+    assert data["strategy"] == "memory"
 
 
 @pytest.mark.asyncio
@@ -132,15 +136,34 @@ async def test_response_echoes_query(async_client, mock_embeddings):
 
 
 @pytest.mark.asyncio
-async def test_default_mode_is_text_basic(async_client, mock_embeddings):
-    """Request without explicit mode defaults to text_basic."""
+async def test_default_strategy_is_basic(async_client, mock_embeddings):
+    """Request without explicit strategy defaults to basic."""
     resp = await async_client.post(
         "/v1/retrieval/query",
         json={"query_text": "test defaults"},
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["mode"] == "text_basic"
+    assert data["strategy"] == "basic"
+    assert data["modality_filter"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_new_strategy_field_works(async_client, mock_embeddings):
+    """New strategy + modality_filter fields work directly."""
+    resp = await async_client.post(
+        "/v1/retrieval/query",
+        json={
+            "query_text": "test",
+            "strategy": "hybrid",
+            "modality_filter": "text",
+            "top_k": 5,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["strategy"] == "hybrid"
+    assert data["modality_filter"] == "text"
 
 
 @pytest.mark.asyncio

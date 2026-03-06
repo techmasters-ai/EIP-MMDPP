@@ -20,8 +20,9 @@ from app.api.v1._retrieval_helpers import (
 )
 from app.db.session import get_async_session, get_neo4j_async_driver, get_qdrant_async_client
 from app.schemas.retrieval import (
-    QueryMode,
+    ModalityFilter,
     QueryResultItem,
+    QueryStrategy,
     UnifiedQueryRequest,
     UnifiedQueryResponse,
 )
@@ -50,20 +51,20 @@ async def unified_query(
     - **graphrag_global**: Cross-community summarization for broad questions
     """
     try:
-        if body.mode == QueryMode.text_basic:
+        if body.strategy == QueryStrategy.basic:
             results = await _text_vector_search(db, body)
-        elif body.mode == QueryMode.memory:
+        elif body.strategy == QueryStrategy.memory:
             results = await _memory_query(body)
-        elif body.mode == QueryMode.graphrag_local:
+        elif body.strategy == QueryStrategy.graphrag_local:
             results = await _graphrag_local_query(db, body)
-        elif body.mode == QueryMode.graphrag_global:
+        elif body.strategy == QueryStrategy.graphrag_global:
             results = await _graphrag_global_query(db, body)
-        elif body.mode in (QueryMode.text_only, QueryMode.images_only, QueryMode.multi_modal):
+        elif body.strategy == QueryStrategy.hybrid:
             results = await _multi_modal_pipeline(db, body)
         else:
             results = []
     except Exception as e:
-        logger.warning("Query mode %s failed: %s", body.mode, e)
+        logger.warning("Query strategy %s failed: %s", body.strategy, e)
         results = []
 
     # Populate presigned image URLs for image-modality results
@@ -72,7 +73,8 @@ async def unified_query(
     return UnifiedQueryResponse(
         query_text=body.query_text,
         query_image=body.query_image[:100] if body.query_image else None,
-        mode=body.mode.value,
+        strategy=body.strategy.value,
+        modality_filter=body.modality_filter.value,
         results=results,
         total=len(results),
     )
@@ -115,10 +117,10 @@ async def _multi_modal_pipeline(
     # Step 3: Deduplicate by chunk_id, keep highest score
     deduped = _deduplicate_results(all_results)
 
-    # Step 4: Filter by mode
-    if body.mode == QueryMode.text_only:
+    # Step 4: Filter by modality
+    if body.modality_filter == ModalityFilter.text:
         deduped = [r for r in deduped if r.modality in ("text", "table")]
-    elif body.mode == QueryMode.images_only:
+    elif body.modality_filter == ModalityFilter.image:
         deduped = [r for r in deduped if r.modality in ("image", "schematic")]
 
     # Sort by score descending, cap at top_k
@@ -127,8 +129,9 @@ async def _multi_modal_pipeline(
 
     t_total = time.monotonic()
     logger.info(
-        "retrieval: mode=%s search=%.0fms expand=%.0fms total=%.0fms seeds=%d expanded=%d returned=%d",
-        body.mode.value,
+        "retrieval: strategy=%s modality=%s search=%.0fms expand=%.0fms total=%.0fms seeds=%d expanded=%d returned=%d",
+        body.strategy.value,
+        body.modality_filter.value,
         (t_search - t0) * 1000,
         (t_expand - t_search) * 1000,
         (t_total - t0) * 1000,

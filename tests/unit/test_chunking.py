@@ -92,6 +92,7 @@ class TestSplitText:
         text = "word " * 200
         result = _split_text(text, max_tokens=50, overlap_tokens=10)
         assert len(result) > 1
+        assert len(result) < 20
         for chunk in result:
             assert len(chunk) > 0
 

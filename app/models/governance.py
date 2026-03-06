@@ -78,7 +78,7 @@ class Patch(Base, TimestampMixin):
     # DRAFT | UNDER_REVIEW | APPROVED | DUAL_APPROVED | REJECTED | APPLIED | REVERTED
 
     # Determines if dual approval is required.
-    # True for all AGE graph mutations; false for relational/text corrections.
+    # True for all graph mutations; false for relational/text corrections.
     requires_dual_approval: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )

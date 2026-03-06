@@ -1,6 +1,6 @@
 """Unit tests for Pydantic schema validation across all schema modules.
 
-Tests governance, graph_store, sources, memory, text_store, image_store,
+Tests governance, graph_store, sources, memory,
 and common schemas for valid/invalid inputs, defaults, and bounds.
 """
 
@@ -171,54 +171,6 @@ class TestMemorySchemas:
         from app.schemas.memory import MemoryQueryRequest
         mqr = MemoryQueryRequest(query="test")
         assert mqr.top_k == 10
-
-
-# ---------------------------------------------------------------------------
-# Text store schemas
-# ---------------------------------------------------------------------------
-
-class TestTextStoreSchemas:
-    def test_text_chunk_ingest_valid(self):
-        from app.schemas.text_store import TextChunkIngest
-        tci = TextChunkIngest(text="Hello world.")
-        assert tci.text == "Hello world."
-        assert tci.modality == "text"
-        assert tci.classification == "UNCLASSIFIED"
-
-    def test_text_chunk_ingest_empty_text_rejected(self):
-        from app.schemas.text_store import TextChunkIngest
-        with pytest.raises(ValidationError):
-            TextChunkIngest(text="")
-
-    def test_text_query_request_valid(self):
-        from app.schemas.text_store import TextQueryRequest
-        tqr = TextQueryRequest(query="radar frequency")
-        assert tqr.query == "radar frequency"
-
-
-# ---------------------------------------------------------------------------
-# Image store schemas
-# ---------------------------------------------------------------------------
-
-class TestImageStoreSchemas:
-    def test_image_chunk_ingest_valid(self):
-        from app.schemas.image_store import ImageChunkIngest
-        ici = ImageChunkIngest(
-            image="aGVsbG8=",
-            content_type="image/png",
-        )
-        assert ici.content_type == "image/png"
-
-    def test_image_query_request_valid(self):
-        from app.schemas.image_store import ImageQueryRequest
-        iqr = ImageQueryRequest(query_text="schematic diagram")
-        assert iqr.query_text == "schematic diagram"
-
-    def test_image_query_request_text_and_image_optional(self):
-        from app.schemas.image_store import ImageQueryRequest
-        iqr = ImageQueryRequest(query_image="base64data")
-        assert iqr.query_image == "base64data"
-        assert iqr.query_text is None
 
 
 # ---------------------------------------------------------------------------

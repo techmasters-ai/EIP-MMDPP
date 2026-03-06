@@ -111,6 +111,7 @@ def structure_aware_chunk(
 
         elif etype == "table":
             # Tables are always their own chunk — never split
+            current_heading = buffer_heading  # save before flush clears it
             _flush_buffer()
             chunks.append(StructuredChunk(
                 text=content,
@@ -119,12 +120,13 @@ def structure_aware_chunk(
                 page_number=page,
                 section_path=section,
                 element_uids=[uid],
-                heading_text=buffer_heading,
+                heading_text=current_heading,
             ))
             chunk_index += 1
 
         elif etype == "equation":
             # Equations are their own chunk
+            current_heading = buffer_heading
             _flush_buffer()
             chunks.append(StructuredChunk(
                 text=content,
@@ -133,13 +135,14 @@ def structure_aware_chunk(
                 page_number=page,
                 section_path=section,
                 element_uids=[uid],
-                heading_text=buffer_heading,
+                heading_text=current_heading,
             ))
             chunk_index += 1
 
         elif etype == "image":
             # Image captions get their own chunk (image embeddings handled separately)
             if content:
+                current_heading = buffer_heading
                 _flush_buffer()
                 chunks.append(StructuredChunk(
                     text=content,
@@ -148,7 +151,7 @@ def structure_aware_chunk(
                     page_number=page,
                     section_path=section,
                     element_uids=[uid],
-                    heading_text=buffer_heading,
+                    heading_text=current_heading,
                 ))
                 chunk_index += 1
 
@@ -225,13 +228,23 @@ def _split_text(
     # Fallback: word-based splitting
     words = text.split()
     chunks = []
-    max_words = int(max_tokens / 1.3)
-    overlap_words = int(overlap_tokens / 1.3)
+    max_words = max(int(max_tokens / 1.3), 1)
+    overlap_words = max(int(overlap_tokens / 1.3), 0)
+
+    # Ensure forward progress even when overlap is very large.
+    if overlap_words >= max_words:
+        overlap_words = max_words - 1
 
     i = 0
     while i < len(words):
         end = min(i + max_words, len(words))
         chunks.append(" ".join(words[i:end]))
-        i = end - overlap_words if overlap_words > 0 else end
+        if end >= len(words):
+            break
+
+        next_i = end - overlap_words if overlap_words > 0 else end
+        if next_i <= i:
+            next_i = i + 1
+        i = next_i
 
     return chunks

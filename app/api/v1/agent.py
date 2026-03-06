@@ -15,8 +15,9 @@ Design notes:
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1._agent_helpers import (
@@ -26,7 +27,7 @@ from app.api.v1._agent_helpers import (
     build_sources,
 )
 from app.db.session import get_async_session
-from app.schemas.retrieval import QueryMode, UnifiedQueryRequest
+from app.schemas.retrieval import ModalityFilter, QueryStrategy, UnifiedQueryRequest, _MODE_MAP
 
 router = APIRouter(tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -35,7 +36,9 @@ logger = logging.getLogger(__name__)
 @router.get("/agent/context", response_model=AgentContextResponse)
 async def get_agent_context(
     query: str = Query(..., min_length=1, max_length=4096, description="Search query"),
-    mode: QueryMode = Query(QueryMode.text_basic, description="Retrieval mode"),
+    strategy: QueryStrategy = Query(QueryStrategy.basic, description="Retrieval strategy"),
+    modality_filter: ModalityFilter = Query(ModalityFilter.all, description="Filter results by modality"),
+    mode: Optional[str] = Query(None, description="Deprecated: use strategy + modality_filter"),
     top_k: int = Query(10, ge=1, le=50, description="Number of results"),
     include_sources: bool = Query(True, description="Include sources list in response"),
     db: AsyncSession = Depends(get_async_session),
@@ -49,13 +52,25 @@ async def get_agent_context(
     Query parameters
     ----------------
     - **query**: Search query string
-    - **mode**: `text_basic` | `text_only` | `images_only` | `multi_modal` | `memory` | `graphrag_local` | `graphrag_global`
+    - **strategy**: `basic` | `hybrid` | `memory` | `graphrag_local` | `graphrag_global`
+    - **modality_filter**: `all` | `text` | `image`
     - **top_k**: Number of results to include (1–50, default: 10)
     - **include_sources**: Whether to include the `sources` list (default: true)
     """
+    # Backward-compat: map legacy mode to strategy + modality_filter
+    if mode:
+        if mode not in _MODE_MAP:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown mode: '{mode}'. Valid modes: {', '.join(sorted(_MODE_MAP.keys()))}",
+            )
+        if strategy == QueryStrategy.basic and modality_filter == ModalityFilter.all:
+            strategy, modality_filter = _MODE_MAP[mode]
+
     body = UnifiedQueryRequest(
         query_text=query,
-        mode=mode,
+        strategy=strategy,
+        modality_filter=modality_filter,
         top_k=top_k,
         include_context=True,
     )
@@ -68,15 +83,15 @@ async def get_agent_context(
         _text_vector_search,
     )
 
-    if mode == QueryMode.memory:
+    if strategy == QueryStrategy.memory:
         results = await _memory_query(body)
-    elif mode == QueryMode.text_basic:
+    elif strategy == QueryStrategy.basic:
         results = await _text_vector_search(db, body)
-    elif mode in (QueryMode.text_only, QueryMode.images_only, QueryMode.multi_modal):
+    elif strategy == QueryStrategy.hybrid:
         results = await _multi_modal_pipeline(db, body)
-    elif mode == QueryMode.graphrag_local:
+    elif strategy == QueryStrategy.graphrag_local:
         results = await _graphrag_local_query(db, body)
-    elif mode == QueryMode.graphrag_global:
+    elif strategy == QueryStrategy.graphrag_global:
         results = await _graphrag_global_query(db, body)
     else:
         results = await _text_vector_search(db, body)
@@ -86,7 +101,8 @@ async def get_agent_context(
 
     return AgentContextResponse(
         query=query,
-        mode=mode.value,
+        strategy=strategy.value,
+        modality_filter=modality_filter.value,
         total_results=len(results),
         context=context_md,
         sources=sources,

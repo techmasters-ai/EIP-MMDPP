@@ -34,21 +34,6 @@ def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS ontology")
 
     # ------------------------------------------------------------------
-    # Ensure AGE is available and knowledge graph exists
-    # ------------------------------------------------------------------
-    op.execute("CREATE EXTENSION IF NOT EXISTS age")
-    op.execute("LOAD 'age'")
-    op.execute("SET search_path = ag_catalog, \"$user\", public")
-    # Check if graph exists (Python-level), create if not (top-level SQL —
-    # AGE's create_graph() C function cannot be called from PL/pgSQL DO blocks)
-    conn = op.get_bind()
-    result = conn.execute(sa.text(
-        "SELECT 1 FROM ag_catalog.ag_graph WHERE name = 'eip_kg'"
-    ))
-    if not result.fetchone():
-        op.execute("SELECT ag_catalog.create_graph('eip_kg')")
-
-    # ------------------------------------------------------------------
     # auth.users
     # ------------------------------------------------------------------
     op.create_table(

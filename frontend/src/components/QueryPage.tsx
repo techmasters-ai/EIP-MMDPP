@@ -1,45 +1,61 @@
 import React, { useState, useCallback } from "react";
-import { unifiedQuery, type QueryMode, type QueryResultItem } from "../api/client";
+import { unifiedQuery, type QueryStrategy, type ModalityFilter, type QueryResultItem } from "../api/client";
 
-const MODES: { value: QueryMode; label: string; description: string }[] = [
+interface ModePreset {
+  strategy: QueryStrategy;
+  modality: ModalityFilter;
+  label: string;
+  description: string;
+}
+
+const MODES: ModePreset[] = [
   {
-    value: "text_basic",
+    strategy: "basic",
+    modality: "all",
     label: "Text Basic",
     description: "Simple BGE vector RAG search on text chunks",
   },
   {
-    value: "text_only",
+    strategy: "hybrid",
+    modality: "text",
     label: "Text Only",
-    description: "Full multi-modal pipeline, filtered to text results",
+    description: "Hybrid pipeline (vectors + graph expansion), filtered to text results",
   },
   {
-    value: "images_only",
+    strategy: "hybrid",
+    modality: "image",
     label: "Images Only",
-    description: "Full multi-modal pipeline, filtered to image results",
+    description: "Hybrid pipeline (vectors + graph expansion), filtered to image results",
   },
   {
-    value: "multi_modal",
+    strategy: "hybrid",
+    modality: "all",
     label: "Multi-Modal",
-    description: "Full multi-modal pipeline, all results unfiltered",
+    description: "Hybrid pipeline, all results unfiltered",
   },
   {
-    value: "memory",
+    strategy: "memory",
+    modality: "all",
     label: "Trusted Data",
     description: "Search approved trusted data",
   },
   {
-    value: "graphrag_local",
+    strategy: "graphrag_local",
+    modality: "all",
     label: "GraphRAG Local",
     description: "Entity-centric retrieval with community context reports",
   },
   {
-    value: "graphrag_global",
+    strategy: "graphrag_global",
+    modality: "all",
     label: "GraphRAG Global",
     description: "Cross-community summarization for broad questions",
   },
 ];
 
-const IMAGE_MODES: Set<QueryMode> = new Set(["text_only", "images_only", "multi_modal"]);
+function modeKey(m: ModePreset): string {
+  return `${m.strategy}:${m.modality}`;
+}
 
 function scoreColor(score: number): string {
   if (score >= 0.85) return "var(--color-success)";
@@ -145,7 +161,7 @@ export function QueryPage() {
   const [queryText, setQueryText] = useState("");
   const [queryImage, setQueryImage] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [selectedMode, setSelectedMode] = useState<QueryMode>("text_basic");
+  const [selectedIdx, setSelectedIdx] = useState(0);
   const [topK, setTopK] = useState(10);
   const [results, setResults] = useState<QueryResultItem[] | null>(null);
   const [totalResults, setTotalResults] = useState(0);
@@ -153,7 +169,8 @@ export function QueryPage() {
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
 
-  const showImageInput = IMAGE_MODES.has(selectedMode);
+  const selected = MODES[selectedIdx];
+  const showImageInput = selected.strategy === "hybrid";
 
   const handleImageFile = useCallback((file: File) => {
     const reader = new FileReader();
@@ -196,7 +213,8 @@ export function QueryPage() {
       const res = await unifiedQuery({
         query_text: queryText.trim() || undefined,
         query_image: queryImage || undefined,
-        mode: selectedMode,
+        strategy: selected.strategy,
+        modality_filter: selected.modality,
         top_k: topK,
         include_context: true,
       });
@@ -217,13 +235,13 @@ export function QueryPage() {
           <div className="field">
             <label>Query mode</label>
             <div className="mode-selector" style={{ marginBottom: "1rem" }}>
-              {MODES.map((m) => (
+              {MODES.map((m, i) => (
                 <button
-                  key={m.value}
+                  key={modeKey(m)}
                   type="button"
-                  className={`mode-btn${selectedMode === m.value ? " active" : ""}`}
+                  className={`mode-btn${selectedIdx === i ? " active" : ""}`}
                   title={m.description}
-                  onClick={() => setSelectedMode(m.value)}
+                  onClick={() => setSelectedIdx(i)}
                 >
                   {m.label}
                 </button>
@@ -343,7 +361,7 @@ export function QueryPage() {
 
       <div className="api-info mt-md">
         <strong>LangGraph tool endpoint:</strong>{" "}
-        <code>GET /v1/agent/context?query=&hellip;&amp;mode=text_basic&amp;top_k=10</code>
+        <code>GET /v1/agent/context?query=&hellip;&amp;strategy=basic&amp;top_k=10</code>
         <br />
         Returns a pre-formatted markdown context string ready for LLM prompt injection.
       </div>

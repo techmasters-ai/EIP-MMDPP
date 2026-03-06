@@ -47,10 +47,14 @@ export interface QueryResultItem {
   image_url?: string;
 }
 
+export type QueryStrategy = "basic" | "hybrid" | "memory" | "graphrag_local" | "graphrag_global";
+export type ModalityFilter = "all" | "text" | "image";
+
 export interface UnifiedQueryResponse {
   query_text?: string;
   query_image?: string;
-  mode: string;
+  strategy: string;
+  modality_filter: string;
   results: QueryResultItem[];
   total: number;
 }
@@ -64,21 +68,11 @@ export interface AgentSource {
 
 export interface AgentContextResponse {
   query: string;
-  mode: string;
+  strategy: string;
+  modality_filter: string;
   total_results: number;
   context: string;
   sources: AgentSource[];
-}
-
-export type QueryMode = "text_basic" | "text_only" | "images_only" | "multi_modal" | "memory" | "graphrag_local" | "graphrag_global";
-
-export interface TextIngestResponse {
-  chunk_ids: string[];
-  chunks_created: number;
-}
-
-export interface ImageIngestResponse {
-  chunk_id: string;
 }
 
 export interface GraphIngestResponse {
@@ -230,7 +224,8 @@ export async function deleteWatchDir(id: string): Promise<void> {
 export async function unifiedQuery(params: {
   query_text?: string;
   query_image?: string;
-  mode: QueryMode;
+  strategy: QueryStrategy;
+  modality_filter: ModalityFilter;
   top_k?: number;
   include_context?: boolean;
 }): Promise<UnifiedQueryResponse> {
@@ -240,40 +235,6 @@ export async function unifiedQuery(params: {
     body: JSON.stringify({ top_k: 10, include_context: true, ...params }),
   });
   return handleResponse<UnifiedQueryResponse>(res);
-}
-
-// ---------------------------------------------------------------------------
-// Text Store
-// ---------------------------------------------------------------------------
-
-export async function ingestText(params: {
-  text: string;
-  modality?: string;
-  classification?: string;
-}): Promise<TextIngestResponse> {
-  const res = await fetch("/v1/text/ingest", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
-  return handleResponse<TextIngestResponse>(res);
-}
-
-// ---------------------------------------------------------------------------
-// Image Store
-// ---------------------------------------------------------------------------
-
-export async function ingestImage(params: {
-  image: string;
-  alt_text?: string;
-  classification?: string;
-}): Promise<ImageIngestResponse> {
-  const res = await fetch("/v1/images/ingest", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
-  return handleResponse<ImageIngestResponse>(res);
 }
 
 // ---------------------------------------------------------------------------
@@ -368,12 +329,14 @@ export async function rejectMemory(id: string, notes?: string): Promise<MemoryPr
 
 export async function getAgentContext(params: {
   query: string;
-  mode?: QueryMode;
+  strategy?: QueryStrategy;
+  modality_filter?: ModalityFilter;
   top_k?: number;
 }): Promise<AgentContextResponse> {
   const search = new URLSearchParams({
     query: params.query,
-    mode: params.mode ?? "text_basic",
+    strategy: params.strategy ?? "basic",
+    modality_filter: params.modality_filter ?? "all",
     top_k: String(params.top_k ?? 10),
   });
   const res = await fetch(`/v1/agent/context?${search}`);

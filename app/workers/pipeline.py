@@ -334,7 +334,17 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         )
         db.commit()
 
-        # 3. Docling conversion
+        # 3. Route by format — Docling only handles PDF and images
+        _DOCLING_MIMES = {"application/pdf", "image/png", "image/jpeg", "image/tiff", "image/bmp", "image/gif"}
+        if mime_type not in _DOCLING_MIMES:
+            logger.info("prepare_document: %s not supported by Docling (mime=%s), using legacy extraction", document_id, mime_type)
+            _legacy_extract(db, document_id, doc, file_bytes)
+            db.commit()
+            _update_stage_run(db, run_id, "prepare_document", "COMPLETE", metrics={"fallback": True, "reason": "unsupported_format"})
+            db.commit()
+            return document_id
+
+        # 4. Docling conversion (only for supported formats)
         docling_healthy = check_health_sync()
         if not docling_healthy:
             if settings.docling_fallback_enabled:

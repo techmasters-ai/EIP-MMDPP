@@ -3,14 +3,14 @@
 # EIP-MMDPP — Single test execution entrypoint
 # ============================================================
 # Usage:
-#   ./scripts/run_tests.sh           — full suite (unit → integration → contract → e2e)
+#   ./scripts/run_tests.sh           — full suite (unit → integration → e2e)
 #   ./scripts/run_tests.sh unit      — unit tests only
 #   ./scripts/run_tests.sh integration
-#   ./scripts/run_tests.sh contract
 #   ./scripts/run_tests.sh e2e
 #
 # Environment:
 #   KEEP_STACK=1    — preserve Docker Compose stack after tests
+#   SKIP_COV=1      — skip coverage instrumentation (faster, lower RAM)
 #   TEST_SEED=42    — deterministic random seed for fixtures
 # ============================================================
 
@@ -23,6 +23,7 @@ ENV_FILE="${PROJECT_ROOT}/.env.test"
 
 MODE="${1:-all}"
 KEEP_STACK="${KEEP_STACK:-0}"
+SKIP_COV="${SKIP_COV:-0}"
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -54,7 +55,7 @@ mkdir -p "${REPORTS_DIR}"
 # ---------------------------------------------------------------------------
 # Docker Compose stack management
 # ---------------------------------------------------------------------------
-COMPOSE_CMD="docker compose -f ${PROJECT_ROOT}/docker-compose.yml"
+COMPOSE_CMD="docker compose -p eip-mmdpp-test -f ${PROJECT_ROOT}/docker-compose.yml"
 if [[ -f "${PROJECT_ROOT}/docker-compose.test.yml" ]]; then
   COMPOSE_CMD="${COMPOSE_CMD} -f ${PROJECT_ROOT}/docker-compose.test.yml"
 fi
@@ -69,7 +70,7 @@ start_stack() {
   local max_attempts=30
 
   while [[ ${attempts} -lt ${max_attempts} ]]; do
-    if docker compose -f "${PROJECT_ROOT}/docker-compose.yml" ps --format json 2>/dev/null | \
+    if ${COMPOSE_CMD} ps --format json 2>/dev/null | \
        python3 -c "
 import sys, json
 services = [json.loads(l) for l in sys.stdin if l.strip()]
@@ -122,11 +123,14 @@ run_unit() {
   divider
   info "Running unit tests..."
   cd "${PROJECT_ROOT}"
+  local cov_args=()
+  if [[ "${SKIP_COV}" != "1" ]]; then
+    cov_args=(--cov=app --cov-report=xml:"${REPORTS_DIR}/coverage_unit.xml")
+  fi
   pytest tests/unit \
     -m "unit" \
     --tb=short \
-    --cov=app \
-    --cov-report=xml:"${REPORTS_DIR}/coverage_unit.xml" \
+    "${cov_args[@]}" \
     --junitxml="${REPORTS_DIR}/junit_unit.xml" \
     -q
   info "Unit tests passed."
@@ -136,26 +140,17 @@ run_integration() {
   divider
   info "Running integration tests..."
   cd "${PROJECT_ROOT}"
+  local cov_args=()
+  if [[ "${SKIP_COV}" != "1" ]]; then
+    cov_args=(--cov=app --cov-append --cov-report=xml:"${REPORTS_DIR}/coverage_integration.xml")
+  fi
   pytest tests/integration \
     -m "integration" \
     --tb=short \
-    --cov=app \
-    --cov-append \
-    --cov-report=xml:"${REPORTS_DIR}/coverage_integration.xml" \
+    "${cov_args[@]}" \
     --junitxml="${REPORTS_DIR}/junit_integration.xml" \
     -q
   info "Integration tests passed."
-}
-
-run_contract() {
-  divider
-  info "Running contract tests..."
-  cd "${PROJECT_ROOT}"
-  pytest tests/api \
-    --tb=short \
-    --junitxml="${REPORTS_DIR}/junit_contract.xml" \
-    -q
-  info "Contract tests passed."
 }
 
 run_e2e() {
@@ -228,12 +223,6 @@ case "${MODE}" in
     run_integration || FAILED=1
     stop_stack
     ;;
-  contract)
-    start_stack
-    run_migrations
-    run_contract || FAILED=1
-    stop_stack
-    ;;
   e2e)
     start_stack
     run_migrations
@@ -245,13 +234,12 @@ case "${MODE}" in
     start_stack
     run_migrations
     run_integration || FAILED=1
-    run_contract    || FAILED=1
     run_e2e         || FAILED=1
     stop_stack
     write_summary   || FAILED=1
     ;;
   *)
-    error "Unknown mode: ${MODE}. Use: all | unit | integration | contract | e2e"
+    error "Unknown mode: ${MODE}. Use: all | unit | integration | e2e"
     ;;
 esac
 

@@ -2,8 +2,6 @@ import { useState } from "react";
 import { Nav, type Page } from "./components/Nav";
 import { IngestPage } from "./components/IngestPage";
 import { QueryPage } from "./components/QueryPage";
-import { TextIngest } from "./components/TextIngest";
-import { ImageIngest } from "./components/ImageIngest";
 import { GraphExplorer } from "./components/GraphExplorer";
 import { MemoryPanel } from "./components/MemoryPanel";
 
@@ -25,29 +23,11 @@ export function App() {
             <QueryPage />
           </div>
         )}
-        {page === "text" && (
-          <div className="page">
-            <h1 className="page-title">Text Store</h1>
-            <p className="page-subtitle">
-              Directly ingest text chunks into the BGE vector store, bypassing the document pipeline.
-            </p>
-            <TextIngest />
-          </div>
-        )}
-        {page === "images" && (
-          <div className="page">
-            <h1 className="page-title">Image Store</h1>
-            <p className="page-subtitle">
-              Directly ingest images into the CLIP vector store, bypassing the document pipeline.
-            </p>
-            <ImageIngest />
-          </div>
-        )}
         {page === "graph" && (
           <div className="page">
             <h1 className="page-title">Graph Explorer</h1>
             <p className="page-subtitle">
-              Browse and add entities and relationships in the Apache AGE knowledge graph.
+              Browse and add entities and relationships in the Neo4j knowledge graph.
             </p>
             <GraphExplorer />
           </div>

@@ -306,7 +306,8 @@ function MemorySearch() {
     try {
       const res = await unifiedQuery({
         query_text: query.trim(),
-        mode: "memory",
+        strategy: "memory",
+        modality_filter: "all",
         top_k: 20,
       });
       setResults(res.results ?? []);

@@ -18,7 +18,8 @@ class AgentSource(APIModel):
 
 class AgentContextResponse(APIModel):
     query: str
-    mode: str
+    strategy: str
+    modality_filter: str = "all"
     total_results: int
     context: str          # markdown string ready for LLM prompt injection
     sources: list[AgentSource]
