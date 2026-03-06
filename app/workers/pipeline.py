@@ -153,7 +153,7 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
             page_number=chunk.page_number,
             bounding_box=chunk.bounding_box,
             content_text=chunk.chunk_text,
-            metadata=chunk.metadata or {},
+            element_metadata=chunk.metadata or {},
             element_hash=element_hash,
         )
         db.add(elem)
@@ -350,7 +350,7 @@ def prepare_document(self, document_id: str) -> str:
                 "content_text": chunk.chunk_text,
                 "storage_bucket": storage_bucket,
                 "storage_key": storage_key,
-                "metadata": chunk.metadata or {},
+                "element_metadata": chunk.metadata or {},
                 "element_hash": element_hash,
             }
 
@@ -362,7 +362,7 @@ def prepare_document(self, document_id: str) -> str:
                     "content_text": element_values["content_text"],
                     "storage_bucket": element_values["storage_bucket"],
                     "storage_key": element_values["storage_key"],
-                    "metadata": element_values["metadata"],
+                    "element_metadata": element_values["element_metadata"],
                     "element_hash": element_values["element_hash"],
                 },
             )

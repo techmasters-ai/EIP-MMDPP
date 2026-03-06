@@ -293,7 +293,7 @@ class DocumentElement(Base):
     content_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     storage_bucket: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     storage_key: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    element_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
     element_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 

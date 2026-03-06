@@ -72,7 +72,7 @@ def sample_document_element(db_session, sample_document_id) -> "DocumentElement"
         element_type="text",
         element_order=0,
         content_text=MILITARY_TEXT,
-        metadata={},
+        element_metadata={},
         element_hash=element_hash,
     )
     db_session.add(element)
