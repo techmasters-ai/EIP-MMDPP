@@ -377,6 +377,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
 
         # 5. Dual-write Artifact rows with deterministic IDs
         artifact_ids = _persist_extraction_results(db, document_id, result.elements, element_uids=element_uids)
+        db.flush()  # Ensure artifact rows visible for FK checks in Core SQL inserts below
 
         # 6. Persist canonical DocumentElement rows with artifact_id linked inline
         elements_created = 0

@@ -292,12 +292,12 @@ def _easyocr_image(
     for _, text, conf in results:
         if text.strip():
             texts.append(text.strip())
-            confidences.append(conf)
+            confidences.append(float(conf))
 
     if not texts:
         return []
 
-    avg_confidence = sum(confidences) / len(confidences)
+    avg_confidence = float(sum(confidences) / len(confidences))
     combined_text = " ".join(texts)
     requires_review = avg_confidence < confidence_threshold
 
