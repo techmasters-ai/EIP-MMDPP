@@ -1,7 +1,0 @@
-
-EIP-MMDPP Test Summary
-======================
-Total Tests  : 448
-Failures     : 17
-Errors       : 80
-Result       : FAILED
