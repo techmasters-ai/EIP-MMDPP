@@ -160,7 +160,7 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 - `POST /v1/sources/{id}/documents` — upload a document (streams to MinIO, triggers pipeline; 409 on duplicate unless previous upload FAILED)
 - `GET /v1/documents/{id}/status` — poll pipeline status (includes stage summary)
 - `GET /v1/documents/{id}/stages` — detailed pipeline stage diagnostics
-- `POST /v1/documents/{id}/reingest` — re-run pipeline (`{"mode": "full|embeddings_only|graph_only"}`); resets status to PENDING
+- `POST /v1/documents/{id}/reingest` — re-run pipeline (`{"mode": "full|embeddings_only|graph_only"}`); resets status to PENDING; returns 409 if already PROCESSING
 
 ### Directory Watcher
 - `POST /v1/watch-dirs` — register a directory for auto-ingest
@@ -306,6 +306,8 @@ Key features:
 - **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.); documents stay in PROCESSING status during retries and only show FAILED after all retries are exhausted
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks prevent indefinite blocking
 - **Re-upload on failure** — re-uploading a file that previously FAILED removes the old record and re-ingests (no 409)
+- **Reingest safety** — reingest endpoint rejects requests when pipeline is already PROCESSING (409); failure handlers use the task's own `run_id` to avoid cross-run contamination
+- **Terminal status handling** — UI polling stops for all terminal states (COMPLETE, ERROR, FAILED, PARTIAL_COMPLETE); FAILED shows red badge, PARTIAL_COMPLETE shows amber warning badge with error context
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 

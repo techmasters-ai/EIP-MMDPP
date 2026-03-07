@@ -27,8 +27,10 @@ function StatusBadge({ status }: { status: string }) {
   const cls =
     status === "COMPLETE"
       ? "badge badge-complete"
-      : status === "ERROR"
+      : status === "ERROR" || status === "FAILED"
       ? "badge badge-error"
+      : status === "PARTIAL_COMPLETE"
+      ? "badge badge-warning"
       : status === "uploading"
       ? "badge badge-processing"
       : status === "polling" || status === "PROCESSING"
@@ -42,6 +44,10 @@ function StatusBadge({ status }: { status: string }) {
       ? "Uploading"
       : status === "polling"
       ? "Processing…"
+      : status === "PARTIAL_COMPLETE"
+      ? "Partial"
+      : status === "FAILED"
+      ? "Failed"
       : status;
 
   return <span className={cls}>{label}</span>;
@@ -72,8 +78,9 @@ export function FileUpload() {
   useEffect(() => {
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
 
+    const TERMINAL = new Set(["COMPLETE", "ERROR", "FAILED", "PARTIAL_COMPLETE"]);
     const pending = entries.filter(
-      (e) => e.documentId && e.status !== "COMPLETE" && e.status !== "ERROR",
+      (e) => e.documentId && !TERMINAL.has(e.status),
     );
     if (pending.length === 0) return;
 
@@ -89,7 +96,7 @@ export function FileUpload() {
           const result = updates[idx];
           if (result.status === "fulfilled") {
             const doc: Document = result.value;
-            return { ...entry, status: doc.pipeline_status };
+            return { ...entry, status: doc.pipeline_status, error: doc.error_message || entry.error };
           }
           return entry;
         }),

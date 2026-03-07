@@ -379,6 +379,7 @@ input:focus, select:focus, textarea:focus {
 .badge-processing { background: #E8F0FD; color: var(--color-info); }
 .badge-complete  { background: var(--color-success-bg); color: var(--color-success); }
 .badge-error     { background: var(--color-error-bg);  color: var(--color-error); }
+.badge-warning   { background: #fef3c7; color: #92400e; }
 .badge-info      { background: #E8F0FD; color: var(--color-info); }
 
 /* ---- Mode selector ---- */

@@ -281,6 +281,9 @@ async def reingest_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
+    if doc.pipeline_status == "PROCESSING":
+        raise HTTPException(status_code=409, detail="Pipeline already running for this document.")
+
     # Reset status so the pipeline picks it up cleanly
     doc.pipeline_status = "PENDING"
     await db.commit()

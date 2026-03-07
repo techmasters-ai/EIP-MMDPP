@@ -21,6 +21,9 @@ export interface Document {
   source_id: string;
   filename: string;
   pipeline_status: string;
+  pipeline_stage?: string;
+  error_message?: string;
+  failed_stages?: string[];
   created_at: string;
 }
 

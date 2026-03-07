@@ -24,6 +24,7 @@ from typing import Optional
 
 import redis as redis_lib
 from celery import chain, chord, group
+from celery.exceptions import Retry as CeleryRetry
 
 from app.workers.celery_app import celery_app
 from app.config import get_settings
@@ -305,9 +306,11 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     import magic
 
-    # Apply env-var configurable retry settings
+    # Apply env-var configurable retry and time-limit settings
     self.max_retries = settings.prepare_max_retries
     self.default_retry_delay = settings.prepare_retry_delay
+    self.soft_time_limit = settings.prepare_soft_time_limit
+    self.time_limit = settings.prepare_time_limit
 
     logger.info("prepare_document: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="prepare_document")
@@ -477,6 +480,8 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         )
         return document_id
 
+    except CeleryRetry:
+        raise
     except Exception as exc:
         logger.error("prepare_document failed for %s: %s", document_id, exc)
         db.rollback()
@@ -484,7 +489,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             _update_document_status(
                 document_id, STATUS_FAILED, stage="prepare_document", error=str(exc)
             )
-            run_id_for_err = _get_pipeline_run_id(db, document_id)
+            run_id_for_err = run_id or _get_pipeline_run_id(db, document_id)
             if run_id_for_err:
                 _update_stage_run(db, run_id_for_err, "prepare_document", "FAILED", error=str(exc))
                 db.commit()
@@ -511,6 +516,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
     self.max_retries = settings.embed_max_retries
     self.default_retry_delay = settings.embed_retry_delay
+    self.soft_time_limit = settings.embed_soft_time_limit
+    self.time_limit = settings.embed_time_limit
 
     logger.info("derive_text_chunks_and_embeddings: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_text_embeddings")
@@ -624,6 +631,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         )
         return {"stage": "derive_text_embeddings", "status": "ok", "chunks": chunks_created}
 
+    except CeleryRetry:
+        raise
     except Exception as exc:
         logger.error("derive_text_chunks_and_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
@@ -659,6 +668,8 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
 
     self.max_retries = settings.embed_max_retries
     self.default_retry_delay = settings.embed_retry_delay
+    self.soft_time_limit = settings.embed_soft_time_limit
+    self.time_limit = settings.embed_time_limit
 
     logger.info("derive_image_embeddings: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_image_embeddings")
@@ -771,6 +782,8 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
         )
         return {"stage": "derive_image_embeddings", "status": "ok", "chunks": chunks_created}
 
+    except CeleryRetry:
+        raise
     except Exception as exc:
         logger.error("derive_image_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
@@ -804,6 +817,8 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
 
     self.max_retries = settings.graph_max_retries
     self.default_retry_delay = settings.graph_retry_delay
+    self.soft_time_limit = settings.graph_soft_time_limit
+    self.time_limit = settings.graph_time_limit
 
     logger.info("derive_ontology_graph: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_ontology_graph")
@@ -972,6 +987,8 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         )
         return {"stage": "derive_ontology_graph", "status": "ok", "nodes": nodes_created, "edges": edges_created}
 
+    except CeleryRetry:
+        raise
     except Exception as exc:
         logger.error("derive_ontology_graph failed for %s: %s", document_id, exc)
         db.rollback()
@@ -1009,6 +1026,8 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 
     self.max_retries = settings.finalize_max_retries
     self.default_retry_delay = settings.finalize_retry_delay
+    self.soft_time_limit = settings.finalize_soft_time_limit
+    self.time_limit = settings.finalize_time_limit
 
     logger.info("derive_structure_links: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_structure_links")
@@ -1285,6 +1304,8 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         )
         return {"stage": "derive_structure_links", "status": "ok", "links": links_created}
 
+    except CeleryRetry:
+        raise
     except Exception as exc:
         logger.error("derive_structure_links failed for %s: %s", document_id, exc)
         db.rollback()
@@ -1306,22 +1327,29 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 @celery_app.task(bind=True)
 def collect_derivations(self, derivation_results: list[dict], document_id: str, run_id: str | None = None) -> None:
     """Chord callback: aggregate derivation stage statuses."""
-    logger.info(
-        "collect_derivations: document_id=%s results=%s",
-        document_id, derivation_results,
-    )
-    failed = [r["stage"] for r in (derivation_results or []) if r.get("status") not in ("ok", "skipped")]
-    if failed:
-        logger.warning(
-            "collect_derivations: document_id=%s failed_stages=%s", document_id, failed
+    try:
+        logger.info(
+            "collect_derivations: document_id=%s results=%s",
+            document_id, derivation_results,
         )
+        failed = [r["stage"] for r in (derivation_results or []) if r.get("status") not in ("ok", "skipped")]
+        if failed:
+            logger.warning(
+                "collect_derivations: document_id=%s failed_stages=%s", document_id, failed
+            )
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="collect_derivations",
+                failed_stages=failed,
+            )
+        else:
+            _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
+    except Exception as exc:
+        logger.error("collect_derivations failed for %s: %s", document_id, exc)
         _update_document_status(
             document_id, STATUS_PARTIAL_COMPLETE,
-            stage="collect_derivations",
-            failed_stages=failed,
+            stage="collect_derivations", error=str(exc),
         )
-    else:
-        _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
@@ -1337,6 +1365,8 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
 
     self.max_retries = settings.finalize_max_retries
     self.default_retry_delay = settings.finalize_retry_delay
+    self.soft_time_limit = settings.finalize_soft_time_limit
+    self.time_limit = settings.finalize_time_limit
 
     logger.info("derive_canonicalization: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_canonicalization")
@@ -1365,6 +1395,8 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
         )
         return {"stage": "derive_canonicalization", "status": "ok", **stats}
 
+    except CeleryRetry:
+        raise
     except Exception as exc:
         logger.error("derive_canonicalization failed for %s: %s", document_id, exc)
         db.rollback()
@@ -1388,6 +1420,8 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
 
     self.max_retries = settings.finalize_max_retries
     self.default_retry_delay = settings.finalize_retry_delay
+    self.soft_time_limit = settings.finalize_soft_time_limit
+    self.time_limit = settings.finalize_time_limit
 
     logger.info("finalize_document: document_id=%s run_id=%s", document_id, run_id)
     db = _get_db()
@@ -1443,9 +1477,16 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
             "finalize_document: document_id=%s — pipeline %s",
             document_id, final_status,
         )
+    except CeleryRetry:
+        raise
     except Exception as exc:
         logger.error("finalize_document failed for %s: %s", document_id, exc)
         db.rollback()
+        # Ensure PipelineRun doesn't get stuck in PROCESSING
+        if run_id:
+            _update_stage_run(db, run_id, "finalize_document", "FAILED", error=str(exc))
+            db.commit()
+        _update_document_status(document_id, STATUS_PARTIAL_COMPLETE, stage="finalize_document", error=str(exc))
     finally:
         db.close()
 
