@@ -3,8 +3,6 @@
 
 services:
   postgres:
-    ports:
-      - "5435:5432"
     environment:
       POSTGRES_DB: eip_test
       POSTGRES_USER: eip_test
@@ -18,15 +16,10 @@ services:
       retries: 10
 
   redis:
-    ports:
-      - "6380:6379"
     volumes:
       - redis_test_data:/data
 
   minio:
-    ports:
-      - "9002:9000"
-      - "9003:9001"
     environment:
       MINIO_ROOT_USER: testadmin
       MINIO_ROOT_PASSWORD: testadmin
@@ -43,18 +36,12 @@ services:
       "
 
   neo4j:
-    ports:
-      - "7688:7687"
-      - "7475:7474"
     environment:
       NEO4J_AUTH: neo4j/test_neo4j_secret
     volumes:
       - neo4j_test_data:/data
 
   qdrant:
-    ports:
-      - "6335:6333"
-      - "6336:6334"
     volumes:
       - qdrant_test_data:/qdrant/storage
 
@@ -63,8 +50,6 @@ services:
       DOCLING_DEVICE: cpu
       DOCLING_DTYPE: float32
     deploy: {}
-    ports:
-      - "8003:8001"
 
   # Don't start api/worker/beat in test mode — tests connect directly
   api:

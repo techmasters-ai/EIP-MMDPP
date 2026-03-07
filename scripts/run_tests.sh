@@ -104,6 +104,8 @@ stop_stack() {
   ${COMPOSE_CMD} down -v --remove-orphans || true
 }
 
+trap stop_stack EXIT
+
 # ---------------------------------------------------------------------------
 # Migrations and seed
 # ---------------------------------------------------------------------------
@@ -219,23 +221,20 @@ case "${MODE}" in
     ;;
   integration)
     start_stack
-    run_migrations
+    run_migrations || FAILED=1
     run_integration || FAILED=1
-    stop_stack
     ;;
   e2e)
     start_stack
-    run_migrations
+    run_migrations || FAILED=1
     run_e2e || FAILED=1
-    stop_stack
     ;;
   all)
     run_unit || FAILED=1
     start_stack
-    run_migrations
+    run_migrations || FAILED=1
     run_integration || FAILED=1
     run_e2e         || FAILED=1
-    stop_stack
     write_summary   || FAILED=1
     ;;
   *)
