@@ -66,6 +66,7 @@ def _extract_single_pass(
 
     ontology = load_ontology(ontology_path)
     prompt = build_extraction_prompt(ontology, text)
+    compact_prompt: str | None = None
 
     max_attempts = settings.docling_graph_retry_attempts
     backoff = settings.docling_graph_retry_backoff_seconds
@@ -77,6 +78,21 @@ def _extract_single_pass(
             extraction = _validate_triples(extraction, ontology_path)
             return _build_networkx_graph(extraction, document_id), "docling-graph"
         except Exception as e:
+            if (
+                isinstance(e, ValueError)
+                and "empty response" in str(e).lower()
+                and compact_prompt is None
+            ):
+                compact_prompt = build_extraction_prompt(
+                    ontology, text, compact_ontology=True,
+                )
+                if len(compact_prompt) < len(prompt):
+                    logger.warning(
+                        "LLM empty response; retrying with compact prompt (%d -> %d chars)",
+                        len(prompt), len(compact_prompt),
+                    )
+                    prompt = compact_prompt
+                    continue
             if attempt < max_attempts - 1:
                 wait = backoff * (attempt + 1)
                 logger.info(
@@ -277,6 +293,63 @@ def extract_and_import_to_neo4j(
     return stats
 
 
+def _get_attr_or_key(obj: Any, key: str) -> Any:
+    """Read a key from dict-like objects or attributes from class instances."""
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _coerce_completion_text(value: Any) -> str:
+    """Normalize completion payload variants into plain text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            text = _get_attr_or_key(item, "text")
+            if isinstance(text, str):
+                parts.append(text)
+                continue
+            content = _get_attr_or_key(item, "content")
+            if isinstance(content, str):
+                parts.append(content)
+        return "\n".join(p for p in parts if p).strip()
+    if isinstance(value, dict):
+        for key in ("text", "content", "value"):
+            maybe = value.get(key)
+            if isinstance(maybe, str):
+                return maybe
+    return ""
+
+
+def _extract_response_text(response: Any) -> tuple[str, str]:
+    """Extract assistant text from LiteLLM/OpenAI/Ollama response variants."""
+    choices = _get_attr_or_key(response, "choices") or []
+    if not choices:
+        return "", "none"
+
+    choice = choices[0]
+    message = _get_attr_or_key(choice, "message")
+
+    if message is not None:
+        for field in ("content", "reasoning_content", "thinking", "reasoning"):
+            text = _coerce_completion_text(_get_attr_or_key(message, field)).strip()
+            if text:
+                return text, field
+
+    text = _coerce_completion_text(_get_attr_or_key(choice, "text")).strip()
+    if text:
+        return text, "text"
+
+    return "", "none"
+
+
 def _call_llm(prompt: str, settings) -> str:
     """Call LLM via LiteLLM for entity/relationship extraction.
 
@@ -341,8 +414,9 @@ def _call_llm(prompt: str, settings) -> str:
         except redis_lib.exceptions.LockNotOwnedError:
             pass
 
-    content = response.choices[0].message.content
-    finish_reason = getattr(response.choices[0], "finish_reason", None)
+    content, content_field = _extract_response_text(response)
+    first_choice = (_get_attr_or_key(response, "choices") or [None])[0]
+    finish_reason = _get_attr_or_key(first_choice, "finish_reason")
     if not content or not content.strip():
         logger.error(
             "LLM returned empty response: finish_reason=%s, model=%s, prompt_len=%d",
@@ -350,6 +424,8 @@ def _call_llm(prompt: str, settings) -> str:
         )
         raise ValueError("LLM returned empty response")
 
+    if content_field != "content":
+        logger.info("LLM graph extraction used %s field (%d chars)", content_field, len(content))
     logger.info("LLM graph extraction response: %d chars", len(content))
     return content
 

@@ -127,6 +127,9 @@ def build_extraction_prompt(
     ontology: dict[str, Any],
     text: str,
     max_text_length: int = 8000,
+    *,
+    compact_ontology: bool = False,
+    max_properties_per_entity: int = 8,
 ) -> str:
     """Build an LLM prompt for entity/relationship extraction using the ontology.
 
@@ -140,18 +143,27 @@ def build_extraction_prompt(
     entity_descriptions = []
     for et in ontology.get("entity_types", []):
         props = list(et.get("properties", {}).get("properties", {}).keys())
-        entity_descriptions.append(
-            f"  - {et['name']}: {et.get('description', '')} "
-            f"(properties: {', '.join(props)})"
-        )
+        if compact_ontology:
+            prop_preview = ", ".join(props[:max_properties_per_entity]) or "none"
+            if len(props) > max_properties_per_entity:
+                prop_preview += ", ..."
+            entity_descriptions.append(f"  - {et['name']} (props: {prop_preview})")
+        else:
+            entity_descriptions.append(
+                f"  - {et['name']}: {et.get('description', '')} "
+                f"(properties: {', '.join(props)})"
+            )
 
     rel_descriptions = []
     for rt in ontology.get("relationship_types", []):
         src = rt.get("source_type") or "any"
         tgt = rt.get("target_type") or "any"
-        rel_descriptions.append(
-            f"  - {rt['name']}: {rt.get('description', '')} ({src} -> {tgt})"
-        )
+        if compact_ontology:
+            rel_descriptions.append(f"  - {rt['name']} ({src} -> {tgt})")
+        else:
+            rel_descriptions.append(
+                f"  - {rt['name']}: {rt.get('description', '')} ({src} -> {tgt})"
+            )
 
     prompt = f"""Extract entities and relationships from the following military/defense document text.
 

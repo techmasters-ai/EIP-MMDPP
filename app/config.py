@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     ollama_vlm_model: str = "llava"  # DEPRECATED: replaced by Docling service
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_llm_concurrency: int = 1
-    ollama_num_ctx: int = 8192
+    ollama_num_ctx: int = 32768
 
     # Per-feature model selection — each feature can use a different model
     docling_graph_model: str = "llama3.2"  # Model for graph entity/relationship extraction

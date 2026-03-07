@@ -137,6 +137,15 @@ class TestExtractionPrompt:
         prompt = build_extraction_prompt(ontology, long_text, max_text_length=100)
         assert "[...truncated...]" in prompt
 
+    def test_compact_prompt_is_shorter(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology
+
+        ontology = load_ontology()
+        text = "The Patriot PAC-3 system uses MIL-STD-1553B."
+        full_prompt = build_extraction_prompt(ontology, text, compact_ontology=False)
+        compact_prompt = build_extraction_prompt(ontology, text, compact_ontology=True)
+        assert len(compact_prompt) < len(full_prompt)
+
 
 class TestHelpers:
     def test_build_entity_type_names(self):

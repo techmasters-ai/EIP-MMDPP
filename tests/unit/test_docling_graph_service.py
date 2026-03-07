@@ -5,6 +5,7 @@ All tests mock the LLM — no actual model calls are made.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,8 +62,34 @@ class TestParseLLMResponse:
     def test_parse_invalid_json_raises(self):
         from app.services.docling_graph_service import _parse_llm_response
 
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(ValueError):
             _parse_llm_response("this is not json")
+
+
+class TestExtractResponseText:
+    def test_prefers_message_content(self):
+        from app.services.docling_graph_service import _extract_response_text
+
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"entities": []}'))]
+        )
+        text, field = _extract_response_text(response)
+        assert text == '{"entities": []}'
+        assert field == "content"
+
+    def test_falls_back_to_reasoning_content(self):
+        from app.services.docling_graph_service import _extract_response_text
+
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="", reasoning_content='{"entities": []}')
+                )
+            ]
+        )
+        text, field = _extract_response_text(response)
+        assert text == '{"entities": []}'
+        assert field == "reasoning_content"
 
 
 class TestFallbackRegexExtraction:
