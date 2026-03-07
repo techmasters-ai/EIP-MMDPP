@@ -233,6 +233,46 @@ class TestDeduplicateExtraction:
         assert len(deduped.entities) == 2
 
 
+class TestCallLlmJsonMode:
+    def test_ollama_passes_response_format(self, monkeypatch):
+        """Verify response_format=json_object is passed for Ollama provider."""
+        from unittest.mock import MagicMock, patch
+        from types import SimpleNamespace
+
+        captured_kwargs = {}
+
+        def fake_completion(**kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=SAMPLE_LLM_RESPONSE),
+                    finish_reason="stop",
+                )]
+            )
+
+        settings = MagicMock()
+        settings.llm_provider = "ollama"
+        settings.docling_graph_model = "test-model"
+        settings.ollama_base_url = "http://localhost:11434"
+        settings.ollama_num_ctx = 4096
+        settings.docling_graph_max_tokens = 1200
+        settings.docling_graph_timeout = 60.0
+        settings.redis_url = "redis://localhost:6379/0"
+
+        with patch("app.services.docling_graph_service.litellm") as mock_litellm, \
+             patch("app.services.docling_graph_service.redis_lib") as mock_redis:
+            mock_litellm.completion = fake_completion
+            mock_lock = MagicMock()
+            mock_lock.acquire.return_value = True
+            mock_redis.from_url.return_value.lock.return_value = mock_lock
+
+            from app.services.docling_graph_service import _call_llm
+            _call_llm("test prompt", settings)
+
+        assert "response_format" in captured_kwargs
+        assert captured_kwargs["response_format"] == {"type": "json_object"}
+
+
 class TestExtractSinglePass:
     def test_mock_provider_returns_mock(self):
         from app.services.docling_graph_service import _extract_single_pass

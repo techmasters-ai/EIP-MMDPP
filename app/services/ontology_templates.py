@@ -130,6 +130,7 @@ def build_extraction_prompt(
     *,
     compact_ontology: bool = False,
     max_properties_per_entity: int = 8,
+    few_shot: bool = False,
 ) -> str:
     """Build an LLM prompt for entity/relationship extraction using the ontology.
 
@@ -165,6 +166,14 @@ def build_extraction_prompt(
                 f"  - {rt['name']}: {rt.get('description', '')} ({src} -> {tgt})"
             )
 
+    few_shot_block = ""
+    if few_shot:
+        few_shot_block = """
+## Example
+Input: "The AN/MPQ-53 radar operates in X-band at 9.4 GHz."
+Output: {"entities": [{"entity_type": "RADAR_SYSTEM", "name": "AN/MPQ-53", "properties": {}, "confidence": 0.9}, {"entity_type": "FREQUENCY_BAND", "name": "X-band", "properties": {"band_letter": "X"}, "confidence": 0.85}], "relationships": [{"relationship_type": "OPERATES_IN_BAND", "from_name": "AN/MPQ-53", "from_type": "RADAR_SYSTEM", "to_name": "X-band", "to_type": "FREQUENCY_BAND", "properties": {}, "confidence": 0.8}]}
+"""
+
     prompt = f"""Extract entities and relationships from the following military/defense document text.
 
 ## Entity Types
@@ -172,7 +181,7 @@ def build_extraction_prompt(
 
 ## Relationship Types
 {chr(10).join(rel_descriptions)}
-
+{few_shot_block}
 ## Instructions
 1. Identify all entities mentioned in the text that match the entity types above.
 2. For each entity, extract its name and any available properties.

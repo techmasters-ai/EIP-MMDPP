@@ -136,7 +136,7 @@ OLLAMA_NUM_CTX=8192                   # Context window for Ollama (must fit prom
 DOCLING_GRAPH_MODEL=gpt-oss:20b   # Model for graph entity/relationship extraction
 GRAPHRAG_MODEL=gpt-oss:20b        # Model for GraphRAG community report generation
 
-# Graph extraction hardening
+# Graph extraction hardening (JSON mode + few-shot example enabled for Ollama)
 DOCLING_GRAPH_REQUIRE_LLM=true            # Fail-closed: raise on NER fallback (default true)
 DOCLING_GRAPH_MAX_TOKENS=1200             # Max tokens for LLM response
 DOCLING_GRAPH_RETRY_ATTEMPTS=2            # Retry attempts before failure/fallback
@@ -443,6 +443,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.9 | Architecture upgrade: Neo4j + Qdrant + GraphRAG + expanded ontology + entity canonicalization | Complete |
 | 2.10 | Docling-graph fixes (chunked extraction, property persistence, word-boundary mentions, queue isolation) + Trusted Data simplification (Cognee → Qdrant-backed, Celery indexing) | Complete |
 | 2.11 | Graph extraction hardening (fail-closed, retry/backoff, concurrency gate) + Docling health-check fix (threadpool, advisory probe) + Search UI overhaul (4-mode selector, modality sub-filter, GraphRAG entity/report exploration, image proxy, result card improvements) + Polling fix | Complete |
+| 2.12 | LLM extraction reliability: Ollama JSON mode (`response_format`) + few-shot example in extraction prompt | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

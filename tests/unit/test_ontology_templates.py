@@ -147,6 +147,36 @@ class TestExtractionPrompt:
         assert len(compact_prompt) < len(full_prompt)
 
 
+class TestFewShotPrompt:
+    def test_few_shot_includes_example(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology
+
+        ontology = load_ontology()
+        prompt = build_extraction_prompt(ontology, "Test text", few_shot=True)
+        assert "## Example" in prompt
+        assert "AN/MPQ-53" in prompt
+        assert "RADAR_SYSTEM" in prompt
+
+    def test_no_few_shot_excludes_example(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology
+
+        ontology = load_ontology()
+        prompt = build_extraction_prompt(ontology, "Test text", few_shot=False)
+        assert "## Example" not in prompt
+
+    def test_few_shot_with_compact(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology
+
+        ontology = load_ontology()
+        prompt = build_extraction_prompt(
+            ontology, "Test text", compact_ontology=True, few_shot=True,
+        )
+        assert "## Example" in prompt
+        assert len(prompt) < len(
+            build_extraction_prompt(ontology, "Test text", few_shot=True)
+        )
+
+
 class TestHelpers:
     def test_build_entity_type_names(self):
         from app.services.ontology_templates import build_entity_type_names

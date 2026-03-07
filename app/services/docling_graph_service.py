@@ -65,7 +65,7 @@ def _extract_single_pass(
         return nx.DiGraph(), "mock"
 
     ontology = load_ontology(ontology_path)
-    prompt = build_extraction_prompt(ontology, text)
+    prompt = build_extraction_prompt(ontology, text, few_shot=True)
     compact_prompt: str | None = None
 
     max_attempts = settings.docling_graph_retry_attempts
@@ -75,6 +75,11 @@ def _extract_single_pass(
         try:
             result = _call_llm(prompt, settings)
             extraction = _parse_llm_response(result)
+            if not extraction.entities:
+                logger.warning(
+                    "LLM returned valid JSON but 0 entities for document %s",
+                    document_id,
+                )
             extraction = _validate_triples(extraction, ontology_path)
             return _build_networkx_graph(extraction, document_id), "docling-graph"
         except Exception as e:
@@ -84,7 +89,7 @@ def _extract_single_pass(
                 and compact_prompt is None
             ):
                 compact_prompt = build_extraction_prompt(
-                    ontology, text, compact_ontology=True,
+                    ontology, text, compact_ontology=True, few_shot=True,
                 )
                 if len(compact_prompt) < len(prompt):
                     logger.warning(
@@ -407,6 +412,7 @@ def _call_llm(prompt: str, settings) -> str:
         )
         if provider == "ollama":
             kwargs["num_ctx"] = settings.ollama_num_ctx
+            kwargs["response_format"] = {"type": "json_object"}
         response = litellm.completion(**kwargs)
     finally:
         try:
