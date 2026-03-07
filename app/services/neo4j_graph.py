@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Cache for EXTRACTED_FROM edge existence check (avoids per-query Neo4j lookups)
+_extracted_from_cache: dict[str, Any] = {"exists": None, "checked_at": 0.0}
+_EXTRACTED_FROM_CACHE_TTL = 60  # seconds
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +398,30 @@ async def get_neighborhood_async(
         return []
 
 
+async def _has_extracted_from_edges(driver) -> bool:
+    """Check if any EXTRACTED_FROM edges exist (cached for 60s)."""
+    now = time.monotonic()
+    if (
+        _extracted_from_cache["exists"] is not None
+        and now - _extracted_from_cache["checked_at"] < _EXTRACTED_FROM_CACHE_TTL
+    ):
+        return _extracted_from_cache["exists"]
+
+    try:
+        async with driver.session() as session:
+            result = await session.run(
+                "MATCH ()-[r:EXTRACTED_FROM]->() RETURN count(r) > 0 AS has_edges LIMIT 1"
+            )
+            record = await result.single()
+            exists = bool(record and record["has_edges"])
+    except Exception:
+        exists = False
+
+    _extracted_from_cache["exists"] = exists
+    _extracted_from_cache["checked_at"] = now
+    return exists
+
+
 async def get_ontology_linked_chunks_async(
     driver,
     chunk_id: str,
@@ -403,6 +432,10 @@ async def get_ontology_linked_chunks_async(
     Path: ChunkRef <-[EXTRACTED_FROM]- Entity -[ontology_rel]- Related
           -[EXTRACTED_FROM]-> ChunkRef
     """
+    # Short-circuit if no EXTRACTED_FROM edges exist (prevents warning spam)
+    if not await _has_extracted_from_edges(driver):
+        return []
+
     query = """
         MATCH (src:ChunkRef {chunk_id: $chunk_id})
               <-[:EXTRACTED_FROM]-(entity:Entity)

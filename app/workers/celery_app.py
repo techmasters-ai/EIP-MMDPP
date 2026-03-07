@@ -14,6 +14,7 @@ celery_app = Celery(
     include=[
         "app.workers.pipeline",
         "app.workers.watcher",
+        "app.workers.graphrag_tasks",
     ],
 )
 
@@ -47,5 +48,15 @@ celery_app.conf.update(
             "task": "app.workers.watcher.scan_watch_directories",
             "schedule": settings.watch_dir_poll_interval_seconds,
         },
+        **(
+            {
+                "graphrag-indexing": {
+                    "task": "app.workers.graphrag_tasks.run_graphrag_indexing_task",
+                    "schedule": settings.graphrag_indexing_interval_minutes * 60,
+                },
+            }
+            if settings.graphrag_indexing_enabled
+            else {}
+        ),
     },
 )

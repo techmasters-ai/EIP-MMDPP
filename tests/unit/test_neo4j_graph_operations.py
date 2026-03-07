@@ -311,24 +311,61 @@ class TestGetNeighborhoodAsync:
 
 
 class TestGetOntologyLinkedChunksAsync:
+    def _reset_extracted_from_cache(self):
+        """Reset the EXTRACTED_FROM existence cache so each test starts fresh."""
+        from app.services import neo4j_graph
+        neo4j_graph._extracted_from_cache["exists"] = None
+        neo4j_graph._extracted_from_cache["checked_at"] = 0.0
+
     @pytest.mark.asyncio
     async def test_returns_linked_chunks(self):
+        self._reset_extracted_from_cache()
         from app.services.neo4j_graph import get_ontology_linked_chunks_async
         data = [{
             "target_chunk_id": "c2", "target_chunk_type": "text",
             "rel_type": "USES", "entity_name": "A", "related_name": "B",
         }]
-        driver, _, _ = _mock_async_driver(data_return=data)
+        # First call checks EXTRACTED_FROM existence, second is the main query
+        guard_result = AsyncMock()
+        guard_result.single = AsyncMock(return_value={"has_edges": True})
+        main_result = AsyncMock()
+        main_result.data = AsyncMock(return_value=data)
+
+        mock_session = AsyncMock()
+        mock_session.run = AsyncMock(side_effect=[guard_result, main_result])
+        driver = MagicMock()
+        driver.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+
         results = await get_ontology_linked_chunks_async(driver, "c1")
         assert len(results) == 1
         assert results[0]["target_chunk_id"] == "c2"
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self):
+        self._reset_extracted_from_cache()
         from app.services.neo4j_graph import get_ontology_linked_chunks_async
         driver, session, _ = _mock_async_driver()
         session.run.side_effect = Exception("fail")
         assert await get_ontology_linked_chunks_async(driver, "c1") == []
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_extracted_from_edges(self):
+        self._reset_extracted_from_cache()
+        from app.services.neo4j_graph import get_ontology_linked_chunks_async
+        guard_result = AsyncMock()
+        guard_result.single = AsyncMock(return_value={"has_edges": False})
+
+        mock_session = AsyncMock()
+        mock_session.run = AsyncMock(return_value=guard_result)
+        driver = MagicMock()
+        driver.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        results = await get_ontology_linked_chunks_async(driver, "c1")
+        assert results == []
+        # Should only have made the guard query, not the main query
+        assert mock_session.run.call_count == 1
 
 
 class TestGetGraphStatsAsync:

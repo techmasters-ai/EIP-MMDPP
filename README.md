@@ -335,6 +335,52 @@ python scripts/migrate_age_to_neo4j.py
 
 All migration scripts are idempotent (MERGE/upsert).
 
+## Performance Tuning
+
+### Single-Node Tuning Matrix
+
+Use `docker compose --profile split up -d --build` for all tiers. This runs separate worker processes for ingest, embed, and graph queues.
+
+| Tier | Hardware | Docling settings | Worker settings (split profile) | Queue/scheduling | UI polling |
+|---|---|---|---|---|---|
+| **S** (dev) | 8 vCPU, 32 GB RAM, no GPU | `DOCLING_DEVICE=cpu`, `DOCLING_DTYPE=float32`, `DOCLING_CONCURRENCY=1` | `WORKER_INGEST_CONCURRENCY=1`, `WORKER_EMBED_CONCURRENCY=1`, `WORKER_GRAPH_CONCURRENCY=1` | `WATCH_DIR_POLL_INTERVAL_SECONDS=60` | 5s poll interval |
+| **M** (workstation) | 16 vCPU, 64 GB RAM, 1 GPU (24 GB+) | `DOCLING_DEVICE=cuda`, `DOCLING_DTYPE=bfloat16`, `DOCLING_CONCURRENCY=2` | `WORKER_INGEST_CONCURRENCY=2`, `WORKER_EMBED_CONCURRENCY=2`, `WORKER_GRAPH_CONCURRENCY=2` | Watcher 30s | 3–5s with backoff |
+| **L** (server) | 32 vCPU, 128 GB RAM, 1 strong GPU (40–80 GB) | `DOCLING_DEVICE=cuda`, `DOCLING_DTYPE=bfloat16`, `DOCLING_CONCURRENCY=3` | `WORKER_INGEST_CONCURRENCY=3`, `WORKER_EMBED_CONCURRENCY=4`, `WORKER_GRAPH_CONCURRENCY=3` | Watcher 20–30s | 3s + backoff |
+| **XL** (big server) | 48+ vCPU, 256 GB RAM, 2 GPUs | `DOCLING_DEVICE=cuda`, `DOCLING_DTYPE=bfloat16`, `DOCLING_CONCURRENCY=4` | `WORKER_INGEST_CONCURRENCY=4`, `WORKER_EMBED_CONCURRENCY=6`, `WORKER_GRAPH_CONCURRENCY=4` | Watcher 15–20s | 3s + backoff |
+
+Start command: `docker compose --profile split up -d --build`
+
+### Guardrails
+
+1. **Keep `WORKER_INGEST_CONCURRENCY <= DOCLING_CONCURRENCY`** to avoid Docling-capacity retry storms. When ingest workers outnumber Docling permits, excess tasks retry-loop and can exhaust their retry budget.
+2. **Use split workers** (`docker compose --profile split up -d --build`). The default single-worker mode shares concurrency across all queues.
+3. **For CPU use `DOCLING_DTYPE=float32`; for GPU use `DOCLING_DTYPE=bfloat16`.** Do NOT use `bfloat32` — it is not a valid PyTorch dtype.
+4. If capacity retries still fail, raise `PREPARE_MAX_RETRIES` as a temporary mitigation — the real fix is concurrency alignment.
+
+### Multi-Node Scaling Matrix
+
+| Tier | Cluster shape | Docling pool | Ingest pool (prepare/finalize) | Embed pool | Graph pool | Broker/DB notes |
+|---|---|---|---|---|---|---|
+| **MN-1** | 3 worker + 1 API node | 1 GPU replica, `DOCLING_CONCURRENCY=2` | 2 workers (`concurrency=1` each) | 1 worker (`concurrency=2`) | 1 worker (`concurrency=1`) | Single Redis/Postgres acceptable |
+| **MN-2** | 6 worker + 2 API nodes | 2 GPU replicas, total permits=4 | 4 workers (`concurrency=1`) | 2 workers (`concurrency=2` each) | 1–2 workers (`concurrency=2`) | Redis HA (sentinel/managed), Postgres primary+replica |
+| **MN-3** | 10 worker + 3 API nodes | 3 GPU replicas, total permits=6 | 6 workers (`concurrency=1`) | 3 workers (`concurrency=3`) | 2 workers (`concurrency=2`) | Managed Redis, Postgres tuned pools, Qdrant/Neo4j on dedicated hosts |
+| **MN-4** | 16+ worker + 4 API nodes | 4 GPU replicas, total permits=8 | 8 workers (`concurrency=1`) | 4 workers (`concurrency=4`) | 3 workers (`concurrency=2`) | Separate stateful cluster tier (Redis/Postgres/Qdrant/Neo4j) |
+
+### Multi-Node Rules
+
+1. Keep **total ingest concurrency <= total Docling permits** across all nodes (prevents `Docling at capacity` retry storms).
+2. Run **exactly one Beat scheduler** (the `beat` service) — never scale the Beat container.
+3. Put the directory watcher on a **dedicated queue/worker** so scans never block ingest.
+4. Use **split workers only** (ingest/embed/graph separated) — mixed-queue workers cause head-of-line blocking.
+5. Add queue tuning: `worker_prefetch_multiplier=1`, worker recycle/memory caps.
+
+### Autoscaling Triggers
+
+1. Scale **ingest workers** when `ingest` queue depth stays > 2× available permits for 2+ minutes.
+2. Scale **embed workers** when `embed` queue age > 60s.
+3. Scale **graph workers** when `graph` queue age > 120s.
+4. Scale **Docling replicas first** if the prepare stage dominates wall time.
+
 ## Implementation Phases
 
 | Phase | Scope | Status |

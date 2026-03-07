@@ -9,12 +9,21 @@ import {
   type Source,
 } from "../api/client";
 
-interface FileEntry {
+export interface FileEntry {
   file: File;
+  fileName: string;        // cached for display after File ref may be gone
+  fileSize: number;        // cached for display after File ref may be gone
   progress: number;        // 0–100 upload progress
   status: "queued" | "uploading" | "polling" | "COMPLETE" | "ERROR" | string;
   documentId?: string;
   error?: string;
+}
+
+interface FileUploadProps {
+  entries: FileEntry[];
+  setEntries: React.Dispatch<React.SetStateAction<FileEntry[]>>;
+  selectedSourceId: string;
+  setSelectedSourceId: React.Dispatch<React.SetStateAction<string>>;
 }
 
 function formatBytes(bytes: number): string {
@@ -53,26 +62,24 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={cls}>{label}</span>;
 }
 
-export function FileUpload() {
+export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedSourceId }: FileUploadProps) {
   const [sources, setSources] = useState<Source[]>([]);
-  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [newSourceName, setNewSourceName] = useState("");
   const [directoryMode, setDirectoryMode] = useState(false);
-  const [entries, setEntries] = useState<FileEntry[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load sources on mount
+  // Load sources on mount — don't clobber persisted selectedSourceId
   useEffect(() => {
     listSources()
       .then((s) => {
         setSources(s);
-        if (s.length > 0) setSelectedSourceId(s[0].id);
+        if (!selectedSourceId && s.length > 0) setSelectedSourceId(s[0].id);
       })
       .catch(() => {/* sources list optional */});
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll pipeline status for documents that are still processing
   useEffect(() => {
@@ -137,6 +144,8 @@ export function FileUpload() {
 
       const newEntries: FileEntry[] = files.map((f) => ({
         file: f,
+        fileName: f.name,
+        fileSize: f.size,
         progress: 0,
         status: "queued",
       }));
@@ -282,10 +291,10 @@ export function FileUpload() {
         <div className="file-list">
           {entries.map((entry, i) => (
             <div key={i} className="file-item">
-              <span className="file-item-name" title={entry.file.name}>
-                {entry.file.name}
+              <span className="file-item-name" title={entry.fileName}>
+                {entry.fileName}
               </span>
-              <span className="file-item-size">{formatBytes(entry.file.size)}</span>
+              <span className="file-item-size">{formatBytes(entry.fileSize)}</span>
 
               {entry.status === "uploading" ? (
                 <div className="progress-wrap">

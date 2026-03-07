@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Nav, type Page } from "./components/Nav";
 import { IngestPage } from "./components/IngestPage";
+import { type FileEntry } from "./components/FileUpload";
 import { QueryPage } from "./components/QueryPage";
 import { GraphExplorer } from "./components/GraphExplorer";
 import { MemoryPanel } from "./components/MemoryPanel";
@@ -8,11 +9,22 @@ import { MemoryPanel } from "./components/MemoryPanel";
 export function App() {
   const [page, setPage] = useState<Page>("ingest");
 
+  // Lifted from FileUpload so upload state survives page navigation
+  const [uploadEntries, setUploadEntries] = useState<FileEntry[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+
   return (
     <>
       <Nav page={page} onNavigate={setPage} />
       <main>
-        {page === "ingest" && <IngestPage />}
+        {page === "ingest" && (
+          <IngestPage
+            entries={uploadEntries}
+            setEntries={setUploadEntries}
+            selectedSourceId={selectedSourceId}
+            setSelectedSourceId={setSelectedSourceId}
+          />
+        )}
         {page === "query" && (
           <div className="page">
             <h1 className="page-title">Search Documents</h1>

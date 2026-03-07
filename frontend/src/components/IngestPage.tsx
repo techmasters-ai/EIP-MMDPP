@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { DirectoryMonitor } from "./DirectoryMonitor";
-import { FileUpload } from "./FileUpload";
+import { FileUpload, type FileEntry } from "./FileUpload";
 
 type Tab = "upload" | "monitor";
 
@@ -9,7 +9,14 @@ const TABS: { value: Tab; label: string }[] = [
   { value: "monitor", label: "Monitor Directory" },
 ];
 
-export function IngestPage() {
+interface IngestPageProps {
+  entries: FileEntry[];
+  setEntries: React.Dispatch<React.SetStateAction<FileEntry[]>>;
+  selectedSourceId: string;
+  setSelectedSourceId: React.Dispatch<React.SetStateAction<string>>;
+}
+
+export function IngestPage({ entries, setEntries, selectedSourceId, setSelectedSourceId }: IngestPageProps) {
   const [tab, setTab] = useState<Tab>("upload");
 
   return (
@@ -32,7 +39,14 @@ export function IngestPage() {
         ))}
       </div>
 
-      {tab === "upload" && <FileUpload />}
+      {tab === "upload" && (
+        <FileUpload
+          entries={entries}
+          setEntries={setEntries}
+          selectedSourceId={selectedSourceId}
+          setSelectedSourceId={setSelectedSourceId}
+        />
+      )}
       {tab === "monitor" && <DirectoryMonitor />}
     </div>
   );

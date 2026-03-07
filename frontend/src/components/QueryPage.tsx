@@ -63,8 +63,61 @@ function scoreColor(score: number): string {
   return "var(--color-text-muted)";
 }
 
+function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        background: "rgba(0,0,0,0.8)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+      }}
+      onClick={onClose}
+    >
+      <img
+        src={src}
+        alt={alt}
+        style={{
+          maxWidth: "90vw",
+          maxHeight: "90vh",
+          objectFit: "contain",
+          borderRadius: "6px",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          top: "1rem",
+          right: "1rem",
+          background: "rgba(255,255,255,0.15)",
+          border: "none",
+          color: "#fff",
+          fontSize: "1.5rem",
+          cursor: "pointer",
+          borderRadius: "50%",
+          width: "2.5rem",
+          height: "2.5rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        &times;
+      </button>
+    </div>
+  );
+}
+
 function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const [expanded, setExpanded] = useState(false);
+  const [imageExpanded, setImageExpanded] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const displayText = item.content_text;
   const ctx = item.context as Record<string, unknown> | undefined;
@@ -117,19 +170,39 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
       )}
 
       {item.image_url && (
-        <div className="result-image" style={{ margin: "0.5rem 0" }}>
-          <img
-            src={item.image_url}
-            alt={item.content_text || "Retrieved image"}
-            loading="lazy"
-            style={{
-              maxHeight: "300px",
-              maxWidth: "100%",
-              objectFit: "contain",
-              borderRadius: "4px",
-              border: "1px solid var(--color-border, #e0e0e0)",
-            }}
-          />
+        <div style={{ margin: "0.5rem 0" }}>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setImageExpanded((v) => !v)}
+          >
+            {imageExpanded ? "▾ Hide image" : "▸ View image"}
+          </button>
+          {imageExpanded && (
+            <div className="result-image" style={{ marginTop: "0.5rem" }}>
+              <img
+                src={item.image_url}
+                alt={item.content_text || "Retrieved image"}
+                loading="lazy"
+                style={{
+                  maxHeight: "300px",
+                  maxWidth: "100%",
+                  objectFit: "contain",
+                  borderRadius: "4px",
+                  border: "1px solid var(--color-border, #e0e0e0)",
+                  cursor: "pointer",
+                }}
+                title="Click for full size"
+                onClick={() => setModalOpen(true)}
+              />
+            </div>
+          )}
+          {modalOpen && (
+            <ImageLightbox
+              src={item.image_url}
+              alt={item.content_text || "Retrieved image"}
+              onClose={() => setModalOpen(false)}
+            />
+          )}
         </div>
       )}
 
