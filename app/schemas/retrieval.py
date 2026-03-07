@@ -12,7 +12,6 @@ from app.schemas.common import APIModel
 class QueryStrategy(str, Enum):
     basic = "basic"
     hybrid = "hybrid"
-    memory = "memory"
     graphrag_local = "graphrag_local"
     graphrag_global = "graphrag_global"
 
@@ -29,7 +28,6 @@ _MODE_MAP: dict[str, tuple[QueryStrategy, ModalityFilter]] = {
     "text_only": (QueryStrategy.hybrid, ModalityFilter.text),
     "images_only": (QueryStrategy.hybrid, ModalityFilter.image),
     "multi_modal": (QueryStrategy.hybrid, ModalityFilter.all),
-    "memory": (QueryStrategy.memory, ModalityFilter.all),
     "graphrag_local": (QueryStrategy.graphrag_local, ModalityFilter.all),
     "graphrag_global": (QueryStrategy.graphrag_global, ModalityFilter.all),
     # Also accept new strategy names directly as mode

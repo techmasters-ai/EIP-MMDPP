@@ -202,3 +202,154 @@ class TestDeriveOntologyGraph:
             assert "from_name" in call_kwargs
             assert "to_name" in call_kwargs
             assert "rel_type" in call_kwargs
+
+
+class TestDoclingGraphPath:
+    """Tests for the docling-graph LLM extraction path (mocked LLM)."""
+
+    def test_docling_graph_provider_set_correctly(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """When LLM extraction succeeds, provider should be 'docling-graph'."""
+        import networkx as nx
+        from app.workers.pipeline import derive_ontology_graph
+        from app.models.ingest import DocumentGraphExtraction
+        from sqlalchemy import select
+
+        # Build a fake graph that _extract_single_pass would return
+        fake_graph = nx.DiGraph()
+        fake_graph.add_node(
+            "EQUIPMENT_SYSTEM:Patriot PAC-3",
+            entity_type="EQUIPMENT_SYSTEM", name="Patriot PAC-3",
+            properties={"designation": "MIM-104F"}, confidence=0.95,
+        )
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
+            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
+            patch(
+                "app.services.docling_graph_service.extract_graph_from_text_chunked",
+                return_value=(fake_graph, "docling-graph"),
+            ),
+            patch("app.workers.pipeline.settings") as mock_settings,
+        ):
+            mock_settings.llm_provider = "ollama"
+            mock_settings.graph_extraction_chunk_size = 7000
+            mock_settings.graph_extraction_chunk_overlap = 500
+            mock_settings.graph_node_min_confidence = 0.6
+            mock_settings.graph_rel_min_confidence = 0.55
+            mock_settings.docling_graph_model = "llama3.2"
+            mock_settings.graph_max_retries = 2
+            mock_settings.graph_retry_delay = 60
+            mock_settings.graph_soft_time_limit = 600
+            mock_settings.graph_time_limit = 660
+            result = derive_ontology_graph.run(sample_document_id)
+
+        assert result["nodes"] >= 1
+
+        db_session.expire_all()
+        extraction = db_session.execute(
+            select(DocumentGraphExtraction)
+            .where(DocumentGraphExtraction.document_id == uuid.UUID(sample_document_id))
+        ).scalar_one_or_none()
+        assert extraction is not None
+        assert extraction.provider == "docling-graph"
+
+    def test_silent_fallback_sets_provider_ner(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """When LLM fails silently, provider should be 'ner'."""
+        import networkx as nx
+        from app.workers.pipeline import derive_ontology_graph
+        from app.models.ingest import DocumentGraphExtraction
+        from sqlalchemy import select
+
+        # Simulate NER fallback returning a graph with "ner" provider
+        fake_graph = nx.DiGraph()
+        fake_graph.add_node(
+            "STANDARD:MIL-STD-1553B",
+            entity_type="STANDARD", name="MIL-STD-1553B",
+            properties={}, confidence=0.7,
+        )
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
+            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
+            patch(
+                "app.services.docling_graph_service.extract_graph_from_text_chunked",
+                return_value=(fake_graph, "ner"),
+            ),
+            patch("app.workers.pipeline.settings") as mock_settings,
+        ):
+            mock_settings.llm_provider = "ollama"
+            mock_settings.graph_extraction_chunk_size = 7000
+            mock_settings.graph_extraction_chunk_overlap = 500
+            mock_settings.graph_node_min_confidence = 0.6
+            mock_settings.graph_rel_min_confidence = 0.55
+            mock_settings.docling_graph_model = "llama3.2"
+            mock_settings.graph_max_retries = 2
+            mock_settings.graph_retry_delay = 60
+            mock_settings.graph_soft_time_limit = 600
+            mock_settings.graph_time_limit = 660
+            result = derive_ontology_graph.run(sample_document_id)
+
+        db_session.expire_all()
+        extraction = db_session.execute(
+            select(DocumentGraphExtraction)
+            .where(DocumentGraphExtraction.document_id == uuid.UUID(sample_document_id))
+        ).scalar_one_or_none()
+        assert extraction is not None
+        assert extraction.provider == "ner"
+
+    def test_node_properties_passed_to_upsert(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """Node properties dict should be passed to upsert_node."""
+        import networkx as nx
+        from app.workers.pipeline import derive_ontology_graph
+
+        fake_graph = nx.DiGraph()
+        fake_graph.add_node(
+            "EQUIPMENT_SYSTEM:Patriot",
+            entity_type="EQUIPMENT_SYSTEM", name="Patriot",
+            properties={"designation": "MIM-104F", "nsn": "1410-01-234-5678"},
+            confidence=0.95,
+        )
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id") as mock_node,
+            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
+            patch(
+                "app.services.docling_graph_service.extract_graph_from_text_chunked",
+                return_value=(fake_graph, "docling-graph"),
+            ),
+            patch("app.workers.pipeline.settings") as mock_settings,
+        ):
+            mock_settings.llm_provider = "ollama"
+            mock_settings.graph_extraction_chunk_size = 7000
+            mock_settings.graph_extraction_chunk_overlap = 500
+            mock_settings.graph_node_min_confidence = 0.6
+            mock_settings.graph_rel_min_confidence = 0.55
+            mock_settings.docling_graph_model = "llama3.2"
+            mock_settings.graph_max_retries = 2
+            mock_settings.graph_retry_delay = 60
+            mock_settings.graph_soft_time_limit = 600
+            mock_settings.graph_time_limit = 660
+            derive_ontology_graph.run(sample_document_id)
+
+        assert mock_node.call_count >= 1
+        call_kwargs = mock_node.call_args.kwargs
+        assert "properties" in call_kwargs
+        assert call_kwargs["properties"]["designation"] == "MIM-104F"

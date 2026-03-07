@@ -64,7 +64,10 @@ def convert_document_sync(
     if data.get("status") == "error":
         raise RuntimeError(f"Docling conversion failed: {data.get('error', 'unknown')}")
 
-    chunks = _map_elements_to_chunks(data.get("elements", []))
+    chunks = _map_elements_to_chunks(
+        data.get("elements", []),
+        review_threshold=settings.docling_review_confidence_threshold,
+    )
     return DoclingConversionResult(
         elements=chunks,
         markdown=data.get("markdown", ""),
@@ -86,7 +89,10 @@ def check_health_sync() -> bool:
         return False
 
 
-def _map_elements_to_chunks(elements: list[dict]) -> list[ExtractedChunk]:
+def _map_elements_to_chunks(
+    elements: list[dict],
+    review_threshold: float = 0.60,
+) -> list[ExtractedChunk]:
     """Map Docling ConvertedElement dicts to ExtractedChunk instances."""
     chunks = []
     for elem in elements:
@@ -116,7 +122,10 @@ def _map_elements_to_chunks(elements: list[dict]) -> list[ExtractedChunk]:
             raw_image_bytes=raw_image_bytes,
             ocr_confidence=elem.get("confidence"),
             ocr_engine="docling-granite" if elem.get("confidence") else None,
-            requires_human_review=False,
+            requires_human_review=(
+                elem.get("confidence") is not None
+                and elem.get("confidence") < review_threshold
+            ),
             metadata=meta,
         )
         chunks.append(chunk)

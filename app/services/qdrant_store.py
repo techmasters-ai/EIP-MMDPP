@@ -1,9 +1,10 @@
 """Qdrant vector store operations.
 
 Provides sync helpers for Celery workers and async helpers for FastAPI routes.
-Manages two collections:
+Manages three collections:
   - eip_text_chunks: 1024-dim cosine (BGE-large-en-v1.5)
   - eip_image_chunks: 512-dim cosine (OpenCLIP ViT-B/32)
+  - eip_trusted_text: 1024-dim cosine (trusted data submissions)
 """
 
 from __future__ import annotations
@@ -44,6 +45,44 @@ def ensure_collections(client) -> None:
         settings.qdrant_image_collection,
         dim=settings.image_embedding_dim,
     )
+    _ensure_trusted_collection(client)
+
+
+def _ensure_trusted_collection(client) -> None:
+    """Create the trusted data collection if it doesn't exist."""
+    settings = get_settings()
+    name = settings.qdrant_trusted_text_collection
+    existing = [c.name for c in client.get_collections().collections]
+    if name in existing:
+        logger.info("Qdrant trusted collection '%s' already exists", name)
+        return
+
+    client.create_collection(
+        collection_name=name,
+        vectors_config=VectorParams(
+            size=settings.text_embedding_dim, distance=Distance.COSINE
+        ),
+    )
+
+    for field in ("submission_id", "status", "classification"):
+        try:
+            client.create_payload_index(
+                collection_name=name,
+                field_name=field,
+                field_schema="keyword",
+            )
+        except Exception:
+            pass
+    try:
+        client.create_payload_index(
+            collection_name=name,
+            field_name="confidence",
+            field_schema="float",
+        )
+    except Exception:
+        pass
+
+    logger.info("Created Qdrant trusted collection '%s' (dim=%d)", name, settings.text_embedding_dim)
 
 
 def _ensure_collection(client, name: str, dim: int) -> None:
@@ -275,6 +314,57 @@ def delete_by_document_id(client, document_id: str) -> None:
             client.delete(collection_name=collection, points_selector=doc_filter)
         except Exception as e:
             logger.warning("delete_by_document_id failed for %s/%s: %s", collection, document_id, e)
+
+
+# ---------------------------------------------------------------------------
+# Filter builder
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Trusted data operations
+# ---------------------------------------------------------------------------
+
+def upsert_trusted_vector(
+    client,
+    point_id: str,
+    vector: list[float],
+    payload: dict[str, Any],
+) -> None:
+    """Upsert a single point to the trusted text collection."""
+    settings = get_settings()
+    client.upsert(
+        collection_name=settings.qdrant_trusted_text_collection,
+        points=[
+            PointStruct(
+                id=point_id,
+                vector=vector,
+                payload=payload,
+            )
+        ],
+    )
+
+
+async def search_trusted_vectors(
+    query_vector: list[float],
+    top_k: int = 10,
+) -> list[dict[str, Any]]:
+    """Search the trusted text collection (async)."""
+    from app.db.session import get_qdrant_async_client
+
+    settings = get_settings()
+    client = get_qdrant_async_client()
+
+    results = await client.query_points(
+        collection_name=settings.qdrant_trusted_text_collection,
+        query=query_vector,
+        limit=top_k,
+        with_payload=True,
+    )
+
+    return [
+        {"score": point.score, **point.payload}
+        for point in results.points
+    ]
 
 
 # ---------------------------------------------------------------------------

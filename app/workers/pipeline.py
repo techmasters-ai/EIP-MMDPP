@@ -210,6 +210,7 @@ def start_ingest_pipeline(document_id: str) -> str:
 
     pipeline = chain(
         prepare_document.si(document_id, run_id),
+        purge_document_derivations.si(document_id, run_id),
         chord(
             group(
                 derive_text_chunks_and_embeddings.si(document_id, run_id),
@@ -355,22 +356,39 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             db.commit()
             return document_id
 
-        # 4. Docling conversion — acquire semaphore permit FIRST, then check health
-        #    (health check fails while Docling is busy converting another doc)
+        # 4. Docling conversion — acquire semaphore permit with busy-wait
+        #    Uses in-task backoff loop instead of self.retry() so capacity waits
+        #    do NOT consume the task's retry budget (retries reserved for real errors).
+        import time as _time
+
         docling_lock = None
-        for _permit_i in range(settings.docling_concurrency):
-            _candidate = _redis_client.lock(
-                f"docling:permit:{_permit_i}", timeout=settings.docling_lock_timeout, blocking=False,
-            )
-            if _candidate.acquire(blocking=False):
-                docling_lock = _candidate
+        _wait_start = _time.monotonic()
+        _max_wait = settings.docling_lock_timeout  # 600s default
+        _wait_attempt = 0
+        while docling_lock is None:
+            for _permit_i in range(settings.docling_concurrency):
+                _candidate = _redis_client.lock(
+                    f"docling:permit:{_permit_i}", timeout=settings.docling_lock_timeout, blocking=False,
+                )
+                if _candidate.acquire(blocking=False):
+                    docling_lock = _candidate
+                    break
+            if docling_lock is not None:
                 break
-        if docling_lock is None:
+            _elapsed = _time.monotonic() - _wait_start
+            if _elapsed >= _max_wait:
+                raise RuntimeError(
+                    f"Docling at capacity for {_elapsed:.0f}s — all {settings.docling_concurrency} "
+                    f"permits held. Document {document_id} cannot proceed."
+                )
+            _wait_attempt += 1
+            _sleep_time = min(30, 5 * _wait_attempt)  # 5s, 10s, 15s, ... capped at 30s
             logger.info(
-                "prepare_document: Docling at capacity (%d/%d), re-queuing %s",
-                settings.docling_concurrency, settings.docling_concurrency, document_id,
+                "prepare_document: Docling at capacity (%d/%d), waiting %ds for %s (%.0fs elapsed)",
+                settings.docling_concurrency, settings.docling_concurrency,
+                _sleep_time, document_id, _elapsed,
             )
-            raise self.retry(countdown=30, max_retries=20)
+            _time.sleep(_sleep_time)
 
         try:
             # Health check only when we hold the lock (Docling should be idle)
@@ -472,6 +490,30 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
 
         db.commit()
 
+        # Remove stale DocumentElements/Artifacts not in current extraction
+        from sqlalchemy import delete as sql_delete
+        stale_elems = db.execute(
+            sql_delete(DocumentElement).where(
+                DocumentElement.document_id == uuid.UUID(document_id),
+                ~DocumentElement.element_uid.in_(element_uids),
+            )
+        )
+        stale_elem_count = stale_elems.rowcount
+
+        stale_arts = db.execute(
+            sql_delete(Artifact).where(
+                Artifact.document_id == uuid.UUID(document_id),
+                ~Artifact.id.in_(artifact_ids),
+            )
+        )
+        stale_art_count = stale_arts.rowcount
+        if stale_elem_count or stale_art_count:
+            db.commit()
+            logger.info(
+                "prepare_document: cleaned %d stale elements, %d stale artifacts for %s",
+                stale_elem_count, stale_art_count, document_id,
+            )
+
         _update_stage_run(
             db, run_id, "prepare_document", "COMPLETE",
             attempt=self.request.retries + 1,
@@ -479,6 +521,8 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 "elements": elements_created,
                 "num_pages": result.num_pages,
                 "processing_time_ms": result.processing_time_ms,
+                "stale_elements_removed": stale_elem_count,
+                "stale_artifacts_removed": stale_art_count,
             },
         )
         db.commit()
@@ -505,6 +549,102 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             raise
         logger.info("prepare_document: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, soft_time_limit=120, time_limit=180, queue="ingest")
+def purge_document_derivations(self, document_id: str, run_id: str | None = None) -> str:
+    """Delete stale derived data for a document before re-deriving.
+
+    Purges: TextChunks, ImageChunks, ChunkLinks (Postgres),
+    Qdrant vectors (both collections), Neo4j structural subgraph.
+    Idempotent — safe to call on first ingest (no-op if nothing exists).
+    """
+    from app.models.retrieval import TextChunk, ImageChunk, ChunkLink
+    from app.models.ingest import DocumentGraphExtraction
+    from app.services.qdrant_store import delete_by_document_id
+    from app.db.session import get_neo4j_driver, get_qdrant_client
+    from sqlalchemy import delete as sql_delete
+
+    logger.info("purge_document_derivations: document_id=%s", document_id)
+    _update_document_status(document_id, STATUS_PROCESSING, stage="purge_document_derivations")
+
+    db = _get_db()
+    metrics: dict = {}
+    try:
+        if run_id:
+            _update_stage_run(db, run_id, "purge_document_derivations", "RUNNING", attempt=1)
+            db.commit()
+
+        doc_uuid = uuid.UUID(document_id)
+
+        # 1. Postgres derived tables
+        for model, label in [
+            (ChunkLink, "chunk_links"),
+            (TextChunk, "text_chunks"),
+            (ImageChunk, "image_chunks"),
+        ]:
+            result = db.execute(
+                sql_delete(model).where(model.document_id == doc_uuid)
+            )
+            metrics[f"{label}_deleted"] = result.rowcount
+
+        result = db.execute(
+            sql_delete(DocumentGraphExtraction).where(
+                DocumentGraphExtraction.document_id == doc_uuid
+            )
+        )
+        metrics["graph_extractions_deleted"] = result.rowcount
+        db.commit()
+
+        # 2. Qdrant vectors
+        try:
+            qdrant_client = get_qdrant_client()
+            delete_by_document_id(qdrant_client, document_id)
+            metrics["qdrant_purged"] = True
+        except Exception as exc:
+            logger.warning("purge: Qdrant cleanup failed for %s: %s", document_id, exc)
+            metrics["qdrant_purged"] = False
+
+        # 3. Neo4j — delete document structural subgraph
+        try:
+            neo4j_driver = get_neo4j_driver()
+            with neo4j_driver.session() as session:
+                result = session.run("""
+                    MATCH (d:Document {document_id: $doc_id})-[]->(c:ChunkRef)
+                    DETACH DELETE c
+                    RETURN count(c) AS deleted_chunks
+                """, doc_id=document_id)
+                record = result.single()
+                metrics["neo4j_chunks_deleted"] = record["deleted_chunks"] if record else 0
+
+                result = session.run("""
+                    MATCH ()-[r]->()
+                    WHERE r.artifact_id = $doc_id
+                    DELETE r
+                    RETURN count(r) AS deleted_edges
+                """, doc_id=document_id)
+                record = result.single()
+                metrics["neo4j_edges_deleted"] = record["deleted_edges"] if record else 0
+        except Exception as exc:
+            logger.warning("purge: Neo4j cleanup failed for %s: %s", document_id, exc)
+            metrics["neo4j_purge_error"] = str(exc)
+
+        if run_id:
+            _update_stage_run(db, run_id, "purge_document_derivations", "COMPLETE", attempt=1, metrics=metrics)
+            db.commit()
+
+        logger.info("purge_document_derivations: document_id=%s metrics=%s", document_id, metrics)
+        return document_id
+
+    except Exception as exc:
+        logger.error("purge_document_derivations failed for %s: %s", document_id, exc)
+        db.rollback()
+        if run_id:
+            _update_stage_run(db, run_id, "purge_document_derivations", "FAILED", attempt=1, error=str(exc))
+            db.commit()
+        raise
     finally:
         db.close()
 
@@ -813,6 +953,62 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
         db.close()
 
 
+def _build_entity_mentions(
+    entities: list[dict],
+    elements: list,
+    source_provider: str,
+) -> list[dict]:
+    """Build entity-to-element mentions via normalized text matching.
+
+    Each entity dict must have 'name' and 'entity_type'.
+    Short names (≤4 chars) use word-boundary matching to avoid false positives.
+    Returns deduplicated list of mention dicts.
+    """
+    import re
+
+    mentions: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for entity in entities:
+        name = entity.get("name", "")
+        entity_type = entity.get("entity_type", "UNKNOWN")
+        if not name.strip():
+            continue
+
+        # Short names use word-boundary regex to avoid false positives
+        # (e.g. "RAM" matching "program", "C4" matching "AC400")
+        if len(name) <= 4:
+            pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
+            match_type = "word_boundary"
+        else:
+            pattern = None
+            name_lower = name.lower()
+            match_type = "substring"
+
+        for elem in elements:
+            content = getattr(elem, "content_text", None) or ""
+            if not content:
+                continue
+
+            if pattern is not None:
+                matched = pattern.search(content)
+            else:
+                matched = name_lower in content.lower()
+
+            if matched:
+                key = (name, entity_type, elem.element_uid)
+                if key not in seen:
+                    seen.add(key)
+                    mentions.append({
+                        "entity_name": name,
+                        "entity_type": entity_type,
+                        "element_uid": elem.element_uid,
+                        "source_provider": source_provider,
+                        "match_type": match_type,
+                    })
+    return mentions
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
                  soft_time_limit=600, time_limit=660)
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
@@ -872,8 +1068,12 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
 
         if settings.llm_provider != "mock":
             try:
-                from app.services.docling_graph_service import extract_graph_from_text
-                nx_graph = extract_graph_from_text(full_text, document_id)
+                from app.services.docling_graph_service import extract_graph_from_text_chunked
+                nx_graph, actual_provider = extract_graph_from_text_chunked(
+                    full_text, document_id,
+                    chunk_size=settings.graph_extraction_chunk_size,
+                    chunk_overlap=settings.graph_extraction_chunk_overlap,
+                )
                 if nx_graph and nx_graph.number_of_nodes() > 0:
                     graph_data = {
                         "nodes": [{"id": n, **nx_graph.nodes[n]} for n in nx_graph.nodes],
@@ -885,12 +1085,16 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                                 "to_type": nx_graph.nodes[v].get("entity_type", "UNKNOWN"),
                                 "rel_type": d.get("relationship_type", d.get("rel_type", "RELATED_TO")),
                                 "confidence": d.get("confidence", 0.5),
+                                "properties": d.get("properties", {}),
                             }
                             for u, v, d in nx_graph.edges(data=True)
                         ],
                     }
-                    provider = "docling-graph"
-                    model_name = settings.docling_graph_model
+                    graph_data["mentions"] = _build_entity_mentions(
+                        graph_data["nodes"], elements, actual_provider,
+                    )
+                    provider = actual_provider
+                    model_name = settings.docling_graph_model if actual_provider == "docling-graph" else "regex"
             except ImportError:
                 logger.debug("docling-graph not available, falling back to NER")
             except Exception as exc:
@@ -911,26 +1115,71 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 ],
             }
 
-            # Build mentions: map each entity back to the element(s) whose
-            # content_text contains the entity source_text.
-            mentions: list[dict] = []
-            seen_mentions: set[tuple[str, str]] = set()
-            for entity in entities:
-                for elem in elements:
-                    if not elem.content_text:
-                        continue
-                    if entity.source_text in elem.content_text:
-                        key = (entity.name, elem.element_uid)
-                        if key not in seen_mentions:
-                            seen_mentions.add(key)
-                            mentions.append({
-                                "entity_name": entity.name,
-                                "entity_type": entity.entity_type,
-                                "element_uid": elem.element_uid,
-                            })
-            graph_data["mentions"] = mentions
+            graph_data["mentions"] = _build_entity_mentions(
+                graph_data["nodes"], elements, "ner",
+            )
 
-        # Upsert into document_graph_extractions (one row per document)
+        # Import into Neo4j with confidence quality gates
+        neo4j_driver = get_neo4j_driver()
+        nodes_created = 0
+        nodes_rejected = 0
+        edges_created = 0
+        edges_rejected = 0
+
+        node_min_conf = settings.graph_node_min_confidence
+        rel_min_conf = settings.graph_rel_min_confidence
+        accepted_nodes: set[str] = set()
+
+        for node in graph_data.get("nodes", []):
+            conf = node.get("confidence", 0.8)
+            if conf < node_min_conf:
+                nodes_rejected += 1
+                continue
+            node_name = node.get("name", node.get("id", ""))
+            accepted_nodes.add(node_name)
+            node_id = upsert_node(
+                driver=neo4j_driver,
+                entity_type=node.get("entity_type", "UNKNOWN"),
+                name=node_name,
+                artifact_id=document_id,
+                confidence=conf,
+                properties=node.get("properties", {}),
+            )
+            if node_id:
+                nodes_created += 1
+
+        for edge in graph_data.get("edges", []):
+            conf = edge.get("confidence", 0.8)
+            from_name = edge.get("from", "")
+            to_name = edge.get("to", "")
+            if conf < rel_min_conf or from_name not in accepted_nodes or to_name not in accepted_nodes:
+                edges_rejected += 1
+                continue
+            ok = upsert_relationship(
+                driver=neo4j_driver,
+                from_name=from_name,
+                from_type=edge.get("from_type", "UNKNOWN"),
+                to_name=to_name,
+                to_type=edge.get("to_type", "UNKNOWN"),
+                rel_type=edge.get("rel_type", edge.get("type", "RELATED_TO")),
+                artifact_id=document_id,
+                confidence=conf,
+                properties=edge.get("properties", {}),
+            )
+            if ok:
+                edges_created += 1
+
+        # Store filter metadata in graph_json for auditability
+        graph_data["_ingest_filter"] = {
+            "node_min_confidence": node_min_conf,
+            "rel_min_confidence": rel_min_conf,
+            "nodes_accepted": nodes_created,
+            "nodes_rejected": nodes_rejected,
+            "edges_accepted": edges_created,
+            "edges_rejected": edges_rejected,
+        }
+
+        # Upsert into document_graph_extractions (includes filter metadata)
         extraction_values = {
             "document_id": uuid.UUID(document_id),
             "provider": provider,
@@ -938,7 +1187,10 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             "extraction_version": "1.0",
             "graph_json": graph_data,
             "status": "COMPLETE",
-            "metrics": {"nodes": len(graph_data["nodes"]), "edges": len(graph_data["edges"])},
+            "metrics": {
+                "nodes": nodes_created, "edges": edges_created,
+                "nodes_rejected": nodes_rejected, "edges_rejected": edges_rejected,
+            },
         }
         stmt = pg_insert(DocumentGraphExtraction).values(**extraction_values).on_conflict_do_update(
             index_elements=["document_id"],
@@ -952,50 +1204,22 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         )
         db.execute(stmt)
 
-        # Import into Neo4j
-        neo4j_driver = get_neo4j_driver()
-        nodes_created = 0
-        edges_created = 0
-
-        for node in graph_data.get("nodes", []):
-            node_id = upsert_node(
-                driver=neo4j_driver,
-                entity_type=node.get("entity_type", "UNKNOWN"),
-                name=node.get("name", node.get("id", "")),
-                artifact_id=document_id,
-                confidence=node.get("confidence", 0.8),
-                properties={k: v for k, v in node.items() if k not in ("id", "entity_type", "name", "confidence", "properties")},
-            )
-            if node_id:
-                nodes_created += 1
-
-        for edge in graph_data.get("edges", []):
-            ok = upsert_relationship(
-                driver=neo4j_driver,
-                from_name=edge.get("from", ""),
-                from_type=edge.get("from_type", "UNKNOWN"),
-                to_name=edge.get("to", ""),
-                to_type=edge.get("to_type", "UNKNOWN"),
-                rel_type=edge.get("rel_type", edge.get("type", "RELATED_TO")),
-                artifact_id=document_id,
-                confidence=edge.get("confidence", 0.8),
-            )
-            if ok:
-                edges_created += 1
-
         db.commit()
 
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_ontology_graph", "COMPLETE",
                 attempt=self.request.retries + 1,
-                metrics={"nodes": nodes_created, "edges": edges_created, "provider": provider},
+                metrics={
+                    "nodes": nodes_created, "edges": edges_created, "provider": provider,
+                    "nodes_rejected": nodes_rejected, "edges_rejected": edges_rejected,
+                },
             )
             db.commit()
 
         logger.info(
-            "derive_ontology_graph: document_id=%s nodes=%d edges=%d provider=%s",
-            document_id, nodes_created, edges_created, provider,
+            "derive_ontology_graph: document_id=%s nodes=%d(%d rejected) edges=%d(%d rejected) provider=%s",
+            document_id, nodes_created, nodes_rejected, edges_created, edges_rejected, provider,
         )
         return {"stage": "derive_ontology_graph", "status": "ok", "nodes": nodes_created, "edges": edges_created}
 
@@ -1449,6 +1673,7 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
         # Check for failed, missing, or stuck stages
         REQUIRED_STAGES = {
             "prepare_document",
+            "purge_document_derivations",
             "derive_text_embeddings",
             "derive_image_embeddings",
             "derive_ontology_graph",
@@ -1472,7 +1697,18 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
                 document_id, failed, list(missing), stuck,
             )
         else:
-            final_status = STATUS_COMPLETE
+            # Check if any artifacts need human review
+            from app.models.ingest import Artifact as _Artifact
+            review_artifacts = db.execute(
+                select(_Artifact).where(
+                    _Artifact.document_id == uuid.UUID(document_id),
+                    _Artifact.requires_human_review == True,  # noqa: E712
+                )
+            ).scalars().all()
+            if review_artifacts:
+                final_status = STATUS_PENDING_REVIEW
+            else:
+                final_status = STATUS_COMPLETE
 
         _update_document_status(document_id, final_status, stage=None)
 

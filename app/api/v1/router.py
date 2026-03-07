@@ -7,9 +7,9 @@ from app.api.v1 import (
     governance,
     graph_store,
     health,
-    memory,
     retrieval,
     sources,
+    trusted_data,
 )
 
 api_router = APIRouter(prefix="/v1")
@@ -17,7 +17,7 @@ api_router = APIRouter(prefix="/v1")
 api_router.include_router(health.router)
 api_router.include_router(sources.router)
 api_router.include_router(graph_store.router)
-api_router.include_router(memory.router)
+api_router.include_router(trusted_data.router)
 api_router.include_router(retrieval.router)
 api_router.include_router(governance.router)
 api_router.include_router(agent.router)

@@ -34,12 +34,6 @@ const MODES: ModePreset[] = [
     description: "Hybrid pipeline, all results unfiltered",
   },
   {
-    strategy: "memory",
-    modality: "all",
-    label: "Trusted Data",
-    description: "Search approved trusted data",
-  },
-  {
     strategy: "graphrag_local",
     modality: "all",
     label: "GraphRAG Local",

@@ -18,19 +18,18 @@ pytestmark = pytest.mark.unit
 class TestQueryStrategy:
     def test_all_strategy_values_exist(self):
         from app.schemas.retrieval import QueryStrategy
-        expected = {"basic", "hybrid", "memory", "graphrag_local", "graphrag_global"}
+        expected = {"basic", "hybrid", "graphrag_local", "graphrag_global"}
         actual = {m.value for m in QueryStrategy}
         assert actual == expected
 
-    def test_has_five_members(self):
+    def test_has_four_members(self):
         from app.schemas.retrieval import QueryStrategy
-        assert len(QueryStrategy) == 5
+        assert len(QueryStrategy) == 4
 
     def test_strategy_string_values(self):
         from app.schemas.retrieval import QueryStrategy
         assert QueryStrategy.basic.value == "basic"
         assert QueryStrategy.hybrid.value == "hybrid"
-        assert QueryStrategy.memory.value == "memory"
         assert QueryStrategy.graphrag_local.value == "graphrag_local"
         assert QueryStrategy.graphrag_global.value == "graphrag_global"
 
@@ -164,10 +163,11 @@ class TestUnifiedQueryRequest:
         assert req.strategy == QueryStrategy.hybrid
         assert req.modality_filter == ModalityFilter.all
 
-    def test_legacy_mode_memory(self):
-        from app.schemas.retrieval import QueryStrategy
-        req = self._make(query_text="test", mode="memory")
-        assert req.strategy == QueryStrategy.memory
+    def test_legacy_mode_memory_rejected(self):
+        """Memory mode removed — should raise validation error."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            self._make(query_text="test", mode="memory")
 
     def test_legacy_mode_graphrag_local(self):
         from app.schemas.retrieval import QueryStrategy

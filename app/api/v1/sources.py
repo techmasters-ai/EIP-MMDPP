@@ -13,6 +13,7 @@ from app.models.ingest import Artifact, Document, Source, WatchDir
 from app.schemas.common import CursorPage
 from app.schemas.sources import (
     ArtifactResponse,
+    BatchStatusRequest,
     DocumentResponse,
     DocumentStatusResponse,
     SourceCreate,
@@ -213,6 +214,22 @@ async def get_document_status(
         ]
 
     return resp
+
+
+@router.post("/documents/batch-status", response_model=list[DocumentStatusResponse])
+async def batch_document_status(
+    body: BatchStatusRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> list[DocumentStatusResponse]:
+    """Get pipeline status for multiple documents in a single query."""
+    if not body.document_ids:
+        return []
+
+    result = await db.execute(
+        select(Document).where(Document.id.in_(body.document_ids))
+    )
+    docs = result.scalars().all()
+    return [DocumentStatusResponse.model_validate(d) for d in docs]
 
 
 @router.get("/documents/{document_id}/stages")

@@ -61,13 +61,13 @@ async def test_agent_context_legacy_mode_multi_modal_returns_200(async_client, m
 
 
 @pytest.mark.asyncio
-async def test_agent_context_memory_returns_200(async_client, mock_cognee):
+async def test_agent_context_memory_mode_returns_422(async_client):
+    """Memory mode removed — should return 422."""
     resp = await async_client.get(
         "/v1/agent/context",
         params={"query": "approved knowledge", "mode": "memory"},
     )
-    assert resp.status_code == 200
-    assert resp.json()["strategy"] == "memory"
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

@@ -78,14 +78,11 @@ async def get_agent_context(
     from app.api.v1.retrieval import (
         _graphrag_global_query,
         _graphrag_local_query,
-        _memory_query,
         _multi_modal_pipeline,
         _text_vector_search,
     )
 
-    if strategy == QueryStrategy.memory:
-        results = await _memory_query(body)
-    elif strategy == QueryStrategy.basic:
+    if strategy == QueryStrategy.basic:
         results = await _text_vector_search(db, body)
     elif strategy == QueryStrategy.hybrid:
         results = await _multi_modal_pipeline(db, body)

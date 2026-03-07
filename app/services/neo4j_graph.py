@@ -94,16 +94,22 @@ def upsert_relationship(
     rel_type: str,
     artifact_id: str,
     confidence: float,
+    properties: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Create or update a directed relationship between two entity nodes."""
     from_label = _sanitize_label(from_type)
     to_label = _sanitize_label(to_type)
     rel_label = _sanitize_label(rel_type)
 
+    rel_props = dict(properties or {})
+    rel_props["artifact_id"] = artifact_id
+    rel_props["confidence"] = confidence
+
     query = f"""
         MATCH (a:Entity:{from_label} {{name: $from_name}})
         MATCH (b:Entity:{to_label} {{name: $to_name}})
         MERGE (a)-[r:{rel_label} {{artifact_id: $artifact_id}}]->(b)
+        ON CREATE SET r += $props
         ON MATCH SET r.confidence = CASE
             WHEN r.confidence < $confidence THEN $confidence
             ELSE r.confidence
@@ -119,6 +125,7 @@ def upsert_relationship(
                 to_name=to_name,
                 artifact_id=artifact_id,
                 confidence=confidence,
+                props=rel_props,
             )
         return True
     except Exception as e:

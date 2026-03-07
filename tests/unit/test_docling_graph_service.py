@@ -154,6 +154,77 @@ class TestNetworkxToNeo4jImport:
         assert result["edges"][0]["rel_type"] == "HAS"
 
 
+class TestDeduplicateExtraction:
+    def test_dedup_keeps_highest_confidence(self):
+        from app.services.docling_graph_service import _deduplicate_extraction
+        from app.services.ontology_templates import DocumentExtractionResult, ExtractedEntity
+
+        result = DocumentExtractionResult(
+            entities=[
+                ExtractedEntity(entity_type="SYSTEM", name="Patriot", confidence=0.7, properties={"a": "1"}),
+                ExtractedEntity(entity_type="SYSTEM", name="Patriot", confidence=0.9, properties={"b": "2"}),
+            ],
+        )
+        deduped = _deduplicate_extraction(result)
+        assert len(deduped.entities) == 1
+        assert deduped.entities[0].confidence == 0.9
+        # Properties from both occurrences should be merged
+        assert "a" in deduped.entities[0].properties
+        assert "b" in deduped.entities[0].properties
+
+    def test_dedup_relationships_by_key(self):
+        from app.services.docling_graph_service import _deduplicate_extraction
+        from app.services.ontology_templates import DocumentExtractionResult, ExtractedRelationship
+
+        result = DocumentExtractionResult(
+            relationships=[
+                ExtractedRelationship(
+                    relationship_type="CONTAINS", from_name="A", from_type="SYS",
+                    to_name="B", to_type="COMP", confidence=0.6,
+                ),
+                ExtractedRelationship(
+                    relationship_type="CONTAINS", from_name="A", from_type="SYS",
+                    to_name="B", to_type="COMP", confidence=0.8,
+                ),
+            ],
+        )
+        deduped = _deduplicate_extraction(result)
+        assert len(deduped.relationships) == 1
+        assert deduped.relationships[0].confidence == 0.8
+
+    def test_dedup_different_entities_preserved(self):
+        from app.services.docling_graph_service import _deduplicate_extraction
+        from app.services.ontology_templates import DocumentExtractionResult, ExtractedEntity
+
+        result = DocumentExtractionResult(
+            entities=[
+                ExtractedEntity(entity_type="SYSTEM", name="Patriot", confidence=0.9),
+                ExtractedEntity(entity_type="STANDARD", name="MIL-STD-1553B", confidence=0.8),
+            ],
+        )
+        deduped = _deduplicate_extraction(result)
+        assert len(deduped.entities) == 2
+
+
+class TestExtractSinglePass:
+    def test_mock_provider_returns_mock(self):
+        from app.services.docling_graph_service import _extract_single_pass
+
+        G, provider = _extract_single_pass("some text", "doc-123")
+        assert provider == "mock"
+        assert len(G.nodes) == 0
+
+
+class TestChunkedExtraction:
+    def test_short_text_single_pass(self):
+        from app.services.docling_graph_service import extract_graph_from_text_chunked
+
+        # With mock provider, short text should go through single pass
+        G, provider = extract_graph_from_text_chunked("short text", "doc-1", chunk_size=7000)
+        assert provider == "mock"
+        assert len(G.nodes) == 0
+
+
 class TestExtractGraphFromText:
     def test_mock_provider_returns_empty_graph(self):
         from app.services.docling_graph_service import extract_graph_from_text

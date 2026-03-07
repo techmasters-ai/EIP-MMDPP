@@ -1,11 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  batchDocumentStatus,
   createSource,
-  getDocumentStatus,
   listSources,
   reingestDocument,
   uploadFile,
-  type Document,
   type Source,
 } from "../api/client";
 
@@ -38,7 +37,7 @@ function StatusBadge({ status }: { status: string }) {
       ? "badge badge-complete"
       : status === "ERROR" || status === "FAILED"
       ? "badge badge-error"
-      : status === "PARTIAL_COMPLETE"
+      : status === "PARTIAL_COMPLETE" || status === "PENDING_HUMAN_REVIEW"
       ? "badge badge-warning"
       : status === "uploading"
       ? "badge badge-processing"
@@ -57,6 +56,8 @@ function StatusBadge({ status }: { status: string }) {
       ? "Partial"
       : status === "FAILED"
       ? "Failed"
+      : status === "PENDING_HUMAN_REVIEW"
+      ? "Needs Review"
       : status;
 
   return <span className={cls}>{label}</span>;
@@ -81,39 +82,55 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
       .catch(() => {/* sources list optional */});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll pipeline status for documents that are still processing
+  // Poll pipeline status using batch endpoint with adaptive interval
   useEffect(() => {
-    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
 
-    const TERMINAL = new Set(["COMPLETE", "ERROR", "FAILED", "PARTIAL_COMPLETE"]);
+    const TERMINAL = new Set(["COMPLETE", "ERROR", "FAILED", "PARTIAL_COMPLETE", "PENDING_HUMAN_REVIEW"]);
     const pending = entries.filter(
       (e) => e.documentId && !TERMINAL.has(e.status),
     );
     if (pending.length === 0) return;
 
-    pollTimerRef.current = setInterval(async () => {
-      const updates = await Promise.allSettled(
-        pending.map((e) => getDocumentStatus(e.documentId!)),
-      );
-      setEntries((prev) =>
-        prev.map((entry) => {
-          if (!entry.documentId) return entry;
-          const idx = pending.findIndex((p) => p.documentId === entry.documentId);
-          if (idx === -1) return entry;
-          const result = updates[idx];
-          if (result.status === "fulfilled") {
-            const doc: Document = result.value;
+    const startTime = Date.now();
+
+    const getInterval = () => {
+      const elapsed = Date.now() - startTime;
+      if (elapsed < 30_000) return 2000;
+      if (elapsed < 120_000) return 5000;
+      return 10_000;
+    };
+
+    const poll = async () => {
+      const ids = pending.map((e) => e.documentId!);
+      try {
+        const docs = await batchDocumentStatus(ids);
+        const statusMap = new Map(docs.map((d) => [d.id, d]));
+        setEntries((prev) =>
+          prev.map((entry) => {
+            if (!entry.documentId) return entry;
+            const doc = statusMap.get(entry.documentId);
+            if (!doc) return entry;
             return { ...entry, status: doc.pipeline_status, error: doc.error_message || entry.error };
-          }
-          return entry;
-        }),
-      );
-    }, 3000);
+          }),
+        );
+      } catch {
+        // Batch endpoint failed — skip this poll cycle
+      }
+    };
+
+    const scheduleNext = () => {
+      pollTimerRef.current = setTimeout(async () => {
+        await poll();
+        scheduleNext();
+      }, getInterval());
+    };
+    scheduleNext();
 
     return () => {
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
-  }, [entries]);
+  }, [entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ensureSource = useCallback(async (): Promise<string | null> => {
     if (selectedSourceId) return selectedSourceId;

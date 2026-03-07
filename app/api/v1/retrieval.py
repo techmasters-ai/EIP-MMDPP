@@ -53,8 +53,6 @@ async def unified_query(
     try:
         if body.strategy == QueryStrategy.basic:
             results = await _text_vector_search(db, body)
-        elif body.strategy == QueryStrategy.memory:
-            results = await _memory_query(body)
         elif body.strategy == QueryStrategy.graphrag_local:
             results = await _graphrag_local_query(db, body)
         elif body.strategy == QueryStrategy.graphrag_global:
@@ -770,10 +768,3 @@ async def _populate_image_urls(
 # Memory query — Cognee search (unchanged)
 # ---------------------------------------------------------------------------
 
-async def _memory_query(body: UnifiedQueryRequest) -> list[QueryResultItem]:
-    if not body.query_text:
-        return []
-
-    from app.services.cognee_service import cognee_search
-
-    return await cognee_search(body.query_text, body.top_k)

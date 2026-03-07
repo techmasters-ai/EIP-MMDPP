@@ -153,24 +153,23 @@ class TestSourcesSchemas:
 # Memory schemas
 # ---------------------------------------------------------------------------
 
-class TestMemorySchemas:
-    def test_memory_proposal_create_valid(self):
-        from app.schemas.memory import MemoryProposalCreate
-        mpc = MemoryProposalCreate(
+class TestTrustedDataSchemas:
+    def test_trusted_data_create_valid(self):
+        from app.schemas.trusted_data import TrustedDataCreate
+        tdc = TrustedDataCreate(
             content="The SA-11 uses a phased array radar.",
-            source="document:abc123",
         )
-        assert "SA-11" in mpc.content
+        assert "SA-11" in tdc.content
 
-    def test_memory_query_request_valid(self):
-        from app.schemas.memory import MemoryQueryRequest
-        mqr = MemoryQueryRequest(query="radar systems")
-        assert mqr.query == "radar systems"
+    def test_trusted_data_query_request_valid(self):
+        from app.schemas.trusted_data import TrustedDataQueryRequest
+        tqr = TrustedDataQueryRequest(query="radar systems")
+        assert tqr.query == "radar systems"
 
-    def test_memory_query_request_top_k_default(self):
-        from app.schemas.memory import MemoryQueryRequest
-        mqr = MemoryQueryRequest(query="test")
-        assert mqr.top_k == 10
+    def test_trusted_data_query_request_top_k_default(self):
+        from app.schemas.trusted_data import TrustedDataQueryRequest
+        tqr = TrustedDataQueryRequest(query="test")
+        assert tqr.top_k == 10
 
 
 # ---------------------------------------------------------------------------

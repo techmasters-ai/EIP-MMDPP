@@ -36,18 +36,28 @@ def extract_graph_from_text(
 ) -> nx.DiGraph:
     """Extract entities and relationships from text, returning a NetworkX DiGraph.
 
-    The LLM provider is controlled by ``settings.llm_provider``:
-      - ``ollama``: routes through local Ollama instance
-      - ``openai``: routes through OpenAI API
-      - ``mock``: returns an empty graph (for tests)
+    Backward-compatible wrapper around ``_extract_single_pass``.
+    """
+    graph, _provider = _extract_single_pass(text, document_id, ontology_path=ontology_path)
+    return graph
 
-    Falls back to regex NER if the LLM call fails.
+
+def _extract_single_pass(
+    text: str,
+    document_id: str,
+    *,
+    ontology_path=None,
+) -> tuple[nx.DiGraph, str]:
+    """Single-pass extraction. Returns (graph, actual_provider).
+
+    The provider string reflects what actually ran: "docling-graph" if the LLM
+    succeeded, "ner" if it fell back to regex, or "mock" in test mode.
     """
     settings = get_settings()
 
     if settings.llm_provider == "mock":
         logger.info("LLM provider is 'mock'; returning empty graph")
-        return nx.DiGraph()
+        return nx.DiGraph(), "mock"
 
     ontology = load_ontology(ontology_path)
     prompt = build_extraction_prompt(ontology, text)
@@ -55,14 +65,126 @@ def extract_graph_from_text(
     try:
         result = _call_llm(prompt, settings)
         extraction = _parse_llm_response(result)
+        extraction = _validate_triples(extraction, ontology_path)
+        return _build_networkx_graph(extraction, document_id), "docling-graph"
     except Exception as e:
         logger.warning("LLM extraction failed, falling back to regex NER: %s", e)
         extraction = _fallback_regex_extraction(text)
+        return _build_networkx_graph(extraction, document_id), "ner"
 
-    # Validate triples against ontology
-    extraction = _validate_triples(extraction, ontology_path)
 
-    return _build_networkx_graph(extraction, document_id)
+def extract_graph_from_text_chunked(
+    text: str,
+    document_id: str,
+    *,
+    chunk_size: int = 7000,
+    chunk_overlap: int = 500,
+    ontology_path=None,
+) -> tuple[nx.DiGraph, str]:
+    """Extract entities/relationships using chunked windows for large text.
+
+    For short text (<= chunk_size), delegates to a single pass.
+    For longer text, splits into overlapping chunks, extracts from each,
+    deduplicates entities/relationships, and returns merged results.
+
+    Returns (graph, provider) where provider reflects the actual method used.
+    """
+    if len(text) <= chunk_size:
+        return _extract_single_pass(text, document_id, ontology_path=ontology_path)
+
+    # Build overlapping chunks
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        chunks.append(text[start:end])
+        if end >= len(text):
+            break
+        start = end - chunk_overlap
+
+    logger.info(
+        "extract_graph_from_text_chunked: %d chars → %d chunks (size=%d, overlap=%d)",
+        len(text), len(chunks), chunk_size, chunk_overlap,
+    )
+
+    # Extract from each chunk and merge
+    merged = DocumentExtractionResult()
+    actual_provider: str | None = None
+
+    for i, chunk_text in enumerate(chunks):
+        chunk_graph, chunk_provider = _extract_single_pass(
+            chunk_text, document_id, ontology_path=ontology_path,
+        )
+        if actual_provider is None:
+            actual_provider = chunk_provider
+
+        for node_id, data in chunk_graph.nodes(data=True):
+            merged.entities.append(ExtractedEntity(
+                entity_type=data.get("entity_type", "UNKNOWN"),
+                name=data.get("name", str(node_id)),
+                properties=data.get("properties", {}),
+                confidence=data.get("confidence", 0.5),
+            ))
+        for u, v, data in chunk_graph.edges(data=True):
+            merged.relationships.append(ExtractedRelationship(
+                relationship_type=data.get("relationship_type", "RELATED_TO"),
+                from_name=chunk_graph.nodes[u].get("name", str(u)),
+                from_type=chunk_graph.nodes[u].get("entity_type", "UNKNOWN"),
+                to_name=chunk_graph.nodes[v].get("name", str(v)),
+                to_type=chunk_graph.nodes[v].get("entity_type", "UNKNOWN"),
+                properties=data.get("properties", {}),
+                confidence=data.get("confidence", 0.5),
+            ))
+
+    merged = _deduplicate_extraction(merged)
+    return _build_networkx_graph(merged, document_id), actual_provider or "ner"
+
+
+def _deduplicate_extraction(
+    result: DocumentExtractionResult,
+) -> DocumentExtractionResult:
+    """Deduplicate entities and relationships from multi-chunk extraction.
+
+    Entities: keyed by (entity_type, name), keeps highest confidence,
+    merges properties from all occurrences.
+    Relationships: keyed by (from_name, to_name, from_type, relationship_type),
+    keeps highest confidence.
+    """
+    entity_map: dict[tuple[str, str], ExtractedEntity] = {}
+    for e in result.entities:
+        key = (e.entity_type, e.name)
+        existing = entity_map.get(key)
+        if existing is None:
+            entity_map[key] = e
+        elif e.confidence > existing.confidence:
+            merged_props = {**existing.properties, **e.properties}
+            entity_map[key] = ExtractedEntity(
+                entity_type=e.entity_type,
+                name=e.name,
+                properties=merged_props,
+                confidence=e.confidence,
+            )
+        else:
+            # Keep existing but merge in any new properties
+            merged_props = {**e.properties, **existing.properties}
+            entity_map[key] = ExtractedEntity(
+                entity_type=existing.entity_type,
+                name=existing.name,
+                properties=merged_props,
+                confidence=existing.confidence,
+            )
+
+    rel_map: dict[tuple[str, str, str, str], ExtractedRelationship] = {}
+    for r in result.relationships:
+        key = (r.from_name, r.to_name, r.from_type, r.relationship_type)
+        existing = rel_map.get(key)
+        if existing is None or r.confidence > existing.confidence:
+            rel_map[key] = r
+
+    return DocumentExtractionResult(
+        entities=list(entity_map.values()),
+        relationships=list(rel_map.values()),
+    )
 
 
 def extract_and_import_to_neo4j(
@@ -108,6 +230,7 @@ def extract_and_import_to_neo4j(
             rel_type=edge["rel_type"],
             artifact_id=edge["artifact_id"],
             confidence=edge["confidence"],
+            properties=edge.get("properties", {}),
         )
         if success:
             stats["edges_upserted"] += 1
@@ -278,6 +401,7 @@ def _build_networkx_graph(
             to_id,
             relationship_type=rel.relationship_type,
             confidence=rel.confidence,
+            properties=rel.properties,
             document_id=document_id,
         )
 
@@ -314,6 +438,7 @@ def networkx_to_neo4j_import(
             "to_type": to_data.get("entity_type", "UNKNOWN"),
             "rel_type": data.get("relationship_type", "RELATED_TO"),
             "confidence": data.get("confidence", 0.5),
+            "properties": data.get("properties", {}),
             "artifact_id": artifact_id,
         })
 

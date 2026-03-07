@@ -4,7 +4,7 @@ import { IngestPage } from "./components/IngestPage";
 import { type FileEntry } from "./components/FileUpload";
 import { QueryPage } from "./components/QueryPage";
 import { GraphExplorer } from "./components/GraphExplorer";
-import { MemoryPanel } from "./components/MemoryPanel";
+import { TrustedDataPanel } from "./components/TrustedDataPanel";
 
 export function App() {
   const [page, setPage] = useState<Page>("ingest");
@@ -50,7 +50,7 @@ export function App() {
             <p className="page-subtitle">
               Propose, review, and search governed knowledge in the trusted data layer.
             </p>
-            <MemoryPanel />
+            <TrustedDataPanel />
           </div>
         )}
       </main>

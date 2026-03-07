@@ -104,6 +104,16 @@ class TestUpsertRelationship:
         session.run.side_effect = Exception("fail")
         assert upsert_relationship(driver, "A", "T", "B", "T", "R", "a1", 0.5) is False
 
+    def test_properties_passed_to_cypher(self):
+        from app.services.neo4j_graph import upsert_relationship
+        driver, session = _mock_driver()
+        props = {"frequency": "S-band", "verified": True}
+        upsert_relationship(driver, "A", "TypeA", "B", "TypeB", "USES", "art-1", 0.9, properties=props)
+        call_kwargs = session.run.call_args.kwargs
+        assert "props" in call_kwargs
+        assert call_kwargs["props"]["frequency"] == "S-band"
+        assert call_kwargs["props"]["verified"] is True
+
 
 # ---------------------------------------------------------------------------
 # upsert_document_node

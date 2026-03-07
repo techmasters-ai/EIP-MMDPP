@@ -219,7 +219,7 @@ services:
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
-        --queues=celery,ingest,extract,embed,graph
+        --queues=celery,ingest,extract,embed,graph,graph_extract,trusted
         --concurrency=${WORKER_CONCURRENCY:-4}
     volumes:
       - ./app:/app/app
@@ -334,7 +334,7 @@ services:
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
-        --queues=graph
+        --queues=graph,graph_extract
         --concurrency=${WORKER_GRAPH_CONCURRENCY:-2}
         --hostname=worker-graph@%h
     volumes:

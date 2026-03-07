@@ -81,8 +81,8 @@ async def test_multi_modal_returns_200(async_client, mock_embeddings):
 
 
 @pytest.mark.asyncio
-async def test_memory_returns_200(async_client, mock_cognee):
-    """Memory query returns 200."""
+async def test_memory_mode_returns_422(async_client):
+    """Memory mode removed — should return 422."""
     resp = await async_client.post(
         "/v1/retrieval/query",
         json={
@@ -91,9 +91,7 @@ async def test_memory_returns_200(async_client, mock_cognee):
             "top_k": 5,
         },
     )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["strategy"] == "memory"
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into Qdrant vector collections, builds a military equipment knowledge graph (Neo4j), runs GraphRAG community detection and reporting, and maintains governed trusted data (Cognee). Supports 7 retrieval modes: text basic, text only, images only, multi-modal, trusted data, GraphRAG local, and GraphRAG global. Includes a user feedback → curator patch approval workflow and a React web UI.
+Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into Qdrant vector collections, builds a military equipment knowledge graph (Neo4j), runs GraphRAG community detection and reporting, and maintains governed trusted data (dedicated Qdrant collection with human-review gate). Supports 6 retrieval modes: text basic, text only, images only, multi-modal, GraphRAG local, and GraphRAG global. Trusted data has its own query endpoint. Includes a user feedback → curator patch approval workflow and a React web UI.
 
 ## Architecture
 
@@ -33,9 +33,11 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
                     └──────────────────────────────────────────┘
 
                     ┌──────────────────────────────────────────┐
-                    │       Cognee Trusted Data Layer            │
-                    │   NetworkX + LanceDB (separate store)     │
-                    │   Governed: PROPOSED → APPROVED/REJECTED  │
+                    │       Qdrant: eip_trusted_text             │
+                    │   Trusted Data (human-reviewed, indexed)   │
+                    │   BGE 1024-dim, cosine distance            │
+                    │   PROPOSED → APPROVED_PENDING_INDEX →      │
+                    │     APPROVED_INDEXED | INDEX_FAILED        │
                     └──────────────────────────────────────────┘
 ```
 
@@ -54,7 +56,7 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 | Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
 | Graph Extraction | docling-graph + LLM (ontology-driven entity/relationship extraction) |
 | GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
-| Trusted Data | Cognee (NetworkX graph + LanceDB vector, governed approval workflow) |
+| Trusted Data | Dedicated Qdrant collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
@@ -116,7 +118,7 @@ All service lifecycle, database, worker, and test operations are available throu
 
 ## LLM Provider Configuration
 
-A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, GraphRAG reports, Cognee trusted data). Each feature specifies its own model via a dedicated env var.
+A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, GraphRAG reports). Each feature specifies its own model via a dedicated env var.
 
 | Value | Description |
 |---|---|
@@ -132,7 +134,6 @@ OLLAMA_BASE_URL=http://ollama:11434
 # Per-feature model selection
 DOCLING_GRAPH_MODEL=llama3.2       # Model for graph entity/relationship extraction
 GRAPHRAG_MODEL=llama3.2            # Model for GraphRAG community report generation
-COGNEE_MODEL=llama3.2              # Model for Cognee trusted data operations
 ```
 
 ## Running Tests
@@ -172,12 +173,13 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 - `POST /v1/graph/ingest/relationship` — create a relationship edge
 - `POST /v1/graph/query` — Cypher traversal query
 
-### Trusted Data (Cognee)
-- `POST /v1/memory/ingest` — propose knowledge (status: PROPOSED)
-- `GET /v1/memory/proposals` — list proposals (filterable by status)
-- `POST /v1/memory/proposals/{id}/approve` — curator approves → writes to Cognee
-- `POST /v1/memory/proposals/{id}/reject` — curator rejects
-- `POST /v1/memory/query` — search approved trusted data
+### Trusted Data
+- `POST /v1/trusted-data/ingest` — propose knowledge (status: PROPOSED)
+- `GET /v1/trusted-data/proposals` — list submissions (filterable by status)
+- `POST /v1/trusted-data/proposals/{id}/approve` — curator approves → enqueues Celery task to embed + index in Qdrant
+- `POST /v1/trusted-data/proposals/{id}/reject` — curator rejects
+- `POST /v1/trusted-data/proposals/{id}/reindex` — re-enqueue failed/pending indexing
+- `POST /v1/trusted-data/query` — search approved trusted data (direct Qdrant vector search)
 
 ### Unified Retrieval
 
@@ -214,7 +216,6 @@ Query strategies:
 | `hybrid` | `text` | Text or image | Full multi-modal pipeline | Filtered to text |
 | `hybrid` | `image` | Text or image | Full multi-modal pipeline | Filtered to images |
 | `hybrid` | `all` | Text or image | Full multi-modal pipeline | All results |
-| `memory` | `all` | Text | Cognee search | Approved trusted data |
 | `graphrag_local` | `all` | Text | Entity-centric + community reports | Entity matches with community context |
 | `graphrag_global` | `all` | Text | Cross-community summarization | Community reports ranked by relevance |
 
@@ -313,7 +314,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation, with regex NER as fallback when LLM is unavailable. Extracted entities and relationships are imported directly to Neo4j. Graph data is stored once per document (`document_graph_extractions`), not per artifact.
+Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation, with regex NER as fallback when LLM is unavailable. Large documents are chunked into overlapping windows (`GRAPH_EXTRACTION_CHUNK_SIZE`, default 7000 chars) for extraction, then deduplicated. Extracted entities and relationships are imported directly to Neo4j with full property preservation. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
 
 ## Data Migration (from AGE)
 
@@ -388,10 +389,11 @@ Start command: `docker compose --profile split up -d --build`
 | 1 | Core data pipeline: upload → text extract → embed → semantic query | Complete |
 | 2 | Multi-modal pipeline, graph extraction, all query modes, directory watcher | Complete |
 | 2.5 | React web UI (upload, directory monitor, query), LangGraph agent endpoint | Complete |
-| 2.6 | Cognee integration: trusted data query mode, dual-ingest pipeline step | Complete |
+| 2.6 | Trusted data layer: governed knowledge with human-review gate | Complete |
 | 2.7 | Knowledge restructure: split vector tables, per-layer endpoints, unified query, docling-graph, trusted data governance, UI overhaul | Complete |
 | 2.8 | Pipeline consolidation (manifest-first, parallel derivations, idempotent) + Retrieval upgrades (weighted fusion, chunk_links, image display) | Complete |
 | 2.9 | Architecture upgrade: Neo4j + Qdrant + GraphRAG + expanded ontology + entity canonicalization | Complete |
+| 2.10 | Docling-graph fixes (chunked extraction, property persistence, word-boundary mentions, queue isolation) + Trusted Data simplification (Cognee → Qdrant-backed, Celery indexing) | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -406,12 +408,11 @@ app/
 │   ├── agent.py          #   LangGraph agent context endpoint
 │   ├── _agent_helpers.py #   Agent response formatting
 │   ├── graph_store.py    #   Graph entity/relationship ingest + query (Neo4j)
-│   ├── memory.py         #   Trusted data proposals + approval + search
+│   ├── trusted_data.py   #   Trusted data proposals + approval + indexing + search
 │   ├── governance.py     #   Feedback + patch state machine
 │   ├── sources.py        #   Sources CRUD, document upload, watch dirs
 │   └── health.py         #   Health check endpoint
 ├── services/
-│   ├── cognee_service.py       # Cognee async wrapper
 │   ├── docling_client.py       # HTTP client for Docling conversion service
 │   ├── docling_graph_service.py # LLM-powered graph extraction → Neo4j import
 │   ├── graphrag_service.py     # GraphRAG community detection, reports, search
@@ -422,8 +423,9 @@ app/
 │   ├── ontology_templates.py   # YAML → Pydantic extraction templates + validation
 │   └── ner.py                  # Military NER (offline regex, EM/RF patterns, fallback)
 ├── workers/
-│   ├── pipeline.py       # Celery ingest pipeline (parallel text/image embed)
-│   └── watcher.py        # Celery Beat directory watcher
+│   ├── pipeline.py             # Celery ingest pipeline (parallel text/image embed)
+│   ├── trusted_data_tasks.py   # Celery task for trusted data embedding + Qdrant indexing
+│   └── watcher.py              # Celery Beat directory watcher
 ├── models/               # SQLAlchemy ORM (ingest, retrieval, governance, auth, trusted_data)
 └── schemas/              # Pydantic request/response schemas
 docker/
@@ -442,7 +444,7 @@ frontend/
 │   ├── FileUpload.tsx    #   Document upload
 │   ├── IngestPage.tsx    #   Unified ingest page
 │   ├── GraphExplorer.tsx #   Graph search + entity/relationship creation (full ontology)
-│   ├── MemoryPanel.tsx   #   Trusted data proposals + approval + search
+│   ├── TrustedDataPanel.tsx #   Trusted data submissions + approval + indexing + search
 │   ├── DirectoryMonitor.tsx # Watch directory management
 │   └── Nav.tsx           #   Navigation
 └── src/api/client.ts     # Typed API client (all endpoints)

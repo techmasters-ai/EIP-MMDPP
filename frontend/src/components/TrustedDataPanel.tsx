@@ -1,25 +1,26 @@
 import React, { useEffect, useState } from "react";
 import {
-  proposeMemory,
-  listMemoryProposals,
-  approveMemory,
-  rejectMemory,
-  type MemoryProposal,
-  unifiedQuery,
-  type QueryResultItem,
+  proposeTrustedData,
+  listTrustedDataSubmissions,
+  approveTrustedData,
+  rejectTrustedData,
+  reindexTrustedData,
+  queryTrustedData,
+  type TrustedDataSubmission,
+  type TrustedDataQueryResult,
 } from "../api/client";
 
 type Tab = "propose" | "proposals" | "search";
-type StatusFilter = "all" | "proposed" | "approved" | "rejected";
+type StatusFilter = "all" | "proposed" | "approved_pending_index" | "approved_indexed" | "index_failed" | "rejected";
 
-export function MemoryPanel() {
+export function TrustedDataPanel() {
   const [tab, setTab] = useState<Tab>("proposals");
 
   return (
     <div>
       <div className="tabs" style={{ marginBottom: "1rem" }}>
         {([
-          ["proposals", "Proposals"],
+          ["proposals", "Submissions"],
           ["propose", "Propose Knowledge"],
           ["search", "Search Trusted Data"],
         ] as [Tab, string][]).map(([t, label]) => (
@@ -35,7 +36,7 @@ export function MemoryPanel() {
 
       {tab === "proposals" && <ProposalsList />}
       {tab === "propose" && <ProposeForm />}
-      {tab === "search" && <MemorySearch />}
+      {tab === "search" && <TrustedDataSearch />}
     </div>
   );
 }
@@ -67,16 +68,16 @@ function ProposeForm() {
     }
 
     try {
-      const proposal = await proposeMemory({
+      const submission = await proposeTrustedData({
         content: content.trim(),
         source_context,
         confidence,
       });
-      setSuccess(`Proposal created (${proposal.id.slice(0, 8)}\u2026) — status: ${proposal.status}`);
+      setSuccess(`Submission created (${submission.id.slice(0, 8)}\u2026) \u2014 status: ${submission.status}`);
       setContent("");
       setContextJson("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create proposal");
+      setError(err instanceof Error ? err.message : "Failed to create submission");
     } finally {
       setLoading(false);
     }
@@ -86,9 +87,9 @@ function ProposeForm() {
     <div className="card card-body">
       <form onSubmit={(e) => void handleSubmit(e)}>
         <div className="field">
-          <label htmlFor="memory-content">Knowledge content</label>
+          <label htmlFor="td-content">Knowledge content</label>
           <textarea
-            id="memory-content"
+            id="td-content"
             rows={4}
             placeholder="e.g. The SA-2 Guideline uses a Fan Song radar for target tracking and missile guidance."
             value={content}
@@ -98,9 +99,9 @@ function ProposeForm() {
         </div>
         <div className="field-row" style={{ gap: "1rem" }}>
           <div className="field" style={{ width: "120px" }}>
-            <label htmlFor="memory-confidence">Confidence</label>
+            <label htmlFor="td-confidence">Confidence</label>
             <input
-              id="memory-confidence"
+              id="td-confidence"
               type="number"
               min={0}
               max={1}
@@ -110,9 +111,9 @@ function ProposeForm() {
             />
           </div>
           <div className="field" style={{ flex: 1 }}>
-            <label htmlFor="memory-context">Source context (JSON, optional)</label>
+            <label htmlFor="td-context">Source context (JSON, optional)</label>
             <input
-              id="memory-context"
+              id="td-context"
               type="text"
               placeholder='{"document": "SA-2 Technical Manual", "page": 42}'
               value={contextJson}
@@ -135,37 +136,45 @@ function ProposeForm() {
   );
 }
 
+function statusBadgeClass(status: string): string {
+  if (status === "APPROVED_INDEXED") return "badge-success";
+  if (status === "REJECTED") return "badge-error";
+  if (status === "INDEX_FAILED") return "badge-error";
+  if (status === "APPROVED_PENDING_INDEX") return "badge-warning";
+  return "badge-info";
+}
+
 function ProposalsList() {
-  const [proposals, setProposals] = useState<MemoryProposal[]>([]);
+  const [submissions, setSubmissions] = useState<TrustedDataSubmission[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const fetchProposals = async () => {
+  const fetchSubmissions = async () => {
     setLoading(true);
     setError(null);
     try {
       const status = filter === "all" ? undefined : filter;
-      const data = await listMemoryProposals(status);
-      setProposals(data);
+      const data = await listTrustedDataSubmissions(status);
+      setSubmissions(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load proposals");
+      setError(err instanceof Error ? err.message : "Failed to load submissions");
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    void fetchProposals();
+    void fetchSubmissions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
   const handleApprove = async (id: string) => {
     setActionLoading(id);
     try {
-      await approveMemory(id);
-      await fetchProposals();
+      await approveTrustedData(id);
+      await fetchSubmissions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to approve");
     } finally {
@@ -176,10 +185,22 @@ function ProposalsList() {
   const handleReject = async (id: string) => {
     setActionLoading(id);
     try {
-      await rejectMemory(id);
-      await fetchProposals();
+      await rejectTrustedData(id);
+      await fetchSubmissions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to reject");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleReindex = async (id: string) => {
+    setActionLoading(id);
+    try {
+      await reindexTrustedData(id);
+      await fetchSubmissions();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to reindex");
     } finally {
       setActionLoading(null);
     }
@@ -188,7 +209,9 @@ function ProposalsList() {
   const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
     { value: "all", label: "All" },
     { value: "proposed", label: "Pending" },
-    { value: "approved", label: "Approved" },
+    { value: "approved_pending_index", label: "Indexing" },
+    { value: "approved_indexed", label: "Indexed" },
+    { value: "index_failed", label: "Failed" },
     { value: "rejected", label: "Rejected" },
   ];
 
@@ -210,7 +233,7 @@ function ProposalsList() {
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            onClick={() => void fetchProposals()}
+            onClick={() => void fetchSubmissions()}
             disabled={loading}
             style={{ marginLeft: "auto" }}
           >
@@ -221,70 +244,81 @@ function ProposalsList() {
 
       {error && <div className="alert alert-error mt-sm">{error}</div>}
 
-      {proposals.length === 0 && !loading ? (
+      {submissions.length === 0 && !loading ? (
         <div className="empty-state">
-          <div className="empty-state-title">No proposals</div>
+          <div className="empty-state-title">No submissions</div>
           <div className="text-muted text-sm">
             {filter === "all"
-              ? "No trusted data proposals yet. Use the \"Propose Knowledge\" tab to add one."
-              : `No ${filter} proposals found.`}
+              ? "No trusted data submissions yet. Use the \"Propose Knowledge\" tab to add one."
+              : `No ${filter.replace(/_/g, " ")} submissions found.`}
           </div>
         </div>
       ) : (
-        proposals.map((p) => (
-          <div key={p.id} className="result-card">
+        submissions.map((s) => (
+          <div key={s.id} className="result-card">
             <div className="result-card-header">
-              <span className="text-xs text-muted">{p.id.slice(0, 8)}&hellip;</span>
-              <span
-                className={`badge ${
-                  p.status === "approved"
-                    ? "badge-success"
-                    : p.status === "rejected"
-                    ? "badge-error"
-                    : "badge-info"
-                }`}
-              >
-                {p.status}
+              <span className="text-xs text-muted">{s.id.slice(0, 8)}&hellip;</span>
+              <span className={`badge ${statusBadgeClass(s.status)}`}>
+                {s.status}
+              </span>
+              {s.index_status && s.index_status !== "COMPLETE" && (
+                <span className="badge badge-warning">{s.index_status}</span>
+              )}
+              <span className="text-xs text-muted">
+                confidence: {(s.confidence * 100).toFixed(0)}%
               </span>
               <span className="text-xs text-muted">
-                confidence: {(p.confidence * 100).toFixed(0)}%
-              </span>
-              <span className="text-xs text-muted">
-                {new Date(p.created_at).toLocaleDateString()}
+                {new Date(s.created_at).toLocaleDateString()}
               </span>
             </div>
-            <p style={{ margin: "0.5rem 0" }}>{p.content}</p>
-            {p.source_context && (
+            <p style={{ margin: "0.5rem 0" }}>{s.content}</p>
+            {s.source_context && (
               <pre
                 className="text-xs"
                 style={{ whiteSpace: "pre-wrap", margin: "0.25rem 0" }}
               >
-                {JSON.stringify(p.source_context, null, 2)}
+                {JSON.stringify(s.source_context, null, 2)}
               </pre>
             )}
-            {p.review_notes && (
+            {s.review_notes && (
               <div className="text-sm text-muted" style={{ marginTop: "0.25rem" }}>
-                Review notes: {p.review_notes}
+                Review notes: {s.review_notes}
               </div>
             )}
-            {p.status === "proposed" && (
-              <div className="flex-center gap-sm" style={{ marginTop: "0.5rem" }}>
+            {s.index_error && (
+              <div className="text-sm text-muted" style={{ marginTop: "0.25rem", color: "var(--error)" }}>
+                Index error: {s.index_error}
+              </div>
+            )}
+            <div className="flex-center gap-sm" style={{ marginTop: "0.5rem" }}>
+              {s.status === "PROPOSED" && (
+                <>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    disabled={actionLoading === s.id}
+                    onClick={() => void handleApprove(s.id)}
+                  >
+                    {actionLoading === s.id ? "..." : "Approve"}
+                  </button>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    disabled={actionLoading === s.id}
+                    onClick={() => void handleReject(s.id)}
+                  >
+                    {actionLoading === s.id ? "..." : "Reject"}
+                  </button>
+                </>
+              )}
+              {(s.status === "INDEX_FAILED" || s.status === "APPROVED_PENDING_INDEX") && (
                 <button
                   className="btn btn-sm btn-primary"
-                  disabled={actionLoading === p.id}
-                  onClick={() => void handleApprove(p.id)}
+                  disabled={actionLoading === s.id}
+                  onClick={() => void handleReindex(s.id)}
                 >
-                  {actionLoading === p.id ? "..." : "Approve"}
+                  {actionLoading === s.id ? "..." : "Reindex"}
                 </button>
-                <button
-                  className="btn btn-sm btn-ghost"
-                  disabled={actionLoading === p.id}
-                  onClick={() => void handleReject(p.id)}
-                >
-                  {actionLoading === p.id ? "..." : "Reject"}
-                </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         ))
       )}
@@ -292,9 +326,9 @@ function ProposalsList() {
   );
 }
 
-function MemorySearch() {
+function TrustedDataSearch() {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<QueryResultItem[] | null>(null);
+  const [results, setResults] = useState<TrustedDataQueryResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -304,10 +338,8 @@ function MemorySearch() {
     setLoading(true);
     setError(null);
     try {
-      const res = await unifiedQuery({
-        query_text: query.trim(),
-        strategy: "memory",
-        modality_filter: "all",
+      const res = await queryTrustedData({
+        query: query.trim(),
         top_k: 20,
       });
       setResults(res.results ?? []);
@@ -324,9 +356,9 @@ function MemorySearch() {
         <form onSubmit={(e) => void handleSearch(e)}>
           <div className="field-row" style={{ alignItems: "flex-end" }}>
             <div className="field" style={{ flex: 1 }}>
-              <label htmlFor="memory-query">Search approved trusted data</label>
+              <label htmlFor="td-query">Search approved trusted data</label>
               <input
-                id="memory-query"
+                id="td-query"
                 type="search"
                 placeholder="e.g. SA-2 guidance radar"
                 value={query}
@@ -351,17 +383,16 @@ function MemorySearch() {
               <div key={i} className="result-card">
                 <div className="result-card-header">
                   <span className="text-xs text-muted">#{i + 1}</span>
-                  <span className="badge badge-info">{item.modality}</span>
+                  <span className="badge badge-info">
+                    score: {item.score.toFixed(3)}
+                  </span>
+                  {item.confidence !== undefined && item.confidence !== null && (
+                    <span className="text-xs text-muted">
+                      confidence: {(item.confidence * 100).toFixed(0)}%
+                    </span>
+                  )}
                 </div>
-                {item.content_text && <p>{item.content_text}</p>}
-                {item.context && (
-                  <pre
-                    className="text-xs"
-                    style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0" }}
-                  >
-                    {JSON.stringify(item.context, null, 2)}
-                  </pre>
-                )}
+                <p>{item.content_text}</p>
               </div>
             ))
           )}

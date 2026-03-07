@@ -50,7 +50,7 @@ export interface QueryResultItem {
   image_url?: string;
 }
 
-export type QueryStrategy = "basic" | "hybrid" | "memory" | "graphrag_local" | "graphrag_global";
+export type QueryStrategy = "basic" | "hybrid" | "graphrag_local" | "graphrag_global";
 export type ModalityFilter = "all" | "text" | "image";
 
 export interface UnifiedQueryResponse {
@@ -83,7 +83,7 @@ export interface GraphIngestResponse {
   node_id?: string;
 }
 
-export interface MemoryProposal {
+export interface TrustedDataSubmission {
   id: string;
   content: string;
   source_context?: Record<string, unknown>;
@@ -93,11 +93,24 @@ export interface MemoryProposal {
   reviewed_by?: string;
   review_notes?: string;
   created_at: string;
+  index_status?: string;
+  index_error?: string;
+  qdrant_point_id?: string;
+  embedding_model?: string;
+  embedded_at?: string;
 }
 
-export interface MemoryQueryResponse {
+export interface TrustedDataQueryResult {
+  content_text: string;
+  score: number;
+  submission_id?: string;
+  confidence?: number;
+  classification?: string;
+}
+
+export interface TrustedDataQueryResponse {
   query: string;
-  results: QueryResultItem[];
+  results: TrustedDataQueryResult[];
   total: number;
 }
 
@@ -144,6 +157,15 @@ export async function createSource(name: string, description?: string): Promise<
 export async function getDocumentStatus(documentId: string): Promise<Document> {
   const res = await fetch(`/v1/documents/${documentId}/status`);
   return handleResponse<Document>(res);
+}
+
+export async function batchDocumentStatus(ids: string[]): Promise<Document[]> {
+  const res = await fetch("/v1/documents/batch-status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_ids: ids }),
+  });
+  return handleResponse<Document[]>(res);
 }
 
 export function uploadFile(
@@ -286,44 +308,64 @@ export async function queryGraph(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Memory
+// Trusted Data
 // ---------------------------------------------------------------------------
 
-export async function proposeMemory(params: {
+export async function proposeTrustedData(params: {
   content: string;
   source_context?: Record<string, unknown>;
   confidence?: number;
-}): Promise<MemoryProposal> {
-  const res = await fetch("/v1/memory/ingest", {
+}): Promise<TrustedDataSubmission> {
+  const res = await fetch("/v1/trusted-data/ingest", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
-  return handleResponse<MemoryProposal>(res);
+  return handleResponse<TrustedDataSubmission>(res);
 }
 
-export async function listMemoryProposals(status?: string): Promise<MemoryProposal[]> {
-  const url = status ? `/v1/memory/proposals?status=${status}` : "/v1/memory/proposals";
+export async function listTrustedDataSubmissions(status?: string): Promise<TrustedDataSubmission[]> {
+  const url = status ? `/v1/trusted-data/proposals?status=${status}` : "/v1/trusted-data/proposals";
   const res = await fetch(url);
-  return handleResponse<MemoryProposal[]>(res);
+  return handleResponse<TrustedDataSubmission[]>(res);
 }
 
-export async function approveMemory(id: string, notes?: string): Promise<MemoryProposal> {
-  const res = await fetch(`/v1/memory/proposals/${id}/approve`, {
+export async function approveTrustedData(id: string, notes?: string): Promise<TrustedDataSubmission> {
+  const res = await fetch(`/v1/trusted-data/proposals/${id}/approve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ notes }),
   });
-  return handleResponse<MemoryProposal>(res);
+  return handleResponse<TrustedDataSubmission>(res);
 }
 
-export async function rejectMemory(id: string, notes?: string): Promise<MemoryProposal> {
-  const res = await fetch(`/v1/memory/proposals/${id}/reject`, {
+export async function rejectTrustedData(id: string, notes?: string): Promise<TrustedDataSubmission> {
+  const res = await fetch(`/v1/trusted-data/proposals/${id}/reject`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ notes }),
   });
-  return handleResponse<MemoryProposal>(res);
+  return handleResponse<TrustedDataSubmission>(res);
+}
+
+export async function reindexTrustedData(id: string): Promise<TrustedDataSubmission> {
+  const res = await fetch(`/v1/trusted-data/proposals/${id}/reindex`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  return handleResponse<TrustedDataSubmission>(res);
+}
+
+export async function queryTrustedData(params: {
+  query: string;
+  top_k?: number;
+}): Promise<TrustedDataQueryResponse> {
+  const res = await fetch("/v1/trusted-data/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: params.query, top_k: params.top_k ?? 10 }),
+  });
+  return handleResponse<TrustedDataQueryResponse>(res);
 }
 
 // ---------------------------------------------------------------------------

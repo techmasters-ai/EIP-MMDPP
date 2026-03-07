@@ -89,10 +89,18 @@ class Settings(BaseSettings):
 
     # Per-feature model selection — each feature can use a different model
     docling_graph_model: str = "llama3.2"  # Model for graph entity/relationship extraction
-    cognee_model: str = "llama3.2"         # Model for Cognee memory operations
 
     # docling-graph extraction settings
     docling_graph_timeout: float = 120.0
+    graph_extraction_chunk_size: int = 7000
+    graph_extraction_chunk_overlap: int = 500
+
+    # Docling human-review confidence threshold
+    docling_review_confidence_threshold: float = 0.60
+
+    # Graph confidence quality gates
+    graph_node_min_confidence: float = 0.60
+    graph_rel_min_confidence: float = 0.55
 
     # Neo4j (knowledge graph — replaces Apache AGE)
     neo4j_uri: str = "bolt://neo4j:7687"
@@ -103,6 +111,7 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://qdrant:6333"
     qdrant_text_collection: str = "eip_text_chunks"
     qdrant_image_collection: str = "eip_image_chunks"
+    qdrant_trusted_text_collection: str = "eip_trusted_text"
 
     # GraphRAG (community detection + reports)
     graphrag_model: str = "llama3.2"
@@ -114,14 +123,6 @@ class Settings(BaseSettings):
     docling_service_url: str = "http://docling:8001"
     docling_timeout_seconds: float = 300.0
     docling_fallback_enabled: bool = False  # fall back to legacy extraction if Docling is down
-
-    # Cognee storage (networkx/lancedb require no extra services — air-gapped safe)
-    cognee_graph_engine: str = "networkx"   # networkx | neo4j
-    cognee_vector_engine: str = "lancedb"   # lancedb | pgvector
-    cognee_data_dir: str = "/app/data/cognee"
-
-    # Memory layer
-    memory_enabled: bool = True
 
     # OCR thresholds
     ocr_tesseract_confidence_threshold: float = 0.75

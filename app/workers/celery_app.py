@@ -15,6 +15,7 @@ celery_app = Celery(
         "app.workers.pipeline",
         "app.workers.watcher",
         "app.workers.graphrag_tasks",
+        "app.workers.trusted_data_tasks",
     ],
 )
 
@@ -29,13 +30,15 @@ celery_app.conf.update(
     # Task routing to dedicated queues
     task_routes={
         "app.workers.pipeline.prepare_document": {"queue": "ingest"},
+        "app.workers.pipeline.purge_document_derivations": {"queue": "ingest"},
         "app.workers.pipeline.derive_text_chunks_and_embeddings": {"queue": "embed"},
         "app.workers.pipeline.derive_image_embeddings": {"queue": "embed"},
-        "app.workers.pipeline.derive_ontology_graph": {"queue": "graph"},
+        "app.workers.pipeline.derive_ontology_graph": {"queue": "graph_extract"},
         "app.workers.pipeline.derive_structure_links": {"queue": "graph"},
         "app.workers.pipeline.collect_derivations": {"queue": "ingest"},
         "app.workers.pipeline.finalize_document": {"queue": "ingest"},
         "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
+        "app.workers.trusted_data_tasks.index_trusted_submission": {"queue": "trusted"},
     },
     # Task result expiry
     result_expires=86400,  # 24 hours

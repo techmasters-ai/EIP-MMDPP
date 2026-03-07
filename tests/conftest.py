@@ -202,23 +202,6 @@ def mock_embeddings(monkeypatch):
     return MagicMock()
 
 
-@pytest.fixture
-def mock_cognee(monkeypatch):
-    """Mock Cognee service calls."""
-    async def fake_search(query, top_k=10):
-        return []
-
-    async def fake_add(text, dataset_name):
-        return None
-
-    async def fake_cognify(dataset_name):
-        return None
-
-    monkeypatch.setattr("app.services.cognee_service.cognee_search", fake_search)
-    monkeypatch.setattr("app.services.cognee_service.cognee_add", fake_add)
-    monkeypatch.setattr("app.services.cognee_service.cognee_cognify", fake_cognify)
-    return MagicMock()
-
 
 @pytest.fixture
 def mock_neo4j_driver():
