@@ -152,6 +152,8 @@ class Settings(BaseSettings):
     docling_concurrency: int = 1
     # Lock timeout (auto-release if worker crashes)
     docling_lock_timeout: int = 600
+    # Health probe timeout (seconds)
+    docling_health_timeout: float = 10.0
 
     # Directory watcher
     watch_dir_poll_interval_seconds: int = 30

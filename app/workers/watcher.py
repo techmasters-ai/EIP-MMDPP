@@ -20,11 +20,13 @@ logger = logging.getLogger(__name__)
 @celery_app.task(bind=True)
 def scan_watch_directories(self) -> None:
     """Scan all enabled watch directories for new or modified files."""
+    import datetime
     from sqlalchemy import select
     from app.db.session import get_sync_session
     from app.models.ingest import WatchDir, WatchLog, Document, Source
 
     db = get_sync_session()
+    now = datetime.datetime.now(datetime.timezone.utc)
     try:
         result = db.execute(
             select(WatchDir).where(WatchDir.enabled.is_(True))
@@ -32,6 +34,19 @@ def scan_watch_directories(self) -> None:
         watch_dirs = result.scalars().all()
 
         for watch_dir in watch_dirs:
+            # Respect per-directory poll interval
+            interval = getattr(watch_dir, "poll_interval_seconds", None) or 30
+            last_log_ts = db.execute(
+                select(WatchLog.created_at)
+                .where(WatchLog.watch_dir_id == watch_dir.id)
+                .order_by(WatchLog.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if last_log_ts is not None:
+                if last_log_ts.tzinfo is None:
+                    last_log_ts = last_log_ts.replace(tzinfo=datetime.timezone.utc)
+                if (now - last_log_ts).total_seconds() < interval:
+                    continue
             _scan_directory(db, watch_dir)
 
     except Exception as exc:

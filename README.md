@@ -165,6 +165,7 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 ### Directory Watcher
 - `POST /v1/watch-dirs` — register a directory for auto-ingest
 - `DELETE /v1/watch-dirs/{id}` — remove watch directory
+- Per-directory `poll_interval_seconds` respected (directories only scanned when enough time has elapsed since last scan)
 
 ### Graph Store (Neo4j)
 - `POST /v1/graph/ingest/entity` — create an entity node
@@ -302,8 +303,9 @@ Key features:
 - **Dual vector store** — embeddings upserted to Qdrant with `qdrant_point_id` cross-reference in Postgres
 - **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
 - **Worker split** — optional queue isolation: `docker compose --profile split up`
-- **Docling concurrency gate** — Redis-based lock serializes Docling calls (single-threaded service); queued tasks wait and retry instead of timing out; health check runs only after lock acquisition to avoid false "unavailable" during busy conversions
+- **Docling concurrency gate** — Redis semaphore with `DOCLING_CONCURRENCY` permits (default 1) controls parallel Docling conversions; queued tasks wait and retry instead of timing out; health check runs only after permit acquisition to avoid false "unavailable" during busy conversions; health probe timeout configurable via `DOCLING_HEALTH_TIMEOUT` (default 10s)
 - **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.); documents stay in PROCESSING status during retries and only show FAILED after all retries are exhausted
+- **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks prevent indefinite blocking
 - **Re-upload on failure** — re-uploading a file that previously FAILED removes the old record and re-ingests (no 409)
 - **Reingest safety** — reingest endpoint rejects requests when pipeline is already PROCESSING (409); failure handlers use the task's own `run_id` to avoid cross-run contamination

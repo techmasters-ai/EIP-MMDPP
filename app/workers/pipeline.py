@@ -321,7 +321,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         if not run_id:
             run_id = _create_pipeline_run(db, document_id)
             db.commit()
-        _update_stage_run(db, run_id, "prepare_document", "RUNNING")
+        _update_stage_run(db, run_id, "prepare_document", "RUNNING", attempt=self.request.retries + 1)
         db.commit()
 
         doc = db.get(Document, uuid.UUID(document_id))
@@ -351,17 +351,25 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             logger.info("prepare_document: %s not supported by Docling (mime=%s), using legacy extraction", document_id, mime_type)
             _legacy_extract(db, document_id, doc, file_bytes)
             db.commit()
-            _update_stage_run(db, run_id, "prepare_document", "COMPLETE", metrics={"fallback": True, "reason": "unsupported_format"})
+            _update_stage_run(db, run_id, "prepare_document", "COMPLETE", attempt=self.request.retries + 1, metrics={"fallback": True, "reason": "unsupported_format"})
             db.commit()
             return document_id
 
-        # 4. Docling conversion — acquire lock FIRST, then check health
+        # 4. Docling conversion — acquire semaphore permit FIRST, then check health
         #    (health check fails while Docling is busy converting another doc)
-        docling_lock = _redis_client.lock(
-            "docling:convert", timeout=settings.docling_lock_timeout, blocking=False,
-        )
-        if not docling_lock.acquire(blocking=False):
-            logger.info("prepare_document: Docling busy, re-queuing %s", document_id)
+        docling_lock = None
+        for _permit_i in range(settings.docling_concurrency):
+            _candidate = _redis_client.lock(
+                f"docling:permit:{_permit_i}", timeout=settings.docling_lock_timeout, blocking=False,
+            )
+            if _candidate.acquire(blocking=False):
+                docling_lock = _candidate
+                break
+        if docling_lock is None:
+            logger.info(
+                "prepare_document: Docling at capacity (%d/%d), re-queuing %s",
+                settings.docling_concurrency, settings.docling_concurrency, document_id,
+            )
             raise self.retry(countdown=30, max_retries=20)
 
         try:
@@ -372,7 +380,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                     logger.warning("prepare_document: Docling unhealthy, falling back to legacy for %s", document_id)
                     _legacy_extract(db, document_id, doc, file_bytes)
                     db.commit()
-                    _update_stage_run(db, run_id, "prepare_document", "COMPLETE", metrics={"fallback": True})
+                    _update_stage_run(db, run_id, "prepare_document", "COMPLETE", attempt=self.request.retries + 1, metrics={"fallback": True})
                     db.commit()
                     return document_id
                 raise RuntimeError("Docling service unavailable and fallback is disabled")
@@ -466,6 +474,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
 
         _update_stage_run(
             db, run_id, "prepare_document", "COMPLETE",
+            attempt=self.request.retries + 1,
             metrics={
                 "elements": elements_created,
                 "num_pages": result.num_pages,
@@ -491,7 +500,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             )
             run_id_for_err = run_id or _get_pipeline_run_id(db, document_id)
             if run_id_for_err:
-                _update_stage_run(db, run_id_for_err, "prepare_document", "FAILED", error=str(exc))
+                _update_stage_run(db, run_id_for_err, "prepare_document", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             raise
         logger.info("prepare_document: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
@@ -527,7 +536,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         if not run_id:
             run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
-            _update_stage_run(db, run_id, "derive_text_embeddings", "RUNNING")
+            _update_stage_run(db, run_id, "derive_text_embeddings", "RUNNING", attempt=self.request.retries + 1)
             db.commit()
 
         # Advisory lock to prevent concurrent runs for same document
@@ -621,6 +630,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_text_embeddings", "COMPLETE",
+                attempt=self.request.retries + 1,
                 metrics={"chunks": chunks_created, "elements": len(elements)},
             )
             db.commit()
@@ -642,7 +652,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 stage="derive_text_embeddings", error=str(exc),
             )
             if run_id:
-                _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED", error=str(exc))
+                _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             raise
         logger.info("derive_text_chunks_and_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
@@ -679,7 +689,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
         if not run_id:
             run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
-            _update_stage_run(db, run_id, "derive_image_embeddings", "RUNNING")
+            _update_stage_run(db, run_id, "derive_image_embeddings", "RUNNING", attempt=self.request.retries + 1)
             db.commit()
 
         db.execute(
@@ -772,6 +782,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_image_embeddings", "COMPLETE",
+                attempt=self.request.retries + 1,
                 metrics={"chunks": chunks_created, "elements": len(elements)},
             )
             db.commit()
@@ -793,7 +804,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                 stage="derive_image_embeddings", error=str(exc),
             )
             if run_id:
-                _update_stage_run(db, run_id, "derive_image_embeddings", "FAILED", error=str(exc))
+                _update_stage_run(db, run_id, "derive_image_embeddings", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             raise
         logger.info("derive_image_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
@@ -828,7 +839,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         if not run_id:
             run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
-            _update_stage_run(db, run_id, "derive_ontology_graph", "RUNNING")
+            _update_stage_run(db, run_id, "derive_ontology_graph", "RUNNING", attempt=self.request.retries + 1)
             db.commit()
 
         db.execute(
@@ -850,7 +861,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         if not full_text.strip():
             logger.info("derive_ontology_graph: no text elements for %s", document_id)
             if run_id:
-                _update_stage_run(db, run_id, "derive_ontology_graph", "COMPLETE", metrics={"skipped": True})
+                _update_stage_run(db, run_id, "derive_ontology_graph", "COMPLETE", attempt=self.request.retries + 1, metrics={"skipped": True})
                 db.commit()
             return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
 
@@ -977,6 +988,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_ontology_graph", "COMPLETE",
+                attempt=self.request.retries + 1,
                 metrics={"nodes": nodes_created, "edges": edges_created, "provider": provider},
             )
             db.commit()
@@ -998,7 +1010,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 stage="derive_ontology_graph", error=str(exc),
             )
             if run_id:
-                _update_stage_run(db, run_id, "derive_ontology_graph", "FAILED", error=str(exc))
+                _update_stage_run(db, run_id, "derive_ontology_graph", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             raise
         logger.info("derive_ontology_graph: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
@@ -1037,7 +1049,7 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         if not run_id:
             run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
-            _update_stage_run(db, run_id, "derive_structure_links", "RUNNING")
+            _update_stage_run(db, run_id, "derive_structure_links", "RUNNING", attempt=self.request.retries + 1)
             db.commit()
 
         db.execute(
@@ -1289,6 +1301,7 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_structure_links", "COMPLETE",
+                attempt=self.request.retries + 1,
                 metrics={
                     "chunk_links": links_created,
                     "entity_links": entity_links,
@@ -1315,7 +1328,7 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                 stage="derive_structure_links", error=str(exc),
             )
             if run_id:
-                _update_stage_run(db, run_id, "derive_structure_links", "FAILED", error=str(exc))
+                _update_stage_run(db, run_id, "derive_structure_links", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             raise
         logger.info("derive_structure_links: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
@@ -1376,7 +1389,7 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
         if not run_id:
             run_id = _get_pipeline_run_id(db, document_id)
         if run_id:
-            _update_stage_run(db, run_id, "derive_canonicalization", "RUNNING")
+            _update_stage_run(db, run_id, "derive_canonicalization", "RUNNING", attempt=self.request.retries + 1)
             db.commit()
 
         neo4j_driver = get_neo4j_driver()
@@ -1385,6 +1398,7 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_canonicalization", "COMPLETE",
+                attempt=self.request.retries + 1,
                 metrics=stats,
             )
             db.commit()
@@ -1402,7 +1416,7 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
         db.rollback()
         if self.request.retries >= self.max_retries:
             if run_id:
-                _update_stage_run(db, run_id, "derive_canonicalization", "FAILED", error=str(exc))
+                _update_stage_run(db, run_id, "derive_canonicalization", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             raise
         logger.info("derive_canonicalization: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
@@ -1484,7 +1498,7 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
         db.rollback()
         # Ensure PipelineRun doesn't get stuck in PROCESSING
         if run_id:
-            _update_stage_run(db, run_id, "finalize_document", "FAILED", error=str(exc))
+            _update_stage_run(db, run_id, "finalize_document", "FAILED", attempt=self.request.retries + 1, error=str(exc))
             db.commit()
         _update_document_status(document_id, STATUS_PARTIAL_COMPLETE, stage="finalize_document", error=str(exc))
     finally:

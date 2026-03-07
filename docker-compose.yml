@@ -202,7 +202,7 @@ services:
       minio:
         condition: service_healthy
       docling:
-        condition: service_started
+        condition: service_healthy
       neo4j:
         condition: service_healthy
       qdrant:
@@ -246,7 +246,7 @@ services:
       minio:
         condition: service_healthy
       docling:
-        condition: service_started
+        condition: service_healthy
       neo4j:
         condition: service_healthy
       qdrant:

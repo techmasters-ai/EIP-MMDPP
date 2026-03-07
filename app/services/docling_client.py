@@ -79,7 +79,7 @@ def check_health_sync() -> bool:
     try:
         resp = httpx.get(
             f"{settings.docling_service_url}/health",
-            timeout=5.0,
+            timeout=settings.docling_health_timeout,
         )
         return resp.status_code == 200 and resp.json().get("model_loaded", False)
     except Exception:
