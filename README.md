@@ -132,8 +132,17 @@ LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://ollama:11434
 
 # Per-feature model selection
-DOCLING_GRAPH_MODEL=llama3.2       # Model for graph entity/relationship extraction
-GRAPHRAG_MODEL=llama3.2            # Model for GraphRAG community report generation
+DOCLING_GRAPH_MODEL=gpt-oss:20b   # Model for graph entity/relationship extraction
+GRAPHRAG_MODEL=gpt-oss:20b        # Model for GraphRAG community report generation
+
+# Graph extraction hardening
+DOCLING_GRAPH_REQUIRE_LLM=true            # Fail-closed: raise on NER fallback (default true)
+DOCLING_GRAPH_MAX_TOKENS=1200             # Max tokens for LLM response
+DOCLING_GRAPH_RETRY_ATTEMPTS=2            # Retry attempts before failure/fallback
+DOCLING_GRAPH_RETRY_BACKOFF_SECONDS=5     # Base backoff between retries (multiplied by attempt)
+DOCLING_GRAPH_TIMEOUT=300.0               # LLM call timeout (seconds)
+GRAPH_EXTRACTION_CHUNK_SIZE=2000          # Chars per extraction window
+GRAPH_EXTRACTION_CHUNK_OVERLAP=200        # Overlap between windows
 ```
 
 ## Running Tests
@@ -223,7 +232,7 @@ Query strategies:
 
 The hybrid pipeline runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → weighted fusion scoring → deduplicate → rank → filter by modality.
 
-Image-modality results include a presigned `image_url` for inline display in the UI.
+Image-modality results include an `image_url` served via the API proxy (`GET /v1/images/{chunk_id}`), which streams from MinIO with 1-hour cache headers. This avoids exposing Docker-internal MinIO hostnames in presigned URLs and works in air-gapped environments without hostname configuration.
 
 **Weighted Fusion Scoring**: `final = 0.65*semantic + 0.20*doc_structure + 0.15*ontology + MIL-ID bonus`. MIL-ID bonus matches NSN, MIL-STD, ELNOT, DIEQP, and AN/ designators. All weights are configurable via environment variables (see `env.example`).
 
@@ -275,6 +284,43 @@ Community detection and cross-community search powered by Microsoft's `graphrag`
 - **Local search**: Entity-centric retrieval with community report context — finds relevant entities and enriches results with their community summaries
 - **Global search**: Cross-community summarization — retrieves and ranks community reports for broad analytical questions
 
+## Web UI
+
+React 18 + TypeScript + Vite single-page application served by the API container. The frontend builds as Stage 1 of the main Dockerfile (`node:22-alpine`).
+
+### Search Documents (`QueryPage`)
+
+Four query modes with a mode selector bar:
+
+| Mode | Strategy | Description |
+|---|---|---|
+| **Text Basic** | `basic` | BGE vector search over text chunks |
+| **Multi-Modal** | `hybrid` | Full multi-modal pipeline (text + image). Shows a modality sub-filter: All / Text Only / Images Only |
+| **GraphRAG Local** | `graphrag_local` | Entity-centric search with community report context |
+| **GraphRAG Global** | `graphrag_global` | Cross-community summarization for broad analytical questions |
+
+**Result cards** show:
+- Always-visible text preview (first ~300 chars of `content_text`)
+- Inline image thumbnails for image-modality results (click for lightbox)
+- Expandable "Show details" section with full text and all metadata (`chunk_id`, `artifact_id`, `document_id`, `score`, `modality`, `page_number`, `classification`, full `context` object)
+
+**GraphRAG-specific exploration:**
+- **Local results**: Entity properties table (name, type, confidence, artifact) + community reports list (title, summary) rendered inline
+- **Global results**: Community title + level badge, expandable full report text
+
+Images are served via the API proxy (`GET /v1/images/{chunk_id}`) which streams from MinIO — no Docker-internal hostnames exposed to the browser.
+
+### Document Upload (`FileUpload`)
+
+Drag-and-drop or click-to-upload with real-time pipeline status polling. Supports PDF, DOCX, PNG, JPG, TIFF. Adaptive polling intervals (2s → 5s → 10s) based on elapsed time. Retry button for FAILED/ERROR documents.
+
+### Other Pages
+
+- **Ingest** — unified ingest page with upload + status overview
+- **Directory Monitor** — register/remove watch directories for auto-ingest
+- **Graph Explorer** — Neo4j entity/relationship search + manual creation (full ontology support)
+- **Trusted Data** — submit, approve/reject, reindex, and search human-reviewed knowledge
+
 ## Ingest Pipeline
 
 Manifest-first architecture with parallel derivation stages and idempotent writes:
@@ -304,7 +350,8 @@ Key features:
 - **Dual vector store** — embeddings upserted to Qdrant with `qdrant_point_id` cross-reference in Postgres
 - **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
 - **Worker split** — optional queue isolation: `docker compose --profile split up`
-- **Docling concurrency gate** — Redis semaphore with `DOCLING_CONCURRENCY` permits (default 1) controls parallel Docling conversions; queued tasks wait and retry instead of timing out; health check runs only after permit acquisition to avoid false "unavailable" during busy conversions; health probe timeout configurable via `DOCLING_HEALTH_TIMEOUT` (default 10s)
+- **Docling concurrency gate** — Redis semaphore with `DOCLING_CONCURRENCY` permits (default 1) controls parallel Docling conversions; queued tasks wait and retry instead of timing out; health check is advisory (logs warning but proceeds with conversion) to avoid starvation when the Docling service runs CPU-bound VLM conversion; health probe timeout configurable via `DOCLING_HEALTH_TIMEOUT` (default 60s)
+- **Docling threadpool isolation** — The Docling service runs conversion in a threadpool (`run_in_threadpool`) so the `/health` endpoint remains responsive during CPU-bound VLM processing; an `asyncio.Semaphore` (capacity from `DOCLING_MAX_CONCURRENT`, default 1 on CPU) gates concurrent conversions and returns 503 when saturated
 - **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.); documents stay in PROCESSING status during retries and only show FAILED after all retries are exhausted
 - **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks prevent indefinite blocking
@@ -314,7 +361,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation, with regex NER as fallback when LLM is unavailable. Large documents are chunked into overlapping windows (`GRAPH_EXTRACTION_CHUNK_SIZE`, default 7000 chars) for extraction, then deduplicated. Extracted entities and relationships are imported directly to Neo4j with full property preservation. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
+Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation. By default, extraction is **fail-closed** (`DOCLING_GRAPH_REQUIRE_LLM=true`): if the LLM is unavailable or returns empty responses after all retry attempts, the pipeline stage fails instead of silently falling back to regex NER. Retries use exponential backoff (`DOCLING_GRAPH_RETRY_ATTEMPTS`, default 2; `DOCLING_GRAPH_RETRY_BACKOFF_SECONDS`, default 5). A Redis concurrency gate (`ollama:llm_extract`) serializes Ollama LLM calls to prevent overload. Large documents are chunked into overlapping windows (`GRAPH_EXTRACTION_CHUNK_SIZE`, default 2000 chars; `GRAPH_EXTRACTION_CHUNK_OVERLAP`, default 200) for extraction, then deduplicated. Extracted entities and relationships are imported directly to Neo4j with full property preservation. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
 
 ## Data Migration (from AGE)
 
@@ -394,6 +441,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.8 | Pipeline consolidation (manifest-first, parallel derivations, idempotent) + Retrieval upgrades (weighted fusion, chunk_links, image display) | Complete |
 | 2.9 | Architecture upgrade: Neo4j + Qdrant + GraphRAG + expanded ontology + entity canonicalization | Complete |
 | 2.10 | Docling-graph fixes (chunked extraction, property persistence, word-boundary mentions, queue isolation) + Trusted Data simplification (Cognee → Qdrant-backed, Celery indexing) | Complete |
+| 2.11 | Graph extraction hardening (fail-closed, retry/backoff, concurrency gate) + Docling health-check fix (threadpool, advisory probe) + Search UI overhaul (4-mode selector, modality sub-filter, GraphRAG entity/report exploration, image proxy, result card improvements) + Polling fix | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -440,7 +488,7 @@ scripts/
 └── seed_ontology.py              # Seed ontology types from YAML
 frontend/
 ├── src/components/       # React components
-│   ├── QueryPage.tsx     #   Multi-strategy search with flat ranked results
+│   ├── QueryPage.tsx     #   Multi-strategy search (4 modes, modality sub-filter, GraphRAG exploration)
 │   ├── FileUpload.tsx    #   Document upload
 │   ├── IngestPage.tsx    #   Unified ingest page
 │   ├── GraphExplorer.tsx #   Graph search + entity/relationship creation (full ontology)

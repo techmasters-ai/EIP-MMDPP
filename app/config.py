@@ -86,14 +86,21 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_vlm_model: str = "llava"  # DEPRECATED: replaced by Docling service
     ollama_embedding_model: str = "nomic-embed-text"
+    ollama_llm_concurrency: int = 1
 
     # Per-feature model selection — each feature can use a different model
     docling_graph_model: str = "llama3.2"  # Model for graph entity/relationship extraction
 
     # docling-graph extraction settings
-    docling_graph_timeout: float = 120.0
-    graph_extraction_chunk_size: int = 7000
-    graph_extraction_chunk_overlap: int = 500
+    docling_graph_timeout: float = 300.0
+    graph_extraction_chunk_size: int = 2000
+    graph_extraction_chunk_overlap: int = 200
+
+    # Docling-graph extraction behavior
+    docling_graph_require_llm: bool = True
+    docling_graph_max_tokens: int = 1200
+    docling_graph_retry_attempts: int = 2
+    docling_graph_retry_backoff_seconds: int = 5
 
     # Docling human-review confidence threshold
     docling_review_confidence_threshold: float = 0.60

@@ -391,17 +391,15 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             _time.sleep(_sleep_time)
 
         try:
-            # Health check only when we hold the lock (Docling should be idle)
+            # Advisory health check — log but don't fail (health endpoint
+            # may time out during long CPU conversions on other docs, but
+            # convert itself will work once the semaphore permits it).
             docling_healthy = check_health_sync()
             if not docling_healthy:
-                if settings.docling_fallback_enabled:
-                    logger.warning("prepare_document: Docling unhealthy, falling back to legacy for %s", document_id)
-                    _legacy_extract(db, document_id, doc, file_bytes)
-                    db.commit()
-                    _update_stage_run(db, run_id, "prepare_document", "COMPLETE", attempt=self.request.retries + 1, metrics={"fallback": True})
-                    db.commit()
-                    return document_id
-                raise RuntimeError("Docling service unavailable and fallback is disabled")
+                logger.warning(
+                    "prepare_document: Docling health check failed (advisory) for %s — proceeding with convert",
+                    document_id,
+                )
             result = convert_document_sync(file_bytes, doc.filename or "document")
         finally:
             try:
@@ -1096,11 +1094,20 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                     provider = actual_provider
                     model_name = settings.docling_graph_model if actual_provider == "docling-graph" else "regex"
             except ImportError:
+                if settings.docling_graph_require_llm:
+                    raise RuntimeError("docling-graph module not available and DOCLING_GRAPH_REQUIRE_LLM=true")
                 logger.debug("docling-graph not available, falling back to NER")
             except Exception as exc:
+                if settings.docling_graph_require_llm:
+                    raise  # Fail-closed: do not silently fall back to NER
                 logger.warning("docling-graph failed: %s — falling back to NER", exc)
 
         if graph_data is None:
+            if settings.docling_graph_require_llm:
+                raise RuntimeError(
+                    "LLM graph extraction produced no results and DOCLING_GRAPH_REQUIRE_LLM=true — "
+                    "refusing to fall back to NER"
+                )
             from app.services.ner import extract_entities, extract_relationships
             entities = extract_entities(full_text)
             relationships = extract_relationships(full_text, entities)

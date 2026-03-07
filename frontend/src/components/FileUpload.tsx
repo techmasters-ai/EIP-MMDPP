@@ -82,29 +82,35 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
       .catch(() => {/* sources list optional */});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll pipeline status using batch endpoint with adaptive interval
+  // Poll pipeline status using batch endpoint with adaptive interval.
+  // Dependency is the set of pending document IDs (not entries itself),
+  // so status updates from polling don't reset the timer/startTime.
+  const TERMINAL = new Set(["COMPLETE", "ERROR", "FAILED", "PARTIAL_COMPLETE", "PENDING_HUMAN_REVIEW"]);
+  const pendingIdsKey = entries
+    .filter((e) => e.documentId && !TERMINAL.has(e.status))
+    .map((e) => e.documentId!)
+    .sort()
+    .join(",");
+  const pollStartRef = useRef<number>(0);
+
   useEffect(() => {
     if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    if (!pendingIdsKey) return;
 
-    const TERMINAL = new Set(["COMPLETE", "ERROR", "FAILED", "PARTIAL_COMPLETE", "PENDING_HUMAN_REVIEW"]);
-    const pending = entries.filter(
-      (e) => e.documentId && !TERMINAL.has(e.status),
-    );
-    if (pending.length === 0) return;
-
-    const startTime = Date.now();
+    // Reset start time only when the set of pending IDs changes
+    pollStartRef.current = Date.now();
+    const pendingIds = pendingIdsKey.split(",");
 
     const getInterval = () => {
-      const elapsed = Date.now() - startTime;
+      const elapsed = Date.now() - pollStartRef.current;
       if (elapsed < 30_000) return 2000;
       if (elapsed < 120_000) return 5000;
       return 10_000;
     };
 
     const poll = async () => {
-      const ids = pending.map((e) => e.documentId!);
       try {
-        const docs = await batchDocumentStatus(ids);
+        const docs = await batchDocumentStatus(pendingIds);
         const statusMap = new Map(docs.map((d) => [d.id, d]));
         setEntries((prev) =>
           prev.map((entry) => {
@@ -130,7 +136,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
     return () => {
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
-  }, [entries]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pendingIdsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ensureSource = useCallback(async (): Promise<string | null> => {
     if (selectedSourceId) return selectedSourceId;

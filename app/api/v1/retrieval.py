@@ -6,7 +6,8 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +76,54 @@ async def unified_query(
         modality_filter=body.modality_filter.value,
         results=results,
         total=len(results),
+    )
+
+
+@router.get("/images/{chunk_id}")
+async def get_image(
+    chunk_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Stream an image from MinIO for a given image chunk ID.
+
+    Used by the frontend to display image results without exposing
+    Docker-internal MinIO presigned URLs.
+    """
+    sql = text("""
+        SELECT a.storage_bucket, a.storage_key
+        FROM retrieval.image_chunks ic
+        JOIN ingest.artifacts a ON a.id = ic.artifact_id
+        WHERE ic.id = :chunk_id
+          AND a.storage_bucket IS NOT NULL AND a.storage_key IS NOT NULL
+    """)
+    row = (await db.execute(sql, {"chunk_id": chunk_id})).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    bucket, key = row[0], row[1]
+    try:
+        from app.services.storage import download_bytes_async
+        image_bytes = await download_bytes_async(bucket, key)
+    except Exception as e:
+        logger.warning("Image download failed for chunk %s: %s", chunk_id, e)
+        raise HTTPException(status_code=502, detail="Failed to fetch image from storage")
+
+    # Guess content type from key extension
+    ext = key.rsplit(".", 1)[-1].lower() if "." in key else "png"
+    content_type = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "tiff": "image/tiff",
+        "tif": "image/tiff",
+        "gif": "image/gif",
+        "webp": "image/webp",
+    }.get(ext, "image/png")
+
+    return StreamingResponse(
+        iter([image_bytes]),
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=3600"},
     )
 
 
@@ -718,50 +767,14 @@ async def _lookup_image_chunk(
 async def _populate_image_urls(
     db: AsyncSession, results: list[QueryResultItem]
 ) -> None:
-    """Batch-fetch presigned URLs for image-modality results."""
-    image_chunk_ids = [
-        str(r.chunk_id) for r in results
-        if r.modality in ("image", "schematic") and r.chunk_id
-    ]
-    if not image_chunk_ids:
-        return
+    """Set image_url to the API proxy path for image-modality results.
 
-    try:
-        from app.services.storage import generate_presigned_url_async
-    except ImportError:
-        logger.debug("storage service not available for image URL generation")
-        return
-
-    sql = text("""
-        SELECT ic.id, a.storage_bucket, a.storage_key
-        FROM retrieval.image_chunks ic
-        JOIN ingest.artifacts a ON a.id = ic.artifact_id
-        WHERE ic.id = ANY(:ids)
-          AND a.storage_bucket IS NOT NULL AND a.storage_key IS NOT NULL
-    """)
-    try:
-        rows = (await db.execute(sql, {"ids": image_chunk_ids})).fetchall()
-    except Exception as e:
-        logger.debug("Image URL lookup failed: %s", e)
-        return
-
-    if not rows:
-        return
-
-    # Generate presigned URLs in parallel
-    url_map: dict[str, str] = {}
-
-    async def _gen_url(chunk_id: str, bucket: str, key: str) -> None:
-        try:
-            url_map[chunk_id] = await generate_presigned_url_async(bucket, key)
-        except Exception as e:
-            logger.debug("Presigned URL generation failed for %s: %s", chunk_id, e)
-
-    await asyncio.gather(*[_gen_url(str(r[0]), r[1], r[2]) for r in rows])
-
+    Uses /api/v1/images/{chunk_id} which streams from MinIO, avoiding
+    presigned URLs that contain the Docker-internal MinIO hostname.
+    """
     for result in results:
-        if result.chunk_id and str(result.chunk_id) in url_map:
-            result.image_url = url_map[str(result.chunk_id)]
+        if result.modality in ("image", "schematic") and result.chunk_id:
+            result.image_url = f"/api/v1/images/{result.chunk_id}"
 
 
 # ---------------------------------------------------------------------------

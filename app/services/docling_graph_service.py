@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import networkx as nx
+import redis as redis_lib
 
 from app.config import get_settings
 from app.services.ontology_templates import (
@@ -48,10 +50,13 @@ def _extract_single_pass(
     *,
     ontology_path=None,
 ) -> tuple[nx.DiGraph, str]:
-    """Single-pass extraction. Returns (graph, actual_provider).
+    """Single-pass extraction with retry/backoff. Returns (graph, actual_provider).
 
     The provider string reflects what actually ran: "docling-graph" if the LLM
     succeeded, "ner" if it fell back to regex, or "mock" in test mode.
+
+    When ``docling_graph_require_llm`` is True (default), raises on final
+    failure instead of falling back to NER — fail-closed behavior.
     """
     settings = get_settings()
 
@@ -62,15 +67,39 @@ def _extract_single_pass(
     ontology = load_ontology(ontology_path)
     prompt = build_extraction_prompt(ontology, text)
 
-    try:
-        result = _call_llm(prompt, settings)
-        extraction = _parse_llm_response(result)
-        extraction = _validate_triples(extraction, ontology_path)
-        return _build_networkx_graph(extraction, document_id), "docling-graph"
-    except Exception as e:
-        logger.warning("LLM extraction failed, falling back to regex NER: %s", e)
-        extraction = _fallback_regex_extraction(text)
-        return _build_networkx_graph(extraction, document_id), "ner"
+    max_attempts = settings.docling_graph_retry_attempts
+    backoff = settings.docling_graph_retry_backoff_seconds
+
+    for attempt in range(max_attempts):
+        try:
+            result = _call_llm(prompt, settings)
+            extraction = _parse_llm_response(result)
+            extraction = _validate_triples(extraction, ontology_path)
+            return _build_networkx_graph(extraction, document_id), "docling-graph"
+        except Exception as e:
+            if attempt < max_attempts - 1:
+                wait = backoff * (attempt + 1)
+                logger.info(
+                    "LLM extraction attempt %d/%d failed, retrying in %ds: %s",
+                    attempt + 1, max_attempts, wait, e,
+                )
+                time.sleep(wait)
+                continue
+            if settings.docling_graph_require_llm:
+                logger.error(
+                    "LLM extraction failed after %d attempts (fail-closed): %s",
+                    max_attempts, e,
+                )
+                raise
+            logger.warning(
+                "LLM extraction failed after %d attempts, falling back to NER: %s",
+                max_attempts, e,
+            )
+            extraction = _fallback_regex_extraction(text)
+            return _build_networkx_graph(extraction, document_id), "ner"
+
+    # Should not be reached, but satisfy type checker
+    raise RuntimeError("Extraction loop exited without result")
 
 
 def extract_graph_from_text_chunked(
@@ -249,7 +278,12 @@ def extract_and_import_to_neo4j(
 
 
 def _call_llm(prompt: str, settings) -> str:
-    """Call LLM via LiteLLM for entity/relationship extraction."""
+    """Call LLM via LiteLLM for entity/relationship extraction.
+
+    Serializes Ollama calls via a Redis lock to prevent concurrent requests
+    from overwhelming the model server (same pattern as docling concurrency gate).
+    Guards against empty/None responses.
+    """
     import litellm
 
     provider = settings.llm_provider
@@ -264,37 +298,89 @@ def _call_llm(prompt: str, settings) -> str:
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
-    response = litellm.completion(
-        model=model_str,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a military/defense document analysis expert. "
-                    "Extract entities and relationships as structured JSON. "
-                    "Return ONLY valid JSON, no markdown fences."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.1,
-        max_tokens=4096,
-        timeout=settings.docling_graph_timeout,
+    logger.info(
+        "LLM graph extraction: model=%s, prompt_len=%d, max_tokens=%d",
+        model_str, len(prompt), settings.docling_graph_max_tokens,
     )
 
-    return response.choices[0].message.content
+    # Serialize LLM calls via Redis lock (prevents concurrent Ollama overload)
+    r = redis_lib.from_url(settings.redis_url)
+    lock_timeout = int(settings.docling_graph_timeout) + 60
+    lock = r.lock(
+        "ollama:llm_extract",
+        timeout=lock_timeout,
+        blocking_timeout=lock_timeout,
+    )
+    if not lock.acquire(blocking=True):
+        raise TimeoutError("Could not acquire Ollama LLM lock")
+
+    try:
+        response = litellm.completion(
+            model=model_str,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a military/defense document analysis expert. "
+                        "Extract entities and relationships as structured JSON. "
+                        "Return ONLY valid JSON, no markdown fences."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=settings.docling_graph_max_tokens,
+            timeout=settings.docling_graph_timeout,
+        )
+    finally:
+        try:
+            lock.release()
+        except redis_lib.exceptions.LockNotOwnedError:
+            pass
+
+    content = response.choices[0].message.content
+    if not content or not content.strip():
+        raise ValueError("LLM returned empty response")
+
+    logger.info("LLM graph extraction response: %d chars", len(content))
+    return content
 
 
 def _parse_llm_response(response_text: str) -> DocumentExtractionResult:
-    """Parse LLM JSON output into a DocumentExtractionResult."""
+    """Parse LLM JSON output into a DocumentExtractionResult.
+
+    Handles common LLM output issues: markdown fences, preamble text before
+    JSON, and truncated output.
+    """
     cleaned = response_text.strip()
+    # Strip markdown fences
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
         lines = [l for l in lines if not l.strip().startswith("```")]
-        cleaned = "\n".join(lines)
+        cleaned = "\n".join(lines).strip()
 
-    data = json.loads(cleaned)
-    return DocumentExtractionResult(**data)
+    # First attempt: direct parse
+    try:
+        data = json.loads(cleaned)
+        return DocumentExtractionResult(**data)
+    except json.JSONDecodeError:
+        pass
+
+    # Recovery: extract JSON object between first { and last }
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        subset = cleaned[first_brace:last_brace + 1]
+        try:
+            data = json.loads(subset)
+            logger.info("JSON recovery succeeded (extracted object from position %d-%d)", first_brace, last_brace)
+            return DocumentExtractionResult(**data)
+        except json.JSONDecodeError:
+            pass
+
+    # All recovery failed
+    snippet = response_text[:200].replace("\n", "\\n")
+    raise ValueError(f"Failed to parse LLM response as JSON. Response starts with: {snippet}")
 
 
 def _fallback_regex_extraction(text: str) -> DocumentExtractionResult:

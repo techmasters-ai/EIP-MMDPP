@@ -3,7 +3,6 @@ import { unifiedQuery, type QueryStrategy, type ModalityFilter, type QueryResult
 
 interface ModePreset {
   strategy: QueryStrategy;
-  modality: ModalityFilter;
   label: string;
   description: string;
 }
@@ -11,45 +10,31 @@ interface ModePreset {
 const MODES: ModePreset[] = [
   {
     strategy: "basic",
-    modality: "all",
     label: "Text Basic",
     description: "Simple BGE vector RAG search on text chunks",
   },
   {
     strategy: "hybrid",
-    modality: "text",
-    label: "Text Only",
-    description: "Hybrid pipeline (vectors + graph expansion), filtered to text results",
-  },
-  {
-    strategy: "hybrid",
-    modality: "image",
-    label: "Images Only",
-    description: "Hybrid pipeline (vectors + graph expansion), filtered to image results",
-  },
-  {
-    strategy: "hybrid",
-    modality: "all",
     label: "Multi-Modal",
-    description: "Hybrid pipeline, all results unfiltered",
+    description: "Hybrid pipeline (vectors + graph expansion)",
   },
   {
     strategy: "graphrag_local",
-    modality: "all",
     label: "GraphRAG Local",
     description: "Entity-centric retrieval with community context reports",
   },
   {
     strategy: "graphrag_global",
-    modality: "all",
     label: "GraphRAG Global",
     description: "Cross-community summarization for broad questions",
   },
 ];
 
-function modeKey(m: ModePreset): string {
-  return `${m.strategy}:${m.modality}`;
-}
+const MODALITY_OPTIONS: { value: ModalityFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "text", label: "Text Only" },
+  { value: "image", label: "Images Only" },
+];
 
 function scoreColor(score: number): string {
   if (score >= 0.85) return "var(--color-success)";
@@ -108,13 +93,158 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
   );
 }
 
+/* ---------- GraphRAG Local: Entity explorer ---------- */
+function GraphRAGLocalDetail({ ctx }: { ctx: Record<string, unknown> }) {
+  const entity = ctx.entity as Record<string, unknown> | undefined;
+  const reports = ctx.community_reports as Array<Record<string, unknown>> | undefined;
+
+  return (
+    <div style={{ marginTop: "0.5rem" }}>
+      {entity && (
+        <div style={{ marginBottom: "0.75rem" }}>
+          <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+            Entity: {String(entity.name || "")}
+            {entity.entity_type && (
+              <span className="badge badge-info" style={{ marginLeft: "0.5rem" }}>
+                {String(entity.entity_type)}
+              </span>
+            )}
+          </div>
+          <table style={{ fontSize: "0.85rem", borderCollapse: "collapse", width: "100%" }}>
+            <tbody>
+              {Object.entries(entity)
+                .filter(([k]) => k !== "name" && k !== "entity_type")
+                .map(([k, v]) => (
+                  <tr key={k} style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+                    <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500, whiteSpace: "nowrap", verticalAlign: "top" }}>{k}</td>
+                    <td style={{ padding: "0.2rem 0.5rem", wordBreak: "break-word" }}>
+                      {typeof v === "object" ? JSON.stringify(v) : String(v ?? "")}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {reports && reports.length > 0 && (
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Community Reports</div>
+          {reports.map((r, i) => (
+            <div key={i} style={{ marginBottom: "0.5rem", padding: "0.5rem", background: "var(--color-bg-muted, #f5f5f5)", borderRadius: "4px" }}>
+              {r.title && <div style={{ fontWeight: 500 }}>{String(r.title)}</div>}
+              {r.summary && <div className="text-sm" style={{ marginTop: "0.25rem" }}>{String(r.summary)}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- GraphRAG Global: Community report explorer ---------- */
+function GraphRAGGlobalDetail({ ctx }: { ctx: Record<string, unknown> }) {
+  const [showFull, setShowFull] = useState(false);
+  const reportText = ctx.report_text as string | undefined;
+
+  return (
+    <div style={{ marginTop: "0.5rem" }}>
+      <div style={{ marginBottom: "0.25rem" }}>
+        {ctx.community_title && (
+          <span style={{ fontWeight: 600 }}>{String(ctx.community_title)}</span>
+        )}
+        {ctx.level != null && (
+          <span className="text-xs text-muted" style={{ marginLeft: "0.5rem" }}>Level {String(ctx.level)}</span>
+        )}
+        {ctx.community_id && (
+          <span className="text-xs text-muted" style={{ marginLeft: "0.5rem" }}>ID: {String(ctx.community_id)}</span>
+        )}
+      </div>
+      {reportText && (
+        <>
+          <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>
+            {showFull ? reportText : reportText.slice(0, 500) + (reportText.length > 500 ? "\u2026" : "")}
+          </p>
+          {reportText.length > 500 && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowFull((v) => !v)}>
+              {showFull ? "Show less" : "Show full report"}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Generic metadata detail section ---------- */
+function MetadataDetail({ item }: { item: QueryResultItem }) {
+  const ctx = item.context as Record<string, unknown> | undefined;
+
+  return (
+    <div style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <tbody>
+          {item.chunk_id && (
+            <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+              <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>chunk_id</td>
+              <td style={{ padding: "0.2rem 0.5rem", fontFamily: "monospace" }}>{item.chunk_id}</td>
+            </tr>
+          )}
+          {item.artifact_id && (
+            <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+              <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>artifact_id</td>
+              <td style={{ padding: "0.2rem 0.5rem", fontFamily: "monospace" }}>{item.artifact_id}</td>
+            </tr>
+          )}
+          {item.document_id && (
+            <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+              <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>document_id</td>
+              <td style={{ padding: "0.2rem 0.5rem", fontFamily: "monospace" }}>{item.document_id}</td>
+            </tr>
+          )}
+          <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+            <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>score</td>
+            <td style={{ padding: "0.2rem 0.5rem" }}>{item.score.toFixed(4)}</td>
+          </tr>
+          <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+            <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>modality</td>
+            <td style={{ padding: "0.2rem 0.5rem" }}>{item.modality}</td>
+          </tr>
+          {item.page_number != null && (
+            <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+              <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>page</td>
+              <td style={{ padding: "0.2rem 0.5rem" }}>{item.page_number}</td>
+            </tr>
+          )}
+          <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+            <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>classification</td>
+            <td style={{ padding: "0.2rem 0.5rem" }}>{item.classification}</td>
+          </tr>
+          {ctx && Object.keys(ctx).length > 0 && (
+            <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+              <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500, verticalAlign: "top" }}>context</td>
+              <td style={{ padding: "0.2rem 0.5rem" }}>
+                <pre style={{ margin: 0, fontSize: "0.8rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {JSON.stringify(ctx, null, 2)}
+                </pre>
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ---------- Result card ---------- */
 function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const [imageExpanded, setImageExpanded] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
 
   const displayText = item.content_text;
   const ctx = item.context as Record<string, unknown> | undefined;
+  const isGraphRAGLocal = ctx?.source === "graphrag_local";
+  const isGraphRAGGlobal = ctx?.source === "graphrag_global";
 
   let provenanceLabel = "";
   if (ctx?.source === "ontology") {
@@ -131,15 +261,21 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   } else if (ctx?.source === "cross_modal") {
     const edge = ctx.edge_type as string | undefined;
     if (edge) provenanceLabel = `Via graph bridge: ${edge}`;
-  } else if (ctx?.source === "graphrag_local") {
+  } else if (isGraphRAGLocal) {
     const entityType = ctx.entity_type as string | undefined;
     provenanceLabel = `GraphRAG Local: ${entityType || "entity"} match`;
-  } else if (ctx?.source === "graphrag_global") {
+  } else if (isGraphRAGGlobal) {
     const title = ctx.community_title as string | undefined;
     provenanceLabel = `GraphRAG Global: ${title || "community report"}`;
   }
 
-  const truncated = displayText && displayText.length > 400 && !expanded;
+  // Preview: first 300 chars always visible
+  const previewLen = 300;
+  const preview = displayText
+    ? displayText.length > previewLen
+      ? displayText.slice(0, previewLen) + "\u2026"
+      : displayText
+    : null;
 
   return (
     <div className="result-card">
@@ -163,33 +299,24 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         </div>
       )}
 
+      {/* Inline image thumbnail */}
       {item.image_url && (
         <div style={{ margin: "0.5rem 0" }}>
-          <button
-            className="btn btn-ghost btn-sm"
-            onClick={() => setImageExpanded((v) => !v)}
-          >
-            {imageExpanded ? "▾ Hide image" : "▸ View image"}
-          </button>
-          {imageExpanded && (
-            <div className="result-image" style={{ marginTop: "0.5rem" }}>
-              <img
-                src={item.image_url}
-                alt={item.content_text || "Retrieved image"}
-                loading="lazy"
-                style={{
-                  maxHeight: "300px",
-                  maxWidth: "100%",
-                  objectFit: "contain",
-                  borderRadius: "4px",
-                  border: "1px solid var(--color-border, #e0e0e0)",
-                  cursor: "pointer",
-                }}
-                title="Click for full size"
-                onClick={() => setModalOpen(true)}
-              />
-            </div>
-          )}
+          <img
+            src={item.image_url}
+            alt={item.content_text || "Retrieved image"}
+            loading="lazy"
+            style={{
+              maxHeight: "200px",
+              maxWidth: "100%",
+              objectFit: "contain",
+              borderRadius: "4px",
+              border: "1px solid var(--color-border, #e0e0e0)",
+              cursor: "pointer",
+            }}
+            title="Click for full size"
+            onClick={() => setModalOpen(true)}
+          />
           {modalOpen && (
             <ImageLightbox
               src={item.image_url}
@@ -200,26 +327,37 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         </div>
       )}
 
-      {displayText && (
-        <>
-          <p className="result-text">
-            {truncated ? displayText.slice(0, 400) + "\u2026" : displayText}
-          </p>
-          {displayText.length > 400 && (
-            <button
-              className="btn btn-ghost btn-sm mt-sm"
-              onClick={() => setExpanded((v) => !v)}
-            >
-              {expanded ? "Show less" : "Show more"}
-            </button>
-          )}
-        </>
+      {/* Text preview — always visible */}
+      {preview && (
+        <p className="result-text">{preview}</p>
       )}
 
-      <div className="result-meta">
-        {item.chunk_id && <span>Chunk: {String(item.chunk_id).slice(0, 8)}&hellip;</span>}
-        {item.artifact_id && <span>Artifact: {String(item.artifact_id).slice(0, 8)}&hellip;</span>}
-      </div>
+      {/* GraphRAG Local: entity details always shown inline */}
+      {isGraphRAGLocal && ctx && <GraphRAGLocalDetail ctx={ctx} />}
+
+      {/* GraphRAG Global: community report inline */}
+      {isGraphRAGGlobal && ctx && <GraphRAGGlobalDetail ctx={ctx} />}
+
+      {/* Show details toggle — full text + all metadata */}
+      <button
+        className="btn btn-ghost btn-sm mt-sm"
+        onClick={() => setDetailsOpen((v) => !v)}
+      >
+        {detailsOpen ? "Hide details" : "Show details"}
+      </button>
+
+      {detailsOpen && (
+        <div style={{ marginTop: "0.5rem", borderTop: "1px solid var(--color-border, #e0e0e0)", paddingTop: "0.5rem" }}>
+          {/* Full text if longer than preview */}
+          {displayText && displayText.length > previewLen && (
+            <div style={{ marginBottom: "0.5rem" }}>
+              <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Full Text</div>
+              <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>{displayText}</p>
+            </div>
+          )}
+          <MetadataDetail item={item} />
+        </div>
+      )}
     </div>
   );
 }
@@ -229,6 +367,7 @@ export function QueryPage() {
   const [queryImage, setQueryImage] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [modalityFilter, setModalityFilter] = useState<ModalityFilter>("all");
   const [topK, setTopK] = useState(10);
   const [results, setResults] = useState<QueryResultItem[] | null>(null);
   const [totalResults, setTotalResults] = useState(0);
@@ -281,7 +420,7 @@ export function QueryPage() {
         query_text: queryText.trim() || undefined,
         query_image: queryImage || undefined,
         strategy: selected.strategy,
-        modality_filter: selected.modality,
+        modality_filter: selected.strategy === "hybrid" ? modalityFilter : "all",
         top_k: topK,
         include_context: true,
       });
@@ -304,16 +443,35 @@ export function QueryPage() {
             <div className="mode-selector" style={{ marginBottom: "1rem" }}>
               {MODES.map((m, i) => (
                 <button
-                  key={modeKey(m)}
+                  key={m.strategy}
                   type="button"
                   className={`mode-btn${selectedIdx === i ? " active" : ""}`}
                   title={m.description}
-                  onClick={() => setSelectedIdx(i)}
+                  onClick={() => {
+                    setSelectedIdx(i);
+                    setModalityFilter("all");
+                  }}
                 >
                   {m.label}
                 </button>
               ))}
             </div>
+
+            {/* Modality sub-filter for Multi-Modal */}
+            {selected.strategy === "hybrid" && (
+              <div className="mode-selector" style={{ marginBottom: "1rem" }}>
+                {MODALITY_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={`mode-btn${modalityFilter === opt.value ? " active" : ""}`}
+                    onClick={() => setModalityFilter(opt.value)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {showImageInput && (
