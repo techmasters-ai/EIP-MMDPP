@@ -64,9 +64,8 @@ def _update_document_status(
         values = {
             "pipeline_status": status,
             "pipeline_stage": stage,
+            "error_message": error,  # None clears previous errors
         }
-        if error:
-            values["error_message"] = error
         if failed_stages is not None:
             values["failed_stages"] = failed_stages
 
@@ -353,19 +352,8 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             db.commit()
             return document_id
 
-        # 4. Docling conversion (only for supported formats)
-        docling_healthy = check_health_sync()
-        if not docling_healthy:
-            if settings.docling_fallback_enabled:
-                logger.warning("prepare_document: Docling unhealthy, falling back to legacy for %s", document_id)
-                _legacy_extract(db, document_id, doc, file_bytes)
-                db.commit()
-                _update_stage_run(db, run_id, "prepare_document", "COMPLETE", metrics={"fallback": True})
-                db.commit()
-                return document_id
-            raise RuntimeError("Docling service unavailable and fallback is disabled")
-
-        # Acquire Docling concurrency lock — serialize access to single-threaded Docling
+        # 4. Docling conversion — acquire lock FIRST, then check health
+        #    (health check fails while Docling is busy converting another doc)
         docling_lock = _redis_client.lock(
             "docling:convert", timeout=settings.docling_lock_timeout, blocking=False,
         )
@@ -374,6 +362,17 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             raise self.retry(countdown=30, max_retries=20)
 
         try:
+            # Health check only when we hold the lock (Docling should be idle)
+            docling_healthy = check_health_sync()
+            if not docling_healthy:
+                if settings.docling_fallback_enabled:
+                    logger.warning("prepare_document: Docling unhealthy, falling back to legacy for %s", document_id)
+                    _legacy_extract(db, document_id, doc, file_bytes)
+                    db.commit()
+                    _update_stage_run(db, run_id, "prepare_document", "COMPLETE", metrics={"fallback": True})
+                    db.commit()
+                    return document_id
+                raise RuntimeError("Docling service unavailable and fallback is disabled")
             result = convert_document_sync(file_bytes, doc.filename or "document")
         finally:
             try:
@@ -481,13 +480,16 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     except Exception as exc:
         logger.error("prepare_document failed for %s: %s", document_id, exc)
         db.rollback()
-        _update_document_status(
-            document_id, STATUS_FAILED, stage="prepare_document", error=str(exc)
-        )
-        run_id_for_err = _get_pipeline_run_id(db, document_id)
-        if run_id_for_err:
-            _update_stage_run(db, run_id_for_err, "prepare_document", "FAILED", error=str(exc))
-            db.commit()
+        if self.request.retries >= self.max_retries:
+            _update_document_status(
+                document_id, STATUS_FAILED, stage="prepare_document", error=str(exc)
+            )
+            run_id_for_err = _get_pipeline_run_id(db, document_id)
+            if run_id_for_err:
+                _update_stage_run(db, run_id_for_err, "prepare_document", "FAILED", error=str(exc))
+                db.commit()
+            raise
+        logger.info("prepare_document: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
         db.close()
@@ -625,13 +627,16 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
     except Exception as exc:
         logger.error("derive_text_chunks_and_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE,
-            stage="derive_text_embeddings", error=str(exc),
-        )
-        if run_id:
-            _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED", error=str(exc))
-            db.commit()
+        if self.request.retries >= self.max_retries:
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="derive_text_embeddings", error=str(exc),
+            )
+            if run_id:
+                _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED", error=str(exc))
+                db.commit()
+            raise
+        logger.info("derive_text_chunks_and_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
         db.close()
@@ -769,13 +774,16 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
     except Exception as exc:
         logger.error("derive_image_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE,
-            stage="derive_image_embeddings", error=str(exc),
-        )
-        if run_id:
-            _update_stage_run(db, run_id, "derive_image_embeddings", "FAILED", error=str(exc))
-            db.commit()
+        if self.request.retries >= self.max_retries:
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="derive_image_embeddings", error=str(exc),
+            )
+            if run_id:
+                _update_stage_run(db, run_id, "derive_image_embeddings", "FAILED", error=str(exc))
+                db.commit()
+            raise
+        logger.info("derive_image_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
         db.close()
@@ -967,13 +975,16 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     except Exception as exc:
         logger.error("derive_ontology_graph failed for %s: %s", document_id, exc)
         db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE,
-            stage="derive_ontology_graph", error=str(exc),
-        )
-        if run_id:
-            _update_stage_run(db, run_id, "derive_ontology_graph", "FAILED", error=str(exc))
-            db.commit()
+        if self.request.retries >= self.max_retries:
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="derive_ontology_graph", error=str(exc),
+            )
+            if run_id:
+                _update_stage_run(db, run_id, "derive_ontology_graph", "FAILED", error=str(exc))
+                db.commit()
+            raise
+        logger.info("derive_ontology_graph: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
         db.close()
@@ -1277,13 +1288,16 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
     except Exception as exc:
         logger.error("derive_structure_links failed for %s: %s", document_id, exc)
         db.rollback()
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE,
-            stage="derive_structure_links", error=str(exc),
-        )
-        if run_id:
-            _update_stage_run(db, run_id, "derive_structure_links", "FAILED", error=str(exc))
-            db.commit()
+        if self.request.retries >= self.max_retries:
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="derive_structure_links", error=str(exc),
+            )
+            if run_id:
+                _update_stage_run(db, run_id, "derive_structure_links", "FAILED", error=str(exc))
+                db.commit()
+            raise
+        logger.info("derive_structure_links: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
         db.close()
@@ -1354,9 +1368,12 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
     except Exception as exc:
         logger.error("derive_canonicalization failed for %s: %s", document_id, exc)
         db.rollback()
-        if run_id:
-            _update_stage_run(db, run_id, "derive_canonicalization", "FAILED", error=str(exc))
-            db.commit()
+        if self.request.retries >= self.max_retries:
+            if run_id:
+                _update_stage_run(db, run_id, "derive_canonicalization", "FAILED", error=str(exc))
+                db.commit()
+            raise
+        logger.info("derive_canonicalization: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
         db.close()

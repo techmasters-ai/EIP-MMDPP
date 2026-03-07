@@ -302,8 +302,8 @@ Key features:
 - **Dual vector store** — embeddings upserted to Qdrant with `qdrant_point_id` cross-reference in Postgres
 - **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
 - **Worker split** — optional queue isolation: `docker compose --profile split up`
-- **Docling concurrency gate** — Redis-based lock serializes Docling calls (single-threaded service); queued tasks wait and retry instead of timing out
-- **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.)
+- **Docling concurrency gate** — Redis-based lock serializes Docling calls (single-threaded service); queued tasks wait and retry instead of timing out; health check runs only after lock acquisition to avoid false "unavailable" during busy conversions
+- **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.); documents stay in PROCESSING status during retries and only show FAILED after all retries are exhausted
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks prevent indefinite blocking
 - **Re-upload on failure** — re-uploading a file that previously FAILED removes the old record and re-ingests (no 409)
 
