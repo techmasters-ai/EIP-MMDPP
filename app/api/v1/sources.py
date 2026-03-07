@@ -103,18 +103,23 @@ async def upload_document(
     )
 
     # Check for duplicate within the same source
-    existing_doc = await db.execute(
+    existing_result = await db.execute(
         select(Document).where(
             Document.source_id == source_id,
             Document.file_hash == file_hash,
         )
     )
-    if existing_doc.scalar_one_or_none():
-        await delete_object_async(settings.minio_bucket_raw, key)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Duplicate Document Upload",
-        )
+    existing_doc = existing_result.scalar_one_or_none()
+    if existing_doc:
+        if existing_doc.pipeline_status not in ("FAILED", "ERROR"):
+            await delete_object_async(settings.minio_bucket_raw, key)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Duplicate Document Upload",
+            )
+        # Previous upload failed — remove old record so re-upload can proceed
+        await db.delete(existing_doc)
+        await db.flush()
 
     document = Document(
         id=doc_id,
@@ -275,6 +280,10 @@ async def reingest_document(
     doc = await db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
+
+    # Reset status so the pipeline picks it up cleanly
+    doc.pipeline_status = "PENDING"
+    await db.commit()
 
     mode = (body or {}).get("mode", "full")
 

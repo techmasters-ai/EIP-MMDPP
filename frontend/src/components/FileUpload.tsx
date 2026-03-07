@@ -3,6 +3,7 @@ import {
   createSource,
   getDocumentStatus,
   listSources,
+  reingestDocument,
   uploadFile,
   type Document,
   type Source,
@@ -286,6 +287,39 @@ export function FileUpload() {
               ) : null}
 
               <StatusBadge status={entry.status} />
+
+              {(entry.status === "FAILED" || entry.status === "ERROR") && (
+                <button
+                  className="btn btn-ghost btn-xs"
+                  onClick={async () => {
+                    if (entry.documentId) {
+                      // Pipeline failed — reingest existing document
+                      try {
+                        await reingestDocument(entry.documentId);
+                        setEntries((prev) =>
+                          prev.map((e, j) =>
+                            j === i ? { ...e, status: "polling", error: undefined } : e,
+                          ),
+                        );
+                      } catch (err) {
+                        setEntries((prev) =>
+                          prev.map((e, j) =>
+                            j === i
+                              ? { ...e, error: err instanceof Error ? err.message : "Retry failed" }
+                              : e,
+                          ),
+                        );
+                      }
+                    } else {
+                      // Upload itself failed — re-upload the file
+                      setEntries((prev) => prev.filter((_, j) => j !== i));
+                      void processFiles([entry.file]);
+                    }
+                  }}
+                >
+                  Retry
+                </button>
+              )}
 
               {entry.error && (
                 <span className="text-xs text-muted" title={entry.error}>

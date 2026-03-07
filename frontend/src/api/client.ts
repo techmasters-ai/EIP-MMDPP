@@ -324,6 +324,22 @@ export async function rejectMemory(id: string, notes?: string): Promise<MemoryPr
 }
 
 // ---------------------------------------------------------------------------
+// Document Reingest
+// ---------------------------------------------------------------------------
+
+export async function reingestDocument(
+  documentId: string,
+  mode: "full" | "embeddings_only" | "graph_only" = "full",
+): Promise<{ document_id: string; mode: string; task_id: string }> {
+  const res = await fetch(`/v1/documents/${documentId}/reingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  return handleResponse<{ document_id: string; mode: string; task_id: string }>(res);
+}
+
+// ---------------------------------------------------------------------------
 // LangGraph agent context
 // ---------------------------------------------------------------------------
 

@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     # Docling document conversion service (granite-docling-258M VLM)
     docling_service_url: str = "http://docling:8001"
     docling_timeout_seconds: float = 300.0
-    docling_fallback_enabled: bool = True  # fall back to legacy extraction if Docling is down
+    docling_fallback_enabled: bool = False  # fall back to legacy extraction if Docling is down
 
     # Cognee storage (networkx/lancedb require no extra services — air-gapped safe)
     cognee_graph_engine: str = "networkx"   # networkx | neo4j
@@ -130,6 +130,28 @@ class Settings(BaseSettings):
     # Security / ABAC
     default_classification: str = "UNCLASSIFIED"
     abac_policy_path: str = "/app/policy/abac.yaml"
+
+    # Pipeline retry & time-limit settings (env-var configurable)
+    prepare_max_retries: int = 3
+    prepare_retry_delay: int = 30
+    prepare_soft_time_limit: int = 600
+    prepare_time_limit: int = 660
+    embed_max_retries: int = 2
+    embed_retry_delay: int = 60
+    embed_soft_time_limit: int = 300
+    embed_time_limit: int = 360
+    graph_max_retries: int = 2
+    graph_retry_delay: int = 60
+    graph_soft_time_limit: int = 600
+    graph_time_limit: int = 660
+    finalize_max_retries: int = 1
+    finalize_retry_delay: int = 30
+    finalize_soft_time_limit: int = 120
+    finalize_time_limit: int = 180
+    # Docling concurrency: max concurrent Docling conversions (Redis semaphore)
+    docling_concurrency: int = 1
+    # Lock timeout (auto-release if worker crashes)
+    docling_lock_timeout: int = 600
 
     # Directory watcher
     watch_dir_poll_interval_seconds: int = 30

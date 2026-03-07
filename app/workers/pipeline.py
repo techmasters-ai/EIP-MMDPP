@@ -22,6 +22,7 @@ import logging
 import uuid
 from typing import Optional
 
+import redis as redis_lib
 from celery import chain, chord, group
 
 from app.workers.celery_app import celery_app
@@ -29,6 +30,9 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Redis-based semaphore for Docling concurrency control
+_redis_client = redis_lib.Redis.from_url(settings.celery_broker_url)
 
 # Pipeline status constants
 STATUS_PROCESSING = "PROCESSING"
@@ -287,7 +291,8 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
     return str(row) if row else None
 
 
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=30,
+                 soft_time_limit=600, time_limit=660)
 def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     """Validate + detect + Docling convert + persist document_elements.
 
@@ -300,6 +305,10 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     from app.services.docling_client import convert_document_sync, check_health_sync
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     import magic
+
+    # Apply env-var configurable retry settings
+    self.max_retries = settings.prepare_max_retries
+    self.default_retry_delay = settings.prepare_retry_delay
 
     logger.info("prepare_document: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="prepare_document")
@@ -356,7 +365,21 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 return document_id
             raise RuntimeError("Docling service unavailable and fallback is disabled")
 
-        result = convert_document_sync(file_bytes, doc.filename or "document")
+        # Acquire Docling concurrency lock — serialize access to single-threaded Docling
+        docling_lock = _redis_client.lock(
+            "docling:convert", timeout=settings.docling_lock_timeout, blocking=False,
+        )
+        if not docling_lock.acquire(blocking=False):
+            logger.info("prepare_document: Docling busy, re-queuing %s", document_id)
+            raise self.retry(countdown=30, max_retries=20)
+
+        try:
+            result = convert_document_sync(file_bytes, doc.filename or "document")
+        finally:
+            try:
+                docling_lock.release()
+            except redis_lib.exceptions.LockNotOwnedError:
+                logger.warning("prepare_document: Docling lock expired before release for %s", document_id)
         logger.info(
             "prepare_document: docling returned %d elements, %d pages, %.0fms",
             len(result.elements), result.num_pages, result.processing_time_ms,
@@ -470,7 +493,8 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         db.close()
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
+                 soft_time_limit=300, time_limit=360)
 def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
 
@@ -482,6 +506,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
     from app.services.embedding import embed_texts
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    self.max_retries = settings.embed_max_retries
+    self.default_retry_delay = settings.embed_retry_delay
 
     logger.info("derive_text_chunks_and_embeddings: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_text_embeddings")
@@ -610,7 +637,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         db.close()
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed")
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
+                 soft_time_limit=300, time_limit=360)
 def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read image document_elements → CLIP embed → upsert image_chunks.
 
@@ -623,6 +651,9 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
     from app.services.storage import download_bytes_sync
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    self.max_retries = settings.embed_max_retries
+    self.default_retry_delay = settings.embed_retry_delay
 
     logger.info("derive_image_embeddings: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_image_embeddings")
@@ -750,7 +781,8 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
         db.close()
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph")
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
+                 soft_time_limit=600, time_limit=660)
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
     """Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to Neo4j.
 
@@ -761,6 +793,9 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     from app.db.session import get_neo4j_driver
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    self.max_retries = settings.graph_max_retries
+    self.default_retry_delay = settings.graph_retry_delay
 
     logger.info("derive_ontology_graph: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_ontology_graph")
@@ -944,7 +979,8 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         db.close()
 
 
-@celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph")
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
+                 soft_time_limit=120, time_limit=180)
 def derive_structure_links(self, document_id: str, run_id: str | None = None) -> dict:
     """Generate chunk_links and structural AGE edges.
 
@@ -959,6 +995,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
     from app.models.retrieval import TextChunk, ImageChunk, ChunkLink
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    self.max_retries = settings.finalize_max_retries
+    self.default_retry_delay = settings.finalize_retry_delay
 
     logger.info("derive_structure_links: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_structure_links")
@@ -1271,7 +1310,8 @@ def collect_derivations(self, derivation_results: list[dict], document_id: str, 
         _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
 
 
-@celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph")
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
+                 soft_time_limit=120, time_limit=180)
 def derive_canonicalization(self, document_id: str, run_id: str | None = None) -> dict:
     """Post-extraction entity canonicalization pass.
 
@@ -1280,6 +1320,9 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
     """
     from app.db.session import get_neo4j_driver
     from app.services.canonicalization import canonicalize_document_entities
+
+    self.max_retries = settings.finalize_max_retries
+    self.default_retry_delay = settings.finalize_retry_delay
 
     logger.info("derive_canonicalization: document_id=%s run_id=%s", document_id, run_id)
     _update_document_status(document_id, STATUS_PROCESSING, stage="derive_canonicalization")
@@ -1319,12 +1362,15 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
         db.close()
 
 
-@celery_app.task(bind=True)
+@celery_app.task(bind=True, soft_time_limit=120, time_limit=180)
 def finalize_document(self, document_id: str, run_id: str | None = None) -> None:
     """Mark pipeline COMPLETE if all required stages succeeded."""
     from app.models.ingest import PipelineRun, StageRun
     from sqlalchemy import select, update as sql_update
     import datetime
+
+    self.max_retries = settings.finalize_max_retries
+    self.default_retry_delay = settings.finalize_retry_delay
 
     logger.info("finalize_document: document_id=%s run_id=%s", document_id, run_id)
     db = _get_db()
