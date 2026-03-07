@@ -104,11 +104,11 @@ function GraphRAGLocalDetail({ ctx }: { ctx: Record<string, unknown> }) {
         <div style={{ marginBottom: "0.75rem" }}>
           <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
             Entity: {String(entity.name || "")}
-            {entity.entity_type && (
+            {entity.entity_type ? (
               <span className="badge badge-info" style={{ marginLeft: "0.5rem" }}>
                 {String(entity.entity_type)}
               </span>
-            )}
+            ) : null}
           </div>
           <table style={{ fontSize: "0.85rem", borderCollapse: "collapse", width: "100%" }}>
             <tbody>
@@ -132,8 +132,8 @@ function GraphRAGLocalDetail({ ctx }: { ctx: Record<string, unknown> }) {
           <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Community Reports</div>
           {reports.map((r, i) => (
             <div key={i} style={{ marginBottom: "0.5rem", padding: "0.5rem", background: "var(--color-bg-muted, #f5f5f5)", borderRadius: "4px" }}>
-              {r.title && <div style={{ fontWeight: 500 }}>{String(r.title)}</div>}
-              {r.summary && <div className="text-sm" style={{ marginTop: "0.25rem" }}>{String(r.summary)}</div>}
+              {r.title ? <div style={{ fontWeight: 500 }}>{String(r.title)}</div> : null}
+              {r.summary ? <div className="text-sm" style={{ marginTop: "0.25rem" }}>{String(r.summary)}</div> : null}
             </div>
           ))}
         </div>
@@ -150,15 +150,15 @@ function GraphRAGGlobalDetail({ ctx }: { ctx: Record<string, unknown> }) {
   return (
     <div style={{ marginTop: "0.5rem" }}>
       <div style={{ marginBottom: "0.25rem" }}>
-        {ctx.community_title && (
+        {ctx.community_title ? (
           <span style={{ fontWeight: 600 }}>{String(ctx.community_title)}</span>
-        )}
+        ) : null}
         {ctx.level != null && (
           <span className="text-xs text-muted" style={{ marginLeft: "0.5rem" }}>Level {String(ctx.level)}</span>
         )}
-        {ctx.community_id && (
+        {ctx.community_id ? (
           <span className="text-xs text-muted" style={{ marginLeft: "0.5rem" }}>ID: {String(ctx.community_id)}</span>
-        )}
+        ) : null}
       </div>
       {reportText && (
         <>
