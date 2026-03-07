@@ -5,7 +5,6 @@ All tests mock the LLM — no actual model calls are made.
 """
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -60,36 +59,11 @@ class TestParseLLMResponse:
         assert len(result.entities) == 2
 
     def test_parse_invalid_json_raises(self):
-        from app.services.docling_graph_service import _parse_llm_response
+        from app.services.docling_graph_service import _parse_llm_response, DeterministicExtractionError
 
-        with pytest.raises(ValueError):
+        with pytest.raises(DeterministicExtractionError):
             _parse_llm_response("this is not json")
 
-
-class TestExtractResponseText:
-    def test_prefers_message_content(self):
-        from app.services.docling_graph_service import _extract_response_text
-
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content='{"entities": []}'))]
-        )
-        text, field = _extract_response_text(response)
-        assert text == '{"entities": []}'
-        assert field == "content"
-
-    def test_falls_back_to_reasoning_content(self):
-        from app.services.docling_graph_service import _extract_response_text
-
-        response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="", reasoning_content='{"entities": []}')
-                )
-            ]
-        )
-        text, field = _extract_response_text(response)
-        assert text == '{"entities": []}'
-        assert field == "reasoning_content"
 
 
 class TestFallbackRegexExtraction:
@@ -233,21 +207,59 @@ class TestDeduplicateExtraction:
         assert len(deduped.entities) == 2
 
 
-class TestCallLlmJsonMode:
-    def test_ollama_passes_response_format(self, monkeypatch):
-        """Verify response_format=json_object is passed for Ollama provider."""
+class TestCallLlmDirectOllama:
+    def test_ollama_passes_json_schema_format(self):
+        """Verify format contains the DocumentExtractionResult JSON schema."""
         from unittest.mock import MagicMock, patch
-        from types import SimpleNamespace
+        import httpx
 
-        captured_kwargs = {}
+        captured_payload = {}
 
-        def fake_completion(**kwargs):
-            captured_kwargs.update(kwargs)
-            return SimpleNamespace(
-                choices=[SimpleNamespace(
-                    message=SimpleNamespace(content=SAMPLE_LLM_RESPONSE),
-                    finish_reason="stop",
-                )]
+        def fake_post(url, *, json, timeout, **kw):
+            captured_payload.update(json)
+            resp = httpx.Response(
+                200,
+                json={"message": {"content": SAMPLE_LLM_RESPONSE}},
+                request=httpx.Request("POST", url),
+            )
+            return resp
+
+        settings = MagicMock()
+        settings.llm_provider = "ollama"
+        settings.docling_graph_model = "test-model"
+        settings.ollama_base_url = "http://localhost:11434"
+        settings.ollama_num_ctx = 4096
+        settings.docling_graph_max_tokens = 1200
+        settings.docling_graph_timeout = 60.0
+        settings.redis_url = "redis://localhost:6379/0"
+
+        with patch("app.services.docling_graph_service.httpx.post", side_effect=fake_post), \
+             patch("app.services.docling_graph_service.redis_lib") as mock_redis:
+            mock_lock = MagicMock()
+            mock_lock.acquire.return_value = True
+            mock_redis.from_url.return_value.lock.return_value = mock_lock
+
+            from app.services.docling_graph_service import _call_llm
+            result = _call_llm("test prompt", settings)
+
+        assert "format" in captured_payload
+        schema = captured_payload["format"]
+        assert schema["type"] == "object"
+        assert "entities" in schema.get("properties", {})
+        assert "relationships" in schema.get("properties", {})
+        assert captured_payload["options"]["temperature"] == 0
+        assert result == SAMPLE_LLM_RESPONSE
+
+    def test_empty_response_raises_deterministic_error(self):
+        """Verify empty LLM response raises DeterministicExtractionError."""
+        from unittest.mock import MagicMock, patch
+        import httpx
+
+        def fake_post(url, *, json, timeout, **kw):
+            return httpx.Response(
+                200,
+                json={"message": {"content": ""}},
+                request=httpx.Request("POST", url),
             )
 
         settings = MagicMock()
@@ -259,18 +271,33 @@ class TestCallLlmJsonMode:
         settings.docling_graph_timeout = 60.0
         settings.redis_url = "redis://localhost:6379/0"
 
-        with patch("app.services.docling_graph_service.litellm") as mock_litellm, \
+        with patch("app.services.docling_graph_service.httpx.post", side_effect=fake_post), \
              patch("app.services.docling_graph_service.redis_lib") as mock_redis:
-            mock_litellm.completion = fake_completion
             mock_lock = MagicMock()
             mock_lock.acquire.return_value = True
             mock_redis.from_url.return_value.lock.return_value = mock_lock
 
-            from app.services.docling_graph_service import _call_llm
-            _call_llm("test prompt", settings)
+            from app.services.docling_graph_service import _call_llm, DeterministicExtractionError
+            with pytest.raises(DeterministicExtractionError, match="empty response"):
+                _call_llm("test prompt", settings)
 
-        assert "response_format" in captured_kwargs
-        assert captured_kwargs["response_format"] == {"type": "json_object"}
+
+class TestDeterministicErrors:
+    def test_parse_invalid_json_raises_deterministic(self):
+        from app.services.docling_graph_service import _parse_llm_response, DeterministicExtractionError
+
+        with pytest.raises(DeterministicExtractionError, match="Failed to parse"):
+            _parse_llm_response("This is reasoning text, not JSON at all")
+
+    def test_parse_reasoning_with_no_json_raises_deterministic(self):
+        from app.services.docling_graph_service import _parse_llm_response, DeterministicExtractionError
+
+        reasoning = (
+            "We need to parse the document text. Entities: SA-2, SR-71? "
+            "Actually text says 'The SA-2 and SR-71' but not further."
+        )
+        with pytest.raises(DeterministicExtractionError, match="Failed to parse"):
+            _parse_llm_response(reasoning)
 
 
 class TestExtractSinglePass:

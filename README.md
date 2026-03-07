@@ -54,7 +54,7 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 | Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, fully local) |
 | Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
 | Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
-| Graph Extraction | docling-graph + LLM (ontology-driven entity/relationship extraction) |
+| Graph Extraction | Direct Ollama API + structured outputs (ontology-driven entity/relationship extraction) |
 | GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
 | Trusted Data | Dedicated Qdrant collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
@@ -136,14 +136,15 @@ OLLAMA_NUM_CTX=8192                   # Context window for Ollama (must fit prom
 DOCLING_GRAPH_MODEL=gpt-oss:20b   # Model for graph entity/relationship extraction
 GRAPHRAG_MODEL=gpt-oss:20b        # Model for GraphRAG community report generation
 
-# Graph extraction hardening (JSON mode + few-shot example enabled for Ollama)
+# Graph extraction hardening (structured output schema + deterministic error handling)
 DOCLING_GRAPH_REQUIRE_LLM=true            # Fail-closed: raise on NER fallback (default true)
 DOCLING_GRAPH_MAX_TOKENS=1200             # Max tokens for LLM response
-DOCLING_GRAPH_RETRY_ATTEMPTS=2            # Retry attempts before failure/fallback
+DOCLING_GRAPH_RETRY_ATTEMPTS=2            # Retry attempts for transient errors only
 DOCLING_GRAPH_RETRY_BACKOFF_SECONDS=5     # Base backoff between retries (multiplied by attempt)
 DOCLING_GRAPH_TIMEOUT=300.0               # LLM call timeout (seconds)
 GRAPH_EXTRACTION_CHUNK_SIZE=2000          # Chars per extraction window
 GRAPH_EXTRACTION_CHUNK_OVERLAP=200        # Overlap between windows
+DOCLING_FALLBACK_ENABLED=false            # Fall back to legacy extraction on Docling 5xx (default false)
 ```
 
 ## Running Tests
@@ -284,6 +285,11 @@ Community detection and cross-community search powered by Microsoft's `graphrag`
 - **Indexing**: Celery Beat runs Leiden/Louvain community detection on the Neo4j graph, then generates LLM community reports (configurable interval via `GRAPHRAG_INDEXING_INTERVAL_MINUTES`)
 - **Local search**: Entity-centric retrieval with community report context — finds relevant entities and enriches results with their community summaries
 - **Global search**: Cross-community summarization — retrieves and ranks community reports for broad analytical questions
+
+**Prerequisites**: GraphRAG queries require data in the knowledge graph:
+- **Local search** needs entities in Neo4j — ensure documents have been ingested with successful graph extraction (`derive_ontology_graph` task must complete without errors)
+- **Global search** needs community reports — ensure `GRAPHRAG_INDEXING_ENABLED=true` (default) and that at least one indexing cycle has run after entities exist in Neo4j
+- If prerequisites are not met, the API returns explicit errors (404 for no entity matches, 409 for missing community reports) instead of silent empty results
 
 ## Web UI
 
@@ -443,7 +449,8 @@ Start command: `docker compose --profile split up -d --build`
 | 2.9 | Architecture upgrade: Neo4j + Qdrant + GraphRAG + expanded ontology + entity canonicalization | Complete |
 | 2.10 | Docling-graph fixes (chunked extraction, property persistence, word-boundary mentions, queue isolation) + Trusted Data simplification (Cognee → Qdrant-backed, Celery indexing) | Complete |
 | 2.11 | Graph extraction hardening (fail-closed, retry/backoff, concurrency gate) + Docling health-check fix (threadpool, advisory probe) + Search UI overhaul (4-mode selector, modality sub-filter, GraphRAG entity/report exploration, image proxy, result card improvements) + Polling fix | Complete |
-| 2.12 | LLM extraction reliability: Ollama JSON mode (`response_format`) + few-shot example in extraction prompt | Complete |
+| 2.12 | LLM extraction reliability: Ollama structured outputs (full JSON schema via `format`), direct httpx (removed LiteLLM), deterministic error classification (skip retries for empty/non-JSON), Docling 5xx fallback gate | Complete |
+| 2.13 | Retrieval fixes: text preview hydration (chunk_text in Qdrant payload + Postgres backfill), image URL prefix fix, GraphRAG precondition checks (404/409 instead of silent empty) | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -464,7 +471,7 @@ app/
 │   └── health.py         #   Health check endpoint
 ├── services/
 │   ├── docling_client.py       # HTTP client for Docling conversion service
-│   ├── docling_graph_service.py # LLM-powered graph extraction → Neo4j import
+│   ├── docling_graph_service.py # Direct Ollama graph extraction (structured outputs) → Neo4j import
 │   ├── graphrag_service.py     # GraphRAG community detection, reports, search
 │   ├── neo4j_graph.py          # Neo4j Cypher operations (sync + async)
 │   ├── qdrant_store.py         # Qdrant vector upsert/search

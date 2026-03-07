@@ -101,6 +101,10 @@ def local_search(
         from app.services.neo4j_graph import search_nodes_by_name
         entity_matches = search_nodes_by_name(neo4j_driver, query, limit=limit)
 
+        if not entity_matches:
+            logger.info("GraphRAG local: no entity matches for query '%s'", query)
+            return results
+
         # Get community context for matched entities
         community_context = _get_entity_community_context(db_session, entity_matches)
 
@@ -114,8 +118,10 @@ def local_search(
             }
             results.append(result)
 
+        logger.info("GraphRAG local: %d entities matched for query '%s'", len(results), query)
+
     except Exception as e:
-        logger.warning("GraphRAG local search failed for '%s': %s", query, e)
+        logger.error("GraphRAG local search runtime fault for '%s': %s", query, e, exc_info=True)
 
     return results
 
@@ -155,8 +161,14 @@ def global_search(
                 "summary": row[1],
                 "rank": row[2],
             })
+
+        if not results:
+            logger.info("GraphRAG global: no community reports found for query '%s'", query)
+        else:
+            logger.info("GraphRAG global: %d community reports returned for query '%s'", len(results), query)
+
     except Exception as e:
-        logger.warning("GraphRAG global search failed for '%s': %s", query, e)
+        logger.error("GraphRAG global search runtime fault for '%s': %s", query, e, exc_info=True)
 
     return results
 

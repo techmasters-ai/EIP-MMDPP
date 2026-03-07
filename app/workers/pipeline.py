@@ -22,6 +22,7 @@ import logging
 import uuid
 from typing import Optional
 
+import httpx
 import redis as redis_lib
 from celery import chain, chord, group
 from celery.exceptions import Retry as CeleryRetry
@@ -536,6 +537,33 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     except Exception as exc:
         logger.error("prepare_document failed for %s: %s", document_id, exc)
         db.rollback()
+
+        # Docling 5xx: fall back to legacy extraction if enabled
+        # doc/file_bytes are assigned before Docling call, so always in scope for 5xx
+        if (
+            settings.docling_fallback_enabled
+            and isinstance(exc, httpx.HTTPStatusError)
+            and exc.response.status_code >= 500
+        ):
+            logger.warning(
+                "prepare_document: Docling %d for %s — falling back to legacy extraction",
+                exc.response.status_code, document_id,
+            )
+            try:
+                _legacy_extract(db, document_id, doc, file_bytes)
+                db.commit()
+                _update_stage_run(
+                    db, run_id, "prepare_document", "COMPLETE",
+                    attempt=self.request.retries + 1,
+                    metrics={"fallback": True, "reason": f"docling_{exc.response.status_code}"},
+                )
+                db.commit()
+                return document_id
+            except Exception as fallback_exc:
+                logger.error("prepare_document: legacy fallback also failed for %s: %s", document_id, fallback_exc)
+                db.rollback()
+                # Fall through to normal retry/fail logic
+
         if self.request.retries >= self.max_retries:
             _update_document_status(
                 document_id, STATUS_FAILED, stage="prepare_document", error=str(exc)
@@ -759,6 +787,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "modality": elem.element_type if elem.element_type != "heading" else "text",
                         "page_number": elem.page_number,
                         "classification": "UNCLASSIFIED",
+                        "chunk_text": text,
                     },
                 )
                 chunks_created += 1
@@ -911,6 +940,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                             "modality": "image",
                             "page_number": elem.page_number,
                             "classification": "UNCLASSIFIED",
+                            "chunk_text": elem.content_text or "",
                         },
                     )
                     chunks_created += 1
@@ -1233,9 +1263,14 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     except CeleryRetry:
         raise
     except Exception as exc:
+        from app.services.docling_graph_service import DeterministicExtractionError
+
         logger.error("derive_ontology_graph failed for %s: %s", document_id, exc)
         db.rollback()
-        if self.request.retries >= self.max_retries:
+
+        # Deterministic errors (empty/non-JSON output) won't resolve on retry
+        is_deterministic = isinstance(exc, DeterministicExtractionError)
+        if is_deterministic or self.request.retries >= self.max_retries:
             _update_document_status(
                 document_id, STATUS_PARTIAL_COMPLETE,
                 stage="derive_ontology_graph", error=str(exc),
@@ -1243,6 +1278,11 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             if run_id:
                 _update_stage_run(db, run_id, "derive_ontology_graph", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
+            if is_deterministic:
+                logger.warning(
+                    "derive_ontology_graph: deterministic failure for %s — skipping retries",
+                    document_id,
+                )
             raise
         logger.info("derive_ontology_graph: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)

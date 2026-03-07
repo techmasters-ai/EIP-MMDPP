@@ -1,8 +1,7 @@
 """LLM-powered entity/relationship extraction via ontology templates.
 
-Uses LiteLLM for provider-agnostic routing (Ollama, OpenAI, etc.) controlled
-by the system-wide LLM_PROVIDER setting.  Falls back to regex NER
-(app.services.ner) when the LLM is unavailable.
+Calls Ollama directly via httpx for structured-output graph extraction.
+Falls back to regex NER (app.services.ner) when the LLM is unavailable.
 
 Extraction results are imported directly into Neo4j (replaces AGE).
 """
@@ -14,6 +13,7 @@ import logging
 import time
 from typing import Any
 
+import httpx
 import networkx as nx
 import redis as redis_lib
 
@@ -26,6 +26,10 @@ from app.services.ontology_templates import (
     load_ontology,
     load_validation_matrix,
 )
+
+
+class DeterministicExtractionError(ValueError):
+    """LLM extraction failure that will not resolve on retry (empty/non-JSON output)."""
 
 logger = logging.getLogger(__name__)
 
@@ -82,26 +86,36 @@ def _extract_single_pass(
                 )
             extraction = _validate_triples(extraction, ontology_path)
             return _build_networkx_graph(extraction, document_id), "docling-graph"
-        except Exception as e:
-            if (
-                isinstance(e, ValueError)
-                and "empty response" in str(e).lower()
-                and compact_prompt is None
-            ):
+        except DeterministicExtractionError as e:
+            # Try compact prompt once on first deterministic failure
+            if compact_prompt is None:
                 compact_prompt = build_extraction_prompt(
                     ontology, text, compact_ontology=True, few_shot=True,
                 )
                 if len(compact_prompt) < len(prompt):
                     logger.warning(
-                        "LLM empty response; retrying with compact prompt (%d -> %d chars)",
-                        len(prompt), len(compact_prompt),
+                        "Deterministic extraction error; retrying with compact prompt (%d -> %d chars): %s",
+                        len(prompt), len(compact_prompt), e,
                     )
                     prompt = compact_prompt
                     continue
+            # Deterministic errors won't resolve on retry — fail immediately
+            if settings.docling_graph_require_llm:
+                logger.error(
+                    "LLM extraction failed (deterministic, fail-closed): %s", e,
+                )
+                raise
+            logger.warning(
+                "LLM extraction failed (deterministic), falling back to NER: %s", e,
+            )
+            extraction = _fallback_regex_extraction(text)
+            return _build_networkx_graph(extraction, document_id), "ner"
+        except Exception as e:
+            # Transient errors (network, timeout, etc.) — retry with backoff
             if attempt < max_attempts - 1:
                 wait = backoff * (attempt + 1)
                 logger.info(
-                    "LLM extraction attempt %d/%d failed, retrying in %ds: %s",
+                    "LLM extraction attempt %d/%d failed (transient), retrying in %ds: %s",
                     attempt + 1, max_attempts, wait, e,
                 )
                 time.sleep(wait)
@@ -298,87 +312,22 @@ def extract_and_import_to_neo4j(
     return stats
 
 
-def _get_attr_or_key(obj: Any, key: str) -> Any:
-    """Read a key from dict-like objects or attributes from class instances."""
-    if isinstance(obj, dict):
-        return obj.get(key)
-    return getattr(obj, key, None)
-
-
-def _coerce_completion_text(value: Any) -> str:
-    """Normalize completion payload variants into plain text."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts: list[str] = []
-        for item in value:
-            if isinstance(item, str):
-                parts.append(item)
-                continue
-            text = _get_attr_or_key(item, "text")
-            if isinstance(text, str):
-                parts.append(text)
-                continue
-            content = _get_attr_or_key(item, "content")
-            if isinstance(content, str):
-                parts.append(content)
-        return "\n".join(p for p in parts if p).strip()
-    if isinstance(value, dict):
-        for key in ("text", "content", "value"):
-            maybe = value.get(key)
-            if isinstance(maybe, str):
-                return maybe
-    return ""
-
-
-def _extract_response_text(response: Any) -> tuple[str, str]:
-    """Extract assistant text from LiteLLM/OpenAI/Ollama response variants."""
-    choices = _get_attr_or_key(response, "choices") or []
-    if not choices:
-        return "", "none"
-
-    choice = choices[0]
-    message = _get_attr_or_key(choice, "message")
-
-    if message is not None:
-        for field in ("content", "reasoning_content", "thinking", "reasoning"):
-            text = _coerce_completion_text(_get_attr_or_key(message, field)).strip()
-            if text:
-                return text, field
-
-    text = _coerce_completion_text(_get_attr_or_key(choice, "text")).strip()
-    if text:
-        return text, "text"
-
-    return "", "none"
-
 
 def _call_llm(prompt: str, settings) -> str:
-    """Call LLM via LiteLLM for entity/relationship extraction.
+    """Call Ollama directly via httpx for entity/relationship extraction.
 
-    Serializes Ollama calls via a Redis lock to prevent concurrent requests
-    from overwhelming the model server (same pattern as docling concurrency gate).
-    Guards against empty/None responses.
+    Uses Ollama's structured-output ``format`` parameter with the full
+    ``DocumentExtractionResult`` JSON schema so output is constrained at
+    the token-sampling level.
+
+    Serializes calls via a Redis lock to prevent concurrent requests
+    from overwhelming the model server.
     """
-    import litellm
-
-    provider = settings.llm_provider
     model = settings.docling_graph_model
-
-    if provider == "ollama":
-        model_str = f"ollama/{model}"
-        litellm.api_base = settings.ollama_base_url
-    elif provider == "openai":
-        model_str = model
-        litellm.api_key = settings.openai_api_key
-    else:
-        raise ValueError(f"Unsupported LLM provider: {provider}")
 
     logger.info(
         "LLM graph extraction: model=%s, prompt_len=%d, max_tokens=%d",
-        model_str, len(prompt), settings.docling_graph_max_tokens,
+        model, len(prompt), settings.docling_graph_max_tokens,
     )
 
     # Serialize LLM calls via Redis lock (prevents concurrent Ollama overload)
@@ -393,45 +342,47 @@ def _call_llm(prompt: str, settings) -> str:
         raise TimeoutError("Could not acquire Ollama LLM lock")
 
     try:
-        kwargs: dict[str, Any] = dict(
-            model=model_str,
-            messages=[
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
                 {
                     "role": "system",
                     "content": (
                         "You are a military/defense document analysis expert. "
-                        "Extract entities and relationships as structured JSON. "
-                        "Return ONLY valid JSON, no markdown fences."
+                        "Extract entities and relationships as structured JSON."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.1,
-            max_tokens=settings.docling_graph_max_tokens,
+            "format": DocumentExtractionResult.model_json_schema(),
+            "stream": False,
+            "options": {
+                "temperature": 0,
+                "num_ctx": settings.ollama_num_ctx,
+                "num_predict": settings.docling_graph_max_tokens,
+            },
+        }
+        response = httpx.post(
+            f"{settings.ollama_base_url}/api/chat",
+            json=payload,
             timeout=settings.docling_graph_timeout,
         )
-        if provider == "ollama":
-            kwargs["num_ctx"] = settings.ollama_num_ctx
-            kwargs["response_format"] = {"type": "json_object"}
-        response = litellm.completion(**kwargs)
+        response.raise_for_status()
     finally:
         try:
             lock.release()
         except redis_lib.exceptions.LockNotOwnedError:
             pass
 
-    content, content_field = _extract_response_text(response)
-    first_choice = (_get_attr_or_key(response, "choices") or [None])[0]
-    finish_reason = _get_attr_or_key(first_choice, "finish_reason")
+    data = response.json()
+    content = (data.get("message") or {}).get("content", "")
     if not content or not content.strip():
         logger.error(
-            "LLM returned empty response: finish_reason=%s, model=%s, prompt_len=%d",
-            finish_reason, model_str, len(prompt),
+            "LLM returned empty response: model=%s, prompt_len=%d",
+            model, len(prompt),
         )
-        raise ValueError("LLM returned empty response")
+        raise DeterministicExtractionError("LLM returned empty response")
 
-    if content_field != "content":
-        logger.info("LLM graph extraction used %s field (%d chars)", content_field, len(content))
     logger.info("LLM graph extraction response: %d chars", len(content))
     return content
 
@@ -470,7 +421,7 @@ def _parse_llm_response(response_text: str) -> DocumentExtractionResult:
 
     # All recovery failed
     snippet = response_text[:200].replace("\n", "\\n")
-    raise ValueError(f"Failed to parse LLM response as JSON. Response starts with: {snippet}")
+    raise DeterministicExtractionError(f"Failed to parse LLM response as JSON. Response starts with: {snippet}")
 
 
 def _fallback_regex_extraction(text: str) -> DocumentExtractionResult:

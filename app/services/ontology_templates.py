@@ -186,18 +186,34 @@ Output: {"entities": [{"entity_type": "RADAR_SYSTEM", "name": "AN/MPQ-53", "prop
 1. Identify all entities mentioned in the text that match the entity types above.
 2. For each entity, extract its name and any available properties.
 3. Identify relationships between entities.
-4. Return a JSON object with this exact structure:
+4. Return a JSON object matching this schema:
+
+```json
 {{
   "entities": [
-    {{"entity_type": "TYPE", "name": "...", "properties": {{}}, "confidence": 0.0-1.0}}
+    {{
+      "entity_type": "string (one of the entity types listed above)",
+      "name": "string (canonical name of the entity)",
+      "properties": {{"string": "any"}},
+      "confidence": "number (0.0 to 1.0)"
+    }}
   ],
   "relationships": [
-    {{"relationship_type": "TYPE", "from_name": "...", "from_type": "TYPE", "to_name": "...", "to_type": "TYPE", "properties": {{}}, "confidence": 0.0-1.0}}
+    {{
+      "relationship_type": "string (one of the relationship types listed above)",
+      "from_name": "string (source entity name)",
+      "from_type": "string (source entity type)",
+      "to_name": "string (target entity name)",
+      "to_type": "string (target entity type)",
+      "properties": {{"string": "any"}},
+      "confidence": "number (0.0 to 1.0)"
+    }}
   ]
 }}
+```
 
 Only extract entities and relationships you are confident about. Set confidence accordingly.
-Return ONLY valid JSON, no markdown fences or extra text.
+Return ONLY valid JSON.
 
 ## Document Text
 {text}

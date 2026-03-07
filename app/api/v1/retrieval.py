@@ -62,9 +62,15 @@ async def unified_query(
             results = await _multi_modal_pipeline(db, body)
         else:
             results = []
+    except HTTPException:
+        raise  # Let GraphRAG precondition errors propagate as-is
     except Exception as e:
         logger.warning("Query strategy %s failed: %s", body.strategy, e)
         results = []
+
+    # Backfill content_text from Postgres for results missing it (pre-existing data)
+    if body.include_context:
+        await _backfill_content_text(db, results)
 
     # Populate presigned image URLs for image-modality results
     await _populate_image_urls(db, results)
@@ -571,6 +577,13 @@ async def _graphrag_local_query(
         ),
     )
 
+    if not graphrag_results:
+        raise HTTPException(
+            status_code=404,
+            detail="GraphRAG local: no matching entities found in the knowledge graph. "
+            "Ensure documents have been ingested with successful graph extraction.",
+        )
+
     # Convert GraphRAG results to QueryResultItem format
     results = []
     for i, gr in enumerate(graphrag_results):
@@ -610,6 +623,14 @@ async def _graphrag_global_query(
     if not body.query_text:
         return []
 
+    from app.config import get_settings
+    settings = get_settings()
+    if not settings.graphrag_indexing_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="GraphRAG global search is unavailable: GRAPHRAG_INDEXING_ENABLED is false.",
+        )
+
     from app.services.graphrag_service import global_search
     from app.db.session import SyncSessionFactory
 
@@ -629,6 +650,13 @@ async def _graphrag_global_query(
             session.close()
 
     graphrag_results = await loop.run_in_executor(None, _run_global)
+
+    if not graphrag_results:
+        raise HTTPException(
+            status_code=409,
+            detail="GraphRAG global: no community reports available. "
+            "Run the GraphRAG indexing pipeline to generate community reports.",
+        )
 
     results = []
     for gr in graphrag_results:
@@ -764,17 +792,51 @@ async def _lookup_image_chunk(
 # Image URL population (presigned MinIO URLs for image results)
 # ---------------------------------------------------------------------------
 
+async def _backfill_content_text(
+    db: AsyncSession, results: list[QueryResultItem]
+) -> None:
+    """Batch-fill content_text from Postgres for results missing it.
+
+    Handles pre-existing Qdrant points that were indexed without chunk_text
+    in their payload.  Queries both text_chunks and image_chunks tables.
+    """
+    missing = [
+        r for r in results
+        if r.content_text is None and r.chunk_id is not None
+    ]
+    if not missing:
+        return
+
+    chunk_ids = [str(r.chunk_id) for r in missing]
+
+    # Batch lookup from both chunk tables
+    sql = text("""
+        SELECT id::text, chunk_text FROM retrieval.text_chunks
+        WHERE id = ANY(:ids)
+        UNION ALL
+        SELECT id::text, chunk_text FROM retrieval.image_chunks
+        WHERE id = ANY(:ids)
+    """)
+    rows = (await db.execute(sql, {"ids": chunk_ids})).fetchall()
+    text_map = {row[0]: row[1] for row in rows if row[1]}
+
+    for r in missing:
+        cid = str(r.chunk_id)
+        if cid in text_map:
+            r.content_text = text_map[cid]
+
+
 async def _populate_image_urls(
     db: AsyncSession, results: list[QueryResultItem]
 ) -> None:
     """Set image_url to the API proxy path for image-modality results.
 
-    Uses /api/v1/images/{chunk_id} which streams from MinIO, avoiding
+    Uses /v1/images/{chunk_id} which streams from MinIO, avoiding
     presigned URLs that contain the Docker-internal MinIO hostname.
     """
     for result in results:
         if result.modality in ("image", "schematic") and result.chunk_id:
-            result.image_url = f"/api/v1/images/{result.chunk_id}"
+            result.image_url = f"/v1/images/{result.chunk_id}"
 
 
 # ---------------------------------------------------------------------------
