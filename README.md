@@ -130,6 +130,7 @@ A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-depende
 # Air-gapped (Ollama) setup
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_NUM_CTX=8192                   # Context window for Ollama (must fit prompt + response)
 
 # Per-feature model selection
 DOCLING_GRAPH_MODEL=gpt-oss:20b   # Model for graph entity/relationship extraction

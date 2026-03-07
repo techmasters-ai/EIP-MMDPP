@@ -315,7 +315,7 @@ def _call_llm(prompt: str, settings) -> str:
         raise TimeoutError("Could not acquire Ollama LLM lock")
 
     try:
-        response = litellm.completion(
+        kwargs: dict[str, Any] = dict(
             model=model_str,
             messages=[
                 {
@@ -332,6 +332,9 @@ def _call_llm(prompt: str, settings) -> str:
             max_tokens=settings.docling_graph_max_tokens,
             timeout=settings.docling_graph_timeout,
         )
+        if provider == "ollama":
+            kwargs["num_ctx"] = settings.ollama_num_ctx
+        response = litellm.completion(**kwargs)
     finally:
         try:
             lock.release()
@@ -339,7 +342,12 @@ def _call_llm(prompt: str, settings) -> str:
             pass
 
     content = response.choices[0].message.content
+    finish_reason = getattr(response.choices[0], "finish_reason", None)
     if not content or not content.strip():
+        logger.error(
+            "LLM returned empty response: finish_reason=%s, model=%s, prompt_len=%d",
+            finish_reason, model_str, len(prompt),
+        )
         raise ValueError("LLM returned empty response")
 
     logger.info("LLM graph extraction response: %d chars", len(content))
