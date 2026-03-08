@@ -429,25 +429,27 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         artifact_ids = _persist_extraction_results(db, document_id, result.elements, element_uids=element_uids)
         db.flush()  # Ensure artifact rows visible for FK checks in Core SQL inserts below
 
+        # Build a lookup of image storage keys from Artifact uploads to avoid re-uploading
+        _image_storage: dict[int, tuple[str, str]] = {}
+        for idx, chunk in enumerate(result.elements):
+            if chunk.raw_image_bytes:
+                # The Artifact was already uploaded in _persist_extraction_results;
+                # query its storage_key to reuse for the DocumentElement row.
+                art = db.get(Artifact, artifact_ids[idx])
+                if art and art.storage_key:
+                    _image_storage[idx] = (art.storage_bucket, art.storage_key)
+
         # 6. Persist canonical DocumentElement rows with artifact_id linked inline
         elements_created = 0
         for idx, chunk in enumerate(result.elements):
             element_uid = element_uids[idx]
 
-            storage_bucket = None
-            storage_key = None
-
-            if chunk.raw_image_bytes:
-                ext = (chunk.metadata or {}).get("ext", "png")
-                img_key = f"artifacts/{document_id}/images/{uuid_mod.uuid4()}.{ext}"
-                upload_bytes_sync(
-                    chunk.raw_image_bytes,
-                    settings.minio_bucket_derived,
-                    img_key,
-                    content_type=f"image/{ext}",
-                )
-                storage_bucket = settings.minio_bucket_derived
-                storage_key = img_key
+            # Reuse image storage from Artifact upload (no duplicate MinIO I/O)
+            if idx in _image_storage:
+                storage_bucket, storage_key = _image_storage[idx]
+            else:
+                storage_bucket = None
+                storage_key = None
 
             element_hash = hashlib.sha256(
                 f"{document_id}:{element_uid}:{chunk.chunk_text or ''}".encode()
@@ -756,11 +758,13 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             embeddings = embed_texts(all_texts)
             model_version = settings.text_embedding_model
 
-            # Get Qdrant client for vector upsert
+            # Get Qdrant client for batch vector upsert
             from app.db.session import get_qdrant_client
-            from app.services.qdrant_store import upsert_text_vector
+            from app.services.qdrant_store import upsert_text_vectors_batch
+            from qdrant_client.models import PointStruct
             qdrant = get_qdrant_client()
 
+            qdrant_points: list[PointStruct] = []
             for (elem, idx), text, embedding in zip(all_element_refs, all_texts, embeddings):
                 # Deterministic chunk key
                 chunk_key = hashlib.sha256(
@@ -770,6 +774,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
                 qdrant_point_id = chunk_id  # Use same UUID for Qdrant
 
+                modality = elem.element_type if elem.element_type != "heading" else "text"
                 chunk_values = {
                     "id": chunk_id,
                     "artifact_id": elem.artifact_id,
@@ -777,7 +782,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     "chunk_index": idx,
                     "chunk_text": text,
                     "embedding": embedding,
-                    "modality": elem.element_type if elem.element_type != "heading" else "text",
+                    "modality": modality,
                     "page_number": elem.page_number,
                     "bounding_box": elem.bounding_box,
                     "qdrant_point_id": qdrant_point_id,
@@ -794,22 +799,24 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 )
                 db.execute(stmt)
 
-                # Upsert vector to Qdrant
-                upsert_text_vector(
-                    qdrant,
-                    point_id=qdrant_point_id,
+                qdrant_points.append(PointStruct(
+                    id=str(qdrant_point_id),
                     vector=embedding,
                     payload={
                         "chunk_id": str(chunk_id),
                         "document_id": document_id,
                         "artifact_id": str(elem.artifact_id),
-                        "modality": elem.element_type if elem.element_type != "heading" else "text",
+                        "modality": modality,
                         "page_number": elem.page_number,
                         "classification": "UNCLASSIFIED",
                         "chunk_text": text,
                     },
-                )
+                ))
                 chunks_created += 1
+
+            # Batch upsert all text vectors in one Qdrant RPC
+            if qdrant_points:
+                upsert_text_vectors_batch(qdrant, qdrant_points)
 
         db.commit()
 
@@ -911,11 +918,13 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                 image_embeddings = embed_images(pil_images)
                 model_version = settings.image_embedding_model
 
-                # Get Qdrant client for vector upsert
+                # Get Qdrant client for batch vector upsert
                 from app.db.session import get_qdrant_client
-                from app.services.qdrant_store import upsert_image_vector
+                from app.services.qdrant_store import upsert_image_vectors_batch
+                from qdrant_client.models import PointStruct
                 qdrant = get_qdrant_client()
 
+                qdrant_points: list[PointStruct] = []
                 for elem, img_embedding in zip(valid_elements, image_embeddings):
                     chunk_key = hashlib.sha256(
                         f"{document_id}:{elem.element_uid}:{model_version}".encode()
@@ -947,10 +956,8 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                     )
                     db.execute(stmt)
 
-                    # Upsert vector to Qdrant
-                    upsert_image_vector(
-                        qdrant,
-                        point_id=qdrant_point_id,
+                    qdrant_points.append(PointStruct(
+                        id=str(qdrant_point_id),
                         vector=img_embedding,
                         payload={
                             "chunk_id": str(chunk_id),
@@ -961,8 +968,12 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                             "classification": "UNCLASSIFIED",
                             "chunk_text": elem.content_text or "",
                         },
-                    )
+                    ))
                     chunks_created += 1
+
+                # Batch upsert all image vectors in one Qdrant RPC
+                if qdrant_points:
+                    upsert_image_vectors_batch(qdrant, qdrant_points)
 
         db.commit()
 
@@ -1175,17 +1186,17 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 graph_data["nodes"], elements, "ner",
             )
 
-        # Import into Neo4j with confidence quality gates
+        # Import into Neo4j with confidence quality gates (batch)
         neo4j_driver = get_neo4j_driver()
-        nodes_created = 0
         nodes_rejected = 0
-        edges_created = 0
         edges_rejected = 0
 
         node_min_conf = settings.graph_node_min_confidence
         rel_min_conf = settings.graph_rel_min_confidence
         accepted_nodes: set[str] = set()
 
+        # Collect accepted nodes for batch upsert
+        batch_nodes: list[dict] = []
         for node in graph_data.get("nodes", []):
             conf = node.get("confidence", 0.8)
             if conf < node_min_conf:
@@ -1193,17 +1204,27 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 continue
             node_name = node.get("name", node.get("id", ""))
             accepted_nodes.add(node_name)
-            node_id = upsert_node(
-                driver=neo4j_driver,
-                entity_type=node.get("entity_type", "UNKNOWN"),
-                name=node_name,
-                artifact_id=document_id,
-                confidence=conf,
-                properties=node.get("properties", {}),
-            )
-            if node_id:
-                nodes_created += 1
+            node_props = dict(node.get("properties", {}))
+            node_props.update({
+                "id": str(uuid.uuid4()),
+                "name": node_name,
+                "entity_type": node.get("entity_type", "UNKNOWN"),
+                "artifact_id": document_id,
+                "confidence": conf,
+            })
+            batch_nodes.append({
+                "entity_type": node.get("entity_type", "UNKNOWN"),
+                "name": node_name,
+                "artifact_id": document_id,
+                "confidence": conf,
+                "props": node_props,
+            })
 
+        from app.services.neo4j_graph import upsert_nodes_batch, upsert_relationships_batch
+        nodes_created = upsert_nodes_batch(neo4j_driver, batch_nodes) if batch_nodes else 0
+
+        # Collect accepted edges for batch upsert
+        batch_edges: list[dict] = []
         for edge in graph_data.get("edges", []):
             conf = edge.get("confidence", 0.8)
             from_name = edge.get("from", "")
@@ -1211,19 +1232,21 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             if conf < rel_min_conf or from_name not in accepted_nodes or to_name not in accepted_nodes:
                 edges_rejected += 1
                 continue
-            ok = upsert_relationship(
-                driver=neo4j_driver,
-                from_name=from_name,
-                from_type=edge.get("from_type", "UNKNOWN"),
-                to_name=to_name,
-                to_type=edge.get("to_type", "UNKNOWN"),
-                rel_type=edge.get("rel_type", edge.get("type", "RELATED_TO")),
-                artifact_id=document_id,
-                confidence=conf,
-                properties=edge.get("properties", {}),
-            )
-            if ok:
-                edges_created += 1
+            edge_props = dict(edge.get("properties", {}))
+            edge_props["artifact_id"] = document_id
+            edge_props["confidence"] = conf
+            batch_edges.append({
+                "from_name": from_name,
+                "from_type": edge.get("from_type", "UNKNOWN"),
+                "to_name": to_name,
+                "to_type": edge.get("to_type", "UNKNOWN"),
+                "rel_type": edge.get("rel_type", edge.get("type", "RELATED_TO")),
+                "artifact_id": document_id,
+                "confidence": conf,
+                "props": edge_props,
+            })
+
+        edges_created = upsert_relationships_batch(neo4j_driver, batch_edges) if batch_edges else 0
 
         # Store filter metadata in graph_json for auditability
         graph_data["_ingest_filter"] = {

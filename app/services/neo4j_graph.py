@@ -136,6 +136,89 @@ def upsert_relationship(
         return False
 
 
+def upsert_nodes_batch(
+    driver,
+    nodes: list[dict[str, Any]],
+) -> int:
+    """Batch upsert entity nodes grouped by label. Returns count created.
+
+    Each dict must have: entity_type, name, artifact_id, confidence, props.
+    """
+    from collections import defaultdict
+
+    by_label: dict[str, list[dict]] = defaultdict(list)
+    for n in nodes:
+        label = _sanitize_label(n["entity_type"])
+        by_label[label].append(n)
+
+    total = 0
+    try:
+        with driver.session() as session:
+            for label, group in by_label.items():
+                query = f"""
+                    UNWIND $nodes AS node
+                    MERGE (n:Entity:{label} {{name: node.name, entity_type: node.entity_type}})
+                    ON CREATE SET n += node.props
+                    ON MATCH SET
+                        n.last_artifact_id = node.artifact_id,
+                        n.confidence = CASE
+                            WHEN n.confidence < node.confidence THEN node.confidence
+                            ELSE n.confidence
+                        END
+                    RETURN count(n) AS cnt
+                """
+                result = session.run(query, nodes=group)
+                total += result.single()["cnt"]
+    except Exception as e:
+        logger.warning("upsert_nodes_batch failed: %s", e)
+
+    return total
+
+
+def upsert_relationships_batch(
+    driver,
+    edges: list[dict[str, Any]],
+) -> int:
+    """Batch upsert relationships grouped by label triple. Returns count created.
+
+    Each dict must have: from_name, from_type, to_name, to_type, rel_type,
+    artifact_id, confidence, props.
+    """
+    from collections import defaultdict
+
+    by_labels: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for e in edges:
+        key = (
+            _sanitize_label(e["from_type"]),
+            _sanitize_label(e["to_type"]),
+            _sanitize_label(e["rel_type"]),
+        )
+        by_labels[key].append(e)
+
+    total = 0
+    try:
+        with driver.session() as session:
+            for (from_label, to_label, rel_label), group in by_labels.items():
+                query = f"""
+                    UNWIND $edges AS edge
+                    MATCH (a:Entity:{from_label} {{name: edge.from_name}})
+                    MATCH (b:Entity:{to_label} {{name: edge.to_name}})
+                    MERGE (a)-[r:{rel_label} {{artifact_id: edge.artifact_id}}]->(b)
+                    ON CREATE SET r += edge.props
+                    ON MATCH SET r.confidence = CASE
+                        WHEN r.confidence < edge.confidence THEN edge.confidence
+                        ELSE r.confidence
+                    END
+                    RETURN count(r) AS cnt
+                """
+                result = session.run(query, edges=group)
+                total += result.single()["cnt"]
+    except Exception as e:
+        logger.warning("upsert_relationships_batch failed: %s", e)
+
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Document / Chunk structural operations (sync)
 # ---------------------------------------------------------------------------

@@ -354,10 +354,11 @@ Key features:
 - **Sequential structure links** — runs after embeddings are committed (avoids race condition)
 - **Entity canonicalization** — post-extraction alias resolution (exact → alias → fuzzy match → new)
 - **Idempotent writes** — deterministic chunk keys with `ON CONFLICT DO UPDATE`
-- **Dual vector store** — embeddings upserted to Qdrant with `qdrant_point_id` cross-reference in Postgres
+- **Dual vector store** — embeddings batch-upserted to Qdrant (single RPC per document) with `qdrant_point_id` cross-reference in Postgres
+- **Batch Neo4j writes** — entities and relationships grouped by label and upserted via UNWIND (one Cypher call per label group instead of per-node)
 - **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
 - **Worker split** — optional queue isolation: `docker compose --profile split up`
-- **Docling concurrency gate** — Redis semaphore with `DOCLING_CONCURRENCY` permits (default 1) controls parallel Docling conversions; queued tasks wait and retry instead of timing out; health check is advisory (logs warning but proceeds with conversion) to avoid starvation when the Docling service runs CPU-bound VLM conversion; health probe timeout configurable via `DOCLING_HEALTH_TIMEOUT` (default 60s)
+- **Docling concurrency gate** — Redis semaphore with `DOCLING_CONCURRENCY` permits (default 1) controls parallel Docling conversions; queued tasks wait and retry instead of timing out; health check is advisory (logs warning but proceeds with conversion) to avoid starvation when the Docling service runs CPU-bound VLM conversion; health probe timeout configurable via `DOCLING_HEALTH_TIMEOUT` (default 5s)
 - **Docling threadpool isolation** — The Docling service runs conversion in a threadpool (`run_in_threadpool`) so the `/health` endpoint remains responsive during CPU-bound VLM processing; an `asyncio.Semaphore` (capacity from `DOCLING_MAX_CONCURRENT`, default 1 on CPU) gates concurrent conversions and returns 503 when saturated
 - **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.); documents stay in PROCESSING status during retries and only show FAILED after all retries are exhausted
 - **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
@@ -368,7 +369,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation. By default, extraction is **fail-closed** (`DOCLING_GRAPH_REQUIRE_LLM=true`): if the LLM is unavailable or returns empty responses after all retry attempts, the pipeline stage fails instead of silently falling back to regex NER. Retries use exponential backoff (`DOCLING_GRAPH_RETRY_ATTEMPTS`, default 2; `DOCLING_GRAPH_RETRY_BACKOFF_SECONDS`, default 5). A Redis concurrency gate (`ollama:llm_extract`) serializes Ollama LLM calls to prevent overload. Large documents are chunked into overlapping windows (`GRAPH_EXTRACTION_CHUNK_SIZE`, default 2000 chars; `GRAPH_EXTRACTION_CHUNK_OVERLAP`, default 200) for extraction, then deduplicated. Extracted entities and relationships are imported directly to Neo4j with full property preservation. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
+Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation. By default, extraction is **fail-closed** (`DOCLING_GRAPH_REQUIRE_LLM=true`): if the LLM is unavailable or returns empty responses after all retry attempts, the pipeline stage fails instead of silently falling back to regex NER. Retries use exponential backoff (`DOCLING_GRAPH_RETRY_ATTEMPTS`, default 2; `DOCLING_GRAPH_RETRY_BACKOFF_SECONDS`, default 5). A Redis concurrency gate (`ollama:llm_extract`) serializes Ollama LLM calls to prevent overload. Large documents are chunked into overlapping windows (`GRAPH_EXTRACTION_CHUNK_SIZE`, default 5000 chars; `GRAPH_EXTRACTION_CHUNK_OVERLAP`, default 500) for extraction, then deduplicated. Extracted entities and relationships are imported directly to Neo4j with full property preservation. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
 
 ## Data Migration (from AGE)
 
@@ -453,6 +454,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.13 | Retrieval fixes: text preview hydration (chunk_text in Qdrant payload + Postgres backfill), image URL prefix fix, GraphRAG precondition checks (404/409 instead of silent empty) | Complete |
 | 2.14 | Docling 503 storm fix: increased timeouts (30 min for large PDFs), fixed concurrency=1 to match Docling capacity, SoftTimeLimitExceeded no longer consumes retry budget, 503 uses 5-min backoff | Complete |
 | 2.15 | GraphRAG report generation: LiteLLM → direct Ollama httpx (matching extraction path), manual indexing trigger (`POST /v1/graphrag/index`), removed litellm dependency. Ingest page: historical document listing per source with live status polling and retry. | Complete |
+| 2.16 | Pipeline performance: batch Qdrant upserts, batch Neo4j UNWIND writes, duplicate image upload elimination, Celery prefetch=1, graph chunk size 5000→2.5× fewer LLM calls, split worker profile in manage.sh, 16GB GPU .env optimization | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

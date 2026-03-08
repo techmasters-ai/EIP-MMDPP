@@ -45,6 +45,8 @@ celery_app.conf.update(
     # Retry defaults
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    # Prevent long tasks from starving short ones
+    worker_prefetch_multiplier=1,
     # Beat schedule
     beat_schedule={
         "scan-watch-directories": {

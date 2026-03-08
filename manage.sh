@@ -3,7 +3,8 @@
 # EIP-MMDPP — Project management CLI
 # ============================================================
 # Usage:
-#   ./manage.sh --start          Build and start all services
+#   ./manage.sh --start          Build and start all services (single worker)
+#   ./manage.sh --start-split    Build and start with split workers (ingest/embed/graph)
 #   ./manage.sh --stop           Stop all services
 #   ./manage.sh --restart        Restart without rebuild
 #   ./manage.sh --status         Show status and health checks
@@ -119,10 +120,19 @@ wait_for_healthy() {
 # Service lifecycle commands
 # ---------------------------------------------------------------------------
 cmd_start() {
-  header "Starting EIP-MMDPP stack"
+  local profile="${1:-}"
+  local profile_args=()
 
-  info "Building and starting all services..."
-  dc up -d --build
+  if [[ "${profile}" == "split" ]]; then
+    header "Starting EIP-MMDPP stack (split workers)"
+    profile_args=(--profile split)
+    info "Building and starting with split workers (ingest/embed/graph)..."
+  else
+    header "Starting EIP-MMDPP stack"
+    info "Building and starting all services..."
+  fi
+
+  dc "${profile_args[@]}" up -d --build
 
   local api_port="${API_PORT:-8000}"
   divider
@@ -135,6 +145,9 @@ cmd_start() {
   info "  API:           http://localhost:${api_port}/v1"
   info "  API docs:      http://localhost:${api_port}/docs"
   info "  MinIO console: http://localhost:${MINIO_CONSOLE_PORT:-9001}"
+  if [[ "${profile}" == "split" ]]; then
+    info "  Workers:       ingest(${WORKER_INGEST_CONCURRENCY:-4}), embed(${WORKER_EMBED_CONCURRENCY:-2}), graph(${WORKER_GRAPH_CONCURRENCY:-2})"
+  fi
 }
 
 cmd_stop() {
@@ -301,7 +314,8 @@ ${BOLD}EIP-MMDPP Management CLI${NC}
 ${CYAN}Usage:${NC}  ./manage.sh <command> [args]
 
 ${CYAN}Service Lifecycle:${NC}
-  --start              Build images and start all services; wait for health
+  --start              Build images and start all services (single mixed worker)
+  --start-split        Build and start with split workers (ingest/embed/graph)
   --stop               Stop all services gracefully (preserves data)
   --restart            Restart without rebuilding images
   --status             Show service status and health checks
@@ -321,7 +335,8 @@ ${CYAN}Testing:${NC}
                        Modes: all (default), unit, integration, contract, e2e
 
 ${CYAN}Examples:${NC}
-  ./manage.sh --start                  # Build & start everything
+  ./manage.sh --start                  # Build & start (single worker)
+  ./manage.sh --start-split            # Build & start (split workers)
   ./manage.sh --logs worker            # Follow worker logs
   ./manage.sh --db-shell               # Open psql
   ./manage.sh --test unit              # Run unit tests only
@@ -347,6 +362,7 @@ main() {
 
   case "${1}" in
     --start)          cmd_start ;;
+    --start-split)    cmd_start split ;;
     --stop)           cmd_stop ;;
     --restart)        cmd_restart ;;
     --status)         cmd_status ;;
