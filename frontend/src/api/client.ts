@@ -154,6 +154,11 @@ export async function createSource(name: string, description?: string): Promise<
 // Documents
 // ---------------------------------------------------------------------------
 
+export async function listDocumentsBySource(sourceId: string): Promise<Document[]> {
+  const res = await fetch(`/v1/sources/${sourceId}/documents`);
+  return handleResponse<Document[]>(res);
+}
+
 export async function getDocumentStatus(documentId: string): Promise<Document> {
   const res = await fetch(`/v1/documents/${documentId}/status`);
   return handleResponse<Document>(res);

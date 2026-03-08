@@ -25,7 +25,7 @@ from typing import Optional
 import httpx
 import redis as redis_lib
 from celery import chain, chord, group
-from celery.exceptions import Retry as CeleryRetry
+from celery.exceptions import Retry as CeleryRetry, SoftTimeLimitExceeded
 
 from app.workers.celery_app import celery_app
 from app.config import get_settings
@@ -534,6 +534,15 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
 
     except CeleryRetry:
         raise
+    except SoftTimeLimitExceeded as exc:
+        # Task killed mid-wait or mid-conversion — Docling may still be working on
+        # this or another document.  Re-queue without consuming the retry budget.
+        logger.warning(
+            "prepare_document: soft time limit for %s — re-queuing in 180s (attempt %d, not counted)",
+            document_id, self.request.retries + 1,
+        )
+        db.rollback()
+        raise self.retry(exc=exc, countdown=180)
     except Exception as exc:
         logger.error("prepare_document failed for %s: %s", document_id, exc)
         db.rollback()
@@ -564,6 +573,16 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 db.rollback()
                 # Fall through to normal retry/fail logic
 
+        # Docling 503 (busy, not broken): use longer countdown since Docling is
+        # actively processing another document and will become available eventually.
+        countdown = settings.prepare_retry_delay
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 503:
+            countdown = 300  # 5 min — wait for current conversion to finish
+            logger.info(
+                "prepare_document: Docling busy (503) for %s — retrying in %ds",
+                document_id, countdown,
+            )
+
         if self.request.retries >= self.max_retries:
             _update_document_status(
                 document_id, STATUS_FAILED, stage="prepare_document", error=str(exc)
@@ -574,7 +593,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 db.commit()
             raise
         logger.info("prepare_document: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc, countdown=countdown)
     finally:
         db.close()
 

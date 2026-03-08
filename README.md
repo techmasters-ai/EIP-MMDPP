@@ -282,7 +282,7 @@ See `ontology/base.yaml` for the full schema.
 
 Community detection and cross-community search powered by Microsoft's `graphrag` library:
 
-- **Indexing**: Celery Beat runs Leiden/Louvain community detection on the Neo4j graph, then generates LLM community reports (configurable interval via `GRAPHRAG_INDEXING_INTERVAL_MINUTES`)
+- **Indexing**: Celery Beat runs Leiden/Louvain community detection on the Neo4j graph, then generates LLM community reports (configurable interval via `GRAPHRAG_INDEXING_INTERVAL_MINUTES`). Manual trigger: `POST /v1/graphrag/index` dispatches the task immediately (Redis lock prevents overlapping runs)
 - **Local search**: Entity-centric retrieval with community report context — finds relevant entities and enriches results with their community summaries
 - **Global search**: Cross-community summarization — retrieves and ranks community reports for broad analytical questions
 
@@ -319,7 +319,7 @@ Images are served via the API proxy (`GET /v1/images/{chunk_id}`) which streams 
 
 ### Document Upload (`FileUpload`)
 
-Drag-and-drop or click-to-upload with real-time pipeline status polling. Supports PDF, DOCX, PNG, JPG, TIFF. Adaptive polling intervals (2s → 5s → 10s) based on elapsed time. Retry button for FAILED/ERROR documents.
+Drag-and-drop or click-to-upload with real-time pipeline status polling. Supports PDF, DOCX, PNG, JPG, TIFF. Adaptive polling intervals (2s → 5s → 10s) based on elapsed time. Retry button for FAILED/ERROR documents. When a source is selected, shows all historical documents for that source with live status updates and retry support.
 
 ### Other Pages
 
@@ -451,6 +451,8 @@ Start command: `docker compose --profile split up -d --build`
 | 2.11 | Graph extraction hardening (fail-closed, retry/backoff, concurrency gate) + Docling health-check fix (threadpool, advisory probe) + Search UI overhaul (4-mode selector, modality sub-filter, GraphRAG entity/report exploration, image proxy, result card improvements) + Polling fix | Complete |
 | 2.12 | LLM extraction reliability: Ollama structured outputs (full JSON schema via `format`), direct httpx (removed LiteLLM), deterministic error classification (skip retries for empty/non-JSON), Docling 5xx fallback gate | Complete |
 | 2.13 | Retrieval fixes: text preview hydration (chunk_text in Qdrant payload + Postgres backfill), image URL prefix fix, GraphRAG precondition checks (404/409 instead of silent empty) | Complete |
+| 2.14 | Docling 503 storm fix: increased timeouts (30 min for large PDFs), fixed concurrency=1 to match Docling capacity, SoftTimeLimitExceeded no longer consumes retry budget, 503 uses 5-min backoff | Complete |
+| 2.15 | GraphRAG report generation: LiteLLM → direct Ollama httpx (matching extraction path), manual indexing trigger (`POST /v1/graphrag/index`), removed litellm dependency. Ingest page: historical document listing per source with live status polling and retry. | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

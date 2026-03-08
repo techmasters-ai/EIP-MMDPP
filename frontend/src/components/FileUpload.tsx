@@ -2,9 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   batchDocumentStatus,
   createSource,
+  listDocumentsBySource,
   listSources,
   reingestDocument,
   uploadFile,
+  type Document,
   type Source,
 } from "../api/client";
 
@@ -69,6 +71,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
   const [directoryMode, setDirectoryMode] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [existingDocs, setExistingDocs] = useState<Document[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -82,13 +85,28 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
       .catch(() => {/* sources list optional */});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Load existing documents when selected source changes
+  useEffect(() => {
+    if (!selectedSourceId) {
+      setExistingDocs([]);
+      return;
+    }
+    listDocumentsBySource(selectedSourceId)
+      .then(setExistingDocs)
+      .catch(() => setExistingDocs([]));
+  }, [selectedSourceId]);
+
   // Poll pipeline status using batch endpoint with adaptive interval.
   // Dependency is the set of pending document IDs (not entries itself),
   // so status updates from polling don't reset the timer/startTime.
   const TERMINAL = new Set(["COMPLETE", "ERROR", "FAILED", "PARTIAL_COMPLETE", "PENDING_HUMAN_REVIEW"]);
-  const pendingIdsKey = entries
+  const pendingEntryIds = entries
     .filter((e) => e.documentId && !TERMINAL.has(e.status))
-    .map((e) => e.documentId!)
+    .map((e) => e.documentId!);
+  const pendingExistingIds = existingDocs
+    .filter((d) => !TERMINAL.has(d.pipeline_status))
+    .map((d) => d.id);
+  const pendingIdsKey = [...pendingEntryIds, ...pendingExistingIds]
     .sort()
     .join(",");
   const pollStartRef = useRef<number>(0);
@@ -118,6 +136,13 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
             const doc = statusMap.get(entry.documentId);
             if (!doc) return entry;
             return { ...entry, status: doc.pipeline_status, error: doc.error_message || entry.error };
+          }),
+        );
+        // Also update existing docs with new statuses
+        setExistingDocs((prev) =>
+          prev.map((d) => {
+            const updated = statusMap.get(d.id);
+            return updated ? { ...d, pipeline_status: updated.pipeline_status, error_message: updated.error_message } : d;
           }),
         );
       } catch {
@@ -380,6 +405,58 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
           </button>
         </div>
       )}
+
+      {/* Existing documents for selected source */}
+      {selectedSourceId && existingDocs.length > 0 && (() => {
+        const uploadedIds = new Set(entries.map((e) => e.documentId).filter(Boolean));
+        const filtered = existingDocs.filter((d) => !uploadedIds.has(d.id));
+        if (filtered.length === 0) return null;
+        return (
+          <div style={{ marginTop: "2rem" }}>
+            <h4 style={{ marginBottom: "0.5rem" }}>Source Documents</h4>
+            <div className="file-list">
+              {filtered.map((doc) => (
+                <div key={doc.id} className="file-item">
+                  <span className="file-item-name" title={doc.filename}>
+                    {doc.filename}
+                  </span>
+                  <span className="text-xs text-muted">
+                    {new Date(doc.created_at).toLocaleDateString()}
+                  </span>
+
+                  <StatusBadge status={doc.pipeline_status} />
+
+                  {(doc.pipeline_status === "FAILED" || doc.pipeline_status === "ERROR") && (
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      onClick={async () => {
+                        try {
+                          await reingestDocument(doc.id);
+                          setExistingDocs((prev) =>
+                            prev.map((d) =>
+                              d.id === doc.id ? { ...d, pipeline_status: "PENDING" } : d,
+                            ),
+                          );
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : "Retry failed");
+                        }
+                      }}
+                    >
+                      Retry
+                    </button>
+                  )}
+
+                  {doc.error_message && (
+                    <span className="text-xs text-muted" title={doc.error_message}>
+                      ⚠
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

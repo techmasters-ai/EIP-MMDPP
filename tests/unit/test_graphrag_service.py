@@ -90,13 +90,6 @@ try:
 except ImportError:
     _has_networkx = False
 
-try:
-    import litellm
-    _has_litellm = True
-except ImportError:
-    _has_litellm = False
-
-
 @pytest.mark.skipif(not _has_networkx, reason="networkx not installed")
 class TestDetectCommunities:
     def test_empty_entities(self):
@@ -143,7 +136,6 @@ class TestDetectCommunities:
 # _generate_community_reports
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _has_litellm, reason="litellm not installed")
 class TestGenerateCommunityReports:
     def test_mock_provider_returns_canned_reports(self):
         from app.services.graphrag_service import _generate_community_reports
@@ -174,6 +166,39 @@ class TestGenerateCommunityReports:
         assert "report_text" in r
         assert "summary" in r
         assert "rank" in r
+
+    @patch("httpx.post")
+    def test_ollama_provider_calls_httpx(self, mock_post):
+        from app.services.graphrag_service import _generate_community_reports
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={
+                "message": {"content": "This community contains radar systems."},
+            }),
+            raise_for_status=MagicMock(),
+        )
+        communities = [{"community_id": "0", "entity_names": ["A"], "title": "C0"}]
+        entities = [{"name": "A", "entity_type": "RadarSystem"}]
+        settings = _mock_settings(llm_provider="ollama", ollama_num_ctx=32768)
+        reports = _generate_community_reports(communities, entities, [], settings)
+        assert len(reports) == 1
+        assert "radar" in reports[0]["report_text"].lower()
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "/api/chat" in call_args[0][0]
+
+    @patch("httpx.post")
+    def test_ollama_empty_response_skipped(self, mock_post):
+        from app.services.graphrag_service import _generate_community_reports
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=MagicMock(return_value={"message": {"content": ""}}),
+            raise_for_status=MagicMock(),
+        )
+        communities = [{"community_id": "0", "entity_names": ["A"], "title": "C0"}]
+        settings = _mock_settings(llm_provider="ollama", ollama_num_ctx=32768)
+        reports = _generate_community_reports(communities, [], [], settings)
+        assert len(reports) == 0
 
 
 # ---------------------------------------------------------------------------

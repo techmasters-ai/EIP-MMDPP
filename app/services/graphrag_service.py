@@ -269,12 +269,9 @@ def _generate_community_reports(
     settings,
 ) -> list[dict[str, Any]]:
     """Generate natural-language community reports via LLM."""
-    import litellm
+    import httpx
 
-    provider = settings.llm_provider
-    model = settings.graphrag_model
-
-    if provider == "mock":
+    if settings.llm_provider == "mock":
         return [
             {
                 "community_id": c["community_id"],
@@ -284,16 +281,6 @@ def _generate_community_reports(
             }
             for c in communities
         ]
-
-    if provider == "ollama":
-        model_str = f"ollama/{model}"
-        litellm.api_base = settings.ollama_base_url
-    elif provider == "openai":
-        model_str = model
-        litellm.api_key = settings.openai_api_key
-    else:
-        model_str = f"ollama/{model}"
-        litellm.api_base = settings.ollama_base_url
 
     # Build entity lookup
     entity_map = {e["name"]: e for e in entities}
@@ -333,17 +320,34 @@ Write a concise report (2-3 paragraphs) explaining:
 Return ONLY the report text, no JSON or markdown fences."""
 
         try:
-            response = litellm.completion(
-                model=model_str,
-                messages=[
+            payload = {
+                "model": settings.graphrag_model,
+                "messages": [
                     {"role": "system", "content": "You are a military intelligence analyst."},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.3,
-                max_tokens=1024,
+                "stream": False,
+                "options": {
+                    "temperature": 0.3,
+                    "num_predict": 1024,
+                    "num_ctx": settings.ollama_num_ctx,
+                },
+            }
+            response = httpx.post(
+                f"{settings.ollama_base_url}/api/chat",
+                json=payload,
                 timeout=60,
             )
-            report_text = response.choices[0].message.content.strip()
+            response.raise_for_status()
+            report_text = (
+                (response.json().get("message") or {}).get("content", "").strip()
+            )
+            if not report_text:
+                logger.warning(
+                    "Empty report for community %s — skipping",
+                    community["community_id"],
+                )
+                continue
 
             reports.append({
                 "community_id": community["community_id"],

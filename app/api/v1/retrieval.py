@@ -840,6 +840,23 @@ async def _populate_image_urls(
 
 
 # ---------------------------------------------------------------------------
+# GraphRAG manual indexing trigger
+# ---------------------------------------------------------------------------
+
+
+@router.post("/graphrag/index")
+async def trigger_graphrag_indexing():
+    """Dispatch GraphRAG community detection + report generation as a Celery task.
+
+    The task is idempotent — a Redis lock prevents overlapping runs.
+    """
+    from app.workers.graphrag_tasks import run_graphrag_indexing_task
+
+    task = run_graphrag_indexing_task.delay()
+    return {"status": "indexing_started", "task_id": str(task.id)}
+
+
+# ---------------------------------------------------------------------------
 # Memory query — Cognee search (unchanged)
 # ---------------------------------------------------------------------------
 
