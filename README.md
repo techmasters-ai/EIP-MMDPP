@@ -455,6 +455,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.14 | Docling 503 storm fix: increased timeouts (30 min for large PDFs), fixed concurrency=1 to match Docling capacity, SoftTimeLimitExceeded no longer consumes retry budget, 503 uses 5-min backoff | Complete |
 | 2.15 | GraphRAG report generation: LiteLLM → direct Ollama httpx (matching extraction path), manual indexing trigger (`POST /v1/graphrag/index`), removed litellm dependency. Ingest page: historical document listing per source with live status polling and retry. | Complete |
 | 2.16 | Pipeline performance: batch Qdrant upserts, batch Neo4j UNWIND writes, duplicate image upload elimination, Celery prefetch=1, graph chunk size 5000→2.5× fewer LLM calls, split worker profile in manage.sh, 16GB GPU .env optimization | Complete |
+| 2.17 | Pipeline stabilization: Docling timeout 300→1500s, 503 retries no longer consume budget, truncated LLM JSON repair (json-repair), chord group tasks return error dicts (finalize always runs), GraphRAG routed off ingest worker, graph chunk size 2500 / max tokens 1200 | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

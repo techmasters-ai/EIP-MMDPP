@@ -39,6 +39,7 @@ celery_app.conf.update(
         "app.workers.pipeline.finalize_document": {"queue": "ingest"},
         "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
         "app.workers.trusted_data_tasks.index_trusted_submission": {"queue": "trusted"},
+        "app.workers.graphrag_tasks.run_graphrag_indexing_task": {"queue": "graph"},
     },
     # Task result expiry
     result_expires=86400,  # 24 hours

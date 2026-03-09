@@ -63,6 +63,7 @@ dependencies = [
 
     # Utilities
     "httpx>=0.28.0",
+    "json-repair>=0.30.0",
     "jsonpatch>=1.33",
     "cachetools>=5.5.0",
     "python-jose[cryptography]>=3.3.0",

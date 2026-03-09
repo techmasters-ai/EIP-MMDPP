@@ -419,6 +419,17 @@ def _parse_llm_response(response_text: str) -> DocumentExtractionResult:
         except json.JSONDecodeError:
             pass
 
+    # Recovery: repair truncated JSON (e.g. LLM output cut off at token limit)
+    try:
+        from json_repair import repair_json
+        repaired_str = repair_json(cleaned, return_objects=False)
+        data = json.loads(repaired_str)
+        if isinstance(data, dict):
+            logger.info("JSON repair succeeded (truncated output recovered)")
+            return DocumentExtractionResult(**data)
+    except Exception as repair_exc:
+        logger.debug("json-repair failed: %s", repair_exc)
+
     # All recovery failed
     snippet = response_text[:200].replace("\n", "\\n")
     raise DeterministicExtractionError(f"Failed to parse LLM response as JSON. Response starts with: {snippet}")

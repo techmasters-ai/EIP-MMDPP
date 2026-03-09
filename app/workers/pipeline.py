@@ -575,15 +575,16 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 db.rollback()
                 # Fall through to normal retry/fail logic
 
-        # Docling 503 (busy, not broken): use longer countdown since Docling is
-        # actively processing another document and will become available eventually.
-        countdown = settings.prepare_retry_delay
+        # Docling 503 (busy, not broken): re-queue without consuming the retry
+        # budget — mirrors the SoftTimeLimitExceeded pattern above.
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 503:
-            countdown = 300  # 5 min — wait for current conversion to finish
             logger.info(
-                "prepare_document: Docling busy (503) for %s — retrying in %ds",
-                document_id, countdown,
+                "prepare_document: Docling busy (503) for %s — re-queuing in 300s (not counted)",
+                document_id,
             )
+            raise self.retry(exc=exc, countdown=300)
+
+        countdown = settings.prepare_retry_delay
 
         if self.request.retries >= self.max_retries:
             _update_document_status(
@@ -847,7 +848,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             if run_id:
                 _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
-            raise
+            return {"stage": "derive_text_embeddings", "status": "failed", "error": str(exc)}
         logger.info("derive_text_chunks_and_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
@@ -1004,7 +1005,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
             if run_id:
                 _update_stage_run(db, run_id, "derive_image_embeddings", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
-            raise
+            return {"stage": "derive_image_embeddings", "status": "failed", "error": str(exc)}
         logger.info("derive_image_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
@@ -1325,7 +1326,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                     "derive_ontology_graph: deterministic failure for %s — skipping retries",
                     document_id,
                 )
-            raise
+            return {"stage": "derive_ontology_graph", "status": "failed", "error": str(exc)}
         logger.info("derive_ontology_graph: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:
@@ -1658,7 +1659,12 @@ def collect_derivations(self, derivation_results: list[dict], document_id: str, 
             "collect_derivations: document_id=%s results=%s",
             document_id, derivation_results,
         )
-        failed = [r["stage"] for r in (derivation_results or []) if r.get("status") not in ("ok", "skipped")]
+        failed = []
+        for r in (derivation_results or []):
+            if not isinstance(r, dict):
+                failed.append(str(r))
+            elif r.get("status") not in ("ok", "skipped"):
+                failed.append(r.get("stage", "unknown"))
         if failed:
             logger.warning(
                 "collect_derivations: document_id=%s failed_stages=%s", document_id, failed
