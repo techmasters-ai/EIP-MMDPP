@@ -425,7 +425,25 @@ def _parse_llm_response(response_text: str) -> DocumentExtractionResult:
         repaired_str = repair_json(cleaned, return_objects=False)
         data = json.loads(repaired_str)
         if isinstance(data, dict):
-            logger.info("JSON repair succeeded (truncated output recovered)")
+            # Filter out incomplete entities/relationships that may result
+            # from truncation (missing required fields like name/entity_type).
+            if "entities" in data:
+                data["entities"] = [
+                    e for e in data["entities"]
+                    if isinstance(e, dict) and e.get("entity_type") and e.get("name")
+                ]
+            if "relationships" in data:
+                data["relationships"] = [
+                    r for r in data["relationships"]
+                    if isinstance(r, dict)
+                    and r.get("relationship_type")
+                    and r.get("from_name")
+                    and r.get("to_name")
+                ]
+            logger.info(
+                "JSON repair succeeded (truncated output recovered): %d entities, %d relationships",
+                len(data.get("entities", [])), len(data.get("relationships", [])),
+            )
             return DocumentExtractionResult(**data)
     except Exception as repair_exc:
         logger.debug("json-repair failed: %s", repair_exc)

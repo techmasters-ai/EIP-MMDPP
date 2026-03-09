@@ -558,24 +558,27 @@ async def _graphrag_local_query(
         return []
 
     from app.services.graphrag_service import local_search
-    from app.db.session import get_neo4j_driver
+    from app.db.session import get_neo4j_driver, SyncSessionFactory
 
-    # GraphRAG local_search uses sync Neo4j driver internally
+    # GraphRAG local_search uses sync Neo4j driver + sync DB session
     import asyncio
     loop = asyncio.get_event_loop()
     neo4j_driver = get_neo4j_driver()
-    qdrant_client = get_qdrant_async_client()
 
-    graphrag_results = await loop.run_in_executor(
-        None,
-        lambda: local_search(
-            query=body.query_text,
-            neo4j_driver=neo4j_driver,
-            qdrant_client=None,  # Not used in current implementation
-            db_session=None,  # Will create own session for community lookup
-            limit=body.top_k,
-        ),
-    )
+    def _run_local():
+        session = SyncSessionFactory()
+        try:
+            return local_search(
+                query=body.query_text,
+                neo4j_driver=neo4j_driver,
+                qdrant_client=None,
+                db_session=session,
+                limit=body.top_k,
+            )
+        finally:
+            session.close()
+
+    graphrag_results = await loop.run_in_executor(None, _run_local)
 
     if not graphrag_results:
         raise HTTPException(

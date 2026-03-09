@@ -97,13 +97,19 @@ def local_search(
     results = []
 
     try:
-        # Find matching entities
-        from app.services.neo4j_graph import search_nodes_by_name
-        entity_matches = search_nodes_by_name(neo4j_driver, query, limit=limit)
+        # Find matching entities via fulltext index (handles multi-word queries)
+        from app.services.neo4j_graph import fulltext_search_entity
+        ft_matches = fulltext_search_entity(neo4j_driver, query, limit=limit)
 
-        if not entity_matches:
+        if not ft_matches:
             logger.info("GraphRAG local: no entity matches for query '%s'", query)
             return results
+
+        # Reshape fulltext results — pass through all node fields
+        entity_matches = [
+            {"node": m, "entity_type": m.get("entity_type")}
+            for m in ft_matches
+        ]
 
         # Get community context for matched entities
         community_context = _get_entity_community_context(db_session, entity_matches)

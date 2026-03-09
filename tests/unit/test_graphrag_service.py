@@ -272,20 +272,20 @@ class TestRunGraphragIndexing:
 
 class TestLocalSearch:
     @patch("app.services.graphrag_service._get_entity_community_context", return_value={})
-    @patch("app.services.neo4j_graph.search_nodes_by_name")
+    @patch("app.services.neo4j_graph.fulltext_search_entity")
     def test_returns_entity_results(self, mock_search, mock_ctx):
         from app.services.graphrag_service import local_search
-        mock_search.return_value = [{"node": {"name": "A"}, "entity_type": "T"}]
+        mock_search.return_value = [{"name": "A", "canonical_name": None, "entity_type": "T", "score": 1.0}]
         results = local_search("radar", MagicMock(), MagicMock(), MagicMock())
         assert len(results) == 1
 
     @patch("app.services.graphrag_service._get_entity_community_context", return_value={})
-    @patch("app.services.neo4j_graph.search_nodes_by_name", return_value=[])
+    @patch("app.services.neo4j_graph.fulltext_search_entity", return_value=[])
     def test_empty_matches(self, mock_search, mock_ctx):
         from app.services.graphrag_service import local_search
         assert local_search("nothing", MagicMock(), MagicMock(), MagicMock()) == []
 
-    @patch("app.services.neo4j_graph.search_nodes_by_name", side_effect=Exception("fail"))
+    @patch("app.services.neo4j_graph.fulltext_search_entity", side_effect=Exception("fail"))
     def test_exception_returns_empty(self, mock_search):
         from app.services.graphrag_service import local_search
         assert local_search("q", MagicMock(), MagicMock(), MagicMock()) == []

@@ -26,6 +26,7 @@ import httpx
 import redis as redis_lib
 from celery import chain, chord, group
 from celery.exceptions import Retry as CeleryRetry, SoftTimeLimitExceeded
+from celery.signals import worker_ready
 
 from app.workers.celery_app import celery_app
 from app.config import get_settings
@@ -42,6 +43,38 @@ STATUS_COMPLETE = "COMPLETE"
 STATUS_PARTIAL_COMPLETE = "PARTIAL_COMPLETE"
 STATUS_FAILED = "FAILED"
 STATUS_PENDING_REVIEW = "PENDING_HUMAN_REVIEW"
+
+
+@worker_ready.connect
+def _cleanup_stale_runs(sender, **kwargs):
+    """Reset documents stuck in PROCESSING from prior worker crashes."""
+    from app.db.session import get_sync_session
+    from sqlalchemy import text
+
+    db = get_sync_session()
+    try:
+        result = db.execute(text("""
+            UPDATE ingest.documents
+            SET pipeline_status = 'PENDING'
+            WHERE pipeline_status = 'PROCESSING'
+            RETURNING id
+        """))
+        stale_ids = [str(r[0]) for r in result.fetchall()]
+
+        db.execute(text("""
+            UPDATE ingest.stage_runs
+            SET status = 'PENDING'
+            WHERE status = 'RUNNING'
+        """))
+
+        db.commit()
+        if stale_ids:
+            logger.info("Cleaned up %d stale PROCESSING documents: %s", len(stale_ids), stale_ids)
+    except Exception as e:
+        logger.warning("Stale document cleanup failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
 
 
 def _get_db():
@@ -294,7 +327,8 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30,
-                 soft_time_limit=600, time_limit=660)
+                 soft_time_limit=settings.prepare_soft_time_limit,
+                 time_limit=settings.prepare_time_limit)
 def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     """Validate + detect + Docling convert + persist document_elements.
 
@@ -401,7 +435,25 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                     "prepare_document: Docling health check failed (advisory) for %s — proceeding with convert",
                     document_id,
                 )
-            result = convert_document_sync(file_bytes, doc.filename or "document")
+
+            # In-task retry loop for 503 (Docling busy with ghost request from
+            # a previous timed-out attempt).  Sleeps and retries WITHOUT consuming
+            # the Celery retry budget.  The Redis lock stays held during this loop
+            # so no other tasks attempt to send to Docling concurrently.
+            _max_503_retries = 10
+            for _503_attempt in range(_max_503_retries):
+                try:
+                    result = convert_document_sync(file_bytes, doc.filename or "document")
+                    break  # success
+                except httpx.HTTPStatusError as _docling_exc:
+                    if _docling_exc.response.status_code != 503 or _503_attempt >= _max_503_retries - 1:
+                        raise
+                    _wait = min(120, 30 * (_503_attempt + 1))  # 30s, 60s, 90s, 120s cap
+                    logger.info(
+                        "prepare_document: Docling 503 for %s — in-task wait %ds (%d/%d)",
+                        document_id, _wait, _503_attempt + 1, _max_503_retries,
+                    )
+                    _time.sleep(_wait)
         finally:
             try:
                 docling_lock.release()
@@ -575,15 +627,26 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 db.rollback()
                 # Fall through to normal retry/fail logic
 
-        # Docling 503 (busy, not broken): re-queue without consuming the retry
-        # budget — mirrors the SoftTimeLimitExceeded pattern above.
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 503:
-            logger.info(
-                "prepare_document: Docling busy (503) for %s — re-queuing in 300s (not counted)",
-                document_id,
+        # Deterministic Docling errors (VlmPipeline failed, unsupported format)
+        # won't resolve on retry — fail immediately.
+        _deterministic_markers = ("VlmPipeline failed", "unsupported format", "invalid PDF")
+        if isinstance(exc, RuntimeError) and any(m in str(exc) for m in _deterministic_markers):
+            logger.warning(
+                "prepare_document: deterministic Docling failure for %s — skipping retries: %s",
+                document_id, exc,
             )
-            raise self.retry(exc=exc, countdown=300)
+            _update_document_status(
+                document_id, STATUS_FAILED, stage="prepare_document", error=str(exc)
+            )
+            run_id_for_err = run_id or _get_pipeline_run_id(db, document_id)
+            if run_id_for_err:
+                _update_stage_run(db, run_id_for_err, "prepare_document", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+                db.commit()
+            raise
 
+        # 503 is now handled by the in-task retry loop above; if we still
+        # reach here with a 503 it means all in-task retries were exhausted —
+        # treat it as a normal error and let the Celery retry budget handle it.
         countdown = settings.prepare_retry_delay
 
         if self.request.retries >= self.max_retries:
@@ -601,7 +664,8 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         db.close()
 
 
-@celery_app.task(bind=True, soft_time_limit=120, time_limit=180, queue="ingest")
+@celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,
+                 time_limit=settings.finalize_time_limit, queue="ingest")
 def purge_document_derivations(self, document_id: str, run_id: str | None = None) -> str:
     """Delete stale derived data for a document before re-deriving.
 
@@ -698,7 +762,8 @@ def purge_document_derivations(self, document_id: str, run_id: str | None = None
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
-                 soft_time_limit=300, time_limit=360)
+                 soft_time_limit=settings.embed_soft_time_limit,
+                 time_limit=settings.embed_time_limit)
 def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
 
@@ -856,7 +921,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
-                 soft_time_limit=300, time_limit=360)
+                 soft_time_limit=settings.embed_soft_time_limit,
+                 time_limit=settings.embed_time_limit)
 def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read image document_elements → CLIP embed → upsert image_chunks.
 
@@ -1069,7 +1135,8 @@ def _build_entity_mentions(
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
-                 soft_time_limit=600, time_limit=660)
+                 soft_time_limit=settings.graph_soft_time_limit,
+                 time_limit=settings.graph_time_limit)
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
     """Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to Neo4j.
 
@@ -1334,7 +1401,8 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
-                 soft_time_limit=120, time_limit=180)
+                 soft_time_limit=settings.finalize_soft_time_limit,
+                 time_limit=settings.finalize_time_limit)
 def derive_structure_links(self, document_id: str, run_id: str | None = None) -> dict:
     """Generate chunk_links and structural AGE edges.
 
@@ -1685,7 +1753,8 @@ def collect_derivations(self, derivation_results: list[dict], document_id: str, 
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
-                 soft_time_limit=120, time_limit=180)
+                 soft_time_limit=settings.finalize_soft_time_limit,
+                 time_limit=settings.finalize_time_limit)
 def derive_canonicalization(self, document_id: str, run_id: str | None = None) -> dict:
     """Post-extraction entity canonicalization pass.
 
@@ -1744,7 +1813,8 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
         db.close()
 
 
-@celery_app.task(bind=True, soft_time_limit=120, time_limit=180)
+@celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,
+                 time_limit=settings.finalize_time_limit)
 def finalize_document(self, document_id: str, run_id: str | None = None) -> None:
     """Mark pipeline COMPLETE if all required stages succeeded."""
     from app.models.ingest import PipelineRun, StageRun
