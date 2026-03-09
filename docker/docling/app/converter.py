@@ -120,7 +120,7 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
         )
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
-        logger.error("Docling conversion failed for %s: %s", filename, exc)
+        logger.exception("Docling conversion failed for %s: %s", filename, exc)
         return ConvertResponse(
             status="error",
             filename=filename,

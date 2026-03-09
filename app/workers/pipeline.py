@@ -77,6 +77,24 @@ def _cleanup_stale_runs(sender, **kwargs):
         db.close()
 
 
+def _dedupe_extracted_elements(chunks: list) -> tuple[list, int]:
+    """Remove exact duplicate extracted elements conservatively.
+
+    Dedup key: (modality, page_number, section_path, content_text, bounding_box).
+    Preserves first-occurrence order. Keeps duplicates across different pages/sections.
+    """
+    seen: set[str] = set()
+    result = []
+    for chunk in chunks:
+        section_path = (getattr(chunk, "metadata", None) or {}).get("section_path", "")
+        key = f"{chunk.modality}|{chunk.page_number}|{section_path}|{chunk.chunk_text}|{chunk.bounding_box}"
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(chunk)
+    return result, len(chunks) - len(result)
+
+
 def _get_db():
     """Get a synchronous DB session for Celery worker use."""
     from app.db.session import get_sync_session
@@ -464,7 +482,15 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             len(result.elements), result.num_pages, result.processing_time_ms,
         )
 
-        # 4. Build element_uids, then persist Artifacts with deterministic IDs
+        # 4. Deduplicate extracted elements (conservative: same modality+page+section+text+bbox)
+        result.elements, _dups_dropped = _dedupe_extracted_elements(result.elements)
+        if _dups_dropped:
+            logger.info(
+                "prepare_document: %d elements after dedup (%d duplicates dropped) for %s",
+                len(result.elements), _dups_dropped, document_id,
+            )
+
+        # 5. Build element_uids, then persist Artifacts with deterministic IDs
         element_uids: list[str] = []
         elements_created = 0
         for chunk in result.elements:
@@ -810,18 +836,26 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
         all_texts = []
         all_element_refs = []
+        _seen_chunk_texts: set[str] = set()
 
         for elem in elements:
             if not elem.content_text:
                 continue
             text_chunks_list = chunk_text(elem.content_text)
             for idx, chunk_str in enumerate(text_chunks_list):
+                if chunk_str in _seen_chunk_texts:
+                    continue
+                _seen_chunk_texts.add(chunk_str)
                 all_texts.append(chunk_str)
                 all_element_refs.append((elem, idx))
 
         chunks_created = 0
         if all_texts:
-            embeddings = embed_texts(all_texts)
+            # Batch embedding to limit memory for very large documents
+            _embed_batch = settings.embed_text_batch_size
+            embeddings: list[list[float]] = []
+            for _eb_start in range(0, len(all_texts), _embed_batch):
+                embeddings.extend(embed_texts(all_texts[_eb_start:_eb_start + _embed_batch]))
             model_version = settings.text_embedding_model
 
             # Get Qdrant client for batch vector upsert
@@ -880,9 +914,11 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 ))
                 chunks_created += 1
 
-            # Batch upsert all text vectors in one Qdrant RPC
+            # Batch upsert text vectors in bounded Qdrant RPCs
             if qdrant_points:
-                upsert_text_vectors_batch(qdrant, qdrant_points)
+                _upsert_batch = settings.qdrant_upsert_batch_size
+                for _qb_start in range(0, len(qdrant_points), _upsert_batch):
+                    upsert_text_vectors_batch(qdrant, qdrant_points[_qb_start:_qb_start + _upsert_batch])
 
         db.commit()
 
@@ -914,6 +950,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED", attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             return {"stage": "derive_text_embeddings", "status": "failed", "error": str(exc)}
+        if run_id:
+            _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+            db.commit()
         logger.info("derive_text_chunks_and_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
     finally:

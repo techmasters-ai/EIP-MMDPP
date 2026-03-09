@@ -116,8 +116,8 @@ def get_qdrant_client():
     if _qdrant_client is None:
         from qdrant_client import QdrantClient
 
-        _qdrant_client = QdrantClient(url=settings.qdrant_url)
-        logger.info("Qdrant sync client created: %s", settings.qdrant_url)
+        _qdrant_client = QdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_seconds)
+        logger.info("Qdrant sync client created: %s (timeout=%ss)", settings.qdrant_url, settings.qdrant_timeout_seconds)
     return _qdrant_client
 
 
@@ -127,6 +127,6 @@ def get_qdrant_async_client():
     if _qdrant_async_client is None:
         from qdrant_client import AsyncQdrantClient
 
-        _qdrant_async_client = AsyncQdrantClient(url=settings.qdrant_url)
-        logger.info("Qdrant async client created: %s", settings.qdrant_url)
+        _qdrant_async_client = AsyncQdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_seconds)
+        logger.info("Qdrant async client created: %s (timeout=%ss)", settings.qdrant_url, settings.qdrant_timeout_seconds)
     return _qdrant_async_client

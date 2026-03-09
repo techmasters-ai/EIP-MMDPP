@@ -354,6 +354,8 @@ Key features:
 - **Sequential structure links** — runs after embeddings are committed (avoids race condition)
 - **Entity canonicalization** — post-extraction alias resolution (exact → alias → fuzzy match → new)
 - **Idempotent writes** — deterministic chunk keys with `ON CONFLICT DO UPDATE`
+- **Ingest dedup** — duplicate extracted elements (same modality+page+section+text+bbox) suppressed before persistence; text chunks deduplicated by content before embedding to prevent redundant Qdrant vectors
+- **Retrieval diversity** — content-level deduplication across all search modes: `_text_vector_search` over-fetches candidates (`RETRIEVAL_DIVERSITY_OVERSAMPLE_FACTOR`, default 8×) then deduplicates by `(document_id, page_number, normalized_text)` keeping highest score; hybrid pipeline applies same diversity pass after chunk-id dedup
 - **Dual vector store** — embeddings batch-upserted to Qdrant (single RPC per document) with `qdrant_point_id` cross-reference in Postgres
 - **Batch Neo4j writes** — entities and relationships grouped by label and upserted via UNWIND (one Cypher call per label group instead of per-node)
 - **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
@@ -363,6 +365,8 @@ Key features:
 - **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.); documents stay in PROCESSING status during retries and only show FAILED after all retries are exhausted; Docling 503 (busy) and `SoftTimeLimitExceeded` retries do NOT consume the retry budget
 - **Chord resilience** — derivation tasks (text/image embeddings, graph extraction) return error dicts instead of raising on terminal failure, ensuring the chord callback and `finalize_document` always execute
 - **Truncated JSON repair** — LLM graph extraction output truncated by token limits is automatically repaired via `json-repair` before falling back to `DeterministicExtractionError`
+- **Recursive chunk splitting** — when a graph extraction chunk fails with deterministic LLM error, the chunk is recursively halved (2500→1250→625, floor 600 chars) and each sub-chunk retried; partial graph from successful chunks/sub-chunks still allows COMPLETE status; only total failure of all chunks triggers PARTIAL_COMPLETE
+- **Batched text embedding + Qdrant upserts** — large documents (thousands of text elements) no longer send all vectors in a single Qdrant RPC; embedding and upserts are batched via `EMBED_TEXT_BATCH_SIZE` and `QDRANT_UPSERT_BATCH_SIZE` (default 128 each); Qdrant client timeout configurable via `QDRANT_TIMEOUT_SECONDS` (default 60s)
 - **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks read from env-var settings at registration time (not hardcoded), ensuring `.env` tuning takes effect without code changes
 - **Stale run cleanup** — on worker startup, documents stuck in PROCESSING (from prior crashes) are reset to PENDING for re-processing via Celery `worker_ready` signal
@@ -460,6 +464,8 @@ Start command: `docker compose --profile split up -d --build`
 | 2.16 | Pipeline performance: batch Qdrant upserts, batch Neo4j UNWIND writes, duplicate image upload elimination, Celery prefetch=1, graph chunk size 5000→2.5× fewer LLM calls, split worker profile in manage.sh, 16GB GPU .env optimization | Complete |
 | 2.17 | Pipeline stabilization: Docling timeout 300→1500s, in-task 503 retry loop (no budget consumed), truncated LLM JSON repair with entity filtering (json-repair), chord tasks return error dicts (finalize always runs), deterministic VlmPipeline failures fail-fast, GraphRAG routed off ingest worker, GraphRAG local search uses fulltext index, graph chunk size 2500 / max tokens 1200 | Complete |
 | 2.18 | Runtime config alignment: Celery task time limits read from settings (not hardcoded in decorators), GraphRAG local search passes sync DB session for community report enrichment, fulltext entity results preserve all node fields, stale PROCESSING/RUNNING cleanup on worker startup | Complete |
+| 2.19 | Large document resilience: batched text embedding + Qdrant upserts (EMBED_TEXT_BATCH_SIZE, QDRANT_UPSERT_BATCH_SIZE, QDRANT_TIMEOUT_SECONDS), recursive chunk splitting on graph extraction failure (2500→1250→625 chars), stage_run marked FAILED before retry (no stale RUNNING rows), config defaults aligned with .env | Complete |
+| 2.20 | Search result diversity: content-level dedup in all search modes (over-fetch + diversify by doc/page/text), ingest-time element dedup (conservative modality+page+section+text+bbox key), text chunk dedup before embedding | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

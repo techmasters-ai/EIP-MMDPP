@@ -94,8 +94,8 @@ class Settings(BaseSettings):
 
     # docling-graph extraction settings
     docling_graph_timeout: float = 300.0
-    graph_extraction_chunk_size: int = 5000
-    graph_extraction_chunk_overlap: int = 500
+    graph_extraction_chunk_size: int = 2500
+    graph_extraction_chunk_overlap: int = 300
 
     # Docling-graph extraction behavior
     docling_graph_require_llm: bool = True
@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     qdrant_text_collection: str = "eip_text_chunks"
     qdrant_image_collection: str = "eip_image_chunks"
     qdrant_trusted_text_collection: str = "eip_trusted_text"
+    qdrant_upsert_batch_size: int = 128
+    qdrant_timeout_seconds: float = 60.0
+
+    # Embedding batching
+    embed_text_batch_size: int = 128
 
     # GraphRAG (community detection + reports)
     graphrag_model: str = "llama3.2"
@@ -223,6 +228,10 @@ class Settings(BaseSettings):
     # Legacy decay (fallback when chunk_links unavailable)
     retrieval_cross_modal_decay: float = 0.85
     retrieval_ontology_decay: float = 0.75
+
+    # Retrieval diversity (content-level dedup)
+    retrieval_diversity_oversample_factor: int = 8
+    retrieval_diversity_max_candidates: int = 800
 
 
 @lru_cache

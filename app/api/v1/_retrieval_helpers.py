@@ -126,6 +126,23 @@ def deduplicate_results(results: list[QueryResultItem]) -> list[QueryResultItem]
     return list(best.values())
 
 
+def diversify_results(results: list[QueryResultItem]) -> list[QueryResultItem]:
+    """Content-level dedupe: keep highest-scoring entry per unique text within same doc+page.
+
+    Non-text modalities (image, graph_node) and items without content_text pass through.
+    """
+    best: dict[str, QueryResultItem] = {}
+    for r in results:
+        if r.modality in ("image", "graph_node") or not r.content_text:
+            best[str(id(r))] = r
+            continue
+        normalized = r.content_text.strip().lower()
+        key = f"{r.document_id}:{r.page_number}:{normalized}"
+        if key not in best or r.score > best[key].score:
+            best[key] = r
+    return list(best.values())
+
+
 # ---------------------------------------------------------------------------
 # Parameterized filter builders (SQL injection safe)
 # ---------------------------------------------------------------------------

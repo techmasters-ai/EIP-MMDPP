@@ -16,6 +16,7 @@ from app.api.v1._retrieval_helpers import (
     build_text_filters as _build_text_filters,
     compute_fusion_score,
     deduplicate_results as _deduplicate_results,
+    diversify_results as _diversify_results,
     get_cross_modal_decay,
     get_ontology_decay,
 )
@@ -167,8 +168,9 @@ async def _multi_modal_pipeline(
 
     all_results = seed_results + expanded
 
-    # Step 3: Deduplicate by chunk_id, keep highest score
+    # Step 3: Deduplicate by chunk_id, then by content
     deduped = _deduplicate_results(all_results)
+    deduped = _diversify_results(deduped)
 
     # Step 4: Filter by modality
     if body.modality_filter == ModalityFilter.text:
@@ -266,15 +268,24 @@ async def _text_vector_search(
     # Build Qdrant filter from request filters
     qdrant_filters = _build_qdrant_filters(body)
 
+    from app.config import get_settings as _get_settings
+    _settings = _get_settings()
+
+    # Over-fetch to compensate for content-level dedup
+    oversample = min(
+        body.top_k * _settings.retrieval_diversity_oversample_factor,
+        _settings.retrieval_diversity_max_candidates,
+    )
+
     qdrant_client = get_qdrant_async_client()
     hits = await search_text_vectors_async(
         qdrant_client,
         query_vector=query_embedding,
-        limit=body.top_k,
+        limit=oversample,
         filters=qdrant_filters,
     )
 
-    # Map Qdrant results back to QueryResultItem using payload metadata
+    # Map Qdrant results — always fetch chunk_text for content dedup
     results = []
     for hit in hits:
         payload = hit.get("payload", {})
@@ -285,11 +296,21 @@ async def _text_vector_search(
                 document_id=payload.get("document_id"),
                 score=float(hit.get("score", 0.0)),
                 modality=payload.get("modality", "text"),
-                content_text=payload.get("chunk_text") if body.include_context else None,
+                content_text=payload.get("chunk_text"),
                 page_number=payload.get("page_number"),
                 classification=payload.get("classification", "UNCLASSIFIED"),
             )
         )
+
+    # Content-level diversification, then trim to requested top_k
+    results = _diversify_results(results)
+    results.sort(key=lambda r: r.score, reverse=True)
+    results = results[:body.top_k]
+
+    # Strip content_text if not requested
+    if not body.include_context:
+        for r in results:
+            r.content_text = None
 
     return results
 

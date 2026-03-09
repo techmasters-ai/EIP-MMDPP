@@ -137,6 +137,80 @@ def _extract_single_pass(
     raise RuntimeError("Extraction loop exited without result")
 
 
+_MIN_RECURSIVE_CHUNK_SIZE = 600
+
+
+def _extract_with_recursive_split(
+    chunk_text: str,
+    document_id: str,
+    ontology_path=None,
+    depth: int = 0,
+) -> tuple[nx.DiGraph, str]:
+    """Try extraction; on deterministic failure, split chunk and retry sub-chunks.
+
+    Recursively halves the chunk (floor _MIN_RECURSIVE_CHUNK_SIZE) until extraction
+    succeeds or the chunk is too small. Partial results from successful sub-chunks
+    are merged.
+    """
+    try:
+        return _extract_single_pass(chunk_text, document_id, ontology_path=ontology_path)
+    except DeterministicExtractionError:
+        if len(chunk_text) <= _MIN_RECURSIVE_CHUNK_SIZE:
+            raise  # Too small to split further
+
+        mid = len(chunk_text) // 2
+        logger.info(
+            "Recursive split: chunk %d chars → 2x ~%d chars (depth=%d) for %s",
+            len(chunk_text), mid, depth + 1, document_id,
+        )
+
+        sub_graphs: list[tuple[nx.DiGraph, str]] = []
+        for sub in [chunk_text[:mid], chunk_text[mid:]]:
+            try:
+                sub_graphs.append(
+                    _extract_with_recursive_split(sub, document_id, ontology_path, depth + 1)
+                )
+            except DeterministicExtractionError:
+                continue  # Sub-chunk also failed, skip it
+
+        if not sub_graphs:
+            raise DeterministicExtractionError(
+                f"All sub-chunks failed at depth {depth + 1} for document {document_id}"
+            )
+
+        # Merge successful sub-chunk graphs
+        merged = DocumentExtractionResult()
+        actual_provider = None
+        for sg, sp in sub_graphs:
+            if actual_provider is None:
+                actual_provider = sp
+            _collect_graph_into_result(sg, merged)
+
+        merged = _deduplicate_extraction(merged)
+        return _build_networkx_graph(merged, document_id), actual_provider or "ner"
+
+
+def _collect_graph_into_result(graph: nx.DiGraph, result: DocumentExtractionResult) -> None:
+    """Collect entities and relationships from a NetworkX graph into a DocumentExtractionResult."""
+    for node_id, data in graph.nodes(data=True):
+        result.entities.append(ExtractedEntity(
+            entity_type=data.get("entity_type", "UNKNOWN"),
+            name=data.get("name", str(node_id)),
+            properties=data.get("properties", {}),
+            confidence=data.get("confidence", 0.5),
+        ))
+    for u, v, data in graph.edges(data=True):
+        result.relationships.append(ExtractedRelationship(
+            relationship_type=data.get("relationship_type", "RELATED_TO"),
+            from_name=graph.nodes[u].get("name", str(u)),
+            from_type=graph.nodes[u].get("entity_type", "UNKNOWN"),
+            to_name=graph.nodes[v].get("name", str(v)),
+            to_type=graph.nodes[v].get("entity_type", "UNKNOWN"),
+            properties=data.get("properties", {}),
+            confidence=data.get("confidence", 0.5),
+        ))
+
+
 def extract_graph_from_text_chunked(
     text: str,
     document_id: str,
@@ -150,6 +224,9 @@ def extract_graph_from_text_chunked(
     For short text (<= chunk_size), delegates to a single pass.
     For longer text, splits into overlapping chunks, extracts from each,
     deduplicates entities/relationships, and returns merged results.
+
+    On per-chunk failure, recursively splits the failing chunk into smaller
+    pieces. Only fails the entire stage if ALL chunks fail.
 
     Returns (graph, provider) where provider reflects the actual method used.
     """
@@ -174,31 +251,35 @@ def extract_graph_from_text_chunked(
     # Extract from each chunk and merge
     merged = DocumentExtractionResult()
     actual_provider: str | None = None
+    failed_chunks = 0
 
     for i, chunk_text in enumerate(chunks):
-        chunk_graph, chunk_provider = _extract_single_pass(
-            chunk_text, document_id, ontology_path=ontology_path,
-        )
+        try:
+            chunk_graph, chunk_provider = _extract_with_recursive_split(
+                chunk_text, document_id, ontology_path=ontology_path,
+            )
+        except Exception as e:
+            failed_chunks += 1
+            logger.warning(
+                "extract_graph_from_text_chunked: chunk %d/%d failed for %s: %s",
+                i + 1, len(chunks), document_id, e,
+            )
+            continue
+
         if actual_provider is None:
             actual_provider = chunk_provider
 
-        for node_id, data in chunk_graph.nodes(data=True):
-            merged.entities.append(ExtractedEntity(
-                entity_type=data.get("entity_type", "UNKNOWN"),
-                name=data.get("name", str(node_id)),
-                properties=data.get("properties", {}),
-                confidence=data.get("confidence", 0.5),
-            ))
-        for u, v, data in chunk_graph.edges(data=True):
-            merged.relationships.append(ExtractedRelationship(
-                relationship_type=data.get("relationship_type", "RELATED_TO"),
-                from_name=chunk_graph.nodes[u].get("name", str(u)),
-                from_type=chunk_graph.nodes[u].get("entity_type", "UNKNOWN"),
-                to_name=chunk_graph.nodes[v].get("name", str(v)),
-                to_type=chunk_graph.nodes[v].get("entity_type", "UNKNOWN"),
-                properties=data.get("properties", {}),
-                confidence=data.get("confidence", 0.5),
-            ))
+        _collect_graph_into_result(chunk_graph, merged)
+
+    if failed_chunks:
+        logger.info(
+            "extract_graph_from_text_chunked: %d/%d chunks failed for %s — partial graph extracted",
+            failed_chunks, len(chunks), document_id,
+        )
+    if failed_chunks == len(chunks):
+        raise DeterministicExtractionError(
+            f"All {len(chunks)} chunks failed extraction for document {document_id}"
+        )
 
     merged = _deduplicate_extraction(merged)
     return _build_networkx_graph(merged, document_id), actual_provider or "ner"
