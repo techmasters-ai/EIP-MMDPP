@@ -466,6 +466,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.18 | Runtime config alignment: Celery task time limits read from settings (not hardcoded in decorators), GraphRAG local search passes sync DB session for community report enrichment, fulltext entity results preserve all node fields, stale PROCESSING/RUNNING cleanup on worker startup | Complete |
 | 2.19 | Large document resilience: batched text embedding + Qdrant upserts (EMBED_TEXT_BATCH_SIZE, QDRANT_UPSERT_BATCH_SIZE, QDRANT_TIMEOUT_SECONDS), recursive chunk splitting on graph extraction failure (2500→1250→625 chars), stage_run marked FAILED before retry (no stale RUNNING rows), config defaults aligned with .env | Complete |
 | 2.20 | Search result diversity: content-level dedup in all search modes (over-fetch + diversify by doc/page/text), ingest-time element dedup (conservative modality+page+section+text+bbox key), text chunk dedup before embedding | Complete |
+| 2.21 | Large-document timeout fix: `DOCLING_TIMEOUT_SECONDS` 300→3600, `PREPARE_SOFT_TIME_LIMIT` 1800→4200, `DOCLING_LOCK_TIMEOUT` 1800→4200 (90-page PDFs take ~30 min on CPU), pinned docling==2.76.0/docling-core==2.67.1, full traceback logging on Docling errors | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

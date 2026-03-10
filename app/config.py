@@ -134,7 +134,7 @@ class Settings(BaseSettings):
 
     # Docling document conversion service (granite-docling-258M VLM)
     docling_service_url: str = "http://docling:8001"
-    docling_timeout_seconds: float = 300.0
+    docling_timeout_seconds: float = 3600.0
     docling_fallback_enabled: bool = False  # fall back to legacy extraction if Docling is down
 
     # OCR thresholds
@@ -148,8 +148,8 @@ class Settings(BaseSettings):
     # Pipeline retry & time-limit settings (env-var configurable)
     prepare_max_retries: int = 3
     prepare_retry_delay: int = 30
-    prepare_soft_time_limit: int = 1800
-    prepare_time_limit: int = 1860
+    prepare_soft_time_limit: int = 4200
+    prepare_time_limit: int = 4260
     embed_max_retries: int = 2
     embed_retry_delay: int = 60
     embed_soft_time_limit: int = 300
@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     # Docling concurrency: max concurrent Docling conversions (Redis semaphore)
     docling_concurrency: int = 1
     # Lock timeout (auto-release if worker crashes)
-    docling_lock_timeout: int = 1800
+    docling_lock_timeout: int = 4200
     # Health probe timeout (seconds)
     docling_health_timeout: float = 10.0
 
