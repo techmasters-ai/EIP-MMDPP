@@ -156,8 +156,8 @@ class Settings(BaseSettings):
     embed_time_limit: int = 360
     graph_max_retries: int = 2
     graph_retry_delay: int = 60
-    graph_soft_time_limit: int = 600
-    graph_time_limit: int = 660
+    graph_soft_time_limit: int = 1800
+    graph_time_limit: int = 1860
     finalize_max_retries: int = 1
     finalize_retry_delay: int = 30
     finalize_soft_time_limit: int = 120

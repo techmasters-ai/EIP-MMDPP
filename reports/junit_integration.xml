@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="80" failures="0" skipped="0" tests="80" time="2.692" timestamp="2026-03-10T09:10:51.098456-05:00" hostname="TMI-L00002851"><testcase classname="tests.integration.test_agent_api" name="test_agent_context_basic_returns_200" time="0.004"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="80" failures="0" skipped="0" tests="80" time="2.222" timestamp="2026-03-10T18:19:30.585499-05:00" hostname="TMI-L00002851"><testcase classname="tests.integration.test_agent_api" name="test_agent_context_basic_returns_200" time="0.002"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 ../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:730: in pytest_fixture_setup
@@ -8,35 +8,35 @@ tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_legacy_mode_text_only_returns_200" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_legacy_mode_text_only_returns_200" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_legacy_mode_images_only_returns_200" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_legacy_mode_images_only_returns_200" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_legacy_mode_multi_modal_returns_200" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_legacy_mode_multi_modal_returns_200" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_memory_mode_returns_422" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_memory_mode_returns_422" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_default_strategy_is_basic" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_default_strategy_is_basic" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
@@ -92,14 +92,14 @@ tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_top_k_over_max_returns_422" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_top_k_over_max_returns_422" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_sources_have_required_fields" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_sources_have_required_fields" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
@@ -113,7 +113,7 @@ tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_no_results_message" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_agent_api" name="test_agent_context_no_results_message" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app
@@ -225,7 +225,7 @@ tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_pipeline_graph.TestDeriveOntologyGraph" name="test_ner_extraction_produces_entities" time="0.041"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'psycopg2'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:730: in pytest_fixture_setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_pipeline_graph.TestDeriveOntologyGraph" name="test_ner_extraction_produces_entities" time="0.038"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'psycopg2'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:730: in pytest_fixture_setup
     return (yield)
             ^^^^^
 tests/conftest.py:50: in sync_engine
@@ -283,7 +283,7 @@ E   ModuleNotFoundError: No module named 'psycopg2'</error></testcase><testcase 
             ^^^^^^^^^^^^^^^^^^^^^^^^
 ../../.local/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/psycopg2.py:696: in import_dbapi
     import psycopg2
-E   ModuleNotFoundError: No module named 'psycopg2'</error></testcase><testcase classname="tests.integration.test_pipeline_graph.TestDoclingGraphPath" name="test_docling_graph_provider_set_correctly" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'psycopg2'&quot;">tests/conftest.py:50: in sync_engine
+E   ModuleNotFoundError: No module named 'psycopg2'</error></testcase><testcase classname="tests.integration.test_pipeline_graph.TestDoclingGraphPath" name="test_docling_graph_provider_set_correctly" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'psycopg2'&quot;">tests/conftest.py:50: in sync_engine
     engine = create_engine(test_db_url, echo=False)
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ../../.local/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py:281: in warned
@@ -294,7 +294,7 @@ E   ModuleNotFoundError: No module named 'psycopg2'</error></testcase><testcase 
             ^^^^^^^^^^^^^^^^^^^^^^^^
 ../../.local/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/psycopg2.py:696: in import_dbapi
     import psycopg2
-E   ModuleNotFoundError: No module named 'psycopg2'</error></testcase><testcase classname="tests.integration.test_pipeline_graph.TestDoclingGraphPath" name="test_silent_fallback_sets_provider_ner" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'psycopg2'&quot;">tests/conftest.py:50: in sync_engine
+E   ModuleNotFoundError: No module named 'psycopg2'</error></testcase><testcase classname="tests.integration.test_pipeline_graph.TestDoclingGraphPath" name="test_silent_fallback_sets_provider_ner" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'psycopg2'&quot;">tests/conftest.py:50: in sync_engine
     engine = create_engine(test_db_url, echo=False)
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ../../.local/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py:281: in warned
@@ -589,7 +589,7 @@ tests/conftest.py:96: in app
     from app.main import create_app
 app/main.py:7: in &lt;module&gt;
     import structlog
-E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_unified_query_api" name="test_empty_query_text_only_returns_422" time="0.001"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
+E   ModuleNotFoundError: No module named 'structlog'</error></testcase><testcase classname="tests.integration.test_unified_query_api" name="test_empty_query_text_only_returns_422" time="0.000"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'structlog'&quot;">../../.local/lib/python3.12/site-packages/pytest_asyncio/plugin.py:458: in setup
     return super().setup()
            ^^^^^^^^^^^^^^^
 tests/conftest.py:96: in app

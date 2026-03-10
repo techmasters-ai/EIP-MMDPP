@@ -250,6 +250,33 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
         db.add(elem)
 
 
+@celery_app.task(bind=True)
+def _chord_error_handler(self, request, exc, traceback, document_id: str, run_id: str | None = None):
+    """Errback for chord failures (e.g. hard time limit kills a chord member)."""
+    logger.error("Chord failed for document %s: %s", document_id, exc)
+    _update_document_status(
+        document_id, STATUS_FAILED,
+        stage="chord_error", error=str(exc),
+    )
+    if run_id:
+        db = _get_db()
+        try:
+            from app.models.ingest import PipelineRun
+            from sqlalchemy import update as sql_update
+            import datetime
+            db.execute(
+                sql_update(PipelineRun)
+                .where(PipelineRun.id == uuid.UUID(run_id))
+                .values(status="FAILED", finished_at=datetime.datetime.now(datetime.timezone.utc))
+            )
+            db.commit()
+        except Exception as e:
+            logger.warning("_chord_error_handler: failed to update pipeline run %s: %s", run_id, e)
+            db.rollback()
+        finally:
+            db.close()
+
+
 def start_ingest_pipeline(document_id: str) -> str:
     """Enqueue the ingest pipeline for a document. Returns Celery task ID."""
     # Create PipelineRun before enqueuing so all stages share the same run_id
@@ -259,6 +286,8 @@ def start_ingest_pipeline(document_id: str) -> str:
         db.commit()
     finally:
         db.close()
+
+    errback = _chord_error_handler.s(document_id, run_id)
 
     pipeline = chain(
         prepare_document.si(document_id, run_id),
@@ -270,7 +299,7 @@ def start_ingest_pipeline(document_id: str) -> str:
                 derive_ontology_graph.si(document_id, run_id),
             ),
             collect_derivations.s(document_id, run_id),
-        ),
+        ).on_error(errback),
         derive_structure_links.si(document_id, run_id),
         derive_canonicalization.si(document_id, run_id),
         finalize_document.si(document_id, run_id),
@@ -938,6 +967,14 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
     except CeleryRetry:
         raise
+    except SoftTimeLimitExceeded:
+        logger.warning("derive_text_chunks_and_embeddings: soft time limit for %s", document_id)
+        db.rollback()
+        if run_id:
+            _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED",
+                              attempt=self.request.retries + 1, error="soft time limit exceeded")
+            db.commit()
+        return {"stage": "derive_text_embeddings", "status": "failed", "error": "soft time limit exceeded"}
     except Exception as exc:
         logger.error("derive_text_chunks_and_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
@@ -1099,6 +1136,14 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
 
     except CeleryRetry:
         raise
+    except SoftTimeLimitExceeded:
+        logger.warning("derive_image_embeddings: soft time limit for %s", document_id)
+        db.rollback()
+        if run_id:
+            _update_stage_run(db, run_id, "derive_image_embeddings", "FAILED",
+                              attempt=self.request.retries + 1, error="soft time limit exceeded")
+            db.commit()
+        return {"stage": "derive_image_embeddings", "status": "failed", "error": "soft time limit exceeded"}
     except Exception as exc:
         logger.error("derive_image_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
@@ -1411,6 +1456,14 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
 
     except CeleryRetry:
         raise
+    except SoftTimeLimitExceeded:
+        logger.warning("derive_ontology_graph: soft time limit for %s", document_id)
+        db.rollback()
+        if run_id:
+            _update_stage_run(db, run_id, "derive_ontology_graph", "FAILED",
+                              attempt=self.request.retries + 1, error="soft time limit exceeded")
+            db.commit()
+        return {"stage": "derive_ontology_graph", "status": "failed", "error": "soft time limit exceeded"}
     except Exception as exc:
         from app.services.docling_graph_service import DeterministicExtractionError
 
