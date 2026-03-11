@@ -67,9 +67,20 @@ def _cleanup_stale_runs(sender, **kwargs):
             WHERE status = 'RUNNING'
         """))
 
+        # Mark stale pipeline_runs as FAILED so queued tasks from those runs
+        # will be caught by the supersession guard in prepare_document.
+        db.execute(text("""
+            UPDATE ingest.pipeline_runs
+            SET status = 'FAILED', finished_at = NOW()
+            WHERE status = 'PROCESSING'
+        """))
+
         db.commit()
         if stale_ids:
-            logger.info("Cleaned up %d stale PROCESSING documents: %s", len(stale_ids), stale_ids)
+            # Also clear Redis singleflight locks for stale documents
+            for stale_id in stale_ids:
+                _redis_client.delete(f"prepare:{stale_id}")
+            logger.info("Cleaned up %d stale PROCESSING documents (+ Redis locks): %s", len(stale_ids), stale_ids)
     except Exception as e:
         logger.warning("Stale document cleanup failed: %s", e)
         db.rollback()
@@ -148,20 +159,32 @@ def _persist_extraction_results(db, document_id: str, chunks, element_uids: list
     If *element_uids* is provided (one per chunk, same order), each Artifact
     gets a deterministic ID derived from document_id + element_uid.
 
+    Uses ON CONFLICT DO UPDATE so reingest/retry with the same deterministic
+    IDs is idempotent (updates mutable fields, preserves classification).
+
     Returns the list of artifact IDs (in chunk order).
     """
     import uuid as uuid_mod
+    from sqlalchemy import func as sa_func
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
     from app.models.ingest import Artifact
     from app.services.storage import upload_bytes_sync
 
     artifact_ids: list[uuid.UUID] = []
     for idx, chunk in enumerate(chunks):
+        # Compute artifact_id first so image storage keys are deterministic
+        artifact_id = (
+            _deterministic_artifact_id(document_id, element_uids[idx])
+            if element_uids
+            else uuid_mod.uuid4()
+        )
+
         storage_bucket = None
         storage_key = None
 
         if chunk.raw_image_bytes:
             ext = chunk.metadata.get("ext", "png")
-            img_key = f"artifacts/{document_id}/images/{uuid_mod.uuid4()}.{ext}"
+            img_key = f"artifacts/{document_id}/images/{artifact_id}.{ext}"
             upload_bytes_sync(
                 chunk.raw_image_bytes,
                 settings.minio_bucket_derived,
@@ -171,27 +194,39 @@ def _persist_extraction_results(db, document_id: str, chunks, element_uids: list
             storage_bucket = settings.minio_bucket_derived
             storage_key = img_key
 
-        artifact_id = (
-            _deterministic_artifact_id(document_id, element_uids[idx])
-            if element_uids
-            else uuid_mod.uuid4()
-        )
+        values = {
+            "id": artifact_id,
+            "document_id": uuid.UUID(document_id),
+            "artifact_type": chunk.modality,
+            "content_text": chunk.chunk_text,
+            "content_metadata": chunk.metadata,
+            "storage_bucket": storage_bucket,
+            "storage_key": storage_key,
+            "page_number": chunk.page_number,
+            "bounding_box": chunk.bounding_box,
+            "ocr_confidence": chunk.ocr_confidence,
+            "ocr_engine": chunk.ocr_engine,
+            "requires_human_review": chunk.requires_human_review,
+        }
 
-        artifact = Artifact(
-            id=artifact_id,
-            document_id=uuid.UUID(document_id),
-            artifact_type=chunk.modality,
-            content_text=chunk.chunk_text,
-            content_metadata=chunk.metadata,
-            storage_bucket=storage_bucket,
-            storage_key=storage_key,
-            page_number=chunk.page_number,
-            bounding_box=chunk.bounding_box,
-            ocr_confidence=chunk.ocr_confidence,
-            ocr_engine=chunk.ocr_engine,
-            requires_human_review=chunk.requires_human_review,
+        stmt = pg_insert(Artifact).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            constraint="artifacts_pkey",
+            set_={
+                "artifact_type": stmt.excluded.artifact_type,
+                "content_text": stmt.excluded.content_text,
+                "content_metadata": stmt.excluded.content_metadata,
+                "storage_bucket": stmt.excluded.storage_bucket,
+                "storage_key": stmt.excluded.storage_key,
+                "page_number": stmt.excluded.page_number,
+                "bounding_box": stmt.excluded.bounding_box,
+                "ocr_confidence": stmt.excluded.ocr_confidence,
+                "ocr_engine": stmt.excluded.ocr_engine,
+                "requires_human_review": stmt.excluded.requires_human_review,
+                "updated_at": sa_func.now(),
+            },
         )
-        db.add(artifact)
+        db.execute(stmt)
         artifact_ids.append(artifact_id)
 
     return artifact_ids
@@ -279,9 +314,30 @@ def _chord_error_handler(self, request, exc, traceback, document_id: str, run_id
 
 def start_ingest_pipeline(document_id: str) -> str:
     """Enqueue the ingest pipeline for a document. Returns Celery task ID."""
-    # Create PipelineRun before enqueuing so all stages share the same run_id
+    from app.models.ingest import PipelineRun
+    from sqlalchemy import select
+
     db = _get_db()
     try:
+        # Atomic check: prevent duplicate dispatch if a run is already active
+        active = db.execute(
+            select(PipelineRun.id)
+            .where(
+                PipelineRun.document_id == uuid.UUID(document_id),
+                PipelineRun.status == "PROCESSING",
+            )
+            .with_for_update()
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if active:
+            logger.warning(
+                "start_ingest_pipeline: skipping document %s — active run %s exists",
+                document_id, active,
+            )
+            db.commit()  # release FOR UPDATE lock
+            return str(active)
+
         run_id = _create_pipeline_run(db, document_id)
         db.commit()
     finally:
@@ -396,6 +452,49 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     self.time_limit = settings.prepare_time_limit
 
     logger.info("prepare_document: document_id=%s run_id=%s", document_id, run_id)
+
+    # Singleflight lock: prevent concurrent prepare_document for same document
+    _singleflight_lock = _redis_client.lock(
+        f"prepare:{document_id}",
+        timeout=settings.prepare_singleflight_timeout,
+        blocking=False,
+    )
+    if not _singleflight_lock.acquire(blocking=False):
+        # Lock held — check if there's genuinely an active PROCESSING run.
+        # If not, the lock is stale (orphaned by a crashed/timed-out task).
+        _check_db = _get_db()
+        try:
+            from app.models.ingest import PipelineRun as _PR
+            from sqlalchemy import select as _sa_select
+            _active_run = _check_db.execute(
+                _sa_select(_PR.id).where(
+                    _PR.document_id == uuid.UUID(document_id),
+                    _PR.status == "PROCESSING",
+                ).limit(1)
+            ).scalar_one_or_none()
+        finally:
+            _check_db.close()
+
+        if _active_run:
+            logger.warning(
+                "prepare_document: singleflight lock held for %s (active run %s) — aborting",
+                document_id, _active_run,
+            )
+            return document_id
+
+        # Lock is stale — force-delete and re-acquire
+        logger.warning(
+            "prepare_document: stale singleflight lock for %s — no active run, force-releasing",
+            document_id,
+        )
+        _redis_client.delete(f"prepare:{document_id}")
+        if not _singleflight_lock.acquire(blocking=False):
+            logger.error(
+                "prepare_document: failed to acquire lock for %s even after force-release",
+                document_id,
+            )
+            return document_id
+
     _update_document_status(document_id, STATUS_PROCESSING, stage="prepare_document")
 
     db = _get_db()
@@ -404,6 +503,33 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         if not run_id:
             run_id = _create_pipeline_run(db, document_id)
             db.commit()
+
+        # Supersession guard: bail if a newer pipeline run exists
+        from app.models.ingest import PipelineRun
+        from sqlalchemy import select as sa_select
+        latest_active = db.execute(
+            sa_select(PipelineRun.id)
+            .where(
+                PipelineRun.document_id == uuid.UUID(document_id),
+                PipelineRun.status == "PROCESSING",
+            )
+            .order_by(PipelineRun.started_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest_active and str(latest_active) != run_id:
+            logger.warning(
+                "prepare_document: run %s superseded by %s for document %s — aborting",
+                run_id, latest_active, document_id,
+            )
+            _update_stage_run(db, run_id, "prepare_document", "FAILED",
+                              attempt=self.request.retries + 1, error="superseded")
+            db.commit()
+            try:
+                _singleflight_lock.release()
+            except Exception:
+                pass
+            return document_id
+
         _update_stage_run(db, run_id, "prepare_document", "RUNNING", attempt=self.request.retries + 1)
         db.commit()
 
@@ -487,7 +613,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             # a previous timed-out attempt).  Sleeps and retries WITHOUT consuming
             # the Celery retry budget.  The Redis lock stays held during this loop
             # so no other tasks attempt to send to Docling concurrently.
-            _max_503_retries = 10
+            _max_503_retries = settings.docling_503_max_retries
             for _503_attempt in range(_max_503_retries):
                 try:
                     result = convert_document_sync(file_bytes, doc.filename or "document")
@@ -501,11 +627,23 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                         document_id, _wait, _503_attempt + 1, _max_503_retries,
                     )
                     _time.sleep(_wait)
+            _docling_convert_ok = True
+        except Exception:
+            # If Celery retries remain, keep the Docling lock held to prevent
+            # another task from grabbing it in the gap. Lock TTL auto-expires.
+            _docling_convert_ok = False
+            if self.request.retries < self.max_retries:
+                logger.info(
+                    "prepare_document: keeping Docling lock for %s (retries remain, TTL will expire)",
+                    document_id,
+                )
+            raise
         finally:
-            try:
-                docling_lock.release()
-            except redis_lib.exceptions.LockNotOwnedError:
-                logger.warning("prepare_document: Docling lock expired before release for %s", document_id)
+            if _docling_convert_ok or self.request.retries >= self.max_retries:
+                try:
+                    docling_lock.release()
+                except redis_lib.exceptions.LockNotOwnedError:
+                    logger.warning("prepare_document: Docling lock expired before release for %s", document_id)
         logger.info(
             "prepare_document: docling returned %d elements, %d pages, %.0fms",
             len(result.elements), result.num_pages, result.processing_time_ms,
@@ -682,6 +820,24 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 db.rollback()
                 # Fall through to normal retry/fail logic
 
+        # Artifact PK collision — deterministic IDs collided with existing rows.
+        # This shouldn't happen after the upsert fix, but if it does, retrying
+        # will produce the same collision.  Fail immediately.
+        from sqlalchemy.exc import IntegrityError as _IntegrityError
+        if isinstance(exc, _IntegrityError) and "artifacts_pkey" in str(exc):
+            logger.error(
+                "prepare_document: artifact PK collision for %s — failing without retry: %s",
+                document_id, exc,
+            )
+            _update_document_status(
+                document_id, STATUS_FAILED, stage="prepare_document", error=str(exc)
+            )
+            run_id_for_err = run_id or _get_pipeline_run_id(db, document_id)
+            if run_id_for_err:
+                _update_stage_run(db, run_id_for_err, "prepare_document", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+                db.commit()
+            raise
+
         # Deterministic Docling errors (VlmPipeline failed, unsupported format)
         # won't resolve on retry — fail immediately.
         _deterministic_markers = ("VlmPipeline failed", "unsupported format", "invalid PDF")
@@ -717,6 +873,11 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         raise self.retry(exc=exc, countdown=countdown)
     finally:
         db.close()
+        # Release singleflight lock (safe if already released or expired)
+        try:
+            _singleflight_lock.release()
+        except Exception:
+            pass
 
 
 @celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,

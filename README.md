@@ -369,9 +369,13 @@ Key features:
 - **Batched text embedding + Qdrant upserts** — large documents (thousands of text elements) no longer send all vectors in a single Qdrant RPC; embedding and upserts are batched via `EMBED_TEXT_BATCH_SIZE` and `QDRANT_UPSERT_BATCH_SIZE` (default 128 each); Qdrant client timeout configurable via `QDRANT_TIMEOUT_SECONDS` (default 60s)
 - **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks read from env-var settings at registration time (not hardcoded), ensuring `.env` tuning takes effect without code changes
-- **Stale run cleanup** — on worker startup, documents stuck in PROCESSING (from prior crashes) are reset to PENDING for re-processing via Celery `worker_ready` signal
+- **Stale run cleanup** — on worker startup, documents stuck in PROCESSING (from prior crashes) are reset to PENDING and their PipelineRuns marked FAILED via Celery `worker_ready` signal
 - **Re-upload on failure** — re-uploading a file that previously FAILED removes the old record and re-ingests (no 409)
 - **Reingest safety** — reingest endpoint rejects requests when pipeline is already PROCESSING (409); failure handlers use the task's own `run_id` to avoid cross-run contamination
+- **Concurrent dispatch prevention** — atomic `FOR UPDATE` check in `start_ingest_pipeline()` prevents duplicate PipelineRun creation; document-scoped Redis singleflight lock in `prepare_document` prevents concurrent execution; supersession guard aborts stale tasks from prior cleanup cycles
+- **Celery visibility timeout** — `CELERY_VISIBILITY_TIMEOUT` (default 10800s / 3h) prevents Redis from redelivering long-running tasks that appear stuck
+- **Worker topology isolation** — `manage.sh` auto-stops opposite worker set when switching between single and split modes
+- **Idempotent artifact persistence** — `_persist_extraction_results` uses `ON CONFLICT DO UPDATE` with deterministic artifact IDs so reingest/retry never fails with PK collision; image storage keys are deterministic (`artifacts/{doc_id}/images/{artifact_id}.{ext}`) to prevent MinIO object churn; `classification` is preserved on conflict (never overwritten by extraction)
 - **Terminal status handling** — UI polling stops for all terminal states (COMPLETE, ERROR, FAILED, PARTIAL_COMPLETE); FAILED shows red badge, PARTIAL_COMPLETE shows amber warning badge with error context
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
@@ -468,6 +472,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.20 | Search result diversity: content-level dedup in all search modes (over-fetch + diversify by doc/page/text), ingest-time element dedup (conservative modality+page+section+text+bbox key), text chunk dedup before embedding | Complete |
 | 2.21 | Large-document timeout fix: `DOCLING_TIMEOUT_SECONDS` 300→3600, `PREPARE_SOFT_TIME_LIMIT` 1800→4200, `DOCLING_LOCK_TIMEOUT` 1800→4200 (90-page PDFs take ~30 min on CPU), pinned docling==2.76.0/docling-core==2.67.1, full traceback logging on Docling errors | Complete |
 | 2.22 | Chord resilience fix: `SoftTimeLimitExceeded` handlers on all chord member tasks (return error dict instead of dying), chord `on_error` errback marks document FAILED on hard kills, `GRAPH_SOFT_TIME_LIMIT` 600→1800 / `GRAPH_TIME_LIMIT` 660→1860 for large-document LLM extraction | Complete |
+| 2.23 | Concurrent pipeline dispatch fix: atomic PipelineRun check-and-set (`FOR UPDATE`), document-scoped singleflight Redis lock in `prepare_document`, supersession guard aborts stale tasks, Docling lock held through `self.retry()` (no gap for lock theft), configurable 503 retry limit (`DOCLING_503_MAX_RETRIES=20`), Celery Redis visibility timeout (`CELERY_VISIBILITY_TIMEOUT=10800`), stale cleanup marks PipelineRuns FAILED, worker topology overlap prevention in `manage.sh`, Docling `MAX_CONCURRENT` aligned with pipeline `DOCLING_CONCURRENCY` | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

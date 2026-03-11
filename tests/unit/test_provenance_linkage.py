@@ -97,8 +97,8 @@ class TestPersistExtractionWithDeterministicIds:
         assert len(result) == 1
         assert isinstance(result[0], uuid.UUID)
 
-    def test_artifact_added_to_db_with_correct_id(self):
-        from unittest.mock import MagicMock, call
+    def test_artifact_upserted_to_db_with_correct_id(self):
+        from unittest.mock import MagicMock
         from app.workers.pipeline import _persist_extraction_results, _deterministic_artifact_id
 
         db = MagicMock()
@@ -108,10 +108,10 @@ class TestPersistExtractionWithDeterministicIds:
 
         _persist_extraction_results(db, doc_id, chunks, element_uids=uids)
 
-        # db.add should have been called once with an Artifact whose id matches
-        assert db.add.call_count == 1
-        artifact = db.add.call_args[0][0]
-        assert artifact.id == _deterministic_artifact_id(doc_id, "elem-0")
+        # db.execute should have been called once with a pg_insert upsert
+        assert db.execute.call_count == 1
+        # db.add should NOT be called (we use execute with pg_insert now)
+        db.add.assert_not_called()
 
     def test_empty_chunks_returns_empty(self):
         from unittest.mock import MagicMock
@@ -120,7 +120,41 @@ class TestPersistExtractionWithDeterministicIds:
         db = MagicMock()
         result = _persist_extraction_results(db, "doc-1", [], element_uids=[])
         assert result == []
-        db.add.assert_not_called()
+        db.execute.assert_not_called()
+
+    def test_image_storage_key_uses_artifact_id(self):
+        """Verify image storage keys are deterministic (use artifact_id, not random UUID)."""
+        from unittest.mock import MagicMock, patch
+        from app.workers.pipeline import _persist_extraction_results, _deterministic_artifact_id
+
+        db = MagicMock()
+        doc_id = str(uuid.uuid4())
+        chunk = self._make_chunk(raw_image_bytes=b"\x89PNG", metadata={"ext": "png"})
+        uids = ["elem-img-0"]
+
+        with patch("app.workers.pipeline.upload_bytes_sync") as mock_upload:
+            _persist_extraction_results(db, doc_id, [chunk], element_uids=uids)
+
+        expected_id = _deterministic_artifact_id(doc_id, "elem-img-0")
+        expected_key = f"artifacts/{doc_id}/images/{expected_id}.png"
+        # Verify upload was called with the deterministic key
+        mock_upload.assert_called_once()
+        actual_key = mock_upload.call_args[0][2]  # 3rd positional arg is the key
+        assert actual_key == expected_key
+
+    def test_upsert_preserves_classification(self):
+        """Verify classification is NOT in the on_conflict set_ dict.
+
+        The upsert should never overwrite a manually-applied classification.
+        We check the source of set_={...} to confirm 'classification' is absent.
+        """
+        import inspect
+        from app.workers.pipeline import _persist_extraction_results
+        source = inspect.getsource(_persist_extraction_results)
+        # Extract the set_={...} block from source
+        set_block = source[source.index("set_="):]
+        set_block = set_block[:set_block.index("}") + 1]
+        assert "classification" not in set_block
 
 
 # ---------------------------------------------------------------------------

@@ -126,9 +126,17 @@ cmd_start() {
   if [[ "${profile}" == "split" ]]; then
     header "Starting EIP-MMDPP stack (split workers)"
     profile_args=(--profile split)
+    # Stop single-mode worker to prevent overlap
+    info "Stopping single-mode worker (if running)..."
+    dc stop worker 2>/dev/null || true
+    dc rm -f worker 2>/dev/null || true
     info "Building and starting with split workers (ingest/embed/graph)..."
   else
     header "Starting EIP-MMDPP stack"
+    # Stop split-mode workers to prevent overlap
+    info "Stopping split-mode workers (if running)..."
+    dc --profile split stop worker-ingest worker-embed worker-graph 2>/dev/null || true
+    dc --profile split rm -f worker-ingest worker-embed worker-graph 2>/dev/null || true
     info "Building and starting all services..."
   fi
 

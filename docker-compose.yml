@@ -126,6 +126,8 @@ services:
     environment:
       DOCLING_DEVICE: ${DOCLING_DEVICE:-cuda}
       DOCLING_DTYPE: ${DOCLING_DTYPE:-bfloat16}
+      # Match pipeline Redis semaphore permits (DOCLING_CONCURRENCY)
+      DOCLING_MAX_CONCURRENT: ${DOCLING_CONCURRENCY:-1}
     ports:
       - "${DOCLING_PORT:-8001}:8001"
     deploy:

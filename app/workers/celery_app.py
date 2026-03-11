@@ -48,6 +48,8 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     # Prevent long tasks from starving short ones
     worker_prefetch_multiplier=1,
+    # Redis visibility timeout — prevent redelivery of long-running tasks
+    broker_transport_options={"visibility_timeout": settings.celery_visibility_timeout},
     # Beat schedule
     beat_schedule={
         "scan-watch-directories": {

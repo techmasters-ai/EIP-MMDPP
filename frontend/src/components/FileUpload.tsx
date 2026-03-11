@@ -352,7 +352,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
 
               <StatusBadge status={entry.status} />
 
-              {(entry.status === "FAILED" || entry.status === "ERROR") && (
+              {(entry.status === "FAILED" || entry.status === "ERROR" || entry.status === "PENDING") && (
                 <button
                   className="btn btn-ghost btn-xs"
                   onClick={async () => {
@@ -426,7 +426,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
 
                   <StatusBadge status={doc.pipeline_status} />
 
-                  {(doc.pipeline_status === "FAILED" || doc.pipeline_status === "ERROR") && (
+                  {(doc.pipeline_status === "FAILED" || doc.pipeline_status === "ERROR" || doc.pipeline_status === "PENDING") && (
                     <button
                       className="btn btn-ghost btn-xs"
                       onClick={async () => {

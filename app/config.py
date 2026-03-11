@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     docling_lock_timeout: int = 4200
     # Health probe timeout (seconds)
     docling_health_timeout: float = 10.0
+    # In-task 503 retry cap (Docling busy with prior conversion)
+    docling_503_max_retries: int = 20
+
+    # Celery Redis visibility timeout (seconds) — prevents redelivery of long tasks
+    celery_visibility_timeout: int = 10800  # 3 hours
+
+    # Singleflight lock timeout for prepare_document (seconds)
+    prepare_singleflight_timeout: int = 5400  # 90 minutes
 
     # Directory watcher
     watch_dir_poll_interval_seconds: int = 30
