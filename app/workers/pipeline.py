@@ -987,7 +987,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
     """
     from app.models.ingest import DocumentElement
     from app.models.retrieval import TextChunk
-    from app.services.extraction import chunk_text
+    from app.services.chunking import structure_aware_chunk
     from app.services.embedding import embed_texts
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -1024,20 +1024,37 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
+        # Convert ORM objects to dicts for structure-aware chunker
+        element_dicts = [
+            {
+                "element_type": elem.element_type,
+                "content_text": elem.content_text,
+                "page_number": elem.page_number,
+                "section_path": elem.section_path,
+                "element_uid": str(elem.element_uid) if elem.element_uid else "",
+                "element_order": elem.element_order,
+                "heading_level": elem.heading_level,
+            }
+            for elem in elements
+            if elem.content_text
+        ]
+        structured_chunks = structure_aware_chunk(element_dicts)
+
+        # Build a lookup from element_uid to the ORM element for artifact_id / bounding_box
+        elem_by_uid: dict[str, DocumentElement] = {
+            str(e.element_uid): e for e in elements if e.element_uid
+        }
+
         all_texts = []
-        all_element_refs = []
+        all_chunk_refs = []
         _seen_chunk_texts: set[str] = set()
 
-        for elem in elements:
-            if not elem.content_text:
+        for sc in structured_chunks:
+            if sc.text in _seen_chunk_texts:
                 continue
-            text_chunks_list = chunk_text(elem.content_text)
-            for idx, chunk_str in enumerate(text_chunks_list):
-                if chunk_str in _seen_chunk_texts:
-                    continue
-                _seen_chunk_texts.add(chunk_str)
-                all_texts.append(chunk_str)
-                all_element_refs.append((elem, idx))
+            _seen_chunk_texts.add(sc.text)
+            all_texts.append(sc.text)
+            all_chunk_refs.append(sc)
 
         chunks_created = 0
         if all_texts:
@@ -1055,26 +1072,32 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             qdrant = get_qdrant_client()
 
             qdrant_points: list[PointStruct] = []
-            for (elem, idx), text, embedding in zip(all_element_refs, all_texts, embeddings):
-                # Deterministic chunk key
+            for sc, text, embedding in zip(all_chunk_refs, all_texts, embeddings):
+                # Resolve artifact_id from the first element_uid in this chunk
+                first_uid = sc.element_uids[0] if sc.element_uids else ""
+                ref_elem = elem_by_uid.get(first_uid)
+                artifact_id = ref_elem.artifact_id if ref_elem else None
+                bounding_box = ref_elem.bounding_box if ref_elem else None
+
+                # Deterministic chunk key using element_uids for stability
+                uid_key = "|".join(sc.element_uids)
                 chunk_key = hashlib.sha256(
-                    f"{document_id}:{elem.element_uid}:{idx}:{model_version}".encode()
+                    f"{document_id}:{uid_key}:{sc.chunk_index}:{model_version}".encode()
                 ).hexdigest()
 
                 chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
                 qdrant_point_id = chunk_id  # Use same UUID for Qdrant
 
-                modality = elem.element_type if elem.element_type != "heading" else "text"
                 chunk_values = {
                     "id": chunk_id,
-                    "artifact_id": elem.artifact_id,
+                    "artifact_id": artifact_id,
                     "document_id": uuid.UUID(document_id),
-                    "chunk_index": idx,
+                    "chunk_index": sc.chunk_index,
                     "chunk_text": text,
                     "embedding": embedding,
-                    "modality": modality,
-                    "page_number": elem.page_number,
-                    "bounding_box": elem.bounding_box,
+                    "modality": sc.modality,
+                    "page_number": sc.page_number,
+                    "bounding_box": bounding_box,
                     "qdrant_point_id": qdrant_point_id,
                 }
 
@@ -1095,9 +1118,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     payload={
                         "chunk_id": str(chunk_id),
                         "document_id": document_id,
-                        "artifact_id": str(elem.artifact_id),
-                        "modality": modality,
-                        "page_number": elem.page_number,
+                        "artifact_id": str(artifact_id) if artifact_id else None,
+                        "modality": sc.modality,
+                        "page_number": sc.page_number,
                         "classification": "UNCLASSIFIED",
                         "chunk_text": text,
                     },
