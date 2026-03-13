@@ -136,15 +136,26 @@ def _alias_match(driver, name: str) -> Optional[str]:
 
 
 def _fuzzy_match(driver, name: str, entity_type: str) -> Optional[str]:
-    """Use fulltext search for fuzzy matching."""
+    """Use fulltext search for fuzzy matching.
+
+    BM25 scores are unbounded, so we normalize to 0-1 by dividing each
+    score by the maximum score in the result set before comparing against
+    FUZZY_THRESHOLD.
+    """
     from app.services.neo4j_graph import fulltext_search_entity
 
     results = fulltext_search_entity(driver, name, limit=3)
+    if not results:
+        return None
+
+    max_score = max(r["score"] for r in results) if results else 1.0
     for r in results:
-        if r["entity_type"] == entity_type and r["score"] > FUZZY_THRESHOLD:
-            candidate = r.get("canonical_name") or r["name"]
-            if candidate != name:
-                return candidate
+        if r["entity_type"] == entity_type:
+            normalized_score = r["score"] / max_score if max_score > 0 else 0
+            if normalized_score > FUZZY_THRESHOLD:
+                candidate = r.get("canonical_name") or r["name"]
+                if candidate != name:
+                    return candidate
     return None
 
 

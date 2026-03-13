@@ -655,7 +655,7 @@ def ensure_indexes(driver) -> None:
         # Fulltext index for entity name search (canonicalization + retrieval)
         """
         CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS
-        FOR (n:Entity) ON EACH [n.name]
+        FOR (n:Entity) ON EACH [n.name, n.canonical_name]
         """,
         # Uniqueness constraint on Document node
         """

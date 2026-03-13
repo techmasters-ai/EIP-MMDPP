@@ -90,8 +90,11 @@ class TestFuzzyMatch:
     @patch("app.services.neo4j_graph.fulltext_search_entity")
     def test_low_score_returns_none(self, mock_search):
         from app.services.canonicalization import _fuzzy_match
+        # With BM25 normalization, scores are divided by max.
+        # The RadarSystem result (0.3) normalized = 0.3/1.0 = 0.3 < 0.8 threshold
         mock_search.return_value = [
-            {"name": "AN/SPY-1", "canonical_name": None, "entity_type": "RadarSystem", "score": 0.3}
+            {"name": "SomeOther", "canonical_name": None, "entity_type": "MissileSystem", "score": 1.0},
+            {"name": "AN/SPY-1", "canonical_name": None, "entity_type": "RadarSystem", "score": 0.3},
         ]
         assert _fuzzy_match(MagicMock(), "SPY-1", "RadarSystem") is None
 
