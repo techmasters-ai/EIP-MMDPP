@@ -173,3 +173,20 @@ class TestRelationshipExtraction:
         from app.services.ner import extract_relationships
 
         assert extract_relationships("some text", []) == []
+
+
+def test_all_entity_types_are_valid_ontology_types():
+    """Every entity_type produced by NER must exist in the ontology."""
+    from app.services.ner import extract_entities
+    from app.services.ontology_templates import build_entity_type_names
+    valid_types = set(build_entity_type_names())
+
+    text = (
+        "ELNOT FIRE HAWK operates in X-band at 9.4 GHz. "
+        "DIEQP ABC-123 uses LFM waveform with PRI 1500 μs. "
+        "Semi-active radar guidance. Track-while-scan mode. "
+        "Barrage jamming countermeasure."
+    )
+    entities = extract_entities(text)
+    invalid = [(e.name, e.entity_type) for e in entities if e.entity_type not in valid_types]
+    assert not invalid, f"NER produced invalid entity types: {invalid}"
