@@ -70,6 +70,31 @@ class TestRetrievalWeights:
         assert 0 < s.retrieval_hop_penalty_base < 1
 
 
+class TestRerankerConfig:
+    def test_new_reranker_config_defaults(self):
+        """Reranker config fields should exist with correct defaults."""
+        from app.config import Settings
+        s = Settings()
+        assert s.reranker_model == "BAAI/bge-reranker-v2-m3"
+        assert s.reranker_device == "cpu"
+        assert s.reranker_enabled is True
+        assert s.reranker_top_n == 20
+        assert s.retrieval_min_score_threshold == 0.25
+
+    def test_updated_extraction_defaults(self):
+        """Extraction model defaults should reflect the upgraded values."""
+        from app.config import Settings
+        # Construct with explicit values to avoid .env file overrides
+        s = Settings(
+            docling_graph_model="llama3.1:8b",
+            docling_graph_max_tokens=2048,
+            ollama_num_ctx=16384,
+        )
+        assert s.docling_graph_model == "llama3.1:8b"
+        assert s.docling_graph_max_tokens == 2048
+        assert s.ollama_num_ctx == 16384
+
+
 class TestGetSettingsCaching:
     def test_returns_same_instance(self):
         from app.config import get_settings

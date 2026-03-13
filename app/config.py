@@ -87,10 +87,10 @@ class Settings(BaseSettings):
     ollama_vlm_model: str = "llava"  # DEPRECATED: replaced by Docling service
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_llm_concurrency: int = 1
-    ollama_num_ctx: int = 8192
+    ollama_num_ctx: int = 16384
 
     # Per-feature model selection — each feature can use a different model
-    docling_graph_model: str = "llama3.2"  # Model for graph entity/relationship extraction
+    docling_graph_model: str = "llama3.1:8b"  # Model for graph entity/relationship extraction
 
     # docling-graph extraction settings
     docling_graph_timeout: float = 300.0
@@ -99,7 +99,7 @@ class Settings(BaseSettings):
 
     # Docling-graph extraction behavior
     docling_graph_require_llm: bool = True
-    docling_graph_max_tokens: int = 1200
+    docling_graph_max_tokens: int = 2048
     docling_graph_retry_attempts: int = 2
     docling_graph_retry_backoff_seconds: int = 5
 
@@ -122,6 +122,15 @@ class Settings(BaseSettings):
     qdrant_trusted_text_collection: str = "eip_trusted_text"
     qdrant_upsert_batch_size: int = 128
     qdrant_timeout_seconds: float = 60.0
+
+    # Reranker (cross-encoder for retrieval re-scoring)
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_device: str = "cpu"  # cpu | cuda
+    reranker_enabled: bool = True
+    reranker_top_n: int = 20
+
+    # Minimum cosine similarity threshold (below this, results are dropped)
+    retrieval_min_score_threshold: float = 0.25
 
     # Embedding batching
     embed_text_batch_size: int = 128
