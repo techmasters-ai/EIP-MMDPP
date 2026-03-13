@@ -147,6 +147,55 @@ cmd_start() {
   wait_for_healthy "http://localhost:${api_port}/v1/health" "API liveness" "${HEALTH_TIMEOUT}"
   wait_for_healthy "http://localhost:${api_port}/v1/health/ready" "API readiness" "${HEALTH_TIMEOUT}"
 
+  # Pre-download ML models (air-gapped: must be available before first query)
+  header "Pre-downloading ML models"
+
+  # Download sentence-transformers models inside the API container (skip if cached)
+  if dc exec -T api python -c "
+from sentence_transformers import SentenceTransformer
+import os, hashlib
+cache_dir = os.path.expanduser('~/.cache/huggingface/hub')
+model_dir = os.path.join(cache_dir, 'models--BAAI--bge-large-en-v1.5')
+exit(0 if os.path.isdir(model_dir) else 1)
+" 2>/dev/null; then
+    info "BGE model already cached — skipping download"
+  else
+    info "Downloading text embedding model (BGE-large-en-v1.5)..."
+    dc exec -T api python -c "
+from sentence_transformers import SentenceTransformer
+SentenceTransformer('BAAI/bge-large-en-v1.5')
+print('BGE model ready')
+" 2>/dev/null && info "BGE model ready" || warn "BGE model download failed (will retry on first use)"
+  fi
+
+  if dc exec -T api python -c "
+import os
+cache_dir = os.path.expanduser('~/.cache/huggingface/hub')
+model_dir = os.path.join(cache_dir, 'models--BAAI--bge-reranker-v2-m3')
+exit(0 if os.path.isdir(model_dir) else 1)
+" 2>/dev/null; then
+    info "Reranker model already cached — skipping download"
+  else
+    info "Downloading reranker model (bge-reranker-v2-m3)..."
+    dc exec -T api python -c "
+from sentence_transformers import CrossEncoder
+CrossEncoder('BAAI/bge-reranker-v2-m3')
+print('Reranker model ready')
+" 2>/dev/null && info "Reranker model ready" || warn "Reranker model download failed (will retry on first use)"
+  fi
+
+  # Pull Ollama model via the external Ollama service (skip if already present)
+  if command -v ollama &>/dev/null; then
+    if ollama list 2>/dev/null | grep -q "llama3.1:8b"; then
+      info "Ollama model llama3.1:8b already present — skipping pull"
+    else
+      info "Pulling Ollama model (llama3.1:8b)..."
+      ollama pull llama3.1:8b 2>/dev/null && info "Ollama model ready" || warn "Ollama pull failed"
+    fi
+  else
+    info "Ollama not found locally — ensure llama3.1:8b is available on the Ollama server"
+  fi
+
   divider
   info "All services started."
   info "  UI:            http://localhost:${api_port}"
