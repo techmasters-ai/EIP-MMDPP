@@ -198,7 +198,7 @@ async def query_trusted_data(
     from app.services.embedding import embed_texts
     from app.services.qdrant_store import search_trusted_vectors
 
-    vectors = embed_texts([body.query])
+    vectors = embed_texts([body.query], query=True)
     results = await search_trusted_vectors(vectors[0], top_k=body.top_k)
 
     return TrustedDataQueryResponse(

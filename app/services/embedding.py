@@ -37,12 +37,14 @@ def _get_text_model():
     return model
 
 
-def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
+def embed_texts(texts: list[str], batch_size: int = 64, *, query: bool = False) -> list[list[float]]:
     """Embed a list of text strings. Returns list of float vectors.
 
     Args:
         texts: List of input strings.
         batch_size: Batch size for GPU inference (64 maximises GPU utilisation).
+        query: If True, use the BGE query prefix (for search queries).
+               If False, use the passage prefix (for indexing documents).
 
     Returns:
         List of embedding vectors (each is a list of floats).
@@ -52,9 +54,12 @@ def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
 
     model = _get_text_model()
 
-    # BGE models perform better with a query prefix for retrieval tasks
+    # BGE models use asymmetric prefixes: different for queries vs passages
     if "bge" in settings.text_embedding_model.lower():
-        texts = [f"Represent this sentence: {t}" for t in texts]
+        if query:
+            texts = [f"Represent this query for searching relevant passages: {t}" for t in texts]
+        else:
+            texts = [f"Represent this sentence: {t}" for t in texts]
 
     embeddings = model.encode(
         texts,
@@ -67,7 +72,7 @@ def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:
 
 def embed_query(query: str) -> list[float]:
     """Embed a single search query."""
-    return embed_texts([query])[0]
+    return embed_texts([query], query=True)[0]
 
 
 # ---------------------------------------------------------------------------

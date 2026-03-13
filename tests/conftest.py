@@ -174,7 +174,7 @@ def mock_embeddings(monkeypatch):
     text_dim = int(os.environ.get("TEXT_EMBEDDING_DIM", "384"))
     image_dim = int(os.environ.get("IMAGE_EMBEDDING_DIM", "128"))
 
-    def fake_embed_texts(texts, batch_size=64):
+    def fake_embed_texts(texts, batch_size=64, *, query=False):
         result = []
         for t in texts:
             rng = random.Random(hash(t) % (2**31))
@@ -182,7 +182,7 @@ def mock_embeddings(monkeypatch):
         return result
 
     def fake_embed_query(query):
-        return fake_embed_texts([query])[0]
+        return fake_embed_texts([query], query=True)[0]
 
     def fake_embed_images(images):
         result = []

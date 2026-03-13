@@ -263,7 +263,7 @@ async def _text_vector_search(
     from app.services.embedding import embed_texts
     from app.services.qdrant_store import search_text_vectors_async
 
-    query_embedding = embed_texts([body.query_text])[0]
+    query_embedding = embed_texts([body.query_text], query=True)[0]
 
     # Build Qdrant filter from request filters
     qdrant_filters = _build_qdrant_filters(body)

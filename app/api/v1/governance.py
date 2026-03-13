@@ -341,9 +341,9 @@ async def _apply_patch_payload(db: AsyncSession, patch: Patch) -> None:
         patched = jsonpatch.apply_patch(patch.previous_snapshot, operations)
         if "chunk_text" in patched:
             chunk.chunk_text = patched["chunk_text"]
-            # Re-embed on text change
-            from app.services.embedding import embed_query
-            chunk.embedding = embed_query(chunk.chunk_text)
+            # Re-embed on text change (indexing, not querying)
+            from app.services.embedding import embed_texts
+            chunk.embedding = embed_texts([chunk.chunk_text])[0]
         if "classification" in patched:
             chunk.classification = patched["classification"]
 
