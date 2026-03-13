@@ -154,8 +154,8 @@ class TestFewShotPrompt:
         ontology = load_ontology()
         prompt = build_extraction_prompt(ontology, "Test text", few_shot=True)
         assert "## Example" in prompt
-        assert "AN/MPQ-53" in prompt
-        assert "RADAR_SYSTEM" in prompt
+        assert "Patriot PAC-3" in prompt
+        assert "EQUIPMENT_SYSTEM" in prompt
 
     def test_no_few_shot_excludes_example(self):
         from app.services.ontology_templates import build_extraction_prompt, load_ontology
@@ -175,6 +175,24 @@ class TestFewShotPrompt:
         assert len(prompt) < len(
             build_extraction_prompt(ontology, "Test text", few_shot=True)
         )
+
+    def test_prompt_few_shot_uses_valid_types(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology, build_entity_type_names, build_relationship_type_names
+
+        ontology = load_ontology()
+        prompt = build_extraction_prompt(ontology, "test text", few_shot=True)
+        # Few-shot example should use EQUIPMENT_SYSTEM, not made-up types
+        assert "Patriot PAC-3" in prompt
+        assert "EQUIPMENT_SYSTEM" in prompt
+        # The old invalid few-shot example with AN/MPQ-53 should be gone
+        assert "AN/MPQ-53" not in prompt
+
+    def test_prompt_includes_property_descriptions(self):
+        from app.services.ontology_templates import build_extraction_prompt, load_ontology
+
+        ontology = load_ontology()
+        prompt = build_extraction_prompt(ontology, "test text")
+        assert "National Stock Number" in prompt or "CAGE" in prompt
 
 
 class TestPropertyEnrichment:

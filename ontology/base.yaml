@@ -1182,42 +1182,86 @@ validation_matrix:
   - {source: ASSERTION, relationship: SUPPORTED_BY, target: FIGURE}
   - {source: ASSERTION, relationship: SUPPORTED_BY, target: TABLE}
   - {source: ASSERTION, relationship: SUPPORTED_BY, target: SPREADSHEET}
-  - {source: ASSERTION, relationship: ABOUT, target: null}
+  - {source: ASSERTION, relationship: ABOUT, target: EQUIPMENT_SYSTEM}
+  - {source: ASSERTION, relationship: ABOUT, target: RADAR_SYSTEM}
+  - {source: ASSERTION, relationship: ABOUT, target: MISSILE_SYSTEM}
+  - {source: ASSERTION, relationship: ABOUT, target: PLATFORM}
+  - {source: ASSERTION, relationship: ABOUT, target: COMPONENT}
 
   # Generic relations (any source type allowed)
-  - {source: null, relationship: MENTIONED_IN, target: DOCUMENT}
-  - {source: null, relationship: PART_OF, target: null}
-  - {source: null, relationship: CONTAINS, target: null}
-  - {source: null, relationship: HAS_SUBSYSTEM, target: SUBSYSTEM}
-  - {source: null, relationship: HAS_COMPONENT, target: COMPONENT}
-  - {source: null, relationship: INSTALLED_ON, target: PLATFORM}
-  - {source: null, relationship: PROVIDES, target: CAPABILITY}
-  - {source: null, relationship: ASSOCIATED_WITH, target: null}
-  - {source: null, relationship: MANUFACTURED_BY, target: ORGANIZATION}
-  - {source: null, relationship: DESCRIBED_IN, target: DOCUMENT}
-  - {source: null, relationship: DERIVED_FROM, target: null}
-  - {source: null, relationship: IS_A, target: null}
-  - {source: null, relationship: INSTANCE_OF, target: null}
-  - {source: null, relationship: ALIAS_OF, target: null}
-  - {source: null, relationship: SUPERSEDES, target: null}
+  - {source: EQUIPMENT_SYSTEM, relationship: MENTIONED_IN, target: DOCUMENT}
+  - {source: RADAR_SYSTEM, relationship: MENTIONED_IN, target: DOCUMENT}
+  - {source: MISSILE_SYSTEM, relationship: MENTIONED_IN, target: DOCUMENT}
+  - {source: PLATFORM, relationship: MENTIONED_IN, target: DOCUMENT}
+  - {source: COMPONENT, relationship: MENTIONED_IN, target: DOCUMENT}
+  - {source: SUBSYSTEM, relationship: MENTIONED_IN, target: DOCUMENT}
+  - {source: SUBSYSTEM, relationship: PART_OF, target: EQUIPMENT_SYSTEM}
+  - {source: COMPONENT, relationship: PART_OF, target: SUBSYSTEM}
+  - {source: ASSEMBLY, relationship: PART_OF, target: EQUIPMENT_SYSTEM}
+  - {source: WEAPON_SYSTEM, relationship: CONTAINS, target: SUBSYSTEM}
+  - {source: EQUIPMENT_SYSTEM, relationship: CONTAINS, target: COMPONENT}
+  - {source: EQUIPMENT_SYSTEM, relationship: HAS_SUBSYSTEM, target: SUBSYSTEM}
+  - {source: WEAPON_SYSTEM, relationship: HAS_SUBSYSTEM, target: SUBSYSTEM}
+  - {source: EQUIPMENT_SYSTEM, relationship: HAS_COMPONENT, target: COMPONENT}
+  - {source: WEAPON_SYSTEM, relationship: HAS_COMPONENT, target: COMPONENT}
+  - {source: SUBSYSTEM, relationship: HAS_COMPONENT, target: COMPONENT}
+  - {source: RADAR_SYSTEM, relationship: INSTALLED_ON, target: PLATFORM}
+  - {source: EQUIPMENT_SYSTEM, relationship: PROVIDES, target: CAPABILITY}
+  - {source: RADAR_SYSTEM, relationship: ASSOCIATED_WITH, target: ELECTRONIC_WARFARE_SYSTEM}
+  - {source: EQUIPMENT_SYSTEM, relationship: MANUFACTURED_BY, target: ORGANIZATION}
+  - {source: COMPONENT, relationship: MANUFACTURED_BY, target: ORGANIZATION}
+  - {source: PLATFORM, relationship: MANUFACTURED_BY, target: ORGANIZATION}
+  - {source: EQUIPMENT_SYSTEM, relationship: DESCRIBED_IN, target: DOCUMENT}
+  - {source: RADAR_SYSTEM, relationship: DESCRIBED_IN, target: DOCUMENT}
+  - {source: MISSILE_SYSTEM, relationship: DESCRIBED_IN, target: DOCUMENT}
+  - {source: PLATFORM, relationship: DESCRIBED_IN, target: DOCUMENT}
+  - {source: ASSERTION, relationship: DERIVED_FROM, target: DOCUMENT}
+  - {source: DOCUMENT, relationship: DERIVED_FROM, target: DOCUMENT}
+  - {source: RADAR_SYSTEM, relationship: IS_A, target: EQUIPMENT_SYSTEM}
+  - {source: MISSILE_SYSTEM, relationship: IS_A, target: WEAPON_SYSTEM}
+  - {source: AIR_DEFENSE_ARTILLERY_SYSTEM, relationship: IS_A, target: WEAPON_SYSTEM}
+  - {source: EQUIPMENT_SYSTEM, relationship: INSTANCE_OF, target: EQUIPMENT_SYSTEM}
+  - {source: PLATFORM, relationship: INSTANCE_OF, target: PLATFORM}
+  - {source: RADAR_SYSTEM, relationship: ALIAS_OF, target: RADAR_SYSTEM}
+  - {source: MISSILE_SYSTEM, relationship: ALIAS_OF, target: MISSILE_SYSTEM}
+  - {source: EQUIPMENT_SYSTEM, relationship: ALIAS_OF, target: EQUIPMENT_SYSTEM}
+  - {source: DOCUMENT, relationship: SUPERSEDES, target: DOCUMENT}
+  - {source: STANDARD, relationship: SUPERSEDES, target: STANDARD}
+  - {source: SPECIFICATION, relationship: SUPERSEDES, target: SPECIFICATION}
 
   # Legacy relations
   - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: EQUIPMENT_SYSTEM}
   - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: RADAR_SYSTEM}
   - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: MISSILE_SYSTEM}
-  - {source: null, relationship: IMPLEMENTS, target: CAPABILITY}
-  - {source: null, relationship: MEETS_STANDARD, target: STANDARD}
-  - {source: null, relationship: SPECIFIED_BY, target: SPECIFICATION}
+  - {source: EQUIPMENT_SYSTEM, relationship: IMPLEMENTS, target: CAPABILITY}
+  - {source: SUBSYSTEM, relationship: IMPLEMENTS, target: CAPABILITY}
+  - {source: EQUIPMENT_SYSTEM, relationship: MEETS_STANDARD, target: STANDARD}
+  - {source: COMPONENT, relationship: MEETS_STANDARD, target: STANDARD}
+  - {source: EQUIPMENT_SYSTEM, relationship: SPECIFIED_BY, target: SPECIFICATION}
+  - {source: RADAR_SYSTEM, relationship: SPECIFIED_BY, target: SPECIFICATION}
+  - {source: MISSILE_SYSTEM, relationship: SPECIFIED_BY, target: SPECIFICATION}
   - {source: PROCEDURE, relationship: PERFORMED_BY, target: ORGANIZATION}
-  - {source: FAILURE_MODE, relationship: AFFECTS, target: null}
-  - {source: null, relationship: TESTED_IN, target: TEST_EVENT}
+  - {source: FAILURE_MODE, relationship: AFFECTS, target: COMPONENT}
+  - {source: FAILURE_MODE, relationship: AFFECTS, target: SUBSYSTEM}
+  - {source: FAILURE_MODE, relationship: AFFECTS, target: EQUIPMENT_SYSTEM}
+  - {source: EQUIPMENT_SYSTEM, relationship: TESTED_IN, target: TEST_EVENT}
+  - {source: RADAR_SYSTEM, relationship: TESTED_IN, target: TEST_EVENT}
+  - {source: MISSILE_SYSTEM, relationship: TESTED_IN, target: TEST_EVENT}
+  - {source: COMPONENT, relationship: TESTED_IN, target: TEST_EVENT}
 
   # Combat / engagement relations
-  - {source: null, relationship: TRACKS, target: null}
-  - {source: null, relationship: ENGAGES, target: null}
-  - {source: null, relationship: DETECTS, target: null}
-  - {source: null, relationship: DESIGNATES, target: null}
-  - {source: null, relationship: SUPPORTS_ENGAGEMENT_OF, target: null}
+  - {source: RADAR_SYSTEM, relationship: TRACKS, target: PLATFORM}
+  - {source: FIRE_CONTROL_SYSTEM, relationship: TRACKS, target: PLATFORM}
+  - {source: WEAPON_SYSTEM, relationship: ENGAGES, target: PLATFORM}
+  - {source: MISSILE_SYSTEM, relationship: ENGAGES, target: PLATFORM}
+  - {source: AIR_DEFENSE_ARTILLERY_SYSTEM, relationship: ENGAGES, target: PLATFORM}
+  - {source: RADAR_SYSTEM, relationship: DETECTS, target: PLATFORM}
+  - {source: ELECTRONIC_WARFARE_SYSTEM, relationship: DETECTS, target: RF_EMISSION}
+  - {source: RADAR_SYSTEM, relationship: DESIGNATES, target: PLATFORM}
+  - {source: FIRE_CONTROL_SYSTEM, relationship: DESIGNATES, target: PLATFORM}
+  - {source: INTEGRATED_AIR_DEFENSE_SYSTEM, relationship: SUPPORTS_ENGAGEMENT_OF, target: PLATFORM}
+  - {source: RADAR_SYSTEM, relationship: SUPPORTS_ENGAGEMENT_OF, target: MISSILE_SYSTEM}
 
   # Provenance relations
-  - {source: null, relationship: REVIEWED_BY, target: ORGANIZATION}
+  - {source: ASSERTION, relationship: REVIEWED_BY, target: ORGANIZATION}
+  - {source: DOCUMENT, relationship: REVIEWED_BY, target: ORGANIZATION}

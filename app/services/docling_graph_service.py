@@ -22,7 +22,9 @@ from app.services.ontology_templates import (
     DocumentExtractionResult,
     ExtractedEntity,
     ExtractedRelationship,
+    build_entity_type_names,
     build_extraction_prompt,
+    build_relationship_type_names,
     load_ontology,
     load_validation_matrix,
 )
@@ -85,6 +87,8 @@ def _extract_single_pass(
                     document_id,
                 )
             extraction = _validate_triples(extraction, ontology_path)
+            extraction = _validate_entity_types(extraction, ontology_path)
+            extraction = _validate_properties(extraction, ontology_path)
             return _build_networkx_graph(extraction, document_id), "docling-graph"
         except DeterministicExtractionError as e:
             # Try compact prompt once on first deterministic failure
@@ -589,6 +593,111 @@ def _validate_triples(
     return DocumentExtractionResult(
         entities=extraction.entities,
         relationships=valid_rels,
+    )
+
+
+def _validate_entity_types(
+    extraction: DocumentExtractionResult,
+    ontology_path=None,
+) -> DocumentExtractionResult:
+    """Remove entities with invalid entity types and relationships with invalid types."""
+    ontology = load_ontology(ontology_path)
+    valid_entity_types = set(build_entity_type_names(ontology))
+    valid_rel_types = set(build_relationship_type_names(ontology))
+
+    valid_entities = []
+    for entity in extraction.entities:
+        if entity.entity_type in valid_entity_types:
+            valid_entities.append(entity)
+        else:
+            logger.warning(
+                "Rejected entity with unknown type %r: %s",
+                entity.entity_type, entity.name,
+            )
+
+    valid_rels = []
+    for rel in extraction.relationships:
+        if rel.relationship_type in valid_rel_types:
+            valid_rels.append(rel)
+        else:
+            logger.warning(
+                "Rejected relationship with unknown type %r: %s -> %s",
+                rel.relationship_type, rel.from_name, rel.to_name,
+            )
+
+    return DocumentExtractionResult(
+        entities=valid_entities,
+        relationships=valid_rels,
+    )
+
+
+import re as _re
+
+# Known property patterns for validation (field_name -> compiled regex).
+# Values that don't match the pattern for their field are removed.
+_PROPERTY_PATTERNS: dict[str, _re.Pattern] = {
+    "nsn": _re.compile(r"^\d{4}-\d{2}-\d{3}-\d{4}$"),
+    "cage_code": _re.compile(r"^[A-Z0-9]{5}$"),
+}
+
+
+def _validate_properties(
+    extraction: DocumentExtractionResult,
+    ontology_path=None,
+) -> DocumentExtractionResult:
+    """Remove property values that fail pattern validation.
+
+    Uses built-in patterns for known fields (e.g. NSN, CAGE code) and
+    ontology-defined patterns when available.  Bad properties are removed
+    from the entity but the entity itself is kept.
+    """
+    ontology = load_ontology(ontology_path)
+
+    # Build per-entity-type pattern lookup from ontology
+    ont_patterns: dict[str, dict[str, _re.Pattern]] = {}
+    for et in ontology.get("entity_types", []):
+        et_name = et["name"]
+        prop_patterns: dict[str, _re.Pattern] = {}
+        for pname, pdef in et.get("properties", {}).get("properties", {}).items():
+            pat_str = pdef.get("pattern")
+            if pat_str:
+                try:
+                    prop_patterns[pname] = _re.compile(pat_str)
+                except _re.error:
+                    pass
+            elif pname in _PROPERTY_PATTERNS:
+                prop_patterns[pname] = _PROPERTY_PATTERNS[pname]
+        if prop_patterns:
+            ont_patterns[et_name] = prop_patterns
+
+    validated_entities = []
+    for entity in extraction.entities:
+        patterns = ont_patterns.get(entity.entity_type, {})
+        if not patterns:
+            validated_entities.append(entity)
+            continue
+
+        clean_props = {}
+        for pname, pvalue in entity.properties.items():
+            pat = patterns.get(pname)
+            if pat and isinstance(pvalue, str) and not pat.match(pvalue):
+                logger.warning(
+                    "Rejected property %s=%r on entity %s (%s): failed pattern %s",
+                    pname, pvalue, entity.name, entity.entity_type, pat.pattern,
+                )
+            else:
+                clean_props[pname] = pvalue
+
+        validated_entities.append(ExtractedEntity(
+            entity_type=entity.entity_type,
+            name=entity.name,
+            properties=clean_props,
+            confidence=entity.confidence,
+        ))
+
+    return DocumentExtractionResult(
+        entities=validated_entities,
+        relationships=extraction.relationships,
     )
 
 

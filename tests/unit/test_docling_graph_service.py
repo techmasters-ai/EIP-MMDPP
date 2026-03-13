@@ -319,6 +319,48 @@ class TestChunkedExtraction:
         assert len(G.nodes) == 0
 
 
+class TestValidateEntityTypes:
+    def test_validate_entity_types_rejects_unknown(self):
+        from app.services.docling_graph_service import _validate_entity_types
+        from app.services.ontology_templates import ExtractedEntity, DocumentExtractionResult
+
+        extraction = DocumentExtractionResult(entities=[
+            ExtractedEntity(entity_type="EQUIPMENT_SYSTEM", name="Patriot", confidence=0.9),
+            ExtractedEntity(entity_type="INVENTED_TYPE", name="AN/MPQ-65", confidence=0.9),
+        ])
+        result = _validate_entity_types(extraction)
+        assert len(result.entities) == 1
+        assert result.entities[0].entity_type == "EQUIPMENT_SYSTEM"
+
+    def test_validate_entity_types_rejects_unknown_rel_types(self):
+        from app.services.docling_graph_service import _validate_entity_types
+        from app.services.ontology_templates import ExtractedEntity, ExtractedRelationship, DocumentExtractionResult
+
+        extraction = DocumentExtractionResult(
+            entities=[ExtractedEntity(entity_type="EQUIPMENT_SYSTEM", name="X", confidence=0.9)],
+            relationships=[
+                ExtractedRelationship(relationship_type="MEETS_STANDARD", from_name="X", from_type="EQUIPMENT_SYSTEM", to_name="Y", to_type="STANDARD", confidence=0.9),
+                ExtractedRelationship(relationship_type="FAKE_RELATIONSHIP", from_name="X", from_type="EQUIPMENT_SYSTEM", to_name="Z", to_type="FREQUENCY_BAND", confidence=0.9),
+            ]
+        )
+        result = _validate_entity_types(extraction)
+        assert len(result.relationships) == 1
+        assert result.relationships[0].relationship_type == "MEETS_STANDARD"
+
+
+class TestValidateProperties:
+    def test_validate_properties_rejects_misplaced_nsn(self):
+        from app.services.docling_graph_service import _validate_properties
+        from app.services.ontology_templates import ExtractedEntity, DocumentExtractionResult
+
+        extraction = DocumentExtractionResult(entities=[
+            ExtractedEntity(entity_type="COMPONENT", name="Widget", properties={"cage_code": "5961-01-234-5678", "nsn": "5961-01-234-5678"}, confidence=0.9),
+        ])
+        result = _validate_properties(extraction)
+        assert "cage_code" not in result.entities[0].properties
+        assert "nsn" in result.entities[0].properties
+
+
 class TestExtractGraphFromText:
     def test_mock_provider_returns_empty_graph(self):
         from app.services.docling_graph_service import extract_graph_from_text

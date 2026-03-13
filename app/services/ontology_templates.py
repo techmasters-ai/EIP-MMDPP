@@ -150,9 +150,19 @@ def build_extraction_prompt(
                 prop_preview += ", ..."
             entity_descriptions.append(f"  - {et['name']} (props: {prop_preview})")
         else:
+            prop_details = []
+            for pname, pdef in et.get("properties", {}).get("properties", {}).items():
+                desc = pdef.get("description", "")
+                example = pdef.get("example", "")
+                detail = f"{pname}"
+                if desc:
+                    detail += f" ({desc})"
+                if example:
+                    detail += f" [e.g. {example}]"
+                prop_details.append(detail)
             entity_descriptions.append(
-                f"  - {et['name']}: {et.get('description', '')} "
-                f"(properties: {', '.join(props)})"
+                f"  - {et['name']}: {et.get('description', '')}\n"
+                f"    Properties: {', '.join(prop_details)}"
             )
 
     rel_descriptions = []
@@ -168,11 +178,11 @@ def build_extraction_prompt(
 
     few_shot_block = ""
     if few_shot:
-        few_shot_block = """
+        few_shot_block = '''
 ## Example
-Input: "The AN/MPQ-53 radar operates in X-band at 9.4 GHz."
-Output: {"entities": [{"entity_type": "RADAR_SYSTEM", "name": "AN/MPQ-53", "properties": {}, "confidence": 0.9}, {"entity_type": "FREQUENCY_BAND", "name": "X-band", "properties": {"band_letter": "X"}, "confidence": 0.85}], "relationships": [{"relationship_type": "OPERATES_IN_BAND", "from_name": "AN/MPQ-53", "from_type": "RADAR_SYSTEM", "to_name": "X-band", "to_type": "FREQUENCY_BAND", "properties": {}, "confidence": 0.8}]}
-"""
+Input: "The Patriot PAC-3 missile system uses MIL-STD-1553B for internal data bus communication. The guidance section contains a Ka-band seeker operating at 35 GHz."
+Output: {"entities": [{"entity_type": "EQUIPMENT_SYSTEM", "name": "Patriot PAC-3", "properties": {"name": "Patriot PAC-3"}, "confidence": 0.95}, {"entity_type": "STANDARD", "name": "MIL-STD-1553B", "properties": {"designation": "MIL-STD-1553B"}, "confidence": 0.95}, {"entity_type": "SUBSYSTEM", "name": "Guidance Section", "properties": {"name": "Guidance Section", "function": "Terminal phase target tracking and guidance"}, "confidence": 0.85}, {"entity_type": "COMPONENT", "name": "Ka-band Seeker", "properties": {"name": "Ka-band Seeker"}, "confidence": 0.80}], "relationships": [{"relationship_type": "MEETS_STANDARD", "from_name": "Patriot PAC-3", "from_type": "EQUIPMENT_SYSTEM", "to_name": "MIL-STD-1553B", "to_type": "STANDARD", "properties": {}, "confidence": 0.90}, {"relationship_type": "IS_SUBSYSTEM_OF", "from_name": "Guidance Section", "from_type": "SUBSYSTEM", "to_name": "Patriot PAC-3", "to_type": "EQUIPMENT_SYSTEM", "properties": {}, "confidence": 0.85}, {"relationship_type": "CONTAINS", "from_name": "Guidance Section", "from_type": "SUBSYSTEM", "to_name": "Ka-band Seeker", "to_type": "COMPONENT", "properties": {}, "confidence": 0.80}]}
+'''
 
     prompt = f"""Extract entities and relationships from the following military/defense document text.
 
@@ -213,6 +223,8 @@ Output: {"entities": [{"entity_type": "RADAR_SYSTEM", "name": "AN/MPQ-53", "prop
 ```
 
 Only extract entities and relationships you are confident about. Set confidence accordingly.
+Only use entity types and relationship types from the lists above. Do not invent new types.
+Place each extracted value in the correct property field based on its description.
 Return ONLY valid JSON.
 
 ## Document Text
@@ -226,49 +238,16 @@ def load_validation_matrix(
 ) -> set[tuple[str, str, str]]:
     """Load the ontology validation matrix as a set of (source, rel, target) triples.
 
-    Supports two YAML formats:
-
-    List format (source_types/target_types expand into cross-product)::
-
-        - source_types: [A, B]
-          relationship: REL
-          target_types: [X, Y]
-        # produces: (A, REL, X), (A, REL, Y), (B, REL, X), (B, REL, Y)
-
-    Flat format (single source/target per entry)::
-
-        - {source: A, relationship: REL, target: X}
-        # produces: (A, REL, X)
-
-    Entries where source or target is null are stored with the string ``"*"``
-    which means "any entity type is allowed in that position".
-
     Returns an empty set if the ontology doesn't define a validation_matrix.
     """
     ontology = load_ontology(path)
     matrix: set[tuple[str, str, str]] = set()
-
     for entry in ontology.get("validation_matrix", []):
+        source = entry.get("source", "") or entry.get("source_type", "")
         rel = entry.get("relationship", "")
-        if not rel:
-            continue
-
-        # --- list format (source_types / target_types) ---
-        source_types = entry.get("source_types")
-        target_types = entry.get("target_types")
-        if source_types is not None or target_types is not None:
-            sources = source_types or ["*"]
-            targets = target_types or ["*"]
-            for src in sources:
-                for tgt in targets:
-                    matrix.add((src or "*", rel, tgt or "*"))
-            continue
-
-        # --- flat format (source / target) ---
-        source = entry.get("source") or entry.get("source_type") or "*"
-        target = entry.get("target") or entry.get("target_type") or "*"
-        matrix.add((source, rel, target))
-
+        target = entry.get("target", "") or entry.get("target_type", "")
+        if source and rel and target:
+            matrix.add((source, rel, target))
     return matrix
 
 
