@@ -226,16 +226,49 @@ def load_validation_matrix(
 ) -> set[tuple[str, str, str]]:
     """Load the ontology validation matrix as a set of (source, rel, target) triples.
 
+    Supports two YAML formats:
+
+    List format (source_types/target_types expand into cross-product)::
+
+        - source_types: [A, B]
+          relationship: REL
+          target_types: [X, Y]
+        # produces: (A, REL, X), (A, REL, Y), (B, REL, X), (B, REL, Y)
+
+    Flat format (single source/target per entry)::
+
+        - {source: A, relationship: REL, target: X}
+        # produces: (A, REL, X)
+
+    Entries where source or target is null are stored with the string ``"*"``
+    which means "any entity type is allowed in that position".
+
     Returns an empty set if the ontology doesn't define a validation_matrix.
     """
     ontology = load_ontology(path)
     matrix: set[tuple[str, str, str]] = set()
+
     for entry in ontology.get("validation_matrix", []):
-        source = entry.get("source_type", "")
         rel = entry.get("relationship", "")
-        target = entry.get("target_type", "")
-        if source and rel and target:
-            matrix.add((source, rel, target))
+        if not rel:
+            continue
+
+        # --- list format (source_types / target_types) ---
+        source_types = entry.get("source_types")
+        target_types = entry.get("target_types")
+        if source_types is not None or target_types is not None:
+            sources = source_types or ["*"]
+            targets = target_types or ["*"]
+            for src in sources:
+                for tgt in targets:
+                    matrix.add((src or "*", rel, tgt or "*"))
+            continue
+
+        # --- flat format (source / target) ---
+        source = entry.get("source") or entry.get("source_type") or "*"
+        target = entry.get("target") or entry.get("target_type") or "*"
+        matrix.add((source, rel, target))
+
     return matrix
 
 

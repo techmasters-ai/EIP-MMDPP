@@ -224,3 +224,50 @@ relationship_types:
     source_type: null
     target_type: TEST_EVENT
     cardinality: many_to_many
+
+# =============================================================================
+# ONTOLOGY VALIDATION MATRIX
+# Allowed (source_type, relationship, target_type) triples.
+# Triples not in this matrix are rejected before graph write.
+# source_types / target_types are expanded into a cross-product of triples.
+# =============================================================================
+validation_matrix:
+  - source_types: [SUBSYSTEM]
+    relationship: IS_SUBSYSTEM_OF
+    target_types: [EQUIPMENT_SYSTEM]
+
+  - source_types: [ASSEMBLY, SUBSYSTEM, EQUIPMENT_SYSTEM]
+    relationship: CONTAINS
+    target_types: [COMPONENT, ASSEMBLY]
+
+  - source_types: [EQUIPMENT_SYSTEM, SUBSYSTEM]
+    relationship: IMPLEMENTS
+    target_types: [CAPABILITY]
+
+  - source_types: [COMPONENT, SUBSYSTEM, EQUIPMENT_SYSTEM, ASSEMBLY]
+    relationship: MEETS_STANDARD
+    target_types: [STANDARD]
+
+  - source_types: [COMPONENT, SUBSYSTEM, EQUIPMENT_SYSTEM]
+    relationship: SPECIFIED_BY
+    target_types: [SPECIFICATION]
+
+  - source_types: [EQUIPMENT_SYSTEM, SUBSYSTEM, COMPONENT, ASSEMBLY, SPECIFICATION, CAPABILITY, STANDARD, ORGANIZATION, PROCEDURE, FAILURE_MODE, TEST_EVENT]
+    relationship: DESCRIBED_IN
+    target_types: [DOCUMENT]
+
+  - source_types: [PROCEDURE]
+    relationship: PERFORMED_BY
+    target_types: [ORGANIZATION]
+
+  - source_types: [FAILURE_MODE]
+    relationship: AFFECTS
+    target_types: [COMPONENT, SUBSYSTEM, ASSEMBLY]
+
+  - source_types: [DOCUMENT, STANDARD]
+    relationship: SUPERSEDES
+    target_types: [DOCUMENT, STANDARD]
+
+  - source_types: [EQUIPMENT_SYSTEM, SUBSYSTEM, COMPONENT]
+    relationship: TESTED_IN
+    target_types: [TEST_EVENT]

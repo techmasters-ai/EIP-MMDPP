@@ -1211,3 +1211,13 @@ validation_matrix:
   - {source: PROCEDURE, relationship: PERFORMED_BY, target: ORGANIZATION}
   - {source: FAILURE_MODE, relationship: AFFECTS, target: null}
   - {source: null, relationship: TESTED_IN, target: TEST_EVENT}
+
+  # Combat / engagement relations
+  - {source: null, relationship: TRACKS, target: null}
+  - {source: null, relationship: ENGAGES, target: null}
+  - {source: null, relationship: DETECTS, target: null}
+  - {source: null, relationship: DESIGNATES, target: null}
+  - {source: null, relationship: SUPPORTS_ENGAGEMENT_OF, target: null}
+
+  # Provenance relations
+  - {source: null, relationship: REVIEWED_BY, target: ORGANIZATION}
