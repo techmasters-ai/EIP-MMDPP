@@ -184,16 +184,14 @@ print('Reranker model ready')
 " 2>/dev/null && info "Reranker model ready" || warn "Reranker model download failed (will retry on first use)"
   fi
 
-  # Pull Ollama model via the external Ollama service (skip if already present)
-  if command -v ollama &>/dev/null; then
-    if ollama list 2>/dev/null | grep -q "llama3.1:8b"; then
-      info "Ollama model llama3.1:8b already present — skipping pull"
-    else
-      info "Pulling Ollama model (llama3.1:8b)..."
-      ollama pull llama3.1:8b 2>/dev/null && info "Ollama model ready" || warn "Ollama pull failed"
-    fi
+  # Pull Ollama model via the Ollama service on the Docker network
+  local ollama_url="${OLLAMA_BASE_URL:-http://ollama:11434}"
+  if dc exec -T api curl -sf "${ollama_url}/api/tags" 2>/dev/null | grep -q "llama3.1:8b"; then
+    info "Ollama model llama3.1:8b already present — skipping pull"
   else
-    info "Ollama not found locally — ensure llama3.1:8b is available on the Ollama server"
+    info "Pulling Ollama model (llama3.1:8b) via ${ollama_url}..."
+    dc exec -T api curl -sf "${ollama_url}/api/pull" -d '{"name":"llama3.1:8b"}' >/dev/null 2>&1 \
+      && info "Ollama model ready" || warn "Ollama pull failed (ensure Ollama service is on the Docker network)"
   fi
 
   divider
