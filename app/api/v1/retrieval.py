@@ -135,6 +135,52 @@ async def get_image(
 
 
 # ---------------------------------------------------------------------------
+# Cross-encoder reranker helper
+# ---------------------------------------------------------------------------
+
+def _apply_reranker(
+    results: list[QueryResultItem], body: UnifiedQueryRequest
+) -> list[QueryResultItem]:
+    """Re-rank results using cross-encoder if enabled and query_text is present."""
+    from app.config import get_settings
+    from app.services.reranker import rerank as cross_encoder_rerank
+
+    _s = get_settings()
+    if not _s.reranker_enabled or not body.query_text:
+        return results
+
+    rerank_input = [
+        {
+            "chunk_id": str(getattr(r, "chunk_id", "")),
+            "content_text": getattr(r, "content_text", "") or "",
+            "score": getattr(r, "score", 0.0),
+            "artifact_id": getattr(r, "artifact_id", None),
+            "document_id": getattr(r, "document_id", None),
+            "modality": getattr(r, "modality", "text"),
+            "page_number": getattr(r, "page_number", None),
+            "classification": getattr(r, "classification", "UNCLASSIFIED"),
+        }
+        for r in results[:_s.reranker_top_n]
+    ]
+    reranked = cross_encoder_rerank(body.query_text, rerank_input, top_k=body.top_k)
+
+    # Rebuild result items from reranked dicts
+    return [
+        QueryResultItem(
+            chunk_id=r["chunk_id"],
+            artifact_id=r.get("artifact_id"),
+            document_id=r.get("document_id"),
+            score=r.get("reranker_score", r.get("score", 0.0)),
+            modality=r.get("modality", "text"),
+            content_text=r.get("content_text"),
+            page_number=r.get("page_number"),
+            classification=r.get("classification", "UNCLASSIFIED"),
+        )
+        for r in reranked
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Multi-modal pipeline (shared by text_only, images_only, multi_modal)
 # ---------------------------------------------------------------------------
 
@@ -181,6 +227,9 @@ async def _multi_modal_pipeline(
     # Sort by score descending, cap at top_k
     deduped.sort(key=lambda x: x.score, reverse=True)
     final = deduped[:body.top_k]
+
+    # Re-rank top candidates using cross-encoder
+    final = _apply_reranker(final, body)
 
     t_total = time.monotonic()
     logger.info(
@@ -306,6 +355,9 @@ async def _text_vector_search(
     results = _diversify_results(results)
     results.sort(key=lambda r: r.score, reverse=True)
     results = results[:body.top_k]
+
+    # Re-rank top candidates using cross-encoder
+    results = _apply_reranker(results, body)
 
     # Strip content_text if not requested
     if not body.include_context:
@@ -614,9 +666,16 @@ async def _graphrag_local_query(
         entity = gr.get("entity", {})
         community_reports = gr.get("community_reports", [])
 
+        # Use the fulltext score from Neo4j when available, fall back to rank-based
+        ft_score = entity.get("score")
+        if ft_score is not None and ft_score > 0:
+            score = min(1.0, float(ft_score))
+        else:
+            score = max(0.5, 1.0 - (i * 0.05))
+
         results.append(
             QueryResultItem(
-                score=max(0.5, 1.0 - (i * 0.05)),  # Rank-based scoring
+                score=score,
                 modality="graph_node",
                 content_text=entity.get("name", ""),
                 page_number=None,
@@ -684,9 +743,11 @@ async def _graphrag_global_query(
 
     results = []
     for gr in graphrag_results:
+        # Prefer fulltext relevance score over static rank
+        score = gr.get("relevance") or gr.get("rank", 0.5) or 0.5
         results.append(
             QueryResultItem(
-                score=gr.get("rank", 0.5) or 0.5,
+                score=float(score),
                 modality="community_report",
                 content_text=gr.get("summary") or gr.get("report_text", "")[:500],
                 page_number=None,
