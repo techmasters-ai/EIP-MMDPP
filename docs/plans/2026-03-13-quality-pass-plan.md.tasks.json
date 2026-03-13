@@ -1,0 +1,22 @@
+{
+  "planPath": "docs/plans/2026-03-13-quality-pass-plan.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Enrich ontology property definitions", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Add validation matrix to ontology", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Fix extraction prompt and add post-extraction validation", "status": "pending", "blockedBy": [1, 2]},
+    {"id": 4, "subject": "Task 4: Align NER entity types with ontology", "status": "pending", "blockedBy": [3]},
+    {"id": 5, "subject": "Task 5: Update model defaults and config", "status": "pending"},
+    {"id": 6, "subject": "Task 6: Fix BGE query prefix", "status": "pending"},
+    {"id": 7, "subject": "Task 7: Create reranker service", "status": "pending"},
+    {"id": 8, "subject": "Task 8: Wire reranker into retrieval pipeline", "status": "pending", "blockedBy": [7]},
+    {"id": 9, "subject": "Task 9: Wire structure-aware chunker into pipeline", "status": "pending"},
+    {"id": 10, "subject": "Task 10: Add min score threshold and image oversample", "status": "pending"},
+    {"id": 11, "subject": "Task 11: Fix GraphRAG global and local search", "status": "pending"},
+    {"id": 12, "subject": "Task 12: Fix canonicalization fuzzy threshold", "status": "pending"},
+    {"id": 13, "subject": "Task 13: Add model download to manage.sh", "status": "pending"},
+    {"id": 14, "subject": "Task 14: Re-score expanded chunks independently", "status": "pending"},
+    {"id": 15, "subject": "Task 15: Sync base.yaml with base_v1.yaml", "status": "pending"},
+    {"id": 16, "subject": "Task 16: Run full test suite and update README", "status": "pending", "blockedBy": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]}
+  ],
+  "lastUpdated": "2026-03-13T00:00:00Z"
+}
