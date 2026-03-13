@@ -51,10 +51,11 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 | Graph Database | Neo4j Community Edition (knowledge graph, ontology, canonicalization) |
 | Vector Database | Qdrant OSS (text + image embeddings) |
 | Object Storage | MinIO |
-| Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, fully local) |
+| Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, asymmetric query/passage prefixes) |
 | Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
+| Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (CPU default, GPU optional) |
 | Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
-| Graph Extraction | Direct Ollama API + structured outputs (ontology-driven entity/relationship extraction) |
+| Graph Extraction | Ollama `llama3.1:8b` + structured outputs (ontology-driven entity/relationship extraction with post-extraction validation) |
 | GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
 | Trusted Data | Dedicated Qdrant collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
@@ -130,15 +131,15 @@ A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-depende
 # Air-gapped (Ollama) setup
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_NUM_CTX=8192                   # Context window for Ollama (must fit prompt + response)
+OLLAMA_NUM_CTX=16384                  # Context window for Ollama (must fit prompt + response)
 
 # Per-feature model selection
-DOCLING_GRAPH_MODEL=gpt-oss:20b   # Model for graph entity/relationship extraction
-GRAPHRAG_MODEL=gpt-oss:20b        # Model for GraphRAG community report generation
+DOCLING_GRAPH_MODEL=llama3.1:8b   # Model for graph entity/relationship extraction
+GRAPHRAG_MODEL=llama3.2           # Model for GraphRAG community report generation
 
 # Graph extraction hardening (structured output schema + deterministic error handling)
 DOCLING_GRAPH_REQUIRE_LLM=true            # Fail-closed: raise on NER fallback (default true)
-DOCLING_GRAPH_MAX_TOKENS=1200             # Max tokens for LLM response
+DOCLING_GRAPH_MAX_TOKENS=2048             # Max tokens for LLM response
 DOCLING_GRAPH_RETRY_ATTEMPTS=2            # Retry attempts for transient errors only
 DOCLING_GRAPH_RETRY_BACKOFF_SECONDS=5     # Base backoff between retries (multiplied by attempt)
 DOCLING_GRAPH_TIMEOUT=300.0               # LLM call timeout (seconds)
@@ -232,11 +233,11 @@ Query strategies:
 
 > **Backward compatibility**: The legacy `mode` field (e.g. `"mode": "text_only"`) is still accepted and maps to the corresponding `strategy` + `modality_filter` combination.
 
-The hybrid pipeline runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → weighted fusion scoring → deduplicate → rank → filter by modality.
+The hybrid pipeline runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → independent re-scoring of expanded chunks → weighted fusion scoring → deduplicate → cross-encoder reranking (bge-reranker-v2-m3) → min score threshold filter → rank → filter by modality.
 
 Image-modality results include an `image_url` served via the API proxy (`GET /v1/images/{chunk_id}`), which streams from MinIO with 1-hour cache headers. This avoids exposing Docker-internal MinIO hostnames in presigned URLs and works in air-gapped environments without hostname configuration.
 
-**Weighted Fusion Scoring**: `final = 0.65*semantic + 0.20*doc_structure + 0.15*ontology + MIL-ID bonus`. MIL-ID bonus matches NSN, MIL-STD, ELNOT, DIEQP, and AN/ designators. All weights are configurable via environment variables (see `env.example`).
+**Weighted Fusion Scoring**: `final = 0.65*semantic + 0.20*doc_structure + 0.15*ontology + MIL-ID bonus`. MIL-ID bonus matches NSN, MIL-STD, ELNOT, DIEQP, and AN/ designators. All weights are configurable via environment variables (see `env.example`). Results below `RETRIEVAL_MIN_SCORE_THRESHOLD` (default 0.25) are dropped. Top candidates are re-scored by a cross-encoder reranker (`RERANKER_MODEL`, default `BAAI/bge-reranker-v2-m3`, configurable via `RERANKER_DEVICE`, `RERANKER_ENABLED`, `RERANKER_TOP_N`).
 
 ### Agent / LangGraph Context
 
@@ -473,6 +474,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.21 | Large-document timeout fix: `DOCLING_TIMEOUT_SECONDS` 300→3600, `PREPARE_SOFT_TIME_LIMIT` 1800→4200, `DOCLING_LOCK_TIMEOUT` 1800→4200 (90-page PDFs take ~30 min on CPU), pinned docling==2.76.0/docling-core==2.67.1, full traceback logging on Docling errors | Complete |
 | 2.22 | Chord resilience fix: `SoftTimeLimitExceeded` handlers on all chord member tasks (return error dict instead of dying), chord `on_error` errback marks document FAILED on hard kills, `GRAPH_SOFT_TIME_LIMIT` 600→1800 / `GRAPH_TIME_LIMIT` 660→1860 for large-document LLM extraction | Complete |
 | 2.23 | Concurrent pipeline dispatch fix: atomic PipelineRun check-and-set (`FOR UPDATE`), document-scoped singleflight Redis lock in `prepare_document`, supersession guard aborts stale tasks, Docling lock held through `self.retry()` (no gap for lock theft), configurable 503 retry limit (`DOCLING_503_MAX_RETRIES=20`), Celery Redis visibility timeout (`CELERY_VISIBILITY_TIMEOUT=10800`), stale cleanup marks PipelineRuns FAILED, worker topology overlap prevention in `manage.sh`, Docling `MAX_CONCURRENT` aligned with pipeline `DOCLING_CONCURRENCY` | Complete |
+| 2.24 | Comprehensive quality pass: enriched ontology properties (descriptions/examples/patterns), validation matrix (all relationship types), fixed extraction prompt (valid few-shot, property descriptions, type restrictions), post-extraction validation (_validate_entity_types, _validate_properties), BGE asymmetric query/passage prefixes, cross-encoder reranker (bge-reranker-v2-m3), structure-aware chunking in pipeline, min score threshold + image oversample, GraphRAG global fulltext filtering + local BM25 scoring, fuzzy match score normalization, independent re-scoring of expanded chunks, model pre-download in manage.sh, upgraded to llama3.1:8b | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -499,6 +501,7 @@ app/
 │   ├── qdrant_store.py         # Qdrant vector upsert/search
 │   ├── canonicalization.py     # Entity alias resolution + fuzzy match
 │   ├── chunking.py             # Structure-aware document chunking
+│   ├── reranker.py             # Cross-encoder reranker (bge-reranker-v2-m3)
 │   ├── ontology_templates.py   # YAML → Pydantic extraction templates + validation
 │   └── ner.py                  # Military NER (offline regex, EM/RF patterns, fallback)
 ├── workers/
