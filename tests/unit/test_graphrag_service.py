@@ -300,11 +300,12 @@ class TestGlobalSearch:
         from app.services.graphrag_service import global_search
         db = MagicMock()
         db.execute.return_value.fetchall.return_value = [
-            ("report text", "summary", 1.0, "cid", "title", 0),
+            ("report text", "summary", 1.0, "cid", "title", 0, 0.85),
         ]
         results = global_search("radar", db)
         assert len(results) == 1
         assert results[0]["report_text"] == "report text"
+        assert results[0]["relevance"] == 0.85
 
     def test_empty_db(self):
         from app.services.graphrag_service import global_search
@@ -317,6 +318,25 @@ class TestGlobalSearch:
         db = MagicMock()
         db.execute.side_effect = Exception("fail")
         assert global_search("test", db) == []
+
+    def test_global_search_filters_by_query(self):
+        """global_search must filter community reports by query relevance."""
+        import inspect
+        from app.services.graphrag_service import global_search
+        source = inspect.getsource(global_search)
+        assert "plainto_tsquery" in source, "global_search must use plainto_tsquery to filter by query text"
+        assert ":query" in source, "global_search must bind the query parameter"
+
+    def test_query_param_passed_to_sql(self):
+        """Verify the query text is passed to the SQL statement."""
+        from app.services.graphrag_service import global_search
+        db = MagicMock()
+        db.execute.return_value.fetchall.return_value = []
+        global_search("specific search term", db, limit=5)
+        call_args = db.execute.call_args
+        params = call_args[0][1]
+        assert params["query"] == "specific search term"
+        assert params["limit"] == 5
 
 
 # ---------------------------------------------------------------------------

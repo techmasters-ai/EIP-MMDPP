@@ -146,18 +146,23 @@ def global_search(
     try:
         from sqlalchemy import text
 
-        # Search community reports by keyword
+        # Search community reports filtered by query relevance (fulltext)
         stmt = text("""
             SELECT cr.report_text, cr.summary, cr.rank,
-                   gc.community_id, gc.title, gc.level
+                   gc.community_id, gc.title, gc.level,
+                   ts_rank_cd(
+                       to_tsvector('english', cr.report_text),
+                       plainto_tsquery('english', :query)
+                   ) AS relevance
             FROM retrieval.graphrag_community_reports cr
             JOIN retrieval.graphrag_communities gc
                 ON cr.community_id = gc.community_id
-            ORDER BY cr.rank DESC NULLS LAST
+            WHERE to_tsvector('english', cr.report_text) @@ plainto_tsquery('english', :query)
+            ORDER BY relevance DESC, cr.rank DESC NULLS LAST
             LIMIT :limit
         """)
 
-        result = db_session.execute(stmt, {"limit": limit})
+        result = db_session.execute(stmt, {"query": query, "limit": limit})
         for row in result.fetchall():
             results.append({
                 "community_id": row[3],
@@ -166,6 +171,7 @@ def global_search(
                 "report_text": row[0],
                 "summary": row[1],
                 "rank": row[2],
+                "relevance": float(row[6]),
             })
 
         if not results:
