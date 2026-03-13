@@ -212,6 +212,9 @@ async def _multi_modal_pipeline(
     expanded = await _expand_seeds(db, seed_results, body.include_context, body.query_text)
     t_expand = time.monotonic()
 
+    # Step 2b: Re-score ontology-expanded chunks independently against the query
+    expanded = await _rescore_expanded_chunks(expanded, body.query_text)
+
     all_results = seed_results + expanded
 
     # Step 3: Deduplicate by chunk_id, then by content
@@ -300,6 +303,58 @@ async def _expand_seeds(
 
 
 # ---------------------------------------------------------------------------
+# Re-score expanded chunks independently against the query
+# ---------------------------------------------------------------------------
+
+async def _rescore_expanded_chunks(
+    expanded: list[QueryResultItem],
+    query_text: str | None,
+) -> list[QueryResultItem]:
+    """Re-score ontology-expanded chunks using embedding similarity to the query.
+
+    Ontology-expanded chunks initially inherit a decayed fusion score from their
+    parent seed.  This replaces that score with the chunk's actual cosine
+    similarity to the query embedding, preventing low-relevance expansions from
+    ranking artificially high.
+    """
+    if not expanded or not query_text:
+        return expanded
+
+    # Only re-score ontology-sourced text chunks (they have content_text)
+    ontology_chunks = [
+        c for c in expanded
+        if (getattr(c, "context", None) or {}).get("source") == "ontology"
+        and c.content_text
+    ]
+
+    if not ontology_chunks:
+        return expanded
+
+    import asyncio
+    import numpy as np
+    from app.services.embedding import embed_texts
+
+    loop = asyncio.get_event_loop()
+
+    # Run embedding in executor to avoid blocking the event loop
+    chunk_texts = [c.content_text for c in ontology_chunks]
+
+    def _embed():
+        query_emb = np.array(embed_texts([query_text], query=True)[0])
+        chunk_embs = np.array(embed_texts(chunk_texts))
+        # Cosine similarity (embeddings are already L2-normalized by BGE)
+        similarities = chunk_embs @ query_emb
+        return similarities
+
+    similarities = await loop.run_in_executor(None, _embed)
+
+    for chunk, sim in zip(ontology_chunks, similarities):
+        chunk.score = max(float(sim), 0.0)
+
+    return expanded
+
+
+# ---------------------------------------------------------------------------
 # Text vector search — Qdrant on eip_text_chunks (BGE)
 # ---------------------------------------------------------------------------
 
@@ -333,6 +388,10 @@ async def _text_vector_search(
         limit=oversample,
         filters=qdrant_filters,
     )
+
+    # Filter by minimum score threshold
+    min_score = _settings.retrieval_min_score_threshold
+    hits = [h for h in hits if h.get("score", 0.0) >= min_score]
 
     # Map Qdrant results — always fetch chunk_text for content dedup
     results = []
@@ -392,13 +451,26 @@ async def _image_vector_search(
 
     qdrant_filters = _build_qdrant_filters(body)
 
+    from app.config import get_settings as _get_settings
+    settings = _get_settings()
+
+    # Over-fetch to allow score filtering while still returning enough results
+    oversample = min(
+        body.top_k * settings.retrieval_diversity_oversample_factor,
+        settings.retrieval_diversity_max_candidates,
+    )
+
     qdrant_client = get_qdrant_async_client()
     hits = await search_image_vectors_async(
         qdrant_client,
         query_vector=query_embedding,
-        limit=body.top_k,
+        limit=oversample,
         filters=qdrant_filters,
     )
+
+    # Filter by minimum score threshold
+    min_score = settings.retrieval_min_score_threshold
+    hits = [h for h in hits if h.get("score", 0.0) >= min_score]
 
     results = []
     for hit in hits:
@@ -416,7 +488,9 @@ async def _image_vector_search(
             )
         )
 
-    return results
+    # Sort by score and trim to requested top_k
+    results.sort(key=lambda r: r.score, reverse=True)
+    return results[:body.top_k]
 
 
 # ---------------------------------------------------------------------------

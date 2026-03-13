@@ -188,18 +188,23 @@ def search_text_vectors(
     query_vector: list[float],
     limit: int = 20,
     filters: Optional[dict[str, Any]] = None,
+    score_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     """Search the text collection. Returns list of {id, score, payload}."""
     settings = get_settings()
     qdrant_filter = _build_filter(filters) if filters else None
 
-    results = client.query_points(
+    kwargs: dict[str, Any] = dict(
         collection_name=settings.qdrant_text_collection,
         query=query_vector,
         limit=limit,
         query_filter=qdrant_filter,
         with_payload=True,
     )
+    if score_threshold is not None:
+        kwargs["score_threshold"] = score_threshold
+
+    results = client.query_points(**kwargs)
 
     return [
         {
@@ -216,18 +221,23 @@ def search_image_vectors(
     query_vector: list[float],
     limit: int = 20,
     filters: Optional[dict[str, Any]] = None,
+    score_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     """Search the image collection. Returns list of {id, score, payload}."""
     settings = get_settings()
     qdrant_filter = _build_filter(filters) if filters else None
 
-    results = client.query_points(
+    kwargs: dict[str, Any] = dict(
         collection_name=settings.qdrant_image_collection,
         query=query_vector,
         limit=limit,
         query_filter=qdrant_filter,
         with_payload=True,
     )
+    if score_threshold is not None:
+        kwargs["score_threshold"] = score_threshold
+
+    results = client.query_points(**kwargs)
 
     return [
         {
@@ -248,18 +258,23 @@ async def search_text_vectors_async(
     query_vector: list[float],
     limit: int = 20,
     filters: Optional[dict[str, Any]] = None,
+    score_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     """Async search the text collection."""
     settings = get_settings()
     qdrant_filter = _build_filter(filters) if filters else None
 
-    results = await client.query_points(
+    kwargs: dict[str, Any] = dict(
         collection_name=settings.qdrant_text_collection,
         query=query_vector,
         limit=limit,
         query_filter=qdrant_filter,
         with_payload=True,
     )
+    if score_threshold is not None:
+        kwargs["score_threshold"] = score_threshold
+
+    results = await client.query_points(**kwargs)
 
     return [
         {
@@ -276,18 +291,23 @@ async def search_image_vectors_async(
     query_vector: list[float],
     limit: int = 20,
     filters: Optional[dict[str, Any]] = None,
+    score_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     """Async search the image collection."""
     settings = get_settings()
     qdrant_filter = _build_filter(filters) if filters else None
 
-    results = await client.query_points(
+    kwargs: dict[str, Any] = dict(
         collection_name=settings.qdrant_image_collection,
         query=query_vector,
         limit=limit,
         query_filter=qdrant_filter,
         with_payload=True,
     )
+    if score_threshold is not None:
+        kwargs["score_threshold"] = score_threshold
+
+    results = await client.query_points(**kwargs)
 
     return [
         {
