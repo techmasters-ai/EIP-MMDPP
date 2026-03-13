@@ -12,12 +12,12 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        designation: {type: string}
-        program_office: {type: string}
-        status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
-        prime_contractor: {type: string}
-        service_branch: {type: string}
+        name: {type: string, description: "Common name or designation of the system", example: "Patriot PAC-3"}
+        designation: {type: string, description: "Military AN/ designation or program designation", example: "AN/MPQ-65", pattern: "^AN/[A-Z]{3}-\\d+"}
+        program_office: {type: string, description: "Managing program office", example: "PEO Missiles and Space"}
+        status: {type: string, description: "Current lifecycle status", enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        prime_contractor: {type: string, description: "Lead contractor organization", example: "Lockheed Martin"}
+        service_branch: {type: string, description: "Military branch operating the system", example: "U.S. Army"}
 
   - name: SUBSYSTEM
     label: "Subsystem"
@@ -26,9 +26,9 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        function: {type: string}
-        part_number: {type: string}
+        name: {type: string, description: "Name of the subsystem", example: "Guidance Section"}
+        function: {type: string, description: "Primary functional role of the subsystem", example: "Terminal phase target tracking and guidance"}
+        part_number: {type: string, description: "Subsystem-level part or drawing number", example: "GS-PAC3-001"}
 
   - name: COMPONENT
     label: "Component"
@@ -37,12 +37,12 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        part_number: {type: string}
-        nsn: {type: string, description: "National Stock Number"}
-        cage_code: {type: string}
-        material: {type: string}
-        weight_kg: {type: number}
+        name: {type: string, description: "Common name of the component", example: "Traveling Wave Tube"}
+        part_number: {type: string, description: "Manufacturer-assigned part number (alphanumeric with dashes)", example: "PN-12345-A", pattern: "^[A-Z0-9][A-Z0-9\\-/]{2,20}$"}
+        nsn: {type: string, description: "National Stock Number in NNNN-NN-NNN-NNNN format", example: "5961-01-234-5678", pattern: "^\\d{4}-\\d{2}-\\d{3}-\\d{4}$"}
+        cage_code: {type: string, description: "5-character Commercial and Government Entity code identifying the manufacturer", example: "1ABC3", pattern: "^[A-Z0-9]{5}$"}
+        material: {type: string, description: "Primary material composition of the component", example: "Aluminum 7075-T6"}
+        weight_kg: {type: number, description: "Weight of the component in kilograms", example: 2.5}
 
   - name: ASSEMBLY
     label: "Assembly"
@@ -51,8 +51,8 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        assembly_number: {type: string}
+        name: {type: string, description: "Name of the assembly unit", example: "Antenna Feed Assembly"}
+        assembly_number: {type: string, description: "Assembly drawing or identification number", example: "ASM-7891-A"}
 
   - name: SPECIFICATION
     label: "Specification"
@@ -61,11 +61,11 @@ entity_types:
     properties:
       type: object
       properties:
-        parameter: {type: string}
-        value: {type: string}
-        unit: {type: string}
-        condition: {type: string}
-        source_document: {type: string}
+        parameter: {type: string, description: "Name of the measured parameter (e.g. max_range, operating_temperature)", example: "max_range"}
+        value: {type: string, description: "Numeric value or range of the measurement", example: "150"}
+        unit: {type: string, description: "Unit of measurement (SI or military standard)", example: "km"}
+        condition: {type: string, description: "Operating conditions under which the spec applies", example: "sea level, standard atmosphere"}
+        source_document: {type: string, description: "Document where this specification is defined", example: "TM 9-1425-386-12"}
 
   - name: CAPABILITY
     label: "Capability"
@@ -74,9 +74,9 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        category: {type: string}
-        trl: {type: integer, description: "Technology Readiness Level 1-9"}
+        name: {type: string, description: "Name of the functional capability", example: "Terminal Phase Guidance"}
+        category: {type: string, description: "Capability domain or category", example: "Guidance and Navigation"}
+        trl: {type: integer, description: "Technology Readiness Level on a scale of 1-9", example: 7}
 
   - name: STANDARD
     label: "Standard / Specification Document"
@@ -85,11 +85,11 @@ entity_types:
     properties:
       type: object
       properties:
-        designation: {type: string, description: "e.g., MIL-STD-1553B"}
-        title: {type: string}
-        issuing_org: {type: string}
-        version: {type: string}
-        supersedes: {type: string}
+        designation: {type: string, description: "Official standard designation number (e.g. MIL-STD-1553B)", example: "MIL-STD-1553B", pattern: "^MIL-[A-Z]+-\\d+[A-Z]?"}
+        title: {type: string, description: "Full title of the standard document", example: "Digital Time Division Command/Response Multiplex Data Bus"}
+        issuing_org: {type: string, description: "Organization that published the standard", example: "Department of Defense"}
+        version: {type: string, description: "Revision letter or version number", example: "B"}
+        supersedes: {type: string, description: "Designation of the standard this one replaces", example: "MIL-STD-1553A"}
 
   - name: DOCUMENT
     label: "Source Document"
@@ -98,12 +98,12 @@ entity_types:
     properties:
       type: object
       properties:
-        title: {type: string}
-        document_number: {type: string}
-        revision: {type: string}
-        classification: {type: string}
-        issuing_org: {type: string}
-        date: {type: string}
+        title: {type: string, description: "Full title of the document", example: "Operator Manual for Patriot Missile System"}
+        document_number: {type: string, description: "Official document identifier or TM number", example: "TM 9-1425-386-12"}
+        revision: {type: string, description: "Document revision identifier", example: "Rev C"}
+        classification: {type: string, description: "Security classification level", example: "UNCLASSIFIED"}
+        issuing_org: {type: string, description: "Organization that published the document", example: "U.S. Army TACOM"}
+        date: {type: string, description: "Publication or revision date (YYYY-MM-DD)", example: "2023-06-15"}
 
   - name: ORGANIZATION
     label: "Organization"
@@ -112,10 +112,10 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        type: {type: string, enum: [PRIME_CONTRACTOR, SUBCONTRACTOR, PROGRAM_OFFICE, MILITARY_BRANCH, GOVERNMENT_AGENCY]}
-        cage_code: {type: string}
-        location: {type: string}
+        name: {type: string, description: "Full name of the organization", example: "Raytheon Missiles & Defense"}
+        type: {type: string, description: "Category of organization", enum: [PRIME_CONTRACTOR, SUBCONTRACTOR, PROGRAM_OFFICE, MILITARY_BRANCH, GOVERNMENT_AGENCY]}
+        cage_code: {type: string, description: "5-character CAGE code for the organization", example: "58064", pattern: "^[A-Z0-9]{5}$"}
+        location: {type: string, description: "Primary facility location", example: "Tucson, AZ"}
 
   - name: PROCEDURE
     label: "Procedure"
@@ -124,10 +124,10 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        type: {type: string, enum: [MAINTENANCE, OPERATIONAL, TEST, CALIBRATION, INSPECTION]}
-        periodicity: {type: string}
-        skill_level: {type: string}
+        name: {type: string, description: "Name or title of the procedure", example: "Radar Antenna Alignment Procedure"}
+        type: {type: string, description: "Category of procedure", enum: [MAINTENANCE, OPERATIONAL, TEST, CALIBRATION, INSPECTION]}
+        periodicity: {type: string, description: "How often the procedure must be performed", example: "Semi-annual"}
+        skill_level: {type: string, description: "Required maintenance skill level", example: "20C (Patriot Repairer)"}
 
   - name: FAILURE_MODE
     label: "Failure Mode"
@@ -136,10 +136,10 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        description: {type: string}
-        fmeca_severity: {type: integer, description: "MIL-STD-1629 severity 1-4"}
-        detection_method: {type: string}
+        name: {type: string, description: "Short name of the failure mode", example: "TWT Power Degradation"}
+        description: {type: string, description: "Detailed description of how the failure manifests", example: "Gradual loss of transmit power due to cathode erosion"}
+        fmeca_severity: {type: integer, description: "MIL-STD-1629 severity category (1=catastrophic, 4=minor)", example: 2}
+        detection_method: {type: string, description: "How this failure is detected", example: "BIT fault code 47, power output below threshold"}
 
   - name: TEST_EVENT
     label: "Test Event"
@@ -148,11 +148,11 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        date: {type: string}
-        location: {type: string}
-        test_type: {type: string, enum: [DT, OT, IOT, LFT, DEVELOPMENTAL]}
-        outcome: {type: string, enum: [PASS, FAIL, PARTIAL, INCONCLUSIVE]}
+        name: {type: string, description: "Name or designation of the test event", example: "FET-10 Flight Test"}
+        date: {type: string, description: "Date the test was conducted (YYYY-MM-DD)", example: "2024-03-15"}
+        location: {type: string, description: "Test range or facility location", example: "White Sands Missile Range, NM"}
+        test_type: {type: string, description: "Category of test event", enum: [DT, OT, IOT, LFT, DEVELOPMENTAL]}
+        outcome: {type: string, description: "Overall test result", enum: [PASS, FAIL, PARTIAL, INCONCLUSIVE]}
 
 relationship_types:
   - name: IS_SUBSYSTEM_OF

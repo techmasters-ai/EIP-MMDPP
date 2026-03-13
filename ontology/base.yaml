@@ -27,14 +27,14 @@ entity_types:
     properties:
       type: object
       properties:
-        title: {type: string}
-        document_id: {type: string}
-        document_number: {type: string}
-        classification: {type: string}
-        publication_date: {type: string}
-        source_type: {type: string, enum: [MANUAL, REPORT, BRIEFING, NOTE, SCHEMATIC, DRAWING, SPECIFICATION, CHECKLIST]}
-        issuing_org: {type: string}
-        language: {type: string}
+        title: {type: string, description: "Full title of the document", example: "Operator Manual for Patriot Missile System"}
+        document_id: {type: string, description: "Internal system-assigned document identifier"}
+        document_number: {type: string, description: "Official document identifier or TM number", example: "TM 9-1425-386-12"}
+        classification: {type: string, description: "Security classification level", example: "UNCLASSIFIED"}
+        publication_date: {type: string, description: "Publication or revision date (YYYY-MM-DD)", example: "2023-06-15"}
+        source_type: {type: string, description: "Category of the source document", enum: [MANUAL, REPORT, BRIEFING, NOTE, SCHEMATIC, DRAWING, SPECIFICATION, CHECKLIST]}
+        issuing_org: {type: string, description: "Organization that published the document", example: "U.S. Army TACOM"}
+        language: {type: string, description: "Language of the document (ISO 639-1 code)", example: "en"}
 
   - name: SECTION
     label: "Document Section"
@@ -43,9 +43,9 @@ entity_types:
     properties:
       type: object
       properties:
-        heading: {type: string}
-        page_start: {type: integer}
-        page_end: {type: integer}
+        heading: {type: string, description: "Section heading or title text", example: "Chapter 3: Maintenance Procedures"}
+        page_start: {type: integer, description: "Starting page number of the section", example: 42}
+        page_end: {type: integer, description: "Ending page number of the section", example: 67}
 
   - name: FIGURE
     label: "Figure"
@@ -54,10 +54,10 @@ entity_types:
     properties:
       type: object
       properties:
-        figure_id: {type: string}
-        caption: {type: string}
-        page: {type: integer}
-        figure_type: {type: string, enum: [BLOCK_DIAGRAM, SCHEMATIC, PHOTO, SPECTRUM_PLOT, WIRING_DIAGRAM, FLOWCHART]}
+        figure_id: {type: string, description: "Figure number or identifier within the document", example: "Figure 3-12"}
+        caption: {type: string, description: "Figure caption text", example: "Antenna Feed Assembly Exploded View"}
+        page: {type: integer, description: "Page number where the figure appears", example: 55}
+        figure_type: {type: string, description: "Category of the figure", enum: [BLOCK_DIAGRAM, SCHEMATIC, PHOTO, SPECTRUM_PLOT, WIRING_DIAGRAM, FLOWCHART]}
 
   - name: TABLE
     label: "Table"
@@ -66,9 +66,9 @@ entity_types:
     properties:
       type: object
       properties:
-        table_id: {type: string}
-        caption: {type: string}
-        page: {type: integer}
+        table_id: {type: string, description: "Table number or identifier within the document", example: "Table 4-1"}
+        caption: {type: string, description: "Table caption or title", example: "Radar System Frequency Parameters"}
+        page: {type: integer, description: "Page number where the table appears", example: 78}
 
   - name: SPREADSHEET
     label: "Spreadsheet"
@@ -77,8 +77,8 @@ entity_types:
     properties:
       type: object
       properties:
-        workbook_name: {type: string}
-        sheet_name: {type: string}
+        workbook_name: {type: string, description: "Name of the spreadsheet workbook file", example: "SA-20_MDE_Checklist.xlsx"}
+        sheet_name: {type: string, description: "Name of the specific worksheet tab", example: "Radar Parameters"}
 
   - name: ASSERTION
     label: "Assertion"
@@ -87,10 +87,10 @@ entity_types:
     properties:
       type: object
       properties:
-        assertion_text: {type: string}
-        confidence: {type: number}
-        extraction_method: {type: string, enum: [LLM, NER, MANUAL, RULE]}
-        review_status: {type: string, enum: [UNREVIEWED, APPROVED, REJECTED]}
+        assertion_text: {type: string, description: "The verbatim or paraphrased claim text", example: "Maximum detection range is 300 km against a 1 m^2 target"}
+        confidence: {type: number, description: "Extraction confidence score (0.0 to 1.0)", example: 0.85}
+        extraction_method: {type: string, description: "Method used to extract the assertion", enum: [LLM, NER, MANUAL, RULE]}
+        review_status: {type: string, description: "Current curation review status", enum: [UNREVIEWED, APPROVED, REJECTED]}
 
   # ---------------------------------------------------------------------------
   # Layer 2: Military Equipment (DoDAF backbone)
@@ -102,12 +102,12 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        platform_designation: {type: string}
-        platform_type: {type: string, enum: [AIRCRAFT, SHIP, GROUND_VEHICLE, FIXED_SITE, SPACE, MOBILE_LAUNCHER, AIR_DEFENSE_BATTERY]}
-        country: {type: string}
-        service_branch: {type: string}
-        platform_status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        name: {type: string, description: "Common name of the platform", example: "SA-20 TEL"}
+        platform_designation: {type: string, description: "Military designation of the platform", example: "5P85SE"}
+        platform_type: {type: string, description: "Category of the platform", enum: [AIRCRAFT, SHIP, GROUND_VEHICLE, FIXED_SITE, SPACE, MOBILE_LAUNCHER, AIR_DEFENSE_BATTERY]}
+        country: {type: string, description: "Country of origin or primary operator", example: "Russia"}
+        service_branch: {type: string, description: "Military branch operating the platform", example: "Russian Aerospace Forces"}
+        platform_status: {type: string, description: "Current lifecycle status of the platform", enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
 
   - name: RADAR_SYSTEM
     label: "Radar System"
@@ -116,30 +116,30 @@ entity_types:
     properties:
       type: object
       properties:
-        system_name: {type: string}
-        nomenclature: {type: string}
-        ELNOT: {type: string}
-        DIEQP: {type: string}
-        radar_type: {type: string, enum: [SEARCH, FIRE_CONTROL, TRACKING, WEATHER, SAR, GMTI, MULTI_FUNCTION, AESA, PESA, MPAR]}
-        emitter_function: {type: string}
-        system_status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
-        responsible_agency: {type: string}
-        nominal_frequency: {type: string}
-        frequency_limits: {type: string}
-        radar_waveform: {type: string}
-        nominal_PRI: {type: string}
-        PRI_limits: {type: string}
-        PRF_limits: {type: string}
-        nominal_pulse_duration: {type: string}
-        pulse_duration_limits: {type: string}
-        ERP: {type: string}
-        tx_peak_power: {type: string}
-        duty_cycle: {type: number}
-        gain: {type: number}
-        scan_type: {type: string}
-        scan_period: {type: string}
-        detection_to_designate_time: {type: string}
-        designation_to_launch_time: {type: string}
+        system_name: {type: string, description: "Common name of the radar system", example: "Tombstone"}
+        nomenclature: {type: string, description: "Military AN/ or NATO reporting nomenclature", example: "AN/MPQ-65"}
+        ELNOT: {type: string, description: "Electronic Intelligence Notation identifier", example: "TOMBSTONE"}
+        DIEQP: {type: string, description: "Defense Intelligence Equipment identifier code"}
+        radar_type: {type: string, description: "Functional category of the radar", enum: [SEARCH, FIRE_CONTROL, TRACKING, WEATHER, SAR, GMTI, MULTI_FUNCTION, AESA, PESA, MPAR]}
+        emitter_function: {type: string, description: "Primary emitter function or role", example: "Surveillance and target acquisition"}
+        system_status: {type: string, description: "Current lifecycle status", enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        responsible_agency: {type: string, description: "Organization responsible for system management", example: "PEO IEW&S"}
+        nominal_frequency: {type: string, description: "Nominal operating frequency or center frequency", example: "9.4 GHz"}
+        frequency_limits: {type: string, description: "Frequency range limits (min-max)", example: "8.5-10.5 GHz"}
+        radar_waveform: {type: string, description: "Primary waveform type used", example: "Pulse Doppler LFM chirp"}
+        nominal_PRI: {type: string, description: "Nominal pulse repetition interval", example: "500 us"}
+        PRI_limits: {type: string, description: "PRI range limits (min-max)", example: "200-1000 us"}
+        PRF_limits: {type: string, description: "Pulse repetition frequency range limits", example: "1000-5000 Hz"}
+        nominal_pulse_duration: {type: string, description: "Nominal pulse width or duration", example: "10 us"}
+        pulse_duration_limits: {type: string, description: "Pulse duration range limits (min-max)", example: "1-100 us"}
+        ERP: {type: string, description: "Effective radiated power", example: "1.2 MW"}
+        tx_peak_power: {type: string, description: "Transmitter peak power output", example: "150 kW"}
+        duty_cycle: {type: number, description: "Transmitter duty cycle (0.0 to 1.0)", example: 0.05}
+        gain: {type: number, description: "Antenna gain in dBi", example: 38.0}
+        scan_type: {type: string, description: "Antenna scan mode", example: "Electronic beam steering"}
+        scan_period: {type: string, description: "Time for one complete scan cycle", example: "6 s"}
+        detection_to_designate_time: {type: string, description: "Time from detection to target designation", example: "4 s"}
+        designation_to_launch_time: {type: string, description: "Time from designation to missile launch", example: "8 s"}
 
   - name: MISSILE_SYSTEM
     label: "Missile System"
@@ -148,14 +148,14 @@ entity_types:
     properties:
       type: object
       properties:
-        system_name: {type: string}
-        nomenclature: {type: string}
-        DIEQP: {type: string}
-        system_status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
-        guidance_type: {type: string}
-        seeker_nomenclature: {type: string}
-        seeker_ELNOT: {type: string}
-        seeker_DIEQP: {type: string}
+        system_name: {type: string, description: "Common name of the missile system", example: "PAC-3 MSE"}
+        nomenclature: {type: string, description: "Military designation or NATO reporting name", example: "MIM-104F"}
+        DIEQP: {type: string, description: "Defense Intelligence Equipment identifier code"}
+        system_status: {type: string, description: "Current lifecycle status", enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        guidance_type: {type: string, description: "Primary guidance method used", example: "Active radar homing"}
+        seeker_nomenclature: {type: string, description: "Designation of the terminal guidance seeker", example: "Ka-band active seeker"}
+        seeker_ELNOT: {type: string, description: "ELNOT identifier for the seeker emitter"}
+        seeker_DIEQP: {type: string, description: "DIEQP code for the seeker"}
 
   - name: AIR_DEFENSE_ARTILLERY_SYSTEM
     label: "Air Defense Artillery System"
@@ -164,19 +164,19 @@ entity_types:
     properties:
       type: object
       properties:
-        system_name: {type: string}
-        DIEQP: {type: string}
-        caliber: {type: string}
-        max_tactical_range: {type: string}
-        max_vertical_range: {type: string}
-        min_vertical_range: {type: string}
-        max_horizontal_range: {type: string}
-        min_horizontal_range: {type: string}
-        acquisition_delay: {type: string}
-        handoff_delay: {type: string}
-        track_delay: {type: string}
-        muzzle_velocity: {type: string}
-        maximum_rate_of_fire: {type: string}
+        system_name: {type: string, description: "Common name of the AAA system", example: "ZSU-23-4 Shilka"}
+        DIEQP: {type: string, description: "Defense Intelligence Equipment identifier code"}
+        caliber: {type: string, description: "Gun barrel caliber", example: "23 mm"}
+        max_tactical_range: {type: string, description: "Maximum tactical engagement range", example: "2.5 km"}
+        max_vertical_range: {type: string, description: "Maximum vertical engagement range (ceiling)", example: "1.5 km"}
+        min_vertical_range: {type: string, description: "Minimum vertical engagement range", example: "100 m"}
+        max_horizontal_range: {type: string, description: "Maximum horizontal range", example: "2.5 km"}
+        min_horizontal_range: {type: string, description: "Minimum horizontal range", example: "200 m"}
+        acquisition_delay: {type: string, description: "Time from cue to target acquisition", example: "3 s"}
+        handoff_delay: {type: string, description: "Time for target handoff between systems", example: "2 s"}
+        track_delay: {type: string, description: "Time from acquisition to stable track", example: "1.5 s"}
+        muzzle_velocity: {type: string, description: "Projectile muzzle velocity", example: "970 m/s"}
+        maximum_rate_of_fire: {type: string, description: "Maximum cyclic rate of fire", example: "3400 rounds/min"}
 
   - name: ELECTRONIC_WARFARE_SYSTEM
     label: "Electronic Warfare System"
@@ -185,12 +185,12 @@ entity_types:
     properties:
       type: object
       properties:
-        system_name: {type: string}
-        nomenclature: {type: string}
-        ELNOT: {type: string}
-        ew_role: {type: string, enum: [EA, ES, EP, SIGINT, ELINT, COMINT]}
-        coverage: {type: string}
-        power_output: {type: string}
+        system_name: {type: string, description: "Common name of the EW system", example: "AN/ALQ-99"}
+        nomenclature: {type: string, description: "Military AN/ designation", example: "AN/ALQ-99"}
+        ELNOT: {type: string, description: "Electronic Intelligence Notation identifier"}
+        ew_role: {type: string, description: "Electronic warfare functional role", enum: [EA, ES, EP, SIGINT, ELINT, COMINT]}
+        coverage: {type: string, description: "Frequency or angular coverage range", example: "64 MHz - 40 GHz"}
+        power_output: {type: string, description: "Maximum effective radiated power output", example: "10 kW"}
 
   - name: FIRE_CONTROL_SYSTEM
     label: "Fire Control System"
@@ -199,8 +199,8 @@ entity_types:
     properties:
       type: object
       properties:
-        system_name: {type: string}
-        nomenclature: {type: string}
+        system_name: {type: string, description: "Common name of the fire control system", example: "AN/MPQ-65 Radar Set"}
+        nomenclature: {type: string, description: "Military AN/ designation", example: "AN/MPQ-65"}
 
   - name: INTEGRATED_AIR_DEFENSE_SYSTEM
     label: "Integrated Air Defense System"
@@ -209,9 +209,9 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED]}
-        doctrine: {type: string}
+        name: {type: string, description: "Common or NATO reporting name of the IADS", example: "S-400 Triumf"}
+        status: {type: string, description: "Current lifecycle status", enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED]}
+        doctrine: {type: string, description: "Employment doctrine or concept of operations", example: "Layered defense with multi-range engagement"}
 
   - name: LAUNCHER_SYSTEM
     label: "Launcher System"
@@ -220,9 +220,9 @@ entity_types:
     properties:
       type: object
       properties:
-        system_name: {type: string}
-        launcher_type: {type: string}
-        capacity: {type: integer}
+        system_name: {type: string, description: "Common name of the launcher system", example: "M903 Launching Station"}
+        launcher_type: {type: string, description: "Category of launcher mechanism", example: "Vertical cold-launch canister"}
+        capacity: {type: integer, description: "Number of missiles the launcher can hold", example: 16}
 
   - name: WEAPON_SYSTEM
     label: "Weapon System"
@@ -231,9 +231,9 @@ entity_types:
     properties:
       type: object
       properties:
-        system_name: {type: string}
-        nomenclature: {type: string}
-        weapon_type: {type: string}
+        system_name: {type: string, description: "Common name of the weapon system", example: "Phalanx CIWS"}
+        nomenclature: {type: string, description: "Military designation", example: "Mk 15"}
+        weapon_type: {type: string, description: "Category of weapon system", example: "Close-In Weapon System"}
 
   - name: SUBSYSTEM
     label: "Subsystem"
@@ -242,9 +242,9 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        subsystem_role: {type: string}
-        part_number: {type: string}
+        name: {type: string, description: "Name of the subsystem", example: "Guidance Section"}
+        subsystem_role: {type: string, description: "Functional role within the parent system", example: "Signal processing and target tracking"}
+        part_number: {type: string, description: "Subsystem-level part or drawing number", example: "GS-PAC3-001"}
 
   - name: COMPONENT
     label: "Component"
@@ -253,14 +253,14 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        component_type: {type: string}
-        part_number: {type: string}
-        nsn: {type: string, description: "National Stock Number"}
-        cage_code: {type: string}
-        manufacturer: {type: string}
-        material: {type: string}
-        weight_kg: {type: number}
+        name: {type: string, description: "Common name of the component", example: "Traveling Wave Tube"}
+        component_type: {type: string, description: "Category or class of the component", example: "Amplifier"}
+        part_number: {type: string, description: "Manufacturer-assigned part number (alphanumeric with dashes)", example: "PN-12345-A", pattern: "^[A-Z0-9][A-Z0-9\\-/]{2,20}$"}
+        nsn: {type: string, description: "National Stock Number in NNNN-NN-NNN-NNNN format", example: "5961-01-234-5678", pattern: "^\\d{4}-\\d{2}-\\d{3}-\\d{4}$"}
+        cage_code: {type: string, description: "5-character Commercial and Government Entity code identifying the manufacturer", example: "1ABC3", pattern: "^[A-Z0-9]{5}$"}
+        manufacturer: {type: string, description: "Name of the component manufacturer", example: "L3Harris Technologies"}
+        material: {type: string, description: "Primary material composition of the component", example: "Aluminum 7075-T6"}
+        weight_kg: {type: number, description: "Weight of the component in kilograms", example: 2.5}
 
   - name: ORGANIZATION
     label: "Organization"
@@ -269,11 +269,11 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        org_type: {type: string, enum: [PRIME_CONTRACTOR, SUBCONTRACTOR, PROGRAM_OFFICE, MILITARY_BRANCH, GOVERNMENT_AGENCY]}
-        cage_code: {type: string}
-        country: {type: string}
-        location: {type: string}
+        name: {type: string, description: "Full name of the organization", example: "Raytheon Missiles & Defense"}
+        org_type: {type: string, description: "Category of organization", enum: [PRIME_CONTRACTOR, SUBCONTRACTOR, PROGRAM_OFFICE, MILITARY_BRANCH, GOVERNMENT_AGENCY]}
+        cage_code: {type: string, description: "5-character CAGE code for the organization", example: "58064", pattern: "^[A-Z0-9]{5}$"}
+        country: {type: string, description: "Country where the organization is headquartered", example: "United States"}
+        location: {type: string, description: "Primary facility location", example: "Tucson, AZ"}
 
   # ---------------------------------------------------------------------------
   # Layer 3: EM/RF Signal & Radar
@@ -285,11 +285,11 @@ entity_types:
     properties:
       type: object
       properties:
-        band_name: {type: string}
-        designation: {type: string, enum: [HF, VHF, UHF, L, S, C, X, Ku, K, Ka, V, W, mm]}
-        freq_min_mhz: {type: number}
-        freq_max_mhz: {type: number}
-        standard_family: {type: string}
+        band_name: {type: string, description: "Common name of the frequency band", example: "X-band"}
+        designation: {type: string, description: "IEEE or NATO band letter designation", enum: [HF, VHF, UHF, L, S, C, X, Ku, K, Ka, V, W, mm]}
+        freq_min_mhz: {type: number, description: "Lower frequency limit of the band in MHz", example: 8000}
+        freq_max_mhz: {type: number, description: "Upper frequency limit of the band in MHz", example: 12000}
+        standard_family: {type: string, description: "Standard body that defined the band (IEEE or NATO)", example: "IEEE"}
 
   - name: RF_EMISSION
     label: "RF Emission"
@@ -298,16 +298,16 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        emitter_id: {type: string}
-        center_frequency_mhz: {type: number}
-        bandwidth_mhz: {type: number}
-        ERP_kw: {type: number}
-        tx_peak_power_kw: {type: number}
-        duty_cycle: {type: number}
-        polarization: {type: string}
-        radome_loss_db: {type: number}
-        total_system_losses_db: {type: number}
+        name: {type: string, description: "Name or identifier of the RF emission", example: "Tombstone Search Mode"}
+        emitter_id: {type: string, description: "Unique emitter identifier from ELINT database"}
+        center_frequency_mhz: {type: number, description: "Center frequency of the emission in MHz", example: 9400}
+        bandwidth_mhz: {type: number, description: "Signal bandwidth in MHz", example: 50}
+        ERP_kw: {type: number, description: "Effective radiated power in kilowatts", example: 1200}
+        tx_peak_power_kw: {type: number, description: "Transmitter peak power in kilowatts", example: 150}
+        duty_cycle: {type: number, description: "Duty cycle ratio (0.0 to 1.0)", example: 0.05}
+        polarization: {type: string, description: "Polarization of the transmitted signal", example: "Linear vertical"}
+        radome_loss_db: {type: number, description: "Signal loss through the radome in dB", example: 0.5}
+        total_system_losses_db: {type: number, description: "Total system losses from transmitter to antenna in dB", example: 3.2}
 
   - name: WAVEFORM
     label: "Waveform"
@@ -316,14 +316,14 @@ entity_types:
     properties:
       type: object
       properties:
-        waveform_name: {type: string}
-        waveform_family: {type: string, enum: [PULSE_DOPPLER, FMCW, CW, LFM_CHIRP, PHASE_CODED, BURST, PULSE]}
-        nominal_pulse_duration_us: {type: number}
-        pulse_duration_limits: {type: string}
-        nominal_PRI_us: {type: number}
-        PRI_limits: {type: string}
-        PRF_limits: {type: string}
-        duty_cycle: {type: number}
+        waveform_name: {type: string, description: "Name of the waveform mode", example: "Search Mode 1"}
+        waveform_family: {type: string, description: "Family or class of the waveform", enum: [PULSE_DOPPLER, FMCW, CW, LFM_CHIRP, PHASE_CODED, BURST, PULSE]}
+        nominal_pulse_duration_us: {type: number, description: "Nominal pulse duration in microseconds", example: 10.0}
+        pulse_duration_limits: {type: string, description: "Pulse duration range limits (min-max) in microseconds", example: "1-100 us"}
+        nominal_PRI_us: {type: number, description: "Nominal pulse repetition interval in microseconds", example: 500}
+        PRI_limits: {type: string, description: "PRI range limits (min-max) in microseconds", example: "200-1000 us"}
+        PRF_limits: {type: string, description: "PRF range limits (min-max) in Hz", example: "1000-5000 Hz"}
+        duty_cycle: {type: number, description: "Waveform duty cycle ratio (0.0 to 1.0)", example: 0.02}
 
   - name: MODULATION
     label: "Modulation"
@@ -332,14 +332,14 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        intra_pulse_modulation: {type: string}
-        inter_pulse_modulation: {type: string}
-        frequency_excursion: {type: string}
-        code_bits: {type: integer}
-        pulse_compression_ratio: {type: number}
-        pulse_compression_gain_db: {type: number}
-        pulse_compression_weighting_function: {type: string}
+        name: {type: string, description: "Name or identifier of the modulation scheme", example: "LFM Up-Chirp"}
+        intra_pulse_modulation: {type: string, description: "Type of modulation within each pulse", example: "Linear FM (up-chirp)"}
+        inter_pulse_modulation: {type: string, description: "Type of modulation between pulses", example: "Stagger 4-position"}
+        frequency_excursion: {type: string, description: "Frequency deviation or chirp bandwidth", example: "5 MHz"}
+        code_bits: {type: integer, description: "Number of bits in phase or frequency code", example: 13}
+        pulse_compression_ratio: {type: number, description: "Ratio of uncompressed to compressed pulse width", example: 100}
+        pulse_compression_gain_db: {type: number, description: "Processing gain from pulse compression in dB", example: 20}
+        pulse_compression_weighting_function: {type: string, description: "Weighting function applied to reduce sidelobes", example: "Hamming"}
 
   - name: RF_SIGNATURE
     label: "RF Signature"
@@ -348,17 +348,17 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        nominal_RF: {type: string}
-        nominal_PRI: {type: string}
-        nominal_PD: {type: string}
-        scan_type: {type: string}
-        scan_period: {type: string}
-        modulation_pattern: {type: string}
-        frequency_agility: {type: string}
-        beam_characteristics: {type: string}
-        dwell_time: {type: string}
-        pulses_per_dwell: {type: integer}
+        name: {type: string, description: "Name or identifier for the RF signature", example: "Tombstone Track Signature"}
+        nominal_RF: {type: string, description: "Nominal radio frequency", example: "9.4 GHz"}
+        nominal_PRI: {type: string, description: "Nominal pulse repetition interval", example: "500 us"}
+        nominal_PD: {type: string, description: "Nominal pulse duration", example: "10 us"}
+        scan_type: {type: string, description: "Observed antenna scan type", example: "Sector scan"}
+        scan_period: {type: string, description: "Observed scan period", example: "3 s"}
+        modulation_pattern: {type: string, description: "Observed modulation pattern description", example: "LFM chirp with 4-position PRI stagger"}
+        frequency_agility: {type: string, description: "Frequency agility behavior observed", example: "Burst-to-burst random within 200 MHz"}
+        beam_characteristics: {type: string, description: "Observed beam shape and scanning characteristics", example: "Pencil beam, 1.5 deg azimuth"}
+        dwell_time: {type: string, description: "Time the beam dwells on a given angular position", example: "50 ms"}
+        pulses_per_dwell: {type: integer, description: "Number of pulses transmitted per beam dwell", example: 20}
 
   - name: SCAN_PATTERN
     label: "Scan Pattern"
@@ -367,12 +367,12 @@ entity_types:
     properties:
       type: object
       properties:
-        scan_type: {type: string}
-        scan_period_limits: {type: string}
-        slew_rate: {type: string}
-        illumination_time: {type: string}
-        dwell_time: {type: string}
-        pulses_per_dwell: {type: integer}
+        scan_type: {type: string, description: "Type of antenna scan pattern", example: "Conical scan"}
+        scan_period_limits: {type: string, description: "Scan period range limits (min-max)", example: "2-6 s"}
+        slew_rate: {type: string, description: "Antenna slew rate", example: "25 deg/s"}
+        illumination_time: {type: string, description: "Time target is illuminated per scan", example: "40 ms"}
+        dwell_time: {type: string, description: "Time the beam dwells at each position", example: "50 ms"}
+        pulses_per_dwell: {type: integer, description: "Number of pulses per beam dwell", example: 20}
 
   - name: ANTENNA
     label: "Antenna"
@@ -381,24 +381,24 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        antenna_type: {type: string, enum: [PHASED_ARRAY, DISH, DIPOLE, HORN, PATCH, YAGI, CONFORMAL, SLOTTED_ARRAY, ESA]}
-        tx_polarization: {type: string}
-        rx_polarization: {type: string}
-        number_of_beams: {type: integer}
-        beamwidth_az_deg: {type: number}
-        beamwidth_el_deg: {type: number}
-        aperture_distribution_az: {type: string}
-        aperture_distribution_el: {type: string}
-        gain_dbi: {type: number}
-        backlobe_level_db: {type: number}
-        dimension_horizontal_m: {type: number}
-        dimension_vertical_m: {type: number}
-        height_m: {type: number}
-        min_elevation_deg: {type: number}
-        max_elevation_deg: {type: number}
-        first_sidelobe_level_az_db: {type: number}
-        first_sidelobe_level_el_db: {type: number}
+        name: {type: string, description: "Name or designation of the antenna", example: "Main Array Antenna"}
+        antenna_type: {type: string, description: "Physical type of antenna", enum: [PHASED_ARRAY, DISH, DIPOLE, HORN, PATCH, YAGI, CONFORMAL, SLOTTED_ARRAY, ESA]}
+        tx_polarization: {type: string, description: "Transmit polarization", example: "Linear vertical"}
+        rx_polarization: {type: string, description: "Receive polarization", example: "Linear vertical"}
+        number_of_beams: {type: integer, description: "Number of simultaneous beams supported", example: 1}
+        beamwidth_az_deg: {type: number, description: "Azimuth beamwidth in degrees", example: 1.5}
+        beamwidth_el_deg: {type: number, description: "Elevation beamwidth in degrees", example: 1.5}
+        aperture_distribution_az: {type: string, description: "Aperture amplitude distribution in azimuth", example: "Taylor -40 dB"}
+        aperture_distribution_el: {type: string, description: "Aperture amplitude distribution in elevation", example: "Taylor -40 dB"}
+        gain_dbi: {type: number, description: "Peak antenna gain in dBi", example: 38.0}
+        backlobe_level_db: {type: number, description: "Backlobe level relative to main beam in dB", example: -40}
+        dimension_horizontal_m: {type: number, description: "Horizontal aperture dimension in meters", example: 3.0}
+        dimension_vertical_m: {type: number, description: "Vertical aperture dimension in meters", example: 3.0}
+        height_m: {type: number, description: "Antenna height above ground in meters", example: 8.0}
+        min_elevation_deg: {type: number, description: "Minimum elevation angle in degrees", example: -3}
+        max_elevation_deg: {type: number, description: "Maximum elevation angle in degrees", example: 90}
+        first_sidelobe_level_az_db: {type: number, description: "First azimuth sidelobe level relative to main beam in dB", example: -25}
+        first_sidelobe_level_el_db: {type: number, description: "First elevation sidelobe level relative to main beam in dB", example: -25}
 
   - name: TRANSMITTER
     label: "Transmitter"
@@ -407,13 +407,13 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        peak_power_ERP_kw: {type: number}
-        peak_power_at_transmitter_kw: {type: number}
-        duty_cycle: {type: number}
-        tx_line_loss_db: {type: number}
-        other_system_losses_db: {type: number}
-        total_system_losses_db: {type: number}
+        name: {type: string, description: "Name or designation of the transmitter", example: "Main Transmitter Unit"}
+        peak_power_ERP_kw: {type: number, description: "Peak effective radiated power in kilowatts", example: 1200}
+        peak_power_at_transmitter_kw: {type: number, description: "Peak power at the transmitter output in kilowatts", example: 150}
+        duty_cycle: {type: number, description: "Transmitter duty cycle (0.0 to 1.0)", example: 0.05}
+        tx_line_loss_db: {type: number, description: "Transmit feed line loss in dB", example: 1.5}
+        other_system_losses_db: {type: number, description: "Other system losses (filters, switches) in dB", example: 0.5}
+        total_system_losses_db: {type: number, description: "Total system losses from transmitter to antenna in dB", example: 2.0}
 
   - name: RECEIVER
     label: "Receiver"
@@ -422,14 +422,14 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        radome_loss_db: {type: number}
-        clutter_improvement_factor_db: {type: number}
-        noise_figure_db: {type: number}
-        minimum_discernible_signal_dbm: {type: number}
-        receive_line_loss_db: {type: number}
-        peak_power_noise_bandwidth_mhz: {type: number}
-        average_power_noise_bandwidth_mhz: {type: number}
+        name: {type: string, description: "Name or designation of the receiver", example: "Main Receiver Unit"}
+        radome_loss_db: {type: number, description: "Signal loss through the radome in dB", example: 0.5}
+        clutter_improvement_factor_db: {type: number, description: "Improvement factor for clutter rejection in dB", example: 30}
+        noise_figure_db: {type: number, description: "Receiver noise figure in dB", example: 3.5}
+        minimum_discernible_signal_dbm: {type: number, description: "Minimum detectable signal level in dBm", example: -110}
+        receive_line_loss_db: {type: number, description: "Receive feed line loss in dB", example: 1.0}
+        peak_power_noise_bandwidth_mhz: {type: number, description: "Noise bandwidth for peak power measurement in MHz", example: 2.0}
+        average_power_noise_bandwidth_mhz: {type: number, description: "Noise bandwidth for average power measurement in MHz", example: 0.5}
 
   - name: IF_AMPLIFIER
     label: "IF Amplifier"
@@ -438,8 +438,8 @@ entity_types:
     properties:
       type: object
       properties:
-        stage_number: {type: integer}
-        bandwidth_3db_mhz: {type: number}
+        stage_number: {type: integer, description: "Stage number in the IF amplifier chain", example: 1}
+        bandwidth_3db_mhz: {type: number, description: "3 dB bandwidth of the IF stage in MHz", example: 5.0}
 
   - name: SIGNAL_PROCESSING_CHAIN
     label: "Signal Processing Chain"
@@ -448,25 +448,25 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        matched_filter_detection_loss_db: {type: number}
-        STC: {type: string}
-        pulse_compression_ratio: {type: number}
-        pulse_compression_gain_db: {type: number}
-        pulse_compression_weighting_function: {type: string}
-        coherent_processing_interval: {type: string}
-        filter_response_type: {type: string}
-        doppler_filter_bandwidth_hz: {type: number}
-        approaching_doppler_coverage: {type: string}
-        pulses_on_target: {type: integer}
-        predetection_pulses: {type: integer}
-        predetection_integration_gain_db: {type: number}
-        postdetection_pulses: {type: integer}
-        postdetection_integration_gain_db: {type: number}
-        effective_number_of_pulses_integrated: {type: integer}
-        minimum_snr_required_db: {type: number}
-        MTI_improvement_factor_db: {type: number}
-        drop_track_threshold_improvement_db: {type: number}
+        name: {type: string, description: "Name of the signal processing chain", example: "Main Processing Chain"}
+        matched_filter_detection_loss_db: {type: number, description: "Loss relative to ideal matched filter detection in dB", example: 1.5}
+        STC: {type: string, description: "Sensitivity Time Control configuration", example: "Range-dependent, 20 dB dynamic range"}
+        pulse_compression_ratio: {type: number, description: "Ratio of uncompressed to compressed pulse width", example: 100}
+        pulse_compression_gain_db: {type: number, description: "Processing gain from pulse compression in dB", example: 20}
+        pulse_compression_weighting_function: {type: string, description: "Sidelobe reduction weighting function", example: "Hamming"}
+        coherent_processing_interval: {type: string, description: "Duration of coherent integration period", example: "50 ms"}
+        filter_response_type: {type: string, description: "Doppler filter bank response type", example: "FFT with Chebyshev window"}
+        doppler_filter_bandwidth_hz: {type: number, description: "Individual Doppler filter bandwidth in Hz", example: 50}
+        approaching_doppler_coverage: {type: string, description: "Doppler velocity coverage for approaching targets", example: "50-2000 m/s"}
+        pulses_on_target: {type: integer, description: "Total number of pulses hitting the target per scan", example: 20}
+        predetection_pulses: {type: integer, description: "Number of pulses coherently integrated before detection", example: 16}
+        predetection_integration_gain_db: {type: number, description: "Gain from coherent pre-detection integration in dB", example: 12}
+        postdetection_pulses: {type: integer, description: "Number of detections non-coherently integrated after detection", example: 4}
+        postdetection_integration_gain_db: {type: number, description: "Gain from non-coherent post-detection integration in dB", example: 4}
+        effective_number_of_pulses_integrated: {type: integer, description: "Effective total pulses integrated (pre + post)", example: 20}
+        minimum_snr_required_db: {type: number, description: "Minimum signal-to-noise ratio required for detection in dB", example: 13}
+        MTI_improvement_factor_db: {type: number, description: "Moving Target Indication improvement factor in dB", example: 30}
+        drop_track_threshold_improvement_db: {type: number, description: "Additional SNR margin for maintaining track in dB", example: 3}
 
   # ---------------------------------------------------------------------------
   # Layer 4: Weapon / Missile / AAA
@@ -478,10 +478,10 @@ entity_types:
     properties:
       type: object
       properties:
-        seeker_nomenclature: {type: string}
-        seeker_ELNOT: {type: string}
-        seeker_DIEQP: {type: string}
-        seeker_type: {type: string, enum: [ACTIVE_RADAR, SEMI_ACTIVE_RADAR, IR, DUAL_MODE, ARM, GPS_INS, COMMAND]}
+        seeker_nomenclature: {type: string, description: "Designation or nomenclature of the seeker", example: "Ka-band active seeker"}
+        seeker_ELNOT: {type: string, description: "ELNOT identifier for the seeker emitter"}
+        seeker_DIEQP: {type: string, description: "DIEQP code for the seeker"}
+        seeker_type: {type: string, description: "Guidance technology used by the seeker", enum: [ACTIVE_RADAR, SEMI_ACTIVE_RADAR, IR, DUAL_MODE, ARM, GPS_INS, COMMAND]}
 
   - name: GUIDANCE_METHOD
     label: "Guidance Method"
@@ -490,9 +490,9 @@ entity_types:
     properties:
       type: object
       properties:
-        guidance_type: {type: string, enum: [COMMAND, SARH, ARH, IR, BEAM_RIDING, TVM, GPS_INS, DUAL_MODE]}
-        firing_doctrine: {type: string}
-        track_quality: {type: string}
+        guidance_type: {type: string, description: "Type of guidance method", enum: [COMMAND, SARH, ARH, IR, BEAM_RIDING, TVM, GPS_INS, DUAL_MODE]}
+        firing_doctrine: {type: string, description: "Firing doctrine (shoot-look-shoot, ripple, etc.)", example: "Shoot-look-shoot"}
+        track_quality: {type: string, description: "Required track quality for guidance", example: "Fire-control quality track required"}
 
   - name: MISSILE_PERFORMANCE
     label: "Missile Performance"
@@ -501,25 +501,25 @@ entity_types:
     properties:
       type: object
       properties:
-        maximum_range_km: {type: number}
-        minimum_range_km: {type: number}
-        maximum_intercept_range_km: {type: number}
-        maximum_recommended_intercept_range_km: {type: number}
-        maximum_altitude_km: {type: number}
-        minimum_altitude_m: {type: number}
-        maximum_launch_angle_deg: {type: number}
-        intercept_assessment_time_s: {type: number}
-        time_to_go_s: {type: number}
-        acquisition_delay_s: {type: number}
-        handoff_delay_s: {type: number}
-        track_delay_s: {type: number}
-        launch_delay_s: {type: number}
-        intra_salvo_time_s: {type: number}
-        coast_time_s: {type: number}
-        average_missile_speed_mach: {type: number}
-        maximum_missile_speed_mach: {type: number}
-        maximum_flyout_time_s: {type: number}
-        maximum_offset_deg: {type: number}
+        maximum_range_km: {type: number, description: "Maximum engagement range in kilometers", example: 160}
+        minimum_range_km: {type: number, description: "Minimum engagement range in kilometers", example: 3}
+        maximum_intercept_range_km: {type: number, description: "Maximum intercept range in kilometers", example: 150}
+        maximum_recommended_intercept_range_km: {type: number, description: "Maximum recommended intercept range for reliable kill in km", example: 120}
+        maximum_altitude_km: {type: number, description: "Maximum engagement altitude in kilometers", example: 25}
+        minimum_altitude_m: {type: number, description: "Minimum engagement altitude in meters", example: 60}
+        maximum_launch_angle_deg: {type: number, description: "Maximum off-boresight launch angle in degrees", example: 360}
+        intercept_assessment_time_s: {type: number, description: "Time to assess intercept success in seconds", example: 5}
+        time_to_go_s: {type: number, description: "Estimated time to intercept in seconds", example: 30}
+        acquisition_delay_s: {type: number, description: "Delay from cueing to seeker acquisition in seconds", example: 2}
+        handoff_delay_s: {type: number, description: "Delay for guidance handoff in seconds", example: 1}
+        track_delay_s: {type: number, description: "Delay from acquisition to stable tracking in seconds", example: 1.5}
+        launch_delay_s: {type: number, description: "Delay from fire command to missile launch in seconds", example: 3}
+        intra_salvo_time_s: {type: number, description: "Time between consecutive missile launches in a salvo in seconds", example: 1}
+        coast_time_s: {type: number, description: "Maximum time missile can coast without guidance updates in seconds", example: 5}
+        average_missile_speed_mach: {type: number, description: "Average missile speed during flyout in Mach number", example: 4.1}
+        maximum_missile_speed_mach: {type: number, description: "Maximum missile speed in Mach number", example: 5.0}
+        maximum_flyout_time_s: {type: number, description: "Maximum missile flight time in seconds", example: 60}
+        maximum_offset_deg: {type: number, description: "Maximum target offset angle from launcher in degrees", example: 360}
 
   - name: MISSILE_PHYSICAL_CHARACTERISTICS
     label: "Missile Physical Characteristics"
@@ -528,9 +528,9 @@ entity_types:
     properties:
       type: object
       properties:
-        body_diameter_m: {type: number}
-        overall_length_m: {type: number}
-        total_mass_kg: {type: number}
+        body_diameter_m: {type: number, description: "Missile body diameter in meters", example: 0.255}
+        overall_length_m: {type: number, description: "Overall missile length in meters", example: 5.2}
+        total_mass_kg: {type: number, description: "Total missile mass at launch in kilograms", example: 312}
 
   - name: PROPULSION_STACK
     label: "Propulsion Stack"
@@ -539,7 +539,7 @@ entity_types:
     properties:
       type: object
       properties:
-        total_burntime_s: {type: number}
+        total_burntime_s: {type: number, description: "Total burn time across all propulsion stages in seconds", example: 25}
 
   - name: PROPULSION_STAGE
     label: "Propulsion Stage"
@@ -548,12 +548,12 @@ entity_types:
     properties:
       type: object
       properties:
-        stage_type: {type: string, enum: [EJECTOR, BOOSTER, SUSTAINER]}
-        burn_time_s: {type: number}
-        thrust_kn: {type: number}
-        mass_kg: {type: number}
-        diameter_m: {type: number}
-        length_m: {type: number}
+        stage_type: {type: string, description: "Type of propulsion stage", enum: [EJECTOR, BOOSTER, SUSTAINER]}
+        burn_time_s: {type: number, description: "Burn time of the stage in seconds", example: 12}
+        thrust_kn: {type: number, description: "Stage thrust in kilonewtons", example: 180}
+        mass_kg: {type: number, description: "Stage mass in kilograms", example: 150}
+        diameter_m: {type: number, description: "Stage diameter in meters", example: 0.255}
+        length_m: {type: number, description: "Stage length in meters", example: 2.0}
 
   # ---------------------------------------------------------------------------
   # Layer 5: Operational / Capability
@@ -565,9 +565,9 @@ entity_types:
     properties:
       type: object
       properties:
-        capability_name: {type: string}
-        capability_class: {type: string, enum: [DETECTION, TRACKING, DESIGNATION, ENGAGEMENT, FIRE_CONTROL, AIR_DEFENSE, ELECTRONIC_ATTACK, ELECTRONIC_SUPPORT, SURVEILLANCE, COMMUNICATIONS]}
-        trl: {type: integer, description: "Technology Readiness Level 1-9"}
+        capability_name: {type: string, description: "Name of the functional capability", example: "Terminal Phase Guidance"}
+        capability_class: {type: string, description: "Capability domain or class", enum: [DETECTION, TRACKING, DESIGNATION, ENGAGEMENT, FIRE_CONTROL, AIR_DEFENSE, ELECTRONIC_ATTACK, ELECTRONIC_SUPPORT, SURVEILLANCE, COMMUNICATIONS]}
+        trl: {type: integer, description: "Technology Readiness Level on a scale of 1-9", example: 7}
 
   - name: RADAR_PERFORMANCE
     label: "Radar Performance"
@@ -576,16 +576,16 @@ entity_types:
     properties:
       type: object
       properties:
-        max_detection_range_1sqm_km: {type: number}
-        min_effective_range_km: {type: number}
-        max_unambiguous_range_km: {type: number}
-        maximum_scope_limit_km: {type: number}
-        maximum_processing_range_km: {type: number}
-        max_unambiguous_velocity_mps: {type: number}
-        min_range_of_velocity_response_mps: {type: number}
-        max_range_of_velocity_response_mps: {type: number}
-        minimum_detectable_velocity_mps: {type: number}
-        maximum_detectable_velocity_mps: {type: number}
+        max_detection_range_1sqm_km: {type: number, description: "Maximum detection range against a 1 m^2 RCS target in km", example: 300}
+        min_effective_range_km: {type: number, description: "Minimum effective detection range in km", example: 3}
+        max_unambiguous_range_km: {type: number, description: "Maximum unambiguous range determined by PRF in km", example: 400}
+        maximum_scope_limit_km: {type: number, description: "Maximum display scope range in km", example: 450}
+        maximum_processing_range_km: {type: number, description: "Maximum range at which returns are processed in km", example: 400}
+        max_unambiguous_velocity_mps: {type: number, description: "Maximum unambiguous radial velocity in m/s", example: 1500}
+        min_range_of_velocity_response_mps: {type: number, description: "Minimum radial velocity for detection in m/s", example: 30}
+        max_range_of_velocity_response_mps: {type: number, description: "Maximum radial velocity for detection in m/s", example: 3000}
+        minimum_detectable_velocity_mps: {type: number, description: "Minimum detectable target velocity due to clutter rejection in m/s", example: 30}
+        maximum_detectable_velocity_mps: {type: number, description: "Maximum detectable target velocity (aliasing limit) in m/s", example: 3000}
 
   - name: ENGAGEMENT_TIMELINE
     label: "Engagement Timeline"
@@ -594,14 +594,14 @@ entity_types:
     properties:
       type: object
       properties:
-        detection_to_designate_time_s: {type: number}
-        designation_to_launch_time_s: {type: number}
-        acquisition_delay_s: {type: number}
-        handoff_delay_s: {type: number}
-        track_delay_s: {type: number}
-        launch_delay_s: {type: number}
-        intercept_assessment_time_s: {type: number}
-        time_to_go_s: {type: number}
+        detection_to_designate_time_s: {type: number, description: "Time from first detection to target designation in seconds", example: 4}
+        designation_to_launch_time_s: {type: number, description: "Time from designation to missile launch in seconds", example: 8}
+        acquisition_delay_s: {type: number, description: "Delay from cueing to target acquisition in seconds", example: 2}
+        handoff_delay_s: {type: number, description: "Delay for handoff between search and track in seconds", example: 1}
+        track_delay_s: {type: number, description: "Delay from acquisition to stable track in seconds", example: 1.5}
+        launch_delay_s: {type: number, description: "Delay from fire command to missile launch in seconds", example: 3}
+        intercept_assessment_time_s: {type: number, description: "Time to assess intercept result in seconds", example: 5}
+        time_to_go_s: {type: number, description: "Estimated time from launch to intercept in seconds", example: 30}
 
   - name: FORCE_STRUCTURE
     label: "Force Structure"
@@ -610,9 +610,9 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        echelon: {type: string}
-        service: {type: string}
+        name: {type: string, description: "Name of the force structure unit", example: "108th Air Defense Artillery Brigade"}
+        echelon: {type: string, description: "Military echelon level", example: "Brigade"}
+        service: {type: string, description: "Military service branch", example: "U.S. Army"}
 
   # ---------------------------------------------------------------------------
   # Legacy types retained for backward compatibility
@@ -624,12 +624,12 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        designation: {type: string}
-        program_office: {type: string}
-        status: {type: string, enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
-        prime_contractor: {type: string}
-        service_branch: {type: string}
+        name: {type: string, description: "Common name or designation of the system", example: "Patriot PAC-3"}
+        designation: {type: string, description: "Military AN/ designation or program designation", example: "AN/MPQ-65", pattern: "^AN/[A-Z]{3}-\\d+"}
+        program_office: {type: string, description: "Managing program office", example: "PEO Missiles and Space"}
+        status: {type: string, description: "Current lifecycle status", enum: [DEVELOPMENTAL, OPERATIONAL, RETIRED, PROTOTYPE]}
+        prime_contractor: {type: string, description: "Lead contractor organization", example: "Lockheed Martin"}
+        service_branch: {type: string, description: "Military branch operating the system", example: "U.S. Army"}
 
   - name: ASSEMBLY
     label: "Assembly"
@@ -638,8 +638,8 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        assembly_number: {type: string}
+        name: {type: string, description: "Name of the assembly unit", example: "Antenna Feed Assembly"}
+        assembly_number: {type: string, description: "Assembly drawing or identification number", example: "ASM-7891-A"}
 
   - name: SPECIFICATION
     label: "Specification"
@@ -648,11 +648,11 @@ entity_types:
     properties:
       type: object
       properties:
-        parameter: {type: string}
-        value: {type: string}
-        unit: {type: string}
-        condition: {type: string}
-        source_document: {type: string}
+        parameter: {type: string, description: "Name of the measured parameter (e.g. max_range, operating_temperature)", example: "max_range"}
+        value: {type: string, description: "Numeric value or range of the measurement", example: "150"}
+        unit: {type: string, description: "Unit of measurement (SI or military standard)", example: "km"}
+        condition: {type: string, description: "Operating conditions under which the spec applies", example: "sea level, standard atmosphere"}
+        source_document: {type: string, description: "Document where this specification is defined", example: "TM 9-1425-386-12"}
 
   - name: STANDARD
     label: "Standard / Specification Document"
@@ -661,11 +661,11 @@ entity_types:
     properties:
       type: object
       properties:
-        designation: {type: string}
-        title: {type: string}
-        issuing_org: {type: string}
-        version: {type: string}
-        supersedes: {type: string}
+        designation: {type: string, description: "Official standard designation number (e.g. MIL-STD-1553B)", example: "MIL-STD-1553B", pattern: "^MIL-[A-Z]+-\\d+[A-Z]?"}
+        title: {type: string, description: "Full title of the standard document", example: "Digital Time Division Command/Response Multiplex Data Bus"}
+        issuing_org: {type: string, description: "Organization that published the standard", example: "Department of Defense"}
+        version: {type: string, description: "Revision letter or version number", example: "B"}
+        supersedes: {type: string, description: "Designation of the standard this one replaces", example: "MIL-STD-1553A"}
 
   - name: PROCEDURE
     label: "Procedure"
@@ -674,10 +674,10 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        type: {type: string, enum: [MAINTENANCE, OPERATIONAL, TEST, CALIBRATION, INSPECTION]}
-        periodicity: {type: string}
-        skill_level: {type: string}
+        name: {type: string, description: "Name or title of the procedure", example: "Radar Antenna Alignment Procedure"}
+        type: {type: string, description: "Category of procedure", enum: [MAINTENANCE, OPERATIONAL, TEST, CALIBRATION, INSPECTION]}
+        periodicity: {type: string, description: "How often the procedure must be performed", example: "Semi-annual"}
+        skill_level: {type: string, description: "Required maintenance skill level", example: "20C (Patriot Repairer)"}
 
   - name: FAILURE_MODE
     label: "Failure Mode"
@@ -686,10 +686,10 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        description: {type: string}
-        fmeca_severity: {type: integer}
-        detection_method: {type: string}
+        name: {type: string, description: "Short name of the failure mode", example: "TWT Power Degradation"}
+        description: {type: string, description: "Detailed description of how the failure manifests", example: "Gradual loss of transmit power due to cathode erosion"}
+        fmeca_severity: {type: integer, description: "MIL-STD-1629 severity category (1=catastrophic, 4=minor)", example: 2}
+        detection_method: {type: string, description: "How this failure is detected", example: "BIT fault code 47, power output below threshold"}
 
   - name: TEST_EVENT
     label: "Test Event"
@@ -698,11 +698,11 @@ entity_types:
     properties:
       type: object
       properties:
-        name: {type: string}
-        date: {type: string}
-        location: {type: string}
-        test_type: {type: string, enum: [DT, OT, IOT, LFT, DEVELOPMENTAL]}
-        outcome: {type: string, enum: [PASS, FAIL, PARTIAL, INCONCLUSIVE]}
+        name: {type: string, description: "Name or designation of the test event", example: "FET-10 Flight Test"}
+        date: {type: string, description: "Date the test was conducted (YYYY-MM-DD)", example: "2024-03-15"}
+        location: {type: string, description: "Test range or facility location", example: "White Sands Missile Range, NM"}
+        test_type: {type: string, description: "Category of test event", enum: [DT, OT, IOT, LFT, DEVELOPMENTAL]}
+        outcome: {type: string, description: "Overall test result", enum: [PASS, FAIL, PARTIAL, INCONCLUSIVE]}
 
 # =============================================================================
 # RELATIONSHIP TYPES

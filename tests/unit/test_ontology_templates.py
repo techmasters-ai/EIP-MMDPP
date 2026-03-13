@@ -177,6 +177,34 @@ class TestFewShotPrompt:
         )
 
 
+class TestPropertyEnrichment:
+    """Validate that all ontology properties have descriptions, examples, and patterns."""
+
+    def test_all_properties_have_descriptions(self):
+        from app.services.ontology_templates import load_ontology
+
+        ontology = load_ontology()
+        missing = []
+        for et in ontology["entity_types"]:
+            props = et["properties"]["properties"]
+            for prop_name, prop_def in props.items():
+                if "description" not in prop_def:
+                    missing.append(f"{et['name']}.{prop_name}")
+        assert missing == [], f"Properties missing descriptions: {missing}"
+
+    def test_structured_properties_have_examples(self):
+        from app.services.ontology_templates import load_ontology
+
+        ontology = load_ontology()
+        missing = []
+        for et in ontology["entity_types"]:
+            props = et["properties"]["properties"]
+            for prop_name, prop_def in props.items():
+                if "pattern" in prop_def and "example" not in prop_def:
+                    missing.append(f"{et['name']}.{prop_name}")
+        assert missing == [], f"Properties with patterns but no examples: {missing}"
+
+
 class TestHelpers:
     def test_build_entity_type_names(self):
         from app.services.ontology_templates import build_entity_type_names
