@@ -1,0 +1,16 @@
+{
+  "planPath": "docs/plans/2026-03-13-simplification-plan.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Remove dead code from reranker and extraction", "status": "completed"},
+    {"id": 2, "subject": "Task 2: Remove dead config settings", "status": "completed", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Clean up defensive getattr in retrieval.py", "status": "completed"},
+    {"id": 4, "subject": "Task 4: Consolidate Qdrant store functions", "status": "completed"},
+    {"id": 5, "subject": "Task 5: Extract shared _get_db context manager for workers", "status": "completed"},
+    {"id": 6, "subject": "Task 6: Move ontology relation weights from config to YAML", "status": "completed", "blockedBy": [2]},
+    {"id": 7, "subject": "Task 7: Consolidate retrieval.py lookup patterns and helpers cleanup", "status": "completed"},
+    {"id": 8, "subject": "Task 8: Consolidate Neo4j mock helpers in tests", "status": "completed"},
+    {"id": 9, "subject": "Task 9: Use env vars for hardcoded model names in manage.sh", "status": "completed"},
+    {"id": 10, "subject": "Task 10: Run full test suite and verify", "status": "completed", "blockedBy": [1, 2, 3, 4, 5, 6, 7, 8, 9]}
+  ],
+  "lastUpdated": "2026-03-13T17:00:00Z"
+}
