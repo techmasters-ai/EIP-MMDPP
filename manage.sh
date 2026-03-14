@@ -151,46 +151,50 @@ cmd_start() {
   header "Pre-downloading ML models"
 
   # Download sentence-transformers models inside the API container (skip if cached)
+  local text_model_dir
+  text_model_dir="models--$(echo "${TEXT_EMBEDDING_MODEL}" | tr '/' '--')"
+  local reranker_model_dir
+  reranker_model_dir="models--$(echo "${RERANKER_MODEL}" | tr '/' '--')"
+
   if dc exec -T api python -c "
-from sentence_transformers import SentenceTransformer
-import os, hashlib
+import os
 cache_dir = os.path.expanduser('~/.cache/huggingface/hub')
-model_dir = os.path.join(cache_dir, 'models--BAAI--bge-large-en-v1.5')
+model_dir = os.path.join(cache_dir, '${text_model_dir}')
 exit(0 if os.path.isdir(model_dir) else 1)
 " 2>/dev/null; then
-    info "BGE model already cached — skipping download"
+    info "Text embedding model already cached — skipping download"
   else
-    info "Downloading text embedding model (BGE-large-en-v1.5)..."
+    info "Downloading text embedding model (${TEXT_EMBEDDING_MODEL})..."
     dc exec -T api python -c "
 from sentence_transformers import SentenceTransformer
-SentenceTransformer('BAAI/bge-large-en-v1.5')
-print('BGE model ready')
-" 2>/dev/null && info "BGE model ready" || warn "BGE model download failed (will retry on first use)"
+SentenceTransformer('${TEXT_EMBEDDING_MODEL}')
+print('Text embedding model ready')
+" 2>/dev/null && info "Text embedding model ready" || warn "Text embedding model download failed (will retry on first use)"
   fi
 
   if dc exec -T api python -c "
 import os
 cache_dir = os.path.expanduser('~/.cache/huggingface/hub')
-model_dir = os.path.join(cache_dir, 'models--BAAI--bge-reranker-v2-m3')
+model_dir = os.path.join(cache_dir, '${reranker_model_dir}')
 exit(0 if os.path.isdir(model_dir) else 1)
 " 2>/dev/null; then
     info "Reranker model already cached — skipping download"
   else
-    info "Downloading reranker model (bge-reranker-v2-m3)..."
+    info "Downloading reranker model (${RERANKER_MODEL})..."
     dc exec -T api python -c "
 from sentence_transformers import CrossEncoder
-CrossEncoder('BAAI/bge-reranker-v2-m3')
+CrossEncoder('${RERANKER_MODEL}')
 print('Reranker model ready')
 " 2>/dev/null && info "Reranker model ready" || warn "Reranker model download failed (will retry on first use)"
   fi
 
   # Pull Ollama model via the Ollama service on the Docker network
   local ollama_url="${OLLAMA_BASE_URL:-http://ollama:11434}"
-  if dc exec -T api curl -sf "${ollama_url}/api/tags" 2>/dev/null | grep -q "llama3.1:8b"; then
-    info "Ollama model llama3.1:8b already present — skipping pull"
+  if dc exec -T api curl -sf "${ollama_url}/api/tags" 2>/dev/null | grep -q "${DOCLING_GRAPH_MODEL}"; then
+    info "Ollama model ${DOCLING_GRAPH_MODEL} already present — skipping pull"
   else
-    info "Pulling Ollama model (llama3.1:8b) via ${ollama_url}..."
-    dc exec -T api curl -sf "${ollama_url}/api/pull" -d '{"name":"llama3.1:8b"}' >/dev/null 2>&1 \
+    info "Pulling Ollama model (${DOCLING_GRAPH_MODEL}) via ${ollama_url}..."
+    dc exec -T api curl -sf "${ollama_url}/api/pull" -d "{\"name\":\"${DOCLING_GRAPH_MODEL}\"}" >/dev/null 2>&1 \
       && info "Ollama model ready" || warn "Ollama pull failed (ensure Ollama service is on the Docker network)"
   fi
 
