@@ -1265,3 +1265,18 @@ validation_matrix:
   # Provenance relations
   - {source: ASSERTION, relationship: REVIEWED_BY, target: ORGANIZATION}
   - {source: DOCUMENT, relationship: REVIEWED_BY, target: ORGANIZATION}
+
+# =============================================================================
+# SCORING WEIGHTS — used by retrieval fusion scoring
+# =============================================================================
+scoring_weights:
+  IS_VARIANT_OF: 0.95
+  USES_COMPONENT: 0.92
+  IS_SUBSYSTEM_OF: 0.90
+  CONTAINS: 0.90
+  PART_OF: 0.90
+  INTERFACES_WITH: 0.85
+  OPERATES_ON: 0.85
+  MEETS_STANDARD: 0.80
+  RELATED_TO: 0.75
+  default: 0.70

@@ -5,6 +5,10 @@ the DB session / asyncpg dependency chain (same pattern as _agent_helpers.py).
 """
 
 import re
+from functools import lru_cache
+from pathlib import Path
+
+import yaml
 
 from app.schemas.retrieval import QueryResultItem, UnifiedQueryRequest
 
@@ -33,6 +37,25 @@ def get_ontology_decay() -> float:
 
 
 # ---------------------------------------------------------------------------
+# Ontology relation weights (loaded from ontology YAML)
+# ---------------------------------------------------------------------------
+
+_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "ontology" / "base.yaml"
+
+
+@lru_cache(maxsize=1)
+def _load_scoring_weights() -> dict[str, float]:
+    """Load ontology relation scoring weights from base.yaml."""
+    with open(_ONTOLOGY_PATH) as f:
+        data = yaml.safe_load(f)
+    return data.get("scoring_weights", {})
+
+
+def get_ontology_relation_weights() -> dict[str, float]:
+    return _load_scoring_weights()
+
+
+# ---------------------------------------------------------------------------
 # Fusion weight getters (all from env vars)
 # ---------------------------------------------------------------------------
 
@@ -40,22 +63,6 @@ def get_fusion_weights() -> tuple[float, float, float]:
     """Return (semantic, doc_structure, ontology) weights."""
     s = _settings()
     return s.retrieval_semantic_weight, s.retrieval_doc_structure_weight, s.retrieval_ontology_weight
-
-
-def get_ontology_relation_weights() -> dict[str, float]:
-    s = _settings()
-    return {
-        # Legacy weights
-        "IS_VARIANT_OF": s.retrieval_onto_weight_is_variant_of,
-        "USES_COMPONENT": s.retrieval_onto_weight_uses_component,
-        "IS_SUBSYSTEM_OF": s.retrieval_onto_weight_is_subsystem_of,
-        "CONTAINS": s.retrieval_onto_weight_contains,
-        "PART_OF": s.retrieval_onto_weight_part_of,
-        "INTERFACES_WITH": s.retrieval_onto_weight_interfaces_with,
-        "OPERATES_ON": s.retrieval_onto_weight_operates_on,
-        "MEETS_STANDARD": s.retrieval_onto_weight_meets_standard,
-        "RELATED_TO": s.retrieval_onto_weight_related_to,
-    }
 
 
 def get_doc_link_weights() -> dict[str, float]:
@@ -176,7 +183,7 @@ def compute_fusion_score(
     onto_score = 0.0
     if ontology_rel_type:
         rel_weights = get_ontology_relation_weights()
-        rel_weight = rel_weights.get(ontology_rel_type, s.retrieval_onto_weight_default)
+        rel_weight = rel_weights.get(ontology_rel_type, rel_weights.get("default", 0.70))
         hop_penalty = hop_base ** max(0, ontology_hops - 1)
         onto_score = rel_weight * hop_penalty
 
