@@ -151,14 +151,14 @@ def _apply_reranker(
 
     rerank_input = [
         {
-            "chunk_id": str(getattr(r, "chunk_id", "")),
-            "content_text": getattr(r, "content_text", "") or "",
-            "score": getattr(r, "score", 0.0),
-            "artifact_id": getattr(r, "artifact_id", None),
-            "document_id": getattr(r, "document_id", None),
-            "modality": getattr(r, "modality", "text"),
-            "page_number": getattr(r, "page_number", None),
-            "classification": getattr(r, "classification", "UNCLASSIFIED"),
+            "chunk_id": str(r.chunk_id or ""),
+            "content_text": r.content_text or "",
+            "score": r.score,
+            "artifact_id": r.artifact_id,
+            "document_id": r.document_id,
+            "modality": r.modality,
+            "page_number": r.page_number,
+            "classification": r.classification,
         }
         for r in results[:_s.reranker_top_n]
     ]
@@ -323,7 +323,7 @@ async def _rescore_expanded_chunks(
     # Only re-score ontology-sourced text chunks (they have content_text)
     ontology_chunks = [
         c for c in expanded
-        if (getattr(c, "context", None) or {}).get("source") == "ontology"
+        if (c.context or {}).get("source") == "ontology"
         and c.content_text
     ]
 
