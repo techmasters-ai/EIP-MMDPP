@@ -29,6 +29,7 @@ from celery.exceptions import Retry as CeleryRetry, SoftTimeLimitExceeded
 from celery.signals import worker_ready
 
 from app.workers.celery_app import celery_app
+from app.workers._db import get_worker_db as _get_db
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -105,11 +106,6 @@ def _dedupe_extracted_elements(chunks: list) -> tuple[list, int]:
         result.append(chunk)
     return result, len(chunks) - len(result)
 
-
-def _get_db():
-    """Get a synchronous DB session for Celery worker use."""
-    from app.db.session import get_sync_session
-    return get_sync_session()
 
 
 def _update_document_status(

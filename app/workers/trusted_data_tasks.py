@@ -6,15 +6,10 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.workers.celery_app import celery_app
+from app.workers._db import get_worker_db as _get_db
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-def _get_db():
-    """Get a synchronous DB session for Celery worker use."""
-    from app.db.session import get_sync_session
-    return get_sync_session()
 
 
 @celery_app.task(
