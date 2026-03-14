@@ -33,7 +33,7 @@ def test_rerank_disabled_returns_unchanged():
 
     candidates = [{"chunk_id": "a", "content_text": "text", "score": 0.5}]
 
-    with patch("app.services.reranker._get_settings_safe") as mock_settings_fn:
+    with patch("app.services.reranker.get_settings") as mock_settings_fn:
         mock_s = MagicMock()
         mock_s.reranker_enabled = False
         mock_settings_fn.return_value = mock_s
@@ -47,7 +47,7 @@ def test_rerank_empty_candidates():
     """Empty candidates should return empty list."""
     from app.services.reranker import rerank
 
-    with patch("app.services.reranker._get_settings_safe") as mock_settings_fn:
+    with patch("app.services.reranker.get_settings") as mock_settings_fn:
         mock_s = MagicMock()
         mock_s.reranker_enabled = True
         mock_settings_fn.return_value = mock_s

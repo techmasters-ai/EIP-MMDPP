@@ -17,20 +17,14 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-def _get_settings_safe():
-    """Get settings with safe defaults for reranker fields."""
-    settings = get_settings()
-    return settings
-
-
 @lru_cache(maxsize=1)
 def _get_reranker_model():
     """Load and cache the cross-encoder reranker model."""
     from sentence_transformers import CrossEncoder
 
-    settings = _get_settings_safe()
-    model_name = getattr(settings, "reranker_model", "BAAI/bge-reranker-v2-m3")
-    device = getattr(settings, "reranker_device", "cpu")
+    settings = get_settings()
+    model_name = settings.reranker_model
+    device = settings.reranker_device
     logger.info("Loading reranker model: %s (device=%s)", model_name, device)
     model = CrossEncoder(model_name, device=device)
     logger.info("Reranker model loaded")
@@ -52,8 +46,8 @@ def rerank(
     Returns:
         Re-scored and sorted candidates (top_k).
     """
-    settings = _get_settings_safe()
-    if not getattr(settings, "reranker_enabled", True):
+    settings = get_settings()
+    if not settings.reranker_enabled:
         return candidates
 
     if not candidates or not query:

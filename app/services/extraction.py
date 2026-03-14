@@ -322,37 +322,3 @@ def _table_to_text(table: list[list[str | None]]) -> str:
         cells = [str(c or "").strip() for c in row]
         rows.append(" | ".join(cells))
     return "\n".join(rows)
-
-
-def chunk_text(
-    text: str,
-    max_tokens: int = 512,
-    overlap_tokens: int = 64,
-) -> list[str]:
-    """Split text into overlapping chunks for embedding.
-
-    Uses a simple word-based splitter. For BGE-large with a 512-token
-    limit, this approximates 400 words per chunk with 50-word overlap.
-    """
-    words = text.split()
-    if not words:
-        return []
-
-    # Rough approximation: 1 token ≈ 0.75 words
-    max_words = int(max_tokens * 0.75)
-    overlap_words = int(overlap_tokens * 0.75)
-
-    if len(words) <= max_words:
-        return [text]
-
-    chunks = []
-    start = 0
-    while start < len(words):
-        end = min(start + max_words, len(words))
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
-        if end == len(words):
-            break
-        start += max_words - overlap_words
-
-    return chunks
