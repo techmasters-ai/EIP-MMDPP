@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from qdrant_client.models import (
     Distance,
@@ -112,211 +112,101 @@ def _ensure_collection(client, name: str, dim: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sync upsert (Celery workers)
+# Generic upsert / search (collection-agnostic)
 # ---------------------------------------------------------------------------
 
-def upsert_text_vector(
+def upsert_vectors(client, collection: str, points: list[PointStruct]) -> None:
+    """Upsert points to any collection."""
+    client.upsert(collection_name=collection, points=points)
+
+
+def upsert_vector(
     client,
-    point_id: uuid.UUID,
+    collection: str,
+    point_id: uuid.UUID | str,
     vector: list[float],
     payload: dict[str, Any],
 ) -> None:
-    """Upsert a single text vector into the text collection."""
-    settings = get_settings()
-    client.upsert(
-        collection_name=settings.qdrant_text_collection,
-        points=[
-            PointStruct(
-                id=str(point_id),
-                vector=vector,
-                payload=payload,
-            )
-        ],
-    )
+    """Upsert a single point to any collection."""
+    upsert_vectors(client, collection, [
+        PointStruct(id=str(point_id), vector=vector, payload=payload)
+    ])
 
 
-def upsert_image_vector(
+def search_vectors(
     client,
-    point_id: uuid.UUID,
-    vector: list[float],
-    payload: dict[str, Any],
-) -> None:
-    """Upsert a single image vector into the image collection."""
-    settings = get_settings()
-    client.upsert(
-        collection_name=settings.qdrant_image_collection,
-        points=[
-            PointStruct(
-                id=str(point_id),
-                vector=vector,
-                payload=payload,
-            )
-        ],
-    )
-
-
-def upsert_text_vectors_batch(
-    client,
-    points: list[PointStruct],
-) -> None:
-    """Batch upsert text vectors."""
-    settings = get_settings()
-    client.upsert(
-        collection_name=settings.qdrant_text_collection,
-        points=points,
-    )
-
-
-def upsert_image_vectors_batch(
-    client,
-    points: list[PointStruct],
-) -> None:
-    """Batch upsert image vectors."""
-    settings = get_settings()
-    client.upsert(
-        collection_name=settings.qdrant_image_collection,
-        points=points,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Sync search (Celery workers)
-# ---------------------------------------------------------------------------
-
-def search_text_vectors(
-    client,
+    collection: str,
     query_vector: list[float],
     limit: int = 20,
-    filters: Optional[dict[str, Any]] = None,
+    filters: dict[str, Any] | None = None,
     score_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Search the text collection. Returns list of {id, score, payload}."""
-    settings = get_settings()
+    """Search any collection (sync)."""
     qdrant_filter = _build_filter(filters) if filters else None
-
     kwargs: dict[str, Any] = dict(
-        collection_name=settings.qdrant_text_collection,
-        query=query_vector,
-        limit=limit,
-        query_filter=qdrant_filter,
-        with_payload=True,
+        collection_name=collection, query=query_vector,
+        limit=limit, query_filter=qdrant_filter, with_payload=True,
     )
     if score_threshold is not None:
         kwargs["score_threshold"] = score_threshold
-
     results = client.query_points(**kwargs)
-
-    return [
-        {
-            "id": str(point.id),
-            "score": point.score,
-            "payload": point.payload,
-        }
-        for point in results.points
-    ]
+    return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in results.points]
 
 
-def search_image_vectors(
+async def search_vectors_async(
     client,
+    collection: str,
     query_vector: list[float],
     limit: int = 20,
-    filters: Optional[dict[str, Any]] = None,
+    filters: dict[str, Any] | None = None,
     score_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Search the image collection. Returns list of {id, score, payload}."""
-    settings = get_settings()
+    """Search any collection (async)."""
     qdrant_filter = _build_filter(filters) if filters else None
-
     kwargs: dict[str, Any] = dict(
-        collection_name=settings.qdrant_image_collection,
-        query=query_vector,
-        limit=limit,
-        query_filter=qdrant_filter,
-        with_payload=True,
+        collection_name=collection, query=query_vector,
+        limit=limit, query_filter=qdrant_filter, with_payload=True,
     )
     if score_threshold is not None:
         kwargs["score_threshold"] = score_threshold
-
-    results = client.query_points(**kwargs)
-
-    return [
-        {
-            "id": str(point.id),
-            "score": point.score,
-            "payload": point.payload,
-        }
-        for point in results.points
-    ]
+    results = await client.query_points(**kwargs)
+    return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in results.points]
 
 
 # ---------------------------------------------------------------------------
-# Async search (FastAPI)
+# Backward-compat aliases (text / image collections)
 # ---------------------------------------------------------------------------
 
-async def search_text_vectors_async(
-    client,
-    query_vector: list[float],
-    limit: int = 20,
-    filters: Optional[dict[str, Any]] = None,
-    score_threshold: float | None = None,
-) -> list[dict[str, Any]]:
-    """Async search the text collection."""
-    settings = get_settings()
-    qdrant_filter = _build_filter(filters) if filters else None
-
-    kwargs: dict[str, Any] = dict(
-        collection_name=settings.qdrant_text_collection,
-        query=query_vector,
-        limit=limit,
-        query_filter=qdrant_filter,
-        with_payload=True,
-    )
-    if score_threshold is not None:
-        kwargs["score_threshold"] = score_threshold
-
-    results = await client.query_points(**kwargs)
-
-    return [
-        {
-            "id": str(point.id),
-            "score": point.score,
-            "payload": point.payload,
-        }
-        for point in results.points
-    ]
+def upsert_text_vector(client, point_id, vector, payload):
+    upsert_vector(client, get_settings().qdrant_text_collection, point_id, vector, payload)
 
 
-async def search_image_vectors_async(
-    client,
-    query_vector: list[float],
-    limit: int = 20,
-    filters: Optional[dict[str, Any]] = None,
-    score_threshold: float | None = None,
-) -> list[dict[str, Any]]:
-    """Async search the image collection."""
-    settings = get_settings()
-    qdrant_filter = _build_filter(filters) if filters else None
+def upsert_image_vector(client, point_id, vector, payload):
+    upsert_vector(client, get_settings().qdrant_image_collection, point_id, vector, payload)
 
-    kwargs: dict[str, Any] = dict(
-        collection_name=settings.qdrant_image_collection,
-        query=query_vector,
-        limit=limit,
-        query_filter=qdrant_filter,
-        with_payload=True,
-    )
-    if score_threshold is not None:
-        kwargs["score_threshold"] = score_threshold
 
-    results = await client.query_points(**kwargs)
+def upsert_text_vectors_batch(client, points):
+    upsert_vectors(client, get_settings().qdrant_text_collection, points)
 
-    return [
-        {
-            "id": str(point.id),
-            "score": point.score,
-            "payload": point.payload,
-        }
-        for point in results.points
-    ]
+
+def upsert_image_vectors_batch(client, points):
+    upsert_vectors(client, get_settings().qdrant_image_collection, points)
+
+
+def search_text_vectors(client, query_vector, limit=20, filters=None, score_threshold=None):
+    return search_vectors(client, get_settings().qdrant_text_collection, query_vector, limit, filters, score_threshold)
+
+
+def search_image_vectors(client, query_vector, limit=20, filters=None, score_threshold=None):
+    return search_vectors(client, get_settings().qdrant_image_collection, query_vector, limit, filters, score_threshold)
+
+
+async def search_text_vectors_async(client, query_vector, limit=20, filters=None, score_threshold=None):
+    return await search_vectors_async(client, get_settings().qdrant_text_collection, query_vector, limit, filters, score_threshold)
+
+
+async def search_image_vectors_async(client, query_vector, limit=20, filters=None, score_threshold=None):
+    return await search_vectors_async(client, get_settings().qdrant_image_collection, query_vector, limit, filters, score_threshold)
 
 
 # ---------------------------------------------------------------------------
