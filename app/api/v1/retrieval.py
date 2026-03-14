@@ -898,53 +898,34 @@ async def _batch_lookup_chunks(
 # Single chunk lookups (used by cross-modal and ontology fallback)
 # ---------------------------------------------------------------------------
 
+async def _lookup_chunk(
+    db: AsyncSession, chunk_id: str, table: str = "text_chunks",
+    include_context: bool = True,
+) -> QueryResultItem | None:
+    """Lookup a single chunk by ID from the given retrieval table."""
+    sql = text(f"""
+        SELECT id, artifact_id, document_id, chunk_text, modality,
+               page_number, classification
+        FROM retrieval.{table} WHERE id = :cid
+    """)
+    result = await db.execute(sql, {"cid": chunk_id})
+    row = result.fetchone()
+    if not row:
+        return None
+    return QueryResultItem(
+        chunk_id=row[0], artifact_id=row[1], document_id=row[2],
+        score=0.0, modality=row[4],
+        content_text=row[3] if include_context else None,
+        page_number=row[5], classification=row[6],
+    )
+
+
 async def _lookup_chunk_by_type(
     db: AsyncSession, chunk_id: str, chunk_type: str, include_context: bool = True
 ) -> QueryResultItem | None:
     """Route to the correct lookup based on chunk_type."""
-    if chunk_type == "image_chunk":
-        return await _lookup_image_chunk(db, chunk_id, include_context)
-    return await _lookup_text_chunk(db, chunk_id, include_context)
-
-
-async def _lookup_text_chunk(
-    db: AsyncSession, chunk_id: str, include_context: bool = True
-) -> QueryResultItem | None:
-    sql = text("""
-        SELECT id, artifact_id, document_id, chunk_text, modality,
-               page_number, classification
-        FROM retrieval.text_chunks WHERE id = :cid
-    """)
-    result = await db.execute(sql, {"cid": chunk_id})
-    row = result.fetchone()
-    if not row:
-        return None
-    return QueryResultItem(
-        chunk_id=row[0], artifact_id=row[1], document_id=row[2],
-        score=0.0, modality=row[4],
-        content_text=row[3] if include_context else None,
-        page_number=row[5], classification=row[6],
-    )
-
-
-async def _lookup_image_chunk(
-    db: AsyncSession, chunk_id: str, include_context: bool = True
-) -> QueryResultItem | None:
-    sql = text("""
-        SELECT id, artifact_id, document_id, chunk_text, modality,
-               page_number, classification
-        FROM retrieval.image_chunks WHERE id = :cid
-    """)
-    result = await db.execute(sql, {"cid": chunk_id})
-    row = result.fetchone()
-    if not row:
-        return None
-    return QueryResultItem(
-        chunk_id=row[0], artifact_id=row[1], document_id=row[2],
-        score=0.0, modality=row[4],
-        content_text=row[3] if include_context else None,
-        page_number=row[5], classification=row[6],
-    )
+    table = "image_chunks" if chunk_type == "image_chunk" else "text_chunks"
+    return await _lookup_chunk(db, chunk_id, table, include_context)
 
 
 # ---------------------------------------------------------------------------

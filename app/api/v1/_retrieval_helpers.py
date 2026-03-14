@@ -32,31 +32,6 @@ def get_ontology_decay() -> float:
     return _settings().retrieval_ontology_decay
 
 
-# Keep module-level names for backward compat (read once at first use)
-class _LazyFloat:
-    def __init__(self, getter):
-        self._getter = getter
-        self._value = None
-
-    def __float__(self):
-        if self._value is None:
-            self._value = self._getter()
-        return self._value
-
-    def __mul__(self, other):
-        return float(self) * other
-
-    def __rmul__(self, other):
-        return other * float(self)
-
-    def __repr__(self):
-        return repr(float(self))
-
-
-CROSS_MODAL_DECAY = _LazyFloat(get_cross_modal_decay)
-ONTOLOGY_DECAY = _LazyFloat(get_ontology_decay)
-
-
 # ---------------------------------------------------------------------------
 # Fusion weight getters (all from env vars)
 # ---------------------------------------------------------------------------
@@ -128,7 +103,7 @@ def diversify_results(results: list[QueryResultItem]) -> list[QueryResultItem]:
 # Parameterized filter builders (SQL injection safe)
 # ---------------------------------------------------------------------------
 
-def build_text_filters(body: UnifiedQueryRequest) -> tuple[str, dict]:
+def build_filters(body: UnifiedQueryRequest, alias: str = "tc") -> tuple[str, dict]:
     """Return (WHERE clause suffix, bind params dict).
 
     Uses parameterized queries to prevent SQL injection.
@@ -137,41 +112,27 @@ def build_text_filters(body: UnifiedQueryRequest) -> tuple[str, dict]:
     params: dict = {}
     if body.filters:
         if body.filters.classification:
-            clauses += " AND tc.classification = :filter_classification"
+            clauses += f" AND {alias}.classification = :filter_classification"
             params["filter_classification"] = body.filters.classification
         if body.filters.document_ids:
-            clauses += " AND tc.document_id = ANY(:filter_doc_ids)"
+            clauses += f" AND {alias}.document_id = ANY(:filter_doc_ids)"
             params["filter_doc_ids"] = [str(d) for d in body.filters.document_ids]
         if body.filters.modalities:
-            clauses += " AND tc.modality = ANY(:filter_modalities)"
+            clauses += f" AND {alias}.modality = ANY(:filter_modalities)"
             params["filter_modalities"] = body.filters.modalities
         if body.filters.source_ids:
-            clauses += " AND tc.document_id IN (SELECT id FROM ingest.documents WHERE source_id = ANY(:filter_source_ids))"
+            clauses += f" AND {alias}.document_id IN (SELECT id FROM ingest.documents WHERE source_id = ANY(:filter_source_ids))"
             params["filter_source_ids"] = [str(s) for s in body.filters.source_ids]
     return clauses, params
+
+
+# Backward-compat aliases
+def build_text_filters(body: UnifiedQueryRequest) -> tuple[str, dict]:
+    return build_filters(body, "tc")
 
 
 def build_image_filters(body: UnifiedQueryRequest) -> tuple[str, dict]:
-    """Return (WHERE clause suffix, bind params dict).
-
-    Uses parameterized queries to prevent SQL injection.
-    """
-    clauses = ""
-    params: dict = {}
-    if body.filters:
-        if body.filters.classification:
-            clauses += " AND ic.classification = :filter_classification"
-            params["filter_classification"] = body.filters.classification
-        if body.filters.document_ids:
-            clauses += " AND ic.document_id = ANY(:filter_doc_ids)"
-            params["filter_doc_ids"] = [str(d) for d in body.filters.document_ids]
-        if body.filters.modalities:
-            clauses += " AND ic.modality = ANY(:filter_modalities)"
-            params["filter_modalities"] = body.filters.modalities
-        if body.filters.source_ids:
-            clauses += " AND ic.document_id IN (SELECT id FROM ingest.documents WHERE source_id = ANY(:filter_source_ids))"
-            params["filter_source_ids"] = [str(s) for s in body.filters.source_ids]
-    return clauses, params
+    return build_filters(body, "ic")
 
 
 # ---------------------------------------------------------------------------

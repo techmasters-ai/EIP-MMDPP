@@ -1,8 +1,8 @@
 """Unit tests for pure helper functions in app.api.v1._retrieval_helpers.
 
-These tests exercise deduplicate_results, build_text_filters,
-build_image_filters, score decay constants, fusion weight getters,
-and compute_fusion_score — all of which have no DB dependency.
+These tests exercise deduplicate_results, build_filters (and its aliases
+build_text_filters / build_image_filters), score decay getters, fusion
+weight getters, and compute_fusion_score — all of which have no DB dependency.
 """
 
 import uuid
@@ -216,27 +216,17 @@ class TestBuildImageFilters:
 
 
 # ---------------------------------------------------------------------------
-# Score decay constants (lazy-loaded from settings)
+# Score decay getters (from settings)
 # ---------------------------------------------------------------------------
 
-class TestScoreDecayConstants:
+class TestScoreDecayGetters:
     def test_cross_modal_decay_value(self):
-        from app.api.v1._retrieval_helpers import CROSS_MODAL_DECAY
-        assert abs(float(CROSS_MODAL_DECAY) - 0.85) < 1e-6
+        from app.api.v1._retrieval_helpers import get_cross_modal_decay
+        assert abs(get_cross_modal_decay() - 0.85) < 1e-6
 
     def test_ontology_decay_value(self):
-        from app.api.v1._retrieval_helpers import ONTOLOGY_DECAY
-        assert abs(float(ONTOLOGY_DECAY) - 0.75) < 1e-6
-
-    def test_lazy_float_multiplication(self):
-        from app.api.v1._retrieval_helpers import CROSS_MODAL_DECAY
-        result = 1.0 * CROSS_MODAL_DECAY
-        assert abs(result - 0.85) < 1e-6
-
-    def test_lazy_float_rmul(self):
-        from app.api.v1._retrieval_helpers import ONTOLOGY_DECAY
-        result = ONTOLOGY_DECAY * 2.0
-        assert abs(result - 1.50) < 1e-6
+        from app.api.v1._retrieval_helpers import get_ontology_decay
+        assert abs(get_ontology_decay() - 0.75) < 1e-6
 
 
 # ---------------------------------------------------------------------------
