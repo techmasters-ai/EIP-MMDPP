@@ -80,25 +80,6 @@ def get_ontology_relation_weights() -> dict[str, float]:
         "OPERATES_ON": s.retrieval_onto_weight_operates_on,
         "MEETS_STANDARD": s.retrieval_onto_weight_meets_standard,
         "RELATED_TO": s.retrieval_onto_weight_related_to,
-        # New ontology relation weights
-        "associated_with": s.retrieval_onto_weight_associated_with,
-        "installed_on": s.retrieval_onto_weight_installed_on,
-        "deployed_on": s.retrieval_onto_weight_deployed_on,
-        "uses_waveform": s.retrieval_onto_weight_uses_waveform,
-        "operates_in_band": s.retrieval_onto_weight_operates_in_band,
-        "has_antenna": s.retrieval_onto_weight_has_antenna,
-        "has_receiver": s.retrieval_onto_weight_has_receiver,
-        "has_transmitter": s.retrieval_onto_weight_has_transmitter,
-        "cues": s.retrieval_onto_weight_cues,
-        "guides": s.retrieval_onto_weight_guides,
-        "tracks": s.retrieval_onto_weight_tracks,
-        "emits": s.retrieval_onto_weight_emits,
-        "has_signature": s.retrieval_onto_weight_has_signature,
-        "has_performance": s.retrieval_onto_weight_has_performance,
-        "has_processing_chain": s.retrieval_onto_weight_has_processing_chain,
-        "supported_by": s.retrieval_onto_weight_supported_by,
-        "mentioned_in": s.retrieval_onto_weight_mentioned_in,
-        "alias_of": s.retrieval_onto_weight_alias_of,
     }
 
 

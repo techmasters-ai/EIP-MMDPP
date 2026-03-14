@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     api_port: int = 8000
     log_level: str = "INFO"
     sql_echo: bool = False
-    secret_key: str = "change-me"
 
     # JWT
     jwt_algorithm: str = "HS256"
@@ -84,8 +83,6 @@ class Settings(BaseSettings):
 
     # Ollama connection (shared by all features when llm_provider=ollama)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_vlm_model: str = "llava"  # DEPRECATED: replaced by Docling service
-    ollama_embedding_model: str = "nomic-embed-text"
     ollama_llm_concurrency: int = 1
     ollama_num_ctx: int = 16384
 
@@ -146,13 +143,8 @@ class Settings(BaseSettings):
     docling_timeout_seconds: float = 3600.0
     docling_fallback_enabled: bool = False  # fall back to legacy extraction if Docling is down
 
-    # OCR thresholds
-    ocr_tesseract_confidence_threshold: float = 0.75
-    ocr_easyocr_confidence_threshold: float = 0.60
-
     # Security / ABAC
     default_classification: str = "UNCLASSIFIED"
-    abac_policy_path: str = "/app/policy/abac.yaml"
 
     # Pipeline retry & time-limit settings (env-var configurable)
     prepare_max_retries: int = 3
@@ -188,26 +180,6 @@ class Settings(BaseSettings):
 
     # Directory watcher
     watch_dir_poll_interval_seconds: int = 30
-
-    # --- Retrieval scoring — new ontology relation weights ---
-    retrieval_onto_weight_associated_with: float = 0.95
-    retrieval_onto_weight_installed_on: float = 0.92
-    retrieval_onto_weight_deployed_on: float = 0.92
-    retrieval_onto_weight_uses_waveform: float = 0.92
-    retrieval_onto_weight_operates_in_band: float = 0.92
-    retrieval_onto_weight_has_antenna: float = 0.90
-    retrieval_onto_weight_has_receiver: float = 0.90
-    retrieval_onto_weight_has_transmitter: float = 0.90
-    retrieval_onto_weight_cues: float = 0.90
-    retrieval_onto_weight_guides: float = 0.90
-    retrieval_onto_weight_tracks: float = 0.90
-    retrieval_onto_weight_emits: float = 0.88
-    retrieval_onto_weight_has_signature: float = 0.88
-    retrieval_onto_weight_has_performance: float = 0.85
-    retrieval_onto_weight_has_processing_chain: float = 0.85
-    retrieval_onto_weight_supported_by: float = 0.80
-    retrieval_onto_weight_mentioned_in: float = 0.80
-    retrieval_onto_weight_alias_of: float = 0.95
 
     # --- Retrieval scoring (env-var configurable) ---
     # Expansion limits
