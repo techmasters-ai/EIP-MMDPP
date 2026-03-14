@@ -15,18 +15,6 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _mock_driver(run_return=None):
-    """Return (driver, session) for sync Neo4j."""
-    session = MagicMock()
-    result = MagicMock()
-    result.__iter__ = MagicMock(return_value=iter(run_return or []))
-    session.run.return_value = result
-    driver = MagicMock()
-    driver.session.return_value.__enter__ = MagicMock(return_value=session)
-    driver.session.return_value.__exit__ = MagicMock(return_value=False)
-    return driver, session
-
-
 def _mock_settings(**overrides):
     s = MagicMock()
     s.graphrag_indexing_enabled = True
@@ -44,11 +32,11 @@ def _mock_settings(**overrides):
 # ---------------------------------------------------------------------------
 
 class TestExportGraphForGraphrag:
-    def test_returns_entities_and_relationships(self):
+    def test_returns_entities_and_relationships(self, mock_neo4j_driver):
         from app.services.graphrag_service import _export_graph_for_graphrag
         entities_data = [{"name": "A", "entity_type": "RadarSystem", "id": "1"}]
         rels_data = [{"source": "A", "target": "B", "relationship": "USES"}]
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         # Two calls: entities then relationships
         e_result = MagicMock()
         e_result.__iter__ = MagicMock(return_value=iter(entities_data))
@@ -59,9 +47,9 @@ class TestExportGraphForGraphrag:
         assert len(entities) == 1
         assert len(rels) == 1
 
-    def test_empty_graph(self):
+    def test_empty_graph(self, mock_neo4j_driver):
         from app.services.graphrag_service import _export_graph_for_graphrag
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         e_result = MagicMock()
         e_result.__iter__ = MagicMock(return_value=iter([]))
         r_result = MagicMock()
@@ -71,9 +59,9 @@ class TestExportGraphForGraphrag:
         assert entities == []
         assert rels == []
 
-    def test_exception_returns_empty(self):
+    def test_exception_returns_empty(self, mock_neo4j_driver):
         from app.services.graphrag_service import _export_graph_for_graphrag
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         entities, rels = _export_graph_for_graphrag(driver)
         assert entities == []

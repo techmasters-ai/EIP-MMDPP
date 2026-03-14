@@ -12,67 +12,37 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _mock_driver(run_return=None):
-    """Return (driver, mock_session) with session.run returning run_return."""
-    mock_session = MagicMock()
-    mock_result = MagicMock()
-    mock_result.single.return_value = run_return
-    mock_result.__iter__ = MagicMock(return_value=iter(run_return if isinstance(run_return, list) else []))
-    mock_session.run.return_value = mock_result
-
-    driver = MagicMock()
-    driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-    driver.session.return_value.__exit__ = MagicMock(return_value=False)
-    return driver, mock_session
-
-
-def _mock_async_driver(data_return=None, single_return=None):
-    """Return (driver, mock_session, mock_result) for async tests."""
-    mock_result = AsyncMock()
-    mock_result.data = AsyncMock(return_value=data_return or [])
-    mock_result.single = AsyncMock(return_value=single_return)
-
-    mock_session = AsyncMock()
-    mock_session.run = AsyncMock(return_value=mock_result)
-
-    driver = MagicMock()
-    driver.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-    driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
-    return driver, mock_session, mock_result
-
-
-# ---------------------------------------------------------------------------
 # upsert_node
 # ---------------------------------------------------------------------------
 
 class TestUpsertNode:
-    def test_returns_node_id_on_success(self):
+    def test_returns_node_id_on_success(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_node
-        driver, session = _mock_driver({"node_id": "id-123"})
+        driver, session = mock_neo4j_driver
+        session.run.return_value.single.return_value = {"node_id": "id-123"}
         result = upsert_node(driver, "RadarSystem", "AN/SPY-1", "art-1", 0.9)
         assert result is not None
 
-    def test_properties_passed(self):
+    def test_properties_passed(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_node
-        driver, session = _mock_driver({"node_id": "id-1"})
+        driver, session = mock_neo4j_driver
+        session.run.return_value.single.return_value = {"node_id": "id-1"}
         upsert_node(driver, "RadarSystem", "AN/SPY-1", "art-1", 0.9, {"freq": "S-band"})
         call_kwargs = session.run.call_args
         assert "props" in call_kwargs.kwargs
         assert call_kwargs.kwargs["props"]["freq"] == "S-band"
 
-    def test_exception_returns_none(self):
+    def test_exception_returns_none(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_node
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("connection lost")
         result = upsert_node(driver, "RadarSystem", "TEST", "art-1", 0.5)
         assert result is None
 
-    def test_sanitized_label_in_query(self):
+    def test_sanitized_label_in_query(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_node
-        driver, session = _mock_driver({"node_id": "id-1"})
+        driver, session = mock_neo4j_driver
+        session.run.return_value.single.return_value = {"node_id": "id-1"}
         upsert_node(driver, "Air Defense System", "SA-11", "art-1", 0.9)
         query = session.run.call_args.args[0]
         assert "Air_Defense_System" in query
@@ -83,30 +53,30 @@ class TestUpsertNode:
 # ---------------------------------------------------------------------------
 
 class TestUpsertRelationship:
-    def test_returns_true_on_success(self):
+    def test_returns_true_on_success(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_relationship
-        driver, _ = _mock_driver()
+        driver, _ = mock_neo4j_driver
         result = upsert_relationship(driver, "A", "TypeA", "B", "TypeB", "REL", "art-1", 0.8)
         assert result is True
 
-    def test_both_labels_sanitized(self):
+    def test_both_labels_sanitized(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_relationship
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         upsert_relationship(driver, "A", "Type A", "B", "Type B", "rel type", "a1", 0.5)
         query = session.run.call_args.args[0]
         assert "Type_A" in query
         assert "Type_B" in query
         assert "rel_type" in query
 
-    def test_exception_returns_false(self):
+    def test_exception_returns_false(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_relationship
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert upsert_relationship(driver, "A", "T", "B", "T", "R", "a1", 0.5) is False
 
-    def test_properties_passed_to_cypher(self):
+    def test_properties_passed_to_cypher(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_relationship
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         props = {"frequency": "S-band", "verified": True}
         upsert_relationship(driver, "A", "TypeA", "B", "TypeB", "USES", "art-1", 0.9, properties=props)
         call_kwargs = session.run.call_args.kwargs
@@ -120,15 +90,15 @@ class TestUpsertRelationship:
 # ---------------------------------------------------------------------------
 
 class TestUpsertDocumentNode:
-    def test_returns_document_id(self):
+    def test_returns_document_id(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_document_node
-        driver, _ = _mock_driver()
+        driver, _ = mock_neo4j_driver
         result = upsert_document_node(driver, "doc-1", "Test Doc")
         assert result == "doc-1"
 
-    def test_exception_returns_none(self):
+    def test_exception_returns_none(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_document_node
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert upsert_document_node(driver, "doc-1", "Test") is None
 
@@ -138,14 +108,14 @@ class TestUpsertDocumentNode:
 # ---------------------------------------------------------------------------
 
 class TestUpsertChunkRefNode:
-    def test_returns_chunk_id(self):
+    def test_returns_chunk_id(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_chunk_ref_node
-        driver, _ = _mock_driver()
+        driver, _ = mock_neo4j_driver
         assert upsert_chunk_ref_node(driver, "chunk-1", "text") == "chunk-1"
 
-    def test_exception_returns_none(self):
+    def test_exception_returns_none(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_chunk_ref_node
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert upsert_chunk_ref_node(driver, "c1", "text") is None
 
@@ -155,29 +125,29 @@ class TestUpsertChunkRefNode:
 # ---------------------------------------------------------------------------
 
 class TestCreateStructuralEdge:
-    def test_contains_text(self):
+    def test_contains_text(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_structural_edge
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         assert create_structural_edge(driver, "doc-1", "chunk-1", "CONTAINS_TEXT") is True
         query = session.run.call_args.args[0]
         assert "Document" in query
         assert "ChunkRef" in query
 
-    def test_contains_image(self):
+    def test_contains_image(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_structural_edge
-        driver, _ = _mock_driver()
+        driver, _ = mock_neo4j_driver
         assert create_structural_edge(driver, "doc-1", "chunk-1", "CONTAINS_IMAGE") is True
 
-    def test_same_page(self):
+    def test_same_page(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_structural_edge
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         assert create_structural_edge(driver, "c1", "c2", "SAME_PAGE") is True
         query = session.run.call_args.args[0]
         assert "SAME_PAGE" in query
 
-    def test_exception_returns_false(self):
+    def test_exception_returns_false(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_structural_edge
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert create_structural_edge(driver, "a", "b", "CONTAINS_TEXT") is False
 
@@ -187,16 +157,16 @@ class TestCreateStructuralEdge:
 # ---------------------------------------------------------------------------
 
 class TestCreateEntityChunkEdge:
-    def test_creates_extracted_from_edge(self):
+    def test_creates_extracted_from_edge(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_entity_chunk_edge
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         assert create_entity_chunk_edge(driver, "AN/SPY-1", "RadarSystem", "chunk-1") is True
         query = session.run.call_args.args[0]
         assert "EXTRACTED_FROM" in query
 
-    def test_exception_returns_false(self):
+    def test_exception_returns_false(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_entity_chunk_edge
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert create_entity_chunk_edge(driver, "A", "T", "c1") is False
 
@@ -206,21 +176,28 @@ class TestCreateEntityChunkEdge:
 # ---------------------------------------------------------------------------
 
 class TestSearchNodesByName:
-    def test_returns_list_of_dicts(self):
+    def test_returns_list_of_dicts(self, mock_neo4j_driver):
         from app.services.neo4j_graph import search_nodes_by_name
+        driver, session = mock_neo4j_driver
         record = {"n": {"name": "AN/SPY-1"}, "entity_type": "RadarSystem"}
-        driver, _ = _mock_driver(run_return=[record])
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([record]))
+        mock_result.single.return_value = None
+        session.run.return_value = mock_result
         results = search_nodes_by_name(driver, "SPY")
         assert len(results) == 1
 
-    def test_empty_results(self):
+    def test_empty_results(self, mock_neo4j_driver):
         from app.services.neo4j_graph import search_nodes_by_name
-        driver, _ = _mock_driver(run_return=[])
+        driver, session = mock_neo4j_driver
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        session.run.return_value = mock_result
         assert search_nodes_by_name(driver, "nothing") == []
 
-    def test_exception_returns_empty(self):
+    def test_exception_returns_empty(self, mock_neo4j_driver):
         from app.services.neo4j_graph import search_nodes_by_name
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert search_nodes_by_name(driver, "test") == []
 
@@ -230,27 +207,39 @@ class TestSearchNodesByName:
 # ---------------------------------------------------------------------------
 
 class TestGetNodeNeighborhood:
-    def test_returns_neighborhood(self):
+    def test_returns_neighborhood(self, mock_neo4j_driver):
         from app.services.neo4j_graph import get_node_neighborhood
+        driver, session = mock_neo4j_driver
         record = {"start": {"name": "A"}, "rel_type": "HAS", "neighbor": {"name": "B"}}
-        driver, _ = _mock_driver(run_return=[record])
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([record]))
+        session.run.return_value = mock_result
         results = get_node_neighborhood(driver, "A")
         assert len(results) == 1
 
-    def test_hop_count_clamped(self):
+    def test_hop_count_clamped(self, mock_neo4j_driver):
         from app.services.neo4j_graph import get_node_neighborhood
-        driver, session = _mock_driver(run_return=[])
+        driver, session = mock_neo4j_driver
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        session.run.return_value = mock_result
+
         get_node_neighborhood(driver, "A", hop_count=0)
         query0 = session.run.call_args.args[0]
         assert "*1..1" in query0
+
+        # Reset the iterable for the second call
+        mock_result2 = MagicMock()
+        mock_result2.__iter__ = MagicMock(return_value=iter([]))
+        session.run.return_value = mock_result2
 
         get_node_neighborhood(driver, "A", hop_count=10)
         query10 = session.run.call_args.args[0]
         assert "*1..4" in query10
 
-    def test_exception_returns_empty(self):
+    def test_exception_returns_empty(self, mock_neo4j_driver):
         from app.services.neo4j_graph import get_node_neighborhood
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert get_node_neighborhood(driver, "A") == []
 
@@ -260,9 +249,9 @@ class TestGetNodeNeighborhood:
 # ---------------------------------------------------------------------------
 
 class TestGetGraphStats:
-    def test_returns_counts(self):
+    def test_returns_counts(self, mock_neo4j_driver):
         from app.services.neo4j_graph import get_graph_stats
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         # First call for nodes, second for edges
         node_result = MagicMock()
         node_result.single.return_value = {"cnt": 42}
@@ -273,9 +262,9 @@ class TestGetGraphStats:
         assert stats["nodes"] == 42
         assert stats["edges"] == 10
 
-    def test_exception_returns_zeros(self):
+    def test_exception_returns_zeros(self, mock_neo4j_driver):
         from app.services.neo4j_graph import get_graph_stats
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         stats = get_graph_stats(driver)
         assert stats == {"nodes": 0, "edges": 0}
@@ -287,34 +276,36 @@ class TestGetGraphStats:
 
 class TestSearchNodesAsync:
     @pytest.mark.asyncio
-    async def test_returns_list(self):
+    async def test_returns_list(self, mock_neo4j_async_driver):
         from app.services.neo4j_graph import search_nodes_async
+        driver, session, result = mock_neo4j_async_driver
         data = [{"n": {"name": "X"}, "entity_type": "RadarSystem"}]
-        driver, _, _ = _mock_async_driver(data_return=data)
+        result.data = AsyncMock(return_value=data)
         results = await search_nodes_async(driver, "X")
         assert len(results) == 1
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_empty(self, mock_neo4j_async_driver):
         from app.services.neo4j_graph import search_nodes_async
-        driver, session, _ = _mock_async_driver()
+        driver, session, _ = mock_neo4j_async_driver
         session.run.side_effect = Exception("fail")
         assert await search_nodes_async(driver, "test") == []
 
 
 class TestGetNeighborhoodAsync:
     @pytest.mark.asyncio
-    async def test_returns_neighborhood(self):
+    async def test_returns_neighborhood(self, mock_neo4j_async_driver):
         from app.services.neo4j_graph import get_neighborhood_async
+        driver, session, result = mock_neo4j_async_driver
         data = [{"start": {"name": "A"}, "rel_type": "R", "neighbor": {"name": "B"}}]
-        driver, _, _ = _mock_async_driver(data_return=data)
+        result.data = AsyncMock(return_value=data)
         results = await get_neighborhood_async(driver, "A")
         assert len(results) == 1
 
     @pytest.mark.asyncio
-    async def test_hop_count_clamped(self):
+    async def test_hop_count_clamped(self, mock_neo4j_async_driver):
         from app.services.neo4j_graph import get_neighborhood_async
-        driver, session, _ = _mock_async_driver()
+        driver, session, _ = mock_neo4j_async_driver
         await get_neighborhood_async(driver, "A", hop_count=0)
         query = session.run.call_args.args[0]
         assert "*1..1" in query
@@ -352,10 +343,10 @@ class TestGetOntologyLinkedChunksAsync:
         assert results[0]["target_chunk_id"] == "c2"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_empty(self, mock_neo4j_async_driver):
         self._reset_extracted_from_cache()
         from app.services.neo4j_graph import get_ontology_linked_chunks_async
-        driver, session, _ = _mock_async_driver()
+        driver, session, _ = mock_neo4j_async_driver
         session.run.side_effect = Exception("fail")
         assert await get_ontology_linked_chunks_async(driver, "c1") == []
 
@@ -380,9 +371,9 @@ class TestGetOntologyLinkedChunksAsync:
 
 class TestGetGraphStatsAsync:
     @pytest.mark.asyncio
-    async def test_returns_counts(self):
+    async def test_returns_counts(self, mock_neo4j_async_driver):
         from app.services.neo4j_graph import get_graph_stats_async
-        driver, session, _ = _mock_async_driver()
+        driver, session, _ = mock_neo4j_async_driver
         # Two calls — nodes then edges
         node_result = AsyncMock()
         node_result.single = AsyncMock(return_value={"cnt": 5})
@@ -399,19 +390,22 @@ class TestGetGraphStatsAsync:
 # ---------------------------------------------------------------------------
 
 class TestFulltextSearchEntity:
-    def test_returns_results_with_score(self):
+    def test_returns_results_with_score(self, mock_neo4j_driver):
         from app.services.neo4j_graph import fulltext_search_entity
+        driver, session = mock_neo4j_driver
         records = [
             {"name": "AN/SPY-1", "canonical_name": None, "entity_type": "RadarSystem", "score": 2.5}
         ]
-        driver, _ = _mock_driver(run_return=records)
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter(records))
+        session.run.return_value = mock_result
         results = fulltext_search_entity(driver, "SPY")
         assert len(results) == 1
         assert results[0]["score"] == 2.5
 
-    def test_exception_returns_empty(self):
+    def test_exception_returns_empty(self, mock_neo4j_driver):
         from app.services.neo4j_graph import fulltext_search_entity
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert fulltext_search_entity(driver, "test") == []
 
@@ -421,14 +415,14 @@ class TestFulltextSearchEntity:
 # ---------------------------------------------------------------------------
 
 class TestCreateAliasEdge:
-    def test_returns_true_on_success(self):
+    def test_returns_true_on_success(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_alias_edge
-        driver, _ = _mock_driver()
+        driver, _ = mock_neo4j_driver
         assert create_alias_edge(driver, "AN/SPY-1", "SPY-1", "RadarSystem") is True
 
-    def test_exception_returns_false(self):
+    def test_exception_returns_false(self, mock_neo4j_driver):
         from app.services.neo4j_graph import create_alias_edge
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("fail")
         assert create_alias_edge(driver, "A", "B", "T") is False
 
@@ -438,18 +432,18 @@ class TestCreateAliasEdge:
 # ---------------------------------------------------------------------------
 
 class TestEnsureIndexes:
-    def test_runs_create_queries(self):
+    def test_runs_create_queries(self, mock_neo4j_driver):
         from app.services.neo4j_graph import ensure_indexes
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         ensure_indexes(driver)
         assert session.run.call_count == 3
         queries = [c.args[0] for c in session.run.call_args_list]
         assert any("entity_name_fulltext" in q for q in queries)
         assert any("document_id_unique" in q for q in queries)
 
-    def test_exception_propagates(self):
+    def test_exception_propagates(self, mock_neo4j_driver):
         from app.services.neo4j_graph import ensure_indexes
-        driver, session = _mock_driver()
+        driver, session = mock_neo4j_driver
         session.run.side_effect = Exception("down")
         with pytest.raises(Exception, match="down"):
             ensure_indexes(driver)
