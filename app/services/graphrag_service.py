@@ -222,20 +222,50 @@ def _export_graph_for_graphrag(
     return entities, relationships
 
 
+def _build_weighted_graph(
+    entities: list[dict],
+    relationships: list[dict],
+):
+    """Build a NetworkX graph with ontology-derived edge weights.
+
+    Edge weights come from ``scoring_weights`` in ontology.yaml.
+    Relationship types not listed get the ``default`` weight (0.70).
+    """
+    import networkx as nx
+    from app.services.ontology_templates import load_ontology
+
+    ontology = load_ontology()
+    scoring_weights: dict[str, float] = {}
+    for item in ontology.get("scoring_weights", []):
+        if isinstance(item, dict):
+            scoring_weights.update(item)
+    # scoring_weights may be a dict already (YAML mapping)
+    if isinstance(ontology.get("scoring_weights"), dict):
+        scoring_weights = ontology["scoring_weights"]
+    default_weight = float(scoring_weights.get("default", 0.70))
+
+    G = nx.Graph()
+    for e in entities:
+        G.add_node(e["name"], entity_type=e.get("entity_type"))
+    for r in relationships:
+        rel_type = r.get("relationship", "")
+        weight = float(scoring_weights.get(rel_type, default_weight))
+        G.add_edge(
+            r["source"], r["target"],
+            relationship=rel_type,
+            weight=weight,
+        )
+    return G
+
+
 def _detect_communities(
     entities: list[dict],
     relationships: list[dict],
     settings,
 ) -> list[dict[str, Any]]:
-    """Run Leiden community detection on the graph."""
-    import networkx as nx
+    """Run Leiden community detection on the graph with ontology-weighted edges."""
 
-    # Build NetworkX graph for community detection
-    G = nx.Graph()
-    for e in entities:
-        G.add_node(e["name"], entity_type=e.get("entity_type"))
-    for r in relationships:
-        G.add_edge(r["source"], r["target"], relationship=r.get("relationship"))
+    G = _build_weighted_graph(entities, relationships)
 
     if len(G.nodes) == 0:
         return []
@@ -244,7 +274,11 @@ def _detect_communities(
     try:
         from graspologic.partition import hierarchical_leiden
 
-        community_map = hierarchical_leiden(G, max_cluster_size=settings.graphrag_max_cluster_size)
+        community_map = hierarchical_leiden(
+            G,
+            max_cluster_size=settings.graphrag_max_cluster_size,
+            weights="weight",
+        )
         # Group nodes by community
         communities_by_id: dict[str, list[str]] = {}
         for node, community_id in community_map.items():
@@ -256,7 +290,7 @@ def _detect_communities(
         logger.info("graspologic not available, using Louvain community detection")
         from networkx.algorithms.community import louvain_communities
 
-        partition = louvain_communities(G, seed=42)
+        partition = louvain_communities(G, weight="weight", resolution=1.0, seed=42)
         communities_by_id = {}
         for i, community in enumerate(partition):
             communities_by_id[str(i)] = list(community)
