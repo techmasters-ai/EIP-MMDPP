@@ -145,6 +145,34 @@ services:
       start_period: 120s
 
   # ---------------------------------------------------------------------------
+  # Docling-Graph — ontology-driven entity/relationship extraction
+  # ---------------------------------------------------------------------------
+  docling-graph:
+    build:
+      context: ./docker/docling-graph
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./ontology:/app/ontology:ro
+    environment:
+      ONTOLOGY_PATH: /app/ontology/ontology.yaml
+      LLM_PROVIDER: ${DOCLING_GRAPH_LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${DOCLING_GRAPH_LLM_MODEL:-llama3.2}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+    ports:
+      - "${DOCLING_GRAPH_PORT:-8002}:8002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    networks:
+      - default
+
+  # ---------------------------------------------------------------------------
   # API — FastAPI application
   # ---------------------------------------------------------------------------
   api:
@@ -205,6 +233,8 @@ services:
         condition: service_healthy
       docling:
         condition: service_healthy
+      docling-graph:
+        condition: service_healthy
       neo4j:
         condition: service_healthy
       qdrant:
@@ -248,6 +278,8 @@ services:
       minio:
         condition: service_healthy
       docling:
+        condition: service_healthy
+      docling-graph:
         condition: service_healthy
       neo4j:
         condition: service_healthy

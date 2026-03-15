@@ -51,6 +51,12 @@ services:
       DOCLING_DTYPE: float32
     deploy: {}
 
+  docling-graph:
+    environment:
+      LLM_PROVIDER: mock
+      ONTOLOGY_PATH: /app/ontology/ontology.yaml
+    deploy: {}
+
   # Don't start api/worker/beat in test mode — tests connect directly
   api:
     profiles: ["disabled"]
