@@ -2,9 +2,9 @@
 
 These tests call derive_ontology_graph directly (bypassing Celery), using a
 real test database session. They verify that:
-  1. NER extraction produces entities/relationships from text elements
+  1. Docling-Graph service extraction produces entities/relationships
   2. Graph data is stored in document_graph_extractions
-  3. upsert_node/upsert_relationship are called for Neo4j import
+  3. upsert_nodes_batch/upsert_relationships_batch are called for Neo4j import
 """
 
 import uuid
@@ -26,6 +26,22 @@ Compliance: MIL-STD-1553B, MIL-DTL-38999.
 
 Specifications: 28 VDC input, 1000 MHz processor, 5000 hours MTBF.
 """
+
+# Mock response from the Docling-Graph service
+MOCK_EXTRACTION_RESULT = {
+    "entities": [
+        {"name": "Patriot PAC-3", "entity_type": "EQUIPMENT_SYSTEM", "confidence": 0.95, "properties": {"designation": "MIM-104F"}},
+        {"name": "MK-4", "entity_type": "COMPONENT", "confidence": 0.9, "properties": {}},
+        {"name": "MIL-STD-1553B", "entity_type": "STANDARD", "confidence": 0.85, "properties": {}},
+    ],
+    "relationships": [
+        {"from_name": "MK-4", "from_type": "COMPONENT", "rel_type": "SUBSYSTEM_OF", "to_name": "Patriot PAC-3", "to_type": "EQUIPMENT_SYSTEM", "confidence": 0.88},
+        {"from_name": "Patriot PAC-3", "from_type": "EQUIPMENT_SYSTEM", "rel_type": "COMPLIES_WITH", "to_name": "MIL-STD-1553B", "to_type": "STANDARD", "confidence": 0.8},
+    ],
+    "ontology_version": "3.0.0",
+    "model": "llama3.2",
+    "provider": "ollama",
+}
 
 
 @pytest.fixture
@@ -83,10 +99,10 @@ def sample_document_element(db_session, sample_document_id) -> "DocumentElement"
 class TestDeriveOntologyGraph:
     """Tests for the derive_ontology_graph task (called directly)."""
 
-    def test_ner_extraction_produces_entities(
+    def test_extraction_produces_entities(
         self, db_session, sample_document_id, sample_document_element
     ):
-        """NER should extract entities from military text."""
+        """Docling-Graph service should extract entities from text."""
         from app.workers.pipeline import derive_ontology_graph
 
         with (
@@ -94,14 +110,18 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_node", return_value="mock-node-id") as mock_node,
-            patch("app.services.neo4j_graph.upsert_relationship", return_value=True) as mock_rel,
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3) as mock_nodes,
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
+            patch(
+                "app.services.docling_graph_service.extract_graph",
+                return_value=MOCK_EXTRACTION_RESULT,
+            ),
         ):
             result = derive_ontology_graph.run(sample_document_id)
 
         assert result["status"] == "ok"
-        assert result["nodes"] > 0
-        assert mock_node.call_count > 0
+        assert result["nodes"] == 3
+        assert mock_nodes.call_count == 1
 
     def test_graph_data_stored_in_extraction_table(
         self, db_session, sample_document_id, sample_document_element
@@ -116,8 +136,12 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
-            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
+            patch(
+                "app.services.docling_graph_service.extract_graph",
+                return_value=MOCK_EXTRACTION_RESULT,
+            ),
         ):
             derive_ontology_graph.run(sample_document_id)
 
@@ -129,11 +153,11 @@ class TestDeriveOntologyGraph:
 
         assert extraction is not None
         assert extraction.status == "COMPLETE"
-        assert extraction.provider == "ner"
+        assert extraction.provider == "ollama"
         graph_json = extraction.graph_json
         assert "nodes" in graph_json
         assert "edges" in graph_json
-        assert len(graph_json["nodes"]) > 0
+        assert len(graph_json["nodes"]) == 3
 
     def test_entity_dicts_have_required_keys(
         self, db_session, sample_document_id, sample_document_element
@@ -148,8 +172,12 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
-            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
+            patch(
+                "app.services.docling_graph_service.extract_graph",
+                return_value=MOCK_EXTRACTION_RESULT,
+            ),
         ):
             derive_ontology_graph.run(sample_document_id)
 
@@ -165,7 +193,7 @@ class TestDeriveOntologyGraph:
             assert "confidence" in node
 
     def test_no_elements_is_noop(self, db_session, sample_document_id):
-        """No document elements → no extraction (ok status, 0 nodes)."""
+        """No document elements -> no extraction (ok status, 0 nodes)."""
         from app.workers.pipeline import derive_ontology_graph
 
         with (
@@ -180,10 +208,10 @@ class TestDeriveOntologyGraph:
         assert result["nodes"] == 0
         assert result["edges"] == 0
 
-    def test_upsert_relationship_called_for_edges(
+    def test_relationships_batch_called_for_edges(
         self, db_session, sample_document_id, sample_document_element
     ):
-        """upsert_relationship should be called for discovered relationships."""
+        """upsert_relationships_batch should be called for discovered relationships."""
         from app.workers.pipeline import derive_ontology_graph
 
         with (
@@ -191,62 +219,49 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
-            patch("app.services.neo4j_graph.upsert_relationship", return_value=True) as mock_rel,
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2) as mock_rels,
+            patch(
+                "app.services.docling_graph_service.extract_graph",
+                return_value=MOCK_EXTRACTION_RESULT,
+            ),
         ):
             result = derive_ontology_graph.run(sample_document_id)
 
-        if result["edges"] > 0:
-            assert mock_rel.call_count > 0
-            call_kwargs = mock_rel.call_args.kwargs
-            assert "from_name" in call_kwargs
-            assert "to_name" in call_kwargs
-            assert "rel_type" in call_kwargs
+        assert result["edges"] == 2
+        assert mock_rels.call_count == 1
+        # Verify edge dicts have correct keys
+        edges_arg = mock_rels.call_args[0][1]  # second positional arg
+        for edge in edges_arg:
+            assert "from_name" in edge
+            assert "to_name" in edge
+            assert "rel_type" in edge
+            assert "artifact_id" in edge
 
 
 class TestDoclingGraphPath:
-    """Tests for the docling-graph LLM extraction path (mocked LLM)."""
+    """Tests for the Docling-Graph service extraction path."""
 
-    def test_docling_graph_provider_set_correctly(
+    def test_provider_set_from_response(
         self, db_session, sample_document_id, sample_document_element
     ):
-        """When LLM extraction succeeds, provider should be 'docling-graph'."""
-        import networkx as nx
+        """Provider in extraction record should come from service response."""
         from app.workers.pipeline import derive_ontology_graph
         from app.models.ingest import DocumentGraphExtraction
         from sqlalchemy import select
 
-        # Build a fake graph that _extract_single_pass would return
-        fake_graph = nx.DiGraph()
-        fake_graph.add_node(
-            "EQUIPMENT_SYSTEM:Patriot PAC-3",
-            entity_type="EQUIPMENT_SYSTEM", name="Patriot PAC-3",
-            properties={"designation": "MIM-104F"}, confidence=0.95,
-        )
-
         with (
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
-            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
             patch(
-                "app.services.docling_graph_service.extract_graph_from_text_chunked",
-                return_value=(fake_graph, "docling-graph"),
+                "app.services.docling_graph_service.extract_graph",
+                return_value=MOCK_EXTRACTION_RESULT,
             ),
-            patch("app.workers.pipeline.settings") as mock_settings,
         ):
-            mock_settings.llm_provider = "ollama"
-            mock_settings.graph_extraction_chunk_size = 7000
-            mock_settings.graph_extraction_chunk_overlap = 500
-            mock_settings.graph_node_min_confidence = 0.6
-            mock_settings.graph_rel_min_confidence = 0.55
-            mock_settings.docling_graph_model = "llama3.2"
-            mock_settings.graph_max_retries = 2
-            mock_settings.graph_retry_delay = 60
-            mock_settings.graph_soft_time_limit = 600
-            mock_settings.graph_time_limit = 660
             result = derive_ontology_graph.run(sample_document_id)
 
         assert result["nodes"] >= 1
@@ -257,99 +272,124 @@ class TestDoclingGraphPath:
             .where(DocumentGraphExtraction.document_id == uuid.UUID(sample_document_id))
         ).scalar_one_or_none()
         assert extraction is not None
-        assert extraction.provider == "docling-graph"
+        assert extraction.provider == "ollama"
+        assert extraction.model_name == "llama3.2"
 
-    def test_silent_fallback_sets_provider_ner(
+    def test_confidence_gating_filters_low_confidence(
         self, db_session, sample_document_id, sample_document_element
     ):
-        """When LLM fails silently, provider should be 'ner'."""
-        import networkx as nx
+        """Entities below min confidence should be rejected."""
         from app.workers.pipeline import derive_ontology_graph
-        from app.models.ingest import DocumentGraphExtraction
-        from sqlalchemy import select
 
-        # Simulate NER fallback returning a graph with "ner" provider
-        fake_graph = nx.DiGraph()
-        fake_graph.add_node(
-            "STANDARD:MIL-STD-1553B",
-            entity_type="STANDARD", name="MIL-STD-1553B",
-            properties={}, confidence=0.7,
-        )
+        low_conf_result = {
+            "entities": [
+                {"name": "LowConf", "entity_type": "UNKNOWN", "confidence": 0.1, "properties": {}},
+                {"name": "HighConf", "entity_type": "EQUIPMENT_SYSTEM", "confidence": 0.95, "properties": {}},
+            ],
+            "relationships": [],
+            "ontology_version": "3.0.0",
+            "model": "llama3.2",
+            "provider": "ollama",
+        }
 
         with (
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id"),
-            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=1) as mock_nodes,
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=0),
             patch(
-                "app.services.docling_graph_service.extract_graph_from_text_chunked",
-                return_value=(fake_graph, "ner"),
+                "app.services.docling_graph_service.extract_graph",
+                return_value=low_conf_result,
             ),
-            patch("app.workers.pipeline.settings") as mock_settings,
         ):
-            mock_settings.llm_provider = "ollama"
-            mock_settings.graph_extraction_chunk_size = 7000
-            mock_settings.graph_extraction_chunk_overlap = 500
-            mock_settings.graph_node_min_confidence = 0.6
-            mock_settings.graph_rel_min_confidence = 0.55
-            mock_settings.docling_graph_model = "llama3.2"
-            mock_settings.graph_max_retries = 2
-            mock_settings.graph_retry_delay = 60
-            mock_settings.graph_soft_time_limit = 600
-            mock_settings.graph_time_limit = 660
             result = derive_ontology_graph.run(sample_document_id)
+
+        # Only HighConf should pass the confidence gate
+        assert mock_nodes.call_count == 1
+        batch_arg = mock_nodes.call_args[0][1]
+        assert len(batch_arg) == 1
+        assert batch_arg[0]["name"] == "HighConf"
+
+    def test_ingest_filter_metadata_stored(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """graph_json should contain _ingest_filter metadata."""
+        from app.workers.pipeline import derive_ontology_graph
+        from app.models.ingest import DocumentGraphExtraction
+        from sqlalchemy import select
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
+            patch(
+                "app.services.docling_graph_service.extract_graph",
+                return_value=MOCK_EXTRACTION_RESULT,
+            ),
+        ):
+            derive_ontology_graph.run(sample_document_id)
 
         db_session.expire_all()
         extraction = db_session.execute(
             select(DocumentGraphExtraction)
             .where(DocumentGraphExtraction.document_id == uuid.UUID(sample_document_id))
         ).scalar_one_or_none()
-        assert extraction is not None
-        assert extraction.provider == "ner"
 
-    def test_node_properties_passed_to_upsert(
+        assert "_ingest_filter" in extraction.graph_json
+        filt = extraction.graph_json["_ingest_filter"]
+        assert "node_min_confidence" in filt
+        assert "rel_min_confidence" in filt
+
+    def test_http_error_triggers_retry(
         self, db_session, sample_document_id, sample_document_element
     ):
-        """Node properties dict should be passed to upsert_node."""
-        import networkx as nx
+        """httpx.HTTPStatusError should trigger a Celery retry."""
+        import httpx
         from app.workers.pipeline import derive_ontology_graph
+        from celery.exceptions import Retry as CeleryRetry
 
-        fake_graph = nx.DiGraph()
-        fake_graph.add_node(
-            "EQUIPMENT_SYSTEM:Patriot",
-            entity_type="EQUIPMENT_SYSTEM", name="Patriot",
-            properties={"designation": "MIM-104F", "nsn": "1410-01-234-5678"},
-            confidence=0.95,
-        )
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+        mock_response.request = MagicMock()
 
         with (
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_node", return_value="mock-id") as mock_node,
-            patch("app.services.neo4j_graph.upsert_relationship", return_value=True),
             patch(
-                "app.services.docling_graph_service.extract_graph_from_text_chunked",
-                return_value=(fake_graph, "docling-graph"),
+                "app.services.docling_graph_service.extract_graph",
+                side_effect=httpx.HTTPStatusError(
+                    "Service Unavailable", request=mock_response.request, response=mock_response,
+                ),
             ),
-            patch("app.workers.pipeline.settings") as mock_settings,
         ):
-            mock_settings.llm_provider = "ollama"
-            mock_settings.graph_extraction_chunk_size = 7000
-            mock_settings.graph_extraction_chunk_overlap = 500
-            mock_settings.graph_node_min_confidence = 0.6
-            mock_settings.graph_rel_min_confidence = 0.55
-            mock_settings.docling_graph_model = "llama3.2"
-            mock_settings.graph_max_retries = 2
-            mock_settings.graph_retry_delay = 60
-            mock_settings.graph_soft_time_limit = 600
-            mock_settings.graph_time_limit = 660
-            derive_ontology_graph.run(sample_document_id)
+            with pytest.raises(CeleryRetry):
+                derive_ontology_graph.run(sample_document_id)
 
-        assert mock_node.call_count >= 1
-        call_kwargs = mock_node.call_args.kwargs
-        assert "properties" in call_kwargs
-        assert call_kwargs["properties"]["designation"] == "MIM-104F"
+    def test_deterministic_error_no_retry(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """DeterministicExtractionError should NOT retry."""
+        from app.workers.pipeline import derive_ontology_graph
+        from app.services.docling_graph_service import DeterministicExtractionError
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch(
+                "app.services.docling_graph_service.extract_graph",
+                side_effect=DeterministicExtractionError("empty response"),
+            ),
+        ):
+            result = derive_ontology_graph.run(sample_document_id)
+
+        assert result["status"] == "failed"
+        assert "empty response" in result["error"]

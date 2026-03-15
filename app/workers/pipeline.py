@@ -1402,12 +1402,11 @@ def _build_entity_mentions(
                  soft_time_limit=settings.graph_soft_time_limit,
                  time_limit=settings.graph_time_limit)
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
-    """Read ordered text elements → LLM/NER extraction → upsert document_graph_extractions → import to Neo4j.
+    """Read ordered text elements → Docling-Graph service extraction → upsert document_graph_extractions → import to Neo4j.
 
     Stores graph extraction once per document (not per artifact).
     """
     from app.models.ingest import DocumentElement, DocumentGraphExtraction
-    from app.services.neo4j_graph import upsert_node, upsert_relationship
     from app.db.session import get_neo4j_driver
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -1451,72 +1450,20 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 db.commit()
             return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
 
-        # Try docling-graph + LLM first, fallback to NER
-        graph_data = None
-        provider = "ner"
-        model_name = "regex"
+        # Call Docling-Graph service for entity/relationship extraction
+        from app.services.docling_graph_service import extract_graph
 
-        if settings.llm_provider != "mock":
-            try:
-                from app.services.docling_graph_service import extract_graph_from_text_chunked
-                nx_graph, actual_provider = extract_graph_from_text_chunked(
-                    full_text, document_id,
-                    chunk_size=settings.graph_extraction_chunk_size,
-                    chunk_overlap=settings.graph_extraction_chunk_overlap,
-                )
-                if nx_graph and nx_graph.number_of_nodes() > 0:
-                    graph_data = {
-                        "nodes": [{"id": n, **nx_graph.nodes[n]} for n in nx_graph.nodes],
-                        "edges": [
-                            {
-                                "from": nx_graph.nodes[u].get("name", str(u)),
-                                "to": nx_graph.nodes[v].get("name", str(v)),
-                                "from_type": nx_graph.nodes[u].get("entity_type", "UNKNOWN"),
-                                "to_type": nx_graph.nodes[v].get("entity_type", "UNKNOWN"),
-                                "rel_type": d.get("relationship_type", d.get("rel_type", "RELATED_TO")),
-                                "confidence": d.get("confidence", 0.5),
-                                "properties": d.get("properties", {}),
-                            }
-                            for u, v, d in nx_graph.edges(data=True)
-                        ],
-                    }
-                    graph_data["mentions"] = _build_entity_mentions(
-                        graph_data["nodes"], elements, actual_provider,
-                    )
-                    provider = actual_provider
-                    model_name = settings.docling_graph_model if actual_provider == "docling-graph" else "regex"
-            except ImportError:
-                if settings.docling_graph_require_llm:
-                    raise RuntimeError("docling-graph module not available and DOCLING_GRAPH_REQUIRE_LLM=true")
-                logger.debug("docling-graph not available, falling back to NER")
-            except Exception as exc:
-                if settings.docling_graph_require_llm:
-                    raise  # Fail-closed: do not silently fall back to NER
-                logger.warning("docling-graph failed: %s — falling back to NER", exc)
+        extraction_result = extract_graph(full_text, document_id)
+        provider = extraction_result.get("provider", "docling-graph")
+        model_name = extraction_result.get("model", "unknown")
 
-        if graph_data is None:
-            if settings.docling_graph_require_llm:
-                raise RuntimeError(
-                    "LLM graph extraction produced no results and DOCLING_GRAPH_REQUIRE_LLM=true — "
-                    "refusing to fall back to NER"
-                )
-            from app.services.ner import extract_entities, extract_relationships
-            entities = extract_entities(full_text)
-            relationships = extract_relationships(full_text, entities)
-            graph_data = {
-                "nodes": [
-                    {"id": e.name, "entity_type": e.entity_type, "name": e.name, "confidence": e.confidence, "properties": e.properties}
-                    for e in entities
-                ],
-                "edges": [
-                    {"from": r.from_name, "to": r.to_name, "from_type": r.from_type, "to_type": r.to_type, "rel_type": r.rel_type, "confidence": r.confidence}
-                    for r in relationships
-                ],
-            }
-
-            graph_data["mentions"] = _build_entity_mentions(
-                graph_data["nodes"], elements, "ner",
-            )
+        graph_data = {
+            "nodes": extraction_result.get("entities", []),
+            "edges": extraction_result.get("relationships", []),
+        }
+        graph_data["mentions"] = _build_entity_mentions(
+            graph_data["nodes"], elements, provider,
+        )
 
         # Import into Neo4j with confidence quality gates (batch)
         neo4j_driver = get_neo4j_driver()
@@ -1559,8 +1506,8 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         batch_edges: list[dict] = []
         for edge in graph_data.get("edges", []):
             conf = edge.get("confidence", 0.8)
-            from_name = edge.get("from", "")
-            to_name = edge.get("to", "")
+            from_name = edge.get("from_name", "")
+            to_name = edge.get("to_name", "")
             if conf < rel_min_conf or from_name not in accepted_nodes or to_name not in accepted_nodes:
                 edges_rejected += 1
                 continue
