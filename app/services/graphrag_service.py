@@ -316,6 +316,7 @@ def _generate_community_reports(
 ) -> list[dict[str, Any]]:
     """Generate natural-language community reports via LLM."""
     import httpx
+    from app.services.ontology_templates import load_ontology
 
     if settings.llm_provider == "mock":
         return [
@@ -327,6 +328,23 @@ def _generate_community_reports(
             }
             for c in communities
         ]
+
+    # Load ontology for type descriptions
+    try:
+        ontology = load_ontology()
+    except Exception:
+        logger.warning("Could not load ontology for report generation")
+        ontology = {}
+
+    entity_type_desc: dict[str, str] = {}
+    for et in ontology.get("entity_types", []):
+        if et.get("name") and et.get("description"):
+            entity_type_desc[et["name"]] = et["description"]
+
+    rel_type_desc: dict[str, str] = {}
+    for rt in ontology.get("relationship_types", []):
+        if rt.get("name") and rt.get("description"):
+            rel_type_desc[rt["name"]] = rt["description"]
 
     # Build entity lookup
     entity_map = {e["name"]: e for e in entities}
@@ -350,6 +368,33 @@ def _generate_community_reports(
             for r in relevant_rels[:20]
         ]
 
+        # Build ontology context for this community's types
+        community_entity_types = {
+            entity_map.get(name, {}).get("entity_type")
+            for name in members
+        } - {None, "unknown"}
+        community_rel_types = {
+            r.get("relationship") for r in relevant_rels
+        } - {None}
+
+        ontology_lines = []
+        if community_entity_types:
+            ontology_lines.append("Entity types in this community:")
+            for et in sorted(community_entity_types):
+                desc = entity_type_desc.get(et, "")
+                ontology_lines.append(f"- {et}: {desc}" if desc else f"- {et}")
+        if community_rel_types:
+            ontology_lines.append("\nRelationship types:")
+            for rt in sorted(community_rel_types):
+                desc = rel_type_desc.get(rt, "")
+                ontology_lines.append(f"- {rt}: {desc}" if desc else f"- {rt}")
+
+        ontology_context = "\n".join(ontology_lines)
+
+        system_content = "You are a military intelligence analyst."
+        if ontology_context:
+            system_content += "\n\n" + ontology_context
+
         prompt = f"""Summarize this community of related military/defense entities.
 
 ## Entities
@@ -369,7 +414,7 @@ Return ONLY the report text, no JSON or markdown fences."""
             payload = {
                 "model": settings.graphrag_model,
                 "messages": [
-                    {"role": "system", "content": "You are a military intelligence analyst."},
+                    {"role": "system", "content": system_content},
                     {"role": "user", "content": prompt},
                 ],
                 "stream": False,
