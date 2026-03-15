@@ -2,10 +2,28 @@
 from unittest.mock import patch, MagicMock
 import httpx
 import pytest
-from app.services.docling_graph_service import extract_graph, DeterministicExtractionError
+from app.services.docling_graph_service import (
+    extract_graph,
+    DoclingGraphCapacityError,
+    DeterministicExtractionError,
+)
 
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def mock_redis():
+    """Mock the Redis client used for concurrency gating."""
+    mock_lock = MagicMock()
+    mock_lock.acquire.return_value = True
+    mock_lock.release.return_value = None
+
+    mock_redis_client = MagicMock()
+    mock_redis_client.lock.return_value = mock_lock
+
+    with patch("app.services.docling_graph_service._get_redis", return_value=mock_redis_client):
+        yield mock_redis_client
 
 
 @pytest.fixture
@@ -70,3 +88,16 @@ def test_extract_graph_empty_response():
 
     assert result["entities"] == []
     assert result["relationships"] == []
+
+
+def test_extract_graph_capacity_error():
+    """When all Redis permits are taken, DoclingGraphCapacityError is raised."""
+    mock_lock = MagicMock()
+    mock_lock.acquire.return_value = False  # All permits busy
+
+    mock_redis_client = MagicMock()
+    mock_redis_client.lock.return_value = mock_lock
+
+    with patch("app.services.docling_graph_service._get_redis", return_value=mock_redis_client):
+        with pytest.raises(DoclingGraphCapacityError):
+            extract_graph("Some text", "doc-cap")

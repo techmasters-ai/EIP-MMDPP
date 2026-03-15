@@ -103,6 +103,39 @@ def _build_litellm_model_string() -> str:
     return f"{LLM_PROVIDER}/{LLM_MODEL}"
 
 
+def _mock_extraction_response() -> ExtractionResponse:
+    """Return a canned response for testing (LLM_PROVIDER=mock)."""
+    return ExtractionResponse(
+        entities=[
+            ExtractedEntityResponse(
+                name="Mock Radar System",
+                entity_type="RADAR_SYSTEM",
+                confidence=0.95,
+                properties={"designation": "AN/APG-00"},
+            ),
+            ExtractedEntityResponse(
+                name="Mock Platform",
+                entity_type="PLATFORM",
+                confidence=0.90,
+                properties={"platform_type": "aircraft"},
+            ),
+        ],
+        relationships=[
+            ExtractedRelationshipResponse(
+                from_name="Mock Platform",
+                from_type="PLATFORM",
+                rel_type="HAS_COMPONENT",
+                to_name="Mock Radar System",
+                to_type="RADAR_SYSTEM",
+                confidence=0.85,
+            ),
+        ],
+        ontology_version=_ontology_version,
+        model="mock",
+        provider="mock",
+    )
+
+
 def _run_extraction(text: str) -> Any:
     """Run docling-graph pipeline synchronously (called in threadpool).
 
@@ -187,6 +220,11 @@ async def extract(request: ExtractionRequest):
         request.document_id,
         len(request.text),
     )
+
+    # Mock mode: return canned response without importing docling_graph
+    if LLM_PROVIDER == "mock":
+        logger.info("Mock mode — returning canned extraction for document %s", request.document_id)
+        return _mock_extraction_response()
 
     try:
         graph = await run_in_threadpool(_run_extraction, request.text)
