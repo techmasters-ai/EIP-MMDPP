@@ -258,38 +258,41 @@ def mock_qdrant_client():
 
 @pytest.fixture
 def mock_docling_graph(monkeypatch):
-    """Mock docling-graph extraction to return a canned NetworkX graph."""
-    import networkx as nx
+    """Mock docling-graph HTTP client to return a canned extraction response."""
 
-    def fake_extract(text, document_id, *, ontology_path=None):
-        G = nx.DiGraph()
-        G.add_node(
-            "EQUIPMENT_SYSTEM:Test System",
-            entity_type="EQUIPMENT_SYSTEM",
-            name="Test System",
-            properties={"designation": "TS-001"},
-            confidence=0.9,
-            document_id=document_id,
-        )
-        G.add_node(
-            "COMPONENT:Test Component",
-            entity_type="COMPONENT",
-            name="Test Component",
-            properties={"part_number": "TC-001"},
-            confidence=0.85,
-            document_id=document_id,
-        )
-        G.add_edge(
-            "EQUIPMENT_SYSTEM:Test System",
-            "COMPONENT:Test Component",
-            relationship_type="CONTAINS",
-            confidence=0.8,
-            document_id=document_id,
-        )
-        return G
+    def fake_extract(text, document_id, *, ontology_version=None):
+        return {
+            "entities": [
+                {
+                    "name": "Test System",
+                    "entity_type": "EQUIPMENT_SYSTEM",
+                    "confidence": 0.9,
+                    "properties": {"designation": "TS-001"},
+                },
+                {
+                    "name": "Test Component",
+                    "entity_type": "COMPONENT",
+                    "confidence": 0.85,
+                    "properties": {"part_number": "TC-001"},
+                },
+            ],
+            "relationships": [
+                {
+                    "from_name": "Test System",
+                    "from_type": "EQUIPMENT_SYSTEM",
+                    "rel_type": "CONTAINS",
+                    "to_name": "Test Component",
+                    "to_type": "COMPONENT",
+                    "confidence": 0.8,
+                },
+            ],
+            "ontology_version": "3.0.0",
+            "model": "mock",
+            "provider": "mock",
+        }
 
     monkeypatch.setattr(
-        "app.services.docling_graph_service.extract_graph_from_text",
+        "app.services.docling_graph_service.extract_graph",
         fake_extract,
     )
     return MagicMock()
