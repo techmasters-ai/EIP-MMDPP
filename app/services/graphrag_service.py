@@ -483,9 +483,13 @@ def _store_communities_and_reports(
         db_session.execute(
             text("""
                 INSERT INTO retrieval.graphrag_community_reports
-                    (id, community_id, report_text, summary, rank)
-                VALUES (:id, :community_id, :report_text, :summary, :rank)
-                ON CONFLICT DO NOTHING
+                    (id, community_id, report_text, summary, rank, generated_at)
+                VALUES (:id, :community_id, :report_text, :summary, :rank, NOW())
+                ON CONFLICT (community_id) DO UPDATE SET
+                    report_text = EXCLUDED.report_text,
+                    summary = EXCLUDED.summary,
+                    rank = EXCLUDED.rank,
+                    generated_at = NOW()
             """),
             {
                 "id": str(uuid.uuid4()),
