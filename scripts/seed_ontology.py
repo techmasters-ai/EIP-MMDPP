@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Idempotent ontology seeder.
 
-Loads entity types and relationship types from ontology/base_v1.yaml
+Loads entity types and relationship types from ontology/ontology.yaml
 into the ontology schema. Safe to run multiple times (upsert by name).
 """
 
@@ -25,7 +25,7 @@ from app.models.retrieval import Chunk  # noqa
 
 settings = get_settings()
 
-ONTOLOGY_FILE = Path(__file__).parent.parent / "ontology" / "base_v1.yaml"
+ONTOLOGY_FILE = Path(__file__).parent.parent / "ontology" / "ontology.yaml"
 
 
 def seed(session: Session) -> None:

@@ -40,12 +40,12 @@ def get_ontology_decay() -> float:
 # Ontology relation weights (loaded from ontology YAML)
 # ---------------------------------------------------------------------------
 
-_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "ontology" / "base.yaml"
+_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "ontology" / "ontology.yaml"
 
 
 @lru_cache(maxsize=1)
 def _load_scoring_weights() -> dict[str, float]:
-    """Load ontology relation scoring weights from base.yaml."""
+    """Load ontology relation scoring weights from ontology.yaml."""
     with open(_ONTOLOGY_PATH) as f:
         data = yaml.safe_load(f)
     return data.get("scoring_weights", {})

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, create_model
 
 logger = logging.getLogger(__name__)
 
-_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent / "ontology" / "base.yaml"
+_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent / "ontology" / "ontology.yaml"
 
 # Python type mapping from YAML schema types
 _TYPE_MAP: dict[str, type] = {
@@ -181,7 +181,7 @@ def build_extraction_prompt(
         few_shot_block = '''
 ## Example
 Input: "The Patriot PAC-3 missile system uses MIL-STD-1553B for internal data bus communication. The guidance section contains a Ka-band seeker operating at 35 GHz."
-Output: {"entities": [{"entity_type": "EQUIPMENT_SYSTEM", "name": "Patriot PAC-3", "properties": {"name": "Patriot PAC-3"}, "confidence": 0.95}, {"entity_type": "STANDARD", "name": "MIL-STD-1553B", "properties": {"designation": "MIL-STD-1553B"}, "confidence": 0.95}, {"entity_type": "SUBSYSTEM", "name": "Guidance Section", "properties": {"name": "Guidance Section", "function": "Terminal phase target tracking and guidance"}, "confidence": 0.85}, {"entity_type": "COMPONENT", "name": "Ka-band Seeker", "properties": {"name": "Ka-band Seeker"}, "confidence": 0.80}], "relationships": [{"relationship_type": "MEETS_STANDARD", "from_name": "Patriot PAC-3", "from_type": "EQUIPMENT_SYSTEM", "to_name": "MIL-STD-1553B", "to_type": "STANDARD", "properties": {}, "confidence": 0.90}, {"relationship_type": "IS_SUBSYSTEM_OF", "from_name": "Guidance Section", "from_type": "SUBSYSTEM", "to_name": "Patriot PAC-3", "to_type": "EQUIPMENT_SYSTEM", "properties": {}, "confidence": 0.85}, {"relationship_type": "CONTAINS", "from_name": "Guidance Section", "from_type": "SUBSYSTEM", "to_name": "Ka-band Seeker", "to_type": "COMPONENT", "properties": {}, "confidence": 0.80}]}
+Output: {"entities": [{"entity_type": "EQUIPMENT_SYSTEM", "name": "Patriot PAC-3", "properties": {"name": "Patriot PAC-3"}, "confidence": 0.95}, {"entity_type": "STANDARD", "name": "MIL-STD-1553B", "properties": {"designation": "MIL-STD-1553B"}, "confidence": 0.95}, {"entity_type": "SUBSYSTEM", "name": "Guidance Section", "properties": {"name": "Guidance Section", "function": "Terminal phase target tracking and guidance"}, "confidence": 0.85}, {"entity_type": "COMPONENT", "name": "Ka-band Seeker", "properties": {"name": "Ka-band Seeker"}, "confidence": 0.80}], "relationships": [{"relationship_type": "SPECIFIED_BY", "from_name": "Patriot PAC-3", "from_type": "EQUIPMENT_SYSTEM", "to_name": "MIL-STD-1553B", "to_type": "STANDARD", "properties": {}, "confidence": 0.90}, {"relationship_type": "PART_OF", "from_name": "Guidance Section", "from_type": "SUBSYSTEM", "to_name": "Patriot PAC-3", "to_type": "EQUIPMENT_SYSTEM", "properties": {}, "confidence": 0.85}, {"relationship_type": "CONTAINS", "from_name": "Guidance Section", "from_type": "SUBSYSTEM", "to_name": "Ka-band Seeker", "to_type": "COMPONENT", "properties": {}, "confidence": 0.80}]}
 '''
 
     prompt = f"""Extract entities and relationships from the following military/defense document text.

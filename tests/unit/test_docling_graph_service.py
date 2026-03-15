@@ -30,7 +30,7 @@ SAMPLE_LLM_RESPONSE = json.dumps({
     ],
     "relationships": [
         {
-            "relationship_type": "MEETS_STANDARD",
+            "relationship_type": "SPECIFIED_BY",
             "from_name": "Patriot PAC-3",
             "from_type": "EQUIPMENT_SYSTEM",
             "to_name": "MIL-STD-1553B",
@@ -339,13 +339,13 @@ class TestValidateEntityTypes:
         extraction = DocumentExtractionResult(
             entities=[ExtractedEntity(entity_type="EQUIPMENT_SYSTEM", name="X", confidence=0.9)],
             relationships=[
-                ExtractedRelationship(relationship_type="MEETS_STANDARD", from_name="X", from_type="EQUIPMENT_SYSTEM", to_name="Y", to_type="STANDARD", confidence=0.9),
+                ExtractedRelationship(relationship_type="SPECIFIED_BY", from_name="X", from_type="EQUIPMENT_SYSTEM", to_name="Y", to_type="STANDARD", confidence=0.9),
                 ExtractedRelationship(relationship_type="FAKE_RELATIONSHIP", from_name="X", from_type="EQUIPMENT_SYSTEM", to_name="Z", to_type="FREQUENCY_BAND", confidence=0.9),
             ]
         )
         result = _validate_entity_types(extraction)
         assert len(result.relationships) == 1
-        assert result.relationships[0].relationship_type == "MEETS_STANDARD"
+        assert result.relationships[0].relationship_type == "SPECIFIED_BY"
 
 
 class TestValidateProperties:

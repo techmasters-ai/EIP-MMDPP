@@ -232,7 +232,7 @@ class TestQueryResultItem:
 
     def test_context_field_accepts_dict(self):
         from app.schemas.retrieval import QueryResultItem
-        ctx = {"source": "ontology", "rel_type": "IS_SUBSYSTEM_OF"}
+        ctx = {"source": "ontology", "rel_type": "PART_OF"}
         item = QueryResultItem(score=0.5, modality="text", context=ctx)
         assert item.context == ctx
 

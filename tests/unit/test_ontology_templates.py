@@ -32,9 +32,9 @@ class TestLoadOntology:
 
         ontology = load_ontology()
         names = [rt["name"] for rt in ontology["relationship_types"]]
-        assert "IS_SUBSYSTEM_OF" in names
+        assert "PART_OF" in names
         assert "CONTAINS" in names
-        assert "MEETS_STANDARD" in names
+        assert "SPECIFIED_BY" in names
 
 
 class TestGenerateEntityTemplates:
@@ -104,7 +104,7 @@ class TestRelationshipTemplates:
         rels = generate_relationship_templates(ontology)
         assert len(rels) > 0
         names = [r["name"] for r in rels]
-        assert "IS_SUBSYSTEM_OF" in names
+        assert "PART_OF" in names
 
     def test_relationship_has_required_keys(self):
         from app.services.ontology_templates import generate_relationship_templates, load_ontology
@@ -126,7 +126,7 @@ class TestExtractionPrompt:
         ontology = load_ontology()
         prompt = build_extraction_prompt(ontology, "The Patriot PAC-3 system uses MIL-STD-1553B.")
         assert "EQUIPMENT_SYSTEM" in prompt
-        assert "IS_SUBSYSTEM_OF" in prompt
+        assert "PART_OF" in prompt
         assert "Patriot PAC-3" in prompt
 
     def test_prompt_truncates_long_text(self):
@@ -229,8 +229,8 @@ class TestValidationMatrix:
 
         matrix = load_validation_matrix()
         assert len(matrix) > 0, "Validation matrix should not be empty"
-        # Check a known valid triple from the legacy relations
-        assert ("SUBSYSTEM", "IS_SUBSYSTEM_OF", "EQUIPMENT_SYSTEM") in matrix
+        # Check a known valid triple
+        assert ("SUBSYSTEM", "PART_OF", "EQUIPMENT_SYSTEM") in matrix
 
     def test_validation_matrix_covers_all_relationships(self):
         from app.services.ontology_templates import (

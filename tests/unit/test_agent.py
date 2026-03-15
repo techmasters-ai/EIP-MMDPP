@@ -85,13 +85,13 @@ class TestBuildMarkdown:
             content_text="Some related chunk text",
             context={
                 "source": "ontology",
-                "rel_type": "IS_SUBSYSTEM_OF",
+                "rel_type": "PART_OF",
                 "entity_name": "MK-4 Guidance Computer",
                 "related_name": "Patriot PAC-3",
             },
         )
         md = self._call("test", [item])
-        assert "IS_SUBSYSTEM_OF" in md
+        assert "PART_OF" in md
         assert "MK-4 Guidance Computer" in md
         assert "Patriot PAC-3" in md
         assert "Via ontology" in md
@@ -148,7 +148,7 @@ class TestBuildMarkdown:
     def test_ontology_context_partial_fields(self):
         """Ontology context with missing entity_name should not crash or show Via ontology."""
         item = _make_item(
-            context={"source": "ontology", "rel_type": "IS_SUBSYSTEM_OF"},
+            context={"source": "ontology", "rel_type": "PART_OF"},
         )
         md = self._call("test", [item])
         assert "Via ontology" not in md

@@ -132,9 +132,9 @@ class TestRelationshipExtraction:
         entities = extract_entities(text)
         relationships = extract_relationships(text, entities)
         rel_types = {r.rel_type for r in relationships}
-        # If both a component and a standard were found, expect MEETS_STANDARD
+        # If both a component and a standard were found, expect SPECIFIED_BY
         if any(e.entity_type == "STANDARD" for e in entities):
-            assert "MEETS_STANDARD" in rel_types or len(relationships) >= 0  # may need entities
+            assert "SPECIFIED_BY" in rel_types or len(relationships) >= 0  # may need entities
 
     def test_subsystem_relationship(self):
         from app.services.ner import extract_entities, extract_relationships
@@ -143,8 +143,8 @@ class TestRelationshipExtraction:
         entities = extract_entities(text)
         relationships = extract_relationships(text, entities)
         rel_types = {r.rel_type for r in relationships}
-        assert "IS_SUBSYSTEM_OF" in rel_types, (
-            f"Expected IS_SUBSYSTEM_OF from subsystem phrase, got: {rel_types}"
+        assert "PART_OF" in rel_types, (
+            f"Expected PART_OF from subsystem phrase, got: {rel_types}"
         )
 
     def test_contains_relationship(self):

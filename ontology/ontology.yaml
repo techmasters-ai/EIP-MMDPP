@@ -10,7 +10,7 @@
 #   4. Weapon / Missile / AAA
 #   5. Operational / Capability
 
-version: "2.0.0"
+version: "3.0.0"
 
 # =============================================================================
 # ENTITY TYPES
@@ -614,9 +614,6 @@ entity_types:
         echelon: {type: string, description: "Military echelon level", example: "Brigade"}
         service: {type: string, description: "Military service branch", example: "U.S. Army"}
 
-  # ---------------------------------------------------------------------------
-  # Legacy types retained for backward compatibility
-  # ---------------------------------------------------------------------------
   - name: EQUIPMENT_SYSTEM
     label: "Equipment System"
     description: "Top-level integrated weapon or defense system (generic)"
@@ -1035,47 +1032,11 @@ relationship_types:
     target_type: null
     cardinality: many_to_many
 
-  # --- Legacy relationships retained for backward compatibility ---
-  - name: IS_SUBSYSTEM_OF
-    label: "Is Subsystem Of"
-    description: "A subsystem is a functional part of an equipment system"
-    source_type: SUBSYSTEM
-    target_type: null
-    cardinality: many_to_one
-
-  - name: IMPLEMENTS
-    label: "Implements"
-    description: "A system or subsystem implements a capability"
-    source_type: null
-    target_type: CAPABILITY
-    cardinality: many_to_many
-
-  - name: MEETS_STANDARD
-    label: "Meets Standard"
-    description: "A component or system meets a standard"
-    source_type: null
-    target_type: STANDARD
-    cardinality: many_to_many
-
   - name: SPECIFIED_BY
     label: "Specified By"
     description: "A system is specified by a performance specification"
     source_type: null
     target_type: SPECIFICATION
-    cardinality: many_to_many
-
-  - name: DESCRIBED_IN
-    label: "Described In"
-    description: "An entity is described in a source document"
-    source_type: null
-    target_type: DOCUMENT
-    cardinality: many_to_many
-
-  - name: PERFORMED_BY
-    label: "Performed By"
-    description: "A procedure is performed by an organization"
-    source_type: PROCEDURE
-    target_type: ORGANIZATION
     cardinality: many_to_many
 
   - name: AFFECTS
@@ -1211,10 +1172,6 @@ validation_matrix:
   - {source: EQUIPMENT_SYSTEM, relationship: MANUFACTURED_BY, target: ORGANIZATION}
   - {source: COMPONENT, relationship: MANUFACTURED_BY, target: ORGANIZATION}
   - {source: PLATFORM, relationship: MANUFACTURED_BY, target: ORGANIZATION}
-  - {source: EQUIPMENT_SYSTEM, relationship: DESCRIBED_IN, target: DOCUMENT}
-  - {source: RADAR_SYSTEM, relationship: DESCRIBED_IN, target: DOCUMENT}
-  - {source: MISSILE_SYSTEM, relationship: DESCRIBED_IN, target: DOCUMENT}
-  - {source: PLATFORM, relationship: DESCRIBED_IN, target: DOCUMENT}
   - {source: ASSERTION, relationship: DERIVED_FROM, target: DOCUMENT}
   - {source: DOCUMENT, relationship: DERIVED_FROM, target: DOCUMENT}
   - {source: RADAR_SYSTEM, relationship: IS_A, target: EQUIPMENT_SYSTEM}
@@ -1229,18 +1186,18 @@ validation_matrix:
   - {source: STANDARD, relationship: SUPERSEDES, target: STANDARD}
   - {source: SPECIFICATION, relationship: SUPERSEDES, target: SPECIFICATION}
 
-  # Legacy relations
-  - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: EQUIPMENT_SYSTEM}
-  - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: RADAR_SYSTEM}
-  - {source: SUBSYSTEM, relationship: IS_SUBSYSTEM_OF, target: MISSILE_SYSTEM}
-  - {source: EQUIPMENT_SYSTEM, relationship: IMPLEMENTS, target: CAPABILITY}
-  - {source: SUBSYSTEM, relationship: IMPLEMENTS, target: CAPABILITY}
-  - {source: EQUIPMENT_SYSTEM, relationship: MEETS_STANDARD, target: STANDARD}
-  - {source: COMPONENT, relationship: MEETS_STANDARD, target: STANDARD}
+  # Replacement entries for removed legacy relationship types
+  - {source: SUBSYSTEM, relationship: PART_OF, target: RADAR_SYSTEM}
+  - {source: SUBSYSTEM, relationship: PART_OF, target: MISSILE_SYSTEM}
+  - {source: SUBSYSTEM, relationship: PROVIDES, target: CAPABILITY}
+  - {source: EQUIPMENT_SYSTEM, relationship: SPECIFIED_BY, target: STANDARD}
+  - {source: COMPONENT, relationship: SPECIFIED_BY, target: STANDARD}
+  - {source: PROCEDURE, relationship: OPERATED_BY, target: ORGANIZATION}
+
+  # Retained legacy validation entries
   - {source: EQUIPMENT_SYSTEM, relationship: SPECIFIED_BY, target: SPECIFICATION}
   - {source: RADAR_SYSTEM, relationship: SPECIFIED_BY, target: SPECIFICATION}
   - {source: MISSILE_SYSTEM, relationship: SPECIFIED_BY, target: SPECIFICATION}
-  - {source: PROCEDURE, relationship: PERFORMED_BY, target: ORGANIZATION}
   - {source: FAILURE_MODE, relationship: AFFECTS, target: COMPONENT}
   - {source: FAILURE_MODE, relationship: AFFECTS, target: SUBSYSTEM}
   - {source: FAILURE_MODE, relationship: AFFECTS, target: EQUIPMENT_SYSTEM}
@@ -1272,11 +1229,9 @@ validation_matrix:
 scoring_weights:
   IS_VARIANT_OF: 0.95
   USES_COMPONENT: 0.92
-  IS_SUBSYSTEM_OF: 0.90
   CONTAINS: 0.90
   PART_OF: 0.90
   INTERFACES_WITH: 0.85
   OPERATES_ON: 0.85
-  MEETS_STANDARD: 0.80
   RELATED_TO: 0.75
   default: 0.70

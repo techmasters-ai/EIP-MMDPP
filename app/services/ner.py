@@ -243,7 +243,7 @@ _RE_CONTAINS = re.compile(
     r"incorporates)\s+(?:a\s+|an\s+|the\s+)?([A-Z][A-Za-z0-9\-\s]{2,40})",
     re.IGNORECASE,
 )
-_RE_MEETS_STANDARD = re.compile(
+_RE_SPECIFIED_BY = re.compile(
     r"\b([A-Z][A-Za-z0-9\-\s]{2,40})\s+(?:meets?|complies?\s+with|per|"
     r"in\s+accordance\s+with|IAW)\s+(MIL[-–][A-Z]+-\d+[A-Z]?)",
     re.IGNORECASE,
@@ -513,7 +513,7 @@ def extract_relationships(
         sub = m.group(1).strip()
         parent = m.group(2).strip()
         relationships.append(RelationshipCandidate(
-            rel_type="IS_SUBSYSTEM_OF",
+            rel_type="PART_OF",
             from_name=sub,
             to_name=parent,
             from_type=_lookup_type(sub, "SUBSYSTEM"),
@@ -537,11 +537,11 @@ def extract_relationships(
         ))
 
     # Meets-standard relationships (component → standard)
-    for m in _RE_MEETS_STANDARD.finditer(text):
+    for m in _RE_SPECIFIED_BY.finditer(text):
         component = m.group(1).strip()
         standard = m.group(2).strip().upper()
         relationships.append(RelationshipCandidate(
-            rel_type="MEETS_STANDARD",
+            rel_type="SPECIFIED_BY",
             from_name=component,
             to_name=standard,
             from_type=_lookup_type(component, "COMPONENT"),
@@ -564,7 +564,7 @@ def extract_relationships(
                         and e2.entity_type == "STANDARD"
                     ):
                         relationships.append(RelationshipCandidate(
-                            rel_type="MEETS_STANDARD",
+                            rel_type="SPECIFIED_BY",
                             from_name=e1.name,
                             to_name=e2.name,
                             from_type=e1.entity_type,
