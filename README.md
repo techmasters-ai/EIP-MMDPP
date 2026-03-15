@@ -55,14 +55,14 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 | Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
 | Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (CPU default, GPU optional) |
 | Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
-| Graph Extraction | Ollama `llama3.1:8b` + structured outputs (ontology-driven entity/relationship extraction with post-extraction validation) |
+| Graph Extraction | Docling-Graph service (ontology-driven entity/relationship extraction via LLM structured outputs, port 8002) |
 | GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
 | Trusted Data | Dedicated Qdrant collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
 
-### Docker Services (9 containers)
+### Docker Services (10 containers)
 
 | Service | Purpose |
 |---|---|
@@ -73,6 +73,7 @@ All ML inference runs **fully locally** — no cloud API calls required (air-gap
 | `redis` | Celery broker + result backend |
 | `minio` | S3-compatible object storage |
 | `docling` | Document conversion service (granite-docling-258M VLM) |
+| `docling-graph` | Ontology-driven entity/relationship extraction service (port 8002) |
 | `neo4j` | Neo4j Community Edition (knowledge graph) |
 | `qdrant` | Qdrant OSS (vector search) |
 
@@ -103,7 +104,7 @@ All service lifecycle, database, worker, and test operations are available throu
 ./manage.sh --stop               # Stop all services (preserves data)
 ./manage.sh --restart            # Restart without rebuilding images
 ./manage.sh --status             # Show service status and health checks
-./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, docling, neo4j, qdrant)
+./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, docling, docling-graph, neo4j, qdrant)
 ./manage.sh --blow-away          # Destroy everything: containers, volumes, data
 
 # Database
@@ -134,17 +135,15 @@ OLLAMA_BASE_URL=http://ollama:11434
 OLLAMA_NUM_CTX=16384                  # Context window for Ollama (must fit prompt + response)
 
 # Per-feature model selection
-DOCLING_GRAPH_MODEL=llama3.1:8b   # Model for graph entity/relationship extraction
 GRAPHRAG_MODEL=llama3.2           # Model for GraphRAG community report generation
 
-# Graph extraction hardening (structured output schema + deterministic error handling)
-DOCLING_GRAPH_REQUIRE_LLM=true            # Fail-closed: raise on NER fallback (default true)
-DOCLING_GRAPH_MAX_TOKENS=2048             # Max tokens for LLM response
-DOCLING_GRAPH_RETRY_ATTEMPTS=2            # Retry attempts for transient errors only
-DOCLING_GRAPH_RETRY_BACKOFF_SECONDS=5     # Base backoff between retries (multiplied by attempt)
-DOCLING_GRAPH_TIMEOUT=300.0               # LLM call timeout (seconds)
-GRAPH_EXTRACTION_CHUNK_SIZE=2000          # Chars per extraction window
-GRAPH_EXTRACTION_CHUNK_OVERLAP=200        # Overlap between windows
+# Docling-Graph service (ontology-driven graph extraction)
+DOCLING_GRAPH_BASE_URL=http://docling-graph:8002  # Docling-Graph service URL
+DOCLING_GRAPH_TIMEOUT=300                         # HTTP timeout for extraction calls (seconds)
+DOCLING_GRAPH_CONCURRENCY=2                       # Max concurrent extraction requests
+GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for Neo4j import
+GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for Neo4j import
+
 DOCLING_FALLBACK_ENABLED=false            # Fall back to legacy extraction on Docling 5xx (default false)
 ```
 
@@ -277,7 +276,7 @@ The knowledge graph uses a 5-layer ontology grounded in DoDAF DM2 concepts:
 
 ~35 entity types, 44 relationship predicates, enforced via validation matrix at graph write time.
 
-See `ontology/base.yaml` for the full schema.
+See `ontology/ontology.yaml` for the full schema.
 
 ## GraphRAG
 
@@ -381,7 +380,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction uses LLM (via `LLM_PROVIDER`) for ontology-driven entity/relationship extraction with triple validation. By default, extraction is **fail-closed** (`DOCLING_GRAPH_REQUIRE_LLM=true`): if the LLM is unavailable or returns empty responses after all retry attempts, the pipeline stage fails instead of silently falling back to regex NER. Retries use exponential backoff (`DOCLING_GRAPH_RETRY_ATTEMPTS`, default 2; `DOCLING_GRAPH_RETRY_BACKOFF_SECONDS`, default 5). A Redis concurrency gate (`ollama:llm_extract`) serializes Ollama LLM calls to prevent overload. Large documents are chunked into overlapping windows (`GRAPH_EXTRACTION_CHUNK_SIZE`, default 2500 chars; `GRAPH_EXTRACTION_CHUNK_OVERLAP`, default 300) for extraction, then deduplicated. Extracted entities and relationships are imported directly to Neo4j with full property preservation. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
+Graph extraction is performed by the **Docling-Graph service** (port 8002), which handles ontology-driven entity/relationship extraction via LLM structured outputs, text chunking, deduplication, and confidence scoring. The pipeline's `derive_ontology_graph` task sends document text to Docling-Graph via HTTP and imports the returned entities/relationships into Neo4j. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
 
 ## Data Migration (from AGE)
 
@@ -495,7 +494,7 @@ app/
 │   └── health.py         #   Health check endpoint
 ├── services/
 │   ├── docling_client.py       # HTTP client for Docling conversion service
-│   ├── docling_graph_service.py # Direct Ollama graph extraction (structured outputs) → Neo4j import
+│   ├── docling_graph_service.py # HTTP client for Docling-Graph extraction service
 │   ├── graphrag_service.py     # GraphRAG community detection, reports, search
 │   ├── neo4j_graph.py          # Neo4j Cypher operations (sync + async)
 │   ├── qdrant_store.py         # Qdrant vector upsert/search
@@ -512,10 +511,11 @@ app/
 └── schemas/              # Pydantic request/response schemas
 docker/
 ├── docling/              # Docling VLM conversion service (granite-docling-258M)
+├── docling-graph/        # Docling-Graph extraction service (ontology-driven, port 8002)
 ├── neo4j/                # Neo4j init scripts (constraints, indexes)
 └── postgres/             # Custom Postgres (pgvector)
 ontology/
-└── base.yaml             # Military equipment ontology (5 layers, 35+ types, 44 predicates)
+└── ontology.yaml         # Military equipment ontology (5 layers, 35+ types, 44 predicates)
 scripts/
 ├── init_qdrant_collections.py    # Create Qdrant collections with indexes
 ├── migrate_age_to_neo4j.py       # One-time AGE → Neo4j migration
