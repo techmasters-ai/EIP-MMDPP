@@ -1,0 +1,25 @@
+{
+  "planPath": "docs/plans/2026-03-15-graph-viz-docling-viewer-plan.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Backend — Graph neighborhood Cypher query", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Backend — Neighborhood schemas and endpoint", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Frontend — Install cytoscape npm dependencies", "status": "pending"},
+    {"id": 4, "subject": "Task 4: Frontend — API client function for neighborhood", "status": "pending", "blockedBy": [3]},
+    {"id": 5, "subject": "Task 5: Frontend — GraphTooltip component", "status": "pending", "blockedBy": [3]},
+    {"id": 6, "subject": "Task 6: Frontend — GraphView component", "status": "pending", "blockedBy": [3, 5]},
+    {"id": 7, "subject": "Task 7: Frontend — Integrate GraphView into GraphExplorer", "status": "pending", "blockedBy": [3, 4, 5, 6]},
+    {"id": 8, "subject": "Task 8: Frontend — CSS styles for graph visualization", "status": "pending", "blockedBy": [3, 6]},
+    {"id": 9, "subject": "Task 9: Run tests and verify Feature 1", "status": "pending", "blockedBy": [1, 2, 3, 4, 5, 6, 7, 8]},
+    {"id": 10, "subject": "Task 10: Docling service — Add document_json to response", "status": "pending"},
+    {"id": 11, "subject": "Task 11: Pipeline client — Propagate document_json", "status": "pending", "blockedBy": [10]},
+    {"id": 12, "subject": "Task 12: Pipeline — Persist DoclingDocument to MinIO", "status": "pending", "blockedBy": [10, 11]},
+    {"id": 13, "subject": "Task 13: Backend — DoclingDocument API endpoint", "status": "pending", "blockedBy": [10, 11]},
+    {"id": 14, "subject": "Task 14: Frontend — Install react-markdown npm dependencies", "status": "pending"},
+    {"id": 15, "subject": "Task 15: Frontend — API client function for DoclingDocument", "status": "pending", "blockedBy": [14]},
+    {"id": 16, "subject": "Task 16: Frontend — DoclingViewer component", "status": "pending", "blockedBy": [14, 15]},
+    {"id": 17, "subject": "Task 17: Frontend — Integrate DoclingViewer into FileUpload", "status": "pending", "blockedBy": [14, 15, 16]},
+    {"id": 18, "subject": "Task 18: Frontend — CSS styles for DoclingViewer", "status": "pending", "blockedBy": [14]},
+    {"id": 19, "subject": "Task 19: Run tests and verify Feature 2", "status": "pending", "blockedBy": [10, 11, 12, 13, 14, 15, 16, 17, 18]}
+  ],
+  "lastUpdated": "2026-03-15T00:00:00Z"
+}
