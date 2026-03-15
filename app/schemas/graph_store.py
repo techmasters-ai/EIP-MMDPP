@@ -34,3 +34,14 @@ class GraphQueryRequest(APIModel):
     query: str = Field(..., min_length=1, max_length=4096)
     hop_count: int = Field(default=2, ge=1, le=4)
     top_k: int = Field(default=20, ge=1, le=100)
+
+
+class GraphNeighborhoodRequest(APIModel):
+    entity_name: str = Field(..., min_length=1, max_length=4096)
+    hop_count: int = Field(default=2, ge=1, le=4)
+
+
+class GraphNeighborhoodResponse(APIModel):
+    center: Optional[dict[str, Any]] = None
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []

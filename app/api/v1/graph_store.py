@@ -8,6 +8,8 @@ from app.db.session import get_neo4j_async_driver
 from app.schemas.graph_store import (
     GraphEntityIngest,
     GraphIngestResponse,
+    GraphNeighborhoodRequest,
+    GraphNeighborhoodResponse,
     GraphQueryRequest,
     GraphRelationshipIngest,
 )
@@ -127,3 +129,22 @@ async def query_graph(
         )
 
     return results[:body.top_k]
+
+
+@router.post("/graph/neighborhood", response_model=GraphNeighborhoodResponse)
+async def get_neighborhood(
+    body: GraphNeighborhoodRequest,
+) -> GraphNeighborhoodResponse:
+    """Get an entity's full neighborhood graph for visualization."""
+    from app.services.neo4j_graph import get_neighborhood_graph_async
+
+    driver = get_neo4j_async_driver()
+    result = await get_neighborhood_graph_async(
+        driver, body.entity_name, hop_count=body.hop_count
+    )
+
+    return GraphNeighborhoodResponse(
+        center=result["center"],
+        nodes=result["nodes"],
+        edges=result["edges"],
+    )
