@@ -81,18 +81,20 @@ class TestRerankerConfig:
         assert s.reranker_top_n == 20
         assert s.retrieval_min_score_threshold == 0.25
 
-    def test_updated_extraction_defaults(self):
-        """Extraction model defaults should reflect the upgraded values."""
+    def test_docling_graph_client_defaults(self):
+        """Docling-Graph client settings should have correct defaults."""
         from app.config import Settings
-        # Construct with explicit values to avoid .env file overrides
-        s = Settings(
-            docling_graph_model="llama3.1:8b",
-            docling_graph_max_tokens=2048,
-            ollama_num_ctx=16384,
-        )
-        assert s.docling_graph_model == "llama3.1:8b"
-        assert s.docling_graph_max_tokens == 2048
+        s = Settings()
+        assert s.docling_graph_base_url == "http://docling-graph:8002"
+        assert s.docling_graph_concurrency == 2
+        assert s.docling_graph_timeout == 300
+
+    def test_ollama_settings_for_graphrag(self):
+        """Ollama settings used by GraphRAG should still be present."""
+        from app.config import Settings
+        s = Settings(ollama_num_ctx=16384)
         assert s.ollama_num_ctx == 16384
+        assert s.ollama_base_url == "http://localhost:11434"
 
 
 class TestGetSettingsCaching:

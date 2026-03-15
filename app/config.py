@@ -75,30 +75,18 @@ class Settings(BaseSettings):
     image_embedding_pretrained: str = "openai"
     image_embedding_dim: int = 512
 
-    # LLM provider — system-wide control (openai | ollama | mock)
-    # Controls which LLM backend is used for ALL LLM-dependent features:
-    # docling-graph entity extraction, Cognee memory, and future LLM features.
+    # LLM provider — controls which LLM backend is used for GraphRAG reports
+    # and other LLM-dependent features (openai | ollama | mock).
     llm_provider: str = "ollama"
-    openai_api_key: str = ""
 
-    # Ollama connection (shared by all features when llm_provider=ollama)
+    # Ollama connection (used by GraphRAG report generation)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_llm_concurrency: int = 1
     ollama_num_ctx: int = 16384
 
-    # Per-feature model selection — each feature can use a different model
-    docling_graph_model: str = "llama3.1:8b"  # Model for graph entity/relationship extraction
-
-    # docling-graph extraction settings
-    docling_graph_timeout: float = 300.0
-    graph_extraction_chunk_size: int = 2500
-    graph_extraction_chunk_overlap: int = 300
-
-    # Docling-graph extraction behavior
-    docling_graph_require_llm: bool = True
-    docling_graph_max_tokens: int = 2048
-    docling_graph_retry_attempts: int = 2
-    docling_graph_retry_backoff_seconds: int = 5
+    # --- Docling-Graph service (entity/relationship extraction) ---
+    docling_graph_base_url: str = "http://docling-graph:8002"
+    docling_graph_concurrency: int = 2
+    docling_graph_timeout: int = 300
 
     # Docling human-review confidence threshold
     docling_review_confidence_threshold: float = 0.60
