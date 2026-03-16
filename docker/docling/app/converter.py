@@ -30,24 +30,29 @@ _model_loaded = False
 def init_converter() -> None:
     """Initialize the Docling DocumentConverter with VLM pipeline.
 
-    Called once at service startup. Loads the granite-docling-258M model.
+    Called once at service startup. Loads the granite-docling-258M model
+    with optimized settings for document conversion quality.
     """
     global _converter, _model_loaded
 
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import (
-        PdfPipelineOptions,
-        VlmPipelineOptions,
-    )
+    from docling.datamodel.pipeline_options import VlmPipelineOptions
+    from docling.datamodel.accelerator_options import AcceleratorOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.pipeline.vlm_pipeline import VlmPipeline
 
-    logger.info("Loading Docling converter with model=%s device=%s", MODEL_PATH, DEVICE)
+    logger.info("Loading Docling converter with model=%s device=%s dtype=%s", MODEL_PATH, DEVICE, DTYPE)
+
+    accel = AcceleratorOptions(
+        device=DEVICE,
+        cuda_use_flash_attention2=(DEVICE == "cuda"),
+    )
 
     pipeline_options = VlmPipelineOptions(
-        vlm_model_name=MODEL_PATH,
-        vlm_model_device=DEVICE,
-        vlm_model_dtype=DTYPE,
+        accelerator_options=accel,
+        force_backend_text=True,
+        generate_picture_images=True,
+        images_scale=2.0,
     )
 
     _converter = DocumentConverter(
@@ -106,6 +111,8 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
 
         elements = _extract_elements(doc)
         markdown = doc.export_to_markdown()
+        from app.cleanup import clean_markdown
+        markdown = clean_markdown(markdown)
         document_json = doc.export_to_dict()
         num_pages = _count_pages(doc)
 
