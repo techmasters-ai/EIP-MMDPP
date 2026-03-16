@@ -142,7 +142,6 @@ def _run_extraction(text: str) -> Any:
     The ``docling_graph`` import is deferred because the package is only
     available inside the Docker container.
     """
-    import networkx as nx  # noqa: F811
     from docling_graph import run_pipeline  # type: ignore[import-untyped]
 
     # Configure LiteLLM environment before calling the pipeline
@@ -155,12 +154,22 @@ def _run_extraction(text: str) -> Any:
 
     model_string = _build_litellm_model_string()
 
-    graph: nx.DiGraph = run_pipeline(
-        text=text,
-        templates=_templates,
-        model=model_string,
-    )
-    return graph
+    # Pick the first template class — docling-graph expects a single
+    # Pydantic model class (or dotted-path string), not a dict.
+    template_cls = next(iter(_templates.values())) if _templates else None
+
+    config = {
+        "source": text,
+        "template": template_cls,
+        "backend": "llm",
+        "inference": "remote",
+        "model_override": model_string,
+        "provider_override": LLM_PROVIDER,
+        "dump_to_disk": False,
+    }
+
+    context = run_pipeline(config=config, mode="api")
+    return context.knowledge_graph
 
 
 def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[ExtractedRelationshipResponse]]:
