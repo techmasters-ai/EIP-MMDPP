@@ -147,13 +147,15 @@ def _run_extraction(text: str) -> Any:
 
     from docling_graph import run_pipeline  # type: ignore[import-untyped]
 
-    # Configure LiteLLM environment before calling the pipeline
+    # Configure LiteLLM environment before calling the pipeline.
+    # Use direct assignment (not setdefault) to ensure our values take
+    # precedence over any defaults set by docling-graph internals.
     if LLM_PROVIDER == "ollama":
-        os.environ.setdefault("OLLAMA_API_BASE", OLLAMA_BASE_URL)
+        os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
     if OPENAI_API_KEY:
-        os.environ.setdefault("OPENAI_API_KEY", OPENAI_API_KEY)
+        os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
     if OPENAI_BASE_URL:
-        os.environ.setdefault("OPENAI_API_BASE", OPENAI_BASE_URL)
+        os.environ["OPENAI_API_BASE"] = OPENAI_BASE_URL
 
     model_string = _build_litellm_model_string()
 
