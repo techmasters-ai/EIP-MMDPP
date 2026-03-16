@@ -84,7 +84,8 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir packaging ninja && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Pre-download model into the standard HF cache layout for air-gapped deployment.
 # HF_HOME is set BEFORE the download so snapshot_download writes to the cache
