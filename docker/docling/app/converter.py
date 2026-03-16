@@ -106,6 +106,7 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
 
         elements = _extract_elements(doc)
         markdown = doc.export_to_markdown()
+        document_json = doc.export_to_dict()
         num_pages = _count_pages(doc)
 
         elapsed_ms = (time.monotonic() - start) * 1000
@@ -117,6 +118,7 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
             elements=elements,
             markdown=markdown,
             processing_time_ms=round(elapsed_ms, 1),
+            document_json=document_json,
         )
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000

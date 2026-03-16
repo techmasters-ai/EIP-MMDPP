@@ -31,6 +31,7 @@ class ConvertResponse(BaseModel):
     elements: list[ConvertedElement]
     markdown: str
     processing_time_ms: float
+    document_json: dict | None = None
     error: str | None = None
 
 

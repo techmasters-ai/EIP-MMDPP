@@ -36,6 +36,7 @@ class DoclingConversionResult:
     markdown: str
     num_pages: int
     processing_time_ms: float
+    document_json: dict | None = None
 
 
 def convert_document_sync(
@@ -73,6 +74,7 @@ def convert_document_sync(
         markdown=data.get("markdown", ""),
         num_pages=data.get("num_pages", 0),
         processing_time_ms=data.get("processing_time_ms", 0),
+        document_json=data.get("document_json"),
     )
 
 
