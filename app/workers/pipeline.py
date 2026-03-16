@@ -756,6 +756,29 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 stale_elem_count, stale_art_count, document_id,
             )
 
+        # Persist DoclingDocument markdown and JSON to MinIO for the viewer
+        try:
+            from app.services.storage import upload_bytes_sync
+            _docling_base = f"artifacts/{document_id}"
+            if result.markdown:
+                upload_bytes_sync(
+                    result.markdown.encode("utf-8"),
+                    settings.minio_bucket_derived,
+                    f"{_docling_base}/docling_document.md",
+                    content_type="text/markdown; charset=utf-8",
+                )
+            if getattr(result, "document_json", None):
+                import json as _json
+                upload_bytes_sync(
+                    _json.dumps(result.document_json, ensure_ascii=False, default=str).encode("utf-8"),
+                    settings.minio_bucket_derived,
+                    f"{_docling_base}/docling_document.json",
+                    content_type="application/json; charset=utf-8",
+                )
+                logger.info("prepare_document: persisted DoclingDocument md+json for %s", document_id)
+        except Exception as _doc_err:
+            logger.warning("prepare_document: failed to persist DoclingDocument for %s: %s", document_id, _doc_err)
+
         _update_stage_run(
             db, run_id, "prepare_document", "COMPLETE",
             attempt=self.request.retries + 1,
