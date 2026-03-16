@@ -474,6 +474,22 @@ async def get_docling_document(
         if include_json:
             json_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.json")
     except Exception as exc:
+        # Fall back to raw file content for text files
+        if doc.mime_type and doc.mime_type.startswith("text/"):
+            try:
+                raw_bytes = await download_bytes_async(
+                    doc.storage_bucket, doc.storage_key
+                )
+                return DoclingDocumentResponse(
+                    document_id=str(document_id),
+                    filename=doc.filename or "",
+                    markdown=raw_bytes.decode("utf-8", errors="replace"),
+                    document_json={},
+                    images=[],
+                )
+            except Exception:
+                pass  # fall through to 404
+
         logger.info("get_docling_document: DoclingDocument not found for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=404,
@@ -492,10 +508,14 @@ async def get_docling_document(
     # Build image URL list from artifacts
     from sqlalchemy import select as sa_select
 
-    stmt = sa_select(Artifact).where(
-        Artifact.document_id == document_id,
-        Artifact.artifact_type.in_(["image", "schematic"]),
-        Artifact.storage_key.isnot(None),
+    stmt = (
+        sa_select(Artifact)
+        .where(
+            Artifact.document_id == document_id,
+            Artifact.artifact_type.in_(["image", "schematic"]),
+            Artifact.storage_key.isnot(None),
+        )
+        .order_by(Artifact.id)
     )
     result = await db.execute(stmt)
     artifacts = result.scalars().all()
@@ -510,6 +530,18 @@ async def get_docling_document(
         elem_uid = elem_result.scalar_one_or_none()
         if elem_uid:
             images.append(DoclingImageRef(element_uid=elem_uid, url=url))
+
+    # Replace <!-- image --> placeholders with actual image markdown tags.
+    # Map Nth placeholder to Nth image artifact (ordered by element_order).
+    if images:
+        sorted_images = sorted(images, key=lambda img: img.element_uid)
+        placeholder = "<!-- image -->"
+        for img_ref in sorted_images:
+            markdown_text = markdown_text.replace(
+                placeholder,
+                f"![image]({img_ref.url})",
+                1,
+            )
 
     return DoclingDocumentResponse(
         document_id=str(document_id),
