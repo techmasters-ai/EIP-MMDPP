@@ -169,6 +169,9 @@ def _run_extraction(text: str) -> Any:
             "model_override": model_string,
             "provider_override": LLM_PROVIDER,
             "dump_to_disk": False,
+            "llm_overrides": {
+                "connection": {"base_url": OLLAMA_BASE_URL},
+            },
         }
 
         context = run_pipeline(config=config, mode="api")
