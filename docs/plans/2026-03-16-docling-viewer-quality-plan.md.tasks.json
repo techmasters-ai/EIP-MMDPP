@@ -1,0 +1,12 @@
+{
+  "planPath": "docs/plans/2026-03-16-docling-viewer-quality-plan.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Create markdown cleanup module", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Update Docling converter configuration", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Map image placeholders to artifact URLs", "status": "pending"},
+    {"id": 4, "subject": "Task 4: Add text file fallback", "status": "pending"},
+    {"id": 5, "subject": "Task 5: Hide JSON toggle for empty document_json", "status": "pending"},
+    {"id": 6, "subject": "Task 6: Rebuild and verify", "status": "pending", "blockedBy": [1, 2, 3, 4, 5]}
+  ],
+  "lastUpdated": "2026-03-16T04:00:00Z"
+}
