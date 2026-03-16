@@ -9,6 +9,7 @@ import {
   type Document,
   type Source,
 } from "../api/client";
+import { DoclingViewer } from "./DoclingViewer";
 
 export interface FileEntry {
   file: File;
@@ -72,6 +73,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [existingDocs, setExistingDocs] = useState<Document[]>([]);
+  const [viewingDoc, setViewingDoc] = useState<{ id: string; filename: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -352,6 +354,16 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
 
               <StatusBadge status={entry.status} />
 
+              {entry.status === "COMPLETE" && entry.documentId && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setViewingDoc({ id: entry.documentId!, filename: entry.fileName })}
+                  title="View document"
+                >
+                  View
+                </button>
+              )}
+
               {(entry.status === "FAILED" || entry.status === "ERROR" || entry.status === "PENDING") && (
                 <button
                   className="btn btn-ghost btn-xs"
@@ -426,6 +438,16 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
 
                   <StatusBadge status={doc.pipeline_status} />
 
+                  {doc.pipeline_status === "COMPLETE" && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setViewingDoc({ id: doc.id, filename: doc.filename })}
+                      title="View document"
+                    >
+                      View
+                    </button>
+                  )}
+
                   {(doc.pipeline_status === "FAILED" || doc.pipeline_status === "ERROR" || doc.pipeline_status === "PENDING") && (
                     <button
                       className="btn btn-ghost btn-xs"
@@ -457,6 +479,14 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
           </div>
         );
       })()}
+
+      {viewingDoc && (
+        <DoclingViewer
+          documentId={viewingDoc.id}
+          filename={viewingDoc.filename}
+          onClose={() => setViewingDoc(null)}
+        />
+      )}
     </div>
   );
 }
