@@ -82,6 +82,16 @@ def _cleanup_stale_runs(sender, **kwargs):
             for stale_id in stale_ids:
                 _redis_client.delete(f"prepare:{stale_id}")
             logger.info("Cleaned up %d stale PROCESSING documents (+ Redis locks): %s", len(stale_ids), stale_ids)
+
+        # Clear stale Docling concurrency permits — these are Redis locks that
+        # may be held by a previous worker that died mid-conversion.
+        docling_permits_cleared = 0
+        for i in range(settings.docling_concurrency):
+            key = f"docling:permit:{i}"
+            if _redis_client.delete(key):
+                docling_permits_cleared += 1
+        if docling_permits_cleared:
+            logger.info("Cleared %d stale Docling concurrency permits", docling_permits_cleared)
     except Exception as e:
         logger.warning("Stale document cleanup failed: %s", e)
         db.rollback()
