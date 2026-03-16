@@ -97,3 +97,16 @@ class UnifiedQueryResponse(APIModel):
     modality_filter: str
     results: list[QueryResultItem]
     total: int
+
+
+class DoclingImageRef(APIModel):
+    element_uid: str
+    url: str
+
+
+class DoclingDocumentResponse(APIModel):
+    document_id: str
+    filename: str
+    markdown: str
+    document_json: dict[str, Any]
+    images: list[DoclingImageRef] = []

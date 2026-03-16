@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
-from app.models.ingest import Artifact, Document, Source, WatchDir
+from app.models.ingest import Artifact, Document, DocumentElement, Source, WatchDir
 from app.schemas.common import CursorPage
 from app.schemas.sources import (
     ArtifactResponse,
@@ -439,3 +439,101 @@ async def delete_watch_dir(
     if not watch_dir:
         raise HTTPException(status_code=404, detail="Watch directory not found.")
     await db.delete(watch_dir)
+
+
+# ---------------------------------------------------------------------------
+# DoclingDocument viewer
+# ---------------------------------------------------------------------------
+
+
+@router.get("/documents/{document_id}/docling")
+async def get_docling_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Retrieve the persisted DoclingDocument (markdown + JSON) for a processed document."""
+    import json as _json
+
+    from app.services.storage import download_bytes_async
+    from app.schemas.retrieval import DoclingDocumentResponse, DoclingImageRef
+
+    doc_uuid = uuid.UUID(document_id)
+
+    # Verify document exists
+    doc = await db.get(Document, doc_uuid)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    base_key = f"artifacts/{document_id}"
+    bucket = settings.minio_bucket_derived
+
+    # Fetch markdown and JSON from MinIO
+    try:
+        md_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.md")
+        json_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.json")
+    except Exception:
+        raise HTTPException(
+            status_code=404,
+            detail="DoclingDocument not available for this document. Re-ingest to generate.",
+        )
+
+    markdown_text = md_bytes.decode("utf-8")
+    document_json = _json.loads(json_bytes.decode("utf-8"))
+
+    # Build image URL list from artifacts
+    from sqlalchemy import select as sa_select
+
+    stmt = sa_select(Artifact).where(
+        Artifact.document_id == doc_uuid,
+        Artifact.artifact_type.in_(["image", "schematic"]),
+        Artifact.storage_key.isnot(None),
+    )
+    result = await db.execute(stmt)
+    artifacts = result.scalars().all()
+
+    images: list[DoclingImageRef] = []
+    for art in artifacts:
+        url = f"/v1/documents/{document_id}/artifacts/{art.id}/image"
+        elem_stmt = sa_select(DocumentElement.element_uid).where(
+            DocumentElement.artifact_id == art.id
+        )
+        elem_result = await db.execute(elem_stmt)
+        elem_uid = elem_result.scalar_one_or_none()
+        if elem_uid:
+            images.append(DoclingImageRef(element_uid=elem_uid, url=url))
+
+    return DoclingDocumentResponse(
+        document_id=document_id,
+        filename=doc.filename or "",
+        markdown=markdown_text,
+        document_json=document_json,
+        images=images,
+    )
+
+
+@router.get("/documents/{document_id}/artifacts/{artifact_id}/image")
+async def get_artifact_image(
+    document_id: str,
+    artifact_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Stream an artifact image from MinIO."""
+    from app.services.storage import download_bytes_async
+    from fastapi.responses import Response
+
+    doc_uuid = uuid.UUID(document_id)
+    art_uuid = uuid.UUID(artifact_id)
+
+    art = await db.get(Artifact, art_uuid)
+    if not art or art.document_id != doc_uuid or not art.storage_key:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    image_bytes = await download_bytes_async(art.storage_bucket, art.storage_key)
+    ext = art.storage_key.rsplit(".", 1)[-1].lower() if "." in art.storage_key else "png"
+    content_type = {
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "tiff": "image/tiff", "tif": "image/tiff", "gif": "image/gif",
+        "bmp": "image/bmp",
+    }.get(ext, "image/png")
+
+    return Response(content=image_bytes, media_type=content_type)
