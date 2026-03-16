@@ -48,8 +48,17 @@ def init_converter() -> None:
         cuda_use_flash_attention2=(DEVICE == "cuda"),
     )
 
+    # Override the default VLM options to set torch_dtype=bfloat16
+    # (required for flash attention, and more memory-efficient).
+    default_opts = VlmPipelineOptions()
+    vlm_opts = default_opts.vlm_options
+    for engine_key, override in vlm_opts.model_spec.engine_overrides.items():
+        if override.torch_dtype is None:
+            override.torch_dtype = DTYPE
+
     pipeline_options = VlmPipelineOptions(
         accelerator_options=accel,
+        vlm_options=vlm_opts,
         force_backend_text=True,
         generate_picture_images=True,
         images_scale=2.0,
