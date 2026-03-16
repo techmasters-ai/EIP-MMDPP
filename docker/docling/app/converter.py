@@ -27,6 +27,34 @@ _converter = None
 _model_loaded = False
 
 
+def _patch_imageref_from_pil() -> None:
+    """Monkey-patch ImageRef.from_pil to handle zero-area images.
+
+    Workaround for docling-core bug where VLM predicts bounding boxes
+    that collapse to zero-area after integer rounding, causing PIL
+    "tile cannot extend outside image" crash.
+    See: https://github.com/docling-project/docling/issues/2763
+    """
+    try:
+        from docling_core.types.doc.document import ImageRef
+
+        _original_from_pil = ImageRef.from_pil
+
+        @classmethod  # type: ignore[misc]
+        def _safe_from_pil(cls, image, dpi=72):
+            if image.size[0] == 0 or image.size[1] == 0:
+                logger.warning("Skipping zero-area image (%s) in ImageRef.from_pil", image.size)
+                # Create a 1x1 transparent placeholder instead of crashing
+                from PIL import Image as PILImage
+                image = PILImage.new("RGBA", (1, 1), (0, 0, 0, 0))
+            return _original_from_pil.__func__(cls, image=image, dpi=dpi)
+
+        ImageRef.from_pil = _safe_from_pil
+        logger.info("Patched ImageRef.from_pil for zero-area image workaround")
+    except Exception as e:
+        logger.warning("Failed to patch ImageRef.from_pil: %s", e)
+
+
 def init_converter() -> None:
     """Initialize the Docling DocumentConverter with VLM pipeline.
 
@@ -34,6 +62,8 @@ def init_converter() -> None:
     with optimized settings for document conversion quality.
     """
     global _converter, _model_loaded
+
+    _patch_imageref_from_pil()
 
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import VlmPipelineOptions
