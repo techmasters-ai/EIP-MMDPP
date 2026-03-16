@@ -40,6 +40,15 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 
+# Set LiteLLM env vars at module level so they're available before any
+# library code imports or caches connection settings.
+if LLM_PROVIDER == "ollama":
+    os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
+if OPENAI_API_KEY:
+    os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+if OPENAI_BASE_URL:
+    os.environ["OPENAI_API_BASE"] = OPENAI_BASE_URL
+
 # ---------------------------------------------------------------------------
 # Module-level state (populated at startup)
 # ---------------------------------------------------------------------------
@@ -146,16 +155,6 @@ def _run_extraction(text: str) -> Any:
     from pathlib import Path
 
     from docling_graph import run_pipeline  # type: ignore[import-untyped]
-
-    # Configure LiteLLM environment before calling the pipeline.
-    # Use direct assignment (not setdefault) to ensure our values take
-    # precedence over any defaults set by docling-graph internals.
-    if LLM_PROVIDER == "ollama":
-        os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
-    if OPENAI_API_KEY:
-        os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-    if OPENAI_BASE_URL:
-        os.environ["OPENAI_API_BASE"] = OPENAI_BASE_URL
 
     model_string = _build_litellm_model_string()
 
