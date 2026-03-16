@@ -8,4 +8,3 @@ torch>=2.5.0
 huggingface-hub>=0.20.0
 Pillow>=11.0.0
 python-multipart>=0.0.20
-flash-attn>=2.7.0
