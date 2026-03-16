@@ -142,6 +142,9 @@ def _run_extraction(text: str) -> Any:
     The ``docling_graph`` import is deferred because the package is only
     available inside the Docker container.
     """
+    import tempfile
+    from pathlib import Path
+
     from docling_graph import run_pipeline  # type: ignore[import-untyped]
 
     # Configure LiteLLM environment before calling the pipeline
@@ -158,18 +161,28 @@ def _run_extraction(text: str) -> Any:
     # Pydantic model class (or dotted-path string), not a dict.
     template_cls = next(iter(_templates.values())) if _templates else None
 
-    config = {
-        "source": text,
-        "template": template_cls,
-        "backend": "llm",
-        "inference": "remote",
-        "model_override": model_string,
-        "provider_override": LLM_PROVIDER,
-        "dump_to_disk": False,
-    }
+    # Write text to a temp .md file — docling-graph's input handler tries
+    # Path(source).exists() first, which raises ENAMETOOLONG for long text
+    # strings.  Passing a file path avoids this entirely.
+    tmp = tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8")
+    try:
+        tmp.write(text)
+        tmp.close()
 
-    context = run_pipeline(config=config, mode="api")
-    return context.knowledge_graph
+        config = {
+            "source": tmp.name,
+            "template": template_cls,
+            "backend": "llm",
+            "inference": "remote",
+            "model_override": model_string,
+            "provider_override": LLM_PROVIDER,
+            "dump_to_disk": False,
+        }
+
+        context = run_pipeline(config=config, mode="api")
+        return context.knowledge_graph
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[ExtractedRelationshipResponse]]:
