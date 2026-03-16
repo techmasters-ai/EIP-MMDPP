@@ -76,6 +76,43 @@ def is_model_loaded() -> bool:
     return _model_loaded
 
 
+def _convert_without_picture_images(tmp_path: str):
+    """Retry conversion with generate_picture_images=False.
+
+    Used as a fallback when the VLM produces malformed bounding boxes
+    that crash PIL during image cropping.
+    """
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import VlmPipelineOptions
+    from docling.datamodel.accelerator_options import AcceleratorOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.pipeline.vlm_pipeline import VlmPipeline
+
+    accel = AcceleratorOptions(
+        device=DEVICE,
+        cuda_use_flash_attention2=False,
+    )
+    opts = VlmPipelineOptions(
+        accelerator_options=accel,
+        force_backend_text=True,
+        generate_picture_images=False,
+        images_scale=2.0,
+    )
+    fallback = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_cls=VlmPipeline,
+                pipeline_options=opts,
+            ),
+            InputFormat.IMAGE: PdfFormatOption(
+                pipeline_cls=VlmPipeline,
+                pipeline_options=opts,
+            ),
+        },
+    )
+    return fallback.convert(source=tmp_path)
+
+
 def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
     """Convert a document through the Docling VLM pipeline.
 
@@ -106,7 +143,22 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
         tmp_path = tmp.name
 
     try:
-        result = _converter.convert(source=tmp_path)
+        try:
+            result = _converter.convert(source=tmp_path)
+        except (SystemError, RuntimeError) as crop_exc:
+            # Workaround for docling-core bug: VLM predicts zero-area bounding
+            # boxes → PIL crashes with "tile cannot extend outside image" when
+            # generate_picture_images=True.  Retry without picture extraction.
+            # See: https://github.com/docling-project/docling/issues/2763
+            if "tile cannot extend outside image" in str(crop_exc) or "VlmPipeline failed" in str(crop_exc):
+                logger.warning(
+                    "Docling image crop failed for %s, retrying without generate_picture_images: %s",
+                    filename, crop_exc,
+                )
+                result = _convert_without_picture_images(tmp_path)
+            else:
+                raise
+
         doc = result.document
 
         elements = _extract_elements(doc)
