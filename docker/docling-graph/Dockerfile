@@ -87,4 +87,7 @@ COPY app/ ./app/
 
 EXPOSE 8002
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]
+# Derive OLLAMA_HOST and OLLAMA_API_BASE from OLLAMA_BASE_URL so the
+# ollama Python package and LiteLLM both find the right endpoint.
+# Shell form so env var expansion works at runtime.
+CMD sh -c 'export OLLAMA_HOST="${OLLAMA_BASE_URL:-http://ollama:11434}" OLLAMA_API_BASE="${OLLAMA_BASE_URL:-http://ollama:11434}" && exec uvicorn app.main:app --host 0.0.0.0 --port 8002'

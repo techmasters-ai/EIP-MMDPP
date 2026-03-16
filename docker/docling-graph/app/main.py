@@ -40,18 +40,6 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 
-# Set LiteLLM env vars at module level so they're available before any
-# library code imports or caches connection settings.
-if LLM_PROVIDER == "ollama":
-    os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
-    # The `ollama` Python package (used by LiteLLM internally) reads
-    # OLLAMA_HOST, not OLLAMA_API_BASE.
-    os.environ["OLLAMA_HOST"] = OLLAMA_BASE_URL
-if OPENAI_API_KEY:
-    os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-if OPENAI_BASE_URL:
-    os.environ["OPENAI_API_BASE"] = OPENAI_BASE_URL
-
 # ---------------------------------------------------------------------------
 # Module-level state (populated at startup)
 # ---------------------------------------------------------------------------
