@@ -85,8 +85,13 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir packaging ninja && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir flash-attn --no-build-isolation
+    pip install --no-cache-dir -r requirements.txt
+
+# Build flash-attn after torch is installed. Limit to our GPU arch
+# and parallel jobs to keep build time ~10min instead of ~60min.
+ENV MAX_JOBS=4
+ENV TORCH_CUDA_ARCH_LIST="8.9"
+RUN pip install --no-cache-dir flash-attn --no-build-isolation
 
 # Pre-download model into the standard HF cache layout for air-gapped deployment.
 # HF_HOME is set BEFORE the download so snapshot_download writes to the cache
