@@ -44,6 +44,9 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 # library code imports or caches connection settings.
 if LLM_PROVIDER == "ollama":
     os.environ["OLLAMA_API_BASE"] = OLLAMA_BASE_URL
+    # The `ollama` Python package (used by LiteLLM internally) reads
+    # OLLAMA_HOST, not OLLAMA_API_BASE.
+    os.environ["OLLAMA_HOST"] = OLLAMA_BASE_URL
 if OPENAI_API_KEY:
     os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 if OPENAI_BASE_URL:
