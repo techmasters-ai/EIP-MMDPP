@@ -1,4 +1,4 @@
-"""Pydantic schemas for graph (AGE) ingest/query endpoints."""
+"""Pydantic schemas for graph (Neo4j) ingest/query endpoints."""
 
 import uuid
 from typing import Any, Optional

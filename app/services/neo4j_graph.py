@@ -574,6 +574,7 @@ async def get_neighborhood_graph_async(
                 if records:
                     center = dict(records[0]["props"])
                     center["entity_type"] = records[0]["entity_type"]
+                    nodes_map[entity_name] = center
 
     except Exception as e:
         logger.warning("get_neighborhood_graph_async failed for '%s': %s", entity_name, e)

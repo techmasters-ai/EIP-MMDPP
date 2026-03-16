@@ -1,6 +1,7 @@
 """Sources, document upload, artifacts, and watch directory endpoints."""
 
 import hashlib
+import logging
 import uuid
 from typing import Optional
 
@@ -24,6 +25,7 @@ from app.schemas.sources import (
 from app.services.storage import stream_upload_async, delete_object_async
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter(tags=["sources"])
 
@@ -448,7 +450,7 @@ async def delete_watch_dir(
 
 @router.get("/documents/{document_id}/docling")
 async def get_docling_document(
-    document_id: str,
+    document_id: uuid.UUID,
     db: AsyncSession = Depends(get_async_session),
 ):
     """Retrieve the persisted DoclingDocument (markdown + JSON) for a processed document."""
@@ -457,21 +459,20 @@ async def get_docling_document(
     from app.services.storage import download_bytes_async
     from app.schemas.retrieval import DoclingDocumentResponse, DoclingImageRef
 
-    doc_uuid = uuid.UUID(document_id)
-
     # Verify document exists
-    doc = await db.get(Document, doc_uuid)
+    doc = await db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    base_key = f"artifacts/{document_id}"
+    base_key = f"artifacts/{str(document_id)}"
     bucket = settings.minio_bucket_derived
 
     # Fetch markdown and JSON from MinIO
     try:
         md_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.md")
         json_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.json")
-    except Exception:
+    except Exception as exc:
+        logger.info("get_docling_document: DoclingDocument not found for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=404,
             detail="DoclingDocument not available for this document. Re-ingest to generate.",
@@ -484,7 +485,7 @@ async def get_docling_document(
     from sqlalchemy import select as sa_select
 
     stmt = sa_select(Artifact).where(
-        Artifact.document_id == doc_uuid,
+        Artifact.document_id == document_id,
         Artifact.artifact_type.in_(["image", "schematic"]),
         Artifact.storage_key.isnot(None),
     )
@@ -493,7 +494,7 @@ async def get_docling_document(
 
     images: list[DoclingImageRef] = []
     for art in artifacts:
-        url = f"/v1/documents/{document_id}/artifacts/{art.id}/image"
+        url = f"/v1/documents/{str(document_id)}/artifacts/{art.id}/image"
         elem_stmt = sa_select(DocumentElement.element_uid).where(
             DocumentElement.artifact_id == art.id
         )
@@ -503,7 +504,7 @@ async def get_docling_document(
             images.append(DoclingImageRef(element_uid=elem_uid, url=url))
 
     return DoclingDocumentResponse(
-        document_id=document_id,
+        document_id=str(document_id),
         filename=doc.filename or "",
         markdown=markdown_text,
         document_json=document_json,
@@ -513,19 +514,16 @@ async def get_docling_document(
 
 @router.get("/documents/{document_id}/artifacts/{artifact_id}/image")
 async def get_artifact_image(
-    document_id: str,
-    artifact_id: str,
+    document_id: uuid.UUID,
+    artifact_id: uuid.UUID,
     db: AsyncSession = Depends(get_async_session),
 ):
     """Stream an artifact image from MinIO."""
     from app.services.storage import download_bytes_async
     from fastapi.responses import Response
 
-    doc_uuid = uuid.UUID(document_id)
-    art_uuid = uuid.UUID(artifact_id)
-
-    art = await db.get(Artifact, art_uuid)
-    if not art or art.document_id != doc_uuid or not art.storage_key:
+    art = await db.get(Artifact, artifact_id)
+    if not art or art.document_id != document_id or not art.storage_key:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
     image_bytes = await download_bytes_async(art.storage_bucket, art.storage_key)

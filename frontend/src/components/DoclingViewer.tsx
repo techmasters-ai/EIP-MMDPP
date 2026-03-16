@@ -81,7 +81,11 @@ export function DoclingViewer({ documentId, filename, onClose }: DoclingViewerPr
                     const matchedImage = data.images.find(
                       (img) => src?.includes(img.element_uid),
                     );
-                    const resolvedSrc = matchedImage ? matchedImage.url : src;
+                    const resolvedSrc = matchedImage
+                      ? matchedImage.url
+                      : src?.startsWith("/") || src?.startsWith("http")
+                        ? src
+                        : undefined;
                     return (
                       <img
                         src={resolvedSrc}
