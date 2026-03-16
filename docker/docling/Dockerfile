@@ -64,7 +64,7 @@ RUN gcc -shared -fPIC -o /tmp/libfips_bypass.so /tmp/fips_bypass.c -ldl
 # ============================================================
 # Stage 1 — Docling VLM service
 # ============================================================
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -75,7 +75,7 @@ COPY --from=fips-bypass /tmp/fips_disabled /usr/local/lib/fips_disabled
 RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
     python3.11 python3.11-venv python3.11-dev python3-pip \
-    curl libgl1 libglib2.0-0 poppler-utils \
+    curl libgl1 libglib2.0-0 poppler-utils ninja-build \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/* \
