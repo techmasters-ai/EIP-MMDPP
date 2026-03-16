@@ -59,7 +59,8 @@ const LAYOUT = {
   padding: 40,
 };
 
-const STYLESHEET: cytoscape.StylesheetCSS[] = [
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const STYLESHEET: any[] = [
   {
     selector: "node",
     style: {
