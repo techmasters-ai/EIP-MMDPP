@@ -211,7 +211,8 @@ print('Reranker model ready')
 
 cmd_stop() {
   header "Stopping EIP-MMDPP stack"
-  dc down --remove-orphans
+  # Stop split-profile workers first (not included in default profile)
+  dc --profile split down --remove-orphans
   info "All services stopped."
 }
 
