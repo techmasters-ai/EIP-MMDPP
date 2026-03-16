@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   batchDocumentStatus,
   createSource,
+  deleteDocument,
   listDocumentsBySource,
   listSources,
   reingestDocument,
@@ -402,6 +403,24 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                   ⚠
                 </span>
               )}
+
+              {entry.documentId && !["queued", "uploading", "polling", "PROCESSING"].includes(entry.status) && (
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={async () => {
+                    if (!confirm(`Delete "${entry.fileName}"? This cannot be undone.`)) return;
+                    try {
+                      await deleteDocument(entry.documentId!);
+                      setEntries((prev) => prev.filter((_, j) => j !== i));
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Delete failed");
+                    }
+                  }}
+                  title="Delete document"
+                >
+                  ✕
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -472,6 +491,24 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                     <span className="text-xs text-muted" title={doc.error_message}>
                       ⚠
                     </span>
+                  )}
+
+                  {doc.pipeline_status !== "PROCESSING" && (
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={async () => {
+                        if (!confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
+                        try {
+                          await deleteDocument(doc.id);
+                          setExistingDocs((prev) => prev.filter((d) => d.id !== doc.id));
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : "Delete failed");
+                        }
+                      }}
+                      title="Delete document"
+                    >
+                      ✕
+                    </button>
                   )}
                 </div>
               ))}

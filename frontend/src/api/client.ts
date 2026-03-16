@@ -389,6 +389,20 @@ export async function reingestDocument(
   return handleResponse<{ document_id: string; mode: string; task_id: string }>(res);
 }
 
+export async function deleteDocument(documentId: string): Promise<void> {
+  const res = await fetch(`/v1/documents/${documentId}`, { method: "DELETE" });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? detail;
+    } catch {
+      // ignore
+    }
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LangGraph agent context
 // ---------------------------------------------------------------------------

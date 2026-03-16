@@ -344,6 +344,106 @@ async def reingest_document(
     return {"document_id": str(document_id), "mode": mode, "task_id": task_id}
 
 
+@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Hard-delete a document and all its derived data.
+
+    Removes: DB records (document, artifacts, document_elements, text_chunks,
+    image_chunks, chunk_links, graph_extractions), Qdrant vectors, Neo4j
+    graph nodes/edges, and MinIO objects (raw file + derived artifacts).
+    """
+    from sqlalchemy import delete as sql_delete
+    from app.models.retrieval import TextChunk, ImageChunk, ChunkLink
+    from app.models.ingest import DocumentGraphExtraction
+
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    if doc.pipeline_status == "PROCESSING":
+        raise HTTPException(status_code=409, detail="Cannot delete while pipeline is running.")
+
+    doc_id_str = str(document_id)
+
+    # 1. Delete Qdrant vectors
+    try:
+        from app.services.qdrant_store import delete_by_document_id
+        from app.db.session import get_qdrant_client
+        client = get_qdrant_client()
+        delete_by_document_id(client, doc_id_str)
+    except Exception as exc:
+        logger.warning("delete_document: Qdrant cleanup failed for %s: %s", doc_id_str, exc)
+
+    # 2. Delete Neo4j graph data
+    try:
+        from app.db.session import get_neo4j_driver
+        driver = get_neo4j_driver()
+        with driver.session() as neo_session:
+            # Delete ChunkRef nodes and edges linked to this document
+            neo_session.run(
+                "MATCH (d:Document {document_id: $doc_id})-[r]-() DELETE r, d",
+                doc_id=doc_id_str,
+            )
+            # Delete entity edges tagged with this document's artifact_ids
+            artifact_result = await db.execute(
+                select(Artifact.id).where(Artifact.document_id == document_id)
+            )
+            artifact_ids = [str(a) for a in artifact_result.scalars().all()]
+            if artifact_ids:
+                neo_session.run(
+                    "MATCH ()-[r]->() WHERE r.artifact_id IN $aids DELETE r",
+                    aids=artifact_ids,
+                )
+    except Exception as exc:
+        logger.warning("delete_document: Neo4j cleanup failed for %s: %s", doc_id_str, exc)
+
+    # 3. Delete MinIO objects (raw file + derived artifacts)
+    try:
+        # Raw file
+        if doc.storage_bucket and doc.storage_key:
+            await delete_object_async(doc.storage_bucket, doc.storage_key)
+        # Derived artifacts (images, docling docs)
+        artifacts = (await db.execute(
+            select(Artifact).where(Artifact.document_id == document_id)
+        )).scalars().all()
+        for art in artifacts:
+            if art.storage_bucket and art.storage_key:
+                try:
+                    await delete_object_async(art.storage_bucket, art.storage_key)
+                except Exception:
+                    pass
+        # DoclingDocument files
+        base_key = f"artifacts/{doc_id_str}"
+        for suffix in ("docling_document.md", "docling_document.json"):
+            try:
+                await delete_object_async(settings.minio_bucket_derived, f"{base_key}/{suffix}")
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning("delete_document: MinIO cleanup failed for %s: %s", doc_id_str, exc)
+
+    # 4. Delete DB records (order matters for FK constraints)
+    await db.execute(sql_delete(ChunkLink).where(
+        ChunkLink.source_chunk_id.in_(
+            select(TextChunk.id).where(TextChunk.document_id == document_id)
+        ) | ChunkLink.target_chunk_id.in_(
+            select(TextChunk.id).where(TextChunk.document_id == document_id)
+        )
+    ))
+    await db.execute(sql_delete(TextChunk).where(TextChunk.document_id == document_id))
+    await db.execute(sql_delete(ImageChunk).where(ImageChunk.document_id == document_id))
+    await db.execute(sql_delete(DocumentGraphExtraction).where(DocumentGraphExtraction.document_id == document_id))
+    await db.execute(sql_delete(DocumentElement).where(DocumentElement.document_id == document_id))
+    await db.execute(sql_delete(Artifact).where(Artifact.document_id == document_id))
+    await db.delete(doc)
+    await db.commit()
+
+    logger.info("delete_document: deleted document %s and all derived data", doc_id_str)
+
+
 # ---------------------------------------------------------------------------
 # Artifacts
 # ---------------------------------------------------------------------------
