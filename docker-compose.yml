@@ -163,6 +163,8 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
     ports:
       - "${DOCLING_GRAPH_PORT:-8002}:8002"
+    extra_hosts:
+      - "ollama:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
