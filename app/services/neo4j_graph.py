@@ -488,6 +488,104 @@ async def get_neighborhood_async(
         return []
 
 
+async def get_neighborhood_graph_async(
+    driver,
+    entity_name: str,
+    hop_count: int = 2,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Get a node's neighborhood as separate nodes and edges for graph visualization.
+
+    Unlike get_neighborhood_async(), this unwinds variable-length paths into
+    individual edges with full properties on both endpoints.
+    """
+    hop_count = max(1, min(hop_count, 4))
+
+    query = f"""
+        MATCH (start:Entity {{name: $name}})
+        OPTIONAL MATCH path = (start)-[*1..{hop_count}]-(neighbor:Entity)
+        WITH start, relationships(path) AS rels, nodes(path) AS path_nodes
+        UNWIND range(0, size(rels)-1) AS idx
+        WITH start,
+             path_nodes[idx] AS from_node,
+             rels[idx] AS rel,
+             path_nodes[idx+1] AS to_node
+        RETURN DISTINCT
+            properties(start) AS center_props,
+            start.entity_type AS center_type,
+            from_node.name AS source,
+            from_node.entity_type AS source_type,
+            properties(from_node) AS source_props,
+            type(rel) AS rel_type,
+            properties(rel) AS rel_props,
+            to_node.name AS target,
+            to_node.entity_type AS target_type,
+            properties(to_node) AS target_props
+        LIMIT $limit
+    """
+
+    center: dict[str, Any] | None = None
+    nodes_map: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+
+    try:
+        async with driver.session() as session:
+            result = await session.run(query, name=entity_name, limit=limit)
+            records = await result.data()
+
+            for r in records:
+                if center is None and r.get("center_props"):
+                    center = dict(r["center_props"])
+                    center["entity_type"] = r["center_type"]
+                    nodes_map[entity_name] = center
+
+                source_name = r.get("source")
+                target_name = r.get("target")
+                if not source_name or not target_name:
+                    continue
+
+                if source_name not in nodes_map and r.get("source_props"):
+                    node = dict(r["source_props"])
+                    node["entity_type"] = r["source_type"]
+                    nodes_map[source_name] = node
+                if target_name not in nodes_map and r.get("target_props"):
+                    node = dict(r["target_props"])
+                    node["entity_type"] = r["target_type"]
+                    nodes_map[target_name] = node
+
+                edge: dict[str, Any] = {
+                    "source": source_name,
+                    "target": target_name,
+                    "rel_type": r.get("rel_type", "UNKNOWN"),
+                }
+                if r.get("rel_props"):
+                    edge.update(r["rel_props"])
+                edges.append(edge)
+
+        if center is None:
+            q2 = """
+                MATCH (n:Entity {name: $name})
+                RETURN properties(n) AS props, n.entity_type AS entity_type
+                LIMIT 1
+            """
+            async with driver.session() as session:
+                result = await session.run(q2, name=entity_name)
+                records = await result.data()
+                if records:
+                    center = dict(records[0]["props"])
+                    center["entity_type"] = records[0]["entity_type"]
+                    nodes_map[entity_name] = center
+
+    except Exception as e:
+        logger.warning("get_neighborhood_graph_async failed for '%s': %s", entity_name, e)
+
+    return {
+        "center": center,
+        "nodes": list(nodes_map.values()),
+        "edges": edges,
+    }
+
+
 async def _has_extracted_from_edges(driver) -> bool:
     """Check if any EXTRACTED_FROM edges exist (cached for 60s)."""
     now = time.monotonic()

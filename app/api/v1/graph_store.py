@@ -8,6 +8,8 @@ from app.db.session import get_neo4j_async_driver
 from app.schemas.graph_store import (
     GraphEntityIngest,
     GraphIngestResponse,
+    GraphNeighborhoodRequest,
+    GraphNeighborhoodResponse,
     GraphQueryRequest,
     GraphRelationshipIngest,
 )
@@ -28,14 +30,12 @@ async def ingest_entity(
     """
     from app.services.neo4j_graph import upsert_node
 
-    driver = get_neo4j_async_driver()
-
     # Neo4j async driver uses its own sessions — run sync upsert in executor
     import asyncio
     from app.db.session import get_neo4j_driver
 
     sync_driver = get_neo4j_driver()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     node_id = await loop.run_in_executor(
         None,
         lambda: upsert_node(
@@ -64,7 +64,7 @@ async def ingest_relationship(
     from app.db.session import get_neo4j_driver
 
     sync_driver = get_neo4j_driver()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     ok = await loop.run_in_executor(
         None,
         lambda: upsert_relationship(
@@ -127,3 +127,22 @@ async def query_graph(
         )
 
     return results[:body.top_k]
+
+
+@router.post("/graph/neighborhood", response_model=GraphNeighborhoodResponse)
+async def get_neighborhood(
+    body: GraphNeighborhoodRequest,
+) -> GraphNeighborhoodResponse:
+    """Get an entity's full neighborhood graph for visualization."""
+    from app.services.neo4j_graph import get_neighborhood_graph_async
+
+    driver = get_neo4j_async_driver()
+    result = await get_neighborhood_graph_async(
+        driver, body.entity_name, hop_count=body.hop_count
+    )
+
+    return GraphNeighborhoodResponse(
+        center=result["center"],
+        nodes=result["nodes"],
+        edges=result["edges"],
+    )

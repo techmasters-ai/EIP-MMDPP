@@ -408,3 +408,55 @@ export async function getAgentContext(params: {
   const res = await fetch(`/v1/agent/context?${search}`);
   return handleResponse<AgentContextResponse>(res);
 }
+
+// ---------------------------------------------------------------------------
+// Graph Neighborhood
+// ---------------------------------------------------------------------------
+
+export interface GraphNeighborhoodResponse {
+  center: Record<string, unknown> | null;
+  nodes: Record<string, unknown>[];
+  edges: Array<{
+    source: string;
+    target: string;
+    rel_type: string;
+    [key: string]: unknown;
+  }>;
+}
+
+export async function getGraphNeighborhood(params: {
+  entity_name: string;
+  hop_count?: number;
+}): Promise<GraphNeighborhoodResponse> {
+  const res = await fetch("/v1/graph/neighborhood", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      entity_name: params.entity_name,
+      hop_count: params.hop_count ?? 2,
+    }),
+  });
+  return handleResponse<GraphNeighborhoodResponse>(res);
+}
+
+// ---------------------------------------------------------------------------
+// Docling Document
+// ---------------------------------------------------------------------------
+
+export interface DoclingImageRef {
+  element_uid: string;
+  url: string;
+}
+
+export interface DoclingDocumentResponse {
+  document_id: string;
+  filename: string;
+  markdown: string;
+  document_json: Record<string, unknown>;
+  images: DoclingImageRef[];
+}
+
+export async function getDoclingDocument(documentId: string): Promise<DoclingDocumentResponse> {
+  const res = await fetch(`/v1/documents/${documentId}/docling`);
+  return handleResponse<DoclingDocumentResponse>(res);
+}
