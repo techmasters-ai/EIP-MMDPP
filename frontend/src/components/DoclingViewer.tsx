@@ -50,12 +50,14 @@ export function DoclingViewer({ documentId, filename, onClose }: DoclingViewerPr
             >
               Document
             </button>
-            <button
-              className={`mode-btn${mode === "json" ? " active" : ""}`}
-              onClick={() => setMode("json")}
-            >
-              JSON
-            </button>
+            {data && Object.keys(data.document_json).length > 0 && (
+              <button
+                className={`mode-btn${mode === "json" ? " active" : ""}`}
+                onClick={() => setMode("json")}
+              >
+                JSON
+              </button>
+            )}
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}>
             ✕
