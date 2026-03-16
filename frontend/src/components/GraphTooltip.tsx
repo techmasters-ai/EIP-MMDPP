@@ -26,16 +26,19 @@ export function GraphTooltip({ visible, x, y, data, containerRect }: GraphToolti
   let left = x + 12;
   let top = y + 12;
   if (containerRect) {
+    // Convert from viewport coordinates to container-relative
+    left = x - containerRect.left + 12;
+    top = y - containerRect.top + 12;
     const tooltipWidth = 280;
     const tooltipHeight = entries.length * 28 + 24;
-    if (left + tooltipWidth > containerRect.right) left = x - tooltipWidth - 12;
-    if (top + tooltipHeight > containerRect.bottom) top = y - tooltipHeight - 12;
-    if (left < containerRect.left) left = containerRect.left + 4;
-    if (top < containerRect.top) top = containerRect.top + 4;
+    if (left + tooltipWidth > containerRect.width) left = x - containerRect.left - tooltipWidth - 12;
+    if (top + tooltipHeight > containerRect.height) top = y - containerRect.top - tooltipHeight - 12;
+    if (left < 0) left = 4;
+    if (top < 0) top = 4;
   }
 
   return (
-    <div className="graph-tooltip" style={{ left, top }}>
+    <div className="graph-tooltip" style={{ position: "absolute", left, top }}>
       <table>
         <tbody>
           {entries.map(([key, value]) => (

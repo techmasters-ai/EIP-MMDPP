@@ -155,7 +155,6 @@ def _get_item_text(item) -> str:
 
 def _extract_elements(doc) -> list[ConvertedElement]:
     """Iterate Docling document items and map to ConvertedElement list."""
-    import hashlib
     from docling_core.types.doc import (
         DocItemLabel,
         ImageRefMode,

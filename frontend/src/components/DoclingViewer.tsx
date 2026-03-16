@@ -99,18 +99,25 @@ export function DoclingViewer({ documentId, filename, onClose }: DoclingViewerPr
               >
                 {data.markdown}
               </Markdown>
-              {data.images.length > 0 && (
-                <div className="docling-image-gallery">
-                  {data.images.map((img) => (
-                    <img
-                      key={img.element_uid}
-                      src={img.url}
-                      alt={img.element_uid}
-                      className="docling-inline-image"
-                    />
-                  ))}
-                </div>
-              )}
+              {/* Show images not embedded in markdown */}
+              {(() => {
+                const markdownText = data.markdown || "";
+                const unmatched = data.images.filter(
+                  (img) => !markdownText.includes(img.element_uid),
+                );
+                return unmatched.length > 0 ? (
+                  <div className="docling-image-gallery">
+                    {unmatched.map((img) => (
+                      <img
+                        key={img.element_uid}
+                        src={img.url}
+                        alt={img.element_uid}
+                        className="docling-inline-image"
+                      />
+                    ))}
+                  </div>
+                ) : null;
+              })()}
             </div>
           )}
 

@@ -30,14 +30,12 @@ async def ingest_entity(
     """
     from app.services.neo4j_graph import upsert_node
 
-    driver = get_neo4j_async_driver()
-
     # Neo4j async driver uses its own sessions — run sync upsert in executor
     import asyncio
     from app.db.session import get_neo4j_driver
 
     sync_driver = get_neo4j_driver()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     node_id = await loop.run_in_executor(
         None,
         lambda: upsert_node(
@@ -66,7 +64,7 @@ async def ingest_relationship(
     from app.db.session import get_neo4j_driver
 
     sync_driver = get_neo4j_driver()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     ok = await loop.run_in_executor(
         None,
         lambda: upsert_relationship(

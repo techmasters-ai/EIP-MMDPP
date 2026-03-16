@@ -451,6 +451,7 @@ async def delete_watch_dir(
 @router.get("/documents/{document_id}/docling")
 async def get_docling_document(
     document_id: uuid.UUID,
+    include_json: bool = True,
     db: AsyncSession = Depends(get_async_session),
 ):
     """Retrieve the persisted DoclingDocument (markdown + JSON) for a processed document."""
@@ -467,10 +468,11 @@ async def get_docling_document(
     base_key = f"artifacts/{str(document_id)}"
     bucket = settings.minio_bucket_derived
 
-    # Fetch markdown and JSON from MinIO
+    # Fetch markdown (and optionally JSON) from MinIO
     try:
         md_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.md")
-        json_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.json")
+        if include_json:
+            json_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.json")
     except Exception as exc:
         logger.info("get_docling_document: DoclingDocument not found for %s: %s", document_id, exc)
         raise HTTPException(
@@ -479,7 +481,13 @@ async def get_docling_document(
         )
 
     markdown_text = md_bytes.decode("utf-8")
-    document_json = _json.loads(json_bytes.decode("utf-8"))
+    document_json = {}
+    if include_json:
+        try:
+            document_json = _json.loads(json_bytes.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            logger.error("get_docling_document: corrupt JSON for %s: %s", document_id, exc)
+            raise HTTPException(status_code=500, detail="DoclingDocument JSON is corrupted. Re-ingest to regenerate.")
 
     # Build image URL list from artifacts
     from sqlalchemy import select as sa_select

@@ -3,31 +3,7 @@ import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import { GraphTooltip } from "./GraphTooltip";
 import type { GraphNeighborhoodResponse } from "../api/client";
-
-// Entity type → CSS category class
-const ENTITY_CATEGORY: Record<string, string> = {};
-const MILITARY = [
-  "RadarSystem", "MissileSystem", "AirDefenseArtillerySystem",
-  "IntegratedAirDefenseSystem", "ElectronicWarfareSystem", "FireControlSystem",
-  "LauncherSystem", "WeaponSystem", "Platform", "Subsystem", "Component",
-];
-const EMRF = [
-  "FrequencyBand", "Waveform", "Modulation", "RFEmission", "RFSignature",
-  "Antenna", "Transmitter", "Receiver", "SignalProcessingChain", "ScanPattern",
-];
-const WEAPON = ["Seeker", "GuidanceMethod", "MissilePerformance", "PropulsionStack"];
-const OPERATIONAL = ["Capability", "EngagementTimeline", "RadarPerformance"];
-const REFERENCE = ["Organization", "Document", "Assertion"];
-
-MILITARY.forEach((t) => (ENTITY_CATEGORY[t] = "military"));
-EMRF.forEach((t) => (ENTITY_CATEGORY[t] = "emrf"));
-WEAPON.forEach((t) => (ENTITY_CATEGORY[t] = "weapon"));
-OPERATIONAL.forEach((t) => (ENTITY_CATEGORY[t] = "operational"));
-REFERENCE.forEach((t) => (ENTITY_CATEGORY[t] = "reference"));
-
-function getCategory(entityType: string): string {
-  return ENTITY_CATEGORY[entityType] || "reference";
-}
+import { getEntityCategory } from "../constants/entityTypes";
 
 /** Convert API response to Cytoscape elements. */
 export function toGraphElements(
@@ -45,7 +21,7 @@ export function toGraphElements(
     const label = name.length > 20 ? name.slice(0, 18) + "\u2026" : name;
     elements.push({
       data: { id: name, label, ...node },
-      classes: `${getCategory(entityType)}${name === centerName ? " center" : ""}`,
+      classes: `${getEntityCategory(entityType)}${name === centerName ? " center" : ""}`,
     });
   }
 
