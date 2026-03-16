@@ -1,5 +1,7 @@
 import React, { useState } from "react";
-import { ingestGraphEntity, ingestGraphRelationship, queryGraph, type QueryResultItem } from "../api/client";
+import { ingestGraphEntity, ingestGraphRelationship, queryGraph, getGraphNeighborhood, type QueryResultItem } from "../api/client";
+import type cytoscape from "cytoscape";
+import { GraphView, toGraphElements } from "./GraphView";
 
 const ENTITY_TYPES = [
   // Military assets
@@ -48,6 +50,9 @@ function GraphSearch() {
   const [results, setResults] = useState<QueryResultItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [graphViewIndex, setGraphViewIndex] = useState<number | null>(null);
+  const [graphElements, setGraphElements] = useState<cytoscape.ElementDefinition[] | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,6 +61,40 @@ function GraphSearch() {
     setError(null);
     try {
       const res = await queryGraph({ query: query.trim(), top_k: 20 });
+      setResults(res.results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Search failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleGraph = async (index: number, entityName: string) => {
+    if (graphViewIndex === index) {
+      setGraphViewIndex(null);
+      setGraphElements(null);
+      return;
+    }
+    setGraphViewIndex(index);
+    setGraphLoading(true);
+    try {
+      const resp = await getGraphNeighborhood({ entity_name: entityName });
+      setGraphElements(toGraphElements(resp, entityName));
+    } catch {
+      setGraphElements(null);
+    } finally {
+      setGraphLoading(false);
+    }
+  };
+
+  const handleNodeClick = async (entityName: string) => {
+    setGraphViewIndex(null);
+    setGraphElements(null);
+    setQuery(entityName);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await queryGraph({ query: entityName, top_k: 20 });
       setResults(res.results);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
@@ -98,12 +137,41 @@ function GraphSearch() {
                 <div className="result-card-header">
                   <span className="text-xs text-muted">#{i + 1}</span>
                   <span className="badge badge-info">{item.modality}</span>
+                  {item.content_text && (
+                    <button
+                      className={`btn btn-ghost btn-sm graph-toggle-btn${graphViewIndex === i ? " active" : ""}`}
+                      onClick={() => void handleToggleGraph(i, item.content_text!)}
+                      title="Toggle graph view"
+                    >
+                      ◉
+                    </button>
+                  )}
                 </div>
-                {item.content_text && <p>{item.content_text}</p>}
-                {item.context && (
-                  <pre className="text-xs" style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0" }}>
-                    {JSON.stringify(item.context, null, 2)}
-                  </pre>
+                {graphViewIndex === i ? (
+                  graphLoading ? (
+                    <div className="graph-view-container" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <span className="spinner" />
+                    </div>
+                  ) : graphElements ? (
+                    <GraphView
+                      elements={graphElements}
+                      onNodeClick={(name) => void handleNodeClick(name)}
+                      onClose={() => { setGraphViewIndex(null); setGraphElements(null); }}
+                    />
+                  ) : (
+                    <p className="text-muted text-sm" style={{ padding: "1rem" }}>
+                      Could not load graph data.
+                    </p>
+                  )
+                ) : (
+                  <>
+                    {item.content_text && <p>{item.content_text}</p>}
+                    {item.context && (
+                      <pre className="text-xs" style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0" }}>
+                        {JSON.stringify(item.context, null, 2)}
+                      </pre>
+                    )}
+                  </>
                 )}
               </div>
             ))
