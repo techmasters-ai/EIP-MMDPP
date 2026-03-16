@@ -1,4 +1,5 @@
-import React, { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback } from "react";
+// @ts-expect-error — react-cytoscapejs has no type declarations
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import { GraphTooltip } from "./GraphTooltip";
@@ -58,7 +59,7 @@ const LAYOUT = {
   padding: 40,
 };
 
-const STYLESHEET: cytoscape.Stylesheet[] = [
+const STYLESHEET: cytoscape.StylesheetCSS[] = [
   {
     selector: "node",
     style: {

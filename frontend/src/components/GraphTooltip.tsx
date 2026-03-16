@@ -1,5 +1,3 @@
-import React from "react";
-
 interface GraphTooltipProps {
   visible: boolean;
   x: number;
