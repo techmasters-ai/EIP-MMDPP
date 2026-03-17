@@ -45,6 +45,9 @@ def extract_graph(
     document_id: str,
     *,
     ontology_version: str | None = None,
+    template_group: str | None = None,
+    mode: str = "entities",
+    entities_context: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Extract entities and relationships via the Docling-Graph service.
 
@@ -59,9 +62,14 @@ def extract_graph(
     payload: dict[str, Any] = {
         "document_id": document_id,
         "text": text,
+        "mode": mode,
     }
     if ontology_version:
         payload["ontology_version"] = ontology_version
+    if template_group:
+        payload["template_group"] = template_group
+    if entities_context is not None:
+        payload["entities_context"] = entities_context
 
     # --- Redis concurrency gate (mirrors Docling permit pattern in pipeline.py) ---
     r = _get_redis()
@@ -91,9 +99,8 @@ def extract_graph(
         )
 
     logger.info(
-        "Calling Docling-Graph service for document %s (%d chars, permit acquired)",
-        document_id,
-        len(text),
+        "Calling Docling-Graph service for document %s (%d chars, group=%s, mode=%s, permit acquired)",
+        document_id, len(text), template_group or "legacy", mode,
     )
 
     try:
@@ -113,11 +120,8 @@ def extract_graph(
     entity_count = len(result.get("entities", []))
     rel_count = len(result.get("relationships", []))
     logger.info(
-        "Docling-Graph returned %d entities, %d relationships for document %s (model=%s)",
-        entity_count,
-        rel_count,
-        document_id,
-        result.get("model", "unknown"),
+        "Docling-Graph returned %d entities, %d relationships for document %s (group=%s, mode=%s, model=%s)",
+        entity_count, rel_count, document_id, template_group or "legacy", mode, result.get("model", "unknown"),
     )
 
     return result
