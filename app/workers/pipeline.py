@@ -1483,20 +1483,69 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 db.commit()
             return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
 
-        # Call Docling-Graph service for entity/relationship extraction
+        # ---- Batched entity extraction (5 groups + 1 relationship pass) ----
         from app.services.docling_graph_service import extract_graph
 
-        extraction_result = extract_graph(full_text, document_id)
-        provider = extraction_result.get("provider", "docling-graph")
-        model_name = extraction_result.get("model", "unknown")
+        EXTRACTION_GROUPS = ["reference", "equipment", "rf_signal", "weapon", "operational"]
+
+        all_entities: list[dict] = []
+        all_relationships: list[dict] = []
+        provider = "docling-graph"
+        model_name = "unknown"
+        group_errors: list[str] = []
+
+        for group in EXTRACTION_GROUPS:
+            try:
+                result = extract_graph(
+                    full_text, document_id,
+                    template_group=group, mode="entities",
+                )
+                provider = result.get("provider", provider)
+                model_name = result.get("model", model_name)
+                all_entities.extend(result.get("entities", []))
+                logger.info(
+                    "derive_ontology_graph: group=%s entities=%d for %s",
+                    group, len(result.get("entities", [])), document_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "derive_ontology_graph: group=%s failed for %s: %s — continuing",
+                    group, document_id, exc,
+                )
+                group_errors.append(f"{group}: {exc}")
+
+        # Relationship pass with all discovered entities as context
+        entities_context = [
+            {"name": e["name"], "entity_type": e["entity_type"]}
+            for e in all_entities
+        ]
+        try:
+            rel_result = extract_graph(
+                full_text, document_id,
+                mode="relationships",
+                entities_context=entities_context,
+            )
+            all_relationships = rel_result.get("relationships", [])
+            logger.info(
+                "derive_ontology_graph: relationship pass returned %d for %s",
+                len(all_relationships), document_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "derive_ontology_graph: relationship pass failed for %s: %s",
+                document_id, exc,
+            )
+            group_errors.append(f"relationships: {exc}")
 
         graph_data = {
-            "nodes": extraction_result.get("entities", []),
-            "edges": extraction_result.get("relationships", []),
+            "nodes": all_entities,
+            "edges": all_relationships,
         }
         graph_data["mentions"] = _build_entity_mentions(
             graph_data["nodes"], elements, provider,
         )
+        if group_errors:
+            graph_data["_group_errors"] = group_errors
 
         # Import into Neo4j with confidence quality gates (batch)
         neo4j_driver = get_neo4j_driver()
