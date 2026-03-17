@@ -140,6 +140,8 @@ cmd_start() {
     info "Building and starting all services..."
   fi
 
+  info "Updating docling & docling-graph packages..."
+  dc build --build-arg CACHE_BUST="$(date +%s)" docling docling-graph
   dc "${profile_args[@]}" up -d --build
 
   local api_port="${API_PORT:-8000}"
