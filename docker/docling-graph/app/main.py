@@ -37,6 +37,8 @@ ONTOLOGY_PATH = os.environ.get("ONTOLOGY_PATH", "/ontology/ontology.yaml")
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama")
 LLM_MODEL = os.environ.get("LLM_MODEL", "granite3-dense:8b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
+OLLAMA_THINK = os.environ.get("OLLAMA_THINK", "")  # e.g. "low", "medium", "high" for gpt-oss
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 
@@ -47,11 +49,34 @@ _templates: dict[str, dict[str, type[BaseModel]]] | None = None
 _ontology_version: str | None = None
 
 
+def _configure_ollama_provider() -> None:
+    """Set Ollama-specific defaults on LiteLLM's OllamaConfig class.
+
+    Class-level attributes on ``OllamaConfig`` are merged into every Ollama
+    request's ``options`` dict by LiteLLM's ``get_config()`` machinery, so
+    this is the only reliable way to inject ``num_ctx`` into calls made by
+    docling-graph's internal pipeline (which doesn't expose per-request
+    Ollama options).
+    """
+    if LLM_PROVIDER != "ollama":
+        return
+    try:
+        from litellm.llms.ollama.completion.transformation import (
+            OllamaConfig as _OllamaConfig,
+        )
+
+        _OllamaConfig.num_ctx = OLLAMA_NUM_CTX
+        logger.info("Set LiteLLM OllamaConfig.num_ctx = %d", OLLAMA_NUM_CTX)
+    except Exception:
+        logger.warning("Could not set OllamaConfig.num_ctx — LiteLLM version may differ")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load ontology and build templates at startup."""
     global _templates, _ontology_version
 
+    _configure_ollama_provider()
     logger.info("Loading ontology from %s", ONTOLOGY_PATH)
     try:
         ontology = load_ontology(ONTOLOGY_PATH)
@@ -95,14 +120,25 @@ async def health():
 # ---------------------------------------------------------------------------
 # Extraction endpoint
 # ---------------------------------------------------------------------------
-def _build_litellm_model_string() -> str:
-    """Construct the model string LiteLLM expects for the configured provider."""
+def _litellm_provider() -> str:
+    """Return the LiteLLM provider string.
+
+    For Ollama we use ``ollama_chat`` so LiteLLM targets the ``/api/chat``
+    endpoint.  The default ``ollama`` provider routes to ``/api/generate``
+    which returns empty content for thinking-capable models when structured
+    output is requested.
+    """
     if LLM_PROVIDER == "ollama":
-        return f"ollama/{LLM_MODEL}"
-    if LLM_PROVIDER == "openai":
+        return "ollama_chat"
+    return LLM_PROVIDER
+
+
+def _build_litellm_model_string() -> str:
+    """Construct the full ``provider/model`` string LiteLLM expects."""
+    provider = _litellm_provider()
+    if provider == "openai":
         return LLM_MODEL
-    # Generic fallback: provider/model
-    return f"{LLM_PROVIDER}/{LLM_MODEL}"
+    return f"{provider}/{LLM_MODEL}"
 
 
 def _mock_extraction_response(
@@ -198,10 +234,11 @@ def _run_entity_extraction(
                 "backend": "llm",
                 "inference": "remote",
                 "model_override": model_string,
-                "provider_override": LLM_PROVIDER,
+                "provider_override": _litellm_provider(),
                 "dump_to_disk": False,
                 "llm_overrides": {
                     "connection": {"base_url": OLLAMA_BASE_URL},
+                    "context_limit": OLLAMA_NUM_CTX if LLM_PROVIDER == "ollama" else None,
                 },
             }
             try:
@@ -263,6 +300,9 @@ def _run_relationship_extraction(
     }
     if LLM_PROVIDER == "ollama":
         llm_kwargs["api_base"] = OLLAMA_BASE_URL
+        llm_kwargs["num_ctx"] = OLLAMA_NUM_CTX
+        if OLLAMA_THINK:
+            llm_kwargs["reasoning_effort"] = OLLAMA_THINK
 
     try:
         response = litellm.completion(**llm_kwargs)
