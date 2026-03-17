@@ -247,9 +247,10 @@ def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[
         # Prefer 'label' or '__class__' for the actual ontology entity type
         if raw_type in ("entity", "UNKNOWN"):
             raw_type = data.get("label", data.get("__class__", raw_type))
+        node_name = data.get("name") or data.get("label") or str(node_id)
         entities.append(
             ExtractedEntityResponse(
-                name=data.get("name", str(node_id)),
+                name=node_name,
                 entity_type=raw_type,
                 confidence=float(data.get("confidence", 1.0)),
                 properties={
