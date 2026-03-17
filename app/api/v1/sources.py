@@ -652,6 +652,37 @@ async def get_docling_document(
     )
 
 
+@router.get("/documents/{document_id}/docling-raw")
+async def get_docling_raw_json(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Stream the raw DoclingDocument JSON from MinIO.
+
+    Returns the full DoclingDocument including base64 page images,
+    intended for the <docling-img> web component viewer.
+    """
+    from fastapi.responses import Response
+    from app.services.storage import download_bytes_async
+
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    base_key = f"artifacts/{str(document_id)}"
+    bucket = settings.minio_bucket_derived
+
+    try:
+        json_bytes = await download_bytes_async(bucket, f"{base_key}/docling_document.json")
+    except Exception:
+        raise HTTPException(
+            status_code=404,
+            detail="DoclingDocument JSON not available. Re-ingest to generate.",
+        )
+
+    return Response(content=json_bytes, media_type="application/json")
+
+
 @router.get("/documents/{document_id}/artifacts/{artifact_id}/image")
 async def get_artifact_image(
     document_id: uuid.UUID,
