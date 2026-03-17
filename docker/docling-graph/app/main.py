@@ -16,7 +16,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.prompts import get_entity_prompt, get_relationship_prompt
 from app.schemas import (
     ExtractedEntityResponse,
     ExtractedRelationshipResponse,
@@ -44,7 +43,7 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 # ---------------------------------------------------------------------------
 # Module-level state (populated at startup)
 # ---------------------------------------------------------------------------
-_templates: dict[str, type[BaseModel]] | None = None
+_templates: dict[str, dict[str, type[BaseModel]]] | None = None
 _ontology_version: str | None = None
 
 
@@ -84,11 +83,12 @@ app = FastAPI(
 async def health():
     if _templates is None:
         raise HTTPException(status_code=503, detail="Templates not loaded")
+    total_entity_types = sum(len(group) for group in _templates.values())
     return {
         "status": "ok",
         "ontology_version": _ontology_version,
-        "template_count": len(_templates),
         "groups": list(_templates.keys()),
+        "template_count": total_entity_types,
     }
 
 
@@ -166,57 +166,70 @@ def _run_extraction(
 ) -> Any:
     """Run docling-graph pipeline synchronously (called in threadpool).
 
+    When *template_group* is provided, iterates through each entity model
+    in that group and merges the resulting graphs.  Each entity type gets
+    its own ``run_pipeline`` call so docling-graph can use a focused schema.
+
     The ``docling_graph`` import is deferred because the package is only
     available inside the Docker container.
     """
     import tempfile
     from pathlib import Path
 
+    import networkx as nx
     from docling_graph import run_pipeline  # type: ignore[import-untyped]
 
     model_string = _build_litellm_model_string()
 
-    # Select template: use group-specific template if provided, else first
-    if template_group and _templates:
-        template_cls = _templates.get(template_group)
+    # Resolve which entity model(s) to use
+    entity_models_to_run: list[tuple[str, type]] = []
+    if template_group and _templates and template_group in _templates:
+        group_models = _templates[template_group]
+        entity_models_to_run = list(group_models.items())
     elif _templates:
-        template_cls = next(iter(_templates.values()))
-    else:
-        template_cls = None
-
-    # Build system prompt based on mode and group
-    system_prompt: str | None = None
-    if mode == "relationships":
-        system_prompt = get_relationship_prompt(entities_context or [])
-    elif template_group:
-        system_prompt = get_entity_prompt(template_group)
+        # Legacy: pick the first entity model from the first group
+        first_group = next(iter(_templates.values()))
+        first_name, first_model = next(iter(first_group.items()))
+        entity_models_to_run = [(first_name, first_model)]
 
     # Write text to a temp .md file — docling-graph's input handler tries
     # Path(source).exists() first, which raises ENAMETOOLONG for long text
-    # strings.  Passing a file path avoids this entirely.
     tmp = tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8")
     try:
         tmp.write(text)
         tmp.close()
 
-        config = {
-            "source": tmp.name,
-            "template": template_cls,
-            "backend": "llm",
-            "inference": "remote",
-            "model_override": model_string,
-            "provider_override": LLM_PROVIDER,
-            "dump_to_disk": False,
-            "llm_overrides": {
-                "connection": {"base_url": OLLAMA_BASE_URL},
-            },
-        }
+        merged_graph = nx.DiGraph()
 
-        if system_prompt is not None:
-            config["llm_overrides"]["system_prompt"] = system_prompt
+        for entity_name, template_cls in entity_models_to_run:
+            config: dict[str, Any] = {
+                "source": tmp.name,
+                "template": template_cls,
+                "backend": "llm",
+                "inference": "remote",
+                "model_override": model_string,
+                "provider_override": LLM_PROVIDER,
+                "dump_to_disk": False,
+                "llm_overrides": {
+                    "connection": {"base_url": OLLAMA_BASE_URL},
+                },
+            }
+            try:
+                context = run_pipeline(config=config, mode="api")
+                kg = context.knowledge_graph
+                if kg is not None:
+                    merged_graph = nx.compose(merged_graph, kg)
+                    logger.info(
+                        "Extracted %d nodes, %d edges for entity type %s",
+                        kg.number_of_nodes(), kg.number_of_edges(), entity_name,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "docling-graph pipeline error for %s: %s — skipping",
+                    entity_name, exc,
+                )
 
-        context = run_pipeline(config=config, mode="api")
-        return context.knowledge_graph
+        return merged_graph
     finally:
         Path(tmp.name).unlink(missing_ok=True)
 
@@ -226,17 +239,23 @@ def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[
     entities: list[ExtractedEntityResponse] = []
     relationships: list[ExtractedRelationshipResponse] = []
 
-    # Nodes carry entity data
+    # Nodes carry entity data.
+    # docling-graph stores the entity class in 'label' or '__class__' within
+    # node properties; 'entity_type' may just be 'entity' (generic).
     for node_id, data in graph.nodes(data=True):
+        raw_type = data.get("entity_type", data.get("type", "UNKNOWN"))
+        # Prefer 'label' or '__class__' for the actual ontology entity type
+        if raw_type in ("entity", "UNKNOWN"):
+            raw_type = data.get("label", data.get("__class__", raw_type))
         entities.append(
             ExtractedEntityResponse(
                 name=data.get("name", str(node_id)),
-                entity_type=data.get("entity_type", data.get("type", "UNKNOWN")),
+                entity_type=raw_type,
                 confidence=float(data.get("confidence", 1.0)),
                 properties={
                     k: v
                     for k, v in data.items()
-                    if k not in {"name", "entity_type", "type", "confidence"}
+                    if k not in {"name", "entity_type", "type", "confidence", "label", "__class__"}
                 },
             )
         )

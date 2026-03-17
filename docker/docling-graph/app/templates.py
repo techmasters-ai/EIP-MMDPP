@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
 
 logger = logging.getLogger(__name__)
 
@@ -97,15 +97,14 @@ def _build_entity_model(
     return model
 
 
-def build_templates(ontology: dict[str, Any]) -> dict[str, type[BaseModel]]:
-    """Generate combined Pydantic models grouped by ontology layer.
+def build_templates(ontology: dict[str, Any]) -> dict[str, dict[str, type[BaseModel]]]:
+    """Generate Pydantic entity models grouped by ontology layer.
 
-    Each ontology entity type is first turned into its own Pydantic model via
-    ``_build_entity_model``.  Entity models are then assembled into five
-    *combined* models — one per ``GROUP_MAP`` entry — where each field is an
-    optional list of the corresponding entity model.
+    Each ontology entity type becomes its own Pydantic model via
+    ``_build_entity_model``.  Models are organized into groups matching
+    ``GROUP_MAP`` so the service can iterate through entity types per group.
 
-    Returns a dict mapping **group name** -> combined Pydantic model class.
+    Returns a dict mapping **group name** -> dict of **entity name** -> model class.
     """
     # Step 1: build individual entity models keyed by entity type name
     entity_models: dict[str, type[BaseModel]] = {}
@@ -115,10 +114,22 @@ def build_templates(ontology: dict[str, Any]) -> dict[str, type[BaseModel]]:
         props_schema = et.get("properties", {})
         entity_models[name] = _build_entity_model(name, props_schema)
 
-    # Step 2: for each group, create a combined model with list fields
-    templates: dict[str, type[BaseModel]] = {}
+    # Step 2: organize entity models into groups.
+    # docling-graph expects a single Pydantic model class per run_pipeline call.
+    # We store individual entity models grouped by layer so the service can
+    # iterate through each entity type within a group.
+    from app.prompts import GROUP_PROMPTS
+
+    # Add ontology descriptions to entity model docstrings
+    for et in entity_types:
+        desc = et.get("description", "")
+        name = et["name"]
+        if desc and name in entity_models:
+            entity_models[name].__doc__ = desc
+
+    templates: dict[str, dict[str, type[BaseModel]]] = {}
     for group_name, member_names in GROUP_MAP.items():
-        combined_fields: dict[str, Any] = {}
+        group_models: dict[str, type[BaseModel]] = {}
         for entity_name in member_names:
             if entity_name not in entity_models:
                 logger.warning(
@@ -127,14 +138,8 @@ def build_templates(ontology: dict[str, Any]) -> dict[str, type[BaseModel]]:
                     group_name,
                 )
                 continue
-            em = entity_models[entity_name]
-            combined_fields[entity_name.lower()] = (list[em] | None, None)
-
-        combined_model_name = f"{group_name.title().replace('_', '')}Extraction"
-        combined = create_model(combined_model_name, __config__=None, **combined_fields)
-        combined.model_config["is_entity"] = True
-        combined.model_config["graph_id_fields"] = []
-        templates[group_name] = combined
+            group_models[entity_name] = entity_models[entity_name]
+        templates[group_name] = group_models
 
     logger.info(
         "Built %d group templates (%d entity types) from ontology v%s",

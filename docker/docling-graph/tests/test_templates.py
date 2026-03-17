@@ -76,43 +76,44 @@ def test_all_ontology_types_covered():
 # build_templates() return shape
 # ---------------------------------------------------------------------------
 
-def test_returns_dict_keyed_by_group(templates):
+def test_returns_dict_of_dicts_keyed_by_group(templates):
     assert isinstance(templates, dict)
     assert set(templates.keys()) == set(GROUP_MAP.keys())
+    for group_name, group_models in templates.items():
+        assert isinstance(group_models, dict), f"{group_name} should be a dict"
 
 
-def test_each_template_is_pydantic_model(templates):
-    for name, model in templates.items():
-        assert isinstance(model, type), f"{name} is not a type"
-        assert issubclass(model, BaseModel), f"{name} is not a BaseModel subclass"
+def test_each_entity_model_is_pydantic(templates):
+    for group_name, group_models in templates.items():
+        for entity_name, model in group_models.items():
+            assert isinstance(model, type), f"{group_name}/{entity_name} is not a type"
+            assert issubclass(model, BaseModel), f"{group_name}/{entity_name} is not a BaseModel"
 
 
 # ---------------------------------------------------------------------------
-# Combined model structure
+# Group model structure
 # ---------------------------------------------------------------------------
 
-def test_equipment_template_has_entity_list_fields(templates):
-    equipment_model = templates["equipment"]
+def test_equipment_group_has_all_entity_types(templates):
+    equipment = templates["equipment"]
     for entity_name in GROUP_MAP["equipment"]:
-        field_key = entity_name.lower()
-        assert field_key in equipment_model.model_fields, (
-            f"Missing field '{field_key}' in equipment combined model"
-        )
+        assert entity_name in equipment, f"Missing entity {entity_name} in equipment group"
 
 
-def test_combined_model_fields_are_optional_lists(templates):
-    """Instantiating with no arguments should work; all fields default to None."""
-    for group_name, model_cls in templates.items():
-        instance = model_cls()  # Should not raise
-        for entity_name in GROUP_MAP[group_name]:
-            field_key = entity_name.lower()
-            assert getattr(instance, field_key) is None, (
-                f"{group_name}.{field_key} should default to None"
+def test_entity_models_have_optional_fields(templates):
+    """Instantiating any entity model with no args should work (all fields optional)."""
+    for group_name, group_models in templates.items():
+        for entity_name, model_cls in group_models.items():
+            instance = model_cls()  # Should not raise
+            for field_name in model_cls.model_fields:
+                assert getattr(instance, field_name) is None, (
+                    f"{group_name}/{entity_name}.{field_name} should default to None"
+                )
+
+
+def test_entity_models_have_graph_metadata(templates):
+    for group_name, group_models in templates.items():
+        for entity_name, model_cls in group_models.items():
+            assert model_cls.model_config.get("is_entity") is True, (
+                f"{group_name}/{entity_name} missing is_entity=True"
             )
-
-
-def test_combined_model_has_graph_metadata(templates):
-    for group_name, model_cls in templates.items():
-        assert model_cls.model_config.get("is_entity") is True, (
-            f"{group_name} model missing is_entity=True in model_config"
-        )
