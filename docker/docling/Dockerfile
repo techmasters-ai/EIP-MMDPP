@@ -83,23 +83,25 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt .
+# --- Stable deps (cached normally) ---
+COPY requirements-stable.txt .
 RUN pip install --no-cache-dir packaging ninja && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements-stable.txt
 
-# Build flash-attn after torch is installed. Limit to our GPU arch
-# and parallel jobs to keep build time ~10min instead of ~60min.
+# flash-attn build (expensive, stays cached)
 ENV MAX_JOBS=4
 ENV TORCH_CUDA_ARCH_LIST="8.9"
 RUN pip install --no-cache-dir flash-attn --no-build-isolation
 
-# Pre-download model into the standard HF cache layout for air-gapped deployment.
-# HF_HOME is set BEFORE the download so snapshot_download writes to the cache
-# under /opt/huggingface/hub/models--ibm-granite--granite-docling-258M/...
-# This path is NOT shadowed by any docker-compose volume mount.
+# Model downloads (stays cached)
 ENV HF_HOME=/opt/huggingface
 RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-docling-258M')"
 RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-vision-3.3-2b')"
+
+# --- Updatable deps (cache-busted on every start) ---
+ARG CACHE_BUST
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Lock to offline mode for air-gapped runtime
 ENV HF_HUB_OFFLINE=1
