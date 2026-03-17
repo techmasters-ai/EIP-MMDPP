@@ -1,7 +1,5 @@
-import { useEffect, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { getDoclingDocument, type DoclingDocumentResponse } from "../api/client";
+import { useEffect, useState, useMemo } from "react";
+import { getDoclingRawJson } from "../api/client";
 
 interface DoclingViewerProps {
   documentId: string;
@@ -9,21 +7,71 @@ interface DoclingViewerProps {
   onClose: () => void;
 }
 
-type ViewMode = "markdown" | "json";
+type ViewMode = "document" | "json";
 
-export function DoclingViewer({ documentId, filename, onClose }: DoclingViewerProps) {
-  const [data, setData] = useState<DoclingDocumentResponse | null>(null);
+function buildDoclingHtml(docJson: Record<string, unknown>): string {
+  const jsonStr = JSON.stringify(docJson);
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="/static/docling-components.js" type="module"><\/script>
+    <style>
+      body { margin: 0; background: #f5f5f5; }
+      docling-img { gap: 1rem; }
+      docling-img::part(page) {
+        box-shadow: 0 0.5rem 1rem 0 rgba(0, 0, 0, 0.2);
+      }
+    </style>
+  </head>
+  <body>
+    <docling-img id="dclimg" pagenumbers>
+      <docling-tooltip></docling-tooltip>
+    </docling-img>
+
+    <script id="dcljson" type="application/json">${jsonStr}<\/script>
+
+    <script>
+      (function() {
+        function applySrc() {
+          try {
+            var data = JSON.parse(document.getElementById('dcljson').textContent);
+            var el = document.getElementById('dclimg');
+            if (el) el.src = data;
+          } catch (e) {
+            console.error('Failed to set docling-img src:', e);
+          }
+        }
+        if (!customElements.get('docling-img')) {
+          customElements.whenDefined('docling-img').then(applySrc);
+        } else {
+          applySrc();
+        }
+      })();
+    <\/script>
+  </body>
+</html>`;
+}
+
+export function DoclingViewer({
+  documentId,
+  filename,
+  onClose,
+}: DoclingViewerProps) {
+  const [docJson, setDocJson] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<ViewMode>("markdown");
+  const [mode, setMode] = useState<ViewMode>("document");
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    getDoclingDocument(documentId)
-      .then(setData)
+    getDoclingRawJson(documentId)
+      .then(setDocJson)
       .catch((err) =>
-        setError(err instanceof Error ? err.message : "Failed to load document"),
+        setError(
+          err instanceof Error ? err.message : "Failed to load document",
+        ),
       )
       .finally(() => setLoading(false));
   }, [documentId]);
@@ -36,6 +84,11 @@ export function DoclingViewer({ documentId, filename, onClose }: DoclingViewerPr
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const srcdoc = useMemo(() => {
+    if (!docJson) return "";
+    return buildDoclingHtml(docJson);
+  }, [docJson]);
+
   return (
     <div className="docling-overlay" onClick={onClose}>
       <div className="docling-modal" onClick={(e) => e.stopPropagation()}>
@@ -45,12 +98,12 @@ export function DoclingViewer({ documentId, filename, onClose }: DoclingViewerPr
           </h3>
           <div className="docling-mode-toggle">
             <button
-              className={`mode-btn${mode === "markdown" ? " active" : ""}`}
-              onClick={() => setMode("markdown")}
+              className={`mode-btn${mode === "document" ? " active" : ""}`}
+              onClick={() => setMode("document")}
             >
               Document
             </button>
-            {data && Object.keys(data.document_json).length > 0 && (
+            {docJson && (
               <button
                 className={`mode-btn${mode === "json" ? " active" : ""}`}
                 onClick={() => setMode("json")}
@@ -74,58 +127,23 @@ export function DoclingViewer({ documentId, filename, onClose }: DoclingViewerPr
 
           {error && <div className="alert alert-error">{error}</div>}
 
-          {data && mode === "markdown" && (
-            <div className="docling-markdown-content">
-              <Markdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  img: ({ src, alt, ...props }) => {
-                    const matchedImage = data.images.find(
-                      (img) => src?.includes(img.element_uid),
-                    );
-                    const resolvedSrc = matchedImage
-                      ? matchedImage.url
-                      : src?.startsWith("/") || src?.startsWith("http")
-                        ? src
-                        : undefined;
-                    return (
-                      <img
-                        src={resolvedSrc}
-                        alt={alt || ""}
-                        className="docling-inline-image"
-                        {...props}
-                      />
-                    );
-                  },
-                }}
-              >
-                {data.markdown}
-              </Markdown>
-              {/* Show images not embedded in markdown */}
-              {(() => {
-                const markdownText = data.markdown || "";
-                const unmatched = data.images.filter(
-                  (img) => !markdownText.includes(img.element_uid),
-                );
-                return unmatched.length > 0 ? (
-                  <div className="docling-image-gallery">
-                    {unmatched.map((img) => (
-                      <img
-                        key={img.element_uid}
-                        src={img.url}
-                        alt={img.element_uid}
-                        className="docling-inline-image"
-                      />
-                    ))}
-                  </div>
-                ) : null;
-              })()}
-            </div>
+          {docJson && mode === "document" && (
+            <iframe
+              srcDoc={srcdoc}
+              title={`DoclingViewer: ${filename}`}
+              style={{
+                width: "100%",
+                height: "100%",
+                border: "none",
+                minHeight: "600px",
+              }}
+              sandbox="allow-scripts allow-same-origin"
+            />
           )}
 
-          {data && mode === "json" && (
+          {docJson && mode === "json" && (
             <pre className="docling-json-content">
-              {JSON.stringify(data.document_json, null, 2)}
+              {JSON.stringify(docJson, null, 2)}
             </pre>
           )}
         </div>
