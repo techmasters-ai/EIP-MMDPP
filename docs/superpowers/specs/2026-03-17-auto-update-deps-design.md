@@ -6,7 +6,7 @@
 
 ## Solution
 
-Add a `CACHE_BUST` build arg to the Docling and Docling-Graph Dockerfiles, placed immediately before the `pip install` step. `manage.sh` passes a fresh timestamp on every `--start`, invalidating the pip layer while preserving cached base image and apt layers.
+Add a `CACHE_BUST` build arg to the Docling and Docling-Graph Dockerfiles, placed so it invalidates only the pip install layers that contain the updatable packages. `manage.sh` passes a fresh timestamp on every `--start`, invalidating those layers while preserving cached base image, apt, flash-attn build, and model download layers.
 
 ## Scope
 
@@ -20,40 +20,78 @@ Add a `CACHE_BUST` build arg to the Docling and Docling-Graph Dockerfiles, place
 
 ## Changes
 
-### 1. Dockerfile changes
+### 1. Docling Dockerfile restructure
 
-Both `docker/docling/Dockerfile` and `docker/docling-graph/Dockerfile`:
+The current Docling Dockerfile installs everything in one pip layer, then builds flash-attn, then downloads models. Placing `CACHE_BUST` before pip install would invalidate **all** subsequent layers including the expensive flash-attn build (~10-60 min) and model downloads (~3-4 GB).
+
+**Fix**: Split requirements into stable and updatable. Install stable deps + flash-attn + models first (cached normally), then cache-bust only the updatable deps.
 
 ```dockerfile
-# Place immediately before pip install
+# --- Stable deps (cached normally) ---
+COPY requirements-stable.txt .
+RUN pip install --no-cache-dir packaging ninja && \
+    pip install --no-cache-dir -r requirements-stable.txt
+
+# flash-attn build (expensive, cached)
+ENV MAX_JOBS=4
+ENV TORCH_CUDA_ARCH_LIST="8.9"
+RUN pip install --no-cache-dir flash-attn --no-build-isolation
+
+# Model downloads (cached)
+ENV HF_HOME=/opt/huggingface
+RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-docling-258M')"
+RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-vision-3.3-2b')"
+
+# --- Updatable deps (cache-busted on every start) ---
 ARG CACHE_BUST
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 ```
 
-### 2. Requirements pinning
+**`requirements-stable.txt`** — heavy/slow-to-build deps that rarely change:
+```
+torch>=2.5.0
+transformers>=4.40.0
+huggingface-hub>=0.20.0
+Pillow>=11.0.0
+python-multipart>=0.0.20
+```
 
-`docker/docling/requirements.txt` — relax exact pins to minimums:
+**`requirements.txt`** — the packages we want to auto-update:
+```
+docling>=2.76.0
+docling-core>=2.67.1
+```
 
-| Before | After |
-|--------|-------|
-| `docling==2.76.0` | `docling>=2.76.0` |
-| `docling-core==2.67.1` | `docling-core>=2.67.1` |
+The `--upgrade` flag ensures pip checks PyPI for newer versions even if an older version from the stable layer already satisfies the constraint.
 
-`docker/docling-graph/requirements.txt` — no change needed (already uses `>=`).
+### 2. Docling-Graph Dockerfile
+
+Simpler — no expensive build steps. Just add `CACHE_BUST` before the existing pip install and add `--upgrade`:
+
+```dockerfile
+ARG CACHE_BUST
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
+```
+
+No changes to `requirements.txt` needed (already uses `>=` pinning).
 
 ### 3. manage.sh changes
 
-In the `--start` and `--start-split` code paths, replace the single `docker compose up -d --build` with:
+In the `--start` and `--start-split` code paths, add a targeted build step before the existing `up` command. Uses the existing `dc` wrapper function for consistency:
 
 ```bash
-docker compose build --build-arg CACHE_BUST=$(date +%s) docling docling-graph
-docker compose up -d
+info "Updating docling & docling-graph packages..."
+dc build --build-arg CACHE_BUST=$(date +%s) docling docling-graph
+dc "${profile_args[@]}" up -d --build
 ```
 
-This targets only the two services that need fresh packages. Infrastructure services and the main API image are unaffected.
+The `dc build` targets only the two services. The subsequent `dc up -d --build` still rebuilds any other services whose context changed (e.g., API image when `./app/` code changes), preserving existing behavior.
 
 ### 4. Non-changes
 
 - `--restart` remains fast (no rebuild)
-- `--stop`, `--status`, `--logs`, and all other commands are unaffected
-- docker-compose.yml is unchanged
+- `--stop`, `--status`, `--logs`, `--blow-away`, and all other commands are unaffected
+- `docker-compose.yml` is unchanged
+- Profile args (`--profile split`) are not needed for the `dc build` command since `docling` and `docling-graph` are top-level services not gated by profiles
