@@ -474,3 +474,8 @@ export async function getDoclingDocument(documentId: string): Promise<DoclingDoc
   const res = await fetch(`/v1/documents/${documentId}/docling`);
   return handleResponse<DoclingDocumentResponse>(res);
 }
+
+export async function getDoclingRawJson(documentId: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`/v1/documents/${documentId}/docling-raw`);
+  return handleResponse<Record<string, unknown>>(res);
+}
