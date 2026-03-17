@@ -16,13 +16,14 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from app.prompts import get_entity_prompt, get_relationship_prompt
 from app.schemas import (
     ExtractedEntityResponse,
     ExtractedRelationshipResponse,
     ExtractionRequest,
     ExtractionResponse,
 )
-from app.templates import build_templates, get_ontology_version, load_ontology
+from app.templates import GROUP_MAP, build_templates, get_ontology_version, load_ontology
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -87,6 +88,7 @@ async def health():
         "status": "ok",
         "ontology_version": _ontology_version,
         "template_count": len(_templates),
+        "groups": list(_templates.keys()),
     }
 
 
@@ -103,40 +105,65 @@ def _build_litellm_model_string() -> str:
     return f"{LLM_PROVIDER}/{LLM_MODEL}"
 
 
-def _mock_extraction_response() -> ExtractionResponse:
-    """Return a canned response for testing (LLM_PROVIDER=mock)."""
+def _mock_extraction_response(
+    mode: str = "entities", template_group: str | None = None
+) -> ExtractionResponse:
+    """Return a canned response for testing (LLM_PROVIDER=mock).
+
+    When *mode* is ``"relationships"``, returns mock relationships only (empty
+    entities).  When ``"entities"``, returns mock entities only (empty
+    relationships).
+    """
+    mock_entities = [
+        ExtractedEntityResponse(
+            name="Mock Radar System",
+            entity_type="RADAR_SYSTEM",
+            confidence=0.95,
+            properties={"designation": "AN/APG-00"},
+        ),
+        ExtractedEntityResponse(
+            name="Mock Platform",
+            entity_type="PLATFORM",
+            confidence=0.90,
+            properties={"platform_type": "aircraft"},
+        ),
+    ]
+    mock_relationships = [
+        ExtractedRelationshipResponse(
+            from_name="Mock Platform",
+            from_type="PLATFORM",
+            rel_type="HAS_COMPONENT",
+            to_name="Mock Radar System",
+            to_type="RADAR_SYSTEM",
+            confidence=0.85,
+        ),
+    ]
+
+    if mode == "relationships":
+        return ExtractionResponse(
+            entities=[],
+            relationships=mock_relationships,
+            ontology_version=_ontology_version,
+            model="mock",
+            provider="mock",
+        )
+
+    # mode == "entities" (or legacy default)
     return ExtractionResponse(
-        entities=[
-            ExtractedEntityResponse(
-                name="Mock Radar System",
-                entity_type="RADAR_SYSTEM",
-                confidence=0.95,
-                properties={"designation": "AN/APG-00"},
-            ),
-            ExtractedEntityResponse(
-                name="Mock Platform",
-                entity_type="PLATFORM",
-                confidence=0.90,
-                properties={"platform_type": "aircraft"},
-            ),
-        ],
-        relationships=[
-            ExtractedRelationshipResponse(
-                from_name="Mock Platform",
-                from_type="PLATFORM",
-                rel_type="HAS_COMPONENT",
-                to_name="Mock Radar System",
-                to_type="RADAR_SYSTEM",
-                confidence=0.85,
-            ),
-        ],
+        entities=mock_entities,
+        relationships=[],
         ontology_version=_ontology_version,
         model="mock",
         provider="mock",
     )
 
 
-def _run_extraction(text: str) -> Any:
+def _run_extraction(
+    text: str,
+    template_group: str | None = None,
+    mode: str = "entities",
+    entities_context: list[dict] | None = None,
+) -> Any:
     """Run docling-graph pipeline synchronously (called in threadpool).
 
     The ``docling_graph`` import is deferred because the package is only
@@ -149,9 +176,20 @@ def _run_extraction(text: str) -> Any:
 
     model_string = _build_litellm_model_string()
 
-    # Pick the first template class — docling-graph expects a single
-    # Pydantic model class (or dotted-path string), not a dict.
-    template_cls = next(iter(_templates.values())) if _templates else None
+    # Select template: use group-specific template if provided, else first
+    if template_group and _templates:
+        template_cls = _templates.get(template_group)
+    elif _templates:
+        template_cls = next(iter(_templates.values()))
+    else:
+        template_cls = None
+
+    # Build system prompt based on mode and group
+    system_prompt: str | None = None
+    if mode == "relationships":
+        system_prompt = get_relationship_prompt(entities_context or [])
+    elif template_group:
+        system_prompt = get_entity_prompt(template_group)
 
     # Write text to a temp .md file — docling-graph's input handler tries
     # Path(source).exists() first, which raises ENAMETOOLONG for long text
@@ -173,6 +211,9 @@ def _run_extraction(text: str) -> Any:
                 "connection": {"base_url": OLLAMA_BASE_URL},
             },
         }
+
+        if system_prompt is not None:
+            config["llm_overrides"]["system_prompt"] = system_prompt
 
         context = run_pipeline(config=config, mode="api")
         return context.knowledge_graph
@@ -218,11 +259,31 @@ def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[
     return entities, relationships
 
 
+_VALID_MODES = {"entities", "relationships"}
+
+
 @app.post("/extract", response_model=ExtractionResponse)
 async def extract(request: ExtractionRequest):
     """Extract entities and relationships from document text."""
     if _templates is None:
         raise HTTPException(status_code=503, detail="Service not ready — templates not loaded")
+
+    # Validate mode
+    if request.mode not in _VALID_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown mode '{request.mode}'; valid modes: {sorted(_VALID_MODES)}",
+        )
+
+    # Validate template_group
+    if request.template_group is not None and request.template_group not in _templates:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown template_group '{request.template_group}'; "
+                f"valid groups: {sorted(_templates.keys())}"
+            ),
+        )
 
     # Warn on ontology version mismatch
     if request.ontology_version and request.ontology_version != _ontology_version:
@@ -233,18 +294,26 @@ async def extract(request: ExtractionRequest):
         )
 
     logger.info(
-        "Extracting from document %s (%d chars)",
+        "Extracting from document %s (%d chars, group=%s, mode=%s)",
         request.document_id,
         len(request.text),
+        request.template_group or "(default)",
+        request.mode,
     )
 
     # Mock mode: return canned response without importing docling_graph
     if LLM_PROVIDER == "mock":
         logger.info("Mock mode — returning canned extraction for document %s", request.document_id)
-        return _mock_extraction_response()
+        return _mock_extraction_response(mode=request.mode, template_group=request.template_group)
 
     try:
-        graph = await run_in_threadpool(_run_extraction, request.text)
+        graph = await run_in_threadpool(
+            _run_extraction,
+            request.text,
+            template_group=request.template_group,
+            mode=request.mode,
+            entities_context=request.entities_context,
+        )
     except Exception:
         logger.exception("Extraction failed for document %s", request.document_id)
         raise HTTPException(status_code=503, detail="Extraction pipeline failed")
@@ -252,10 +321,12 @@ async def extract(request: ExtractionRequest):
     entities, relationships = _graph_to_response(graph)
 
     logger.info(
-        "Extracted %d entities, %d relationships from document %s",
+        "Extracted %d entities, %d relationships from document %s (group=%s, mode=%s)",
         len(entities),
         len(relationships),
         request.document_id,
+        request.template_group or "(default)",
+        request.mode,
     )
 
     return ExtractionResponse(
