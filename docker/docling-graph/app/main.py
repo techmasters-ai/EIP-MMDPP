@@ -158,20 +158,13 @@ def _mock_extraction_response(
     )
 
 
-def _run_extraction(
+def _run_entity_extraction(
     text: str,
     template_group: str | None = None,
-    mode: str = "entities",
-    entities_context: list[dict] | None = None,
 ) -> Any:
-    """Run docling-graph pipeline synchronously (called in threadpool).
+    """Run docling-graph pipeline for entity extraction (called in threadpool).
 
-    When *template_group* is provided, iterates through each entity model
-    in that group and merges the resulting graphs.  Each entity type gets
-    its own ``run_pipeline`` call so docling-graph can use a focused schema.
-
-    The ``docling_graph`` import is deferred because the package is only
-    available inside the Docker container.
+    Iterates through each entity model in the group and merges graphs.
     """
     import tempfile
     from pathlib import Path
@@ -187,13 +180,10 @@ def _run_extraction(
         group_models = _templates[template_group]
         entity_models_to_run = list(group_models.items())
     elif _templates:
-        # Legacy: pick the first entity model from the first group
         first_group = next(iter(_templates.values()))
         first_name, first_model = next(iter(first_group.items()))
         entity_models_to_run = [(first_name, first_model)]
 
-    # Write text to a temp .md file — docling-graph's input handler tries
-    # Path(source).exists() first, which raises ENAMETOOLONG for long text
     tmp = tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8")
     try:
         tmp.write(text)
@@ -232,6 +222,79 @@ def _run_extraction(
         return merged_graph
     finally:
         Path(tmp.name).unlink(missing_ok=True)
+
+
+def _run_relationship_extraction(
+    text: str,
+    entities_context: list[dict],
+) -> list[dict]:
+    """Extract relationships via direct LLM call with structured output.
+
+    docling-graph's run_pipeline doesn't support relationship-only extraction,
+    so we call LiteLLM directly with the relationship prompt and ask for JSON.
+    """
+    import json as json_mod
+
+    import litellm
+
+    from app.prompts import get_relationship_prompt
+
+    model_string = _build_litellm_model_string()
+    system_prompt = get_relationship_prompt(entities_context)
+
+    user_prompt = (
+        f"Analyze this text and extract relationships between the known entities:\n\n"
+        f"=== TEXT ===\n{text}\n=== END TEXT ===\n\n"
+        "Return a JSON object with a single key 'relationships' containing an array. "
+        "Each relationship object must have: from_name, from_type, rel_type, to_name, to_type, confidence (0.0-1.0).\n"
+        "Example: {\"relationships\": [{\"from_name\": \"AN/MPQ-53\", \"from_type\": \"RADAR_SYSTEM\", "
+        "\"rel_type\": \"INSTALLED_ON\", \"to_name\": \"Patriot\", \"to_type\": \"PLATFORM\", \"confidence\": 0.9}]}\n"
+        "Return ONLY valid JSON."
+    )
+
+    llm_kwargs: dict[str, Any] = {
+        "model": model_string,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4096,
+    }
+    if LLM_PROVIDER == "ollama":
+        llm_kwargs["api_base"] = OLLAMA_BASE_URL
+
+    try:
+        response = litellm.completion(**llm_kwargs)
+        raw = response.choices[0].message.content
+        if raw is None:
+            logger.warning("Relationship extraction: LLM returned None content")
+            return []
+        raw = raw.strip()
+        logger.debug("Relationship LLM raw output (%d chars): %s", len(raw), raw[:500])
+
+        # Try to parse JSON — handle markdown-wrapped responses
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            if len(parts) >= 2:
+                inner = parts[1]
+                if inner.startswith("json"):
+                    inner = inner[4:]
+                raw = inner.strip()
+
+        # Try to find JSON object in the response
+        json_start = raw.find("{")
+        json_end = raw.rfind("}") + 1
+        if json_start >= 0 and json_end > json_start:
+            raw = raw[json_start:json_end]
+
+        parsed = json_mod.loads(raw)
+        relationships = parsed.get("relationships", [])
+        logger.info("Relationship extraction returned %d relationships", len(relationships))
+        return relationships
+    except Exception as exc:
+        logger.warning("Relationship extraction failed: %s — raw: %s", exc, raw[:200] if raw else "(empty)")
+        return []
 
 
 def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[ExtractedRelationshipResponse]]:
@@ -326,32 +389,68 @@ async def extract(request: ExtractionRequest):
         logger.info("Mock mode — returning canned extraction for document %s", request.document_id)
         return _mock_extraction_response(mode=request.mode, template_group=request.template_group)
 
+    if request.mode == "relationships":
+        # Relationship extraction via direct LLM call (not docling-graph pipeline)
+        try:
+            rel_dicts = await run_in_threadpool(
+                _run_relationship_extraction,
+                request.text,
+                request.entities_context or [],
+            )
+        except Exception:
+            logger.exception("Relationship extraction failed for document %s", request.document_id)
+            raise HTTPException(status_code=503, detail="Relationship extraction failed")
+
+        relationships = [
+            ExtractedRelationshipResponse(
+                from_name=r.get("from_name", ""),
+                from_type=r.get("from_type", "UNKNOWN"),
+                rel_type=r.get("rel_type", "RELATED_TO"),
+                to_name=r.get("to_name", ""),
+                to_type=r.get("to_type", "UNKNOWN"),
+                confidence=float(r.get("confidence", 0.5)),
+            )
+            for r in rel_dicts
+            if r.get("from_name") and r.get("to_name")
+        ]
+
+        logger.info(
+            "Extracted %d relationships from document %s",
+            len(relationships), request.document_id,
+        )
+
+        return ExtractionResponse(
+            entities=[],
+            relationships=relationships,
+            ontology_version=_ontology_version,
+            model=LLM_MODEL,
+            provider=LLM_PROVIDER,
+        )
+
+    # Entity extraction via docling-graph pipeline
     try:
         graph = await run_in_threadpool(
-            _run_extraction,
+            _run_entity_extraction,
             request.text,
-            template_group=request.template_group,
-            mode=request.mode,
-            entities_context=request.entities_context,
+            request.template_group,
         )
     except Exception:
-        logger.exception("Extraction failed for document %s", request.document_id)
+        logger.exception("Entity extraction failed for document %s", request.document_id)
         raise HTTPException(status_code=503, detail="Extraction pipeline failed")
 
-    entities, relationships = _graph_to_response(graph)
+    entities, graph_relationships = _graph_to_response(graph)
 
     logger.info(
-        "Extracted %d entities, %d relationships from document %s (group=%s, mode=%s)",
+        "Extracted %d entities, %d relationships from document %s (group=%s)",
         len(entities),
-        len(relationships),
+        len(graph_relationships),
         request.document_id,
         request.template_group or "(default)",
-        request.mode,
     )
 
     return ExtractionResponse(
         entities=entities,
-        relationships=relationships,
+        relationships=graph_relationships,
         ontology_version=_ontology_version,
         model=LLM_MODEL,
         provider=LLM_PROVIDER,
