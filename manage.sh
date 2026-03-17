@@ -189,12 +189,26 @@ print('Reranker model ready')
   fi
 
   # Download OpenCLIP image embedding model (skip if already cached)
-  info "Downloading image embedding model (${IMAGE_EMBEDDING_MODEL}/${IMAGE_EMBEDDING_PRETRAINED})..."
-  dc exec -T api python -c "
+  if dc exec -T api python -c "
+import os, open_clip
+pcfg = open_clip.get_pretrained_cfg('${IMAGE_EMBEDDING_MODEL}', '${IMAGE_EMBEDDING_PRETRAINED}')
+hf_hub = (pcfg or {}).get('hf_hub', '')
+if hf_hub:
+    # hf_hub looks like 'timm/vit_base_patch32_clip_224.openai/' — convert to cache dir name
+    cache_dir = os.path.expanduser('~/.cache/huggingface/hub')
+    model_dir = 'models--' + hf_hub.strip('/').replace('/', '--')
+    exit(0 if os.path.isdir(os.path.join(cache_dir, model_dir)) else 1)
+exit(1)
+" 2>/dev/null; then
+    info "Image embedding model already cached — skipping download"
+  else
+    info "Downloading image embedding model (${IMAGE_EMBEDDING_MODEL}/${IMAGE_EMBEDDING_PRETRAINED})..."
+    dc exec -T api python -c "
 import open_clip
 open_clip.create_model_and_transforms('${IMAGE_EMBEDDING_MODEL}', pretrained='${IMAGE_EMBEDDING_PRETRAINED}')
 print('Image embedding model ready')
 " 2>/dev/null && info "Image embedding model ready" || warn "Image embedding model download failed (will retry on first use)"
+  fi
 
   # Pull Ollama model via the Ollama service on the Docker network
   local ollama_url="${OLLAMA_BASE_URL:-http://ollama:11434}"
