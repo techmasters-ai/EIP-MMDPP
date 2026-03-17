@@ -190,11 +190,11 @@ print('Reranker model ready')
 
   # Pull Ollama model via the Ollama service on the Docker network
   local ollama_url="${OLLAMA_BASE_URL:-http://ollama:11434}"
-  if dc exec -T api curl -sf "${ollama_url}/api/tags" 2>/dev/null | grep -q "${DOCLING_GRAPH_MODEL}"; then
-    info "Ollama model ${DOCLING_GRAPH_MODEL} already present — skipping pull"
+  if dc exec -T api curl -sf "${ollama_url}/api/tags" 2>/dev/null | grep -q "${DOCLING_GRAPH_LLM_MODEL}"; then
+    info "Ollama model ${DOCLING_GRAPH_LLM_MODEL} already present — skipping pull"
   else
-    info "Pulling Ollama model (${DOCLING_GRAPH_MODEL}) via ${ollama_url}..."
-    dc exec -T api curl -sf "${ollama_url}/api/pull" -d "{\"name\":\"${DOCLING_GRAPH_MODEL}\"}" >/dev/null 2>&1 \
+    info "Pulling Ollama model (${DOCLING_GRAPH_LLM_MODEL}) via ${ollama_url}..."
+    dc exec -T api curl -sf "${ollama_url}/api/pull" -d "{\"name\":\"${DOCLING_GRAPH_LLM_MODEL}\"}" >/dev/null 2>&1 \
       && info "Ollama model ready" || warn "Ollama pull failed (ensure Ollama service is on the Docker network)"
   fi
 
