@@ -40,6 +40,7 @@ def test_report_prompt_includes_ontology_context():
     settings.graphrag_model = "llama3.2"
     settings.ollama_base_url = "http://localhost:11434"
     settings.ollama_num_ctx = 16384
+    settings.ollama_think = ""
 
     with patch("httpx.post", side_effect=mock_ollama_call):
         _generate_community_reports(communities, entities, relationships, settings)

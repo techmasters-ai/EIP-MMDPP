@@ -66,7 +66,12 @@ def _configure_ollama_provider() -> None:
         )
 
         _OllamaConfig.num_ctx = OLLAMA_NUM_CTX
-        logger.info("Set LiteLLM OllamaConfig.num_ctx = %d", OLLAMA_NUM_CTX)
+        if OLLAMA_THINK:
+            _OllamaConfig.think = OLLAMA_THINK
+        logger.info(
+            "Set LiteLLM OllamaConfig: num_ctx=%d, think=%s",
+            OLLAMA_NUM_CTX, OLLAMA_THINK or "(default)",
+        )
     except Exception:
         logger.warning("Could not set OllamaConfig.num_ctx — LiteLLM version may differ")
 
@@ -355,7 +360,7 @@ def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[
             ExtractedEntityResponse(
                 name=node_name,
                 entity_type=raw_type,
-                confidence=float(data.get("confidence", 1.0)),
+                confidence=float(data.get("confidence") or 1.0),
                 properties={
                     k: v
                     for k, v in data.items()
@@ -375,7 +380,7 @@ def _graph_to_response(graph: Any) -> tuple[list[ExtractedEntityResponse], list[
                 rel_type=data.get("rel_type", data.get("type", "RELATED_TO")),
                 to_name=dst_data.get("name", str(dst)),
                 to_type=dst_data.get("entity_type", dst_data.get("type", "UNKNOWN")),
-                confidence=float(data.get("confidence", 1.0)),
+                confidence=float(data.get("confidence") or 1.0),
             )
         )
 

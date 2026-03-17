@@ -22,6 +22,7 @@ def _mock_settings(**overrides):
     s.llm_provider = "mock"
     s.graphrag_model = "llama3.2"
     s.ollama_base_url = "http://localhost:11434"
+    s.ollama_think = ""
     for k, v in overrides.items():
         setattr(s, k, v)
     return s

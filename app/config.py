@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     # Ollama connection (used by GraphRAG report generation)
     ollama_base_url: str = "http://localhost:11434"
     ollama_num_ctx: int = 16384
+    ollama_think: str = ""  # "low", "medium", "high" for gpt-oss thinking level
 
     # --- Docling-Graph service (entity/relationship extraction) ---
     docling_graph_base_url: str = "http://docling-graph:8002"

@@ -411,7 +411,7 @@ Write a concise report (2-3 paragraphs) explaining:
 Return ONLY the report text, no JSON or markdown fences."""
 
         try:
-            payload = {
+            payload: dict = {
                 "model": settings.graphrag_model,
                 "messages": [
                     {"role": "system", "content": system_content},
@@ -424,6 +424,8 @@ Return ONLY the report text, no JSON or markdown fences."""
                     "num_ctx": settings.ollama_num_ctx,
                 },
             }
+            if settings.ollama_think:
+                payload["options"]["think"] = settings.ollama_think
             response = httpx.post(
                 f"{settings.ollama_base_url}/api/chat",
                 json=payload,
