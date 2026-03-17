@@ -27,32 +27,48 @@ _converter = None
 _model_loaded = False
 
 
-def _patch_imageref_from_pil() -> None:
-    """Monkey-patch ImageRef.from_pil to handle zero-area images.
+def _patch_pil_crop() -> None:
+    """Monkey-patch PIL Image.crop to handle malformed bounding boxes.
 
     Workaround for docling-core bug where VLM predicts bounding boxes
-    that collapse to zero-area after integer rounding, causing PIL
-    "tile cannot extend outside image" crash.
+    with inverted/zero-area coordinates, causing either:
+    - ValueError: Coordinate 'lower' is less than 'upper'
+    - SystemError: tile cannot extend outside image
     See: https://github.com/docling-project/docling/issues/2763
     """
     try:
-        from docling_core.types.doc.document import ImageRef
+        from PIL import Image as PILImage
 
-        _original_from_pil = ImageRef.from_pil
+        _original_crop = PILImage.Image.crop
 
-        @classmethod  # type: ignore[misc]
-        def _safe_from_pil(cls, image, dpi=72):
-            if image.size[0] == 0 or image.size[1] == 0:
-                logger.warning("Skipping zero-area image (%s) in ImageRef.from_pil", image.size)
-                # Create a 1x1 transparent placeholder instead of crashing
-                from PIL import Image as PILImage
-                image = PILImage.new("RGBA", (1, 1), (0, 0, 0, 0))
-            return _original_from_pil.__func__(cls, image=image, dpi=dpi)
+        def _safe_crop(self, box=None):
+            if box is not None:
+                left, upper, right, lower = box
+                # Fix inverted coordinates
+                if right < left:
+                    left, right = right, left
+                if lower < upper:
+                    upper, lower = lower, upper
+                # Ensure minimum 1px dimensions
+                if right <= left:
+                    right = left + 1
+                if lower <= upper:
+                    lower = upper + 1
+                # Clamp to image bounds
+                right = min(right, self.width)
+                lower = min(lower, self.height)
+                left = max(0, left)
+                upper = max(0, upper)
+                if right <= left or lower <= upper:
+                    logger.warning("Malformed crop box (%s) on image %s, returning 1x1 placeholder", box, self.size)
+                    return PILImage.new(self.mode, (1, 1))
+                box = (left, upper, right, lower)
+            return _original_crop(self, box)
 
-        ImageRef.from_pil = _safe_from_pil
-        logger.info("Patched ImageRef.from_pil for zero-area image workaround")
+        PILImage.Image.crop = _safe_crop
+        logger.info("Patched PIL Image.crop for malformed bounding box workaround")
     except Exception as e:
-        logger.warning("Failed to patch ImageRef.from_pil: %s", e)
+        logger.warning("Failed to patch PIL Image.crop: %s", e)
 
 
 def init_converter() -> None:
@@ -63,7 +79,7 @@ def init_converter() -> None:
     """
     global _converter, _model_loaded
 
-    _patch_imageref_from_pil()
+    _patch_pil_crop()
 
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import VlmPipelineOptions
