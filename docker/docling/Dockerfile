@@ -99,6 +99,7 @@ RUN pip install --no-cache-dir flash-attn --no-build-isolation
 # This path is NOT shadowed by any docker-compose volume mount.
 ENV HF_HOME=/opt/huggingface
 RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-docling-258M')"
+RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-vision-3.3-2b')"
 
 # Lock to offline mode for air-gapped runtime
 ENV HF_HUB_OFFLINE=1

@@ -82,7 +82,7 @@ def init_converter() -> None:
     _patch_pil_crop()
 
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import VlmPipelineOptions
+    from docling.datamodel.pipeline_options import VlmPipelineOptions, granite_picture_description
     from docling.datamodel.accelerator_options import AcceleratorOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.pipeline.vlm_pipeline import VlmPipeline
@@ -99,6 +99,8 @@ def init_converter() -> None:
         force_backend_text=True,
         generate_picture_images=True,
         images_scale=2.0,
+        do_picture_description=True,
+        picture_description_options=granite_picture_description,
     )
 
     _converter = DocumentConverter(
@@ -142,6 +144,7 @@ def _convert_without_picture_images(tmp_path: str):
         accelerator_options=accel,
         force_backend_text=True,
         generate_picture_images=False,
+        do_picture_description=False,
         images_scale=2.0,
     )
     fallback = DocumentConverter(
