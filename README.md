@@ -502,7 +502,7 @@ app/
 │   ├── chunking.py             # Structure-aware document chunking
 │   ├── reranker.py             # Cross-encoder reranker (bge-reranker-v2-m3)
 │   ├── ontology_templates.py   # YAML → Pydantic extraction templates + validation
-│   └── ner.py                  # Military NER (offline regex, EM/RF patterns, fallback)
+│   └── storage.py              # MinIO storage operations
 ├── workers/
 │   ├── pipeline.py             # Celery ingest pipeline (parallel text/image embed)
 │   ├── trusted_data_tasks.py   # Celery task for trusted data embedding + Qdrant indexing
