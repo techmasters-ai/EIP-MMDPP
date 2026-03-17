@@ -1,0 +1,10 @@
+{
+  "planPath": "docs/superpowers/plans/2026-03-17-auto-update-deps.md",
+  "tasks": [
+    {"id": 9, "subject": "Task 1: Split Docling requirements into stable and updatable files", "status": "pending"},
+    {"id": 10, "subject": "Task 2: Restructure Docling Dockerfile for cache-busted updates", "status": "pending", "blockedBy": [9]},
+    {"id": 11, "subject": "Task 3: Add CACHE_BUST to Docling-Graph Dockerfile", "status": "pending"},
+    {"id": 12, "subject": "Task 4: Update manage.sh to pass CACHE_BUST on every start", "status": "pending", "blockedBy": [10, 11]}
+  ],
+  "lastUpdated": "2026-03-17T18:50:00Z"
+}
