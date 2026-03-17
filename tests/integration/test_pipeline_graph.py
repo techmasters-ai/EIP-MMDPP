@@ -5,6 +5,7 @@ real test database session. They verify that:
   1. Docling-Graph service extraction produces entities/relationships
   2. Graph data is stored in document_graph_extractions
   3. upsert_nodes_batch/upsert_relationships_batch are called for Neo4j import
+  4. Batched extraction (5 entity groups + 1 relationship pass) works correctly
 """
 
 import uuid
@@ -42,6 +43,36 @@ MOCK_EXTRACTION_RESULT = {
     "model": "llama3.2",
     "provider": "ollama",
 }
+
+
+def _mock_extract_factory(entity_result=None, rel_result=None):
+    """Build a side_effect callable for mocking batched extract_graph calls.
+
+    entity_result: returned for each entity group pass (5 times)
+    rel_result: returned for the relationship pass
+    """
+    if entity_result is None:
+        entity_result = {
+            "entities": MOCK_EXTRACTION_RESULT["entities"],
+            "relationships": [],
+            "ontology_version": "3.0.0",
+            "model": "llama3.2",
+            "provider": "ollama",
+        }
+    if rel_result is None:
+        rel_result = {
+            "entities": [],
+            "relationships": MOCK_EXTRACTION_RESULT["relationships"],
+            "ontology_version": "3.0.0",
+            "model": "llama3.2",
+            "provider": "ollama",
+        }
+
+    def _mock(text, doc_id, *, ontology_version=None, template_group=None, mode="entities", entities_context=None):
+        if mode == "relationships":
+            return rel_result
+        return entity_result
+    return _mock
 
 
 @pytest.fixture
@@ -110,17 +141,17 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3) as mock_nodes,
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=15) as mock_nodes,
             patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                return_value=MOCK_EXTRACTION_RESULT,
+                side_effect=_mock_extract_factory(),
             ),
         ):
             result = derive_ontology_graph.run(sample_document_id)
 
         assert result["status"] == "ok"
-        assert result["nodes"] == 3
+        assert result["nodes"] == 15
         assert mock_nodes.call_count == 1
 
     def test_graph_data_stored_in_extraction_table(
@@ -136,11 +167,11 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=15),
             patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                return_value=MOCK_EXTRACTION_RESULT,
+                side_effect=_mock_extract_factory(),
             ),
         ):
             derive_ontology_graph.run(sample_document_id)
@@ -157,7 +188,7 @@ class TestDeriveOntologyGraph:
         graph_json = extraction.graph_json
         assert "nodes" in graph_json
         assert "edges" in graph_json
-        assert len(graph_json["nodes"]) == 3
+        assert len(graph_json["nodes"]) == 15
 
     def test_entity_dicts_have_required_keys(
         self, db_session, sample_document_id, sample_document_element
@@ -172,11 +203,11 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=15),
             patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                return_value=MOCK_EXTRACTION_RESULT,
+                side_effect=_mock_extract_factory(),
             ),
         ):
             derive_ontology_graph.run(sample_document_id)
@@ -219,11 +250,11 @@ class TestDeriveOntologyGraph:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=15),
             patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2) as mock_rels,
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                return_value=MOCK_EXTRACTION_RESULT,
+                side_effect=_mock_extract_factory(),
             ),
         ):
             result = derive_ontology_graph.run(sample_document_id)
@@ -255,11 +286,11 @@ class TestDoclingGraphPath:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=15),
             patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                return_value=MOCK_EXTRACTION_RESULT,
+                side_effect=_mock_extract_factory(),
             ),
         ):
             result = derive_ontology_graph.run(sample_document_id)
@@ -297,19 +328,19 @@ class TestDoclingGraphPath:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=1) as mock_nodes,
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=5) as mock_nodes,
             patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=0),
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                return_value=low_conf_result,
+                side_effect=_mock_extract_factory(entity_result=low_conf_result),
             ),
         ):
             result = derive_ontology_graph.run(sample_document_id)
 
-        # Only HighConf should pass the confidence gate
+        # Only HighConf should pass the confidence gate (1 per group × 5 groups = 5)
         assert mock_nodes.call_count == 1
         batch_arg = mock_nodes.call_args[0][1]
-        assert len(batch_arg) == 1
+        assert len(batch_arg) == 5
         assert batch_arg[0]["name"] == "HighConf"
 
     def test_ingest_filter_metadata_stored(
@@ -325,11 +356,11 @@ class TestDoclingGraphPath:
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=3),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=15),
             patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=2),
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                return_value=MOCK_EXTRACTION_RESULT,
+                side_effect=_mock_extract_factory(),
             ),
         ):
             derive_ontology_graph.run(sample_document_id)
@@ -345,51 +376,148 @@ class TestDoclingGraphPath:
         assert "node_min_confidence" in filt
         assert "rel_min_confidence" in filt
 
-    def test_http_error_triggers_retry(
+    def test_all_groups_fail_graceful_degradation(
         self, db_session, sample_document_id, sample_document_element
     ):
-        """httpx.HTTPStatusError should trigger a Celery retry."""
+        """When ALL extraction groups fail, the task should still succeed with 0 nodes."""
         import httpx
         from app.workers.pipeline import derive_ontology_graph
-        from celery.exceptions import Retry as CeleryRetry
 
         mock_response = MagicMock()
         mock_response.status_code = 503
         mock_response.request = MagicMock()
 
-        with (
-            patch("app.workers.pipeline._get_db", return_value=db_session),
-            patch("app.workers.pipeline._update_document_status"),
-            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
-            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
-            patch(
-                "app.services.docling_graph_service.extract_graph",
-                side_effect=httpx.HTTPStatusError(
-                    "Service Unavailable", request=mock_response.request, response=mock_response,
-                ),
-            ),
-        ):
-            with pytest.raises(CeleryRetry):
-                derive_ontology_graph.run(sample_document_id)
-
-    def test_deterministic_error_no_retry(
-        self, db_session, sample_document_id, sample_document_element
-    ):
-        """DeterministicExtractionError should NOT retry."""
-        from app.workers.pipeline import derive_ontology_graph
-        from app.services.docling_graph_service import DeterministicExtractionError
+        def _always_fail(text, doc_id, *, ontology_version=None, template_group=None, mode="entities", entities_context=None):
+            raise httpx.HTTPStatusError(
+                "Service Unavailable", request=mock_response.request, response=mock_response,
+            )
 
         with (
             patch("app.workers.pipeline._get_db", return_value=db_session),
             patch("app.workers.pipeline._update_document_status"),
             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
             patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=0) as mock_nodes,
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=0) as mock_rels,
             patch(
                 "app.services.docling_graph_service.extract_graph",
-                side_effect=DeterministicExtractionError("empty response"),
+                side_effect=_always_fail,
             ),
         ):
             result = derive_ontology_graph.run(sample_document_id)
 
-        assert result["status"] == "failed"
-        assert "empty response" in result["error"]
+        # Task succeeds with 0 nodes/edges (graceful degradation)
+        assert result["status"] == "ok"
+        assert result["nodes"] == 0
+        assert result["edges"] == 0
+        # No batch calls when there are no entities/edges
+        assert mock_nodes.call_count == 0
+        assert mock_rels.call_count == 0
+
+    def test_deterministic_error_per_group_graceful(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """DeterministicExtractionError in all groups is caught per-group; task still returns ok."""
+        from app.workers.pipeline import derive_ontology_graph
+        from app.services.docling_graph_service import DeterministicExtractionError
+
+        def _always_fail(text, doc_id, *, ontology_version=None, template_group=None, mode="entities", entities_context=None):
+            raise DeterministicExtractionError("empty response")
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=0),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=0),
+            patch(
+                "app.services.docling_graph_service.extract_graph",
+                side_effect=_always_fail,
+            ),
+        ):
+            result = derive_ontology_graph.run(sample_document_id)
+
+        assert result["status"] == "ok"
+        assert result["nodes"] == 0
+        assert result["edges"] == 0
+
+
+class TestBatchedExtraction:
+    """Tests for the batched entity extraction (5 groups + 1 relationship pass)."""
+
+    def test_calls_extract_graph_six_times(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """extract_graph should be called once per entity group (5) plus one relationship pass."""
+        from app.workers.pipeline import derive_ontology_graph
+
+        entity_results = {
+            "reference": {"entities": [{"name": "TM-001", "entity_type": "DOCUMENT", "confidence": 0.9, "properties": {}}], "relationships": [], "ontology_version": "3.0.0", "model": "test", "provider": "ollama"},
+            "equipment": {"entities": [{"name": "Patriot PAC-3", "entity_type": "MISSILE_SYSTEM", "confidence": 0.95, "properties": {}}], "relationships": [], "ontology_version": "3.0.0", "model": "test", "provider": "ollama"},
+            "rf_signal": {"entities": [{"name": "X-band", "entity_type": "FREQUENCY_BAND", "confidence": 0.88, "properties": {}}], "relationships": [], "ontology_version": "3.0.0", "model": "test", "provider": "ollama"},
+            "weapon": {"entities": [{"name": "SARH", "entity_type": "GUIDANCE_METHOD", "confidence": 0.85, "properties": {}}], "relationships": [], "ontology_version": "3.0.0", "model": "test", "provider": "ollama"},
+            "operational": {"entities": [{"name": "MIL-STD-1553B", "entity_type": "STANDARD", "confidence": 0.92, "properties": {}}], "relationships": [], "ontology_version": "3.0.0", "model": "test", "provider": "ollama"},
+        }
+        rel_result = {
+            "entities": [],
+            "relationships": [{"from_name": "Patriot PAC-3", "from_type": "MISSILE_SYSTEM", "rel_type": "OPERATES_IN_BAND", "to_name": "X-band", "to_type": "FREQUENCY_BAND", "confidence": 0.8}],
+            "ontology_version": "3.0.0", "model": "test", "provider": "ollama",
+        }
+        call_count = {"n": 0}
+
+        def mock_extract(text, doc_id, *, ontology_version=None, template_group=None, mode="entities", entities_context=None):
+            call_count["n"] += 1
+            if mode == "relationships":
+                assert entities_context is not None
+                assert len(entities_context) == 5
+                return rel_result
+            return entity_results[template_group]
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=5),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=1),
+            patch("app.services.docling_graph_service.extract_graph", side_effect=mock_extract),
+        ):
+            result = derive_ontology_graph.run(sample_document_id)
+
+        assert call_count["n"] == 6
+        assert result["status"] == "ok"
+        assert result["nodes"] == 5
+
+    def test_partial_group_failure_continues(
+        self, db_session, sample_document_id, sample_document_element
+    ):
+        """When one entity group fails, the task should continue with the remaining groups."""
+        from app.workers.pipeline import derive_ontology_graph
+        import httpx
+
+        ok_result = {"entities": [{"name": "Test", "entity_type": "PLATFORM", "confidence": 0.9, "properties": {}}], "relationships": [], "ontology_version": "3.0.0", "model": "test", "provider": "ollama"}
+        rel_result = {"entities": [], "relationships": [], "ontology_version": "3.0.0", "model": "test", "provider": "ollama"}
+
+        def mock_extract(text, doc_id, *, ontology_version=None, template_group=None, mode="entities", entities_context=None):
+            if mode == "relationships":
+                return rel_result
+            if template_group == "rf_signal":
+                mock_resp = MagicMock()
+                mock_resp.status_code = 503
+                mock_resp.request = MagicMock()
+                raise httpx.HTTPStatusError("fail", request=mock_resp.request, response=mock_resp)
+            return ok_result
+
+        with (
+            patch("app.workers.pipeline._get_db", return_value=db_session),
+            patch("app.workers.pipeline._update_document_status"),
+            patch("app.workers.pipeline._get_pipeline_run_id", return_value=None),
+            patch("app.db.session.get_neo4j_driver", return_value=MagicMock()),
+            patch("app.services.neo4j_graph.upsert_nodes_batch", return_value=4),
+            patch("app.services.neo4j_graph.upsert_relationships_batch", return_value=0),
+            patch("app.services.docling_graph_service.extract_graph", side_effect=mock_extract),
+        ):
+            result = derive_ontology_graph.run(sample_document_id)
+
+        assert result["status"] == "ok"
