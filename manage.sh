@@ -188,6 +188,14 @@ print('Reranker model ready')
 " 2>/dev/null && info "Reranker model ready" || warn "Reranker model download failed (will retry on first use)"
   fi
 
+  # Download OpenCLIP image embedding model (skip if already cached)
+  info "Downloading image embedding model (${IMAGE_EMBEDDING_MODEL}/${IMAGE_EMBEDDING_PRETRAINED})..."
+  dc exec -T api python -c "
+import open_clip
+open_clip.create_model_and_transforms('${IMAGE_EMBEDDING_MODEL}', pretrained='${IMAGE_EMBEDDING_PRETRAINED}')
+print('Image embedding model ready')
+" 2>/dev/null && info "Image embedding model ready" || warn "Image embedding model download failed (will retry on first use)"
+
   # Pull Ollama model via the Ollama service on the Docker network
   local ollama_url="${OLLAMA_BASE_URL:-http://ollama:11434}"
   if dc exec -T api curl -sf "${ollama_url}/api/tags" 2>/dev/null | grep -q "${DOCLING_GRAPH_LLM_MODEL}"; then
