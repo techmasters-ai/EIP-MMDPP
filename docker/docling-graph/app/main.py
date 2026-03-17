@@ -49,6 +49,52 @@ _templates: dict[str, dict[str, type[BaseModel]]] | None = None
 _ontology_version: str | None = None
 
 
+def _patch_node_id_registry() -> None:
+    """Fix docling-graph bug where class names with underscores cause collisions.
+
+    ``NodeIDRegistry.get_node_id`` uses ``split("_")[0]`` to extract the class
+    name from a node ID like ``AIR_DEFENSE_ARTILLERY_SYSTEM_<fingerprint>``.
+    That yields ``AIR`` instead of the full class name.  The fix is to split
+    from the right on the last underscore (``rsplit("_", 1)[0]``).
+    """
+    try:
+        from docling_graph.core.converters.node_id_registry import NodeIDRegistry
+
+        _original_get_node_id = NodeIDRegistry.get_node_id
+
+        def _patched_get_node_id(self, model_instance, auto_register=True):  # type: ignore[override]
+            fingerprint = self._generate_fingerprint(model_instance)
+            class_name = model_instance.__class__.__name__
+
+            if fingerprint in self.fingerprint_to_id:
+                existing_id = self.fingerprint_to_id[fingerprint]
+                # Fix: rsplit to handle class names containing underscores
+                existing_class = existing_id.rsplit("_", 1)[0] if "_" in existing_id else existing_id
+                if existing_class != class_name:
+                    raise ValueError(
+                        f"Node ID collision: fingerprint {fingerprint} maps to both "
+                        f"{existing_id} (class: {existing_class}) and {class_name}_... (new class)"
+                    )
+                return existing_id
+
+            if class_name not in self.seen_classes:
+                self.seen_classes[class_name] = set()
+
+            node_id = f"{class_name}_{fingerprint}"
+
+            if auto_register:
+                self.fingerprint_to_id[fingerprint] = node_id
+                self.id_to_fingerprint[node_id] = fingerprint
+                self.seen_classes[class_name].add(fingerprint)
+
+            return node_id
+
+        NodeIDRegistry.get_node_id = _patched_get_node_id
+        logger.info("Patched NodeIDRegistry.get_node_id (rsplit fix for underscore class names)")
+    except Exception:
+        logger.warning("Could not patch NodeIDRegistry — docling-graph version may differ")
+
+
 def _configure_ollama_provider() -> None:
     """Set Ollama-specific defaults on LiteLLM's OllamaConfig class.
 
@@ -81,6 +127,7 @@ async def lifespan(app: FastAPI):
     """Load ontology and build templates at startup."""
     global _templates, _ontology_version
 
+    _patch_node_id_registry()
     _configure_ollama_provider()
     logger.info("Loading ontology from %s", ONTOLOGY_PATH)
     try:
