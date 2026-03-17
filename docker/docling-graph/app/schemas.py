@@ -14,6 +14,19 @@ class ExtractionRequest(BaseModel):
         None,
         description="Expected ontology version; logged as warning on mismatch",
     )
+    template_group: str | None = Field(
+        None,
+        description="Ontology layer group to extract (reference, equipment, rf_signal, weapon, operational). "
+        "If None, uses legacy single-template behavior.",
+    )
+    mode: str = Field(
+        "entities",
+        description="Extraction mode: 'entities' for entity extraction, 'relationships' for relationship-only pass.",
+    )
+    entities_context: list[dict] | None = Field(
+        None,
+        description="For mode='relationships': list of {name, entity_type} dicts from prior entity passes.",
+    )
 
 
 class ExtractedEntityResponse(BaseModel):
