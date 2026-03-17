@@ -1,0 +1,16 @@
+{
+  "planPath": "docs/plans/2026-03-16-ontology-extraction-ner-removal-plan.md",
+  "tasks": [
+    {"id": 0, "subject": "Task 0: Delete NER service and tests", "status": "pending"},
+    {"id": 1, "subject": "Task 1: Add GROUP_MAP and build combined templates", "status": "pending", "blockedBy": [0]},
+    {"id": 2, "subject": "Task 2: Create group-specific LLM prompts", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Update schemas.py with new request fields", "status": "pending", "blockedBy": [1, 2]},
+    {"id": 4, "subject": "Task 4: Update main.py to route by group/mode with prompts", "status": "pending", "blockedBy": [1, 2, 3]},
+    {"id": 5, "subject": "Task 5: Update pipeline client docling_graph_service.py", "status": "pending", "blockedBy": [4]},
+    {"id": 6, "subject": "Task 6: Update derive_ontology_graph for 6-call batched extraction", "status": "pending", "blockedBy": [4, 5]},
+    {"id": 7, "subject": "Task 7: Update existing pipeline tests for new call signature", "status": "pending", "blockedBy": [5, 6]},
+    {"id": 8, "subject": "Task 8: Run full test suite and update README", "status": "pending", "blockedBy": [7]},
+    {"id": 9, "subject": "Task 9: Rebuild docling-graph image and smoke test", "status": "pending", "blockedBy": [8]}
+  ],
+  "lastUpdated": "2026-03-16T00:00:00Z"
+}
