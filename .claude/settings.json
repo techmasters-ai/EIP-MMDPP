@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "deny": ["EnterPlanMode"],
     "allow": [
       "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml exec docling python3 -c \":*)",
       "Bash(docker compose -f /home/josh/development/EIP-MMDPP/docker-compose.yml up -d)",
