@@ -220,6 +220,7 @@ services:
     volumes:
       - ./app:/app/app
       - model_cache:/root/.cache
+      - graphrag_data:/app/graphrag_data
 
   # ---------------------------------------------------------------------------
   # Worker — single Celery worker (all queues, default mode)
@@ -266,6 +267,7 @@ services:
       - ./app:/app/app
       - model_cache:/root/.cache
       - watch_dirs:/watch
+      - graphrag_data:/app/graphrag_data
     extra_hosts:
       - "ollama:host-gateway"
 
@@ -383,6 +385,7 @@ services:
     volumes:
       - ./app:/app/app
       - model_cache:/root/.cache
+      - graphrag_data:/app/graphrag_data
     extra_hosts:
       - "ollama:host-gateway"
 
@@ -412,6 +415,7 @@ services:
     volumes:
       - celerybeat_data:/var/run/celery
       - watch_dirs:/watch
+      - graphrag_data:/app/graphrag_data
 
 volumes:
   postgres_data:
@@ -422,6 +426,7 @@ volumes:
   model_cache:
   watch_dirs:
   celerybeat_data:
+  graphrag_data:
 
 networks:
   default:

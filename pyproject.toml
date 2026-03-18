@@ -28,8 +28,9 @@ dependencies = [
     # Qdrant (vector search)
     "qdrant-client>=1.13.0",
 
-    # GraphRAG (community detection + reports)
-    "graphrag>=1.0.0",
+    # GraphRAG (Microsoft GraphRAG — community detection + reports + search)
+    "graphrag>=3.0.0",
+    "pyarrow>=14.0.0",
 
     # Celery / task queue
     "celery[redis]>=5.4.0",
