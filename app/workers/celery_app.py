@@ -40,6 +40,7 @@ celery_app.conf.update(
         "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
         "app.workers.trusted_data_tasks.index_trusted_submission": {"queue": "trusted"},
         "app.workers.graphrag_tasks.run_graphrag_indexing_task": {"queue": "graph"},
+        "app.workers.graphrag_tasks.run_graphrag_auto_tune_task": {"queue": "graph"},
         "app.workers.pipeline._chord_error_handler": {"queue": "ingest"},
     },
     # Task result expiry
@@ -62,6 +63,10 @@ celery_app.conf.update(
                 "graphrag-indexing": {
                     "task": "app.workers.graphrag_tasks.run_graphrag_indexing_task",
                     "schedule": settings.graphrag_indexing_interval_minutes * 60,
+                },
+                "graphrag-auto-tune": {
+                    "task": "app.workers.graphrag_tasks.run_graphrag_auto_tune_task",
+                    "schedule": settings.graphrag_tune_interval_minutes * 60,
                 },
             }
             if settings.graphrag_indexing_enabled
