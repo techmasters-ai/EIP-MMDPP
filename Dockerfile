@@ -112,6 +112,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir -e ".[dev]"
 
+# Upgrade open-source deps on every build (cache-busted; flash-attn is only in docling)
+ARG CACHE_BUST
+RUN pip install --no-cache-dir --upgrade -e ".[dev]"
+
 # Copy application code
 COPY app/ ./app/
 COPY alembic/ ./alembic/

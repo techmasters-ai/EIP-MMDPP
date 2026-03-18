@@ -140,9 +140,11 @@ cmd_start() {
     info "Building and starting all services..."
   fi
 
-  info "Updating docling & docling-graph packages..."
-  dc build --build-arg CACHE_BUST="$(date +%s)" docling docling-graph
-  dc "${profile_args[@]}" up -d --build
+  local cache_bust
+  cache_bust="$(date +%s)"
+  info "Upgrading all open-source dependencies (flash-attn wheel cached)..."
+  dc "${profile_args[@]}" build --build-arg CACHE_BUST="${cache_bust}"
+  dc "${profile_args[@]}" up -d
 
   local api_port="${API_PORT:-8000}"
   divider
