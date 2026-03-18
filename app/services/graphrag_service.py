@@ -1,549 +1,296 @@
-"""GraphRAG integration — community detection, reports, and search.
+"""Microsoft GraphRAG integration -- indexing, search, and prompt tuning.
 
-Runs as a background Celery Beat task, not inline during ingest.
-Uses Microsoft's graphrag library with LiteLLM → Ollama for air-gapped LLM.
-
-Provides three search modes:
-  - local_search: entity-centric with community report context
-  - global_search: cross-community summarization
-  - drift_search: hybrid drift-based retrieval
+Replaces the custom community detection/report implementation with
+Microsoft's GraphRAG library. Uses the Neo4j ontology graph built by
+Docling-Graph as input via the bridge layer.
 """
 
-from __future__ import annotations
-
+import asyncio
 import logging
-import uuid
-from typing import Any, Optional
+from pathlib import Path
+
+import pandas as pd
 
 from app.config import get_settings
+from app.services.graphrag_bridge import export_all
+from app.services.graphrag_config import build_graphrag_config
+from app.services.graphrag_prompts import write_prompt_files
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Community detection + report generation (batch job)
+# Indexing
 # ---------------------------------------------------------------------------
 
-def run_graphrag_indexing(
-    neo4j_driver,
-    db_session,
-) -> dict[str, Any]:
-    """Run GraphRAG community detection and report generation.
 
-    Called by Celery Beat task. Exports graph from Neo4j, runs Leiden
-    community detection, generates community reports via LLM.
+def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
+    """Run the full GraphRAG indexing pipeline.
 
-    Returns: {communities_created: int, reports_generated: int}
+    1. Export Neo4j entities/relationships + Postgres text units to Parquet
+    2. Run GraphRAG community detection + report generation + embeddings
+    3. Returns stats dict with communities_created and reports_generated
     """
     settings = get_settings()
-
     if not settings.graphrag_indexing_enabled:
-        logger.info("GraphRAG indexing disabled")
         return {"communities_created": 0, "reports_generated": 0}
 
-    stats = {"communities_created": 0, "reports_generated": 0}
-
     try:
-        # Export entities and relationships from Neo4j
-        entities, relationships = _export_graph_for_graphrag(neo4j_driver)
-        if not entities:
-            logger.info("No entities in Neo4j — skipping GraphRAG indexing")
-            return stats
+        data_dir = Path(settings.graphrag_data_dir)
+        output_dir = data_dir / "output"
 
-        # Run Leiden community detection
-        communities = _detect_communities(entities, relationships, settings)
-        if not communities:
-            logger.info("No communities detected")
-            return stats
+        # Step 1: Bridge -- export ontology graph to Parquet
+        stats = export_all(neo4j_driver, db_session, output_dir)
+        if stats.get("entities", 0) == 0:
+            logger.info("No entities in graph -- skipping GraphRAG indexing")
+            return {"communities_created": 0, "reports_generated": 0}
 
-        # Generate community reports via LLM
-        reports = _generate_community_reports(communities, entities, relationships, settings)
+        # Ensure prompts are written
+        prompts_dir = data_dir / "prompts"
+        write_prompt_files(prompts_dir)
 
-        # Store in Postgres
-        _store_communities_and_reports(db_session, communities, reports)
+        # Step 2: Run GraphRAG pipeline
+        result = _run_graphrag_pipeline(settings, data_dir, output_dir)
+        return result
 
-        stats["communities_created"] = len(communities)
-        stats["reports_generated"] = len(reports)
-
-        logger.info(
-            "GraphRAG indexing complete: %d communities, %d reports",
-            stats["communities_created"],
-            stats["reports_generated"],
-        )
-    except Exception as e:
-        logger.error("GraphRAG indexing failed: %s", e, exc_info=True)
-
-    return stats
-
-
-# ---------------------------------------------------------------------------
-# Search modes
-# ---------------------------------------------------------------------------
-
-def local_search(
-    query: str,
-    neo4j_driver,
-    qdrant_client,
-    db_session,
-    limit: int = 10,
-) -> list[dict[str, Any]]:
-    """Entity-centric search with community report context.
-
-    1. Find relevant entities via keyword match in Neo4j
-    2. Look up community memberships
-    3. Retrieve community reports
-    4. Combine with relevant text chunks from Qdrant
-    """
-    results = []
-
-    try:
-        # Find matching entities via fulltext index (handles multi-word queries)
-        from app.services.neo4j_graph import fulltext_search_entity
-        ft_matches = fulltext_search_entity(neo4j_driver, query, limit=limit)
-
-        if not ft_matches:
-            logger.info("GraphRAG local: no entity matches for query '%s'", query)
-            return results
-
-        # Reshape fulltext results — pass through all node fields
-        entity_matches = [
-            {"node": m, "entity_type": m.get("entity_type")}
-            for m in ft_matches
-        ]
-
-        # Get community context for matched entities
-        community_context = _get_entity_community_context(db_session, entity_matches)
-
-        for match in entity_matches:
-            result = {
-                "entity": match.get("node", {}),
-                "entity_type": match.get("entity_type"),
-                "community_reports": community_context.get(
-                    match.get("node", {}).get("name", ""), []
-                ),
-            }
-            results.append(result)
-
-        logger.info("GraphRAG local: %d entities matched for query '%s'", len(results), query)
-
-    except Exception as e:
-        logger.error("GraphRAG local search runtime fault for '%s': %s", query, e, exc_info=True)
-
-    return results
-
-
-def global_search(
-    query: str,
-    db_session,
-    limit: int = 10,
-) -> list[dict[str, Any]]:
-    """Cross-community summarization for broad questions.
-
-    Retrieves the most relevant community reports and aggregates them.
-    """
-    results = []
-
-    try:
-        from sqlalchemy import text
-
-        # Search community reports filtered by query relevance (fulltext)
-        stmt = text("""
-            SELECT cr.report_text, cr.summary, cr.rank,
-                   gc.community_id, gc.title, gc.level,
-                   ts_rank_cd(
-                       to_tsvector('english', cr.report_text),
-                       plainto_tsquery('english', :query)
-                   ) AS relevance
-            FROM retrieval.graphrag_community_reports cr
-            JOIN retrieval.graphrag_communities gc
-                ON cr.community_id = gc.community_id
-            WHERE to_tsvector('english', cr.report_text) @@ plainto_tsquery('english', :query)
-            ORDER BY relevance DESC, cr.rank DESC NULLS LAST
-            LIMIT :limit
-        """)
-
-        result = db_session.execute(stmt, {"query": query, "limit": limit})
-        for row in result.fetchall():
-            results.append({
-                "community_id": row[3],
-                "community_title": row[4],
-                "level": row[5],
-                "report_text": row[0],
-                "summary": row[1],
-                "rank": row[2],
-                "relevance": float(row[6]),
-            })
-
-        if not results:
-            logger.info("GraphRAG global: no community reports found for query '%s'", query)
-        else:
-            logger.info("GraphRAG global: %d community reports returned for query '%s'", len(results), query)
-
-    except Exception as e:
-        logger.error("GraphRAG global search runtime fault for '%s': %s", query, e, exc_info=True)
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _export_graph_for_graphrag(
-    neo4j_driver,
-) -> tuple[list[dict], list[dict]]:
-    """Export all entities and relationships from Neo4j for GraphRAG."""
-    entities = []
-    relationships = []
-
-    try:
-        with neo4j_driver.session() as session:
-            # Export entities
-            result = session.run("""
-                MATCH (n:Entity)
-                RETURN n.name AS name, n.entity_type AS entity_type,
-                       n.id AS id
-            """)
-            for record in result:
-                entities.append(dict(record))
-
-            # Export relationships
-            result = session.run("""
-                MATCH (a:Entity)-[r]->(b:Entity)
-                RETURN a.name AS source, b.name AS target,
-                       type(r) AS relationship
-            """)
-            for record in result:
-                relationships.append(dict(record))
-
-    except Exception as e:
-        logger.warning("Graph export for GraphRAG failed: %s", e)
-
-    return entities, relationships
-
-
-def _build_weighted_graph(
-    entities: list[dict],
-    relationships: list[dict],
-):
-    """Build a NetworkX graph with ontology-derived edge weights.
-
-    Edge weights come from ``scoring_weights`` in ontology.yaml.
-    Relationship types not listed get the ``default`` weight (0.70).
-    """
-    import networkx as nx
-    from app.services.ontology_templates import load_ontology
-
-    ontology = load_ontology()
-    scoring_weights: dict[str, float] = {}
-    for item in ontology.get("scoring_weights", []):
-        if isinstance(item, dict):
-            scoring_weights.update(item)
-    # scoring_weights may be a dict already (YAML mapping)
-    if isinstance(ontology.get("scoring_weights"), dict):
-        scoring_weights = ontology["scoring_weights"]
-    default_weight = float(scoring_weights.get("default", 0.70))
-
-    G = nx.Graph()
-    for e in entities:
-        G.add_node(e["name"], entity_type=e.get("entity_type"))
-    for r in relationships:
-        rel_type = r.get("relationship", "")
-        weight = float(scoring_weights.get(rel_type, default_weight))
-        G.add_edge(
-            r["source"], r["target"],
-            relationship=rel_type,
-            weight=weight,
-        )
-    return G
-
-
-def _detect_communities(
-    entities: list[dict],
-    relationships: list[dict],
-    settings,
-) -> list[dict[str, Any]]:
-    """Run Leiden community detection on the graph with ontology-weighted edges."""
-
-    G = _build_weighted_graph(entities, relationships)
-
-    if len(G.nodes) == 0:
-        return []
-
-    # Use Louvain as fallback (Leiden requires optional dependency)
-    try:
-        from graspologic.partition import hierarchical_leiden
-
-        community_map = hierarchical_leiden(
-            G,
-            max_cluster_size=settings.graphrag_max_cluster_size,
-            weights="weight",
-        )
-        # Group nodes by community
-        communities_by_id: dict[str, list[str]] = {}
-        for node, community_id in community_map.items():
-            cid = str(community_id)
-            if cid not in communities_by_id:
-                communities_by_id[cid] = []
-            communities_by_id[cid].append(node)
-    except ImportError:
-        logger.info("graspologic not available, using Louvain community detection")
-        from networkx.algorithms.community import louvain_communities
-
-        partition = louvain_communities(G, weight="weight", resolution=1.0, seed=42)
-        communities_by_id = {}
-        for i, community in enumerate(partition):
-            communities_by_id[str(i)] = list(community)
-
-    # Build community dicts
-    communities = []
-    for cid, members in communities_by_id.items():
-        communities.append({
-            "community_id": cid,
-            "level": 0,
-            "entity_names": members,
-            "title": f"Community {cid} ({len(members)} entities)",
-        })
-
-    return communities
-
-
-def _generate_community_reports(
-    communities: list[dict],
-    entities: list[dict],
-    relationships: list[dict],
-    settings,
-) -> list[dict[str, Any]]:
-    """Generate natural-language community reports via LLM."""
-    import httpx
-    from app.services.ontology_templates import load_ontology
-
-    if settings.llm_provider == "mock":
-        return [
-            {
-                "community_id": c["community_id"],
-                "report_text": f"Mock report for {c['title']}",
-                "summary": c["title"],
-                "rank": 1.0,
-            }
-            for c in communities
-        ]
-
-    # Load ontology for type descriptions
-    try:
-        ontology = load_ontology()
     except Exception:
-        logger.warning("Could not load ontology for report generation")
-        ontology = {}
+        logger.exception("GraphRAG indexing failed")
+        return {"communities_created": 0, "reports_generated": 0}
 
-    entity_type_desc: dict[str, str] = {}
-    for et in ontology.get("entity_types", []):
-        if et.get("name") and et.get("description"):
-            entity_type_desc[et["name"]] = et["description"]
 
-    rel_type_desc: dict[str, str] = {}
-    for rt in ontology.get("relationship_types", []):
-        if rt.get("name") and rt.get("description"):
-            rel_type_desc[rt["name"]] = rt["description"]
+def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
+    """Run Microsoft GraphRAG's indexing pipeline on pre-exported Parquet data."""
+    from graphrag.api import build_index
+    from graphrag.config.enums import IndexingMethod
 
-    # Build entity lookup
-    entity_map = {e["name"]: e for e in entities}
+    config = build_graphrag_config(settings)
 
-    reports = []
-    for community in communities:
-        members = community["entity_names"]
-        member_info = []
-        for name in members[:20]:  # Limit context
-            e = entity_map.get(name, {})
-            member_info.append(f"- {name} ({e.get('entity_type', 'unknown')})")
+    # Load pre-exported text as input documents for GraphRAG
+    text_units_path = output_dir / "text_units.parquet"
+    if text_units_path.exists():
+        text_df = pd.read_parquet(text_units_path)
+        input_docs = pd.DataFrame({
+            "id": text_df["id"],
+            "text": text_df["text"],
+            "title": text_df["id"],
+        })
+    else:
+        input_docs = None
 
-        # Get relationships between community members
-        member_set = set(members)
-        relevant_rels = [
-            r for r in relationships
-            if r["source"] in member_set and r["target"] in member_set
-        ]
-        rel_info = [
-            f"- {r['source']} --[{r['relationship']}]--> {r['target']}"
-            for r in relevant_rels[:20]
-        ]
+    # Run indexing
+    results = asyncio.run(build_index(
+        config=config,
+        method=IndexingMethod.Standard,
+        is_update_run=False,
+        verbose=True,
+        input_documents=input_docs,
+    ))
 
-        # Build ontology context for this community's types
-        community_entity_types = {
-            entity_map.get(name, {}).get("entity_type")
-            for name in members
-        } - {None, "unknown"}
-        community_rel_types = {
-            r.get("relationship") for r in relevant_rels
-        } - {None}
+    communities_created = 0
+    reports_generated = 0
 
-        ontology_lines = []
-        if community_entity_types:
-            ontology_lines.append("Entity types in this community:")
-            for et in sorted(community_entity_types):
-                desc = entity_type_desc.get(et, "")
-                ontology_lines.append(f"- {et}: {desc}" if desc else f"- {et}")
-        if community_rel_types:
-            ontology_lines.append("\nRelationship types:")
-            for rt in sorted(community_rel_types):
-                desc = rel_type_desc.get(rt, "")
-                ontology_lines.append(f"- {rt}: {desc}" if desc else f"- {rt}")
-
-        ontology_context = "\n".join(ontology_lines)
-
-        system_content = "You are a military intelligence analyst."
-        if ontology_context:
-            system_content += "\n\n" + ontology_context
-
-        prompt = f"""Summarize this community of related military/defense entities.
-
-## Entities
-{chr(10).join(member_info)}
-
-## Relationships
-{chr(10).join(rel_info) if rel_info else "No direct relationships found."}
-
-Write a concise report (2-3 paragraphs) explaining:
-1. What these entities have in common
-2. Key relationships and their significance
-3. Operational relevance
-
-Return ONLY the report text, no JSON or markdown fences."""
-
-        try:
-            payload: dict = {
-                "model": settings.graphrag_model,
-                "messages": [
-                    {"role": "system", "content": system_content},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "options": {
-                    "temperature": 0.3,
-                    "num_predict": 1024,
-                    "num_ctx": settings.ollama_num_ctx,
-                },
-            }
-            if settings.ollama_think:
-                payload["options"]["think"] = settings.ollama_think
-            response = httpx.post(
-                f"{settings.ollama_base_url}/api/chat",
-                json=payload,
-                timeout=60,
+    for result in results:
+        if result.errors:
+            logger.warning(
+                "GraphRAG workflow %s errors: %s",
+                result.workflow, result.errors,
             )
-            response.raise_for_status()
-            report_text = (
-                (response.json().get("message") or {}).get("content", "").strip()
+        else:
+            logger.info("GraphRAG workflow %s completed", result.workflow)
+
+    # Count outputs
+    communities_path = output_dir / "communities.parquet"
+    reports_path = output_dir / "community_reports.parquet"
+    if communities_path.exists():
+        communities_created = len(pd.read_parquet(communities_path))
+    if reports_path.exists():
+        reports_generated = len(pd.read_parquet(reports_path))
+
+    return {
+        "communities_created": communities_created,
+        "reports_generated": reports_generated,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Search -- all four methods
+# ---------------------------------------------------------------------------
+
+
+def _load_search_data(settings) -> dict:
+    """Load indexed Parquet data for search queries."""
+    output_dir = Path(settings.graphrag_data_dir) / "output"
+
+    data = {}
+    for name in (
+        "entities", "communities", "community_reports",
+        "text_units", "relationships",
+    ):
+        path = output_dir / f"{name}.parquet"
+        if path.exists():
+            data[name] = pd.read_parquet(path)
+        else:
+            data[name] = pd.DataFrame()
+
+    return data
+
+
+def _run_local_search(config, data: dict, query: str, community_level: int):
+    """Run GraphRAG local search."""
+    from graphrag.api import local_search as graphrag_local
+
+    return asyncio.run(graphrag_local(
+        config=config,
+        entities=data["entities"],
+        communities=data["communities"],
+        community_reports=data["community_reports"],
+        text_units=data["text_units"],
+        relationships=data["relationships"],
+        covariates=None,
+        community_level=community_level,
+        response_type="Detailed explanation",
+        query=query,
+    ))
+
+
+def _run_global_search(config, data: dict, query: str, community_level: int):
+    """Run GraphRAG global search."""
+    from graphrag.api import global_search as graphrag_global
+
+    return asyncio.run(graphrag_global(
+        config=config,
+        entities=data["entities"],
+        communities=data["communities"],
+        community_reports=data["community_reports"],
+        community_level=community_level,
+        dynamic_community_selection=False,
+        response_type="Multiple Paragraphs",
+        query=query,
+    ))
+
+
+def _run_drift_search(config, data: dict, query: str, community_level: int):
+    """Run GraphRAG DRIFT search."""
+    from graphrag.api import drift_search as graphrag_drift
+
+    return asyncio.run(graphrag_drift(
+        config=config,
+        entities=data["entities"],
+        communities=data["communities"],
+        community_reports=data["community_reports"],
+        text_units=data["text_units"],
+        relationships=data["relationships"],
+        community_level=community_level,
+        response_type="In-depth analysis",
+        query=query,
+    ))
+
+
+def _run_basic_search(config, data: dict, query: str):
+    """Run GraphRAG basic search."""
+    from graphrag.api import basic_search as graphrag_basic
+
+    return asyncio.run(graphrag_basic(
+        config=config,
+        text_units=data["text_units"],
+        response_type="Concise answer",
+        query=query,
+    ))
+
+
+def local_search(query: str) -> dict:
+    """Entity-centric search with community context."""
+    try:
+        settings = get_settings()
+        config = build_graphrag_config(settings)
+        data = _load_search_data(settings)
+        response, context = _run_local_search(
+            config, data, query, settings.graphrag_community_level,
+        )
+        return {"response": response, "context": context}
+    except Exception:
+        logger.exception("GraphRAG local search failed")
+        return {"response": "", "context": {}}
+
+
+def global_search(query: str) -> dict:
+    """Cross-community summarization for broad questions."""
+    try:
+        settings = get_settings()
+        config = build_graphrag_config(settings)
+        data = _load_search_data(settings)
+        response, context = _run_global_search(
+            config, data, query, settings.graphrag_community_level,
+        )
+        return {"response": response, "context": context}
+    except Exception:
+        logger.exception("GraphRAG global search failed")
+        return {"response": "", "context": {}}
+
+
+def drift_search(query: str) -> dict:
+    """Community-informed expansion search."""
+    try:
+        settings = get_settings()
+        config = build_graphrag_config(settings)
+        data = _load_search_data(settings)
+        response, context = _run_drift_search(
+            config, data, query, settings.graphrag_community_level,
+        )
+        return {"response": response, "context": context}
+    except Exception:
+        logger.exception("GraphRAG DRIFT search failed")
+        return {"response": "", "context": {}}
+
+
+def basic_search(query: str) -> dict:
+    """Vector search over text units."""
+    try:
+        settings = get_settings()
+        config = build_graphrag_config(settings)
+        data = _load_search_data(settings)
+        response, context = _run_basic_search(config, data, query)
+        return {"response": response, "context": context}
+    except Exception:
+        logger.exception("GraphRAG basic search failed")
+        return {"response": "", "context": {}}
+
+
+# ---------------------------------------------------------------------------
+# Prompt tuning
+# ---------------------------------------------------------------------------
+
+
+def run_auto_tune() -> dict:
+    """Run GraphRAG auto prompt tuning against the current corpus."""
+    try:
+        settings = get_settings()
+        data_dir = Path(settings.graphrag_data_dir)
+        config = build_graphrag_config(settings)
+
+        from graphrag.api.prompt_tune import generate_indexing_prompts
+
+        entity_prompt, entity_summary_prompt, community_prompt = asyncio.run(
+            generate_indexing_prompts(
+                config=config,
+                domain="military equipment, radar systems, missile systems, "
+                       "electronic warfare, and air defense",
+                language="English",
+                discover_entity_types=True,
             )
-            if not report_text:
-                logger.warning(
-                    "Empty report for community %s — skipping",
-                    community["community_id"],
-                )
-                continue
-
-            reports.append({
-                "community_id": community["community_id"],
-                "report_text": report_text,
-                "summary": report_text[:200],
-                "rank": len(members) / max(len(entities), 1),
-            })
-        except Exception as e:
-            logger.warning("Report generation failed for community %s: %s", community["community_id"], e)
-
-    return reports
-
-
-def _store_communities_and_reports(
-    db_session,
-    communities: list[dict],
-    reports: list[dict],
-) -> None:
-    """Store communities and reports in Postgres."""
-    from sqlalchemy import text
-
-    for community in communities:
-        db_session.execute(
-            text("""
-                INSERT INTO retrieval.graphrag_communities
-                    (id, community_id, level, entity_ids, title)
-                VALUES (:id, :community_id, :level, :entity_ids, :title)
-                ON CONFLICT (community_id) DO UPDATE SET
-                    entity_ids = EXCLUDED.entity_ids,
-                    title = EXCLUDED.title
-            """),
-            {
-                "id": str(uuid.uuid4()),
-                "community_id": community["community_id"],
-                "level": community.get("level", 0),
-                "entity_ids": community["entity_names"],
-                "title": community.get("title"),
-            },
         )
 
-    for report in reports:
-        db_session.execute(
-            text("""
-                INSERT INTO retrieval.graphrag_community_reports
-                    (id, community_id, report_text, summary, rank, generated_at)
-                VALUES (:id, :community_id, :report_text, :summary, :rank, NOW())
-                ON CONFLICT (community_id) DO UPDATE SET
-                    report_text = EXCLUDED.report_text,
-                    summary = EXCLUDED.summary,
-                    rank = EXCLUDED.rank,
-                    generated_at = NOW()
-            """),
-            {
-                "id": str(uuid.uuid4()),
-                "community_id": report["community_id"],
-                "report_text": report["report_text"],
-                "summary": report.get("summary"),
-                "rank": report.get("rank"),
-            },
+        # Write tuned prompts to prompts dir
+        prompts_dir = data_dir / "prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        (prompts_dir / "entity_extraction.txt").write_text(entity_prompt)
+        (prompts_dir / "entity_summarization.txt").write_text(
+            entity_summary_prompt
         )
+        (prompts_dir / "community_report.txt").write_text(community_prompt)
 
-    db_session.commit()
-
-
-def _get_entity_community_context(
-    db_session,
-    entity_matches: list[dict],
-) -> dict[str, list[dict]]:
-    """Look up community reports for matched entities."""
-    from sqlalchemy import text
-
-    context: dict[str, list[dict]] = {}
-
-    for match in entity_matches:
-        name = match.get("node", {}).get("name", "")
-        if not name:
-            continue
-
-        try:
-            result = db_session.execute(
-                text("""
-                    SELECT cr.report_text, cr.summary, gc.title, gc.community_id
-                    FROM retrieval.graphrag_communities gc
-                    JOIN retrieval.graphrag_community_reports cr
-                        ON gc.community_id = cr.community_id
-                    WHERE :name = ANY(gc.entity_ids)
-                    ORDER BY cr.rank DESC NULLS LAST
-                    LIMIT 3
-                """),
-                {"name": name},
-            )
-            reports = [
-                {
-                    "community_id": row[3],
-                    "title": row[2],
-                    "summary": row[1],
-                    "report_text": row[0],
-                }
-                for row in result.fetchall()
-            ]
-            if reports:
-                context[name] = reports
-        except Exception:
-            pass
-
-    return context
+        logger.info("GraphRAG auto-tuning complete: 3 prompts updated")
+        return {"prompts_updated": 3}
+    except Exception:
+        logger.exception("GraphRAG auto-tuning failed")
+        return {"prompts_updated": 0, "error": True}
