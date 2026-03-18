@@ -59,6 +59,10 @@ async def unified_query(
             results = await _graphrag_local_query(db, body)
         elif body.strategy == QueryStrategy.graphrag_global:
             results = await _graphrag_global_query(db, body)
+        elif body.strategy == QueryStrategy.graphrag_drift:
+            results = await _graphrag_drift_query(db, body)
+        elif body.strategy == QueryStrategy.graphrag_basic:
+            results = await _graphrag_basic_query(db, body)
         elif body.strategy == QueryStrategy.hybrid:
             results = await _multi_modal_pipeline(db, body)
         else:
@@ -700,143 +704,140 @@ async def _expand_via_ontology(
 async def _graphrag_local_query(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
-    """Entity-centric search with community report context."""
+    """Entity-centric search with community report context (Microsoft GraphRAG)."""
     if not body.query_text:
         return []
 
     from app.services.graphrag_service import local_search
-    from app.db.session import get_neo4j_driver, SyncSessionFactory
 
-    # GraphRAG local_search uses sync Neo4j driver + sync DB session
-    import asyncio
     loop = asyncio.get_event_loop()
-    neo4j_driver = get_neo4j_driver()
+    graphrag_result = await loop.run_in_executor(
+        None, local_search, body.query_text,
+    )
 
-    def _run_local():
-        session = SyncSessionFactory()
-        try:
-            return local_search(
-                query=body.query_text,
-                neo4j_driver=neo4j_driver,
-                qdrant_client=None,
-                db_session=session,
-                limit=body.top_k,
-            )
-        finally:
-            session.close()
-
-    graphrag_results = await loop.run_in_executor(None, _run_local)
-
-    if not graphrag_results:
+    response = graphrag_result.get("response", "")
+    if not response:
         raise HTTPException(
             status_code=404,
-            detail="GraphRAG local: no matching entities found in the knowledge graph. "
-            "Ensure documents have been ingested with successful graph extraction.",
+            detail="GraphRAG local: no matching entities found in the knowledge graph.",
         )
 
-    # Convert GraphRAG results to QueryResultItem format
-    results = []
-    for i, gr in enumerate(graphrag_results):
-        entity = gr.get("entity", {})
-        community_reports = gr.get("community_reports", [])
-
-        # Use the fulltext score from Neo4j when available, fall back to rank-based
-        ft_score = entity.get("score")
-        if ft_score is not None and ft_score > 0:
-            score = min(1.0, float(ft_score))
-        else:
-            score = max(0.5, 1.0 - (i * 0.05))
-
-        results.append(
-            QueryResultItem(
-                score=score,
-                modality="graph_node",
-                content_text=entity.get("name", ""),
-                page_number=None,
-                classification="UNCLASSIFIED",
-                context={
-                    "source": "graphrag_local",
-                    "entity_type": gr.get("entity_type"),
-                    "entity": entity,
-                    "community_reports": [
-                        {"title": r.get("title"), "summary": r.get("summary")}
-                        for r in community_reports[:3]
-                    ],
-                },
-            )
-        )
-
-    return results[:body.top_k]
+    return [QueryResultItem(
+        score=1.0,
+        modality="graphrag_response",
+        content_text=response,
+        classification="UNCLASSIFIED",
+        context={
+            "source": "graphrag_local",
+            "graphrag_context": graphrag_result.get("context", {}),
+        },
+    )]
 
 
 # ---------------------------------------------------------------------------
-# GraphRAG global search — cross-community summarization
+# GraphRAG global search -- cross-community summarization
 # ---------------------------------------------------------------------------
 
 async def _graphrag_global_query(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
-    """Cross-community summarization for broad questions."""
+    """Cross-community summarization for broad questions (Microsoft GraphRAG)."""
     if not body.query_text:
         return []
 
-    from app.config import get_settings
-    settings = get_settings()
-    if not settings.graphrag_indexing_enabled:
-        raise HTTPException(
-            status_code=409,
-            detail="GraphRAG global search is unavailable: GRAPHRAG_INDEXING_ENABLED is false.",
-        )
-
     from app.services.graphrag_service import global_search
-    from app.db.session import SyncSessionFactory
 
-    # global_search uses sync SQLAlchemy session
-    import asyncio
     loop = asyncio.get_event_loop()
+    graphrag_result = await loop.run_in_executor(
+        None, global_search, body.query_text,
+    )
 
-    def _run_global():
-        session = SyncSessionFactory()
-        try:
-            return global_search(
-                query=body.query_text,
-                db_session=session,
-                limit=body.top_k,
-            )
-        finally:
-            session.close()
-
-    graphrag_results = await loop.run_in_executor(None, _run_global)
-
-    if not graphrag_results:
+    response = graphrag_result.get("response", "")
+    if not response:
         raise HTTPException(
             status_code=409,
             detail="GraphRAG global: no community reports available. "
-            "Run the GraphRAG indexing pipeline to generate community reports.",
+            "Run the GraphRAG indexing pipeline first.",
         )
 
-    results = []
-    for gr in graphrag_results:
-        # Prefer fulltext relevance score over static rank
-        score = gr.get("relevance") or gr.get("rank", 0.5) or 0.5
-        results.append(
-            QueryResultItem(
-                score=float(score),
-                modality="community_report",
-                content_text=gr.get("summary") or gr.get("report_text", "")[:500],
-                page_number=None,
-                classification="UNCLASSIFIED",
-                context={
-                    "source": "graphrag_global",
-                    "community_id": gr.get("community_id"),
-                    "community_title": gr.get("community_title"),
-                    "level": gr.get("level"),
-                    "report_text": gr.get("report_text"),
-                },
-            )
-        )
+    return [QueryResultItem(
+        score=1.0,
+        modality="graphrag_response",
+        content_text=response,
+        classification="UNCLASSIFIED",
+        context={
+            "source": "graphrag_global",
+            "graphrag_context": graphrag_result.get("context", {}),
+        },
+    )]
 
-    return results[:body.top_k]
+
+# ---------------------------------------------------------------------------
+# GraphRAG DRIFT search -- community-informed expansion
+# ---------------------------------------------------------------------------
+
+async def _graphrag_drift_query(
+    db: AsyncSession, body: UnifiedQueryRequest
+) -> list[QueryResultItem]:
+    """Community-informed expansion search (Microsoft GraphRAG DRIFT)."""
+    if not body.query_text:
+        return []
+
+    from app.services.graphrag_service import drift_search
+
+    loop = asyncio.get_event_loop()
+    graphrag_result = await loop.run_in_executor(
+        None, drift_search, body.query_text,
+    )
+
+    response = graphrag_result.get("response", "")
+    if not response:
+        return []
+
+    return [QueryResultItem(
+        score=1.0,
+        modality="graphrag_response",
+        content_text=response,
+        classification="UNCLASSIFIED",
+        context={
+            "source": "graphrag_drift",
+            "graphrag_context": graphrag_result.get("context", {}),
+        },
+    )]
+
+
+# ---------------------------------------------------------------------------
+# GraphRAG basic search -- vector search over text units
+# ---------------------------------------------------------------------------
+
+async def _graphrag_basic_query(
+    db: AsyncSession, body: UnifiedQueryRequest
+) -> list[QueryResultItem]:
+    """Vector search over text units (Microsoft GraphRAG basic)."""
+    if not body.query_text:
+        return []
+
+    from app.services.graphrag_service import basic_search
+
+    loop = asyncio.get_event_loop()
+    graphrag_result = await loop.run_in_executor(
+        None, basic_search, body.query_text,
+    )
+
+    response = graphrag_result.get("response", "")
+    if not response:
+        return []
+
+    return [QueryResultItem(
+        score=1.0,
+        modality="graphrag_response",
+        content_text=response,
+        classification="UNCLASSIFIED",
+        context={
+            "source": "graphrag_basic",
+            "graphrag_context": graphrag_result.get("context", {}),
+        },
+    )]
 
 
 # ---------------------------------------------------------------------------
@@ -986,14 +987,23 @@ async def _populate_image_urls(
 
 @router.post("/graphrag/index")
 async def trigger_graphrag_indexing():
-    """Dispatch GraphRAG community detection + report generation as a Celery task.
+    """Dispatch GraphRAG indexing as a Celery task.
 
-    The task is idempotent — a Redis lock prevents overlapping runs.
+    The task is idempotent -- a Redis lock prevents overlapping runs.
     """
     from app.workers.graphrag_tasks import run_graphrag_indexing_task
 
     task = run_graphrag_indexing_task.delay()
     return {"status": "indexing_started", "task_id": str(task.id)}
+
+
+@router.post("/graphrag/tune")
+async def trigger_graphrag_tuning():
+    """Dispatch GraphRAG prompt auto-tuning as a Celery task."""
+    from app.workers.graphrag_tasks import run_graphrag_auto_tune_task
+
+    task = run_graphrag_auto_tune_task.delay()
+    return {"status": "tuning_started", "task_id": str(task.id)}
 
 
 # ---------------------------------------------------------------------------
