@@ -121,11 +121,21 @@ class Settings(BaseSettings):
     # Embedding batching
     embed_text_batch_size: int = 128
 
-    # GraphRAG (community detection + reports)
-    graphrag_model: str = "llama3.2"
+    # GraphRAG (Microsoft GraphRAG — community detection + reports + search)
     graphrag_indexing_enabled: bool = True
     graphrag_indexing_interval_minutes: int = 60
     graphrag_max_cluster_size: int = 10
+    graphrag_community_level: int = 2
+    graphrag_data_dir: str = "/app/graphrag_data"
+    # LLM provider for GraphRAG (ollama | openai)
+    graphrag_llm_provider: str = "ollama"
+    graphrag_llm_model: str = "llama3.2"
+    graphrag_llm_api_base: str = "http://localhost:11434/v1"
+    graphrag_api_key: str = ""
+    # Embedding model for GraphRAG's LanceDB store
+    graphrag_embedding_model: str = "nomic-embed-text"
+    # Auto-tuning schedule (minutes, default 24h)
+    graphrag_tune_interval_minutes: int = 1440
 
     # Docling document conversion service (granite-docling-258M VLM)
     docling_service_url: str = "http://docling:8001"
