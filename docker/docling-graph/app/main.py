@@ -229,6 +229,61 @@ def _build_litellm_model_string() -> str:
     return f"{provider}/{LLM_MODEL}"
 
 
+def _extract_llm_content(msg: Any) -> str:
+    """Extract usable text from an LLM response message.
+
+    Thinking models (Ollama with think=true, OpenAI o-series, etc.) may place
+    the final answer in ``content``, or may leave ``content`` empty and put
+    everything into a provider-specific reasoning field.  We walk a deterministic
+    fallback chain and log which field we used so failures are diagnosable from
+    container logs alone.
+
+    Fallback order:
+      1. content            — standard answer field
+      2. reasoning_content  — LiteLLM's mapping of Ollama ``message.thinking``
+      3. thinking           — raw thinking field (some LiteLLM versions)
+      4. thinking_blocks    — list of thinking block dicts (stringify)
+    """
+    # Inventory all candidate fields (for diagnostics)
+    candidates: dict[str, int] = {}
+    for attr in ("content", "reasoning_content", "thinking", "thinking_blocks"):
+        val = getattr(msg, attr, None)
+        if val is not None:
+            candidates[attr] = len(str(val))
+    logger.debug("LLM response field sizes: %s", candidates)
+
+    # 1. Standard content
+    content = getattr(msg, "content", None) or ""
+    if content.strip():
+        return content
+
+    # 2. reasoning_content (LiteLLM maps Ollama's thinking here)
+    rc = getattr(msg, "reasoning_content", None) or ""
+    if rc.strip():
+        logger.info(
+            "content empty — falling back to reasoning_content (%d chars)", len(rc),
+        )
+        return rc
+
+    # 3. thinking (raw field on some providers)
+    th = getattr(msg, "thinking", None) or ""
+    if th.strip():
+        logger.info("content empty — falling back to thinking (%d chars)", len(th))
+        return th
+
+    # 4. thinking_blocks (list of dicts)
+    blocks = getattr(msg, "thinking_blocks", None)
+    if blocks:
+        logger.info("content empty — falling back to thinking_blocks")
+        return str(blocks)
+
+    # Nothing found — log full diagnostics
+    logger.warning(
+        "LLM returned no usable text in any field. Field sizes: %s", candidates,
+    )
+    return ""
+
+
 def _llm_call(system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str | None:
     """Make a single LLM call and return the content string. Returns None on failure."""
     model_string = _build_litellm_model_string()
@@ -244,17 +299,12 @@ def _llm_call(system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> s
     if LLM_PROVIDER == "ollama":
         llm_kwargs["api_base"] = OLLAMA_BASE_URL
         llm_kwargs["num_ctx"] = OLLAMA_NUM_CTX
-        if OLLAMA_THINK:
-            llm_kwargs["reasoning_effort"] = OLLAMA_THINK
+        # Use reasoning_effort only — OllamaConfig.think is set globally at
+        # startup via _configure_ollama_provider(), so we do NOT also pass it
+        # per-request to avoid double-setting via two different LiteLLM paths.
 
     response = litellm.completion(**llm_kwargs)
-    msg = response.choices[0].message
-    content = msg.content
-    # Some providers put thinking in reasoning_content; if content is empty
-    # but reasoning_content exists, the actual answer may be in content after thinking
-    if not content and hasattr(msg, "reasoning_content") and msg.reasoning_content:
-        logger.debug("LLM returned empty content but has reasoning_content (%d chars)", len(msg.reasoning_content))
-    return content
+    return _extract_llm_content(response.choices[0].message)
 
 
 def _parse_json_from_llm(raw: str | None) -> dict | list | None:
