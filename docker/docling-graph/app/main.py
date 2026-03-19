@@ -248,14 +248,24 @@ def _llm_call(system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> s
             llm_kwargs["reasoning_effort"] = OLLAMA_THINK
 
     response = litellm.completion(**llm_kwargs)
-    return response.choices[0].message.content
+    msg = response.choices[0].message
+    content = msg.content
+    # Some providers put thinking in reasoning_content; if content is empty
+    # but reasoning_content exists, the actual answer may be in content after thinking
+    if not content and hasattr(msg, "reasoning_content") and msg.reasoning_content:
+        logger.debug("LLM returned empty content but has reasoning_content (%d chars)", len(msg.reasoning_content))
+    return content
 
 
 def _parse_json_from_llm(raw: str | None) -> dict | list | None:
-    """Extract and parse JSON from LLM output, handling markdown wrapping."""
+    """Extract and parse JSON from LLM output, handling thinking tags and markdown wrapping."""
     if not raw:
         return None
     raw = raw.strip()
+
+    # Strip <think>...</think> blocks (from reasoning/thinking models)
+    import re
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
     # Strip markdown code fences
     if raw.startswith("```"):
@@ -281,7 +291,16 @@ def _parse_json_from_llm(raw: str | None) -> dict | list | None:
     if json_end < json_start:
         return None
 
-    return json_mod.loads(raw[json_start:json_end + 1])
+    try:
+        return json_mod.loads(raw[json_start:json_end + 1])
+    except json_mod.JSONDecodeError:
+        # Try json_repair as fallback for truncated output
+        try:
+            import json_repair
+            return json_repair.loads(raw[json_start:json_end + 1])
+        except Exception:
+            pass
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +338,11 @@ def _extract_entities_for_group(text: str, group_name: str) -> list[dict]:
         raw = _llm_call(system_prompt, user_prompt, max_tokens=4096)
         parsed = _parse_json_from_llm(raw)
         if parsed is None:
-            logger.warning("Entity extraction for group %s: failed to parse JSON", group_name)
+            raw_preview = (raw or "")[:500]
+            logger.warning(
+                "Entity extraction for group %s: failed to parse JSON. Raw preview: %s",
+                group_name, raw_preview,
+            )
             return []
 
         entities = parsed.get("entities", []) if isinstance(parsed, dict) else parsed
@@ -364,7 +387,11 @@ def _extract_relationships(text: str, entities_context: list[dict]) -> list[dict
         raw = _llm_call(system_prompt, user_prompt, max_tokens=4096)
         parsed = _parse_json_from_llm(raw)
         if parsed is None:
-            logger.warning("Relationship extraction: failed to parse JSON")
+            raw_preview = (raw or "")[:500]
+            logger.warning(
+                "Relationship extraction: failed to parse JSON. Raw preview: %s",
+                raw_preview,
+            )
             return []
 
         relationships = parsed.get("relationships", []) if isinstance(parsed, dict) else []
