@@ -51,7 +51,8 @@ def index_trusted_submission(self, submission_id: str):
         point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"trusted:{submission_id}"))
 
         # Upsert to trusted collection
-        from app.services.qdrant_store import upsert_trusted_vector, get_qdrant_client
+        from app.services.qdrant_store import upsert_trusted_vector
+        from app.db.session import get_qdrant_client
 
         upsert_trusted_vector(
             client=get_qdrant_client(),

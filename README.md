@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, images, and technical drawings → converts documents via Docling (granite-docling-258M VLM) → embeds text (BGE) and images (CLIP) into Qdrant vector collections, builds a military equipment knowledge graph (Neo4j), runs GraphRAG community detection and reporting, and maintains governed trusted data (dedicated Qdrant collection with human-review gate). Supports 6 retrieval modes: text basic, text only, images only, multi-modal, GraphRAG local, and GraphRAG global. Trusted data has its own query endpoint. Includes a user feedback → curator patch approval workflow and a React web UI.
+Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (CLIP) into Qdrant vector collections → builds a military equipment knowledge graph (Neo4j) via parallel ontology-driven entity/relationship extraction → runs GraphRAG community detection and reporting → maintains governed trusted data (dedicated Qdrant collection with human-review gate). Supports 8 retrieval modes: text basic, hybrid (text only / images only / multi-modal), GraphRAG local, GraphRAG global, GraphRAG drift, and GraphRAG basic. Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
 
 ## Architecture
 
@@ -51,11 +51,12 @@ Ingests PDFs, DOCX, images, and technical drawings → converts documents via Do
 | Graph Database | Neo4j Community Edition (knowledge graph, ontology, canonicalization) |
 | Vector Database | Qdrant OSS (text + image embeddings) |
 | Object Storage | MinIO |
-| Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim, asymmetric query/passage prefixes) |
-| Image Embeddings | OpenCLIP ViT-B/32 (512-dim, cross-modal) |
-| Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (CPU default, GPU optional) |
-| Document Conversion | Docling + `ibm-granite/granite-docling-258M` VLM |
-| Graph Extraction | Docling-Graph service (ontology-driven entity/relationship extraction via LLM structured outputs, port 8002) |
+| Text Embeddings | `bge-m3:latest` via Ollama `/v1/embeddings` API (1024-dim) |
+| Image Embeddings | OpenCLIP EVA02-E-14-plus (1024-dim, cross-modal) |
+| Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (GPU-accelerated) |
+| Document Conversion | Docling PdfPipeline (dlparse_v4 + EasyOCR + TableFormer), SimplePipeline for Office/HTML/MD |
+| Document Analysis | LLM-based metadata extraction (summary, date, classification, source) + multimodal picture descriptions via Ollama |
+| Graph Extraction | Docling-Graph service (parallel ontology-driven entity/relationship extraction via direct LLM calls, 5 groups in parallel + relationships, port 8002) |
 | GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
 | Trusted Data | Dedicated Qdrant collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
@@ -173,6 +174,11 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 - `GET /v1/documents/{id}/status` — poll pipeline status (includes stage summary)
 - `GET /v1/documents/{id}/stages` — detailed pipeline stage diagnostics
 - `POST /v1/documents/{id}/reingest` — re-run pipeline (`{"mode": "full|embeddings_only|graph_only"}`); resets status to PENDING; returns 409 if already PROCESSING
+- `POST /v1/documents/{id}/cancel` — cancel a PROCESSING document: revokes Celery task chain, cleans up Redis locks, hard-deletes all data (Qdrant vectors, Neo4j graph, MinIO objects, DB records)
+- `DELETE /v1/documents/{id}` — hard-delete a non-processing document and all derived data
+- `GET /v1/documents/{id}/metadata` — LLM-extracted document metadata (summary, date, classification, source)
+- `GET /v1/documents/{id}/docling` — DoclingDocument viewer (markdown + JSON + image injection)
+- `GET /v1/documents/{id}/docling-raw` — raw DoclingDocument JSON stream
 
 ### Directory Watcher
 - `POST /v1/watch-dirs` — register a directory for auto-ingest
@@ -229,6 +235,8 @@ Query strategies:
 | `hybrid` | `all` | Text or image | Full multi-modal pipeline | All results |
 | `graphrag_local` | `all` | Text | Entity-centric + community reports | Entity matches with community context |
 | `graphrag_global` | `all` | Text | Cross-community summarization | Community reports ranked by relevance |
+| `graphrag_drift` | `all` | Text | Community-informed expansion | DRIFT search with entity/community context |
+| `graphrag_basic` | `all` | Text | Vector search over text units | Direct text unit search via GraphRAG |
 
 > **Backward compatibility**: The legacy `mode` field (e.g. `"mode": "text_only"`) is still accepted and maps to the corresponding `strategy` + `modality_filter` combination.
 
@@ -297,7 +305,7 @@ React 18 + TypeScript + Vite single-page application served by the API container
 
 ### Search Documents (`QueryPage`)
 
-Four query modes with a mode selector bar:
+Six query modes with a mode selector bar:
 
 | Mode | Strategy | Description |
 |---|---|---|
@@ -305,6 +313,8 @@ Four query modes with a mode selector bar:
 | **Multi-Modal** | `hybrid` | Full multi-modal pipeline (text + image). Shows a modality sub-filter: All / Text Only / Images Only |
 | **GraphRAG Local** | `graphrag_local` | Entity-centric search with community report context |
 | **GraphRAG Global** | `graphrag_global` | Cross-community summarization for broad analytical questions |
+| **GraphRAG Drift** | `graphrag_drift` | Community-informed expansion search |
+| **GraphRAG Basic** | `graphrag_basic` | Vector search over text units |
 
 **Result cards** show:
 - Always-visible text preview (first ~300 chars of `content_text`)
@@ -319,7 +329,7 @@ Images are served via the API proxy (`GET /v1/images/{chunk_id}`) which streams 
 
 ### Document Upload (`FileUpload`)
 
-Drag-and-drop or click-to-upload with real-time pipeline status polling. Supports PDF, DOCX, PNG, JPG, TIFF. Adaptive polling intervals (2s → 5s → 10s) based on elapsed time. Retry button for FAILED/ERROR documents. When a source is selected, shows all historical documents for that source with live status updates and retry support.
+Drag-and-drop or click-to-upload with real-time pipeline status polling. Supports PDF, DOCX, PPTX, XLSX, HTML, Markdown, CSV, PNG, JPG, TIFF. Adaptive polling intervals (2s → 5s → 10s) based on elapsed time. Cancel button for PROCESSING documents (revokes Celery tasks, cleans up all data stores, removes the document). Retry button for FAILED/ERROR documents. Delete button for completed/failed documents. When a source is selected, shows all historical documents for that source with live status updates, cancel, retry, and delete support. DoclingDocument viewer for COMPLETE documents with bounding-box overlay, metadata panel (summary, date, classification), and plaintext fallback for .txt files.
 
 ### Other Pages
 
@@ -334,6 +344,12 @@ Manifest-first architecture with parallel derivation stages and idempotent write
 
 ```
 prepare_document  (validate + detect + Docling convert + persist document_elements)
+    ↓
+derive_document_metadata  (LLM: summary, date, classification, source characterization)
+    ↓
+derive_picture_descriptions  (LLM: multimodal image descriptions with summary context)
+    ↓
+purge_document_derivations  (clean up prior run data for reingest)
     ↓
 ┌── derive_text_chunks_and_embeddings ──┐
 │── derive_image_embeddings             │  (parallel Celery chord)
@@ -380,7 +396,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction is performed by the **Docling-Graph service** (port 8002), which handles ontology-driven entity/relationship extraction via LLM structured outputs, text chunking, deduplication, and confidence scoring. The pipeline's `derive_ontology_graph` task sends document text to Docling-Graph via HTTP and imports the returned entities/relationships into Neo4j. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. Graph data is stored once per document (`document_graph_extractions`), not per artifact. The extraction task runs on a dedicated `graph_extract` queue, separate from downstream graph tasks.
+Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-all` endpoint, which runs all 5 ontology groups in parallel (reference, equipment, rf_signal, weapon, operational) plus a relationship extraction pass — 6 LLM calls total instead of the previous ~45 sequential calls. Each group extracts ALL entity instances (multiple per type) via direct LLM calls with structured JSON output, bypassing the slow per-entity-type `run_pipeline` approach. The pipeline's `derive_ontology_graph` task makes a single HTTP call and imports the returned entities/relationships into Neo4j. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. Graph data is stored once per document (`document_graph_extractions`). Extraction runs on a dedicated `graph_extract` queue.
 
 ## Data Migration (from AGE)
 
