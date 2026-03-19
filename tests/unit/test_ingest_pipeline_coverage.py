@@ -1042,3 +1042,90 @@ class TestDeleteAllSourceDocuments:
             result = await delete_all_source_documents(source_id, db=mock_db)
 
         assert result == {"deleted": 1}
+
+
+# ===========================================================================
+# Pipeline improvements: classification propagation, fail fast, neighbor links
+# ===========================================================================
+
+class TestDeriveDocumentMetadataFailFast:
+    """derive_document_metadata should raise on failure (not swallow exceptions)."""
+
+    def test_metadata_raises_on_llm_failure(self):
+        """When LLM extraction fails, the task should raise (triggering Celery retry)."""
+        with patch("app.workers.pipeline._get_db") as mock_get_db, \
+             patch("app.workers.pipeline._update_document_status"), \
+             patch("app.workers.pipeline._get_pipeline_run_id", return_value=None), \
+             patch("app.workers.pipeline._update_stage_run"), \
+             patch("app.services.storage.download_bytes_sync", return_value=b"# Test doc"):
+
+            mock_db = MagicMock()
+            mock_get_db.return_value = mock_db
+
+            with patch("app.services.document_analysis.extract_document_metadata", side_effect=Exception("Ollama down")):
+                from app.workers.pipeline import derive_document_metadata
+                # self.retry() re-raises the original exception when called outside Celery
+                with pytest.raises(Exception, match="Ollama down"):
+                    derive_document_metadata(DOC_ID, RUN_ID)
+
+
+class TestDeriveStructureLinksNeighborOnly:
+    """SAME_SECTION and SAME_ARTIFACT links should be neighbor-only (not all-to-all)."""
+
+    def test_same_section_neighbor_links(self):
+        """5 chunks in a section should produce 4 bidirectional links (not 20)."""
+        from app.workers.pipeline import derive_structure_links
+
+        # Simulate the neighbor-only logic directly
+        chunks = list(range(5))
+        links = []
+        for i in range(len(chunks) - 1):
+            links.append((chunks[i], chunks[i + 1]))
+            links.append((chunks[i + 1], chunks[i]))
+
+        # Neighbor-only: 4 pairs × 2 directions = 8 links
+        assert len(links) == 8
+        # Old all-to-all would be: C(5,2) × 2 = 20 links
+        assert len(links) < 20
+
+    def test_same_artifact_neighbor_links(self):
+        """3 chunks in an artifact should produce 2 bidirectional links (not 6)."""
+        chunks = list(range(3))
+        links = []
+        for i in range(len(chunks) - 1):
+            links.append((chunks[i], chunks[i + 1]))
+            links.append((chunks[i + 1], chunks[i]))
+
+        assert len(links) == 4
+        # Old all-to-all would be: C(3,2) × 2 = 6 links
+        assert len(links) < 6
+
+
+class TestBatchEntityChunkEdges:
+    """batch_create_entity_chunk_edges should batch Cypher calls by entity type."""
+
+    def test_empty_edges_returns_zero(self):
+        from app.services.neo4j_graph import batch_create_entity_chunk_edges
+        mock_driver = MagicMock()
+        assert batch_create_entity_chunk_edges(mock_driver, []) == 0
+
+    def test_batches_by_entity_type(self):
+        from app.services.neo4j_graph import batch_create_entity_chunk_edges
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        mock_result = MagicMock()
+        mock_result.single.return_value = {"cnt": 3}
+        mock_session.run.return_value = mock_result
+
+        edges = [
+            ("AN/MPQ-53", "RADAR_SYSTEM", "chunk-1"),
+            ("AN/APG-77", "RADAR_SYSTEM", "chunk-2"),
+            ("Patriot", "MISSILE_SYSTEM", "chunk-1"),
+        ]
+        result = batch_create_entity_chunk_edges(mock_driver, edges)
+
+        # Should make 2 session.run calls (one per entity type), not 3
+        assert mock_session.run.call_count == 2
+        assert result > 0

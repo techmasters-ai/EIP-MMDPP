@@ -343,6 +343,47 @@ def create_entity_chunk_edge(
         return False
 
 
+def batch_create_entity_chunk_edges(
+    driver,
+    edges: list[tuple[str, str, str]],
+) -> int:
+    """Batch-create EXTRACTED_FROM edges from entities to ChunkRef nodes.
+
+    Each edge is a (entity_name, entity_type, chunk_id) tuple.
+    Uses UNWIND for a single Cypher round-trip per entity_type group.
+    Returns the number of edges created.
+    """
+    if not edges:
+        return 0
+
+    # Group by entity_type since label must be static in each query
+    from collections import defaultdict
+    by_type: dict[str, list[dict]] = defaultdict(list)
+    for name, etype, chunk_id in edges:
+        by_type[etype].append({"entity_name": name, "chunk_id": chunk_id})
+
+    created = 0
+    try:
+        with driver.session() as session:
+            for etype, params in by_type.items():
+                label = _sanitize_label(etype)
+                query = f"""
+                    UNWIND $edges AS e
+                    MATCH (ent:Entity:{label} {{name: e.entity_name}})
+                    MATCH (c:ChunkRef {{chunk_id: e.chunk_id}})
+                    MERGE (ent)-[r:EXTRACTED_FROM]->(c)
+                    RETURN count(r) AS cnt
+                """
+                result = session.run(query, edges=params)
+                record = result.single()
+                if record:
+                    created += record["cnt"]
+    except Exception as e:
+        logger.warning("batch_create_entity_chunk_edges failed: %s", e)
+
+    return created
+
+
 # ---------------------------------------------------------------------------
 # Query helpers (sync)
 # ---------------------------------------------------------------------------

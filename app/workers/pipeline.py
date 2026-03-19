@@ -359,9 +359,16 @@ def start_ingest_pipeline(document_id: str) -> str:
 
     pipeline = chain(
         prepare_document.si(document_id, run_id),
-        derive_document_metadata.si(document_id, run_id),
-        derive_picture_descriptions.si(document_id, run_id),
-        purge_document_derivations.si(document_id, run_id),
+        # Metadata extraction and purge run in parallel — purge only touches
+        # derived data (chunks, vectors, graph), not document metadata.
+        chord(
+            group(
+                derive_document_metadata.si(document_id, run_id),
+                purge_document_derivations.si(document_id, run_id),
+            ),
+            # Pictures needs the summary from metadata, so it runs after both complete.
+            derive_picture_descriptions.si(document_id, run_id),
+        ),
         chord(
             group(
                 derive_text_chunks_and_embeddings.si(document_id, run_id),
@@ -1030,8 +1037,7 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
                 _update_stage_run(db, run_id, "derive_document_metadata", "FAILED", attempt=self.request.retries + 1, error=str(exc))
             except Exception:
                 pass
-        # Error is propagated via the return dict; chain continues
-        return {"stage": "derive_document_metadata", "status": "failed", "error": str(exc)}
+        raise self.retry(exc=exc)
     finally:
         db.close()
 
@@ -1179,8 +1185,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                 _update_stage_run(db, run_id, "derive_picture_descriptions", "FAILED", attempt=self.request.retries + 1, error=str(exc))
             except Exception:
                 pass
-        # Error is propagated via the return dict; chain continues
-        return {"stage": "derive_picture_descriptions", "status": "failed", "error": str(exc)}
+        raise self.retry(exc=exc)
     finally:
         db.close()
 
@@ -1290,7 +1295,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
     Uses deterministic chunk keys for idempotent retries.
     """
-    from app.models.ingest import DocumentElement
+    from app.models.ingest import Document, DocumentElement
     from app.models.retrieval import TextChunk
     from app.services.chunking import structure_aware_chunk
     from app.services.embedding import embed_texts
@@ -1320,6 +1325,12 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             ),
             {"doc_id": document_id},
         )
+
+        # Resolve classification from document metadata (fallback: UNCLASSIFIED)
+        doc_obj = db.get(Document, uuid.UUID(document_id))
+        doc_classification = "UNCLASSIFIED"
+        if doc_obj and doc_obj.document_metadata:
+            doc_classification = doc_obj.document_metadata.get("classification", "UNCLASSIFIED")
 
         elements = db.execute(
             select(DocumentElement).where(
@@ -1426,7 +1437,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "artifact_id": str(artifact_id) if artifact_id else None,
                         "modality": sc.modality,
                         "page_number": sc.page_number,
-                        "classification": "UNCLASSIFIED",
+                        "classification": doc_classification,
                         "chunk_text": text,
                     },
                 ))
@@ -1494,7 +1505,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
     Uses deterministic chunk keys for idempotent retries.
     """
     import io
-    from app.models.ingest import DocumentElement
+    from app.models.ingest import Document, DocumentElement
     from app.models.retrieval import ImageChunk
     from app.services.embedding import embed_images
     from app.services.storage import download_bytes_sync
@@ -1516,6 +1527,12 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
         if run_id:
             _update_stage_run(db, run_id, "derive_image_embeddings", "RUNNING", attempt=self.request.retries + 1)
             db.commit()
+
+        # Resolve classification from document metadata (fallback: UNCLASSIFIED)
+        doc_obj = db.get(Document, uuid.UUID(document_id))
+        doc_classification = "UNCLASSIFIED"
+        if doc_obj and doc_obj.document_metadata:
+            doc_classification = doc_obj.document_metadata.get("classification", "UNCLASSIFIED")
 
         db.execute(
             __import__("sqlalchemy").text(
@@ -1597,7 +1614,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                             "artifact_id": str(elem.artifact_id),
                             "modality": "image",
                             "page_number": elem.page_number,
-                            "classification": "UNCLASSIFIED",
+                            "classification": doc_classification,
                             "chunk_text": elem.content_text or "",
                         },
                     ))
@@ -2096,7 +2113,7 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                         settings.retrieval_weight_same_page,
                     )
 
-        # SAME_SECTION links (chunks whose source elements share section_path)
+        # SAME_SECTION links — neighbor-only (prev/next by position) to avoid O(n²)
         section_chunks: dict[str, list] = {}
         for tc in text_chunks:
             if tc.artifact_id and str(tc.artifact_id) in artifact_element_map:
@@ -2105,36 +2122,32 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     section_chunks.setdefault(elem.section_path, []).append(tc)
 
         for section, chunks in section_chunks.items():
-            for i, c1 in enumerate(chunks):
-                for c2 in chunks[i + 1:]:
-                    if c1.id != c2.id:
-                        _upsert_link(
-                            c1.id, c2.id, "SAME_SECTION", 1,
-                            settings.retrieval_weight_same_section,
-                        )
-                        _upsert_link(
-                            c2.id, c1.id, "SAME_SECTION", 1,
-                            settings.retrieval_weight_same_section,
-                        )
+            for i in range(len(chunks) - 1):
+                _upsert_link(
+                    chunks[i].id, chunks[i + 1].id, "SAME_SECTION", 1,
+                    settings.retrieval_weight_same_section,
+                )
+                _upsert_link(
+                    chunks[i + 1].id, chunks[i].id, "SAME_SECTION", 1,
+                    settings.retrieval_weight_same_section,
+                )
 
-        # SAME_ARTIFACT links (different chunks from same artifact)
+        # SAME_ARTIFACT links — neighbor-only (prev/next by position) to avoid O(n²)
         artifact_chunks: dict[str, list] = {}
         for tc in text_chunks:
             if tc.artifact_id:
                 artifact_chunks.setdefault(str(tc.artifact_id), []).append(tc)
 
         for art_id, chunks in artifact_chunks.items():
-            if len(chunks) > 1:
-                for i, c1 in enumerate(chunks):
-                    for c2 in chunks[i + 1:]:
-                        _upsert_link(
-                            c1.id, c2.id, "SAME_ARTIFACT", 1,
-                            settings.retrieval_weight_same_artifact,
-                        )
-                        _upsert_link(
-                            c2.id, c1.id, "SAME_ARTIFACT", 1,
-                            settings.retrieval_weight_same_artifact,
-                        )
+            for i in range(len(chunks) - 1):
+                _upsert_link(
+                    chunks[i].id, chunks[i + 1].id, "SAME_ARTIFACT", 1,
+                    settings.retrieval_weight_same_artifact,
+                )
+                _upsert_link(
+                    chunks[i + 1].id, chunks[i].id, "SAME_ARTIFACT", 1,
+                    settings.retrieval_weight_same_artifact,
+                )
 
         db.commit()
 
@@ -2143,7 +2156,7 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             upsert_document_node,
             upsert_chunk_ref_node,
             create_structural_edge,
-            create_entity_chunk_edge,
+            batch_create_entity_chunk_edges,
         )
         from app.db.session import get_neo4j_driver
         neo4j_driver = get_neo4j_driver()
@@ -2204,6 +2217,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             )
         ).scalars().first()
 
+        # Collect all entity-chunk edges, then batch-create in one Cypher call per type
+        edge_tuples: list[tuple[str, str, str]] = []  # (name, type, chunk_id)
+
         used_mentions_path = False
         if graph_extraction and graph_extraction.graph_json:
             mentions = graph_extraction.graph_json.get("mentions", [])
@@ -2213,10 +2229,8 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     name = mention.get("entity_name", "")
                     etype = mention.get("entity_type", "UNKNOWN")
                     euid = mention.get("element_uid", "")
-                    chunk_ids = element_uid_chunk_map.get(euid, [])
-                    for chunk_id in chunk_ids:
-                        if create_entity_chunk_edge(neo4j_driver, name, etype, chunk_id):
-                            entity_links += 1
+                    for chunk_id in element_uid_chunk_map.get(euid, []):
+                        edge_tuples.append((name, etype, chunk_id))
 
         # Fallback: Artifact.content_metadata path (backward compat)
         if not used_mentions_path:
@@ -2251,8 +2265,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 
                 for (name, etype) in entities_list:
                     for chunk_id in chunk_ids:
-                        if create_entity_chunk_edge(neo4j_driver, name, etype, chunk_id):
-                            entity_links += 1
+                        edge_tuples.append((name, etype, chunk_id))
+
+        entity_links = batch_create_entity_chunk_edges(neo4j_driver, edge_tuples)
 
         db.commit()
 
