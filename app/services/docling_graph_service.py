@@ -125,3 +125,72 @@ def extract_graph(
     )
 
     return result
+
+
+def extract_graph_all(
+    text: str,
+    document_id: str,
+) -> dict[str, Any]:
+    """Extract all entities (5 groups in parallel) + relationships in one call.
+
+    Uses the /extract-all endpoint which runs 5 parallel entity extraction
+    LLM calls + 1 relationship extraction call internally.
+
+    Returns a dict with keys: entities, relationships, ontology_version, model, provider.
+    """
+    settings = get_settings()
+    url = f"{settings.docling_graph_base_url}/extract-all"
+    timeout = settings.docling_graph_timeout
+
+    # --- Redis concurrency gate ---
+    r = _get_redis()
+    concurrency = settings.docling_graph_concurrency
+    lock_timeout = timeout + 60
+    permit_lock = None
+
+    for permit_i in range(concurrency):
+        candidate = r.lock(
+            f"docling-graph:permit:{permit_i}",
+            timeout=lock_timeout,
+            blocking=False,
+        )
+        if candidate.acquire(blocking=False):
+            permit_lock = candidate
+            break
+
+    if permit_lock is None:
+        raise DoclingGraphCapacityError(
+            f"All {concurrency} Docling-Graph permits in use"
+        )
+
+    logger.info(
+        "Calling Docling-Graph /extract-all for document %s (%d chars, permit acquired)",
+        document_id, len(text),
+    )
+
+    try:
+        response = httpx.post(
+            url,
+            json={"document_id": document_id, "text": text},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    finally:
+        try:
+            permit_lock.release()
+        except redis_lib.exceptions.LockNotOwnedError:
+            logger.warning(
+                "Docling-Graph permit lock expired before release for document %s",
+                document_id,
+            )
+
+    result = response.json()
+    logger.info(
+        "Docling-Graph /extract-all returned %d entities, %d relationships for document %s (model=%s)",
+        len(result.get("entities", [])),
+        len(result.get("relationships", [])),
+        document_id,
+        result.get("model", "unknown"),
+    )
+
+    return result

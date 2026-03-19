@@ -1773,59 +1773,31 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 db.commit()
             return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
 
-        # ---- Batched entity extraction (5 groups + 1 relationship pass) ----
-        from app.services.docling_graph_service import extract_graph
+        # ---- Full extraction: all 5 groups in parallel + relationships ----
+        from app.services.docling_graph_service import extract_graph_all
 
-        EXTRACTION_GROUPS = ["reference", "equipment", "rf_signal", "weapon", "operational"]
-
-        all_entities: list[dict] = []
-        all_relationships: list[dict] = []
         provider = "docling-graph"
         model_name = "unknown"
         group_errors: list[str] = []
 
-        for group in EXTRACTION_GROUPS:
-            try:
-                result = extract_graph(
-                    full_text, document_id,
-                    template_group=group, mode="entities",
-                )
-                provider = result.get("provider", provider)
-                model_name = result.get("model", model_name)
-                all_entities.extend(result.get("entities", []))
-                logger.info(
-                    "derive_ontology_graph: group=%s entities=%d for %s",
-                    group, len(result.get("entities", [])), document_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "derive_ontology_graph: group=%s failed for %s: %s — continuing",
-                    group, document_id, exc,
-                )
-                group_errors.append(f"{group}: {exc}")
-
-        # Relationship pass with all discovered entities as context
-        entities_context = [
-            {"name": e["name"], "entity_type": e["entity_type"]}
-            for e in all_entities
-        ]
         try:
-            rel_result = extract_graph(
-                full_text, document_id,
-                mode="relationships",
-                entities_context=entities_context,
-            )
-            all_relationships = rel_result.get("relationships", [])
+            result = extract_graph_all(full_text, document_id)
+            all_entities = result.get("entities", [])
+            all_relationships = result.get("relationships", [])
+            provider = result.get("provider", provider)
+            model_name = result.get("model", model_name)
             logger.info(
-                "derive_ontology_graph: relationship pass returned %d for %s",
-                len(all_relationships), document_id,
+                "derive_ontology_graph: extract-all returned entities=%d relationships=%d for %s",
+                len(all_entities), len(all_relationships), document_id,
             )
         except Exception as exc:
             logger.warning(
-                "derive_ontology_graph: relationship pass failed for %s: %s",
+                "derive_ontology_graph: extract-all failed for %s: %s",
                 document_id, exc,
             )
-            group_errors.append(f"relationships: {exc}")
+            group_errors.append(f"extract-all: {exc}")
+            all_entities = []
+            all_relationships = []
 
         graph_data = {
             "nodes": all_entities,
