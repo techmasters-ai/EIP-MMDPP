@@ -91,18 +91,21 @@ COPY requirements-stable.txt .
 RUN pip install --no-cache-dir packaging ninja && \
     pip install --no-cache-dir -r requirements-stable.txt
 
-# Model downloads (stays cached)
-# PdfPipeline uses EasyOCR + TableFormer + CodeFormulaV2 (downloaded on first use)
+# Model cache directory
 ENV HF_HOME=/opt/huggingface
+
+# Pre-download the layout model (required at pipeline init, checked first)
+RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('docling-project/docling-layout-heron')"
 
 # --- Updatable deps (cache-busted on every start) ---
 ARG CACHE_BUST
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Lock to offline mode for air-gapped runtime
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
+# Allow online model downloads at runtime — TableFormer, CodeFormulaV2, and
+# EasyOCR models are downloaded on first use by the pipeline.
+# Remove HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE to permit this.
+# For fully air-gapped deployments, pre-populate /opt/huggingface at build time.
 
 COPY app/ ./app/
 
