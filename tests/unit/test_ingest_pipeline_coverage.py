@@ -756,9 +756,8 @@ class TestDerivePictureDescriptions:
                 with patch("app.services.document_analysis.describe_pictures", return_value=updated_json):
                     result = derive_picture_descriptions.run(DOC_ID, RUN_ID)
 
-        # Without `select` injected, this should gracefully return "failed"
-        assert result["status"] == "failed"
-        assert "select" in result["error"]
+        # Fixed: `select` is now properly imported as `sa_select`
+        assert result["status"] == "ok"
 
 
 # ===========================================================================

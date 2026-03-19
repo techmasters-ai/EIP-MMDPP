@@ -1030,7 +1030,7 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
                 _update_stage_run(db, run_id, "derive_document_metadata", "FAILED", attempt=self.request.retries + 1, error=str(exc))
             except Exception:
                 pass
-        _record_failed_stage(document_id, "derive_document_metadata", str(exc))
+        # Error is propagated via the return dict; chain continues
         return {"stage": "derive_document_metadata", "status": "failed", "error": str(exc)}
     finally:
         db.close()
@@ -1118,9 +1118,10 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
         # Persist picture descriptions to DocumentElement rows so downstream
         # tasks (text chunking, graph extraction) can see them
         from app.models.ingest import DocumentElement
+        from sqlalchemy import select as sa_select
         pictures_updated = 0
         pic_elements = db.execute(
-            select(DocumentElement).where(
+            sa_select(DocumentElement).where(
                 DocumentElement.document_id == uuid.UUID(document_id),
                 DocumentElement.element_type == "image",
             ).order_by(DocumentElement.element_order)
@@ -1178,7 +1179,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                 _update_stage_run(db, run_id, "derive_picture_descriptions", "FAILED", attempt=self.request.retries + 1, error=str(exc))
             except Exception:
                 pass
-        _record_failed_stage(document_id, "derive_picture_descriptions", str(exc))
+        # Error is propagated via the return dict; chain continues
         return {"stage": "derive_picture_descriptions", "status": "failed", "error": str(exc)}
     finally:
         db.close()
