@@ -24,7 +24,7 @@ export function DirectoryMonitor() {
   const [formPath, setFormPath] = useState("");
   const [formSourceId, setFormSourceId] = useState("");
   const [formInterval, setFormInterval] = useState("30");
-  const [formPatterns, setFormPatterns] = useState("*.pdf,*.docx,*.txt,*.png,*.jpg,*.tiff");
+  const [formPatterns, setFormPatterns] = useState("*.pdf,*.docx,*.doc,*.pptx,*.ppt,*.xlsx,*.xls,*.html,*.htm,*.md,*.csv,*.txt,*.png,*.jpg,*.jpeg,*.tiff,*.tif,*.bmp,*.gif,*.webp");
   const [submitting, setSubmitting] = useState(false);
 
   const refresh = useCallback(async () => {
