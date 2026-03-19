@@ -275,16 +275,22 @@ def _extract_llm_content(msg: Any) -> str:
 
     Thinking models (Ollama with think=true, OpenAI o-series, etc.) may place
     the final answer in ``content``, or may leave ``content`` empty and put
-    everything into a provider-specific reasoning field.  We walk a fallback
-    chain: content → reasoning_content → thinking → thinking_blocks.
+    everything into a provider-specific reasoning field.
+
+    Fallback chain (per Ollama docs + LiteLLM mapping):
+      1. content              — standard answer field
+      2. reasoning_content    — LiteLLM maps Ollama's thinking here
+      3. reasoning            — Ollama OpenAI-compat path may use this
+      4. thinking             — Ollama native field
+      5. thinking_blocks      — list of thinking block dicts (stringify)
     """
     content = getattr(msg, "content", None) or ""
     if content.strip():
         return content
 
-    for attr in ("reasoning_content", "thinking"):
+    for attr in ("reasoning_content", "reasoning", "thinking"):
         val = getattr(msg, attr, None) or ""
-        if val.strip():
+        if isinstance(val, str) and val.strip():
             logger.info("content empty — falling back to %s (%d chars)", attr, len(val))
             return val
 
@@ -321,27 +327,57 @@ def _llm_call(system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> s
 
 
 def _parse_json_from_llm(raw: str | None) -> dict | list | None:
-    """Extract and parse JSON from LLM output, handling thinking tags and markdown wrapping."""
+    """Extract and parse JSON from LLM output.
+
+    Tries multiple strategies in order of reliability:
+      1. Whole string as JSON (clean responses)
+      2. Strip <think> tags, retry whole string
+      3. Fenced ```json code block (regex-based)
+      4. Last complete JSON object/array via bracket-matching
+         (handles reasoning content where JSON is at the end)
+      5. json_repair as last resort for truncated output
+    """
     if not raw:
         return None
+    import re
+
     raw = raw.strip()
 
-    # Strip <think>...</think> blocks (from reasoning/thinking models)
-    import re
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    # Strategy 1: whole string as JSON (cheapest, handles clean output)
+    try:
+        return json_mod.loads(raw)
+    except (json_mod.JSONDecodeError, ValueError):
+        pass
 
-    # Strip markdown code fences
-    if raw.startswith("```"):
-        parts = raw.split("```")
-        if len(parts) >= 2:
-            inner = parts[1]
-            if inner.startswith("json"):
-                inner = inner[4:]
-            raw = inner.strip()
+    # Strategy 2: strip reasoning markers and retry
+    # gpt-oss may wrap reasoning in <thinking>/<think> tags or use inline
+    # markers like "Let me think...", "Reasoning:", "Therefore:" before JSON
+    cleaned = re.sub(r"<think(?:ing)?>.*?</think(?:ing)?>", "", raw, flags=re.DOTALL).strip()
+    # Also strip everything before "Final Answer:" / "Answer:" / "Therefore:" if present
+    for marker in (r"Final [Aa]nswer:\s*", r"Answer:\s*", r"In conclusion[,:]\s*"):
+        m = re.search(marker, cleaned)
+        if m:
+            after = cleaned[m.end():].strip()
+            if after and after[0] in ("{", "["):
+                cleaned = after
+                break
+    if cleaned != raw:
+        try:
+            return json_mod.loads(cleaned)
+        except (json_mod.JSONDecodeError, ValueError):
+            pass
+    raw = cleaned
 
-    # Find JSON object or array — try from the end first (reasoning models
-    # often put the JSON answer after pages of thinking), then fall back to
-    # scanning from the start.  Try both {} and [] and pick the outermost.
+    # Strategy 3: fenced ```json code block
+    m = re.search(r"```(?:json)?\s*(.*?)```", raw, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        try:
+            return json_mod.loads(m.group(1).strip())
+        except (json_mod.JSONDecodeError, ValueError):
+            pass
+
+    # Strategy 4: find the last complete JSON object/array via bracket-matching
+    # (reasoning models put JSON after pages of thinking with stray brackets)
     candidates: list[tuple[int, int]] = []
     for close_ch, open_ch in [("}", "{"), ("]", "[")]:
         end_pos = raw.rfind(close_ch)
@@ -360,16 +396,17 @@ def _parse_json_from_llm(raw: str | None) -> dict | list | None:
     if not candidates:
         return None
 
-    # Pick the candidate that starts earliest (outermost wrapper)
+    # Pick the outermost (earliest start) candidate
     json_start, json_end = min(candidates, key=lambda c: c[0])
+    snippet = raw[json_start:json_end + 1]
 
     try:
-        return json_mod.loads(raw[json_start:json_end + 1])
+        return json_mod.loads(snippet)
     except json_mod.JSONDecodeError:
-        # Try json_repair as fallback for truncated output
+        # Strategy 5: json_repair for truncated/malformed output
         try:
             import json_repair
-            return json_repair.loads(raw[json_start:json_end + 1])
+            return json_repair.loads(snippet)
         except Exception:
             pass
         return None
