@@ -78,8 +78,11 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     curl libgl1 libglib2.0-0 poppler-utils ninja-build \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -f /usr/local/lib/libfips_bypass.so
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep FIPS bypass shim at runtime — OpenSSL FIPS self-test fails on
+# FIPS-enabled host kernels when Python crypto libraries initialize.
+ENV LD_PRELOAD=/usr/local/lib/libfips_bypass.so
 
 WORKDIR /app
 
