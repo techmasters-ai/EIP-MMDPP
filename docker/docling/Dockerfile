@@ -88,15 +88,9 @@ COPY requirements-stable.txt .
 RUN pip install --no-cache-dir packaging ninja && \
     pip install --no-cache-dir -r requirements-stable.txt
 
-# flash-attn build (expensive, stays cached)
-ENV MAX_JOBS=4
-ENV TORCH_CUDA_ARCH_LIST="8.9"
-RUN pip install --no-cache-dir flash-attn --no-build-isolation
-
 # Model downloads (stays cached)
+# PdfPipeline uses EasyOCR + TableFormer + CodeFormulaV2 (downloaded on first use)
 ENV HF_HOME=/opt/huggingface
-RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-docling-258M')"
-RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-vision-3.3-2b')"
 
 # --- Updatable deps (cache-busted on every start) ---
 ARG CACHE_BUST

@@ -137,6 +137,8 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
 
   const handleCy = useCallback(
     (cy: cytoscape.Core) => {
+      // Clean up previous listeners to prevent accumulation on re-render
+      cy.removeAllListeners();
       cyRef.current = cy;
 
       cy.on("mouseover", "node, edge", (evt) => {

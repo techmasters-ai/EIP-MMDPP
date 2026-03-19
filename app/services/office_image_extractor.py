@@ -131,6 +131,8 @@ def inject_images_into_docling_json(
         return 0
 
     # Match by order: first empty picture gets first extracted image, etc.
+    from PIL import Image
+
     injected = 0
     for pic, img in zip(empty_pics, images):
         ct = img["content_type"]
@@ -143,7 +145,6 @@ def inject_images_into_docling_json(
 
         # Set image dimensions if possible
         try:
-            from PIL import Image
             pil_img = Image.open(io.BytesIO(base64.b64decode(b64)))
             pic["image"]["size"] = {"width": pil_img.width, "height": pil_img.height}
         except Exception:

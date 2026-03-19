@@ -16,6 +16,31 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _ollama_chat(
+    client: httpx.Client,
+    url: str,
+    model: str,
+    messages: list[dict],
+    *,
+    temperature: float = 0.1,
+    max_tokens: int = 1024,
+    timeout: float = 300,
+) -> str:
+    """Shared Ollama chat completion call. Returns stripped assistant content."""
+    resp = client.post(
+        url,
+        json={
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
+
+
 def extract_document_metadata(markdown: str) -> dict:
     """Extract metadata from document markdown via LLM.
 
@@ -25,23 +50,17 @@ def extract_document_metadata(markdown: str) -> dict:
     settings = get_settings()
     model = settings.doc_analysis_llm_model
     timeout = settings.doc_analysis_timeout
+    url = f"{settings.ollama_base_url}/v1/chat/completions"
+
+    # Shared client for connection reuse across parallel calls (httpx.Client is thread-safe)
+    client = httpx.Client(timeout=timeout)
 
     def _llm_call(system_prompt: str, user_text: str) -> str:
-        resp = httpx.post(
-            f"{settings.ollama_base_url}/v1/chat/completions",
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_text},
-                ],
-                "temperature": 0.1,
-                "max_tokens": 1024,
-            },
-            timeout=timeout,
+        return _ollama_chat(
+            client, url, model,
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
+            temperature=0.1, max_tokens=1024, timeout=timeout,
         )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
 
     # Truncate markdown to avoid exceeding context window
     max_chars = settings.ollama_num_ctx * 3
@@ -56,19 +75,22 @@ def extract_document_metadata(markdown: str) -> dict:
         "classification": settings.doc_analysis_classification_prompt,
     }
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            pool.submit(_llm_call, prompt, doc_text): key
-            for key, prompt in prompts.items()
-        }
-        for future in as_completed(futures):
-            key = futures[future]
-            try:
-                results[key] = future.result()
-                logger.info("Document metadata '%s' extracted", key)
-            except Exception as e:
-                logger.warning("Document metadata '%s' failed: %s", key, e)
-                results[key] = "Unknown" if key != "classification" else "UNCLASSIFIED"
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(_llm_call, prompt, doc_text): key
+                for key, prompt in prompts.items()
+            }
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    results[key] = future.result()
+                    logger.info("Document metadata '%s' extracted", key)
+                except Exception as e:
+                    logger.warning("Document metadata '%s' failed: %s", key, e)
+                    results[key] = "Unknown" if key != "classification" else "UNCLASSIFIED"
+    finally:
+        client.close()
 
     # Normalize classification
     valid_classes = {"UNCLASSIFIED", "CUI", "FOUO", "SECRET", "TOP SECRET"}
@@ -162,31 +184,25 @@ def _describe_single_image(
 ) -> str | None:
     """Send a single image to the multimodal LLM for description."""
     try:
-        resp = httpx.post(
-            f"{settings.ollama_base_url}/v1/chat/completions",
-            json={
-                "model": model,
-                "messages": [
+        url = f"{settings.ollama_base_url}/v1/chat/completions"
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
                     {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{image_b64}"
-                                },
-                            },
-                        ],
-                    }
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                    },
                 ],
-                "temperature": 0.2,
-                "max_tokens": 2048,
-            },
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
+            }
+        ]
+        # Use a per-call client (images are large payloads; keep-alive less beneficial)
+        with httpx.Client(timeout=timeout) as client:
+            content = _ollama_chat(
+                client, url, model, messages,
+                temperature=0.2, max_tokens=2048, timeout=timeout,
+            )
         logger.debug("Picture description (%d chars): %.100s...", len(content), content)
         return content
     except Exception as e:

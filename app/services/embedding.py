@@ -19,15 +19,19 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Reusable HTTP client for Ollama embedding calls
-_http_client: httpx.Client | None = None
+# Thread-local HTTP client for Ollama embedding calls (Celery workers are
+# multi-threaded and httpx.Client is not thread-safe for concurrent use).
+import threading
+
+_thread_local = threading.local()
 
 
 def _get_http_client() -> httpx.Client:
-    global _http_client
-    if _http_client is None:
-        _http_client = httpx.Client(timeout=120.0)
-    return _http_client
+    client = getattr(_thread_local, "http_client", None)
+    if client is None:
+        client = httpx.Client(timeout=120.0)
+        _thread_local.http_client = client
+    return client
 
 
 def embed_texts(texts: list[str], batch_size: int = 64, *, query: bool = False) -> list[list[float]]:
