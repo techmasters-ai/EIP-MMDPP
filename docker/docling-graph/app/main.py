@@ -234,53 +234,25 @@ def _extract_llm_content(msg: Any) -> str:
 
     Thinking models (Ollama with think=true, OpenAI o-series, etc.) may place
     the final answer in ``content``, or may leave ``content`` empty and put
-    everything into a provider-specific reasoning field.  We walk a deterministic
-    fallback chain and log which field we used so failures are diagnosable from
-    container logs alone.
-
-    Fallback order:
-      1. content            — standard answer field
-      2. reasoning_content  — LiteLLM's mapping of Ollama ``message.thinking``
-      3. thinking           — raw thinking field (some LiteLLM versions)
-      4. thinking_blocks    — list of thinking block dicts (stringify)
+    everything into a provider-specific reasoning field.  We walk a fallback
+    chain: content → reasoning_content → thinking → thinking_blocks.
     """
-    # Inventory all candidate fields (for diagnostics)
-    candidates: dict[str, int] = {}
-    for attr in ("content", "reasoning_content", "thinking", "thinking_blocks"):
-        val = getattr(msg, attr, None)
-        if val is not None:
-            candidates[attr] = len(str(val))
-    logger.debug("LLM response field sizes: %s", candidates)
-
-    # 1. Standard content
     content = getattr(msg, "content", None) or ""
     if content.strip():
         return content
 
-    # 2. reasoning_content (LiteLLM maps Ollama's thinking here)
-    rc = getattr(msg, "reasoning_content", None) or ""
-    if rc.strip():
-        logger.info(
-            "content empty — falling back to reasoning_content (%d chars)", len(rc),
-        )
-        return rc
+    for attr in ("reasoning_content", "thinking"):
+        val = getattr(msg, attr, None) or ""
+        if val.strip():
+            logger.info("content empty — falling back to %s (%d chars)", attr, len(val))
+            return val
 
-    # 3. thinking (raw field on some providers)
-    th = getattr(msg, "thinking", None) or ""
-    if th.strip():
-        logger.info("content empty — falling back to thinking (%d chars)", len(th))
-        return th
-
-    # 4. thinking_blocks (list of dicts)
     blocks = getattr(msg, "thinking_blocks", None)
     if blocks:
         logger.info("content empty — falling back to thinking_blocks")
         return str(blocks)
 
-    # Nothing found — log full diagnostics
-    logger.warning(
-        "LLM returned no usable text in any field. Field sizes: %s", candidates,
-    )
+    logger.warning("LLM returned no usable text in any field")
     return ""
 
 

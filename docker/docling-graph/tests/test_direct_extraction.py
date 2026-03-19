@@ -53,6 +53,28 @@ def client(setup_app):
 
 
 # ---------------------------------------------------------------------------
+# Test helpers — LLM response mock factories
+# ---------------------------------------------------------------------------
+
+def _make_llm_msg(content=None, reasoning_content=None, thinking=None, thinking_blocks=None):
+    """Create a MagicMock LLM message with the given field values."""
+    msg = MagicMock()
+    msg.content = content
+    msg.reasoning_content = reasoning_content
+    msg.thinking = thinking
+    msg.thinking_blocks = thinking_blocks
+    return msg
+
+
+def _make_llm_response(content=None, reasoning_content=None, thinking=None, thinking_blocks=None):
+    """Create a full litellm.completion() response mock."""
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message = _make_llm_msg(content, reasoning_content, thinking, thinking_blocks)
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # _parse_json_from_llm
 # ---------------------------------------------------------------------------
 
@@ -175,16 +197,12 @@ class TestExtractEntitiesForGroup:
     @patch("app.main.litellm")
     def test_parses_llm_response(self, mock_litellm, setup_app):
         """Should parse JSON entity array from LLM response."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = json.dumps({
+        mock_litellm.completion.return_value = _make_llm_response(content=json.dumps({
             "entities": [
                 {"name": "S-300", "entity_type": "MISSILE_SYSTEM", "confidence": 0.9, "properties": {}},
                 {"name": "Tombstone", "entity_type": "RADAR_SYSTEM", "confidence": 0.85, "properties": {}},
             ]
-        })
-        mock_litellm.completion.return_value = mock_response
-
+        }))
         result = setup_app._extract_entities_for_group(
             "The S-300 uses the Tombstone radar.", "equipment"
         )
@@ -196,18 +214,15 @@ class TestExtractEntitiesForGroup:
     def test_llm_failure_returns_empty(self, mock_litellm, setup_app):
         """LLM exception should return empty list, not crash."""
         mock_litellm.completion.side_effect = Exception("LLM timeout")
-
         result = setup_app._extract_entities_for_group("text", "equipment")
         assert result == []
 
     @patch("app.main.litellm")
     def test_invalid_json_returns_empty(self, mock_litellm, setup_app):
         """Non-JSON LLM output should return empty list."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "I cannot extract entities from this text."
-        mock_litellm.completion.return_value = mock_response
-
+        mock_litellm.completion.return_value = _make_llm_response(
+            content="I cannot extract entities from this text."
+        )
         result = setup_app._extract_entities_for_group("text", "equipment")
         assert result == []
 
@@ -219,20 +234,14 @@ class TestExtractEntitiesForGroup:
 class TestExtractRelationships:
     @patch("app.main.litellm")
     def test_parses_relationship_response(self, mock_litellm, setup_app):
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = json.dumps({
-            "relationships": [
-                {
-                    "from_name": "S-300", "from_type": "MISSILE_SYSTEM",
-                    "rel_type": "HAS_COMPONENT",
-                    "to_name": "Tombstone", "to_type": "RADAR_SYSTEM",
-                    "confidence": 0.9,
-                },
-            ]
-        })
-        mock_litellm.completion.return_value = mock_response
-
+        mock_litellm.completion.return_value = _make_llm_response(content=json.dumps({
+            "relationships": [{
+                "from_name": "S-300", "from_type": "MISSILE_SYSTEM",
+                "rel_type": "HAS_COMPONENT",
+                "to_name": "Tombstone", "to_type": "RADAR_SYSTEM",
+                "confidence": 0.9,
+            }]
+        }))
         entities = [
             {"name": "S-300", "entity_type": "MISSILE_SYSTEM"},
             {"name": "Tombstone", "entity_type": "RADAR_SYSTEM"},
@@ -294,87 +303,43 @@ class TestRunFullExtraction:
 class TestExtractLlmContent:
     """Test _extract_llm_content with thinking-model response field layouts.
 
-    When Ollama thinking is enabled (think=high), the LLM may place its output
-    in `reasoning_content` instead of `content`.  These tests reproduce the
-    exact failure mode seen in production: LiteLLM returns msg.content="" and
-    the actual JSON lands in msg.reasoning_content.
+    Reproduces the production failure: gpt-oss:120b with OLLAMA_THINK=high
+    returns msg.content="" and the JSON lands in msg.reasoning_content.
     """
 
     def test_standard_content(self, setup_app):
-        """When content is populated, return it directly."""
-        msg = MagicMock()
-        msg.content = '{"entities": []}'
-        msg.reasoning_content = None
-        msg.thinking = None
-        msg.thinking_blocks = None
+        msg = _make_llm_msg(content='{"entities": []}')
         assert setup_app._extract_llm_content(msg) == '{"entities": []}'
 
     def test_content_empty_falls_back_to_reasoning_content(self, setup_app):
-        """When content is empty, fall back to reasoning_content."""
-        msg = MagicMock()
-        msg.content = ""
-        msg.reasoning_content = '{"entities": [{"name": "test"}]}'
-        msg.thinking = None
-        msg.thinking_blocks = None
-        result = setup_app._extract_llm_content(msg)
-        assert result == '{"entities": [{"name": "test"}]}'
+        msg = _make_llm_msg(content="", reasoning_content='{"entities": [{"name": "test"}]}')
+        assert setup_app._extract_llm_content(msg) == '{"entities": [{"name": "test"}]}'
 
     def test_content_none_falls_back_to_reasoning_content(self, setup_app):
-        """When content is None (not just empty), fall back to reasoning_content."""
-        msg = MagicMock()
-        msg.content = None
-        msg.reasoning_content = '{"entities": []}'
-        msg.thinking = None
-        msg.thinking_blocks = None
+        msg = _make_llm_msg(reasoning_content='{"entities": []}')
         assert setup_app._extract_llm_content(msg) == '{"entities": []}'
 
     def test_falls_back_to_thinking_field(self, setup_app):
-        """Fall back to thinking when content and reasoning_content are empty."""
-        msg = MagicMock()
-        msg.content = ""
-        msg.reasoning_content = ""
-        msg.thinking = '{"entities": []}'
-        msg.thinking_blocks = None
+        msg = _make_llm_msg(content="", reasoning_content="", thinking='{"entities": []}')
         assert setup_app._extract_llm_content(msg) == '{"entities": []}'
 
     def test_falls_back_to_thinking_blocks(self, setup_app):
-        """Fall back to thinking_blocks as last resort."""
-        msg = MagicMock()
-        msg.content = None
-        msg.reasoning_content = None
-        msg.thinking = None
-        msg.thinking_blocks = [{"type": "thinking", "thinking": '{"entities": []}'}]
-        result = setup_app._extract_llm_content(msg)
-        assert "entities" in result
+        msg = _make_llm_msg(thinking_blocks=[{"type": "thinking", "thinking": '{"entities": []}'}])
+        assert "entities" in setup_app._extract_llm_content(msg)
 
     def test_all_fields_empty_returns_empty_string(self, setup_app):
-        """When no field has content, return empty string."""
-        msg = MagicMock()
-        msg.content = None
-        msg.reasoning_content = None
-        msg.thinking = None
-        msg.thinking_blocks = None
-        assert setup_app._extract_llm_content(msg) == ""
+        assert setup_app._extract_llm_content(_make_llm_msg()) == ""
 
     def test_prefers_content_over_reasoning_content(self, setup_app):
-        """When both content and reasoning_content are populated, prefer content."""
-        msg = MagicMock()
-        msg.content = '{"entities": [{"name": "from_content"}]}'
-        msg.reasoning_content = '{"entities": [{"name": "from_reasoning"}]}'
-        msg.thinking = None
-        msg.thinking_blocks = None
-        result = setup_app._extract_llm_content(msg)
-        assert "from_content" in result
+        msg = _make_llm_msg(
+            content='{"entities": [{"name": "from_content"}]}',
+            reasoning_content='{"entities": [{"name": "from_reasoning"}]}',
+        )
+        assert "from_content" in setup_app._extract_llm_content(msg)
 
     def test_whitespace_only_content_falls_back(self, setup_app):
-        """Content that is only whitespace should be treated as empty."""
-        msg = MagicMock()
-        msg.content = "   \n  "
-        msg.reasoning_content = '{"entities": []}'
-        msg.thinking = None
-        msg.thinking_blocks = None
-        result = setup_app._extract_llm_content(msg)
-        assert result == '{"entities": []}'
+        msg = _make_llm_msg(content="   \n  ", reasoning_content='{"entities": []}')
+        assert setup_app._extract_llm_content(msg) == '{"entities": []}'
 
 
 # ---------------------------------------------------------------------------
@@ -382,30 +347,18 @@ class TestExtractLlmContent:
 # ---------------------------------------------------------------------------
 
 class TestThinkingModelExtraction:
-    """Test extraction pipeline with thinking-model response shapes.
-
-    Reproduces the production failure: gpt-oss:120b with OLLAMA_THINK=high
-    returns JSON in reasoning_content, content is empty, extraction returns
-    0 entities / 0 relationships.
+    """Reproduces production failure: gpt-oss:120b with OLLAMA_THINK=high
+    returns JSON in reasoning_content, content empty → 0 entities.
     """
 
     @patch("app.main.litellm")
     def test_entities_from_reasoning_content(self, mock_litellm, setup_app):
-        """Should extract entities when JSON is in reasoning_content (content empty)."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        msg = mock_response.choices[0].message
-        msg.content = ""
-        msg.reasoning_content = json.dumps({
-            "entities": [
-                {"name": "S-300", "entity_type": "MISSILE_SYSTEM",
-                 "confidence": 0.9, "properties": {}},
-            ]
-        })
-        msg.thinking = None
-        msg.thinking_blocks = None
-        mock_litellm.completion.return_value = mock_response
-
+        mock_litellm.completion.return_value = _make_llm_response(
+            content="",
+            reasoning_content=json.dumps({"entities": [
+                {"name": "S-300", "entity_type": "MISSILE_SYSTEM", "confidence": 0.9, "properties": {}},
+            ]}),
+        )
         result = setup_app._extract_entities_for_group("The S-300 system.", "equipment")
         assert len(result) == 1
         assert result[0]["name"] == "S-300"
@@ -413,43 +366,27 @@ class TestThinkingModelExtraction:
     @patch("app.main.litellm")
     def test_entities_from_reasoning_content_with_preamble(self, mock_litellm, setup_app):
         """Should extract JSON even when reasoning_content has reasoning text before it."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        msg = mock_response.choices[0].message
-        msg.content = None
-        msg.reasoning_content = (
+        mock_litellm.completion.return_value = _make_llm_response(reasoning_content=(
             "Let me analyze this text for equipment entities.\n\n"
             "I can identify the following:\n"
             '{"entities": [{"name": "AN/MPQ-53", "entity_type": "RADAR_SYSTEM",'
             ' "confidence": 0.95, "properties": {}}]}'
-        )
-        msg.thinking = None
-        msg.thinking_blocks = None
-        mock_litellm.completion.return_value = mock_response
-
+        ))
         result = setup_app._extract_entities_for_group("The AN/MPQ-53 radar.", "equipment")
         assert len(result) == 1
         assert result[0]["name"] == "AN/MPQ-53"
 
     @patch("app.main.litellm")
     def test_relationships_from_reasoning_content(self, mock_litellm, setup_app):
-        """Should extract relationships when JSON is in reasoning_content."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        msg = mock_response.choices[0].message
-        msg.content = ""
-        msg.reasoning_content = json.dumps({
-            "relationships": [{
+        mock_litellm.completion.return_value = _make_llm_response(
+            content="",
+            reasoning_content=json.dumps({"relationships": [{
                 "from_name": "S-300", "from_type": "MISSILE_SYSTEM",
                 "rel_type": "HAS_COMPONENT",
                 "to_name": "Tombstone", "to_type": "RADAR_SYSTEM",
                 "confidence": 0.9,
-            }]
-        })
-        msg.thinking = None
-        msg.thinking_blocks = None
-        mock_litellm.completion.return_value = mock_response
-
+            }]}),
+        )
         entities = [
             {"name": "S-300", "entity_type": "MISSILE_SYSTEM"},
             {"name": "Tombstone", "entity_type": "RADAR_SYSTEM"},
@@ -460,15 +397,6 @@ class TestThinkingModelExtraction:
 
     @patch("app.main.litellm")
     def test_all_fields_empty_returns_empty_not_crash(self, mock_litellm, setup_app):
-        """When LLM returns nothing in any field, return empty list gracefully."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        msg = mock_response.choices[0].message
-        msg.content = None
-        msg.reasoning_content = None
-        msg.thinking = None
-        msg.thinking_blocks = None
-        mock_litellm.completion.return_value = mock_response
-
+        mock_litellm.completion.return_value = _make_llm_response()
         result = setup_app._extract_entities_for_group("text", "equipment")
         assert result == []
