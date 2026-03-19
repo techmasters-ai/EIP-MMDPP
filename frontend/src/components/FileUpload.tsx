@@ -21,6 +21,7 @@ export interface FileEntry {
   status: "queued" | "uploading" | "polling" | "COMPLETE" | "ERROR" | string;
   documentId?: string;
   error?: string;
+  pipelineStage?: string;  // current pipeline stage (for progress display)
 }
 
 interface FileUploadProps {
@@ -36,7 +37,39 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function StatusBadge({ status }: { status: string }) {
+/** Map pipeline_stage to a 0–100 progress percentage. */
+const STAGE_PROGRESS: Record<string, number> = {
+  prepare_document: 10,
+  derive_document_metadata: 20,
+  derive_picture_descriptions: 30,
+  purge_document_derivations: 35,
+  derive_text_chunks_and_embeddings: 50,
+  derive_image_embeddings: 55,
+  derive_ontology_graph: 60,
+  collect_derivations: 70,
+  derive_structure_links: 80,
+  derive_canonicalization: 90,
+  finalize_document: 95,
+};
+
+/** Human-readable short label for each stage. */
+const STAGE_LABEL: Record<string, string> = {
+  prepare_document: "Converting",
+  derive_document_metadata: "Metadata",
+  derive_picture_descriptions: "Images",
+  purge_document_derivations: "Purging",
+  derive_text_chunks_and_embeddings: "Embedding",
+  derive_image_embeddings: "Embedding",
+  derive_ontology_graph: "Graph",
+  collect_derivations: "Collecting",
+  derive_structure_links: "Linking",
+  derive_canonicalization: "Dedup",
+  finalize_document: "Finalizing",
+};
+
+function StatusBadge({ status, pipelineStage }: { status: string; pipelineStage?: string }) {
+  const isProcessing = status === "polling" || status === "PROCESSING";
+
   const cls =
     status === "COMPLETE"
       ? "badge badge-complete"
@@ -46,7 +79,7 @@ function StatusBadge({ status }: { status: string }) {
       ? "badge badge-warning"
       : status === "uploading"
       ? "badge badge-processing"
-      : status === "polling" || status === "PROCESSING"
+      : isProcessing
       ? "badge badge-processing"
       : "badge badge-pending";
 
@@ -55,8 +88,8 @@ function StatusBadge({ status }: { status: string }) {
       ? "Queued"
       : status === "uploading"
       ? "Uploading"
-      : status === "polling"
-      ? "Processing…"
+      : isProcessing
+      ? (pipelineStage && STAGE_LABEL[pipelineStage]) || "Processing…"
       : status === "PARTIAL_COMPLETE"
       ? "Partial"
       : status === "FAILED"
@@ -64,6 +97,25 @@ function StatusBadge({ status }: { status: string }) {
       : status === "PENDING_HUMAN_REVIEW"
       ? "Needs Review"
       : status;
+
+  // For processing states, render a gradient-fill progress badge
+  if (isProcessing) {
+    const pct = pipelineStage ? (STAGE_PROGRESS[pipelineStage] ?? 5) : 5;
+    const tooltipText = pipelineStage
+      ? `${pipelineStage} (${pct}%)`
+      : "Starting…";
+    return (
+      <span
+        className={cls}
+        title={tooltipText}
+        style={{
+          background: `linear-gradient(90deg, var(--badge-progress-fill) ${pct}%, var(--badge-progress-bg) ${pct}%)`,
+        }}
+      >
+        {label}
+      </span>
+    );
+  }
 
   return <span className={cls}>{label}</span>;
 }
@@ -139,14 +191,14 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
             if (!entry.documentId) return entry;
             const doc = statusMap.get(entry.documentId);
             if (!doc) return entry;
-            return { ...entry, status: doc.pipeline_status, error: doc.error_message || entry.error };
+            return { ...entry, status: doc.pipeline_status, error: doc.error_message || entry.error, pipelineStage: doc.pipeline_stage };
           }),
         );
         // Also update existing docs with new statuses
         setExistingDocs((prev) =>
           prev.map((d) => {
             const updated = statusMap.get(d.id);
-            return updated ? { ...d, pipeline_status: updated.pipeline_status, error_message: updated.error_message } : d;
+            return updated ? { ...d, pipeline_status: updated.pipeline_status, pipeline_stage: updated.pipeline_stage, error_message: updated.error_message } : d;
           }),
         );
       } catch {
@@ -354,7 +406,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                 </div>
               ) : null}
 
-              <StatusBadge status={entry.status} />
+              <StatusBadge status={entry.status} pipelineStage={entry.pipelineStage} />
 
               {entry.status === "COMPLETE" && entry.documentId && (
                 <button
@@ -474,7 +526,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                     {new Date(doc.created_at).toLocaleDateString()}
                   </span>
 
-                  <StatusBadge status={doc.pipeline_status} />
+                  <StatusBadge status={doc.pipeline_status} pipelineStage={doc.pipeline_stage} />
 
                   {doc.pipeline_status === "COMPLETE" && (
                     <button

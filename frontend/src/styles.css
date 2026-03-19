@@ -387,7 +387,13 @@ input:focus, select:focus, textarea:focus {
 }
 
 .badge-pending   { background: var(--color-warning-bg); color: var(--color-warning); }
-.badge-processing { background: #E8F0FD; color: var(--color-info); }
+.badge-processing {
+  background: #E8F0FD;
+  color: var(--color-info);
+  --badge-progress-fill: #b3d1f7;
+  --badge-progress-bg: #E8F0FD;
+  transition: background 0.4s ease;
+}
 .badge-complete  { background: var(--color-success-bg); color: var(--color-success); }
 .badge-error     { background: var(--color-error-bg);  color: var(--color-error); }
 .badge-warning   { background: #fef3c7; color: #92400e; }
