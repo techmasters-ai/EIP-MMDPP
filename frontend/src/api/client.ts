@@ -389,6 +389,11 @@ export async function reingestDocument(
   return handleResponse<{ document_id: string; mode: string; task_id: string }>(res);
 }
 
+export async function cancelDocument(documentId: string): Promise<{ document_id: string; status: string }> {
+  const res = await fetch(`/v1/documents/${documentId}/cancel`, { method: "POST" });
+  return handleResponse<{ document_id: string; status: string }>(res);
+}
+
 export async function deleteDocument(documentId: string): Promise<void> {
   const res = await fetch(`/v1/documents/${documentId}`, { method: "DELETE" });
   if (!res.ok) {

@@ -344,6 +344,59 @@ async def reingest_document(
     return {"document_id": str(document_id), "mode": mode, "task_id": task_id}
 
 
+@router.post("/documents/{document_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Cancel a processing document and delete all its data.
+
+    Revokes the Celery task chain, cleans up Redis locks, then performs
+    a full hard-delete of all derived data across every data store.
+    """
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    if doc.pipeline_status != "PROCESSING":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Document is not processing (status: {doc.pipeline_status}).",
+        )
+
+    doc_id_str = str(document_id)
+
+    # 1. Revoke the Celery task chain so no further stages execute
+    if doc.celery_task_id:
+        try:
+            from app.workers.celery_app import celery_app
+            celery_app.control.revoke(doc.celery_task_id, terminate=True, signal="SIGTERM")
+            logger.info("cancel_document: revoked Celery task %s for doc %s", doc.celery_task_id, doc_id_str)
+        except Exception as exc:
+            logger.warning("cancel_document: Celery revoke failed for %s: %s", doc_id_str, exc)
+
+    # 2. Release Redis locks (singleflight + Docling permits)
+    try:
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(settings.celery_broker_url)
+        r.delete(f"prepare:{doc_id_str}")
+        for i in range(settings.docling_concurrency):
+            r.delete(f"docling:permit:{i}")
+    except Exception as exc:
+        logger.warning("cancel_document: Redis lock cleanup failed for %s: %s", doc_id_str, exc)
+
+    # 3. Mark FAILED so the delete path accepts it, then commit so
+    #    any in-flight worker sees the status change.
+    doc.pipeline_status = "FAILED"
+    doc.error_message = "Cancelled by user"
+    await db.commit()
+
+    # 4. Full hard-delete (reuse the delete_document logic)
+    await _hard_delete_document(document_id, doc, db)
+
+    return {"document_id": doc_id_str, "status": "cancelled"}
+
+
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
     document_id: uuid.UUID,
@@ -355,16 +408,26 @@ async def delete_document(
     image_chunks, chunk_links, graph_extractions), Qdrant vectors, Neo4j
     graph nodes/edges, and MinIO objects (raw file + derived artifacts).
     """
-    from sqlalchemy import delete as sql_delete
-    from app.models.retrieval import TextChunk, ImageChunk, ChunkLink
-    from app.models.ingest import DocumentGraphExtraction
-
     doc = await db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
     if doc.pipeline_status == "PROCESSING":
-        raise HTTPException(status_code=409, detail="Cannot delete while pipeline is running.")
+        raise HTTPException(status_code=409, detail="Cannot delete while pipeline is running. Cancel it first.")
+
+    await _hard_delete_document(document_id, doc, db)
+    logger.info("delete_document: deleted document %s and all derived data", str(document_id))
+
+
+async def _hard_delete_document(
+    document_id: uuid.UUID,
+    doc: Document,
+    db: AsyncSession,
+) -> None:
+    """Shared cleanup: remove all data for a document across every store."""
+    from sqlalchemy import delete as sql_delete
+    from app.models.retrieval import TextChunk, ImageChunk, ChunkLink
+    from app.models.ingest import DocumentGraphExtraction, PipelineRun, StageRun
 
     doc_id_str = str(document_id)
 
@@ -375,19 +438,17 @@ async def delete_document(
         client = get_qdrant_client()
         delete_by_document_id(client, doc_id_str)
     except Exception as exc:
-        logger.warning("delete_document: Qdrant cleanup failed for %s: %s", doc_id_str, exc)
+        logger.warning("_hard_delete: Qdrant cleanup failed for %s: %s", doc_id_str, exc)
 
     # 2. Delete Neo4j graph data
     try:
         from app.db.session import get_neo4j_driver
         driver = get_neo4j_driver()
         with driver.session() as neo_session:
-            # Delete ChunkRef nodes and edges linked to this document
             neo_session.run(
                 "MATCH (d:Document {document_id: $doc_id})-[r]-() DELETE r, d",
                 doc_id=doc_id_str,
             )
-            # Delete entity edges tagged with this document's artifact_ids
             artifact_result = await db.execute(
                 select(Artifact.id).where(Artifact.document_id == document_id)
             )
@@ -398,14 +459,12 @@ async def delete_document(
                     aids=artifact_ids,
                 )
     except Exception as exc:
-        logger.warning("delete_document: Neo4j cleanup failed for %s: %s", doc_id_str, exc)
+        logger.warning("_hard_delete: Neo4j cleanup failed for %s: %s", doc_id_str, exc)
 
     # 3. Delete MinIO objects (raw file + derived artifacts)
     try:
-        # Raw file
         if doc.storage_bucket and doc.storage_key:
             await delete_object_async(doc.storage_bucket, doc.storage_key)
-        # Derived artifacts (images, docling docs)
         artifacts = (await db.execute(
             select(Artifact).where(Artifact.document_id == document_id)
         )).scalars().all()
@@ -415,7 +474,6 @@ async def delete_document(
                     await delete_object_async(art.storage_bucket, art.storage_key)
                 except Exception:
                     pass
-        # DoclingDocument files
         base_key = f"artifacts/{doc_id_str}"
         for suffix in ("docling_document.md", "docling_document.json"):
             try:
@@ -423,7 +481,7 @@ async def delete_document(
             except Exception:
                 pass
     except Exception as exc:
-        logger.warning("delete_document: MinIO cleanup failed for %s: %s", doc_id_str, exc)
+        logger.warning("_hard_delete: MinIO cleanup failed for %s: %s", doc_id_str, exc)
 
     # 4. Delete DB records (order matters for FK constraints)
     await db.execute(sql_delete(ChunkLink).where(
@@ -437,11 +495,15 @@ async def delete_document(
     await db.execute(sql_delete(ImageChunk).where(ImageChunk.document_id == document_id))
     await db.execute(sql_delete(DocumentGraphExtraction).where(DocumentGraphExtraction.document_id == document_id))
     await db.execute(sql_delete(DocumentElement).where(DocumentElement.document_id == document_id))
+    await db.execute(sql_delete(StageRun).where(
+        StageRun.pipeline_run_id.in_(
+            select(PipelineRun.id).where(PipelineRun.document_id == document_id)
+        )
+    ))
+    await db.execute(sql_delete(PipelineRun).where(PipelineRun.document_id == document_id))
     await db.execute(sql_delete(Artifact).where(Artifact.document_id == document_id))
     await db.delete(doc)
     await db.commit()
-
-    logger.info("delete_document: deleted document %s and all derived data", doc_id_str)
 
 
 # ---------------------------------------------------------------------------

@@ -280,6 +280,17 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--color-error);
 }
 
+.btn-warning {
+  background: none;
+  color: #b88a00;
+  border-color: var(--color-border);
+}
+
+.btn-warning:hover:not(:disabled) {
+  background: rgba(184, 138, 0, 0.1);
+  border-color: #b88a00;
+}
+
 .btn-sm {
   padding: 0.3rem 0.65rem;
   font-size: 0.8rem;

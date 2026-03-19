@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   batchDocumentStatus,
+  cancelDocument,
   createSource,
   deleteDocument,
   listDocumentsBySource,
@@ -398,6 +399,24 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                 </button>
               )}
 
+              {entry.documentId && (entry.status === "polling" || entry.status === "PROCESSING") && (
+                <button
+                  className="btn btn-warning btn-sm"
+                  onClick={async () => {
+                    if (!confirm(`Cancel processing "${entry.fileName}"? The document and all derived data will be deleted.`)) return;
+                    try {
+                      await cancelDocument(entry.documentId!);
+                      setEntries((prev) => prev.filter((_, j) => j !== i));
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Cancel failed");
+                    }
+                  }}
+                  title="Cancel processing and delete"
+                >
+                  Cancel
+                </button>
+              )}
+
               {entry.error && (
                 <span className="text-xs text-muted" title={entry.error}>
                   ⚠
@@ -484,6 +503,24 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                       }}
                     >
                       Retry
+                    </button>
+                  )}
+
+                  {doc.pipeline_status === "PROCESSING" && (
+                    <button
+                      className="btn btn-warning btn-sm"
+                      onClick={async () => {
+                        if (!confirm(`Cancel processing "${doc.filename}"? The document and all derived data will be deleted.`)) return;
+                        try {
+                          await cancelDocument(doc.id);
+                          setExistingDocs((prev) => prev.filter((d) => d.id !== doc.id));
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : "Cancel failed");
+                        }
+                      }}
+                      title="Cancel processing and delete"
+                    >
+                      Cancel
                     </button>
                   )}
 
