@@ -137,6 +137,23 @@ class Settings(BaseSettings):
     # Auto-tuning schedule (minutes, default 24h)
     graphrag_tune_interval_minutes: int = 1440
 
+    # Document Analysis (LLM metadata extraction)
+    doc_analysis_enabled: bool = True
+    doc_analysis_llm_model: str = "gpt-oss:120b"
+    doc_analysis_timeout: int = 300
+    doc_analysis_summary_prompt: str = "Summarize this document in 3-5 sentences for a technical reader. Focus on the main subject, scope, and notable findings. Do not include source endnote markings such as [1]."
+    doc_analysis_date_prompt: str = "Extract the most relevant date of information (publication date, report date, or coverage window). If only month/year appears, return that. If there is a range, return it exactly. If unsure, return Unknown. Provide ONLY the date or range."
+    doc_analysis_source_prompt: str = "Characterize the source: 1) Organization or author (if unknown return UNKNOWN) 2) Type of information (website, journal, etc; if unknown return UNKNOWN) 3) Reliability score 1-10. Format: Organization: <name>\\nType: <type>\\nReliability: <score>/10"
+    doc_analysis_classification_prompt: str = "Identify the document classification marking if present (UNCLASSIFIED, CUI, FOUO, SECRET, TOP SECRET). If none, reply UNCLASSIFIED. Provide ONLY the marking."
+
+    # Picture Description (post-conversion enrichment via Ollama)
+    picture_description_model: str = "gemma3:27b"
+    picture_description_timeout: int = 120
+    picture_description_prompt: str = "Analyze this image from a multi-modal PDF using the required narrative sections and the missile/radar/S&T emphasis. Return sections 1-8 exactly as specified. Use the PDF Summary for context but rely on visual evidence.\\n\\n- PDF Summary: {document_summary}\\n\\n- Image:"
+
+    # Docling OCR language
+    docling_ocr_lang: str = "en"
+
     # Docling document conversion service (granite-docling-258M VLM)
     docling_service_url: str = "http://docling:8001"
     docling_timeout_seconds: float = 3600.0

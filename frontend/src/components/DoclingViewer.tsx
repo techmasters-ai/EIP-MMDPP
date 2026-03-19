@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { getDoclingRawJson } from "../api/client";
+import { getDoclingRawJson, getDoclingDocument, getDocumentMetadata } from "../api/client";
 
 interface DoclingViewerProps {
   documentId: string;
@@ -59,6 +59,8 @@ export function DoclingViewer({
   onClose,
 }: DoclingViewerProps) {
   const [docJson, setDocJson] = useState<Record<string, unknown> | null>(null);
+  const [plainText, setPlainText] = useState<string | null>(null);
+  const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ViewMode>("document");
@@ -66,13 +68,27 @@ export function DoclingViewer({
   useEffect(() => {
     setLoading(true);
     setError(null);
+    setDocJson(null);
+    setPlainText(null);
+    getDocumentMetadata(documentId).then(setMetadata);
     getDoclingRawJson(documentId)
       .then(setDocJson)
-      .catch((err) =>
-        setError(
-          err instanceof Error ? err.message : "Failed to load document",
-        ),
-      )
+      .catch(() => {
+        // Fallback: try fetching markdown/text content for non-PDF files
+        return getDoclingDocument(documentId)
+          .then((doc) => {
+            if (doc.markdown) {
+              setPlainText(doc.markdown);
+            } else {
+              setError("No viewable content available for this document.");
+            }
+          })
+          .catch((err) =>
+            setError(
+              err instanceof Error ? err.message : "Failed to load document",
+            ),
+          );
+      })
       .finally(() => setLoading(false));
   }, [documentId]);
 
@@ -127,6 +143,31 @@ export function DoclingViewer({
 
           {error && <div className="alert alert-error">{error}</div>}
 
+          {metadata && (
+            <div style={{
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius)",
+              padding: "0.75rem 1rem",
+              marginBottom: "0.5rem",
+              background: "var(--color-surface-2)",
+              fontSize: "0.85rem",
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: "0.5rem", color: "var(--color-text-muted)" }}>
+                AI-Extracted Document Metadata
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.25rem 1.5rem" }}>
+                <div><strong>Classification:</strong> {String(metadata.classification || "UNCLASSIFIED")}</div>
+                <div><strong>Date of Information:</strong> {String(metadata.date_of_information || "Unknown")}</div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <strong>Source:</strong> {String(metadata.source_characterization || "Unknown")}
+                </div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <strong>Summary:</strong> {String(metadata.document_summary || "")}
+                </div>
+              </div>
+            </div>
+          )}
+
           {docJson && mode === "document" && (
             <iframe
               srcDoc={srcdoc}
@@ -139,6 +180,13 @@ export function DoclingViewer({
               }}
               sandbox="allow-scripts allow-same-origin"
             />
+          )}
+
+          {/* Plain text fallback for .txt and files without Docling JSON */}
+          {!docJson && plainText && mode === "document" && (
+            <pre style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: "0.9rem", lineHeight: 1.6, padding: "1rem", margin: 0 }}>
+              {plainText}
+            </pre>
           )}
 
           {docJson && mode === "json" && (

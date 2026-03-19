@@ -6,7 +6,12 @@ import { GraphTooltip } from "./GraphTooltip";
 import type { GraphNeighborhoodResponse } from "../api/client";
 import { getEntityCategory } from "../constants/entityTypes";
 
-/** Convert API response to Cytoscape elements. */
+/** Convert API response to Cytoscape elements.
+ *
+ * Nodes are keyed by their UUID `id` property (not name) so that
+ * distinct entities sharing the same name (e.g. "Fan Song" as both
+ * ANTENNA and SUBSYSTEM) appear as separate graph nodes.
+ */
 export function toGraphElements(
   response: GraphNeighborhoodResponse,
   centerName: string,
@@ -15,13 +20,19 @@ export function toGraphElements(
   const nodeIds = new Set<string>();
 
   for (const node of response.nodes) {
-    const name = node.name as string;
-    if (!name || nodeIds.has(name)) continue;
-    nodeIds.add(name);
+    // Use UUID id for uniqueness; fall back to name for legacy data
+    const nodeId = (node.id as string) || (node.name as string);
+    const name = (node.name as string) || nodeId;
+    if (!nodeId || nodeIds.has(nodeId)) continue;
+    nodeIds.add(nodeId);
     const entityType = (node.entity_type as string) || "UNKNOWN";
-    const label = name.length > 20 ? name.slice(0, 18) + "\u2026" : name;
+    // Show name + type to distinguish same-name entities
+    const displayName = name === centerName && entityType !== "UNKNOWN"
+      ? `${name} (${entityType})`
+      : name;
+    const label = displayName.length > 25 ? displayName.slice(0, 23) + "\u2026" : displayName;
     elements.push({
-      data: { id: name, label, ...node },
+      data: { id: nodeId, label, ...node },
       classes: `${getEntityCategory(entityType)}${name === centerName ? " center" : ""}`,
     });
   }
@@ -149,7 +160,7 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
       });
 
       cy.on("tap", "node", (evt) => {
-        const name = evt.target.data("id");
+        const name = evt.target.data("name") || evt.target.data("id");
         if (name) onNodeClick(name);
       });
 

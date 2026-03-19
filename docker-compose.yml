@@ -217,6 +217,15 @@ services:
         python scripts/seed_ontology.py &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       "
+    extra_hosts:
+      - "ollama:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     volumes:
       - ./app:/app/app
       - model_cache:/root/.cache

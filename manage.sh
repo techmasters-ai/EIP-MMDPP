@@ -154,27 +154,14 @@ cmd_start() {
   # Pre-download ML models (air-gapped: must be available before first query)
   header "Pre-downloading ML models"
 
-  # Download sentence-transformers models inside the API container (skip if cached)
-  local text_model_dir
-  text_model_dir="models--$(echo "${TEXT_EMBEDDING_MODEL}" | tr '/' '--')"
+  # Ensure text embedding model is available in Ollama
   local reranker_model_dir
   reranker_model_dir="models--$(echo "${RERANKER_MODEL}" | tr '/' '--')"
 
-  if dc exec -T api python -c "
-import os
-cache_dir = os.path.expanduser('~/.cache/huggingface/hub')
-model_dir = os.path.join(cache_dir, '${text_model_dir}')
-exit(0 if os.path.isdir(model_dir) else 1)
-" 2>/dev/null; then
-    info "Text embedding model already cached — skipping download"
-  else
-    info "Downloading text embedding model (${TEXT_EMBEDDING_MODEL})..."
-    dc exec -T api python -c "
-from sentence_transformers import SentenceTransformer
-SentenceTransformer('${TEXT_EMBEDDING_MODEL}')
-print('Text embedding model ready')
-" 2>/dev/null && info "Text embedding model ready" || warn "Text embedding model download failed (will retry on first use)"
-  fi
+  info "Pulling text embedding model (${TEXT_EMBEDDING_MODEL}) via Ollama..."
+  dc exec -T ollama ollama pull "${TEXT_EMBEDDING_MODEL}" 2>/dev/null \
+    && info "Text embedding model ready (Ollama: ${TEXT_EMBEDDING_MODEL})" \
+    || warn "Text embedding model pull failed — ensure Ollama has ${TEXT_EMBEDDING_MODEL}"
 
   if dc exec -T api python -c "
 import os

@@ -90,10 +90,10 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
     reports_generated = 0
 
     for result in results:
-        if result.errors:
+        if result.error:
             logger.warning(
-                "GraphRAG workflow %s errors: %s",
-                result.workflow, result.errors,
+                "GraphRAG workflow %s error: %s",
+                result.workflow, result.error,
             )
         else:
             logger.info("GraphRAG workflow %s completed", result.workflow)

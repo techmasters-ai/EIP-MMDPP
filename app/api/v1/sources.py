@@ -683,6 +683,25 @@ async def get_docling_raw_json(
     return Response(content=json_bytes, media_type="application/json")
 
 
+@router.get("/documents/{document_id}/metadata")
+async def get_document_metadata(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Return the LLM-extracted document metadata (summary, date, classification, source)."""
+    from sqlalchemy import text
+
+    row = (await db.execute(
+        text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+        {"doc_id": str(document_id)},
+    )).first()
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=404, detail="Document metadata not yet extracted")
+
+    return row[0]
+
+
 @router.get("/documents/{document_id}/artifacts/{artifact_id}/image")
 async def get_artifact_image(
     document_id: uuid.UUID,

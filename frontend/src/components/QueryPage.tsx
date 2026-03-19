@@ -1,5 +1,7 @@
 import React, { useState, useCallback } from "react";
-import { unifiedQuery, type QueryStrategy, type ModalityFilter, type QueryResultItem } from "../api/client";
+import { unifiedQuery, getGraphNeighborhood, type QueryStrategy, type ModalityFilter, type QueryResultItem } from "../api/client";
+import { GraphView, toGraphElements } from "./GraphView";
+import type cytoscape from "cytoscape";
 
 interface ModePreset {
   strategy: QueryStrategy;
@@ -27,6 +29,16 @@ const MODES: ModePreset[] = [
     strategy: "graphrag_global",
     label: "GraphRAG Global",
     description: "Cross-community summarization for broad questions",
+  },
+  {
+    strategy: "graphrag_drift",
+    label: "GraphRAG Drift",
+    description: "Community-informed expansion search (DRIFT)",
+  },
+  {
+    strategy: "graphrag_basic",
+    label: "GraphRAG Basic",
+    description: "Vector search over GraphRAG text units",
   },
 ];
 
@@ -236,15 +248,84 @@ function MetadataDetail({ item }: { item: QueryResultItem }) {
   );
 }
 
+/** Extract entity names from GraphRAG context if graph data is present. */
+function extractGraphEntities(ctx: Record<string, unknown> | undefined): string[] {
+  if (!ctx) return [];
+  const gctx = ctx.graphrag_context as Record<string, unknown> | undefined;
+  if (!gctx) return [];
+
+  // GraphRAG local/drift context includes entities as array of objects
+  const entities = gctx.entities as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(entities) && entities.length > 0) {
+    return entities
+      .map((e) => (e.title as string) || (e.name as string) || "")
+      .filter(Boolean);
+  }
+
+  // Fallback: check for reports with entity references
+  const reports = gctx.reports as Array<Record<string, unknown>> | undefined;
+  if (Array.isArray(reports)) {
+    const names: string[] = [];
+    for (const r of reports) {
+      const title = (r.title as string) || (r.entity_name as string);
+      if (title) names.push(title);
+    }
+    if (names.length > 0) return names;
+  }
+
+  return [];
+}
+
 /* ---------- Result card ---------- */
 function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
+  const [graphElements, setGraphElements] = useState<cytoscape.ElementDefinition[] | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState<string | null>(null);
 
   const displayText = item.content_text;
   const ctx = item.context as Record<string, unknown> | undefined;
   const isGraphRAGLocal = ctx?.source === "graphrag_local";
   const isGraphRAGGlobal = ctx?.source === "graphrag_global";
+  const isGraphRAGDrift = ctx?.source === "graphrag_drift";
+  const isGraphRAGBasic = ctx?.source === "graphrag_basic";
+
+  // Show graph toggle only for GraphRAG results that contain entity/graph data
+  const isGraphRAG = isGraphRAGLocal || isGraphRAGGlobal || isGraphRAGDrift || isGraphRAGBasic;
+  const graphEntities = isGraphRAG ? extractGraphEntities(ctx) : [];
+  const hasGraphData = graphEntities.length > 0;
+
+  const handleToggleGraph = async () => {
+    if (graphOpen) {
+      setGraphOpen(false);
+      setGraphElements(null);
+      setGraphError(null);
+      return;
+    }
+    setGraphOpen(true);
+    setGraphLoading(true);
+    setGraphError(null);
+    try {
+      // Fetch neighborhood for the first entity in the context
+      const entityName = graphEntities[0];
+      const resp = await getGraphNeighborhood({ entity_name: entityName, hop_count: 2 });
+      const elements = toGraphElements(resp, entityName);
+      if (elements.length === 0) {
+        setGraphElements(null);
+        setGraphError(`No graph data found for "${entityName}".`);
+      } else {
+        setGraphElements(elements);
+      }
+    } catch (err) {
+      console.error("Graph neighborhood fetch failed:", err);
+      setGraphElements(null);
+      setGraphError(err instanceof Error ? err.message : "Failed to load graph data");
+    } finally {
+      setGraphLoading(false);
+    }
+  };
 
   let provenanceLabel = "";
   if (ctx?.source === "ontology") {
@@ -267,6 +348,10 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   } else if (isGraphRAGGlobal) {
     const title = ctx.community_title as string | undefined;
     provenanceLabel = `GraphRAG Global: ${title || "community report"}`;
+  } else if (isGraphRAGDrift) {
+    provenanceLabel = "GraphRAG Drift: community-informed expansion";
+  } else if (isGraphRAGBasic) {
+    provenanceLabel = "GraphRAG Basic: text unit vector search";
   }
 
   // Preview: first 300 chars always visible
@@ -290,6 +375,15 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         )}
         {item.page_number != null && (
           <span className="text-xs text-muted">p.{item.page_number}</span>
+        )}
+        {hasGraphData && (
+          <button
+            className={`btn btn-ghost btn-sm graph-toggle-btn${graphOpen ? " active" : ""}`}
+            onClick={() => void handleToggleGraph()}
+            title="Toggle graph view"
+          >
+            ◉
+          </button>
         )}
       </div>
 
@@ -330,6 +424,25 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
       {/* Text preview — always visible */}
       {preview && (
         <p className="result-text">{preview}</p>
+      )}
+
+      {/* GraphRAG graph view (when toggled and entity data present) */}
+      {graphOpen && (
+        graphLoading ? (
+          <div className="graph-view-container" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <span className="spinner" />
+          </div>
+        ) : graphElements && graphElements.length > 0 ? (
+          <GraphView
+            elements={graphElements}
+            onNodeClick={() => {}}
+            onClose={() => { setGraphOpen(false); setGraphElements(null); setGraphError(null); }}
+          />
+        ) : (
+          <div className="alert alert-error mt-sm">
+            {graphError || "No graph data available."}
+          </div>
+        )
       )}
 
       {/* GraphRAG Local: entity details always shown inline */}

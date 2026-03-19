@@ -236,7 +236,7 @@ def upsert_document_node(
     query = """
         MERGE (d:Document {document_id: $document_id})
         ON CREATE SET d += $props
-        ON MATCH SET d.title = $title
+        ON MATCH SET d += $props
         RETURN d.document_id AS doc_id
     """
 
@@ -433,17 +433,48 @@ async def search_nodes_async(
     search_term: str,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """Async search for entity nodes."""
-    query = """
-        MATCH (n:Entity)
-        WHERE toLower(n.name) CONTAINS toLower($search)
-        RETURN n, n.entity_type AS entity_type
+    """Async search for entity nodes using the Lucene fulltext index.
+
+    Supports fuzzy matching (typo tolerance), partial words, and relevance
+    scoring.  Falls back to substring CONTAINS if the fulltext index is
+    unavailable.
+    """
+    # Build Lucene query: each token gets a fuzzy suffix (~)
+    tokens = search_term.strip().split()
+    if not tokens:
+        return []
+    lucene_query = " AND ".join(f"{_escape_lucene(t)}~" for t in tokens)
+
+    ft_query = """
+        CALL db.index.fulltext.queryNodes('entity_name_fulltext', $query_text)
+        YIELD node, score
+        RETURN node AS n, node.entity_type AS entity_type, score
+        ORDER BY score DESC
         LIMIT $limit
     """
 
     try:
         async with driver.session() as session:
-            result = await session.run(query, search=search_term, limit=limit)
+            result = await session.run(ft_query, query_text=lucene_query, limit=limit)
+            records = await result.data()
+            if records:
+                return [
+                    {"node": dict(r["n"]), "entity_type": r["entity_type"]}
+                    for r in records
+                ]
+    except Exception as e:
+        logger.debug("Fulltext search failed, falling back to CONTAINS: %s", e)
+
+    # Fallback: simple substring match (in case fulltext index doesn't exist)
+    fallback_query = """
+        MATCH (n:Entity)
+        WHERE toLower(n.name) CONTAINS toLower($search)
+        RETURN n, n.entity_type AS entity_type
+        LIMIT $limit
+    """
+    try:
+        async with driver.session() as session:
+            result = await session.run(fallback_query, search=search_term, limit=limit)
             records = await result.data()
             return [
                 {"node": dict(r["n"]), "entity_type": r["entity_type"]}
@@ -452,6 +483,12 @@ async def search_nodes_async(
     except Exception as e:
         logger.warning("search_nodes_async failed for '%s': %s", search_term, e)
         return []
+
+
+def _escape_lucene(term: str) -> str:
+    """Escape Lucene special characters in a search term."""
+    special = r'+-&|!(){}[]^"~*?:\/'
+    return "".join(f"\\{c}" if c in special else c for c in term)
 
 
 async def get_neighborhood_async(
@@ -525,9 +562,10 @@ async def get_neighborhood_graph_async(
     """
 
     center: dict[str, Any] | None = None
-    nodes_map: dict[str, dict[str, Any]] = {}
+    nodes_map: dict[str, dict[str, Any]] = {}  # keyed by node UUID
     edges: list[dict[str, Any]] = []
 
+    # Main query: fetch neighborhood (may return zero rows for orphan nodes)
     try:
         async with driver.session() as session:
             result = await session.run(query, name=entity_name, limit=limit)
@@ -537,32 +575,43 @@ async def get_neighborhood_graph_async(
                 if center is None and r.get("center_props"):
                     center = dict(r["center_props"])
                     center["entity_type"] = r["center_type"]
-                    nodes_map[entity_name] = center
+                    center_id = center.get("id", entity_name)
+                    nodes_map[center_id] = center
 
+                source_props = r.get("source_props") or {}
+                target_props = r.get("target_props") or {}
                 source_name = r.get("source")
                 target_name = r.get("target")
                 if not source_name or not target_name:
                     continue
 
-                if source_name not in nodes_map and r.get("source_props"):
-                    node = dict(r["source_props"])
+                # Key by UUID to distinguish entities that share the same name
+                source_id = source_props.get("id") or source_name
+                target_id = target_props.get("id") or target_name
+
+                if source_id not in nodes_map and source_props:
+                    node = dict(source_props)
                     node["entity_type"] = r["source_type"]
-                    nodes_map[source_name] = node
-                if target_name not in nodes_map and r.get("target_props"):
-                    node = dict(r["target_props"])
+                    nodes_map[source_id] = node
+                if target_id not in nodes_map and target_props:
+                    node = dict(target_props)
                     node["entity_type"] = r["target_type"]
-                    nodes_map[target_name] = node
+                    nodes_map[target_id] = node
 
                 edge: dict[str, Any] = {
-                    "source": source_name,
-                    "target": target_name,
+                    "source": source_id,
+                    "target": target_id,
                     "rel_type": r.get("rel_type", "UNKNOWN"),
                 }
                 if r.get("rel_props"):
                     edge.update(r["rel_props"])
                 edges.append(edge)
+    except Exception as e:
+        logger.warning("get_neighborhood_graph_async main query failed for '%s': %s", entity_name, e)
 
-        if center is None:
+    # Fallback: always fetch center node if not found by main query
+    if center is None:
+        try:
             q2 = """
                 MATCH (n:Entity {name: $name})
                 RETURN properties(n) AS props, n.entity_type AS entity_type
@@ -574,10 +623,10 @@ async def get_neighborhood_graph_async(
                 if records:
                     center = dict(records[0]["props"])
                     center["entity_type"] = records[0]["entity_type"]
-                    nodes_map[entity_name] = center
-
-    except Exception as e:
-        logger.warning("get_neighborhood_graph_async failed for '%s': %s", entity_name, e)
+                    center_id = center.get("id", entity_name)
+                    nodes_map[center_id] = center
+        except Exception as e:
+            logger.warning("get_neighborhood_graph_async fallback failed for '%s': %s", entity_name, e)
 
     return {
         "center": center,
@@ -751,9 +800,10 @@ def ensure_indexes(driver) -> None:
     """
     statements = [
         # Fulltext index for entity name search (canonicalization + retrieval)
+        # Drop and recreate if the indexed properties change
         """
         CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS
-        FOR (n:Entity) ON EACH [n.name, n.canonical_name]
+        FOR (n:Entity) ON EACH [n.name, n.canonical_name, n.entity_type]
         """,
         # Uniqueness constraint on Document node
         """

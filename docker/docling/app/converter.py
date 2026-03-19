@@ -49,19 +49,23 @@ def _patch_pil_crop() -> None:
                     left, right = right, left
                 if lower < upper:
                     upper, lower = lower, upper
-                # Ensure minimum 1px dimensions
-                if right <= left:
-                    right = left + 1
-                if lower <= upper:
-                    lower = upper + 1
-                # Clamp to image bounds
-                right = min(right, self.width)
-                lower = min(lower, self.height)
+                # Clamp to image bounds first
                 left = max(0, left)
                 upper = max(0, upper)
+                right = min(right, self.width)
+                lower = min(lower, self.height)
+                # Ensure minimum 1px dimensions after clamping
+                if right <= left:
+                    right = min(left + 1, self.width)
+                if lower <= upper:
+                    lower = min(upper + 1, self.height)
+                # If still degenerate (box entirely outside image), return
+                # a placeholder preserving whichever dimension is valid
                 if right <= left or lower <= upper:
-                    logger.warning("Malformed crop box (%s) on image %s, returning 1x1 placeholder", box, self.size)
-                    return PILImage.new(self.mode, (1, 1))
+                    w = max(int(right - left), 1)
+                    h = max(int(lower - upper), 1)
+                    logger.warning("Malformed crop box (%s) on image %s, returning %dx%d placeholder", box, self.size, w, h)
+                    return PILImage.new(self.mode, (w, h))
                 box = (left, upper, right, lower)
             return _original_crop(self, box)
 
@@ -72,47 +76,56 @@ def _patch_pil_crop() -> None:
 
 
 def init_converter() -> None:
-    """Initialize the Docling DocumentConverter with VLM pipeline.
+    """Initialize the Docling DocumentConverter with PdfPipeline.
 
-    Called once at service startup. Loads the granite-docling-258M model
-    with optimized settings for document conversion quality.
+    Uses dlparse_v4 backend with EasyOCR, TableFormer FAST, and
+    formula/code enrichment. Picture descriptions are handled
+    post-conversion by the pipeline via Ollama.
     """
     global _converter, _model_loaded
 
     _patch_pil_crop()
 
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import VlmPipelineOptions, granite_picture_description
-    from docling.datamodel.accelerator_options import AcceleratorOptions
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.pipeline.vlm_pipeline import VlmPipeline
+    from docling.document_converter import (
+        DocumentConverter,
+        PdfFormatOption,
+        WordFormatOption,
+        PowerpointFormatOption,
+        ExcelFormatOption,
+        HTMLFormatOption,
+        MarkdownFormatOption,
+    )
+    from docling.pipeline.simple_pipeline import SimplePipeline
 
-    logger.info("Loading Docling converter with model=%s device=%s dtype=%s", MODEL_PATH, DEVICE, DTYPE)
-
-    accel = AcceleratorOptions(
-        device=DEVICE,
-        cuda_use_flash_attention2=False,  # SDPA used instead — flash_attn requires bf16 but docling loads model in fp32
+    logger.info(
+        "Loading Docling converter: PdfPipeline + dlparse_v4, device=%s, "
+        "formats: PDF, IMAGE, DOCX, PPTX, XLSX, HTML, MD, ASCIIDOC, CSV",
+        DEVICE,
     )
 
-    pipeline_options = VlmPipelineOptions(
-        accelerator_options=accel,
-        force_backend_text=True,
-        generate_picture_images=True,
-        images_scale=2.0,
-        do_picture_description=True,
-        picture_description_options=granite_picture_description,
-    )
+    pdf_pipeline_options = _build_pdf_pipeline_options(generate_picture_images=True)
 
     _converter = DocumentConverter(
+        allowed_formats=[
+            InputFormat.PDF,
+            InputFormat.IMAGE,
+            InputFormat.DOCX,
+            InputFormat.PPTX,
+            InputFormat.XLSX,
+            InputFormat.HTML,
+            InputFormat.MD,
+            InputFormat.ASCIIDOC,
+            InputFormat.CSV,
+        ],
         format_options={
-            InputFormat.PDF: PdfFormatOption(
-                pipeline_cls=VlmPipeline,
-                pipeline_options=pipeline_options,
-            ),
-            InputFormat.IMAGE: PdfFormatOption(
-                pipeline_cls=VlmPipeline,
-                pipeline_options=pipeline_options,
-            ),
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline_options),
+            InputFormat.IMAGE: PdfFormatOption(pipeline_options=pdf_pipeline_options),
+            InputFormat.DOCX: WordFormatOption(pipeline_cls=SimplePipeline),
+            InputFormat.PPTX: PowerpointFormatOption(pipeline_cls=SimplePipeline),
+            InputFormat.XLSX: ExcelFormatOption(pipeline_cls=SimplePipeline),
+            InputFormat.HTML: HTMLFormatOption(pipeline_cls=SimplePipeline),
+            InputFormat.MD: MarkdownFormatOption(pipeline_cls=SimplePipeline),
         },
     )
     _model_loaded = True
@@ -124,39 +137,51 @@ def is_model_loaded() -> bool:
     return _model_loaded
 
 
+def _build_pdf_pipeline_options(*, generate_picture_images: bool = True):
+    """Build PdfPipelineOptions with standard settings. Shared by init and fallback."""
+    from docling.datamodel.pipeline_options import (
+        PdfPipelineOptions,
+        EasyOcrOptions,
+        TableStructureOptions,
+        TableFormerMode,
+    )
+    from docling.datamodel.accelerator_options import AcceleratorOptions
+
+    ocr_lang_str = os.environ.get("DOCLING_OCR_LANG", "en")
+    ocr_languages = [lang.strip() for lang in ocr_lang_str.split(",")]
+
+    return PdfPipelineOptions(
+        accelerator_options=AcceleratorOptions(device=DEVICE),
+        do_ocr=True,
+        ocr_options=EasyOcrOptions(lang=ocr_languages, use_gpu=(DEVICE == "cuda")),
+        do_table_structure=True,
+        table_structure_options=TableStructureOptions(
+            do_cell_matching=True,
+            mode=TableFormerMode.FAST,
+        ),
+        do_formula_enrichment=True,
+        do_code_enrichment=True,
+        generate_picture_images=generate_picture_images,
+        generate_page_images=True,
+        images_scale=1.0,
+        do_picture_description=False,
+    )
+
+
 def _convert_without_picture_images(tmp_path: str):
     """Retry conversion with generate_picture_images=False.
 
-    Used as a fallback when the VLM produces malformed bounding boxes
-    that crash PIL during image cropping.
+    Used as a fallback when image cropping crashes.
     """
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import VlmPipelineOptions
-    from docling.datamodel.accelerator_options import AcceleratorOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.pipeline.vlm_pipeline import VlmPipeline
 
-    accel = AcceleratorOptions(
-        device=DEVICE,
-        cuda_use_flash_attention2=False,
-    )
-    opts = VlmPipelineOptions(
-        accelerator_options=accel,
-        force_backend_text=True,
-        generate_picture_images=False,
-        do_picture_description=False,
-        images_scale=2.0,
-    )
+    pipeline_options = _build_pdf_pipeline_options(generate_picture_images=False)
+
     fallback = DocumentConverter(
         format_options={
-            InputFormat.PDF: PdfFormatOption(
-                pipeline_cls=VlmPipeline,
-                pipeline_options=opts,
-            ),
-            InputFormat.IMAGE: PdfFormatOption(
-                pipeline_cls=VlmPipeline,
-                pipeline_options=opts,
-            ),
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+            InputFormat.IMAGE: PdfFormatOption(pipeline_options=pipeline_options),
         },
     )
     return fallback.convert(source=tmp_path)

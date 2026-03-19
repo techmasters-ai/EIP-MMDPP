@@ -53,6 +53,7 @@ function GraphSearch() {
   const [graphViewIndex, setGraphViewIndex] = useState<number | null>(null);
   const [graphElements, setGraphElements] = useState<cytoscape.ElementDefinition[] | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState<string | null>(null);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,15 +74,25 @@ function GraphSearch() {
     if (graphViewIndex === index) {
       setGraphViewIndex(null);
       setGraphElements(null);
+      setGraphError(null);
       return;
     }
     setGraphViewIndex(index);
     setGraphLoading(true);
+    setGraphError(null);
     try {
       const resp = await getGraphNeighborhood({ entity_name: entityName });
-      setGraphElements(toGraphElements(resp, entityName));
-    } catch {
+      const elements = toGraphElements(resp, entityName);
+      if (elements.length === 0) {
+        setGraphElements(null);
+        setGraphError(`No graph data found for "${entityName}".`);
+      } else {
+        setGraphElements(elements);
+      }
+    } catch (err) {
+      console.error("Graph neighborhood fetch failed:", err);
       setGraphElements(null);
+      setGraphError(err instanceof Error ? err.message : "Failed to load graph data");
     } finally {
       setGraphLoading(false);
     }
@@ -152,16 +163,16 @@ function GraphSearch() {
                     <div className="graph-view-container" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <span className="spinner" />
                     </div>
-                  ) : graphElements ? (
+                  ) : graphElements && graphElements.length > 0 ? (
                     <GraphView
                       elements={graphElements}
                       onNodeClick={(name) => void handleNodeClick(name)}
-                      onClose={() => { setGraphViewIndex(null); setGraphElements(null); }}
+                      onClose={() => { setGraphViewIndex(null); setGraphElements(null); setGraphError(null); }}
                     />
                   ) : (
-                    <p className="text-muted text-sm" style={{ padding: "1rem" }}>
-                      Could not load graph data.
-                    </p>
+                    <div className="alert alert-error mt-sm">
+                      {graphError || "Could not load graph data."}
+                    </div>
                   )
                 ) : (
                   <>

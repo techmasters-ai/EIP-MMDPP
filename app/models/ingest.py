@@ -69,6 +69,11 @@ class Document(Base, TimestampMixin):
     celery_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     uploaded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
 
+    # LLM-extracted document metadata (summary, date, classification, source)
+    document_metadata: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
+
     source: Mapped["Source"] = relationship(back_populates="documents")
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="document")
     text_chunks: Mapped[list["TextChunk"]] = relationship(

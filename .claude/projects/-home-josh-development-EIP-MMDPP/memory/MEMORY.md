@@ -1,0 +1,1 @@
+- [project_open_issues.md](project_open_issues.md) — Comprehensive list of open issues from 2026-03-18 session (8 items), being worked through systematically

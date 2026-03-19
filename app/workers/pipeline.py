@@ -4,6 +4,10 @@ Task graph (manifest-first, parallel derivations, idempotent):
 
     prepare_document  (validate + detect + Docling convert + persist document_elements)
         ↓
+    derive_document_metadata  (LLM: summary, date, classification, source)
+        ↓
+    derive_picture_descriptions  (LLM: image descriptions with summary context)
+        ↓
     ┌── derive_text_chunks_and_embeddings ──┐
     │── derive_image_embeddings             │  (parallel chord)
     └── derive_ontology_graph ──────────────┘
@@ -252,12 +256,14 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
 
     if "pdf" in mime:
         chunks = extract_pdf(file_bytes)
-    elif "word" in mime or "docx" in mime or "officedocument" in mime:
+    elif "wordprocessingml" in mime or "msword" in mime:
         chunks = extract_docx(file_bytes)
     elif "image" in mime:
         chunks = extract_image(file_bytes)
     elif "text" in mime:
         chunks = extract_txt(file_bytes)
+    # Note: PPTX, XLSX, HTML, MD now route to Docling; legacy fallback
+    # only handles formats above. Unknown formats produce empty chunks.
 
     # Build element_uids first, then persist Artifacts with deterministic IDs
     element_uids: list[str] = []
@@ -353,6 +359,8 @@ def start_ingest_pipeline(document_id: str) -> str:
 
     pipeline = chain(
         prepare_document.si(document_id, run_id),
+        derive_document_metadata.si(document_id, run_id),
+        derive_picture_descriptions.si(document_id, run_id),
         purge_document_derivations.si(document_id, run_id),
         chord(
             group(
@@ -560,12 +568,53 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         )
         db.commit()
 
-        # 3. Route by format — Docling only handles PDF and images
-        _DOCLING_MIMES = {"application/pdf", "image/png", "image/jpeg", "image/tiff", "image/bmp", "image/gif"}
+        # 3. Route by format — Docling handles PDF, images, office docs, and markup
+        _DOCLING_MIMES = {
+            # PDF
+            "application/pdf",
+            # Images
+            "image/png", "image/jpeg", "image/tiff", "image/bmp", "image/gif", "image/webp",
+            # Office documents
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # DOCX
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # PPTX
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # XLSX
+            "application/msword",  # legacy DOC
+            "application/vnd.ms-powerpoint",  # legacy PPT
+            "application/vnd.ms-excel",  # legacy XLS
+            # Markup / text
+            "text/html",
+            "text/markdown",
+            "text/csv",
+            "text/asciidoc",
+        }
         if mime_type not in _DOCLING_MIMES:
             logger.info("prepare_document: %s not supported by Docling (mime=%s), using legacy extraction", document_id, mime_type)
             _legacy_extract(db, document_id, doc, file_bytes)
             db.commit()
+
+            # Persist extracted text as markdown so derive_document_metadata can run
+            try:
+                from app.models.ingest import DocumentElement
+                from sqlalchemy import select as sql_select
+                elems = db.execute(
+                    sql_select(DocumentElement.content_text)
+                    .where(DocumentElement.document_id == uuid.UUID(document_id))
+                    .order_by(DocumentElement.element_order)
+                ).scalars().all()
+                fallback_md = "\n\n".join(t for t in elems if t and t.strip())
+                if fallback_md:
+                    from app.services.storage import upload_bytes_sync
+                    _fb_base = f"artifacts/{document_id}"
+                    upload_bytes_sync(
+                        fallback_md.encode("utf-8"),
+                        settings.minio_bucket_derived,
+                        f"{_fb_base}/docling_document.md",
+                        content_type="text/markdown; charset=utf-8",
+                    )
+                    logger.info("prepare_document: persisted legacy markdown for %s (%d chars)", document_id, len(fallback_md))
+            except Exception as _fb_err:
+                logger.warning("prepare_document: failed to persist legacy markdown for %s: %s", document_id, _fb_err)
+
             _update_stage_run(db, run_id, "prepare_document", "COMPLETE", attempt=self.request.retries + 1, metrics={"fallback": True, "reason": "unsupported_format"})
             db.commit()
             return document_id
@@ -907,6 +956,232 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             _singleflight_lock.release()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Stage: derive_document_metadata — LLM metadata extraction
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.pipeline.derive_document_metadata",
+    max_retries=2,
+    default_retry_delay=30,
+    soft_time_limit=settings.doc_analysis_timeout + 60,
+    time_limit=settings.doc_analysis_timeout + 120,
+    queue="ingest",
+)
+def derive_document_metadata(self, document_id: str, run_id: str | None = None) -> dict:
+    """Extract document metadata (summary, date, classification, source) via LLM."""
+    import json as json_mod
+
+    logger.info("derive_document_metadata: document_id=%s run_id=%s", document_id, run_id)
+    _update_document_status(document_id, STATUS_PROCESSING, stage="derive_document_metadata")
+
+    if not settings.doc_analysis_enabled:
+        logger.info("derive_document_metadata: disabled, skipping for %s", document_id)
+        return {"stage": "derive_document_metadata", "status": "skipped"}
+
+    db = _get_db()
+    try:
+        if run_id:
+            _update_stage_run(db, run_id, "derive_document_metadata", "RUNNING", attempt=self.request.retries + 1)
+
+        # Load markdown from MinIO
+        from app.services.storage import download_bytes_sync
+        base_key = f"artifacts/{document_id}"
+        bucket = settings.minio_bucket_derived
+        try:
+            md_bytes = download_bytes_sync(bucket, f"{base_key}/docling_document.md")
+            markdown = md_bytes.decode("utf-8")
+        except Exception:
+            logger.info("derive_document_metadata: no markdown available for %s, skipping", document_id)
+            return {"stage": "derive_document_metadata", "status": "skipped", "reason": "no_markdown"}
+
+        # Extract metadata via LLM
+        from app.services.document_analysis import extract_document_metadata
+        metadata = extract_document_metadata(markdown)
+
+        # Store in documents.document_metadata
+        from sqlalchemy import text
+        db.execute(
+            text("UPDATE ingest.documents SET document_metadata = cast(:meta AS jsonb) WHERE id = cast(:doc_id AS uuid)"),
+            {"meta": json_mod.dumps(metadata), "doc_id": document_id},
+        )
+        db.commit()
+
+        if run_id:
+            _update_stage_run(
+                db, run_id, "derive_document_metadata", "COMPLETE",
+                attempt=self.request.retries + 1,
+                metrics={"summary_length": len(metadata.get("document_summary", ""))},
+            )
+
+        logger.info(
+            "derive_document_metadata: document_id=%s classification=%s",
+            document_id, metadata.get("classification"),
+        )
+        return {"stage": "derive_document_metadata", "status": "ok"}
+
+    except Exception as exc:
+        logger.error("derive_document_metadata failed for %s: %s", document_id, exc)
+        if run_id:
+            try:
+                _update_stage_run(db, run_id, "derive_document_metadata", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+            except Exception:
+                pass
+        _record_failed_stage(document_id, "derive_document_metadata", str(exc))
+        return {"stage": "derive_document_metadata", "status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Stage: derive_picture_descriptions — LLM image enrichment
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.pipeline.derive_picture_descriptions",
+    max_retries=1,
+    default_retry_delay=30,
+    soft_time_limit=1800,
+    time_limit=1860,
+    queue="ingest",
+)
+def derive_picture_descriptions(self, document_id: str, run_id: str | None = None) -> dict:
+    """Enrich picture items with LLM-generated descriptions using document summary context."""
+    import json as json_mod
+
+    logger.info("derive_picture_descriptions: document_id=%s run_id=%s", document_id, run_id)
+    _update_document_status(document_id, STATUS_PROCESSING, stage="derive_picture_descriptions")
+
+    db = _get_db()
+    try:
+        if run_id:
+            _update_stage_run(db, run_id, "derive_picture_descriptions", "RUNNING", attempt=self.request.retries + 1)
+
+        # Load document metadata for summary
+        from sqlalchemy import text as sa_text
+        row = db.execute(
+            sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+            {"doc_id": document_id},
+        ).first()
+        document_summary = ""
+        if row and row[0]:
+            meta = row[0] if isinstance(row[0], dict) else json_mod.loads(row[0])
+            document_summary = meta.get("document_summary", "")
+
+        # Load Docling JSON from MinIO
+        from app.services.storage import download_bytes_sync, upload_bytes_sync
+        base_key = f"artifacts/{document_id}"
+        bucket = settings.minio_bucket_derived
+        try:
+            json_bytes = download_bytes_sync(bucket, f"{base_key}/docling_document.json")
+            docling_json = json_mod.loads(json_bytes)
+        except Exception:
+            logger.info("derive_picture_descriptions: no Docling JSON for %s, skipping", document_id)
+            return {"stage": "derive_picture_descriptions", "status": "skipped"}
+
+        # For Office formats (DOCX/PPTX), Docling's SimplePipeline doesn't
+        # extract actual image bytes. Use python-docx/python-pptx to extract
+        # them and inject into the Docling JSON before describing.
+        from app.models.ingest import Document as DocModel
+        doc = db.get(DocModel, uuid.UUID(document_id))
+        if doc:
+            mime = doc.mime_type or ""
+            if "wordprocessingml" in mime or "msword" in mime:
+                from app.services.office_image_extractor import extract_docx_images, inject_images_into_docling_json
+                file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
+                office_images = extract_docx_images(file_bytes)
+                if office_images:
+                    inject_images_into_docling_json(docling_json, office_images)
+            elif "presentationml" in mime or "ms-powerpoint" in mime:
+                from app.services.office_image_extractor import extract_pptx_images, inject_images_into_docling_json
+                file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
+                office_images = extract_pptx_images(file_bytes)
+                if office_images:
+                    inject_images_into_docling_json(docling_json, office_images)
+
+        # Enrich pictures with descriptions
+        from app.services.document_analysis import describe_pictures
+        updated_json = describe_pictures(docling_json, document_summary)
+
+        # Write updated JSON back to MinIO
+        upload_bytes_sync(
+            json_mod.dumps(updated_json, ensure_ascii=False, default=str).encode("utf-8"),
+            bucket,
+            f"{base_key}/docling_document.json",
+            content_type="application/json; charset=utf-8",
+        )
+
+        # Persist picture descriptions to DocumentElement rows so downstream
+        # tasks (text chunking, graph extraction) can see them
+        from app.models.ingest import DocumentElement
+        pictures_updated = 0
+        pic_elements = db.execute(
+            select(DocumentElement).where(
+                DocumentElement.document_id == uuid.UUID(document_id),
+                DocumentElement.element_type == "image",
+            ).order_by(DocumentElement.element_order)
+        ).scalars().all()
+
+        described_pics = [
+            p for p in updated_json.get("pictures", [])
+            if isinstance(p, dict) and p.get("description")
+        ]
+        # Match by order — first image element gets first described picture
+        for elem, pic in zip(pic_elements, described_pics):
+            desc = pic["description"]
+            if desc and desc != elem.content_text:
+                elem.content_text = desc
+                pictures_updated += 1
+        if pictures_updated:
+            db.commit()
+            logger.info("derive_picture_descriptions: updated %d DocumentElement rows", pictures_updated)
+
+        # Also update the markdown in MinIO to include picture descriptions
+        # so derive_document_metadata and graph extraction see enriched content
+        try:
+            md_bytes = download_bytes_sync(bucket, f"{base_key}/docling_document.md")
+            markdown = md_bytes.decode("utf-8")
+            appendix_parts = []
+            for pic in described_pics:
+                desc = pic.get("description", "")
+                if desc:
+                    appendix_parts.append(f"[Image Description]: {desc}")
+            if appendix_parts:
+                enriched_md = markdown + "\n\n## Image Descriptions\n\n" + "\n\n".join(appendix_parts)
+                upload_bytes_sync(
+                    enriched_md.encode("utf-8"),
+                    bucket,
+                    f"{base_key}/docling_document.md",
+                    content_type="text/markdown; charset=utf-8",
+                )
+        except Exception as md_err:
+            logger.debug("derive_picture_descriptions: could not update markdown: %s", md_err)
+
+        if run_id:
+            _update_stage_run(
+                db, run_id, "derive_picture_descriptions", "COMPLETE",
+                attempt=self.request.retries + 1,
+                metrics={"pictures_updated": pictures_updated},
+            )
+
+        logger.info("derive_picture_descriptions: document_id=%s updated=%d", document_id, pictures_updated)
+        return {"stage": "derive_picture_descriptions", "status": "ok", "pictures_updated": pictures_updated}
+
+    except Exception as exc:
+        logger.error("derive_picture_descriptions failed for %s: %s", document_id, exc)
+        if run_id:
+            try:
+                _update_stage_run(db, run_id, "derive_picture_descriptions", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+            except Exception:
+                pass
+        _record_failed_stage(document_id, "derive_picture_descriptions", str(exc))
+        return {"stage": "derive_picture_descriptions", "status": "failed", "error": str(exc)}
+    finally:
+        db.close()
 
 
 @celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,
@@ -1470,12 +1745,27 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         elements = db.execute(
             select(DocumentElement).where(
                 DocumentElement.document_id == uuid.UUID(document_id),
-                DocumentElement.element_type.in_(["text", "table", "heading", "equation", "schematic"]),
+                DocumentElement.element_type.in_(["text", "table", "heading", "equation", "schematic", "image"]),
                 DocumentElement.content_text.isnot(None),
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
         full_text = "\n\n".join(e.content_text for e in elements if e.content_text)
+
+        # Prepend document metadata (summary, classification) for richer graph context
+        from sqlalchemy import text as sa_text
+        meta_row = db.execute(
+            sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+            {"doc_id": document_id},
+        ).first()
+        if meta_row and meta_row[0]:
+            import json as _json_mod
+            meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
+            doc_summary = meta.get("document_summary", "")
+            doc_class = meta.get("classification", "")
+            if doc_summary:
+                full_text = f"[Document Summary]: {doc_summary}\n[Classification]: {doc_class}\n\n{full_text}"
+
         if not full_text.strip():
             logger.info("derive_ontology_graph: no text elements for %s", document_id)
             if run_id:
@@ -1885,11 +2175,23 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         from app.db.session import get_neo4j_driver
         neo4j_driver = get_neo4j_driver()
 
+        # Include document metadata (summary, classification) as Neo4j properties
+        doc_node_props: dict[str, Any] = {"source_id": str(doc.source_id)}
+        if doc.document_metadata and isinstance(doc.document_metadata, dict):
+            if doc.document_metadata.get("document_summary"):
+                doc_node_props["summary"] = doc.document_metadata["document_summary"]
+            if doc.document_metadata.get("classification"):
+                doc_node_props["classification"] = doc.document_metadata["classification"]
+            if doc.document_metadata.get("date_of_information"):
+                doc_node_props["date_of_information"] = doc.document_metadata["date_of_information"]
+            if doc.document_metadata.get("source_characterization"):
+                doc_node_props["source_characterization"] = doc.document_metadata["source_characterization"]
+
         upsert_document_node(
             driver=neo4j_driver,
             document_id=document_id,
             title=doc.filename,
-            properties={"source_id": str(doc.source_id)},
+            properties=doc_node_props,
         )
 
         for tc in text_chunks:
@@ -2139,6 +2441,8 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
         # Check for failed, missing, or stuck stages
         REQUIRED_STAGES = {
             "prepare_document",
+            "derive_document_metadata",
+            "derive_picture_descriptions",
             "purge_document_derivations",
             "derive_text_embeddings",
             "derive_image_embeddings",

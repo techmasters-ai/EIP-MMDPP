@@ -50,7 +50,7 @@ export interface QueryResultItem {
   image_url?: string;
 }
 
-export type QueryStrategy = "basic" | "hybrid" | "graphrag_local" | "graphrag_global";
+export type QueryStrategy = "basic" | "hybrid" | "graphrag_local" | "graphrag_global" | "graphrag_drift" | "graphrag_basic";
 export type ModalityFilter = "all" | "text" | "image";
 
 export interface UnifiedQueryResponse {
@@ -478,4 +478,16 @@ export async function getDoclingDocument(documentId: string): Promise<DoclingDoc
 export async function getDoclingRawJson(documentId: string): Promise<Record<string, unknown>> {
   const res = await fetch(`/v1/documents/${documentId}/docling-raw`);
   return handleResponse<Record<string, unknown>>(res);
+}
+
+export async function getDocumentMetadata(
+  documentId: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(`/v1/documents/${documentId}/metadata`);
+    if (res.status === 404) return null;
+    return handleResponse<Record<string, unknown>>(res);
+  } catch {
+    return null;
+  }
 }
