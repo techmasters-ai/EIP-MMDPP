@@ -1,0 +1,14 @@
+{
+  "planPath": "docs/superpowers/plans/2026-03-19-ontology-extraction-fixes.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Add pattern fields to schema prompts", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Fix system prompts referencing non-existent properties", "status": "pending"},
+    {"id": 3, "subject": "Task 3: Add cross-group dedup guidance", "status": "pending"},
+    {"id": 4, "subject": "Task 4: Add type hierarchy to schema prompts", "status": "pending"},
+    {"id": 5, "subject": "Task 5: Add few-shot examples to entity prompts", "status": "pending"},
+    {"id": 6, "subject": "Task 6: Complete relationship prompt from ontology", "status": "pending"},
+    {"id": 7, "subject": "Task 7: Chunked entity extraction with global relationship pass", "status": "pending", "blockedBy": [5, 6]},
+    {"id": 8, "subject": "Task 8: Add tests for all fixes", "status": "pending", "blockedBy": [1, 2, 3, 4, 5, 6, 7]}
+  ],
+  "lastUpdated": "2026-03-19T19:30:00Z"
+}

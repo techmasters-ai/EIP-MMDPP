@@ -57,6 +57,8 @@ _templates: dict[str, dict[str, type[BaseModel]]] | None = None
 _ontology_version: str | None = None
 # Pre-built schema descriptions per group (built from ontology YAML at startup)
 _group_schema_prompts: dict[str, str] = {}
+# Auto-generated relationship type context from ontology (for relationship extraction prompt)
+_relationship_prompt_context: str = ""
 
 
 def _patch_node_id_registry() -> None:
@@ -135,7 +137,14 @@ def _build_group_schema_prompts(ontology: dict[str, Any]) -> dict[str, str]:
             if not et:
                 continue
             desc = et.get("description", "")
-            lines.append(f"### {entity_name}")
+            parent = et.get("parent", "")
+            label = et.get("label", "")
+            header = f"### {entity_name}"
+            if parent:
+                header += f" ({parent})"
+            lines.append(header)
+            if label:
+                lines.append(f"Label: {label}")
             if desc:
                 lines.append(f"Description: {desc}")
 
@@ -147,6 +156,7 @@ def _build_group_schema_prompts(ontology: dict[str, Any]) -> dict[str, str]:
                     pdesc = prop_spec.get("description", "")
                     example = prop_spec.get("example", "")
                     enum_vals = prop_spec.get("enum", [])
+                    pattern = prop_spec.get("pattern", "")
                     parts = [f"  - {prop_name} ({ptype})"]
                     if pdesc:
                         parts.append(f": {pdesc}")
@@ -154,6 +164,8 @@ def _build_group_schema_prompts(ontology: dict[str, Any]) -> dict[str, str]:
                         parts.append(f" [example: {example}]")
                     if enum_vals:
                         parts.append(f" [enum: {', '.join(str(v) for v in enum_vals)}]")
+                    if pattern:
+                        parts.append(f" [format: {pattern}]")
                     lines.append("".join(parts))
             lines.append("")
 
@@ -162,10 +174,37 @@ def _build_group_schema_prompts(ontology: dict[str, Any]) -> dict[str, str]:
     return prompts
 
 
+def _build_relationship_prompt_context(ontology: dict[str, Any]) -> str:
+    """Build relationship type descriptions and validation rules from ontology."""
+    rel_types = ontology.get("relationship_types", [])
+    validation = ontology.get("validation_matrix", [])
+
+    lines = ["Available relationship types:"]
+    for rt in rel_types:
+        name = rt["name"]
+        desc = rt.get("description", "")
+        src = rt.get("source_type") or "any"
+        tgt = rt.get("target_type") or "any"
+        card = rt.get("cardinality", "")
+        line = f"  - {name}: {desc}"
+        if src != "any" or tgt != "any":
+            line += f" (from: {src}, to: {tgt})"
+        if card:
+            line += f" [{card}]"
+        lines.append(line)
+
+    if validation:
+        lines.append("\nAllowed (source → relationship → target) triples:")
+        for v in validation:
+            lines.append(f"  {v['source']} → {v['relationship']} → {v['target']}")
+
+    return "\n".join(lines)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load ontology and build templates at startup."""
-    global _templates, _ontology_version, _group_schema_prompts
+    global _templates, _ontology_version, _group_schema_prompts, _relationship_prompt_context
 
     _patch_node_id_registry()
     _configure_ollama_provider()
@@ -175,11 +214,13 @@ async def lifespan(app: FastAPI):
         _ontology_version = get_ontology_version(ontology)
         _templates = build_templates(ontology)
         _group_schema_prompts = _build_group_schema_prompts(ontology)
+        _relationship_prompt_context = _build_relationship_prompt_context(ontology)
         logger.info(
-            "Docling-Graph service ready — ontology v%s, %d templates, %d group prompts",
+            "Docling-Graph service ready — ontology v%s, %d templates, %d group prompts, relationship context %d chars",
             _ontology_version,
             sum(len(g) for g in _templates.values()),
             len(_group_schema_prompts),
+            len(_relationship_prompt_context),
         )
     except Exception:
         logger.exception("Failed to load ontology — service will report unhealthy")
@@ -298,20 +339,29 @@ def _parse_json_from_llm(raw: str | None) -> dict | list | None:
                 inner = inner[4:]
             raw = inner.strip()
 
-    # Find JSON object or array
-    json_start = -1
-    for i, ch in enumerate(raw):
-        if ch in ("{", "["):
-            json_start = i
-            break
-    if json_start < 0:
+    # Find JSON object or array — try from the end first (reasoning models
+    # often put the JSON answer after pages of thinking), then fall back to
+    # scanning from the start.  Try both {} and [] and pick the outermost.
+    candidates: list[tuple[int, int]] = []
+    for close_ch, open_ch in [("}", "{"), ("]", "[")]:
+        end_pos = raw.rfind(close_ch)
+        if end_pos < 0:
+            continue
+        depth = 0
+        for i in range(end_pos, -1, -1):
+            if raw[i] == close_ch:
+                depth += 1
+            elif raw[i] == open_ch:
+                depth -= 1
+                if depth == 0:
+                    candidates.append((i, end_pos))
+                    break
+
+    if not candidates:
         return None
 
-    bracket = raw[json_start]
-    close = "}" if bracket == "{" else "]"
-    json_end = raw.rfind(close)
-    if json_end < json_start:
-        return None
+    # Pick the candidate that starts earliest (outermost wrapper)
+    json_start, json_end = min(candidates, key=lambda c: c[0])
 
     try:
         return json_mod.loads(raw[json_start:json_end + 1])
@@ -333,17 +383,22 @@ def _extract_entities_for_group(text: str, group_name: str) -> list[dict]:
 
     Returns a list of entity dicts with keys: name, entity_type, confidence, properties.
     """
-    from app.prompts import GROUP_PROMPTS
+    from app.prompts import GROUP_PROMPTS, GROUP_FEW_SHOT_EXAMPLES
 
     schema_desc = _group_schema_prompts.get(group_name, "")
     system_prompt = GROUP_PROMPTS.get(group_name, "You are an entity extraction assistant.")
     entity_type_names = GROUP_MAP.get(group_name, [])
+    example = GROUP_FEW_SHOT_EXAMPLES.get(group_name, "")
 
     user_prompt = (
         f"Extract ALL instances of the following entity types from the text below.\n"
         f"Entity types to extract: {', '.join(entity_type_names)}\n\n"
         f"=== ENTITY TYPE SCHEMAS ===\n{schema_desc}\n"
         f"=== END SCHEMAS ===\n\n"
+    )
+    if example:
+        user_prompt += f"=== EXAMPLE ===\n{example}=== END EXAMPLE ===\n\n"
+    user_prompt += (
         f"=== TEXT ===\n{text}\n=== END TEXT ===\n\n"
         f"Return a JSON object with a single key \"entities\" containing an array.\n"
         f"Each entity object MUST have:\n"
@@ -393,7 +448,7 @@ def _extract_relationships(text: str, entities_context: list[dict]) -> list[dict
     """Extract relationships between known entities via a single LLM call."""
     from app.prompts import get_relationship_prompt
 
-    system_prompt = get_relationship_prompt(entities_context)
+    system_prompt = get_relationship_prompt(entities_context, _relationship_prompt_context)
     user_prompt = (
         f"Analyze this text and extract relationships between the known entities:\n\n"
         f"=== TEXT ===\n{text}\n=== END TEXT ===\n\n"
@@ -427,38 +482,77 @@ def _extract_relationships(text: str, entities_context: list[dict]) -> list[dict
 
 
 # ---------------------------------------------------------------------------
-# Full extraction — all groups in parallel + relationships
+# Text chunking and entity deduplication
+# ---------------------------------------------------------------------------
+def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
+    """Split text into overlapping chunks. Returns at least one chunk."""
+    if len(text) <= chunk_size:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
+    return chunks
+
+
+def _dedup_entities(entities: list[dict]) -> list[dict]:
+    """Deduplicate entities by (name, entity_type), keeping highest confidence."""
+    best: dict[tuple[str, str], dict] = {}
+    for e in entities:
+        key = (e.get("name", ""), e.get("entity_type", ""))
+        existing = best.get(key)
+        if existing is None or e.get("confidence", 0) > existing.get("confidence", 0):
+            best[key] = e
+    return list(best.values())
+
+
+# ---------------------------------------------------------------------------
+# Full extraction — chunked entities + global relationships
 # ---------------------------------------------------------------------------
 def _run_full_extraction(text: str) -> tuple[list[dict], list[dict]]:
-    """Extract all entities (5 groups in parallel) then relationships.
+    """Extract entities from text chunks, then relationships from the full text.
+
+    Entity extraction is chunked to stay within context window limits.
+    Entities are deduped by (name, entity_type) keeping highest confidence.
+    Relationship extraction runs once on the full text with all entities as context.
 
     Returns (entities, relationships) as raw dicts.
     """
-    all_entities: list[dict] = []
+    chunk_size = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_SIZE", "12000"))
+    chunk_overlap = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_OVERLAP", "500"))
+    chunks = _chunk_text(text, chunk_size, chunk_overlap)
     group_names = list(GROUP_MAP.keys())
 
-    # Phase 1: Extract entities from all 5 groups in parallel
+    # Phase 1: Entity extraction — per chunk, all groups in parallel per chunk
+    all_entities: list[dict] = []
     t0 = time.monotonic()
-    with ThreadPoolExecutor(max_workers=len(group_names)) as pool:
-        futures = {
-            pool.submit(_extract_entities_for_group, text, group): group
-            for group in group_names
-        }
-        for future in as_completed(futures):
-            group = futures[future]
-            try:
-                entities = future.result()
-                all_entities.extend(entities)
-            except Exception as exc:
-                logger.warning("Entity extraction group=%s raised: %s", group, exc)
+
+    for chunk_idx, chunk in enumerate(chunks):
+        with ThreadPoolExecutor(max_workers=len(group_names)) as pool:
+            futures = {
+                pool.submit(_extract_entities_for_group, chunk, group): group
+                for group in group_names
+            }
+            for future in as_completed(futures):
+                group = futures[future]
+                try:
+                    all_entities.extend(future.result())
+                except Exception as exc:
+                    logger.warning("Entity extraction group=%s chunk=%d raised: %s", group, chunk_idx, exc)
+
+    # Dedup across chunks
+    raw_count = len(all_entities)
+    all_entities = _dedup_entities(all_entities)
 
     entity_elapsed = time.monotonic() - t0
     logger.info(
-        "Phase 1 complete: %d total entities from %d groups in %.1fs (parallel)",
-        len(all_entities), len(group_names), entity_elapsed,
+        "Phase 1 complete: %d unique entities (from %d raw) across %d chunks × %d groups in %.1fs",
+        len(all_entities), raw_count, len(chunks), len(group_names), entity_elapsed,
     )
 
-    # Phase 2: Extract relationships using all discovered entities as context
+    # Phase 2: Relationship extraction on FULL text with all entities as context
     t1 = time.monotonic()
     entities_context = [
         {"name": e.get("name", ""), "entity_type": e.get("entity_type", "UNKNOWN")}

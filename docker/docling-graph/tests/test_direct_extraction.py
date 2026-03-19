@@ -266,15 +266,17 @@ class TestRunFullExtraction:
     @patch("app.main._extract_entities_for_group")
     def test_runs_all_groups_and_relationships(self, mock_entities, mock_rels, setup_app):
         """Should call entity extraction for all 5 groups + 1 relationship pass."""
-        mock_entities.return_value = [
-            {"name": "Test", "entity_type": "PLATFORM", "confidence": 0.9, "properties": {}},
-        ]
+        # Return unique entity per call so dedup doesn't collapse them
+        call_count = [0]
+        def _unique_entity(*args, **kwargs):
+            call_count[0] += 1
+            return [{"name": f"Entity-{call_count[0]}", "entity_type": "PLATFORM", "confidence": 0.9, "properties": {}}]
+        mock_entities.side_effect = _unique_entity
         mock_rels.return_value = []
 
         entities, rels = setup_app._run_full_extraction("some document text")
 
-        # 5 groups should produce 5 entities (1 per group call)
-        assert len(entities) == 5
+        assert len(entities) == 5  # 5 unique entities (1 per group)
         assert mock_entities.call_count == 5
         assert mock_rels.call_count == 1
 
@@ -282,17 +284,18 @@ class TestRunFullExtraction:
     @patch("app.main._extract_entities_for_group")
     def test_passes_entities_to_relationship_extraction(self, mock_entities, mock_rels, setup_app):
         """Relationship extraction should receive all extracted entities as context."""
-        mock_entities.return_value = [
-            {"name": "Radar A", "entity_type": "RADAR_SYSTEM", "confidence": 0.9, "properties": {}},
-        ]
+        call_count = [0]
+        def _unique_entity(*args, **kwargs):
+            call_count[0] += 1
+            return [{"name": f"Radar-{call_count[0]}", "entity_type": "RADAR_SYSTEM", "confidence": 0.9, "properties": {}}]
+        mock_entities.side_effect = _unique_entity
         mock_rels.return_value = []
 
         setup_app._run_full_extraction("text")
 
-        # Check entities_context passed to relationship extraction
         rel_call_args = mock_rels.call_args
         entities_context = rel_call_args[0][1]
-        assert len(entities_context) == 5  # 5 groups × 1 entity each
+        assert len(entities_context) == 5  # 5 groups × 1 unique entity each
         assert all(e.get("name") for e in entities_context)
 
 
