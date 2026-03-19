@@ -3,6 +3,7 @@ import {
   batchDocumentStatus,
   cancelDocument,
   createSource,
+  deleteAllSourceDocuments,
   deleteDocument,
   listDocumentsBySource,
   listSources,
@@ -497,13 +498,27 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
         </div>
       )}
 
-      {entries.length > 0 && (
+      {selectedSourceId && (existingDocs.length > 0 || entries.some((e) => e.documentId)) && (
         <div style={{ marginTop: "1rem", textAlign: "right" }}>
           <button
-            className="btn btn-ghost btn-sm"
-            onClick={() => setEntries([])}
+            className="btn btn-danger btn-sm"
+            onClick={async () => {
+              const sourceName = sources.find((s) => s.id === selectedSourceId)?.name ?? "this source";
+              const totalDocs = existingDocs.length + entries.filter((e) => e.documentId).length;
+              if (!confirm(
+                `Delete all ${totalDocs} document(s) in "${sourceName}"? ` +
+                "This removes all files, extractions, embeddings, and graph data. This cannot be undone."
+              )) return;
+              try {
+                await deleteAllSourceDocuments(selectedSourceId);
+                setEntries([]);
+                setExistingDocs([]);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : "Delete all failed");
+              }
+            }}
           >
-            Clear list
+            Delete All
           </button>
         </div>
       )}

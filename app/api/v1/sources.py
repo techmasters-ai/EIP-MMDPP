@@ -419,6 +419,42 @@ async def delete_document(
     logger.info("delete_document: deleted document %s and all derived data", str(document_id))
 
 
+@router.delete("/sources/{source_id}/documents")
+async def delete_all_source_documents(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Delete all documents in a source and all their derived data."""
+    source = await db.get(Source, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found.")
+
+    docs = (await db.execute(
+        select(Document).where(Document.source_id == source_id)
+    )).scalars().all()
+
+    if not docs:
+        return {"deleted": 0}
+
+    processing = [d for d in docs if d.pipeline_status == "PROCESSING"]
+    if processing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(processing)} document(s) still processing. Cancel them first.",
+        )
+
+    count = 0
+    for doc in docs:
+        try:
+            await _hard_delete_document(doc.id, doc, db)
+            count += 1
+        except Exception as exc:
+            logger.warning("delete_all: failed to delete %s: %s", doc.id, exc)
+
+    logger.info("delete_all_source_documents: deleted %d/%d documents from source %s", count, len(docs), source_id)
+    return {"deleted": count}
+
+
 async def _hard_delete_document(
     document_id: uuid.UUID,
     doc: Document,

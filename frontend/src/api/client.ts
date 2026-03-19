@@ -408,6 +408,11 @@ export async function deleteDocument(documentId: string): Promise<void> {
   }
 }
 
+export async function deleteAllSourceDocuments(sourceId: string): Promise<{ deleted: number }> {
+  const res = await fetch(`/v1/sources/${sourceId}/documents`, { method: "DELETE" });
+  return handleResponse<{ deleted: number }>(res);
+}
+
 // ---------------------------------------------------------------------------
 // LangGraph agent context
 // ---------------------------------------------------------------------------

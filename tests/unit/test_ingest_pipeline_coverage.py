@@ -949,3 +949,96 @@ class TestCancelDocumentEndpoint:
                 result = await cancel_document(doc_id, db=mock_db)
 
         assert result["status"] == "cancelled"
+
+
+# ===========================================================================
+# delete_all_source_documents endpoint
+# ===========================================================================
+
+class TestDeleteAllSourceDocuments:
+
+    @pytest.mark.asyncio
+    async def test_source_not_found_returns_404(self):
+        from app.api.v1.sources import delete_all_source_documents
+
+        mock_db = AsyncMock()
+        mock_db.get.return_value = None
+
+        with pytest.raises(Exception) as exc_info:
+            await delete_all_source_documents(uuid.uuid4(), db=mock_db)
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_empty_source_returns_zero(self):
+        from app.api.v1.sources import delete_all_source_documents
+
+        source_id = uuid.uuid4()
+        mock_db = AsyncMock()
+        mock_db.get.return_value = SimpleNamespace(id=source_id, name="Test")
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        mock_db.execute.return_value = mock_result
+
+        result = await delete_all_source_documents(source_id, db=mock_db)
+        assert result == {"deleted": 0}
+
+    @pytest.mark.asyncio
+    async def test_processing_docs_returns_409(self):
+        from app.api.v1.sources import delete_all_source_documents
+
+        source_id = uuid.uuid4()
+        mock_db = AsyncMock()
+        mock_db.get.return_value = SimpleNamespace(id=source_id, name="Test")
+
+        processing_doc = SimpleNamespace(
+            id=uuid.uuid4(), pipeline_status="PROCESSING", filename="busy.pdf",
+        )
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [processing_doc]
+        mock_db.execute.return_value = mock_result
+
+        with pytest.raises(Exception) as exc_info:
+            await delete_all_source_documents(source_id, db=mock_db)
+        assert exc_info.value.status_code == 409
+        assert "still processing" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_deletes_all_documents(self):
+        from app.api.v1.sources import delete_all_source_documents
+
+        source_id = uuid.uuid4()
+        mock_db = AsyncMock()
+        mock_db.get.return_value = SimpleNamespace(id=source_id, name="Test")
+
+        doc1 = SimpleNamespace(id=uuid.uuid4(), pipeline_status="COMPLETE", filename="a.pdf")
+        doc2 = SimpleNamespace(id=uuid.uuid4(), pipeline_status="FAILED", filename="b.pdf")
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [doc1, doc2]
+        mock_db.execute.return_value = mock_result
+
+        with patch("app.api.v1.sources._hard_delete_document", new_callable=AsyncMock) as mock_delete:
+            result = await delete_all_source_documents(source_id, db=mock_db)
+
+        assert result == {"deleted": 2}
+        assert mock_delete.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_returns_partial_count(self):
+        from app.api.v1.sources import delete_all_source_documents
+
+        source_id = uuid.uuid4()
+        mock_db = AsyncMock()
+        mock_db.get.return_value = SimpleNamespace(id=source_id, name="Test")
+
+        doc1 = SimpleNamespace(id=uuid.uuid4(), pipeline_status="COMPLETE", filename="a.pdf")
+        doc2 = SimpleNamespace(id=uuid.uuid4(), pipeline_status="COMPLETE", filename="b.pdf")
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [doc1, doc2]
+        mock_db.execute.return_value = mock_result
+
+        with patch("app.api.v1.sources._hard_delete_document", new_callable=AsyncMock) as mock_delete:
+            mock_delete.side_effect = [None, Exception("Neo4j down")]
+            result = await delete_all_source_documents(source_id, db=mock_db)
+
+        assert result == {"deleted": 1}

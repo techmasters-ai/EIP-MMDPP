@@ -1,0 +1,9 @@
+{
+  "planPath": "docs/superpowers/plans/2026-03-19-delete-all-source-documents.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Add DELETE /sources/{source_id}/documents backend endpoint", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Add deleteAllSourceDocuments to frontend API client", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Replace Clear list with Delete All button in FileUpload", "status": "pending", "blockedBy": [2]}
+  ],
+  "lastUpdated": "2026-03-19T18:15:00Z"
+}
