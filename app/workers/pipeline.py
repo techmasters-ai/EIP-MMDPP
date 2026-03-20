@@ -987,6 +987,15 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
 
     if not settings.doc_analysis_enabled:
         logger.info("derive_document_metadata: disabled, skipping for %s", document_id)
+        if run_id:
+            _db = _get_db()
+            try:
+                _update_stage_run(_db, run_id, "derive_document_metadata", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={"skipped": True, "reason": "disabled"})
+                _db.commit()
+            finally:
+                _db.close()
         return {"stage": "derive_document_metadata", "status": "skipped"}
 
     db = _get_db()
@@ -1004,6 +1013,11 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
             markdown = md_bytes.decode("utf-8")
         except Exception:
             logger.info("derive_document_metadata: no markdown available for %s, skipping", document_id)
+            if run_id:
+                _update_stage_run(db, run_id, "derive_document_metadata", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={"skipped": True, "reason": "no_markdown"})
+                db.commit()
             return {"stage": "derive_document_metadata", "status": "skipped", "reason": "no_markdown"}
 
         # Extract metadata via LLM
@@ -1052,10 +1066,10 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
 @celery_app.task(
     bind=True,
     name="app.workers.pipeline.derive_picture_descriptions",
-    max_retries=1,
-    default_retry_delay=30,
-    soft_time_limit=1800,
-    time_limit=1860,
+    max_retries=settings.picture_desc_max_retries,
+    default_retry_delay=settings.picture_desc_retry_delay,
+    soft_time_limit=settings.picture_desc_soft_time_limit,
+    time_limit=settings.picture_desc_time_limit,
     queue="ingest",
 )
 def derive_picture_descriptions(self, document_id: str, run_id: str | None = None) -> dict:
@@ -1091,6 +1105,11 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
             docling_json = json_mod.loads(json_bytes)
         except Exception:
             logger.info("derive_picture_descriptions: no Docling JSON for %s, skipping", document_id)
+            if run_id:
+                _update_stage_run(db, run_id, "derive_picture_descriptions", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={"pictures_updated": 0, "skipped": True})
+                db.commit()
             return {"stage": "derive_picture_descriptions", "status": "skipped"}
 
         # For Office formats (DOCX/PPTX), Docling's SimplePipeline doesn't
@@ -1183,6 +1202,21 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
         logger.info("derive_picture_descriptions: document_id=%s updated=%d", document_id, pictures_updated)
         return {"stage": "derive_picture_descriptions", "status": "ok", "pictures_updated": pictures_updated}
 
+    except CeleryRetry:
+        raise
+    except SoftTimeLimitExceeded as exc:
+        logger.warning(
+            "derive_picture_descriptions: soft time limit for %s — marking PARTIAL_COMPLETE",
+            document_id,
+        )
+        if run_id:
+            try:
+                _update_stage_run(db, run_id, "derive_picture_descriptions", "FAILED", attempt=self.request.retries + 1, error="soft time limit exceeded")
+                db.commit()
+            except Exception:
+                pass
+        _update_document_status(document_id, STATUS_PARTIAL_COMPLETE, stage="derive_picture_descriptions")
+        return {"stage": "derive_picture_descriptions", "status": "timeout", "pictures_updated": 0}
     except Exception as exc:
         logger.error("derive_picture_descriptions failed for %s: %s", document_id, exc)
         if run_id:

@@ -490,6 +490,24 @@ export async function getDoclingRawJson(documentId: string): Promise<Record<stri
   return handleResponse<Record<string, unknown>>(res);
 }
 
+export interface ImageDescription {
+  element_uid: string;
+  content_text: string;
+  page_number: number | null;
+}
+
+export async function getDocumentImageDescriptions(
+  documentId: string,
+): Promise<ImageDescription[]> {
+  try {
+    const res = await fetch(`/v1/documents/${documentId}/image-descriptions`);
+    if (res.status === 404) return [];
+    return handleResponse<ImageDescription[]>(res);
+  } catch {
+    return [];
+  }
+}
+
 export async function getDocumentMetadata(
   documentId: string,
 ): Promise<Record<string, unknown> | null> {

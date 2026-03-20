@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
-import { getDoclingRawJson, getDoclingDocument, getDocumentMetadata } from "../api/client";
+import { getDoclingRawJson, getDoclingDocument, getDocumentMetadata, getDocumentImageDescriptions } from "../api/client";
+import type { ImageDescription } from "../api/client";
 
 interface DoclingViewerProps {
   documentId: string;
@@ -61,6 +62,7 @@ export function DoclingViewer({
   const [docJson, setDocJson] = useState<Record<string, unknown> | null>(null);
   const [plainText, setPlainText] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
+  const [imageDescriptions, setImageDescriptions] = useState<ImageDescription[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ViewMode>("document");
@@ -71,6 +73,7 @@ export function DoclingViewer({
     setDocJson(null);
     setPlainText(null);
     getDocumentMetadata(documentId).then(setMetadata);
+    getDocumentImageDescriptions(documentId).then(setImageDescriptions);
     getDoclingRawJson(documentId)
       .then(setDocJson)
       .catch(() => {
@@ -180,6 +183,27 @@ export function DoclingViewer({
               }}
               sandbox="allow-scripts allow-same-origin"
             />
+          )}
+
+          {/* Image description panel for standalone image files (no Docling JSON) */}
+          {!docJson && imageDescriptions.length > 0 && mode === "document" && (
+            <div style={{
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius)",
+              padding: "0.75rem 1rem",
+              marginBottom: "0.5rem",
+              background: "var(--color-surface-2)",
+              fontSize: "0.85rem",
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: "0.5rem", color: "var(--color-text-muted)" }}>
+                AI Image Analysis
+              </div>
+              {imageDescriptions.map((desc) => (
+                <div key={desc.element_uid} style={{ maxHeight: "300px", overflowY: "auto", whiteSpace: "pre-line", lineHeight: 1.5 }}>
+                  {desc.content_text}
+                </div>
+              ))}
+            </div>
           )}
 
           {/* Plain text fallback for .txt and files without Docling JSON */}

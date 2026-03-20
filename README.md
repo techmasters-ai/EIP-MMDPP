@@ -181,6 +181,7 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 - `GET /v1/documents/{id}/metadata` — LLM-extracted document metadata (summary, date, classification, source)
 - `GET /v1/documents/{id}/docling` — DoclingDocument viewer (markdown + JSON + image injection)
 - `GET /v1/documents/{id}/docling-raw` — raw DoclingDocument JSON stream
+- `GET /v1/documents/{id}/image-descriptions` — LLM-generated descriptions for image elements
 
 ### Directory Watcher
 - `POST /v1/watch-dirs` — register a directory for auto-ingest
@@ -331,7 +332,7 @@ Images are served via the API proxy (`GET /v1/images/{chunk_id}`) which streams 
 
 ### Document Upload (`FileUpload`)
 
-Drag-and-drop or click-to-upload with real-time pipeline status polling. Supports PDF, DOCX, PPTX, XLSX, HTML, Markdown, CSV, PNG, JPG, TIFF. Adaptive polling intervals (2s → 5s → 10s) based on elapsed time. Cancel button for PROCESSING documents (revokes Celery tasks, cleans up all data stores, removes the document). Retry button for FAILED/ERROR documents. Delete button for completed/failed documents. When a source is selected, shows all historical documents for that source with live status updates, cancel, retry, and delete support. DoclingDocument viewer for COMPLETE documents with bounding-box overlay, metadata panel (summary, date, classification), and plaintext fallback for .txt files.
+Drag-and-drop or click-to-upload with real-time pipeline status polling. Supports PDF, DOCX, PPTX, XLSX, HTML, Markdown, CSV, PNG, JPG, TIFF. Adaptive polling intervals (2s → 5s → 10s) based on elapsed time. Cancel button for PROCESSING documents (revokes Celery tasks, cleans up all data stores, removes the document). Retry button for FAILED/ERROR documents. Delete button for completed/failed documents. When a source is selected, shows all historical documents for that source with live status updates, cancel, retry, and delete support. DoclingDocument viewer for COMPLETE documents with bounding-box overlay, metadata panel (summary, date, classification), and plaintext fallback for .txt files. **Image description tooltips**: hovering over embedded images (PDF, DOCX, PPTX) shows LLM-generated descriptions via the Docling web component's built-in tooltip system; standalone image documents (.png, .jpeg) display the description in a persistent panel.
 
 ### Other Pages
 
@@ -387,6 +388,7 @@ Key features:
 - **Batched text embedding + Qdrant upserts** — large documents (thousands of text elements) no longer send all vectors in a single Qdrant RPC; embedding and upserts are batched via `EMBED_TEXT_BATCH_SIZE` and `QDRANT_UPSERT_BATCH_SIZE` (default 128 each); Qdrant client timeout configurable via `QDRANT_TIMEOUT_SECONDS` (default 60s)
 - **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks read from env-var settings at registration time (not hardcoded), ensuring `.env` tuning takes effect without code changes
+- **Stage skip completeness** — all pipeline stages mark their stage_run COMPLETE even when skipping (e.g. `derive_picture_descriptions` on .txt files, `derive_document_metadata` when disabled), preventing false PARTIAL_COMPLETE from `finalize_document`
 - **Stale run cleanup** — on worker startup, documents stuck in PROCESSING (from prior crashes) are reset to PENDING and their PipelineRuns marked FAILED via Celery `worker_ready` signal
 - **Re-upload on failure** — re-uploading a file that previously FAILED removes the old record and re-ingests (no 409)
 - **Reingest safety** — reingest endpoint rejects requests when pipeline is already PROCESSING (409); failure handlers use the task's own `run_id` to avoid cross-run contamination
@@ -492,6 +494,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.22 | Chord resilience fix: `SoftTimeLimitExceeded` handlers on all chord member tasks (return error dict instead of dying), chord `on_error` errback marks document FAILED on hard kills, `GRAPH_SOFT_TIME_LIMIT` 600→1800 / `GRAPH_TIME_LIMIT` 660→1860 for large-document LLM extraction | Complete |
 | 2.23 | Concurrent pipeline dispatch fix: atomic PipelineRun check-and-set (`FOR UPDATE`), document-scoped singleflight Redis lock in `prepare_document`, supersession guard aborts stale tasks, Docling lock held through `self.retry()` (no gap for lock theft), configurable 503 retry limit (`DOCLING_503_MAX_RETRIES=20`), Celery Redis visibility timeout (`CELERY_VISIBILITY_TIMEOUT=10800`), stale cleanup marks PipelineRuns FAILED, worker topology overlap prevention in `manage.sh`, Docling `MAX_CONCURRENT` aligned with pipeline `DOCLING_CONCURRENCY` | Complete |
 | 2.24 | Comprehensive quality pass: enriched ontology properties (descriptions/examples/patterns), validation matrix (all relationship types), fixed extraction prompt (valid few-shot, property descriptions, type restrictions), post-extraction validation (_validate_entity_types, _validate_properties), BGE asymmetric query/passage prefixes, cross-encoder reranker (bge-reranker-v2-m3), structure-aware chunking in pipeline, min score threshold + image oversample, GraphRAG global fulltext filtering + local BM25 scoring, fuzzy match score normalization, independent re-scoring of expanded chunks, model pre-download in manage.sh, upgraded to llama3.1:8b | Complete |
+| 2.25 | Image description tooltips: hover tooltips on embedded images via Docling web component (`kind: "description"` annotation fix), persistent description panel for standalone image documents, image-descriptions API endpoint, `SoftTimeLimitExceeded` handler for `derive_picture_descriptions`, configurable picture description timeouts, stage_run status fix for skipped stages (prevents false PARTIAL_COMPLETE on .txt and other non-image documents) | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

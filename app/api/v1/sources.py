@@ -800,6 +800,36 @@ async def get_document_metadata(
     return row[0]
 
 
+@router.get("/documents/{document_id}/image-descriptions")
+async def get_document_image_descriptions(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Return LLM-generated descriptions for image elements in a document."""
+    from sqlalchemy import select
+
+    rows = (await db.execute(
+        select(
+            DocumentElement.element_uid,
+            DocumentElement.content_text,
+            DocumentElement.page_number,
+        ).where(
+            DocumentElement.document_id == document_id,
+            DocumentElement.element_type == "image",
+            DocumentElement.content_text.isnot(None),
+        ).order_by(DocumentElement.element_order)
+    )).all()
+
+    return [
+        {
+            "element_uid": str(r.element_uid),
+            "content_text": r.content_text,
+            "page_number": r.page_number,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/documents/{document_id}/artifacts/{artifact_id}/image")
 async def get_artifact_image(
     document_id: uuid.UUID,

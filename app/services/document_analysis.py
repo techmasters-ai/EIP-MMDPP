@@ -169,6 +169,7 @@ def describe_pictures(docling_json: dict, document_summary: str) -> dict:
         if "annotations" not in pic:
             pic["annotations"] = []
         pic["annotations"].append({
+            "kind": "description",
             "text": desc,
             "source": "llm",
             "model": model,

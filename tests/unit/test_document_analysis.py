@@ -228,7 +228,11 @@ class TestDescribePictures:
         pic = result["pictures"][0]
         assert pic["description"] == "A radar installation on a vehicle."
         assert len(pic["annotations"]) == 1
-        assert pic["annotations"][0]["source"] == "llm"
+        ann = pic["annotations"][0]
+        assert ann["kind"] == "description"
+        assert ann["text"] == "A radar installation on a vehicle."
+        assert ann["source"] == "llm"
+        assert ann["model"] == "gemma3:27b"
 
 
 # ---------------------------------------------------------------------------
