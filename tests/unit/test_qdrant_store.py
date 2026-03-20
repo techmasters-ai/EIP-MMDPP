@@ -25,6 +25,7 @@ def _mock_settings(**overrides):
     s = MagicMock()
     s.qdrant_text_collection = "eip_text_chunks"
     s.qdrant_image_collection = "eip_image_chunks"
+    s.qdrant_trusted_text_collection = "eip_trusted_text"
     s.text_embedding_dim = 1024
     s.image_embedding_dim = 512
     for k, v in overrides.items():
@@ -103,7 +104,8 @@ class TestEnsureCollections:
         client = MagicMock()
         client.get_collections.return_value.collections = []
         ensure_collections(client)
-        assert client.create_collection.call_count == 2
+        # text + image + trusted = 3 collections
+        assert client.create_collection.call_count == 3
 
     @patch("app.services.qdrant_store.get_settings")
     def test_skips_existing_text_collection(self, mock_gs):
@@ -114,7 +116,8 @@ class TestEnsureCollections:
         client = MagicMock()
         client.get_collections.return_value.collections = [existing]
         ensure_collections(client)
-        assert client.create_collection.call_count == 1
+        # image + trusted = 2 collections
+        assert client.create_collection.call_count == 2
 
     @patch("app.services.qdrant_store.get_settings")
     def test_skips_both_if_both_exist(self, mock_gs):
@@ -125,7 +128,8 @@ class TestEnsureCollections:
         client = MagicMock()
         client.get_collections.return_value.collections = [t, i]
         ensure_collections(client)
-        assert client.create_collection.call_count == 0
+        # trusted still created
+        assert client.create_collection.call_count == 1
 
     @patch("app.services.qdrant_store.get_settings")
     def test_creates_payload_indexes(self, mock_gs):
@@ -134,8 +138,8 @@ class TestEnsureCollections:
         client = MagicMock()
         client.get_collections.return_value.collections = []
         ensure_collections(client)
-        # 5 fields × 2 collections = 10 index calls
-        assert client.create_payload_index.call_count == 10
+        # 5 fields × 2 collections (text+image) + 4 fields × 1 (trusted) = 14
+        assert client.create_payload_index.call_count == 14
 
 
 # ---------------------------------------------------------------------------

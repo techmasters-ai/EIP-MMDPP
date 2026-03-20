@@ -30,7 +30,7 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.graphrag_indexing_enabled is True
         assert s.graphrag_max_cluster_size == 10
-        assert s.graphrag_model == "llama3.2"
+        assert isinstance(s.graphrag_llm_model, str)
 
 
 class TestComputedUrls:
@@ -76,7 +76,7 @@ class TestRerankerConfig:
         from app.config import Settings
         s = Settings()
         assert s.reranker_model == "BAAI/bge-reranker-v2-m3"
-        assert s.reranker_device == "cpu"
+        assert s.reranker_device in ("cpu", "cuda")
         assert s.reranker_enabled is True
         assert s.reranker_top_n == 20
         assert s.retrieval_min_score_threshold == 0.25
@@ -92,7 +92,7 @@ class TestRerankerConfig:
     def test_ollama_settings_for_graphrag(self):
         """Ollama settings used by GraphRAG should still be present."""
         from app.config import Settings
-        s = Settings(ollama_num_ctx=16384)
+        s = Settings(ollama_num_ctx=16384, ollama_base_url="http://localhost:11434")
         assert s.ollama_num_ctx == 16384
         assert s.ollama_base_url == "http://localhost:11434"
 

@@ -132,7 +132,9 @@ class TestPersistExtractionWithDeterministicIds:
         chunk = self._make_chunk(raw_image_bytes=b"\x89PNG", metadata={"ext": "png"})
         uids = ["elem-img-0"]
 
-        with patch("app.workers.pipeline.upload_bytes_sync") as mock_upload:
+        with patch("app.services.storage.upload_bytes_sync") as mock_upload, \
+             patch("app.workers.pipeline.settings") as mock_settings:
+            mock_settings.minio_bucket_derived = "test-bucket"
             _persist_extraction_results(db, doc_id, [chunk], element_uids=uids)
 
         expected_id = _deterministic_artifact_id(doc_id, "elem-img-0")

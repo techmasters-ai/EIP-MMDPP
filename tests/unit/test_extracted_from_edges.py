@@ -17,6 +17,14 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _make_celery_self():
+    """Build a mock Celery task 'self' with required attributes."""
+    task_self = MagicMock()
+    task_self.request.retries = 0
+    task_self.max_retries = 1
+    return task_self
+
+
 def _make_element(element_uid, artifact_id, section_path=None, content_text=None):
     elem = MagicMock()
     elem.element_uid = element_uid
@@ -56,26 +64,28 @@ def _setup_db_mock(doc, elements, text_chunks, image_chunks,
                    graph_extraction=None, artifacts_with_entities=None):
     """Build a db mock that returns the right results for derive_structure_links queries.
 
-    The function issues these selects in order:
-    1. TextChunk (order_by page_number, chunk_index)
-    2. ImageChunk
-    3. DocumentElement (order_by element_order)
-    Then later (EXTRACTED_FROM section):
-    4. DocumentGraphExtraction (.first())
-    5. Artifact with content_metadata (fallback, .all())
+    Uses select-query counting (ignores advisory locks and upsert statements).
     """
     db = MagicMock()
-    call_count = {"n": 0}
+    select_count = {"n": 0}
 
     def fake_execute(stmt, params=None):
         result = MagicMock()
 
-        # Advisory lock uses sqlalchemy.text — has a .text attribute
+        # Advisory lock uses sqlalchemy.text — has a .text attribute but no froms
         if hasattr(stmt, 'text') and not hasattr(stmt, 'froms'):
             return result
 
-        call_count["n"] += 1
-        n = call_count["n"]
+        # Upsert (INSERT) statements have no .froms but have .table
+        if hasattr(stmt, 'table') and not hasattr(stmt, 'froms'):
+            return result
+
+        # Only count SELECT queries
+        if not hasattr(stmt, 'froms'):
+            return result
+
+        select_count["n"] += 1
+        n = select_count["n"]
 
         if n == 1:
             result.scalars.return_value.all.return_value = text_chunks
@@ -87,9 +97,6 @@ def _setup_db_mock(doc, elements, text_chunks, image_chunks,
             result.scalars.return_value.first.return_value = graph_extraction
         elif n == 5:
             result.scalars.return_value.all.return_value = artifacts_with_entities or []
-        else:
-            # ChunkLink upserts, commits, etc.
-            pass
         return result
 
     db.execute.side_effect = fake_execute
@@ -97,21 +104,23 @@ def _setup_db_mock(doc, elements, text_chunks, image_chunks,
     return db
 
 
-# Shared patches for all tests — patches at the source modules
-_COMMON_PATCHES = [
-    "app.services.neo4j_graph.create_entity_chunk_edge",
-    "app.services.neo4j_graph.create_structural_edge",
-    "app.services.neo4j_graph.upsert_chunk_ref_node",
-    "app.services.neo4j_graph.upsert_document_node",
-    "app.db.session.get_neo4j_driver",
-]
-
-
 def _default_settings(mock_settings):
     mock_settings.retrieval_weight_next_chunk = 0.8
     mock_settings.retrieval_weight_same_page = 0.6
     mock_settings.retrieval_weight_same_section = 0.5
     mock_settings.retrieval_weight_same_artifact = 0.4
+    mock_settings.finalize_max_retries = 1
+    mock_settings.finalize_retry_delay = 30
+    mock_settings.finalize_soft_time_limit = 300
+    mock_settings.finalize_time_limit = 600
+
+
+def _make_doc_mock():
+    doc = MagicMock()
+    doc.filename = "test.pdf"
+    doc.source_id = uuid.uuid4()
+    doc.document_metadata = None
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +129,7 @@ def _default_settings(mock_settings):
 
 class TestMentionsFromGraphJson:
     @patch("app.db.session.get_neo4j_driver")
-    @patch("app.services.neo4j_graph.create_entity_chunk_edge", return_value=True)
+    @patch("app.services.neo4j_graph.batch_create_entity_chunk_edges", return_value=2)
     @patch("app.services.neo4j_graph.create_structural_edge")
     @patch("app.services.neo4j_graph.upsert_chunk_ref_node")
     @patch("app.services.neo4j_graph.upsert_document_node")
@@ -132,7 +141,7 @@ class TestMentionsFromGraphJson:
     def test_mentions_creates_extracted_from_edges(
         self, mock_settings, mock_get_db, mock_status, mock_run_id,
         mock_stage, mock_upsert_doc, mock_upsert_chunk, mock_struct_edge,
-        mock_entity_edge, mock_driver,
+        mock_batch_entity_edges, mock_driver,
     ):
         from app.workers.pipeline import derive_structure_links
 
@@ -141,10 +150,7 @@ class TestMentionsFromGraphJson:
         chunk_id = uuid.uuid4()
         euid = "elem-001"
 
-        doc = MagicMock()
-        doc.filename = "test.pdf"
-        doc.source_id = uuid.uuid4()
-
+        doc = _make_doc_mock()
         elements = [_make_element(euid, art_id)]
         text_chunks = [_make_text_chunk(chunk_id, art_id)]
         mentions = [
@@ -158,17 +164,17 @@ class TestMentionsFromGraphJson:
         db = _setup_db_mock(doc, elements, text_chunks, [], graph_extraction)
         mock_get_db.return_value = db
 
-        result = derive_structure_links(None, doc_id)
+        result = derive_structure_links.run(doc_id)
 
         assert result["status"] == "ok"
-        # 2 mentions × 1 chunk = 2 calls
-        assert mock_entity_edge.call_count == 2
-        names = {c.args[1] for c in mock_entity_edge.call_args_list}
+        mock_batch_entity_edges.assert_called_once()
+        edge_tuples = mock_batch_entity_edges.call_args[0][1]
+        names = {t[0] for t in edge_tuples}
         assert "M1 Abrams" in names
         assert "Fort Hood" in names
 
     @patch("app.db.session.get_neo4j_driver")
-    @patch("app.services.neo4j_graph.create_entity_chunk_edge", return_value=True)
+    @patch("app.services.neo4j_graph.batch_create_entity_chunk_edges", return_value=0)
     @patch("app.services.neo4j_graph.create_structural_edge")
     @patch("app.services.neo4j_graph.upsert_chunk_ref_node")
     @patch("app.services.neo4j_graph.upsert_document_node")
@@ -180,14 +186,12 @@ class TestMentionsFromGraphJson:
     def test_empty_mentions_no_edges(
         self, mock_settings, mock_get_db, mock_status, mock_run_id,
         mock_stage, mock_upsert_doc, mock_upsert_chunk, mock_struct_edge,
-        mock_entity_edge, mock_driver,
+        mock_batch_entity_edges, mock_driver,
     ):
         from app.workers.pipeline import derive_structure_links
 
         doc_id = str(uuid.uuid4())
-        doc = MagicMock()
-        doc.filename = "test.pdf"
-        doc.source_id = uuid.uuid4()
+        doc = _make_doc_mock()
 
         graph_extraction = _make_graph_extraction(doc_id, {"mentions": []})
         _default_settings(mock_settings)
@@ -195,13 +199,15 @@ class TestMentionsFromGraphJson:
         db = _setup_db_mock(doc, [], [], [], graph_extraction)
         mock_get_db.return_value = db
 
-        result = derive_structure_links(None, doc_id)
+        result = derive_structure_links.run(doc_id)
 
         assert result["status"] == "ok"
-        mock_entity_edge.assert_not_called()
+        mock_batch_entity_edges.assert_called_once()
+        edge_tuples = mock_batch_entity_edges.call_args[0][1]
+        assert len(edge_tuples) == 0
 
     @patch("app.db.session.get_neo4j_driver")
-    @patch("app.services.neo4j_graph.create_entity_chunk_edge", return_value=True)
+    @patch("app.services.neo4j_graph.batch_create_entity_chunk_edges", return_value=2)
     @patch("app.services.neo4j_graph.create_structural_edge")
     @patch("app.services.neo4j_graph.upsert_chunk_ref_node")
     @patch("app.services.neo4j_graph.upsert_document_node")
@@ -213,7 +219,7 @@ class TestMentionsFromGraphJson:
     def test_element_uid_to_chunk_mapping(
         self, mock_settings, mock_get_db, mock_status, mock_run_id,
         mock_stage, mock_upsert_doc, mock_upsert_chunk, mock_struct_edge,
-        mock_entity_edge, mock_driver,
+        mock_batch_entity_edges, mock_driver,
     ):
         """Mentions referencing element_uid map to correct chunks via artifact_id."""
         from app.workers.pipeline import derive_structure_links
@@ -225,9 +231,7 @@ class TestMentionsFromGraphJson:
         chunk_b = uuid.uuid4()
         chunk_c = uuid.uuid4()
 
-        doc = MagicMock()
-        doc.filename = "test.pdf"
-        doc.source_id = uuid.uuid4()
+        doc = _make_doc_mock()
 
         elements = [
             _make_element("elem-1", art_id_1),
@@ -248,12 +252,12 @@ class TestMentionsFromGraphJson:
         db = _setup_db_mock(doc, elements, text_chunks, [], graph_extraction)
         mock_get_db.return_value = db
 
-        result = derive_structure_links(None, doc_id)
+        result = derive_structure_links.run(doc_id)
 
         assert result["status"] == "ok"
-        # elem-1 → art_id_1 → chunk_a, chunk_b  (2 calls)
-        assert mock_entity_edge.call_count == 2
-        chunk_ids_called = {c.args[3] for c in mock_entity_edge.call_args_list}
+        mock_batch_entity_edges.assert_called_once()
+        edge_tuples = mock_batch_entity_edges.call_args[0][1]
+        chunk_ids_called = {t[2] for t in edge_tuples}
         assert str(chunk_a) in chunk_ids_called
         assert str(chunk_b) in chunk_ids_called
 
@@ -264,7 +268,7 @@ class TestMentionsFromGraphJson:
 
 class TestFallbackToArtifactMetadata:
     @patch("app.db.session.get_neo4j_driver")
-    @patch("app.services.neo4j_graph.create_entity_chunk_edge", return_value=True)
+    @patch("app.services.neo4j_graph.batch_create_entity_chunk_edges", return_value=1)
     @patch("app.services.neo4j_graph.create_structural_edge")
     @patch("app.services.neo4j_graph.upsert_chunk_ref_node")
     @patch("app.services.neo4j_graph.upsert_document_node")
@@ -276,7 +280,7 @@ class TestFallbackToArtifactMetadata:
     def test_no_graph_extraction_uses_artifact_metadata(
         self, mock_settings, mock_get_db, mock_status, mock_run_id,
         mock_stage, mock_upsert_doc, mock_upsert_chunk, mock_struct_edge,
-        mock_entity_edge, mock_driver,
+        mock_batch_entity_edges, mock_driver,
     ):
         from app.workers.pipeline import derive_structure_links
 
@@ -284,9 +288,7 @@ class TestFallbackToArtifactMetadata:
         art_id = uuid.uuid4()
         chunk_id = uuid.uuid4()
 
-        doc = MagicMock()
-        doc.filename = "test.pdf"
-        doc.source_id = uuid.uuid4()
+        doc = _make_doc_mock()
 
         elements = [_make_element("elem-1", art_id)]
         text_chunks = [_make_text_chunk(chunk_id, art_id)]
@@ -303,15 +305,16 @@ class TestFallbackToArtifactMetadata:
                            artifacts_with_entities=[artifact])
         mock_get_db.return_value = db
 
-        result = derive_structure_links(None, doc_id)
+        result = derive_structure_links.run(doc_id)
 
         assert result["status"] == "ok"
-        mock_entity_edge.assert_called_once()
-        assert mock_entity_edge.call_args.args[1] == "Apache"
-        assert mock_entity_edge.call_args.args[2] == "HELICOPTER"
+        mock_batch_entity_edges.assert_called_once()
+        edge_tuples = mock_batch_entity_edges.call_args[0][1]
+        names = {t[0] for t in edge_tuples}
+        assert "Apache" in names
 
     @patch("app.db.session.get_neo4j_driver")
-    @patch("app.services.neo4j_graph.create_entity_chunk_edge", return_value=True)
+    @patch("app.services.neo4j_graph.batch_create_entity_chunk_edges", return_value=1)
     @patch("app.services.neo4j_graph.create_structural_edge")
     @patch("app.services.neo4j_graph.upsert_chunk_ref_node")
     @patch("app.services.neo4j_graph.upsert_document_node")
@@ -323,7 +326,7 @@ class TestFallbackToArtifactMetadata:
     def test_docling_graph_data_fallback(
         self, mock_settings, mock_get_db, mock_status, mock_run_id,
         mock_stage, mock_upsert_doc, mock_upsert_chunk, mock_struct_edge,
-        mock_entity_edge, mock_driver,
+        mock_batch_entity_edges, mock_driver,
     ):
         """Fallback reads docling_graph_data.nodes from artifact metadata."""
         from app.workers.pipeline import derive_structure_links
@@ -332,9 +335,7 @@ class TestFallbackToArtifactMetadata:
         art_id = uuid.uuid4()
         chunk_id = uuid.uuid4()
 
-        doc = MagicMock()
-        doc.filename = "test.pdf"
-        doc.source_id = uuid.uuid4()
+        doc = _make_doc_mock()
 
         elements = [_make_element("elem-1", art_id)]
         text_chunks = [_make_text_chunk(chunk_id, art_id)]
@@ -351,9 +352,10 @@ class TestFallbackToArtifactMetadata:
                            artifacts_with_entities=[artifact])
         mock_get_db.return_value = db
 
-        result = derive_structure_links(None, doc_id)
+        result = derive_structure_links.run(doc_id)
 
         assert result["status"] == "ok"
-        mock_entity_edge.assert_called_once()
-        assert mock_entity_edge.call_args.args[1] == "Radar"
-        assert mock_entity_edge.call_args.args[2] == "SENSOR"
+        mock_batch_entity_edges.assert_called_once()
+        edge_tuples = mock_batch_entity_edges.call_args[0][1]
+        names = {t[0] for t in edge_tuples}
+        assert "Radar" in names

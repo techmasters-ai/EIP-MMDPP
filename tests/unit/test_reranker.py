@@ -19,7 +19,10 @@ def test_rerank_returns_sorted_by_score():
     mock_model = MagicMock()
     mock_model.predict.return_value = [0.8, 0.1, 0.95]
 
-    with patch("app.services.reranker._get_reranker_model", return_value=mock_model):
+    mock_settings = MagicMock()
+    mock_settings.reranker_enabled = True
+    with patch("app.services.reranker.get_settings", return_value=mock_settings), \
+         patch("app.services.reranker._get_reranker_model", return_value=mock_model):
         result = rerank("Patriot PAC-3 guidance", candidates, top_k=2)
 
     assert len(result) == 2

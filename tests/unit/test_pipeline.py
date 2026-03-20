@@ -78,33 +78,23 @@ class TestDAGConstruction:
     def test_pipeline_returns_task_id(self):
         from unittest.mock import patch, MagicMock
 
-        with patch("app.workers.pipeline.prepare_document") as mock_prep, \
-             patch("app.workers.pipeline.derive_text_chunks_and_embeddings") as mock_text, \
-             patch("app.workers.pipeline.derive_image_embeddings") as mock_img, \
-             patch("app.workers.pipeline.derive_ontology_graph") as mock_onto, \
-             patch("app.workers.pipeline.derive_structure_links") as mock_links, \
-             patch("app.workers.pipeline.collect_derivations") as mock_collect, \
-             patch("app.workers.pipeline.finalize_document") as mock_final:
+        mock_chain_result = MagicMock()
+        mock_chain_result.id = "mock-task-id"
 
-            mock_chain_result = MagicMock()
-            mock_chain_result.id = "mock-task-id"
+        with patch("app.workers.pipeline._get_db") as mock_get_db, \
+             patch("app.workers.pipeline._create_pipeline_run", return_value="run-1"), \
+             patch("app.workers.pipeline.chain") as mock_chain_fn:
 
-            mock_prep.si.return_value = MagicMock()
-            mock_text.si.return_value = MagicMock()
-            mock_img.si.return_value = MagicMock()
-            mock_onto.si.return_value = MagicMock()
-            mock_links.si.return_value = MagicMock()
-            mock_collect.s.return_value = MagicMock()
-            mock_final.si.return_value = MagicMock()
+            db = MagicMock()
+            db.execute.return_value.scalar_one_or_none.return_value = None
+            mock_get_db.return_value = db
+            mock_chain_fn.return_value.apply_async.return_value = mock_chain_result
 
-            with patch("app.workers.pipeline.chain") as mock_chain_fn:
-                mock_chain_fn.return_value.apply_async.return_value = mock_chain_result
+            from app.workers.pipeline import start_ingest_pipeline
+            task_id = start_ingest_pipeline(str(uuid.uuid4()))
 
-                from app.workers.pipeline import start_ingest_pipeline
-                task_id = start_ingest_pipeline("test-doc-id")
-
-                assert task_id == "mock-task-id"
-                mock_chain_fn.return_value.apply_async.assert_called_once()
+            assert task_id == "mock-task-id"
+            mock_chain_fn.return_value.apply_async.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

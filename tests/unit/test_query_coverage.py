@@ -63,7 +63,7 @@ for _mod_name in (
     "graphrag_llm", "graphrag_llm.config", "graphrag_llm.config.model_config",
     "graphrag_storage", "graphrag_storage.storage_config",
     "graphrag_vectors", "graphrag_vectors.vector_store_config",
-    "pyarrow", "pyarrow.parquet", "lancedb",
+    "lancedb",
 ):
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = _AutoStubModule(_mod_name)

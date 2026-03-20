@@ -68,10 +68,10 @@ class TestFeedbackToPatchTranslation:
         ops = payload["operations"]
         assert any(op["op"] == "replace" and op["path"] == "/chunk_text" for op in ops)
 
-    def test_missing_relationship_targets_age_graph(self):
+    def test_missing_relationship_targets_neo4j_graph(self):
         patch_type, payload = self._translate(FeedbackType.missing_relationship)
         assert patch_type == "relationship_add"
-        assert "age_graph" in payload["target_table"]
+        assert "neo4j" in payload["target_table"]
 
     def test_wrong_classification_replaces_classification(self):
         patch_type, payload = self._translate(

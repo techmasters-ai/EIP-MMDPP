@@ -25,6 +25,7 @@ class TestStartIngestPipeline:
         from app.workers.pipeline import start_ingest_pipeline
 
         db = MagicMock()
+        db.execute.return_value.scalar_one_or_none.return_value = None
         mock_get_db.return_value = db
         mock_chain.return_value.apply_async.return_value = MagicMock(id="task-abc")
 
@@ -53,6 +54,7 @@ class TestStartIngestPipeline:
         )
 
         db = MagicMock()
+        db.execute.return_value.scalar_one_or_none.return_value = None
         mock_get_db.return_value = db
         mock_chain.return_value.apply_async.return_value = MagicMock(id="task-abc")
 
@@ -75,8 +77,9 @@ class TestStageUsesPassedRunId:
     @patch("app.workers.pipeline._update_stage_run")
     @patch("app.workers.pipeline._get_pipeline_run_id")
     @patch("app.workers.pipeline._get_db")
+    @patch("app.workers.pipeline._redis_client")
     def test_prepare_document_uses_passed_run_id(
-        self, mock_get_db, mock_get_run_id, mock_stage_run, mock_status,
+        self, mock_redis, mock_get_db, mock_get_run_id, mock_stage_run, mock_status,
     ):
         """When run_id is passed, _get_pipeline_run_id should NOT be called."""
         from app.workers.pipeline import prepare_document
@@ -84,6 +87,8 @@ class TestStageUsesPassedRunId:
 
         db = MagicMock()
         mock_get_db.return_value = db
+        # Singleflight lock succeeds
+        mock_redis.lock.return_value.acquire.return_value = True
         doc = MagicMock()
         doc.filename = "test.pdf"
         doc.storage_bucket = "bucket"
@@ -94,9 +99,12 @@ class TestStageUsesPassedRunId:
         doc_id = str(uuid.uuid4())
         run_id = str(uuid.uuid4())
 
-        with patch("app.workers.pipeline.download_bytes_sync", side_effect=Exception("stop")):
+        # Supersession guard: return matching run_id so it doesn't abort
+        db.execute.return_value.scalar_one_or_none.return_value = uuid.UUID(run_id)
+
+        with patch("app.services.storage.download_bytes_sync", side_effect=Exception("stop")):
             try:
-                prepare_document(None, doc_id, run_id)
+                prepare_document.run(doc_id, run_id=run_id)
             except Exception:
                 pass
 
@@ -110,14 +118,17 @@ class TestStageUsesPassedRunId:
     @patch("app.workers.pipeline._update_stage_run")
     @patch("app.workers.pipeline._get_pipeline_run_id", return_value="fallback-run")
     @patch("app.workers.pipeline._get_db")
+    @patch("app.workers.pipeline._redis_client")
     def test_null_run_id_falls_back(
-        self, mock_get_db, mock_get_run_id, mock_stage_run, mock_status,
+        self, mock_redis, mock_get_db, mock_get_run_id, mock_stage_run, mock_status,
     ):
-        """When run_id is None, stage falls back to _get_pipeline_run_id."""
+        """When run_id is None, stage falls back to _create_pipeline_run."""
         from app.workers.pipeline import prepare_document
 
         db = MagicMock()
         mock_get_db.return_value = db
+        # Singleflight lock succeeds
+        mock_redis.lock.return_value.acquire.return_value = True
         doc = MagicMock()
         doc.filename = "test.pdf"
         doc.storage_bucket = "bucket"
@@ -126,10 +137,13 @@ class TestStageUsesPassedRunId:
 
         doc_id = str(uuid.uuid4())
 
-        with patch("app.workers.pipeline.download_bytes_sync", side_effect=Exception("stop")):
+        # Supersession guard: return None (no active run) so it proceeds
+        db.execute.return_value.scalar_one_or_none.return_value = None
+
+        with patch("app.services.storage.download_bytes_sync", side_effect=Exception("stop")):
             with patch("app.workers.pipeline._create_pipeline_run", return_value="created-run"):
                 try:
-                    prepare_document(None, doc_id, None)
+                    prepare_document.run(doc_id, None)
                 except Exception:
                     pass
 
@@ -147,6 +161,7 @@ class TestConcurrentIngests:
         from app.workers.pipeline import start_ingest_pipeline
 
         db = MagicMock()
+        db.execute.return_value.scalar_one_or_none.return_value = None
         mock_get_db.return_value = db
         mock_chain.return_value.apply_async.return_value = MagicMock(id="task-1")
 
