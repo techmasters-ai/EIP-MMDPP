@@ -42,6 +42,44 @@ def _run_async(coro):
 
 
 # ---------------------------------------------------------------------------
+# Monkey-patch graphrag_llm embeddings to sanitize Unicode before Ollama
+# ---------------------------------------------------------------------------
+
+_EMBED_SANITIZE = str.maketrans({
+    "\u2011": "-", "\u2010": "-", "\u2012": "-",
+    "\u2013": "-", "\u2014": "-", "\u202f": " ", "\u00a0": " ",
+})
+
+
+def _patch_embedding_sanitization():
+    """Wrap LiteLLMEmbedding.embedding_async to strip chars that cause NaN."""
+    try:
+        from graphrag_llm.embedding.lite_llm_embedding import LiteLLMEmbedding
+
+        _original = LiteLLMEmbedding.embedding_async
+
+        async def _sanitized_embedding_async(self, /, **kwargs):
+            if "input" in kwargs:
+                inp = kwargs["input"]
+                if isinstance(inp, list):
+                    kwargs["input"] = [
+                        t.translate(_EMBED_SANITIZE) if isinstance(t, str) else t
+                        for t in inp
+                    ]
+                elif isinstance(inp, str):
+                    kwargs["input"] = inp.translate(_EMBED_SANITIZE)
+            return await _original(self, **kwargs)
+
+        LiteLLMEmbedding.embedding_async = _sanitized_embedding_async
+        logger.info("Patched LiteLLMEmbedding.embedding_async with Unicode sanitization")
+    except Exception as e:
+        logger.warning("Failed to patch LiteLLMEmbedding: %s", e)
+
+
+_patch_embedding_sanitization()
+
+
+# ---------------------------------------------------------------------------
 # Indexing
 # ---------------------------------------------------------------------------
 
@@ -123,25 +161,6 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
     # Sanitize all output parquets — bge-m3 produces NaN on non-breaking
     # hyphens (U+2011) and similar Unicode chars that gpt-oss generates.
     _sanitize_output_parquets(output_dir)
-
-    # Re-run indexing with sanitized data to generate embeddings.
-    # The first run's generate_text_embeddings likely failed due to NaN.
-    logger.info("Re-running GraphRAG indexing for embeddings (post-sanitization)")
-    try:
-        retry_results = _run_async(build_index(
-            config=config,
-            method=IndexingMethod.Standard,
-            is_update_run=True,
-            verbose=True,
-            input_documents=input_docs,
-        ))
-        for result in retry_results:
-            if result.error:
-                logger.warning("GraphRAG retry workflow %s error: %s", result.workflow, result.error)
-            else:
-                logger.info("GraphRAG retry workflow %s completed", result.workflow)
-    except Exception:
-        logger.exception("GraphRAG embedding retry failed")
 
     # Count outputs
     communities_path = output_dir / "communities.parquet"
