@@ -11,12 +11,34 @@ from pathlib import Path
 
 import pandas as pd
 
+# graphrag_llm calls nest_asyncio2.apply() at import time, which fails under
+# uvloop (uvicorn's default loop).  Neutralise it before any graphrag import.
+try:
+    import nest_asyncio2
+    nest_asyncio2.apply = lambda *a, **kw: None  # type: ignore[assignment]
+except ImportError:
+    pass
+
 from app.config import get_settings
 from app.services.graphrag_bridge import export_all
 from app.services.graphrag_config import build_graphrag_config
 from app.services.graphrag_prompts import write_prompt_files
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async(coro):
+    """Run an async coroutine from a sync context (threadpool thread).
+
+    Creates a fresh event loop to avoid conflicts with uvloop in the main
+    thread.  asyncio.run() fails under uvloop because it cannot patch the
+    running loop type.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +100,7 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
         input_docs = None
 
     # Run indexing
-    results = asyncio.run(build_index(
+    results = _run_async(build_index(
         config=config,
         method=IndexingMethod.Standard,
         is_update_run=False,
@@ -139,7 +161,7 @@ def _run_local_search(config, data: dict, query: str, community_level: int):
     """Run GraphRAG local search."""
     from graphrag.api import local_search as graphrag_local
 
-    return asyncio.run(graphrag_local(
+    return _run_async(graphrag_local(
         config=config,
         entities=data["entities"],
         communities=data["communities"],
@@ -157,7 +179,7 @@ def _run_global_search(config, data: dict, query: str, community_level: int):
     """Run GraphRAG global search."""
     from graphrag.api import global_search as graphrag_global
 
-    return asyncio.run(graphrag_global(
+    return _run_async(graphrag_global(
         config=config,
         entities=data["entities"],
         communities=data["communities"],
@@ -173,7 +195,7 @@ def _run_drift_search(config, data: dict, query: str, community_level: int):
     """Run GraphRAG DRIFT search."""
     from graphrag.api import drift_search as graphrag_drift
 
-    return asyncio.run(graphrag_drift(
+    return _run_async(graphrag_drift(
         config=config,
         entities=data["entities"],
         communities=data["communities"],
@@ -190,7 +212,7 @@ def _run_basic_search(config, data: dict, query: str):
     """Run GraphRAG basic search."""
     from graphrag.api import basic_search as graphrag_basic
 
-    return asyncio.run(graphrag_basic(
+    return _run_async(graphrag_basic(
         config=config,
         text_units=data["text_units"],
         response_type="Concise answer",
@@ -270,7 +292,7 @@ def run_auto_tune() -> dict:
 
         from graphrag.api.prompt_tune import generate_indexing_prompts
 
-        entity_prompt, entity_summary_prompt, community_prompt = asyncio.run(
+        entity_prompt, entity_summary_prompt, community_prompt = _run_async(
             generate_indexing_prompts(
                 config=config,
                 domain="military equipment, radar systems, missile systems, "
