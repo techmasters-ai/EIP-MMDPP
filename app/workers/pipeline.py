@@ -429,7 +429,12 @@ def _update_stage_run(
         constraint="stage_runs_pipeline_run_id_stage_name_attempt_key",
         set_={k: v for k, v in values.items() if k not in ("pipeline_run_id", "stage_name", "attempt")},
     )
-    db.execute(stmt)
+    try:
+        db.execute(stmt)
+    except Exception as exc:
+        # FK violation if pipeline_run was cleaned up by _cleanup_stale_runs
+        db.rollback()
+        logger.debug("_update_stage_run skipped (stale run_id %s): %s", pipeline_run_id, exc)
 
 
 def _get_pipeline_run_id(db, document_id: str) -> str | None:
