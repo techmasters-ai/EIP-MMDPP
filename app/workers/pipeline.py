@@ -295,26 +295,40 @@ def _legacy_extract(db, document_id: str, doc, file_bytes: bytes) -> None:
 
     artifact_ids = _persist_extraction_results(db, document_id, chunks, element_uids=element_uids)
 
-    # Create DocumentElement rows with artifact_id linked inline
+    # Create DocumentElement rows with artifact_id linked inline (upsert for reingest)
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     for idx, chunk in enumerate(chunks):
         element_uid = element_uids[idx]
         element_hash = hashlib.sha256(
             f"{document_id}:{element_uid}:{chunk.chunk_text or ''}".encode()
         ).hexdigest()
 
-        elem = DocumentElement(
-            document_id=uuid.UUID(document_id),
-            element_uid=element_uid,
-            element_type=chunk.modality,
-            element_order=idx,
-            page_number=chunk.page_number,
-            bounding_box=chunk.bounding_box,
-            content_text=chunk.chunk_text,
-            element_metadata=chunk.metadata or {},
-            element_hash=element_hash,
-            artifact_id=artifact_ids[idx],
+        element_values = {
+            "document_id": uuid.UUID(document_id),
+            "element_uid": element_uid,
+            "element_type": chunk.modality,
+            "element_order": idx,
+            "page_number": chunk.page_number,
+            "bounding_box": chunk.bounding_box,
+            "content_text": _normalize_text(chunk.chunk_text),
+            "element_metadata": chunk.metadata or {},
+            "element_hash": element_hash,
+            "artifact_id": artifact_ids[idx],
+        }
+
+        stmt = pg_insert(DocumentElement).values(**element_values)
+        stmt = stmt.on_conflict_do_update(
+            constraint="document_elements_document_id_element_uid_key",
+            set_={
+                "element_type": stmt.excluded.element_type,
+                "element_order": stmt.excluded.element_order,
+                "content_text": stmt.excluded.content_text,
+                "element_hash": stmt.excluded.element_hash,
+                "artifact_id": stmt.excluded.artifact_id,
+            },
         )
-        db.add(elem)
+        db.execute(stmt)
 
 
 @celery_app.task(bind=True)
