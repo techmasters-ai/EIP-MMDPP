@@ -68,6 +68,7 @@ class UnifiedQueryRequest(APIModel):
     mode: Optional[str] = Field(None, description="Deprecated: use strategy + modality_filter")
     filters: Optional[QueryFilters] = None
     top_k: int = Field(default=10, ge=1, le=100)
+    reranker_top_n: Optional[int] = Field(default=None, ge=1, le=200, description="Number of candidates to rerank (defaults to server config)")
     include_context: bool = True
 
     @model_validator(mode="after")

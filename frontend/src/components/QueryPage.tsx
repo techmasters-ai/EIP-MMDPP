@@ -482,6 +482,7 @@ export function QueryPage() {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [modalityFilter, setModalityFilter] = useState<ModalityFilter>("all");
   const [topK, setTopK] = useState(10);
+  const [rerankerTopN, setRerankerTopN] = useState(20);
   const [results, setResults] = useState<QueryResultItem[] | null>(null);
   const [totalResults, setTotalResults] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -535,6 +536,7 @@ export function QueryPage() {
         strategy: selected.strategy,
         modality_filter: selected.strategy === "hybrid" ? modalityFilter : "all",
         top_k: topK,
+        reranker_top_n: rerankerTopN,
         include_context: true,
       });
       setResults(res.results);
@@ -654,6 +656,17 @@ export function QueryPage() {
                 max={100}
                 value={topK}
                 onChange={(e) => setTopK(parseInt(e.target.value, 10) || 10)}
+              />
+            </div>
+            <div className="field" style={{ width: "110px", flexShrink: 0 }}>
+              <label htmlFor="reranker-top-n">Reranker Top N</label>
+              <input
+                id="reranker-top-n"
+                type="number"
+                min={1}
+                max={200}
+                value={rerankerTopN}
+                onChange={(e) => setRerankerTopN(parseInt(e.target.value, 10) || 20)}
               />
             </div>
             <div style={{ paddingBottom: "0" }}>

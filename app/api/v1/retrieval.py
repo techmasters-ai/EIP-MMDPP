@@ -164,7 +164,7 @@ def _apply_reranker(
             "page_number": r.page_number,
             "classification": r.classification,
         }
-        for r in results[:_s.reranker_top_n]
+        for r in results[:body.reranker_top_n or _s.reranker_top_n]
     ]
     reranked = cross_encoder_rerank(body.query_text, rerank_input, top_k=body.top_k)
 

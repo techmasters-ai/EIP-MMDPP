@@ -257,6 +257,7 @@ export async function unifiedQuery(params: {
   strategy: QueryStrategy;
   modality_filter: ModalityFilter;
   top_k?: number;
+  reranker_top_n?: number;
   include_context?: boolean;
 }): Promise<UnifiedQueryResponse> {
   const res = await fetch("/v1/retrieval/query", {
