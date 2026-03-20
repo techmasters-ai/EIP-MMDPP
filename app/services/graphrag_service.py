@@ -194,6 +194,22 @@ def _sanitize_output_parquets(output_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+_UNICODE_SANITIZE = str.maketrans({
+    "\u2011": "-", "\u2010": "-", "\u2012": "-",
+    "\u2013": "-", "\u2014": "-", "\u202f": " ", "\u00a0": " ",
+})
+
+
+def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace Unicode chars that cause NaN in bge-m3 embeddings."""
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].apply(
+                lambda v: v.translate(_UNICODE_SANITIZE) if isinstance(v, str) else v
+            )
+    return df
+
+
 def _load_search_data(settings) -> dict:
     """Load indexed Parquet data for search queries."""
     output_dir = Path(settings.graphrag_data_dir) / "output"
@@ -205,7 +221,7 @@ def _load_search_data(settings) -> dict:
     ):
         path = output_dir / f"{name}.parquet"
         if path.exists():
-            data[name] = pd.read_parquet(path)
+            data[name] = _sanitize_df(pd.read_parquet(path))
         else:
             data[name] = pd.DataFrame()
 
@@ -240,7 +256,7 @@ def _run_global_search(config, data: dict, query: str, community_level: int):
         communities=data["communities"],
         community_reports=data["community_reports"],
         community_level=community_level,
-        dynamic_community_selection=False,
+        dynamic_community_selection=True,
         response_type="Multiple Paragraphs",
         query=query,
     ))
