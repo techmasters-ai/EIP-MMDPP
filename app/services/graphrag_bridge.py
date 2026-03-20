@@ -159,6 +159,30 @@ def export_all(neo4j_driver, db_session, output_dir: Path) -> dict:
                 documents_df["id"] == doc_id, "text_unit_ids"
             ] = [chunk_ids]
 
+    # Sanitize text fields — some Unicode chars (non-breaking hyphen U+2011,
+    # narrow no-break space U+202F) cause bge-m3 to produce NaN embeddings.
+    _UNICODE_REPLACEMENTS = str.maketrans({
+        "\u2011": "-",   # non-breaking hyphen → regular hyphen
+        "\u2010": "-",   # hyphen → regular hyphen
+        "\u2012": "-",   # figure dash
+        "\u2013": "-",   # en dash
+        "\u2014": "-",   # em dash
+        "\u202f": " ",   # narrow no-break space
+        "\u00a0": " ",   # no-break space
+    })
+
+    def _sanitize_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+        for col in df.columns:
+            if df[col].dtype == object:
+                df[col] = df[col].apply(
+                    lambda v: v.translate(_UNICODE_REPLACEMENTS) if isinstance(v, str) else v
+                )
+        return df
+
+    entities_df = _sanitize_text_columns(entities_df)
+    relationships_df = _sanitize_text_columns(relationships_df)
+    text_units_df = _sanitize_text_columns(text_units_df)
+
     entities_df.to_parquet(output_dir / "entities.parquet", index=False)
     relationships_df.to_parquet(output_dir / "relationships.parquet", index=False)
     text_units_df.to_parquet(output_dir / "text_units.parquet", index=False)

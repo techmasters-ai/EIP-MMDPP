@@ -120,6 +120,29 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
         else:
             logger.info("GraphRAG workflow %s completed", result.workflow)
 
+    # Sanitize all output parquets — bge-m3 produces NaN on non-breaking
+    # hyphens (U+2011) and similar Unicode chars that gpt-oss generates.
+    _sanitize_output_parquets(output_dir)
+
+    # Re-run indexing with sanitized data to generate embeddings.
+    # The first run's generate_text_embeddings likely failed due to NaN.
+    logger.info("Re-running GraphRAG indexing for embeddings (post-sanitization)")
+    try:
+        retry_results = _run_async(build_index(
+            config=config,
+            method=IndexingMethod.Standard,
+            is_update_run=True,
+            verbose=True,
+            input_documents=input_docs,
+        ))
+        for result in retry_results:
+            if result.error:
+                logger.warning("GraphRAG retry workflow %s error: %s", result.workflow, result.error)
+            else:
+                logger.info("GraphRAG retry workflow %s completed", result.workflow)
+    except Exception:
+        logger.exception("GraphRAG embedding retry failed")
+
     # Count outputs
     communities_path = output_dir / "communities.parquet"
     reports_path = output_dir / "community_reports.parquet"
@@ -132,6 +155,38 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
         "communities_created": communities_created,
         "reports_generated": reports_generated,
     }
+
+
+def _sanitize_output_parquets(output_dir: Path) -> None:
+    """Sanitize Unicode chars in all output parquets that cause NaN in bge-m3.
+
+    The LLM (gpt-oss) generates en dashes, non-breaking hyphens and narrow
+    no-break spaces which produce NaN embeddings from bge-m3.  We rewrite
+    the parquets with safe ASCII equivalents so that subsequent embedding
+    or re-indexing runs succeed.
+    """
+    replacements = str.maketrans({
+        "\u2011": "-", "\u2010": "-", "\u2012": "-",
+        "\u2013": "-", "\u2014": "-", "\u202f": " ", "\u00a0": " ",
+    })
+
+    for path in output_dir.glob("*.parquet"):
+        try:
+            df = pd.read_parquet(path)
+            changed = False
+            for col in df.columns:
+                if df[col].dtype == object:
+                    new_col = df[col].apply(
+                        lambda v: v.translate(replacements) if isinstance(v, str) else v
+                    )
+                    if not new_col.equals(df[col]):
+                        df[col] = new_col
+                        changed = True
+            if changed:
+                df.to_parquet(path, index=False)
+                logger.info("Sanitized Unicode in %s", path.name)
+        except Exception as e:
+            logger.warning("Failed to sanitize %s: %s", path.name, e)
 
 
 # ---------------------------------------------------------------------------
