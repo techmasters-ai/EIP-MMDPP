@@ -220,6 +220,19 @@ def _run_basic_search(config, data: dict, query: str):
     ))
 
 
+def _serialize_context(context):
+    """Convert GraphRAG context (may contain DataFrames) to JSON-serializable form."""
+    if isinstance(context, pd.DataFrame):
+        return context.to_dict(orient="records")
+    if isinstance(context, dict):
+        return {k: _serialize_context(v) for k, v in context.items()}
+    if isinstance(context, list):
+        return [_serialize_context(item) for item in context]
+    if context is None:
+        return None
+    return context
+
+
 def local_search(query: str) -> dict:
     """Entity-centric search with community context."""
     try:
@@ -229,7 +242,7 @@ def local_search(query: str) -> dict:
         response, context = _run_local_search(
             config, data, query, settings.graphrag_community_level,
         )
-        return {"response": response, "context": context}
+        return {"response": response, "context": _serialize_context(context)}
     except Exception:
         logger.exception("GraphRAG local search failed")
         return {"response": "", "context": {}}
@@ -244,7 +257,7 @@ def global_search(query: str) -> dict:
         response, context = _run_global_search(
             config, data, query, settings.graphrag_community_level,
         )
-        return {"response": response, "context": context}
+        return {"response": response, "context": _serialize_context(context)}
     except Exception:
         logger.exception("GraphRAG global search failed")
         return {"response": "", "context": {}}
@@ -259,7 +272,7 @@ def drift_search(query: str) -> dict:
         response, context = _run_drift_search(
             config, data, query, settings.graphrag_community_level,
         )
-        return {"response": response, "context": context}
+        return {"response": response, "context": _serialize_context(context)}
     except Exception:
         logger.exception("GraphRAG DRIFT search failed")
         return {"response": "", "context": {}}
@@ -272,7 +285,7 @@ def basic_search(query: str) -> dict:
         config = build_graphrag_config(settings)
         data = _load_search_data(settings)
         response, context = _run_basic_search(config, data, query)
-        return {"response": response, "context": context}
+        return {"response": response, "context": _serialize_context(context)}
     except Exception:
         logger.exception("GraphRAG basic search failed")
         return {"response": "", "context": {}}
