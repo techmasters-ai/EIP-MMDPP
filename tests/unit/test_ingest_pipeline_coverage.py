@@ -984,7 +984,8 @@ class TestDeleteAllSourceDocuments:
         assert result == {"deleted": 0}
 
     @pytest.mark.asyncio
-    async def test_processing_docs_returns_409(self):
+    async def test_processing_docs_cancelled_then_deleted(self):
+        """Delete-all should cancel PROCESSING docs then delete all."""
         from app.api.v1.sources import delete_all_source_documents
 
         source_id = uuid.uuid4()
@@ -993,15 +994,16 @@ class TestDeleteAllSourceDocuments:
 
         processing_doc = SimpleNamespace(
             id=uuid.uuid4(), pipeline_status="PROCESSING", filename="busy.pdf",
+            celery_task_id=None, error_message=None,
         )
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = [processing_doc]
         mock_db.execute.return_value = mock_result
 
-        with pytest.raises(Exception) as exc_info:
-            await delete_all_source_documents(source_id, db=mock_db)
-        assert exc_info.value.status_code == 409
-        assert "still processing" in str(exc_info.value.detail)
+        with patch("app.api.v1.sources._hard_delete_document", new_callable=AsyncMock):
+            result = await delete_all_source_documents(source_id, db=mock_db)
+        assert processing_doc.pipeline_status == "FAILED"
+        assert result["deleted"] == 1
 
     @pytest.mark.asyncio
     async def test_deletes_all_documents(self):

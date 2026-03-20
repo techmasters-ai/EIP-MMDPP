@@ -436,12 +436,27 @@ async def delete_all_source_documents(
     if not docs:
         return {"deleted": 0}
 
+    # Cancel any PROCESSING documents first (revoke tasks, release locks)
     processing = [d for d in docs if d.pipeline_status == "PROCESSING"]
+    for doc in processing:
+        doc_id_str = str(doc.id)
+        if doc.celery_task_id:
+            try:
+                from app.workers.celery_app import celery_app as _celery
+                _celery.control.revoke(doc.celery_task_id, terminate=True, signal="SIGTERM")
+            except Exception:
+                pass
+        try:
+            import redis as _redis_lib
+            _r = _redis_lib.Redis.from_url(settings.celery_broker_url)
+            _r.delete(f"prepare:{doc_id_str}")
+        except Exception:
+            pass
+        doc.pipeline_status = "FAILED"
+        doc.error_message = "Cancelled by delete-all"
     if processing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{len(processing)} document(s) still processing. Cancel them first.",
-        )
+        await db.commit()
+        logger.info("delete_all: cancelled %d processing document(s)", len(processing))
 
     count = 0
     for doc in docs:
