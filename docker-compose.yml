@@ -250,19 +250,11 @@ services:
       - ""
       - default
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+      api:
+        condition: service_started
       docling:
         condition: service_healthy
       docling-graph:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-      qdrant:
         condition: service_healthy
     env_file:
       - .env
@@ -297,19 +289,11 @@ services:
     profiles:
       - split
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+      api:
+        condition: service_started
       docling:
         condition: service_healthy
       docling-graph:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-      qdrant:
         condition: service_healthy
     env_file:
       - .env
@@ -341,12 +325,8 @@ services:
     profiles:
       - split
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+      api:
+        condition: service_started
     env_file:
       - .env
     environment:
@@ -376,10 +356,8 @@ services:
     profiles:
       - split
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      api:
+        condition: service_started
       neo4j:
         condition: service_healthy
     env_file:
