@@ -149,7 +149,7 @@ class Settings(BaseSettings):
 
     # Picture Description (post-conversion enrichment via Ollama)
     picture_description_model: str = "gemma3:27b"
-    picture_description_timeout: int = 120
+    picture_description_timeout: int = 300
     picture_description_prompt: str = "Analyze this image from a multi-modal PDF using the required narrative sections and the missile/radar/S&T emphasis. Return sections 1-8 exactly as specified. Use the PDF Summary for context but rely on visual evidence.\\n\\n- PDF Summary: {document_summary}\\n\\n- Image:"
 
     # Docling OCR language
