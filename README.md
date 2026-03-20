@@ -136,7 +136,8 @@ OLLAMA_BASE_URL=http://ollama:11434
 OLLAMA_NUM_CTX=16384                  # Context window for Ollama (must fit prompt + response)
 
 # Per-feature model selection
-GRAPHRAG_MODEL=llama3.2           # Model for GraphRAG community report generation
+GRAPHRAG_LLM_MODEL=llama3.2      # Model for GraphRAG community report generation
+GRAPHRAG_LLM_PROVIDER=ollama     # ollama | openai (defaults to LLM_PROVIDER if not set)
 
 # Docling-Graph service (ontology-driven graph extraction)
 DOCLING_GRAPH_BASE_URL=http://docling-graph:8002  # Docling-Graph service URL
