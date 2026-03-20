@@ -993,6 +993,7 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
     try:
         if run_id:
             _update_stage_run(db, run_id, "derive_document_metadata", "RUNNING", attempt=self.request.retries + 1)
+            db.commit()
 
         # Load markdown from MinIO
         from app.services.storage import download_bytes_sync
@@ -1023,6 +1024,7 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
                 attempt=self.request.retries + 1,
                 metrics={"summary_length": len(metadata.get("document_summary", ""))},
             )
+            db.commit()
 
         logger.info(
             "derive_document_metadata: document_id=%s classification=%s",
@@ -1035,6 +1037,7 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
         if run_id:
             try:
                 _update_stage_run(db, run_id, "derive_document_metadata", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+                db.commit()
             except Exception:
                 pass
         raise self.retry(exc=exc)
@@ -1066,6 +1069,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
     try:
         if run_id:
             _update_stage_run(db, run_id, "derive_picture_descriptions", "RUNNING", attempt=self.request.retries + 1)
+            db.commit()
 
         # Load document metadata for summary
         from sqlalchemy import text as sa_text
@@ -1174,6 +1178,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                 attempt=self.request.retries + 1,
                 metrics={"pictures_updated": pictures_updated},
             )
+            db.commit()
 
         logger.info("derive_picture_descriptions: document_id=%s updated=%d", document_id, pictures_updated)
         return {"stage": "derive_picture_descriptions", "status": "ok", "pictures_updated": pictures_updated}
@@ -1183,6 +1188,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
         if run_id:
             try:
                 _update_stage_run(db, run_id, "derive_picture_descriptions", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+                db.commit()
             except Exception:
                 pass
         raise self.retry(exc=exc)

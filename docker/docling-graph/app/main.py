@@ -52,6 +52,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 GRAPH_EXTRACTION_CHUNK_SIZE = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_SIZE", "100000"))
 GRAPH_EXTRACTION_CHUNK_OVERLAP = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_OVERLAP", "2000"))
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "64000"))
 
 # Pre-compiled regex patterns for JSON extraction from LLM output
 _RE_THINK_TAGS = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL)
@@ -315,7 +316,7 @@ def _extract_llm_content(msg: Any) -> str:
     return ""
 
 
-def _llm_call(system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str | None:
+def _llm_call(system_prompt: str, user_prompt: str, max_tokens: int = LLM_MAX_TOKENS) -> str | None:
     """Make a single LLM call and return the content string. Returns None on failure."""
     model_string = _build_litellm_model_string()
     llm_kwargs: dict[str, Any] = {
@@ -456,7 +457,7 @@ def _extract_entities_for_group(text: str, group_name: str) -> list[dict]:
 
     t0 = time.monotonic()
     try:
-        raw = _llm_call(system_prompt, user_prompt, max_tokens=4096)
+        raw = _llm_call(system_prompt, user_prompt)
         parsed = _parse_json_from_llm(raw)
         if parsed is None:
             raw_preview = (raw or "")[:500]
@@ -505,7 +506,7 @@ def _extract_relationships(text: str, entities_context: list[dict]) -> list[dict
 
     t0 = time.monotonic()
     try:
-        raw = _llm_call(system_prompt, user_prompt, max_tokens=4096)
+        raw = _llm_call(system_prompt, user_prompt)
         parsed = _parse_json_from_llm(raw)
         if parsed is None:
             raw_preview = (raw or "")[:500]

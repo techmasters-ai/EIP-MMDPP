@@ -23,7 +23,7 @@ def _ollama_chat(
     messages: list[dict],
     *,
     temperature: float = 0.1,
-    max_tokens: int = 1024,
+    max_tokens: int,
     timeout: float = 300,
 ) -> str:
     """Shared Ollama chat completion call. Returns stripped assistant content."""
@@ -55,11 +55,13 @@ def extract_document_metadata(markdown: str) -> dict:
     # Shared client for connection reuse across parallel calls (httpx.Client is thread-safe)
     client = httpx.Client(timeout=timeout)
 
+    max_tokens = settings.llm_max_tokens
+
     def _llm_call(system_prompt: str, user_text: str) -> str:
         return _ollama_chat(
             client, url, model,
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
-            temperature=0.1, max_tokens=1024, timeout=timeout,
+            temperature=0.1, max_tokens=max_tokens, timeout=timeout,
         )
 
     # Truncate markdown to avoid exceeding context window
@@ -201,7 +203,7 @@ def _describe_single_image(
         with httpx.Client(timeout=timeout) as client:
             content = _ollama_chat(
                 client, url, model, messages,
-                temperature=0.2, max_tokens=2048, timeout=timeout,
+                temperature=0.2, max_tokens=settings.llm_max_tokens, timeout=timeout,
             )
         logger.debug("Picture description (%d chars): %.100s...", len(content), content)
         return content
