@@ -99,13 +99,13 @@ GROUP_FEW_SHOT_EXAMPLES: dict[str, str] = {
         ']}\n'
     ),
     "rf_signal": (
-        'Example: Given "The radar operates in C-band (5.4-5.9 GHz) using a linear FM '
+        'Example: Given "The radar operates in C-band (5400-5900 MHz) using a linear FM '
         'chirp waveform with 10 us pulse duration", extract:\n'
         '{"entities": [\n'
         '  {"name": "C-band", "entity_type": "FREQUENCY_BAND", "confidence": 0.95, '
-        '"properties": {"band_name": "C", "min_freq_ghz": 5.4, "max_freq_ghz": 5.9}},\n'
+        '"properties": {"band_name": "C", "designation": "C", "freq_min_mhz": 5400, "freq_max_mhz": 5900}},\n'
         '  {"name": "LFM chirp", "entity_type": "WAVEFORM", "confidence": 0.9, '
-        '"properties": {"waveform_type": "LFM", "pulse_duration_us": 10}}\n'
+        '"properties": {"waveform_type": "LFM"}}\n'
         ']}\n'
     ),
     "weapon": (
@@ -123,9 +123,9 @@ GROUP_FEW_SHOT_EXAMPLES: dict[str, str] = {
         'of 150 km against 1 m2 RCS targets", extract:\n'
         '{"entities": [\n'
         '  {"name": "360-degree surveillance", "entity_type": "CAPABILITY", "confidence": 0.9, '
-        '"properties": {"capability_name": "surveillance", "coverage": "360-degree"}},\n'
+        '"properties": {"capability_name": "surveillance", "capability_class": "SURVEILLANCE"}},\n'
         '  {"name": "Detection performance", "entity_type": "RADAR_PERFORMANCE", "confidence": 0.9, '
-        '"properties": {"detection_range_km": 150, "reference_rcs_m2": 1.0}}\n'
+        '"properties": {"max_detection_range_1sqm_km": 150}}\n'
         ']}\n'
     ),
 }

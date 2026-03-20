@@ -14,6 +14,7 @@ from __future__ import annotations
 import json as json_mod
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
@@ -49,6 +50,17 @@ OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
 OLLAMA_THINK = os.environ.get("OLLAMA_THINK", "")  # e.g. "low", "medium", "high" for gpt-oss
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
+GRAPH_EXTRACTION_CHUNK_SIZE = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_SIZE", "12000"))
+GRAPH_EXTRACTION_CHUNK_OVERLAP = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_OVERLAP", "500"))
+
+# Pre-compiled regex patterns for JSON extraction from LLM output
+_RE_THINK_TAGS = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL)
+_RE_FENCED_JSON = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_RE_ANSWER_MARKERS = [
+    re.compile(r"Final [Aa]nswer:\s*"),
+    re.compile(r"Answer:\s*"),
+    re.compile(r"In conclusion[,:]\s*"),
+]
 
 # ---------------------------------------------------------------------------
 # Module-level state (populated at startup)
@@ -339,8 +351,6 @@ def _parse_json_from_llm(raw: str | None) -> dict | list | None:
     """
     if not raw:
         return None
-    import re
-
     raw = raw.strip()
 
     # Strategy 1: whole string as JSON (cheapest, handles clean output)
@@ -350,12 +360,9 @@ def _parse_json_from_llm(raw: str | None) -> dict | list | None:
         pass
 
     # Strategy 2: strip reasoning markers and retry
-    # gpt-oss may wrap reasoning in <thinking>/<think> tags or use inline
-    # markers like "Let me think...", "Reasoning:", "Therefore:" before JSON
-    cleaned = re.sub(r"<think(?:ing)?>.*?</think(?:ing)?>", "", raw, flags=re.DOTALL).strip()
-    # Also strip everything before "Final Answer:" / "Answer:" / "Therefore:" if present
-    for marker in (r"Final [Aa]nswer:\s*", r"Answer:\s*", r"In conclusion[,:]\s*"):
-        m = re.search(marker, cleaned)
+    cleaned = _RE_THINK_TAGS.sub("", raw).strip()
+    for pattern in _RE_ANSWER_MARKERS:
+        m = pattern.search(cleaned)
         if m:
             after = cleaned[m.end():].strip()
             if after and after[0] in ("{", "["):
@@ -369,7 +376,7 @@ def _parse_json_from_llm(raw: str | None) -> dict | list | None:
     raw = cleaned
 
     # Strategy 3: fenced ```json code block
-    m = re.search(r"```(?:json)?\s*(.*?)```", raw, flags=re.DOTALL | re.IGNORECASE)
+    m = _RE_FENCED_JSON.search(raw)
     if m:
         try:
             return json_mod.loads(m.group(1).strip())
@@ -525,12 +532,13 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
     """Split text into overlapping chunks. Returns at least one chunk."""
     if len(text) <= chunk_size:
         return [text]
+    overlap = min(overlap, chunk_size - 1)  # prevent infinite loop
+    step = chunk_size - overlap
     chunks = []
     start = 0
     while start < len(text):
-        end = start + chunk_size
-        chunks.append(text[start:end])
-        start += chunk_size - overlap
+        chunks.append(text[start:start + chunk_size])
+        start += step
     return chunks
 
 
@@ -557,17 +565,15 @@ def _run_full_extraction(text: str) -> tuple[list[dict], list[dict]]:
 
     Returns (entities, relationships) as raw dicts.
     """
-    chunk_size = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_SIZE", "12000"))
-    chunk_overlap = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_OVERLAP", "500"))
-    chunks = _chunk_text(text, chunk_size, chunk_overlap)
+    chunks = _chunk_text(text, GRAPH_EXTRACTION_CHUNK_SIZE, GRAPH_EXTRACTION_CHUNK_OVERLAP)
     group_names = list(GROUP_MAP.keys())
 
     # Phase 1: Entity extraction — per chunk, all groups in parallel per chunk
     all_entities: list[dict] = []
     t0 = time.monotonic()
 
-    for chunk_idx, chunk in enumerate(chunks):
-        with ThreadPoolExecutor(max_workers=len(group_names)) as pool:
+    with ThreadPoolExecutor(max_workers=len(group_names)) as pool:
+        for chunk_idx, chunk in enumerate(chunks):
             futures = {
                 pool.submit(_extract_entities_for_group, chunk, group): group
                 for group in group_names

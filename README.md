@@ -56,7 +56,7 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 | Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (GPU-accelerated) |
 | Document Conversion | Docling PdfPipeline (dlparse_v4 + EasyOCR + TableFormer), SimplePipeline for Office/HTML/MD |
 | Document Analysis | LLM-based metadata extraction (summary, date, classification, source) + multimodal picture descriptions via Ollama |
-| Graph Extraction | Docling-Graph service (parallel ontology-driven entity/relationship extraction via direct LLM calls, 5 groups in parallel + relationships, port 8002) |
+| Graph Extraction | Docling-Graph service (chunked entity extraction across 5 ontology groups in parallel + global relationship pass on full text, with few-shot examples and ontology-derived validation, port 8002) |
 | GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
 | Trusted Data | Dedicated Qdrant collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
@@ -176,6 +176,7 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 - `POST /v1/documents/{id}/reingest` — re-run pipeline (`{"mode": "full|embeddings_only|graph_only"}`); resets status to PENDING; returns 409 if already PROCESSING
 - `POST /v1/documents/{id}/cancel` — cancel a PROCESSING document: revokes Celery task chain, cleans up Redis locks, hard-deletes all data (Qdrant vectors, Neo4j graph, MinIO objects, DB records)
 - `DELETE /v1/documents/{id}` — hard-delete a non-processing document and all derived data
+- `DELETE /v1/sources/{id}/documents` — delete all documents in a source (409 if any are PROCESSING)
 - `GET /v1/documents/{id}/metadata` — LLM-extracted document metadata (summary, date, classification, source)
 - `GET /v1/documents/{id}/docling` — DoclingDocument viewer (markdown + JSON + image injection)
 - `GET /v1/documents/{id}/docling-raw` — raw DoclingDocument JSON stream
@@ -282,7 +283,7 @@ The knowledge graph uses a 5-layer ontology grounded in DoDAF DM2 concepts:
 4. **Weapon / Missile / AAA** — Missiles, seekers, guidance, propulsion, artillery
 5. **Operational / Capability** — Capabilities, engagement timelines, performance measures
 
-~35 entity types, 44 relationship predicates, enforced via validation matrix at graph write time.
+46 entity types, 50 relationship predicates, enforced via validation matrix at graph write time.
 
 See `ontology/ontology.yaml` for the full schema.
 
