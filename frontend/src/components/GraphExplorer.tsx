@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { ingestGraphEntity, ingestGraphRelationship, queryGraph, getGraphNeighborhood, type QueryResultItem } from "../api/client";
+import React, { useState, useEffect, useCallback } from "react";
+import { ingestGraphEntity, ingestGraphRelationship, queryGraph, getGraphNeighborhood, getGraphRAGSettings, triggerGraphRAGIndexing, type QueryResultItem, type GraphRAGSettings } from "../api/client";
 import type cytoscape from "cytoscape";
 import { GraphView, toGraphElements } from "./GraphView";
 
@@ -19,7 +19,14 @@ const ENTITY_TYPES = [
   "Organization", "Document", "Assertion",
 ];
 
-type Tab = "search" | "entity" | "relationship";
+type Tab = "search" | "entity" | "relationship" | "indexing";
+
+const TAB_LABELS: Record<Tab, string> = {
+  search: "Search",
+  entity: "Add Entity",
+  relationship: "Add Relationship",
+  indexing: "Graph Indexing",
+};
 
 export function GraphExplorer() {
   const [tab, setTab] = useState<Tab>("search");
@@ -27,13 +34,13 @@ export function GraphExplorer() {
   return (
     <div>
       <div className="tabs" style={{ marginBottom: "1rem" }}>
-        {(["search", "entity", "relationship"] as Tab[]).map((t) => (
+        {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
           <button
             key={t}
             className={`tab-btn${tab === t ? " active" : ""}`}
             onClick={() => setTab(t)}
           >
-            {t === "search" ? "Search" : t === "entity" ? "Add Entity" : "Add Relationship"}
+            {TAB_LABELS[t]}
           </button>
         ))}
       </div>
@@ -41,6 +48,7 @@ export function GraphExplorer() {
       {tab === "search" && <GraphSearch />}
       {tab === "entity" && <EntityForm />}
       {tab === "relationship" && <RelationshipForm />}
+      {tab === "indexing" && <GraphIndexingPanel />}
     </div>
   );
 }
@@ -382,6 +390,100 @@ function RelationshipForm() {
       </form>
       {error && <div className="alert alert-error mt-sm">{error}</div>}
       {success && <div className="alert alert-success mt-sm">{success}</div>}
+    </div>
+  );
+}
+
+
+function GraphIndexingPanel() {
+  const [settings, setSettings] = useState<GraphRAGSettings | null>(null);
+  const [triggering, setTriggering] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [minutesRemaining, setMinutesRemaining] = useState<number | null>(null);
+
+  const computeRemaining = useCallback((s: GraphRAGSettings) => {
+    if (!s.indexing_enabled || !s.last_indexing_at) {
+      setMinutesRemaining(null);
+      return;
+    }
+    const elapsed = (Date.now() - new Date(s.last_indexing_at).getTime()) / 60000;
+    setMinutesRemaining(Math.max(0, Math.round(s.indexing_interval_minutes - elapsed)));
+  }, []);
+
+  useEffect(() => {
+    getGraphRAGSettings().then((s) => {
+      setSettings(s);
+      computeRemaining(s);
+    });
+  }, [computeRemaining]);
+
+  useEffect(() => {
+    if (!settings) return;
+    const id = setInterval(() => computeRemaining(settings), 60000);
+    return () => clearInterval(id);
+  }, [settings, computeRemaining]);
+
+  const handleTrigger = async () => {
+    setTriggering(true);
+    setStatus(null);
+    setError(null);
+    try {
+      const res = await triggerGraphRAGIndexing();
+      setStatus(`Indexing started (task ${res.task_id.slice(0, 8)}...)`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to trigger indexing");
+    } finally {
+      setTriggering(false);
+    }
+  };
+
+  if (!settings) {
+    return <div className="empty-state"><span className="spinner" /> Loading...</div>;
+  }
+
+  return (
+    <div>
+      <div style={{
+        border: "1px solid var(--color-border)",
+        borderRadius: "var(--radius)",
+        padding: "1rem",
+        marginBottom: "1rem",
+        background: "var(--color-surface-2)",
+        fontSize: "0.9rem",
+        lineHeight: 1.8,
+      }}>
+        <div>
+          Automatic indexing is{" "}
+          <strong>{settings.indexing_enabled ? "enabled" : "disabled"}</strong>
+          {settings.indexing_enabled && (
+            <>, running every <strong>{settings.indexing_interval_minutes} minutes</strong></>
+          )}
+        </div>
+        {settings.indexing_enabled && (
+          <div style={{ color: "var(--color-text-muted)" }}>
+            {minutesRemaining !== null
+              ? <>Next auto indexing will run in <strong>{minutesRemaining} minute{minutesRemaining !== 1 ? "s" : ""}</strong></>
+              : "Pending first run"}
+          </div>
+        )}
+        {settings.last_indexing_at && (
+          <div style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>
+            Last indexed: {new Date(settings.last_indexing_at).toLocaleString()}
+          </div>
+        )}
+      </div>
+
+      <button
+        className="btn btn-primary"
+        onClick={handleTrigger}
+        disabled={triggering}
+      >
+        {triggering ? "Starting..." : "Run Indexing Now"}
+      </button>
+
+      {status && <div className="alert alert-success mt-sm">{status}</div>}
+      {error && <div className="alert alert-error mt-sm">{error}</div>}
     </div>
   );
 }

@@ -985,6 +985,29 @@ async def _populate_image_urls(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/settings/graphrag")
+async def get_graphrag_settings():
+    """Return current GraphRAG configuration (read-only)."""
+    import redis
+    from app.config import get_settings
+
+    settings = get_settings()
+    last_indexing_at = None
+    try:
+        r = redis.from_url(settings.celery_broker_url)
+        val = r.get("graphrag:last_indexed_at")
+        if val:
+            last_indexing_at = val.decode("utf-8")
+    except Exception:
+        pass
+
+    return {
+        "indexing_enabled": settings.graphrag_indexing_enabled,
+        "indexing_interval_minutes": settings.graphrag_indexing_interval_minutes,
+        "last_indexing_at": last_indexing_at,
+    }
+
+
 @router.post("/graphrag/index")
 async def trigger_graphrag_indexing():
     """Dispatch GraphRAG indexing as a Celery task.

@@ -434,6 +434,26 @@ export async function getAgentContext(params: {
 }
 
 // ---------------------------------------------------------------------------
+// GraphRAG Settings & Indexing
+// ---------------------------------------------------------------------------
+
+export interface GraphRAGSettings {
+  indexing_enabled: boolean;
+  indexing_interval_minutes: number;
+  last_indexing_at: string | null;
+}
+
+export async function getGraphRAGSettings(): Promise<GraphRAGSettings> {
+  const res = await fetch("/v1/settings/graphrag");
+  return handleResponse<GraphRAGSettings>(res);
+}
+
+export async function triggerGraphRAGIndexing(): Promise<{ status: string; task_id: string }> {
+  const res = await fetch("/v1/graphrag/index", { method: "POST" });
+  return handleResponse<{ status: string; task_id: string }>(res);
+}
+
+// ---------------------------------------------------------------------------
 // Graph Neighborhood
 // ---------------------------------------------------------------------------
 

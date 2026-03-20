@@ -41,6 +41,15 @@ def run_graphrag_indexing_task(self) -> dict:
         try:
             stats = run_graphrag_indexing(neo4j_driver, db)
             logger.info("GraphRAG indexing complete: %s", stats)
+
+            # Record completion timestamp for the UI countdown
+            import datetime
+            try:
+                r.set("graphrag:last_indexed_at",
+                      datetime.datetime.now(datetime.timezone.utc).isoformat())
+            except Exception:
+                pass
+
             return stats
         finally:
             db.close()
