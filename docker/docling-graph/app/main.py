@@ -50,8 +50,8 @@ OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
 OLLAMA_THINK = os.environ.get("OLLAMA_THINK", "")  # e.g. "low", "medium", "high" for gpt-oss
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
-GRAPH_EXTRACTION_CHUNK_SIZE = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_SIZE", "12000"))
-GRAPH_EXTRACTION_CHUNK_OVERLAP = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_OVERLAP", "500"))
+GRAPH_EXTRACTION_CHUNK_SIZE = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_SIZE", "100000"))
+GRAPH_EXTRACTION_CHUNK_OVERLAP = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_OVERLAP", "2000"))
 
 # Pre-compiled regex patterns for JSON extraction from LLM output
 _RE_THINK_TAGS = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL)
