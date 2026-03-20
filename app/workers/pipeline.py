@@ -33,6 +33,26 @@ from celery.exceptions import Retry as CeleryRetry, SoftTimeLimitExceeded
 from celery.signals import worker_ready
 
 from app.workers.celery_app import celery_app
+
+# Unicode chars that cause NaN in bge-m3 embeddings (non-breaking hyphens,
+# en/em dashes, narrow no-break spaces).  Normalize at ingest time so they
+# never enter the knowledge graph or embedding pipeline.
+_UNICODE_NORMALIZE = str.maketrans({
+    "\u2011": "-",   # non-breaking hyphen
+    "\u2010": "-",   # hyphen
+    "\u2012": "-",   # figure dash
+    "\u2013": "-",   # en dash
+    "\u2014": "-",   # em dash
+    "\u202f": " ",   # narrow no-break space
+    "\u00a0": " ",   # no-break space
+})
+
+
+def _normalize_text(text: str | None) -> str | None:
+    """Replace problematic Unicode chars with ASCII equivalents."""
+    if text is None:
+        return None
+    return text.translate(_UNICODE_NORMALIZE)
 from app.workers._db import get_worker_db as _get_db
 from app.config import get_settings
 
@@ -615,6 +635,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 ).scalars().all()
                 fallback_md = "\n\n".join(t for t in elems if t and t.strip())
                 if fallback_md:
+                    fallback_md = _normalize_text(fallback_md)
                     from app.services.storage import upload_bytes_sync
                     _fb_base = f"artifacts/{document_id}"
                     upload_bytes_sync(
@@ -776,7 +797,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 "bounding_box": chunk.bounding_box,
                 "section_path": (chunk.metadata or {}).get("section_path"),
                 "heading_level": (chunk.metadata or {}).get("heading_level"),
-                "content_text": chunk.chunk_text,
+                "content_text": _normalize_text(chunk.chunk_text),
                 "storage_bucket": storage_bucket,
                 "storage_key": storage_key,
                 "element_metadata": chunk.metadata or {},
@@ -833,15 +854,16 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             _docling_base = f"artifacts/{document_id}"
             if result.markdown:
                 upload_bytes_sync(
-                    result.markdown.encode("utf-8"),
+                    _normalize_text(result.markdown).encode("utf-8"),
                     settings.minio_bucket_derived,
                     f"{_docling_base}/docling_document.md",
                     content_type="text/markdown; charset=utf-8",
                 )
             if getattr(result, "document_json", None):
                 import json as _json
+                _raw_json = _json.dumps(result.document_json, ensure_ascii=False, default=str)
                 upload_bytes_sync(
-                    _json.dumps(result.document_json, ensure_ascii=False, default=str).encode("utf-8"),
+                    _normalize_text(_raw_json).encode("utf-8"),
                     settings.minio_bucket_derived,
                     f"{_docling_base}/docling_document.json",
                     content_type="application/json; charset=utf-8",
