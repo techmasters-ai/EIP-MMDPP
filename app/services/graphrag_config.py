@@ -4,7 +4,9 @@ import logging
 from pathlib import Path
 
 from graphrag.config.models.cluster_graph_config import ClusterGraphConfig
+from graphrag.config.models.drift_search_config import DRIFTSearchConfig
 from graphrag.config.models.graph_rag_config import GraphRagConfig
+from graphrag.config.models.local_search_config import LocalSearchConfig
 from graphrag.config.models.reporting_config import ReportingConfig
 from graphrag_cache.cache_config import CacheConfig
 from graphrag_llm.config.model_config import ModelConfig
@@ -38,11 +40,19 @@ def build_graphrag_config(settings) -> GraphRagConfig:
         api_key = settings.graphrag_api_key
         api_base = settings.graphrag_llm_api_base or None
 
+    # Pass num_ctx so Ollama allocates the correct context window.
+    # Without this, Ollama uses the model's built-in default which may
+    # be too small for GraphRAG's community report prompts.
+    ollama_call_args = {}
+    if settings.graphrag_llm_provider == "ollama":
+        ollama_call_args["num_ctx"] = settings.ollama_num_ctx
+
     chat_model = ModelConfig(
         model_provider="openai",
         model=settings.graphrag_llm_model,
         api_key=api_key,
         api_base=api_base,
+        call_args=ollama_call_args,
     )
 
     embedding_model = ModelConfig(
@@ -51,6 +61,9 @@ def build_graphrag_config(settings) -> GraphRagConfig:
         api_key=api_key,
         api_base=api_base,
     )
+
+    # Use the LLM context window for GraphRAG search token budgets.
+    ctx_tokens = settings.ollama_num_ctx
 
     config = GraphRagConfig(
         completion_models={"default_completion_model": chat_model},
@@ -64,6 +77,20 @@ def build_graphrag_config(settings) -> GraphRagConfig:
         ),
         cluster_graph=ClusterGraphConfig(
             max_cluster_size=settings.graphrag_max_cluster_size,
+        ),
+        local_search=LocalSearchConfig(
+            max_context_tokens=ctx_tokens,
+        ),
+        drift_search=DRIFTSearchConfig(
+            data_max_tokens=ctx_tokens,
+            primer_llm_max_tokens=ctx_tokens,
+            local_search_max_data_tokens=ctx_tokens,
+            # Default proportions (community=0.1 + text_unit=0.9 = 1.0) leave
+            # zero budget for entity/relationship context, causing every
+            # iteration to hit "Reached token limit". Rebalance to match
+            # local search proportions.
+            local_search_community_prop=0.15,
+            local_search_text_unit_prop=0.55,
         ),
     )
 
