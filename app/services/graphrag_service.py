@@ -52,22 +52,31 @@ _EMBED_SANITIZE = str.maketrans({
 
 
 def _patch_embedding_sanitization():
-    """Wrap LiteLLMEmbedding.embedding_async to strip chars that cause NaN."""
+    """Wrap LiteLLMEmbedding.embedding_async to strip chars that cause NaN.
+
+    Primary fix: OLLAMA_FLASH_ATTENTION=false on the Ollama server
+    (BGE-M3's BERT architecture auto-enables Flash Attention since Ollama
+    v0.13.5, causing F32->F16 overflow -> NaN in embeddings).
+
+    This patch is defense-in-depth: NFC normalize + replace known
+    problematic Unicode characters before sending to Ollama.
+    """
     try:
+        import unicodedata
         from graphrag_llm.embedding.lite_llm_embedding import LiteLLMEmbedding
 
         _original = LiteLLMEmbedding.embedding_async
+
+        def _sanitize(text: str) -> str:
+            return unicodedata.normalize("NFC", text).translate(_EMBED_SANITIZE)
 
         async def _sanitized_embedding_async(self, /, **kwargs):
             if "input" in kwargs:
                 inp = kwargs["input"]
                 if isinstance(inp, list):
-                    kwargs["input"] = [
-                        t.translate(_EMBED_SANITIZE) if isinstance(t, str) else t
-                        for t in inp
-                    ]
+                    kwargs["input"] = [_sanitize(t) if isinstance(t, str) else t for t in inp]
                 elif isinstance(inp, str):
-                    kwargs["input"] = inp.translate(_EMBED_SANITIZE)
+                    kwargs["input"] = _sanitize(inp)
             return await _original(self, **kwargs)
 
         LiteLLMEmbedding.embedding_async = _sanitized_embedding_async
@@ -213,10 +222,7 @@ def _sanitize_output_parquets(output_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-_UNICODE_SANITIZE = str.maketrans({
-    "\u2011": "-", "\u2010": "-", "\u2012": "-",
-    "\u2013": "-", "\u2014": "-", "\u202f": " ", "\u00a0": " ",
-})
+_UNICODE_SANITIZE = _EMBED_SANITIZE
 
 
 def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
