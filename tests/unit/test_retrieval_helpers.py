@@ -388,3 +388,16 @@ class TestComputeFusionScore:
         known = self._call(semantic_score=0.8, ontology_rel_type="IS_VARIANT_OF", ontology_hops=1)
         unknown = self._call(semantic_score=0.8, ontology_rel_type="UNKNOWN_REL", ontology_hops=1)
         assert known > unknown  # default weight is lower
+
+
+def test_fusion_score_with_mil_id_bonus_doc_structure():
+    """Doc-structure chunks with matching MIL IDs should get the bonus."""
+    from app.api.v1._retrieval_helpers import compute_fusion_score
+    score = compute_fusion_score(
+        semantic_score=0.8,
+        doc_structure_weight=0.9,
+        doc_structure_hops=1,
+        content_text="The AN/MPQ-53 radar system provides tracking.",
+        query_text="AN/MPQ-53 fire control radar",
+    )
+    assert score > 0.70

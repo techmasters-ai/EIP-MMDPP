@@ -282,7 +282,7 @@ async def _expand_seeds(
             items: list[QueryResultItem] = []
 
             # Try doc-structure expansion (chunk_links table) first
-            doc_items = await _expand_via_doc_structure(db, chunk_id_str, seed.score, include_context)
+            doc_items = await _expand_via_doc_structure(db, chunk_id_str, seed.score, include_context, query_text)
             if doc_items:
                 items.extend(doc_items)
             else:
@@ -529,6 +529,7 @@ async def _expand_via_doc_structure(
     chunk_id: str,
     source_score: float,
     include_context: bool,
+    query_text: str | None = None,
 ) -> list[QueryResultItem]:
     """Expand via document-structure links (chunk_links table).
 
@@ -582,6 +583,7 @@ async def _expand_via_doc_structure(
             doc_structure_weight=weight,
             doc_structure_hops=hops,
             content_text=chunk.content_text,
+            query_text=query_text,
         )
         chunk.context = {
             "source": "doc_structure",
