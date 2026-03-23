@@ -401,3 +401,17 @@ def test_fusion_score_with_mil_id_bonus_doc_structure():
         query_text="AN/MPQ-53 fire control radar",
     )
     assert score > 0.70
+
+
+def test_fusion_score_ontology_preserves_relation_weight():
+    """Ontology chunks should reflect the relation weight, not just cosine similarity."""
+    from app.api.v1._retrieval_helpers import compute_fusion_score
+    high_rel = compute_fusion_score(
+        semantic_score=0.6, ontology_rel_type="IS_VARIANT_OF", ontology_hops=1,
+        content_text="S-75 variant", query_text="SA-2 missile",
+    )
+    low_rel = compute_fusion_score(
+        semantic_score=0.6, ontology_rel_type="RELATED_TO", ontology_hops=1,
+        content_text="related system", query_text="SA-2 missile",
+    )
+    assert high_rel > low_rel

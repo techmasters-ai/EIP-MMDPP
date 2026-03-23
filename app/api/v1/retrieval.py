@@ -334,11 +334,10 @@ async def _rescore_expanded_chunks(
     if not ontology_chunks:
         return expanded
 
-    import asyncio
     import numpy as np
     from app.services.embedding import embed_texts
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Run embedding in executor to avoid blocking the event loop
     chunk_texts = [c.content_text for c in ontology_chunks]
@@ -353,7 +352,15 @@ async def _rescore_expanded_chunks(
     similarities = await loop.run_in_executor(None, _embed)
 
     for chunk, sim in zip(ontology_chunks, similarities):
-        chunk.score = max(float(sim), 0.0)
+        cosine_sim = max(float(sim), 0.0)
+        rel_type = (chunk.context or {}).get("rel_type", "RELATED_TO")
+        chunk.score = compute_fusion_score(
+            semantic_score=cosine_sim,
+            ontology_rel_type=rel_type,
+            ontology_hops=1,
+            content_text=chunk.content_text,
+            query_text=query_text,
+        )
 
     return expanded
 
