@@ -1454,19 +1454,22 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             all_chunk_refs.append(sc)
 
         chunks_created = 0
+
+        # Shared variables for both text chunk and image description passes
+        _embed_batch = settings.embed_text_batch_size
+        _upsert_batch = settings.qdrant_upsert_batch_size
+        model_version = settings.text_embedding_model
+
+        from app.db.session import get_qdrant_client
+        from app.services.qdrant_store import upsert_text_vectors_batch
+        from qdrant_client.models import PointStruct
+        qdrant = get_qdrant_client()
+
         if all_texts:
             # Batch embedding to limit memory for very large documents
-            _embed_batch = settings.embed_text_batch_size
             embeddings: list[list[float]] = []
             for _eb_start in range(0, len(all_texts), _embed_batch):
                 embeddings.extend(embed_texts(all_texts[_eb_start:_eb_start + _embed_batch]))
-            model_version = settings.text_embedding_model
-
-            # Get Qdrant client for batch vector upsert
-            from app.db.session import get_qdrant_client
-            from app.services.qdrant_store import upsert_text_vectors_batch
-            from qdrant_client.models import PointStruct
-            qdrant = get_qdrant_client()
 
             qdrant_points: list[PointStruct] = []
             for sc, text, embedding in zip(all_chunk_refs, all_texts, embeddings):
@@ -1526,23 +1529,154 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
             # Batch upsert text vectors in bounded Qdrant RPCs
             if qdrant_points:
-                _upsert_batch = settings.qdrant_upsert_batch_size
                 for _qb_start in range(0, len(qdrant_points), _upsert_batch):
                     upsert_text_vectors_batch(qdrant, qdrant_points[_qb_start:_qb_start + _upsert_batch])
 
         db.commit()
 
+        # ── Pass 2: Image description sections ──────────────────────────
+        from app.services.chunking import split_description_sections
+        from app.models.retrieval import ChunkLink
+
+        img_elements = db.execute(
+            select(DocumentElement).where(
+                DocumentElement.document_id == uuid.UUID(document_id),
+                DocumentElement.element_type == "image",
+                DocumentElement.content_text.isnot(None),
+                DocumentElement.content_text != "",
+                DocumentElement.artifact_id.isnot(None),
+            ).order_by(DocumentElement.element_order)
+        ).scalars().all()
+
+        img_desc_chunks_created = 0
+        img_desc_qdrant_points: list[PointStruct] = []
+        img_desc_texts: list[str] = []
+        img_desc_chunk_metas: list[dict] = []
+
+        for img_elem in img_elements:
+            # Normalize Unicode to prevent NaN embeddings (same pattern as text chunk pass)
+            desc_text = _normalize_text(img_elem.content_text)
+            sections = split_description_sections(desc_text)
+            if not sections:
+                continue
+
+            for sec_idx, section_text in enumerate(sections):
+                chunk_index = 100000 + img_elem.element_order * 100 + sec_idx
+                uid_str = str(img_elem.element_uid) if img_elem.element_uid else str(img_elem.id)
+                chunk_key = hashlib.sha256(
+                    f"{document_id}:{uid_str}:{sec_idx}:{model_version}".encode()
+                ).hexdigest()
+                chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+
+                img_desc_texts.append(section_text)
+                img_desc_chunk_metas.append({
+                    "chunk_id": chunk_id,
+                    "artifact_id": img_elem.artifact_id,
+                    "document_id": uuid.UUID(document_id),
+                    "chunk_index": chunk_index,
+                    "page_number": img_elem.page_number,
+                    "section_text": section_text,
+                    "element_order": img_elem.element_order,
+                    "sec_idx": sec_idx,
+                })
+
+        # Batch embed all image description sections
+        if img_desc_texts:
+            img_desc_embeddings: list[list[float]] = []
+            for _eb_start in range(0, len(img_desc_texts), _embed_batch):
+                img_desc_embeddings.extend(
+                    embed_texts(img_desc_texts[_eb_start:_eb_start + _embed_batch])
+                )
+
+            # Create TextChunk rows and Qdrant points
+            for meta, emb in zip(img_desc_chunk_metas, img_desc_embeddings):
+                chunk_values = {
+                    "id": meta["chunk_id"],
+                    "artifact_id": meta["artifact_id"],
+                    "document_id": meta["document_id"],
+                    "chunk_index": meta["chunk_index"],
+                    "chunk_text": meta["section_text"],
+                    "embedding": emb,
+                    "modality": "image_description",
+                    "page_number": meta["page_number"],
+                    "bounding_box": None,
+                    "qdrant_point_id": meta["chunk_id"],
+                    "classification": doc_classification,
+                }
+
+                stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "chunk_text": chunk_values["chunk_text"],
+                        "embedding": chunk_values["embedding"],
+                        "modality": chunk_values["modality"],
+                        "qdrant_point_id": chunk_values["qdrant_point_id"],
+                    },
+                )
+                db.execute(stmt)
+
+                img_desc_qdrant_points.append(PointStruct(
+                    id=str(meta["chunk_id"]),
+                    vector=emb,
+                    payload={
+                        "chunk_id": str(meta["chunk_id"]),
+                        "document_id": document_id,
+                        "artifact_id": str(meta["artifact_id"]),
+                        "modality": "image_description",
+                        "page_number": meta["page_number"],
+                        "classification": doc_classification,
+                        "chunk_text": meta["section_text"],
+                    },
+                ))
+                img_desc_chunks_created += 1
+
+            # Batch upsert to Qdrant
+            if img_desc_qdrant_points:
+                for _qb_start in range(0, len(img_desc_qdrant_points), _upsert_batch):
+                    upsert_text_vectors_batch(
+                        qdrant,
+                        img_desc_qdrant_points[_qb_start:_qb_start + _upsert_batch],
+                    )
+
+            # SAME_ARTIFACT chunk_links (neighbor-only) between consecutive sections
+            from collections import defaultdict
+            artifact_section_chunks: dict[str, list[uuid.UUID]] = defaultdict(list)
+            for meta in img_desc_chunk_metas:
+                artifact_section_chunks[str(meta["artifact_id"])].append(meta["chunk_id"])
+
+            for art_id, chunk_ids_list in artifact_section_chunks.items():
+                for i in range(len(chunk_ids_list) - 1):
+                    for src, tgt in [(chunk_ids_list[i], chunk_ids_list[i + 1]),
+                                     (chunk_ids_list[i + 1], chunk_ids_list[i])]:
+                        link_vals = {
+                            "source_chunk_id": src,
+                            "target_chunk_id": tgt,
+                            "document_id": uuid.UUID(document_id),
+                            "link_type": "SAME_ARTIFACT",
+                            "hop": 1,
+                            "weight": settings.retrieval_weight_same_artifact,
+                        }
+                        link_stmt = pg_insert(ChunkLink).values(**link_vals).on_conflict_do_update(
+                            constraint="chunk_links_pkey",
+                            set_={"weight": link_vals["weight"]},
+                        )
+                        db.execute(link_stmt)
+
+            db.commit()
+
+        chunks_created += img_desc_chunks_created
+
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_text_embeddings", "COMPLETE",
                 attempt=self.request.retries + 1,
-                metrics={"chunks": chunks_created, "elements": len(elements)},
+                metrics={"chunks": chunks_created, "elements": len(elements), "img_desc_chunks": img_desc_chunks_created},
             )
             db.commit()
 
         logger.info(
-            "derive_text_chunks_and_embeddings: document_id=%s chunks=%d",
-            document_id, chunks_created,
+            "derive_text_chunks_and_embeddings: document_id=%s chunks=%d img_desc_chunks=%d",
+            document_id, chunks_created, img_desc_chunks_created,
         )
         return {"stage": "derive_text_embeddings", "status": "ok", "chunks": chunks_created}
 
