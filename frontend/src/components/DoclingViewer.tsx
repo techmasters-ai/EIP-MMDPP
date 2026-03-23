@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { getDoclingRawJson, getDoclingDocument, getDocumentMetadata, getDocumentImageDescriptions } from "../api/client";
+import { getDoclingRawJson, getDoclingDocument, getDocumentMetadata, getDocumentImageDescriptions, getDocumentTranslation } from "../api/client";
 import type { ImageDescription } from "../api/client";
 
 interface DoclingViewerProps {
@@ -8,7 +8,7 @@ interface DoclingViewerProps {
   onClose: () => void;
 }
 
-type ViewMode = "document" | "json";
+type ViewMode = "document" | "translate" | "json";
 
 function buildDoclingHtml(docJson: Record<string, unknown>): string {
   const jsonStr = JSON.stringify(docJson);
@@ -66,6 +66,7 @@ export function DoclingViewer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ViewMode>("document");
+  const [translatedMd, setTranslatedMd] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -122,6 +123,21 @@ export function DoclingViewer({
             >
               Document
             </button>
+            {metadata && (metadata as any).has_translation && (
+              <button
+                className={`mode-btn${mode === "translate" ? " active" : ""}`}
+                onClick={() => {
+                  setMode("translate");
+                  if (!translatedMd) {
+                    getDocumentTranslation(documentId).then((t) => {
+                      if (t) setTranslatedMd(t.translated_markdown);
+                    });
+                  }
+                }}
+              >
+                Translate
+              </button>
+            )}
             {docJson && (
               <button
                 className={`mode-btn${mode === "json" ? " active" : ""}`}
@@ -183,6 +199,38 @@ export function DoclingViewer({
               }}
               sandbox="allow-scripts allow-same-origin"
             />
+          )}
+
+          {mode === "translate" && (
+            <div style={{ padding: "1rem", overflowY: "auto", height: "100%" }}>
+              <div style={{
+                background: "#fff3cd",
+                border: "1px solid #ffc107",
+                borderRadius: "var(--radius, 4px)",
+                padding: "0.5rem 0.75rem",
+                marginBottom: "0.75rem",
+                fontSize: "0.85rem",
+              }}>
+                Machine-translated from {(metadata as any)?.detected_language || "unknown language"}.
+                Original may contain untranslated technical terms.
+              </div>
+              {translatedMd ? (
+                <pre style={{
+                  whiteSpace: "pre-wrap",
+                  fontFamily: "inherit",
+                  fontSize: "0.9rem",
+                  lineHeight: 1.6,
+                  margin: 0,
+                }}>
+                  {translatedMd}
+                </pre>
+              ) : (
+                <div className="empty-state">
+                  <span className="spinner" />
+                  <p className="mt-sm">Loading translation...</p>
+                </div>
+              )}
+            </div>
           )}
 
           {/* Image description panel for standalone image files (no Docling JSON) */}
