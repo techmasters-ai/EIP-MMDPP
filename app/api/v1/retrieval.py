@@ -725,7 +725,7 @@ async def _graphrag_local_query(
 
     from app.services.graphrag_service import local_search
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     graphrag_result = await loop.run_in_executor(
         None, local_search, body.query_text,
     )
@@ -762,7 +762,7 @@ async def _graphrag_global_query(
 
     from app.services.graphrag_service import global_search
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     graphrag_result = await loop.run_in_executor(
         None, global_search, body.query_text,
     )
@@ -800,7 +800,7 @@ async def _graphrag_drift_query(
 
     from app.services.graphrag_service import drift_search
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     graphrag_result = await loop.run_in_executor(
         None, drift_search, body.query_text,
     )
@@ -834,7 +834,7 @@ async def _graphrag_basic_query(
 
     from app.services.graphrag_service import basic_search
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     graphrag_result = await loop.run_in_executor(
         None, basic_search, body.query_text,
     )
