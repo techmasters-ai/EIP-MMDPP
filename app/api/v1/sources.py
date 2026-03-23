@@ -831,10 +831,10 @@ async def get_document_translation(
     if not meta.get("has_translation"):
         raise HTTPException(404, "No translation available for this document")
 
-    from app.services.storage import download_bytes_sync
+    from app.services.storage import download_bytes_async
     base_key = f"artifacts/{document_id}"
     try:
-        md_bytes = download_bytes_sync(
+        md_bytes = await download_bytes_async(
             settings.minio_bucket_derived,
             f"{base_key}/docling_document_translated.md",
         )

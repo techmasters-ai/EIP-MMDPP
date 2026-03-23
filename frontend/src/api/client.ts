@@ -549,9 +549,9 @@ export interface DocumentTranslation {
 
 export async function getDocumentTranslation(documentId: string): Promise<DocumentTranslation | null> {
   try {
-    const resp = await fetch(`/v1/documents/${documentId}/translation`);
-    if (!resp.ok) return null;
-    return resp.json();
+    const res = await fetch(`/v1/documents/${documentId}/translation`);
+    if (res.status === 404) return null;
+    return handleResponse<DocumentTranslation>(res);
   } catch {
     return null;
   }

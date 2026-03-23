@@ -272,7 +272,7 @@ def split_description_sections(description: str) -> list[str]:
     Handles markdown headers (# / ## / ###), numbered headers (1) / 1.),
     and bold headers (**Title:**). Falls back to paragraph splitting.
     Returns list of section strings with headers prepended.
-    Skips sections shorter than 20 characters.
+    Skips sections shorter than 10 characters.
     """
     if not description or not description.strip():
         return []

@@ -10,6 +10,15 @@ interface DoclingViewerProps {
 
 type ViewMode = "document" | "translate" | "json";
 
+interface DocumentMetadata {
+  classification?: string;
+  date_of_information?: string;
+  source_characterization?: string;
+  document_summary?: string;
+  detected_language?: string;
+  has_translation?: boolean;
+}
+
 function buildDoclingHtml(docJson: Record<string, unknown>): string {
   const jsonStr = JSON.stringify(docJson);
   return `<!doctype html>
@@ -61,7 +70,7 @@ export function DoclingViewer({
 }: DoclingViewerProps) {
   const [docJson, setDocJson] = useState<Record<string, unknown> | null>(null);
   const [plainText, setPlainText] = useState<string | null>(null);
-  const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
+  const [metadata, setMetadata] = useState<DocumentMetadata | null>(null);
   const [imageDescriptions, setImageDescriptions] = useState<ImageDescription[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -123,14 +132,14 @@ export function DoclingViewer({
             >
               Document
             </button>
-            {metadata && (metadata as any).has_translation && (
+            {metadata && metadata.has_translation && (
               <button
                 className={`mode-btn${mode === "translate" ? " active" : ""}`}
                 onClick={() => {
                   setMode("translate");
                   if (!translatedMd) {
                     getDocumentTranslation(documentId).then((t) => {
-                      if (t) setTranslatedMd(t.translated_markdown);
+                      setTranslatedMd(t ? t.translated_markdown : "Translation unavailable.");
                     });
                   }
                 }}
@@ -175,13 +184,13 @@ export function DoclingViewer({
                 AI-Extracted Document Metadata
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.25rem 1.5rem" }}>
-                <div><strong>Classification:</strong> {String(metadata.classification || "UNCLASSIFIED")}</div>
-                <div><strong>Date of Information:</strong> {String(metadata.date_of_information || "Unknown")}</div>
+                <div><strong>Classification:</strong> {metadata.classification || "UNCLASSIFIED"}</div>
+                <div><strong>Date of Information:</strong> {metadata.date_of_information || "Unknown"}</div>
                 <div style={{ gridColumn: "1 / -1" }}>
-                  <strong>Source:</strong> {String(metadata.source_characterization || "Unknown")}
+                  <strong>Source:</strong> {metadata.source_characterization || "Unknown"}
                 </div>
                 <div style={{ gridColumn: "1 / -1" }}>
-                  <strong>Summary:</strong> {String(metadata.document_summary || "")}
+                  <strong>Summary:</strong> {metadata.document_summary || ""}
                 </div>
               </div>
             </div>
@@ -211,7 +220,7 @@ export function DoclingViewer({
                 marginBottom: "0.75rem",
                 fontSize: "0.85rem",
               }}>
-                Machine-translated from {(metadata as any)?.detected_language || "unknown language"}.
+                Machine-translated from {metadata?.detected_language || "unknown language"}.
                 Original may contain untranslated technical terms.
               </div>
               {translatedMd ? (

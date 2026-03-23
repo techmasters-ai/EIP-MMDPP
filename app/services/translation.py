@@ -133,23 +133,21 @@ def _translate_individually(
 
 def _ollama_translate(text: str) -> str | None:
     """Send text to Ollama for translation."""
+    from app.services.document_analysis import _ollama_chat
+
     settings = get_settings()
     url = f"{settings.ollama_base_url}/v1/chat/completions"
     prompt = settings.translation_prompt.replace("\\n", "\n")
 
     try:
         with httpx.Client(timeout=settings.translation_timeout) as client:
-            resp = client.post(url, json={
-                "model": settings.translation_model,
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.1,
-                "max_tokens": settings.llm_max_tokens,
-            })
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
+            return _ollama_chat(
+                client, url, settings.translation_model,
+                [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
+                temperature=0.1,
+                max_tokens=settings.llm_max_tokens,
+                timeout=settings.translation_timeout,
+            )
     except Exception as e:
         logger.warning("Translation failed: %s", e)
         return None
