@@ -41,11 +41,16 @@ def _ollama_chat(
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-def extract_document_metadata(markdown: str) -> dict:
+def extract_document_metadata(markdown: str, classification_text: str | None = None) -> dict:
     """Extract metadata from document markdown via LLM.
 
     Runs four prompts in parallel (summary, date, source, classification)
     since they're all independent reads of the same markdown.
+
+    If ``classification_text`` is provided it is used for the classification
+    prompt instead of ``markdown``.  This lets callers pass the original
+    (non-translated) text for classification while using a translated version
+    for the other metadata fields.
     """
     settings = get_settings()
     model = settings.doc_analysis_llm_model
@@ -68,21 +73,28 @@ def extract_document_metadata(markdown: str) -> dict:
     max_chars = settings.ollama_num_ctx * 3
     doc_text = markdown[:max_chars] if len(markdown) > max_chars else markdown
 
+    # Classification uses original (pre-translation) text when available so
+    # marking strings are preserved exactly as they appear in the source document.
+    raw_class_text = classification_text if classification_text is not None else markdown
+    class_text = raw_class_text[:max_chars] if len(raw_class_text) > max_chars else raw_class_text
+
     # Run all 4 prompts in parallel — they're independent
     results: dict[str, str] = {}
-    prompts = {
+    non_class_prompts = {
         "document_summary": settings.doc_analysis_summary_prompt,
         "date_of_information": settings.doc_analysis_date_prompt,
         "source_characterization": settings.doc_analysis_source_prompt,
-        "classification": settings.doc_analysis_classification_prompt,
     }
 
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {
+            futures: dict = {
                 pool.submit(_llm_call, prompt, doc_text): key
-                for key, prompt in prompts.items()
+                for key, prompt in non_class_prompts.items()
             }
+            # Classification runs against the original (un-translated) text
+            futures[pool.submit(_llm_call, settings.doc_analysis_classification_prompt, class_text)] = "classification"
+
             for future in as_completed(futures):
                 key = futures[future]
                 try:

@@ -1050,9 +1050,9 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
         from app.services.storage import download_bytes_sync
         base_key = f"artifacts/{document_id}"
         bucket = settings.minio_bucket_derived
+
         try:
-            md_bytes = download_bytes_sync(bucket, f"{base_key}/docling_document.md")
-            markdown = md_bytes.decode("utf-8")
+            original_md = download_bytes_sync(bucket, f"{base_key}/docling_document.md").decode("utf-8")
         except Exception:
             logger.info("derive_document_metadata: no markdown available for %s, skipping", document_id)
             if run_id:
@@ -1062,9 +1062,18 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
                 db.commit()
             return {"stage": "derive_document_metadata", "status": "skipped", "reason": "no_markdown"}
 
+        try:
+            translated_md = download_bytes_sync(bucket, f"{base_key}/docling_document_translated.md").decode("utf-8")
+        except Exception:
+            translated_md = None
+
+        # Use translated for summary/date/source (English); original for classification (detect original markings)
+        markdown = translated_md or original_md
+        classification_markdown = original_md
+
         # Extract metadata via LLM
         from app.services.document_analysis import extract_document_metadata
-        metadata = extract_document_metadata(markdown)
+        metadata = extract_document_metadata(markdown, classification_text=classification_markdown)
 
         # Store in documents.document_metadata
         from sqlalchemy import text
