@@ -162,6 +162,7 @@ def compute_fusion_score(
     doc_structure_hops: int = 0,
     ontology_rel_type: str | None = None,
     ontology_hops: int = 0,
+    cross_modal_decay: float = 0.0,
     content_text: str | None = None,
     query_text: str | None = None,
 ) -> float:
@@ -179,6 +180,11 @@ def compute_fusion_score(
         hop_penalty = hop_base ** max(0, doc_structure_hops - 1)
         doc_score = doc_structure_weight * hop_penalty
 
+    # Cross-modal component (fallback legacy path)
+    cross_score = 0.0
+    if cross_modal_decay > 0:
+        cross_score = cross_modal_decay
+
     # Ontology component
     onto_score = 0.0
     if ontology_rel_type:
@@ -188,7 +194,7 @@ def compute_fusion_score(
         onto_score = rel_weight * hop_penalty
 
     # Weighted fusion
-    final = sem_w * semantic_score + doc_w * doc_score + onto_w * onto_score
+    final = sem_w * semantic_score + doc_w * max(doc_score, cross_score) + onto_w * onto_score
 
     # Military identifier bonus
     mil_bonus = s.retrieval_mil_id_bonus

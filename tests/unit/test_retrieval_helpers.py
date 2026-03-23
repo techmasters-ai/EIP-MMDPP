@@ -415,3 +415,11 @@ def test_fusion_score_ontology_preserves_relation_weight():
         content_text="related system", query_text="SA-2 missile",
     )
     assert high_rel > low_rel
+
+
+def test_fusion_score_cross_modal_uses_doc_weight():
+    """Cross-modal decay should feed through the doc_structure weight slot."""
+    from app.api.v1._retrieval_helpers import compute_fusion_score
+    score = compute_fusion_score(semantic_score=0.8, cross_modal_decay=0.85)
+    # 0.65*0.8 + 0.20*0.85 + 0 = 0.52 + 0.17 = 0.69
+    assert abs(score - 0.69) < 0.01

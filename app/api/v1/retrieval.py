@@ -287,7 +287,7 @@ async def _expand_seeds(
                 items.extend(doc_items)
             else:
                 # Fallback to Neo4j cross-modal for legacy documents
-                cross_items = await _expand_via_cross_modal(chunk_id_str, seed.score, include_context)
+                cross_items = await _expand_via_cross_modal(chunk_id_str, seed.score, include_context, query_text)
                 items.extend(cross_items)
 
             onto_items = await _expand_via_ontology(chunk_id_str, seed.score, include_context, query_text)
@@ -611,6 +611,7 @@ async def _expand_via_cross_modal(
     chunk_id: str,
     source_score: float,
     include_context: bool = True,
+    query_text: str | None = None,
 ) -> list[QueryResultItem]:
     """Follow structural graph edges (SAME_PAGE, CONTAINS_TEXT/IMAGE, EXTRACTED_FROM)
     to find connected chunks via Neo4j. Score decays from source.
@@ -646,7 +647,12 @@ async def _expand_via_cross_modal(
             chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
 
             if chunk_data:
-                chunk_data.score = source_score * decay
+                chunk_data.score = compute_fusion_score(
+                    semantic_score=source_score,
+                    cross_modal_decay=decay,
+                    content_text=chunk_data.content_text,
+                    query_text=query_text,
+                )
                 chunk_data.context = {
                     "source": "cross_modal",
                     "source_chunk_id": chunk_id,
