@@ -18,7 +18,6 @@ from app.api.v1._retrieval_helpers import (
     deduplicate_results as _deduplicate_results,
     diversify_results as _diversify_results,
     get_cross_modal_decay,
-    get_ontology_decay,
 )
 from app.db.session import get_async_session, get_neo4j_async_driver, get_qdrant_async_client
 from app.schemas.retrieval import (
