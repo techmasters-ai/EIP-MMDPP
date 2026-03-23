@@ -11,6 +11,7 @@ Produces text chunks that respect document structure:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -248,3 +249,64 @@ def _split_text(
         i = next_i
 
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# Image description section splitting
+# ---------------------------------------------------------------------------
+
+# Section header patterns for image description splitting
+_SECTION_HEADER_PATTERNS = [
+    re.compile(r'^#{1,4}\s+.+', re.MULTILINE),           # Markdown: # / ## / ### / ####
+    re.compile(r'^\d{1,2}\)\s+.+', re.MULTILINE),        # Numbered: 1) / 2)
+    re.compile(r'^\d{1,2}\.\s+.+', re.MULTILINE),        # Numbered: 1. / 2.
+    re.compile(r'^\*\*[^*]+[:\.]\*\*', re.MULTILINE),    # Bold: **Title:** / **Title.**
+]
+
+_MIN_SECTION_LENGTH = 10
+
+
+def split_description_sections(description: str) -> list[str]:
+    """Split an image description into sections by headers.
+
+    Handles markdown headers (# / ## / ###), numbered headers (1) / 1.),
+    and bold headers (**Title:**). Falls back to paragraph splitting.
+    Returns list of section strings with headers prepended.
+    Skips sections shorter than 20 characters.
+    """
+    if not description or not description.strip():
+        return []
+
+    description = description.strip()
+
+    # Try each header pattern to find split points
+    for pattern in _SECTION_HEADER_PATTERNS:
+        matches = list(pattern.finditer(description))
+        if len(matches) >= 2:
+            return _split_at_matches(description, matches)
+
+    # Fallback: paragraph splitting
+    paragraphs = [p.strip() for p in description.split("\n\n") if p.strip()]
+    paragraphs = [p for p in paragraphs if len(p) >= _MIN_SECTION_LENGTH]
+    return paragraphs if paragraphs else ([description] if len(description) >= _MIN_SECTION_LENGTH else [])
+
+
+def _split_at_matches(description: str, matches: list) -> list[str]:
+    """Split description text at header match positions."""
+    sections: list[str] = []
+
+    # Preamble before first header
+    if matches[0].start() > 0:
+        preamble = description[:matches[0].start()].strip()
+        if len(preamble) >= _MIN_SECTION_LENGTH:
+            sections.append(preamble)
+
+    # Each header + its body until the next header
+    for i, match in enumerate(matches):
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(description)
+        section = description[start:end].strip()
+        if len(section) >= _MIN_SECTION_LENGTH:
+            sections.append(section)
+
+    return sections

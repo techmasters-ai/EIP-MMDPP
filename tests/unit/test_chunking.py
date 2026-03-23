@@ -288,3 +288,66 @@ class TestStructureAwareChunk:
         elems = [self._make_elem(content_text=long_text)]
         result = structure_aware_chunk(elems, max_chunk_tokens=50, overlap_tokens=10)
         assert len(result) > 1
+
+
+# ---------------------------------------------------------------------------
+# split_description_sections
+# ---------------------------------------------------------------------------
+
+from app.services.chunking import split_description_sections
+
+
+class TestSplitDescriptionSections:
+    def test_markdown_headers(self):
+        desc = "# Executive Summary\nThis is a missile.\n\n## Technical Details\nLength: 10m.\n\n## Markings\nNone visible."
+        sections = split_description_sections(desc)
+        assert len(sections) == 3
+        assert sections[0].startswith("# Executive Summary")
+        assert "missile" in sections[0]
+        assert sections[1].startswith("## Technical Details")
+
+    def test_numbered_headers_parenthesis(self):
+        desc = "1) Classification: Category=photo\n\n2) Why This Category: visible cues\n\n3) General Description: missile image"
+        sections = split_description_sections(desc)
+        assert len(sections) == 3
+        assert sections[0].startswith("1)")
+
+    def test_numbered_headers_dot(self):
+        desc = "1. Executive Summary\nMissile system.\n\n2. Source Context\nPDF summary.\n\n3. Full Scene\nOutdoor."
+        sections = split_description_sections(desc)
+        assert len(sections) == 3
+
+    def test_bold_headers(self):
+        desc = "**Executive Summary:** This is a radar.\n\n**Technical Details:** Frequency band X."
+        sections = split_description_sections(desc)
+        assert len(sections) == 2
+        assert "radar" in sections[0]
+
+    def test_fallback_paragraph_split(self):
+        desc = "First paragraph about the missile.\n\nSecond paragraph about the radar.\n\nThird paragraph."
+        sections = split_description_sections(desc)
+        assert len(sections) == 3
+
+    def test_skip_short_sections(self):
+        desc = "# Summary\nGood content here about the system.\n\n## Empty\n\n\n## Details\nMore content here."
+        sections = split_description_sections(desc)
+        assert all(len(s) >= 20 for s in sections)
+
+    def test_preamble_before_first_header(self):
+        desc = "This is introductory text before any header.\n\n# First Section\nContent here."
+        sections = split_description_sections(desc)
+        assert len(sections) == 2
+        assert "introductory" in sections[0]
+
+    def test_single_section_no_headers(self):
+        desc = "This is a single block of text describing a missile system with sufficient length to pass minimum."
+        sections = split_description_sections(desc)
+        assert len(sections) == 1
+
+    def test_empty_description(self):
+        sections = split_description_sections("")
+        assert sections == []
+
+    def test_whitespace_only(self):
+        sections = split_description_sections("   \n\n   ")
+        assert sections == []
