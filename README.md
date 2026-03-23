@@ -249,6 +249,65 @@ Image-modality results include an `image_url` served via the API proxy (`GET /v1
 
 **Weighted Fusion Scoring**: `final = 0.65*semantic + 0.20*doc_structure + 0.15*ontology + MIL-ID bonus`. MIL-ID bonus matches NSN, MIL-STD, ELNOT, DIEQP, and AN/ designators. All weights are configurable via environment variables (see `env.example`). Results below `RETRIEVAL_MIN_SCORE_THRESHOLD` (default 0.25) are dropped. Top candidates are re-scored by a cross-encoder reranker (`RERANKER_MODEL`, default `BAAI/bge-reranker-v2-m3`, configurable via `RERANKER_DEVICE`, `RERANKER_ENABLED`, `RERANKER_TOP_N`).
 
+### Multi-Modal Query Walkthrough
+
+**Example query:** `"VHF radar internal components"` with `strategy=hybrid`, `modality_filter=all`
+
+**Step 1 — Parallel vector search (seeds)**
+
+Two searches run concurrently via `asyncio.gather`:
+
+- **BGE text search** — query embedded with `BAAI/bge-large-en-v1.5`, searched against `eip_text_chunks` (1024-dim cosine). Matches text chunks, table chunks, and **image description sections** (all stored as BGE vectors in the same collection). Over-fetches by 8× for diversity, filters below 0.25, content-deduplicates, reranks, returns top-k.
+- **CLIP image search** — query embedded with OpenCLIP ViT-B/32 text encoder, searched against `eip_image_chunks` (512-dim cosine). Matches images by pixel similarity to the text concept. Scores are typically lower (0.1–0.3) because CLIP cross-modal alignment is loose.
+
+Seeds from both searches are merged (highest score per chunk_id kept).
+
+**Step 2 — Per-seed graph expansion**
+
+For each seed, three strategies run (bounded to 16 concurrent):
+
+- **Document-structure expansion** (Postgres `chunk_links` table) — follows pre-computed structural links: `NEXT_CHUNK` (reading order), `SAME_SECTION` (under same heading), `SAME_ARTIFACT` (from same image/table), `SAME_PAGE` (text ↔ image on same page). If an image description section is a seed, `SAME_ARTIFACT` surfaces sibling sections and `SAME_PAGE` surfaces the original CLIP image chunk.
+- **Cross-modal bridging** (Neo4j, fallback only) — for legacy documents without chunk_links. Traverses structural edges up to 3 hops to bridge text ↔ image.
+- **Ontology traversal** (Neo4j knowledge graph) — follows entity relationships. If a chunk mentions "S-75 Dvina" and the graph has `S-75 Dvina –[VARIANT_OF]→ SA-2 Guideline`, chunks about "SA-2 Guideline" are surfaced with per-relation weights from `ontology.yaml`.
+
+**Step 3 — Re-score ontology-expanded chunks**
+
+Ontology-expanded chunks get their actual BGE cosine similarity to the query computed (replacing the inherited parent score), then re-run through the fusion formula to preserve ontology relation weights.
+
+**Step 4 — Fusion scoring**
+
+All results (seeds + expanded) scored with:
+```
+final = 0.65 × semantic + 0.20 × doc_structure + 0.15 × ontology + MIL-ID bonus
+```
+Hop penalty decays scores for multi-hop expansions. Military identifier bonus (+0.03) fires when query and content share AN/ designators, NSNs, or MIL-STD numbers.
+
+**Step 5 — Deduplicate → filter → sort → rerank**
+
+- Deduplicate by chunk_id (keep highest score)
+- Content-level diversification (same text on same page deduplicated)
+- Filter by `modality_filter` (text includes `text`, `table`, `image_description`; image includes `image`, `schematic`)
+- Sort by score descending, cap at `top_k`
+- Cross-encoder reranking (`bge-reranker-v2-m3`) on top candidates
+
+**Step 6 — Image URL resolution**
+
+- `modality="image"` or `"schematic"` → `image_url = /v1/images/{chunk_id}` (the chunk IS the image)
+- `modality="image_description"` (hybrid strategy only) → batch-lookup `ImageChunk` by `artifact_id` → `image_url = /v1/images/{image_chunk_id}` (links to the original image the description was generated from)
+- `modality="image_description"` in basic strategy → no `image_url` (text-only result)
+
+**Example result set:**
+
+| Rank | Score | Modality | Content | Image |
+|---|---|---|---|---|
+| 1 | 0.999 | `image_description` | "Executive Summary: The image depicts the internal components of a VHF radar system..." | Original radar photo via `image_url` |
+| 2 | 0.952 | `image_description` | "Intelligence Value: This image is of moderate intelligence value..." | Same radar photo |
+| 3 | 0.920 | `image_description` | "Radar / Sensor Analysis: The image reveals components consistent with a VHF radar..." | Same radar photo |
+| 4 | 0.253 | `image` | CLIP image description of SA-2 deployment map | Deployment map via `image_url` |
+| 5 | 0.001 | `text` | "The P-12 Spoon Rest radar operates in the VHF band..." | None |
+
+Image description sections (ranks 1–3) share the same `artifact_id` and `image_url` — they're different analytical sections of the same image's LLM-generated description. The CLIP image result (rank 4) is a different image found by pixel similarity. The text result (rank 5) is a regular text chunk.
+
 ### Agent / LangGraph Context
 
 ```
