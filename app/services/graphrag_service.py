@@ -19,12 +19,17 @@ try:
 except ImportError:
     pass
 
+import litellm
+
 from app.config import get_settings
 from app.services.graphrag_bridge import export_all
 from app.services.graphrag_config import build_graphrag_config
 from app.services.graphrag_prompts import write_prompt_files
 
 logger = logging.getLogger(__name__)
+
+# Set LiteLLM global timeout from config (GraphRAG uses LiteLLM for all LLM calls)
+litellm.request_timeout = float(get_settings().graphrag_llm_timeout)
 
 
 def _run_async(coro):

@@ -135,6 +135,8 @@ class Settings(BaseSettings):
     graphrag_api_key: str = ""
     # Embedding model for GraphRAG's LanceDB store
     graphrag_embedding_model: str = "nomic-embed-text"
+    # LLM request timeout for GraphRAG search/indexing (seconds, default 3h)
+    graphrag_llm_timeout: int = 10800
     # Auto-tuning schedule (minutes, default 24h)
     graphrag_tune_interval_minutes: int = 1440
 
