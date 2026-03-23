@@ -526,7 +526,7 @@ async def _hard_delete_document(
                 except Exception:
                     pass
         base_key = f"artifacts/{doc_id_str}"
-        for suffix in ("docling_document.md", "docling_document.json"):
+        for suffix in ("docling_document.md", "docling_document.json", "docling_document_translated.md"):
             try:
                 await delete_object_async(settings.minio_bucket_derived, f"{base_key}/{suffix}")
             except Exception:

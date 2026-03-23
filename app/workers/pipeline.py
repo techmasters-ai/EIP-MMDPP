@@ -1563,6 +1563,17 @@ def purge_document_derivations(self, document_id: str, run_id: str | None = None
             logger.warning("purge: Neo4j cleanup failed for %s: %s", document_id, exc)
             metrics["neo4j_purge_error"] = str(exc)
 
+        # 4. Delete translated markdown from MinIO (stale from previous ingest)
+        try:
+            from app.services.storage import get_sync_s3_client
+            s3 = get_sync_s3_client()
+            s3.delete_object(
+                Bucket=settings.minio_bucket_derived,
+                Key=f"artifacts/{document_id}/docling_document_translated.md",
+            )
+        except Exception:
+            pass  # File may not exist on first ingest
+
         if run_id:
             _update_stage_run(db, run_id, "purge_document_derivations", "COMPLETE", attempt=1, metrics=metrics)
             db.commit()
