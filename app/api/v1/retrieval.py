@@ -77,7 +77,7 @@ async def unified_query(
         await _backfill_content_text(db, results)
 
     # Populate presigned image URLs for image-modality results
-    await _populate_image_urls(db, results)
+    await _populate_image_urls(db, results, strategy=body.strategy)
 
     return UnifiedQueryResponse(
         query_text=body.query_text,
@@ -984,19 +984,25 @@ async def _backfill_content_text(
 
 
 async def _populate_image_urls(
-    db: AsyncSession, results: list[QueryResultItem]
+    db: AsyncSession, results: list[QueryResultItem],
+    strategy: QueryStrategy = QueryStrategy.hybrid,
 ) -> None:
     """Set image_url to the API proxy path for image-modality results.
 
     For image/schematic: uses chunk_id directly (chunk IS the image).
     For image_description: looks up the ImageChunk by artifact_id to find the image.
+        Only in hybrid (multi-modal) strategy — basic text search omits images
+        for image_description results.
     """
     # Direct image/schematic results
     for result in results:
         if result.modality in ("image", "schematic") and result.chunk_id:
             result.image_url = f"/v1/images/{result.chunk_id}"
 
-    # Image description results — batch lookup ImageChunk by artifact_id
+    # Image description results — only attach images for hybrid (multi-modal) search
+    if strategy != QueryStrategy.hybrid:
+        return
+
     img_desc_results = [
         r for r in results
         if r.modality == "image_description" and r.artifact_id
