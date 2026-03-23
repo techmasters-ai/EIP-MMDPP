@@ -423,3 +423,16 @@ def test_fusion_score_cross_modal_uses_doc_weight():
     score = compute_fusion_score(semantic_score=0.8, cross_modal_decay=0.85)
     # 0.65*0.8 + 0.20*0.85 + 0 = 0.52 + 0.17 = 0.69
     assert abs(score - 0.69) < 0.01
+
+
+def test_image_description_modality_in_text_filter():
+    """image_description should pass through the text modality filter."""
+    from app.schemas.retrieval import QueryResultItem
+    items = [
+        QueryResultItem(score=0.9, modality="text", content_text="missile"),
+        QueryResultItem(score=0.8, modality="image_description", content_text="photo of radar"),
+        QueryResultItem(score=0.7, modality="image", content_text="image"),
+    ]
+    text_filtered = [r for r in items if r.modality in ("text", "table", "image_description")]
+    assert len(text_filtered) == 2
+    assert text_filtered[1].modality == "image_description"

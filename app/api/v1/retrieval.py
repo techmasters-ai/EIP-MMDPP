@@ -226,7 +226,7 @@ async def _multi_modal_pipeline(
 
     # Step 4: Filter by modality
     if body.modality_filter == ModalityFilter.text:
-        deduped = [r for r in deduped if r.modality in ("text", "table")]
+        deduped = [r for r in deduped if r.modality in ("text", "table", "image_description")]
     elif body.modality_filter == ModalityFilter.image:
         deduped = [r for r in deduped if r.modality in ("image", "schematic")]
 
