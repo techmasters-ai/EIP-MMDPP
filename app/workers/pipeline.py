@@ -393,6 +393,7 @@ def start_ingest_pipeline(document_id: str) -> str:
 
     pipeline = chain(
         prepare_document.si(document_id, run_id),
+        detect_and_translate.si(document_id, run_id),
         # Metadata extraction and purge run in parallel — purge only touches
         # derived data (chunks, vectors, graph), not document metadata.
         chord(
@@ -1092,6 +1093,209 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
         if run_id:
             try:
                 _update_stage_run(db, run_id, "derive_document_metadata", "FAILED", attempt=self.request.retries + 1, error=str(exc))
+                db.commit()
+            except Exception:
+                pass
+        raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Stage: detect_and_translate — per-element language detection and translation
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    bind=True,
+    name="app.workers.pipeline.detect_and_translate",
+    max_retries=2,
+    default_retry_delay=30,
+    soft_time_limit=settings.translation_timeout + 60,
+    time_limit=settings.translation_timeout + 120,
+    queue="ingest",
+)
+def detect_and_translate(self, document_id: str, run_id: str | None = None) -> dict:
+    """Detect non-English elements and translate them via Ollama."""
+    import json as json_mod
+
+    from app.models.ingest import Document, DocumentElement
+    from app.services.translation import detect_element_languages, translate_elements
+    from app.services.storage import upload_bytes_sync
+    from sqlalchemy import select
+
+    logger.info("detect_and_translate: document_id=%s run_id=%s", document_id, run_id)
+    _update_document_status(document_id, STATUS_PROCESSING, stage="detect_and_translate")
+
+    if not settings.translation_enabled:
+        logger.info("detect_and_translate: disabled, skipping for %s", document_id)
+        if run_id:
+            _db = _get_db()
+            try:
+                _update_stage_run(_db, run_id, "detect_and_translate", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={"skipped": True, "reason": "disabled"})
+                _db.commit()
+            finally:
+                _db.close()
+        return {"stage": "detect_and_translate", "status": "skipped", "reason": "disabled"}
+
+    db = _get_db()
+    try:
+        if run_id:
+            _update_stage_run(db, run_id, "detect_and_translate", "RUNNING", attempt=self.request.retries + 1)
+            db.commit()
+
+        # Query elements eligible for language detection / translation
+        elements = db.execute(
+            select(DocumentElement)
+            .where(
+                DocumentElement.document_id == uuid.UUID(document_id),
+                DocumentElement.content_text.isnot(None),
+                DocumentElement.element_type.in_(["text", "heading", "table", "equation"]),
+            )
+            .order_by(DocumentElement.element_order)
+        ).scalars().all()
+
+        if not elements:
+            logger.info("detect_and_translate: no eligible elements for %s", document_id)
+            if run_id:
+                _update_stage_run(db, run_id, "detect_and_translate", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={"skipped": True, "reason": "no_elements"})
+                db.commit()
+            return {"stage": "detect_and_translate", "status": "skipped", "reason": "no_elements"}
+
+        # Build list of dicts for translation service
+        elem_dicts = [
+            {"content_text": e.content_text, "element_type": e.element_type}
+            for e in elements
+        ]
+
+        # Detect languages
+        detection = detect_element_languages(elem_dicts)
+        detected_language = detection["document_language"]
+        non_english_indices = detection["non_english_indices"]
+
+        total_elements = len(elem_dicts)
+        non_english_count = len(non_english_indices)
+
+        # Load existing document_metadata (may be None if derive_document_metadata hasn't run)
+        from sqlalchemy import text as sa_text
+        row = db.execute(
+            sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+            {"doc_id": document_id},
+        ).first()
+        doc_meta = {}
+        if row and row[0]:
+            doc_meta = row[0] if isinstance(row[0], dict) else json_mod.loads(row[0])
+
+        doc_meta["detected_language"] = detected_language
+
+        if not non_english_indices:
+            # Nothing to translate — just persist language detection result
+            db.execute(
+                sa_text("UPDATE ingest.documents SET document_metadata = cast(:meta AS jsonb) WHERE id = cast(:doc_id AS uuid)"),
+                {"meta": json_mod.dumps(doc_meta), "doc_id": document_id},
+            )
+            db.commit()
+            if run_id:
+                _update_stage_run(db, run_id, "detect_and_translate", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={
+                                      "detected_language": detected_language,
+                                      "total_elements": total_elements,
+                                      "non_english_elements": 0,
+                                      "elements_translated": 0,
+                                  })
+                db.commit()
+            logger.info("detect_and_translate: document_id=%s all-English (%s), nothing to translate",
+                        document_id, detected_language)
+            return {"stage": "detect_and_translate", "status": "ok", "translated": 0}
+
+        # Translate non-English elements
+        translated_texts = translate_elements(elem_dicts, non_english_indices)
+
+        # Update DocumentElement rows with translated content
+        elements_translated = 0
+        for idx in non_english_indices:
+            new_text = translated_texts[idx]
+            if new_text and new_text != elements[idx].content_text:
+                elements[idx].content_text = new_text
+                elements_translated += 1
+
+        if elements_translated:
+            db.commit()
+
+        # Reassemble all element texts (translated + untouched) into markdown
+        # and upload as docling_document_translated.md
+        md_parts = []
+        for i, elem in enumerate(elements):
+            text = translated_texts[i] or elem.content_text or ""
+            if elem.element_type == "heading":
+                md_parts.append(f"## {text}")
+            else:
+                md_parts.append(text)
+        translated_md = "\n\n".join(md_parts)
+
+        upload_bytes_sync(
+            translated_md.encode("utf-8"),
+            settings.minio_bucket_derived,
+            f"artifacts/{document_id}/docling_document_translated.md",
+            content_type="text/markdown; charset=utf-8",
+        )
+
+        # Persist translation flags to document_metadata
+        doc_meta["has_translation"] = True
+        db.execute(
+            sa_text("UPDATE ingest.documents SET document_metadata = cast(:meta AS jsonb) WHERE id = cast(:doc_id AS uuid)"),
+            {"meta": json_mod.dumps(doc_meta), "doc_id": document_id},
+        )
+        db.commit()
+
+        if run_id:
+            _update_stage_run(db, run_id, "detect_and_translate", "COMPLETE",
+                              attempt=self.request.retries + 1,
+                              metrics={
+                                  "detected_language": detected_language,
+                                  "total_elements": total_elements,
+                                  "non_english_elements": non_english_count,
+                                  "elements_translated": elements_translated,
+                              })
+            db.commit()
+
+        logger.info(
+            "detect_and_translate: document_id=%s language=%s non_english=%d translated=%d",
+            document_id, detected_language, non_english_count, elements_translated,
+        )
+        return {
+            "stage": "detect_and_translate",
+            "status": "ok",
+            "detected_language": detected_language,
+            "translated": elements_translated,
+        }
+
+    except CeleryRetry:
+        raise
+    except SoftTimeLimitExceeded:
+        logger.warning(
+            "detect_and_translate: soft time limit for %s — marking FAILED",
+            document_id,
+        )
+        if run_id:
+            try:
+                _update_stage_run(db, run_id, "detect_and_translate", "FAILED",
+                                  attempt=self.request.retries + 1, error="soft time limit exceeded")
+                db.commit()
+            except Exception:
+                pass
+        _update_document_status(document_id, STATUS_PARTIAL_COMPLETE, stage="detect_and_translate")
+        return {"stage": "detect_and_translate", "status": "timeout"}
+    except Exception as exc:
+        logger.error("detect_and_translate failed for %s: %s", document_id, exc)
+        if run_id:
+            try:
+                _update_stage_run(db, run_id, "detect_and_translate", "FAILED",
+                                  attempt=self.request.retries + 1, error=str(exc))
                 db.commit()
             except Exception:
                 pass
@@ -2644,6 +2848,7 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
         # Check for failed, missing, or stuck stages
         REQUIRED_STAGES = {
             "prepare_document",
+            "detect_and_translate",
             "derive_document_metadata",
             "derive_picture_descriptions",
             "purge_document_derivations",

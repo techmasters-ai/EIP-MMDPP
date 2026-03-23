@@ -466,7 +466,7 @@ class TestFinalizeDocument:
         mock_get_db.return_value = mock_db
 
         required = [
-            "prepare_document", "derive_document_metadata",
+            "prepare_document", "detect_and_translate", "derive_document_metadata",
             "derive_picture_descriptions", "purge_document_derivations",
             "derive_text_embeddings", "derive_image_embeddings",
             "derive_ontology_graph", "derive_structure_links",
@@ -570,7 +570,7 @@ class TestFinalizeDocument:
         mock_get_db.return_value = mock_db
 
         required = [
-            "prepare_document", "derive_document_metadata",
+            "prepare_document", "detect_and_translate", "derive_document_metadata",
             "derive_picture_descriptions", "purge_document_derivations",
             "derive_text_embeddings", "derive_image_embeddings",
             "derive_ontology_graph", "derive_structure_links",
