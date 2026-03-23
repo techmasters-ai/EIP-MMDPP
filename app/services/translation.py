@@ -21,6 +21,7 @@ DetectorFactory.seed = 0
 _MIN_DETECT_LENGTH = 50
 _BATCH_CHAR_LIMIT = 2000
 _BOUNDARY = "\n---ELEMENT_BOUNDARY---\n"
+_BOUNDARY_STRIPPED = "---ELEMENT_BOUNDARY---"
 
 
 def detect_element_languages(elements: list[dict]) -> dict:
@@ -71,6 +72,14 @@ def translate_elements(
     if not non_english_indices:
         return result
 
+    # Resolve settings and create client once for all batches
+    settings = get_settings()
+    url = f"{settings.ollama_base_url}/v1/chat/completions"
+    model = settings.translation_model
+    prompt = settings.translation_prompt.replace("\\n", "\n")
+    timeout = settings.translation_timeout
+    max_tokens = settings.llm_max_tokens
+
     # Build batches of non-English elements
     batches: list[list[int]] = []
     current_batch: list[int] = []
@@ -97,57 +106,73 @@ def translate_elements(
     if current_batch:
         batches.append(current_batch)
 
-    # Translate each batch
-    for batch_indices in batches:
-        if len(batch_indices) == 1:
-            idx = batch_indices[0]
-            translated = _ollama_translate(elements[idx]["content_text"])
-            if translated:
-                result[idx] = translated.strip()
-        else:
-            combined = _BOUNDARY.join(elements[idx]["content_text"] for idx in batch_indices)
-            translated = _ollama_translate(combined)
-
-            if translated and _BOUNDARY.strip() in translated:
-                parts = translated.split(_BOUNDARY.strip())
-                if len(parts) == len(batch_indices):
-                    for idx, part in zip(batch_indices, parts):
-                        result[idx] = part.strip()
-                else:
-                    _translate_individually(elements, batch_indices, result)
+    # Single client for all translation calls (connection reuse)
+    with httpx.Client(timeout=timeout) as client:
+        for batch_indices in batches:
+            if len(batch_indices) == 1:
+                idx = batch_indices[0]
+                translated = _ollama_translate(
+                    client, url, model, prompt, elements[idx]["content_text"],
+                    timeout=timeout, max_tokens=max_tokens,
+                )
+                if translated:
+                    result[idx] = translated.strip()
             else:
-                _translate_individually(elements, batch_indices, result)
+                combined = _BOUNDARY.join(elements[idx]["content_text"] for idx in batch_indices)
+                translated = _ollama_translate(
+                    client, url, model, prompt, combined,
+                    timeout=timeout, max_tokens=max_tokens,
+                )
+
+                if translated and _BOUNDARY_STRIPPED in translated:
+                    parts = translated.split(_BOUNDARY_STRIPPED)
+                    if len(parts) == len(batch_indices):
+                        for idx, part in zip(batch_indices, parts):
+                            result[idx] = part.strip()
+                    else:
+                        _translate_individually(
+                            client, url, model, prompt, elements, batch_indices, result,
+                            timeout=timeout, max_tokens=max_tokens,
+                        )
+                else:
+                    _translate_individually(
+                        client, url, model, prompt, elements, batch_indices, result,
+                        timeout=timeout, max_tokens=max_tokens,
+                    )
 
     return result
 
 
 def _translate_individually(
-    elements: list[dict], indices: list[int], result: list[str]
+    client: httpx.Client, url: str, model: str, prompt: str,
+    elements: list[dict], indices: list[int], result: list[str],
+    *, timeout: float, max_tokens: int,
 ) -> None:
     """Fallback: translate each element individually."""
     for idx in indices:
-        translated = _ollama_translate(elements[idx]["content_text"])
+        translated = _ollama_translate(
+            client, url, model, prompt, elements[idx]["content_text"],
+            timeout=timeout, max_tokens=max_tokens,
+        )
         if translated:
             result[idx] = translated.strip()
 
 
-def _ollama_translate(text: str) -> str | None:
-    """Send text to Ollama for translation."""
+def _ollama_translate(
+    client: httpx.Client, url: str, model: str, prompt: str, text: str,
+    *, timeout: float, max_tokens: int,
+) -> str | None:
+    """Send text to Ollama for translation using shared client."""
     from app.services.document_analysis import _ollama_chat
 
-    settings = get_settings()
-    url = f"{settings.ollama_base_url}/v1/chat/completions"
-    prompt = settings.translation_prompt.replace("\\n", "\n")
-
     try:
-        with httpx.Client(timeout=settings.translation_timeout) as client:
-            return _ollama_chat(
-                client, url, settings.translation_model,
-                [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
-                temperature=0.1,
-                max_tokens=settings.llm_max_tokens,
-                timeout=settings.translation_timeout,
-            )
+        return _ollama_chat(
+            client, url, model,
+            [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
+            temperature=0.1,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
     except Exception as e:
         logger.warning("Translation failed: %s", e)
         return None

@@ -1190,22 +1190,21 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
 
         # Load existing document_metadata (may be None if derive_document_metadata hasn't run)
         from sqlalchemy import text as sa_text
-        row = db.execute(
-            sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
-            {"doc_id": document_id},
-        ).first()
-        doc_meta = {}
-        if row and row[0]:
-            doc_meta = row[0] if isinstance(row[0], dict) else json_mod.loads(row[0])
 
-        doc_meta["detected_language"] = detected_language
+        def _merge_doc_metadata(updates: dict):
+            """Atomically merge keys into document_metadata JSONB (no clobber)."""
+            db.execute(
+                sa_text("""
+                    UPDATE ingest.documents
+                    SET document_metadata = COALESCE(document_metadata, '{}'::jsonb) || cast(:updates AS jsonb)
+                    WHERE id = cast(:doc_id AS uuid)
+                """),
+                {"updates": json_mod.dumps(updates), "doc_id": document_id},
+            )
 
         if not non_english_indices:
             # Nothing to translate — just persist language detection result
-            db.execute(
-                sa_text("UPDATE ingest.documents SET document_metadata = cast(:meta AS jsonb) WHERE id = cast(:doc_id AS uuid)"),
-                {"meta": json_mod.dumps(doc_meta), "doc_id": document_id},
-            )
+            _merge_doc_metadata({"detected_language": detected_language, "has_translation": False})
             db.commit()
             if run_id:
                 _update_stage_run(db, run_id, "detect_and_translate", "COMPLETE",
@@ -1253,12 +1252,8 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
             content_type="text/markdown; charset=utf-8",
         )
 
-        # Persist translation flags to document_metadata
-        doc_meta["has_translation"] = True
-        db.execute(
-            sa_text("UPDATE ingest.documents SET document_metadata = cast(:meta AS jsonb) WHERE id = cast(:doc_id AS uuid)"),
-            {"meta": json_mod.dumps(doc_meta), "doc_id": document_id},
-        )
+        # Persist translation flags to document_metadata (atomic merge, no clobber)
+        _merge_doc_metadata({"detected_language": detected_language, "has_translation": True})
         db.commit()
 
         if run_id:
