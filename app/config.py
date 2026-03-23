@@ -154,6 +154,14 @@ class Settings(BaseSettings):
     picture_description_timeout: int = 300
     picture_description_prompt: str = "Analyze this image from a multi-modal PDF using the required narrative sections and the missile/radar/S&T emphasis. Return sections 1-8 exactly as specified. Use the PDF Summary for context but rely on visual evidence.\\n\\n- PDF Summary: {document_summary}\\n\\n- Image:"
 
+    # Translation (foreign language detection + LLM translation)
+    translation_enabled: bool = True
+    translation_model: str = "gpt-oss:120b"
+    translation_timeout: int = 300
+    translation_prompt: str = "Translate the following text to English. If the text is already in English, return it unchanged. Preserve all markdown formatting including headings (#), bullet points, tables, and code blocks. Preserve technical designators, model numbers, NATO reporting names, and military identifiers verbatim — do not transliterate or translate them (e.g., keep С-75, ЗРК, 9М38 as-is). Preserve all numbers, units, and acronyms. Preserve ---ELEMENT_BOUNDARY--- markers exactly as they appear. Return only the translated text with no commentary."
+    translation_soft_time_limit: int = 3600
+    translation_time_limit: int = 3660
+
     # Docling OCR language
     docling_ocr_lang: str = "en"
 
