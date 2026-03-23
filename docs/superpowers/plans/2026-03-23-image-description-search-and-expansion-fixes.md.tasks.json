@@ -1,0 +1,17 @@
+{
+  "planPath": "docs/superpowers/plans/2026-03-23-image-description-search-and-expansion-fixes.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Fix doc-structure expansion missing query_text", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Fix ontology re-scoring replacing fusion score", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Fix cross-modal expansion to use fusion formula", "status": "pending", "blockedBy": [1, 2]},
+    {"id": 4, "subject": "Task 4: Fix deprecated asyncio.get_event_loop calls", "status": "pending", "blockedBy": [1]},
+    {"id": 5, "subject": "Task 5: Remove dead code", "status": "pending", "blockedBy": [1]},
+    {"id": 6, "subject": "Task 6: Make cross-modal LIMIT configurable", "status": "pending", "blockedBy": [3]},
+    {"id": 7, "subject": "Task 7: Implement split_description_sections", "status": "pending"},
+    {"id": 8, "subject": "Task 8: Add image description embedding to pipeline", "status": "pending", "blockedBy": [7]},
+    {"id": 9, "subject": "Task 9: Add image_description to modality filter", "status": "pending", "blockedBy": [8]},
+    {"id": 10, "subject": "Task 10: Implement batched image URL resolution", "status": "pending", "blockedBy": [8]},
+    {"id": 11, "subject": "Task 11: Run full test suite and verify", "status": "pending", "blockedBy": [9, 10]}
+  ],
+  "lastUpdated": "2026-03-23T15:30:00Z"
+}
