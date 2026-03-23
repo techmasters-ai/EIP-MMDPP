@@ -42,18 +42,18 @@ New Celery task `detect_and_translate` on the `ingest` queue.
 
 **Library:** `langdetect` (lightweight, no model download required). Must be seeded for deterministic results: `DetectorFactory.seed = 0`.
 
-Detection runs on the extracted markdown from MinIO (`docling_document.md`). OCR text is already embedded inline in the markdown by Docling, so it is covered by the same detection pass.
+Detection runs per-element on `DocumentElement.content_text`. This handles mixed-language documents correctly — a document that is half Russian and half English will only translate the Russian elements.
 
-**Logic:**
-1. Load `docling_document.md` from MinIO
-2. If text is shorter than 50 characters, skip detection (too short for reliable results) — set `detected_language: "unknown"` and continue
-3. Sample the first ~5000 characters
-4. Run `langdetect.detect_langs()` to get language probabilities
-5. If top language is not `en` with confidence > 0.7, mark the document for translation
-6. Store detected language code in `documents.document_metadata` JSONB as `"detected_language": "ru"` (ISO 639-1)
-7. If English detected or confidence is low, skip translation — pipeline continues with zero added latency
+**Per-element logic:**
+1. Query all `DocumentElement` rows for the document where `content_text IS NOT NULL` and `element_type IN ('text', 'heading', 'table', 'equation')`
+2. For each element, run `langdetect.detect()` on its `content_text`
+3. Skip elements with fewer than 50 characters (too short for reliable detection)
+4. Mark elements where the detected language is not `en` with confidence > 0.7 as needing translation
+5. Determine the document's `detected_language` from the most common non-English language across all elements (or `"en"` if no non-English elements found)
+6. Store `detected_language` in `documents.document_metadata` JSONB
+7. If no elements need translation, skip the translation step — pipeline continues with zero added latency
 
-**Mixed-language documents:** The spec uses document-level detection (first 5000 chars). If a document is half Russian and half English, the dominant language in the sample determines the action. When translation is triggered, **all** non-structural content is sent to the LLM — the translation prompt instructs the LLM to translate non-English text and pass through English text unchanged. This handles mixed-language documents naturally without paragraph-level detection.
+`langdetect` runs at ~1ms per call, so even 900 elements adds under a second.
 
 ## Translation
 
@@ -61,17 +61,17 @@ When non-English content is detected:
 
 ### Element-by-Element Translation
 
-Translation operates directly on `DocumentElement` rows rather than the flat markdown file. This avoids the fragile problem of mapping translated paragraphs back to element rows.
+Translation operates directly on `DocumentElement` rows flagged as non-English during detection. English elements are left untouched.
 
-1. Query all `DocumentElement` rows for the document where `content_text IS NOT NULL` and `element_type IN ('text', 'heading', 'table', 'equation')`
-2. Batch elements by concatenating their `content_text` with `\n---ELEMENT_BOUNDARY---\n` separators, up to ~2000 characters per batch
+1. Collect the elements flagged as non-English during detection
+2. Batch flagged elements by concatenating their `content_text` with `\n---ELEMENT_BOUNDARY---\n` separators, up to ~2000 characters per batch
 3. Send each batch to the LLM with the translation prompt, instructing it to preserve the `---ELEMENT_BOUNDARY---` markers
 4. Parse the response back into individual translated texts by splitting on the boundary marker
-5. Update each `DocumentElement.content_text` with the translated text
-6. Reassemble the translated elements into `docling_document_translated.md` (for the viewer endpoint) by joining them in `element_order`
+5. Update each flagged `DocumentElement.content_text` with the translated text (English elements remain unchanged)
+6. Reassemble **all** elements (translated + untouched English) into `docling_document_translated.md` by joining them in `element_order`
 7. Upload `docling_document_translated.md` to MinIO
 
-**The original text is preserved in `docling_document.md` in MinIO** (never modified by this task). The `DocumentElement.content_text` is updated with translated text so all downstream tasks (metadata, chunking, embeddings, ontology graph) operate on English without code changes.
+**The original text is preserved in `docling_document.md` in MinIO** (never modified by this task). The `DocumentElement.content_text` is updated with translated text for non-English elements so all downstream tasks (metadata, chunking, embeddings, ontology graph) operate on English without code changes.
 
 ### Configuration
 
@@ -127,7 +127,8 @@ The translation stage records metrics in `StageRun.metrics`:
 ```json
 {
   "detected_language": "ru",
-  "confidence": 0.95,
+  "total_elements": 200,
+  "non_english_elements": 42,
   "elements_translated": 42,
   "batch_count": 8,
   "skipped": false
