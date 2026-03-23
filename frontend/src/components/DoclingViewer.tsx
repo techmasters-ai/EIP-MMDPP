@@ -18,7 +18,7 @@ function buildDoclingHtml(docJson: Record<string, unknown>): string {
     <meta charset="utf-8" />
     <script src="/static/docling-components.js" type="module"><\/script>
     <style>
-      body { margin: 0; background: #f5f5f5; }
+      body { margin: 0; background: #f5f5f5; display: flex; justify-content: center; }
       docling-img { gap: 1rem; }
       docling-img::part(page) {
         box-shadow: 0 0.5rem 1rem 0 rgba(0, 0, 0, 0.2);
