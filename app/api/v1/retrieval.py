@@ -988,12 +988,35 @@ async def _populate_image_urls(
 ) -> None:
     """Set image_url to the API proxy path for image-modality results.
 
-    Uses /v1/images/{chunk_id} which streams from MinIO, avoiding
-    presigned URLs that contain the Docker-internal MinIO hostname.
+    For image/schematic: uses chunk_id directly (chunk IS the image).
+    For image_description: looks up the ImageChunk by artifact_id to find the image.
     """
+    # Direct image/schematic results
     for result in results:
         if result.modality in ("image", "schematic") and result.chunk_id:
             result.image_url = f"/v1/images/{result.chunk_id}"
+
+    # Image description results — batch lookup ImageChunk by artifact_id
+    img_desc_results = [
+        r for r in results
+        if r.modality == "image_description" and r.artifact_id
+    ]
+    if not img_desc_results:
+        return
+
+    artifact_ids = list({str(r.artifact_id) for r in img_desc_results})
+    sql = text("""
+        SELECT artifact_id::text, id::text
+        FROM retrieval.image_chunks
+        WHERE artifact_id = ANY(:artifact_ids)
+    """)
+    rows = (await db.execute(sql, {"artifact_ids": artifact_ids})).fetchall()
+    artifact_to_image_chunk: dict[str, str] = {row[0]: row[1] for row in rows}
+
+    for r in img_desc_results:
+        image_chunk_id = artifact_to_image_chunk.get(str(r.artifact_id))
+        if image_chunk_id:
+            r.image_url = f"/v1/images/{image_chunk_id}"
 
 
 # ---------------------------------------------------------------------------

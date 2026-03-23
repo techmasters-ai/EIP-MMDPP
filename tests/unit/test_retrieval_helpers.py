@@ -436,3 +436,19 @@ def test_image_description_modality_in_text_filter():
     text_filtered = [r for r in items if r.modality in ("text", "table", "image_description")]
     assert len(text_filtered) == 2
     assert text_filtered[1].modality == "image_description"
+
+
+def test_image_description_result_gets_image_url():
+    """image_description results should get image_url populated from their artifact_id."""
+    import uuid as _uuid
+    from app.schemas.retrieval import QueryResultItem
+    art_id = _uuid.uuid4()
+    result = QueryResultItem(
+        score=0.9,
+        modality="image_description",
+        content_text="Photo of S-75 launcher",
+        artifact_id=art_id,
+        document_id=_uuid.uuid4(),
+    )
+    assert result.image_url is None
+    assert result.artifact_id == art_id
