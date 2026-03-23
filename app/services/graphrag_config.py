@@ -62,8 +62,9 @@ def build_graphrag_config(settings) -> GraphRagConfig:
         api_base=api_base,
     )
 
-    # Use the LLM context window for GraphRAG search token budgets.
-    ctx_tokens = settings.ollama_num_ctx
+    # Reserve tokens for the system prompt and LLM generation output;
+    # the rest is the data-context budget GraphRAG can fill.
+    ctx_tokens = int(settings.ollama_num_ctx * 0.75)
 
     config = GraphRagConfig(
         completion_models={"default_completion_model": chat_model},
@@ -91,6 +92,10 @@ def build_graphrag_config(settings) -> GraphRagConfig:
             # local search proportions.
             local_search_community_prop=0.15,
             local_search_text_unit_prop=0.55,
+            # The primer sends all community reports split across N folds.
+            # Default 5 folds with 162 reports = ~32 reports/fold = ~35K tokens,
+            # which overflows the context window. More folds = smaller batches.
+            primer_folds=20,
         ),
     )
 
