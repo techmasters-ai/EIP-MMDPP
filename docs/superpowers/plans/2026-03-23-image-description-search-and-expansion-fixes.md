@@ -613,7 +613,26 @@ def test_image_description_chunk_index_offset():
 Run: `pytest tests/unit/test_retrieval_pipeline.py::test_image_description_chunk_index_offset -v`
 Expected: PASS
 
-- [ ] **Step 3: Implement the image description pass**
+- [ ] **Step 3: Hoist shared variables out of `if all_texts:` block**
+
+Several variables used by both the text chunk pass and the image description pass are currently scoped inside `if all_texts:`. Move these to before that block so they're available regardless.
+
+**Before** the `if all_texts:` block (around line 1457), add:
+
+```python
+        _embed_batch = settings.embed_text_batch_size
+        _upsert_batch = settings.qdrant_upsert_batch_size
+        model_version = settings.text_embedding_model
+
+        from app.db.session import get_qdrant_client
+        from app.services.qdrant_store import upsert_text_vectors_batch
+        from qdrant_client.models import PointStruct
+        qdrant = get_qdrant_client()
+```
+
+Then remove the duplicate assignments of `_embed_batch` (line 1459), `model_version` (line 1463), and the `from` imports (lines 1466-1469) from inside `if all_texts:`.
+
+- [ ] **Step 4: Implement the image description pass**
 
 In `app/workers/pipeline.py`, inside `derive_text_chunks_and_embeddings`, add the following block **after** `db.commit()` at line 1533 and **before** the stage_run update at line 1535:
 
@@ -638,7 +657,9 @@ In `app/workers/pipeline.py`, inside `derive_text_chunks_and_embeddings`, add th
         img_desc_chunk_metas: list[dict] = []
 
         for img_elem in img_elements:
-            sections = split_description_sections(img_elem.content_text)
+            # Normalize Unicode to prevent NaN embeddings (same pattern as text chunk pass)
+            desc_text = _normalize_text(img_elem.content_text)
+            sections = split_description_sections(desc_text)
             if not sections:
                 continue
 
@@ -761,12 +782,12 @@ _embed_batch = settings.embed_text_batch_size
 
 And remove the duplicate `_embed_batch = settings.embed_text_batch_size` from inside the `if all_texts:` block.
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 5: Run tests**
 
 Run: `pytest tests/unit/test_retrieval_pipeline.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add app/workers/pipeline.py
