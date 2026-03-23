@@ -348,6 +348,8 @@ Manifest-first architecture with parallel derivation stages and idempotent write
 ```
 prepare_document  (validate + detect + Docling convert + persist document_elements)
     ↓
+detect_and_translate  (per-element language detection + LLM translation if non-English)
+    ↓
 derive_document_metadata  (LLM: summary, date, classification, source characterization)
     ↓
 derive_picture_descriptions  (LLM: multimodal image descriptions with summary context)
@@ -355,6 +357,8 @@ derive_picture_descriptions  (LLM: multimodal image descriptions with summary co
 purge_document_derivations  (clean up prior run data for reingest)
     ↓
 ┌── derive_text_chunks_and_embeddings ──┐
+│      (includes image description       │
+│       section embedding pass)          │
 │── derive_image_embeddings             │  (parallel Celery chord)
 └── derive_ontology_graph ──────────────┘
     ↓
@@ -388,6 +392,8 @@ Key features:
 - **Batched text embedding + Qdrant upserts** — large documents (thousands of text elements) no longer send all vectors in a single Qdrant RPC; embedding and upserts are batched via `EMBED_TEXT_BATCH_SIZE` and `QDRANT_UPSERT_BATCH_SIZE` (default 128 each); Qdrant client timeout configurable via `QDRANT_TIMEOUT_SECONDS` (default 60s)
 - **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks read from env-var settings at registration time (not hardcoded), ensuring `.env` tuning takes effect without code changes
+- **Foreign language translation** — per-element language detection (`langdetect`) triggers LLM translation of non-English content; translated text replaces `DocumentElement.content_text` for downstream processing; original preserved in MinIO; classification marking detection runs against original text; DoclingViewer offers a "Translate" toggle
+- **Image description text search** — LLM-generated image descriptions split into sections, embedded as BGE text vectors in `eip_text_chunks`, searchable via standard text queries; SAME_ARTIFACT chunk_links tie sections together for graph expansion; `image_url` resolved via artifact_id batch lookup so matching sections display with original image
 - **Stage skip completeness** — all pipeline stages mark their stage_run COMPLETE even when skipping (e.g. `derive_picture_descriptions` on .txt files, `derive_document_metadata` when disabled), preventing false PARTIAL_COMPLETE from `finalize_document`
 - **Stale run cleanup** — on worker startup, documents stuck in PROCESSING (from prior crashes) are reset to PENDING and their PipelineRuns marked FAILED via Celery `worker_ready` signal
 - **Re-upload on failure** — re-uploading a file that previously FAILED removes the old record and re-ingests (no 409)
@@ -495,6 +501,8 @@ Start command: `docker compose --profile split up -d --build`
 | 2.23 | Concurrent pipeline dispatch fix: atomic PipelineRun check-and-set (`FOR UPDATE`), document-scoped singleflight Redis lock in `prepare_document`, supersession guard aborts stale tasks, Docling lock held through `self.retry()` (no gap for lock theft), configurable 503 retry limit (`DOCLING_503_MAX_RETRIES=20`), Celery Redis visibility timeout (`CELERY_VISIBILITY_TIMEOUT=10800`), stale cleanup marks PipelineRuns FAILED, worker topology overlap prevention in `manage.sh`, Docling `MAX_CONCURRENT` aligned with pipeline `DOCLING_CONCURRENCY` | Complete |
 | 2.24 | Comprehensive quality pass: enriched ontology properties (descriptions/examples/patterns), validation matrix (all relationship types), fixed extraction prompt (valid few-shot, property descriptions, type restrictions), post-extraction validation (_validate_entity_types, _validate_properties), BGE asymmetric query/passage prefixes, cross-encoder reranker (bge-reranker-v2-m3), structure-aware chunking in pipeline, min score threshold + image oversample, GraphRAG global fulltext filtering + local BM25 scoring, fuzzy match score normalization, independent re-scoring of expanded chunks, model pre-download in manage.sh, upgraded to llama3.1:8b | Complete |
 | 2.25 | Image description tooltips: hover tooltips on embedded images via Docling web component (`kind: "description"` annotation fix), persistent description panel for standalone image documents, image-descriptions API endpoint, `SoftTimeLimitExceeded` handler for `derive_picture_descriptions`, configurable picture description timeouts, stage_run status fix for skipped stages (prevents false PARTIAL_COMPLETE on .txt and other non-image documents) | Complete |
+| 2.26 | Image description text search: LLM-generated image descriptions split into sections and embedded as BGE text vectors in `eip_text_chunks` (searchable via standard text queries), `image_description` modality with SAME_ARTIFACT chunk_links between sections, image URL resolution via artifact_id batch lookup, modality filter update. Graph expansion fixes: pass `query_text` to doc-structure fusion for military ID bonus, ontology re-scoring preserves relation weights, cross-modal expansion uses fusion formula, deprecated asyncio API fixes, configurable cross-modal LIMIT, dead code cleanup. Picture description timeout tripled (3h). GraphRAG LLM timeout configurable (default 3h). DoclingViewer page centering. | Complete |
+| 2.27 | Foreign language translation: per-element language detection (`langdetect`) + LLM translation in ingest pipeline, translated text stored alongside original in MinIO, all downstream stages (metadata, chunking, embeddings, ontology) operate on English translation, classification marking detection uses original text, translation API endpoint, DoclingViewer "Translate" toggle with language banner | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -522,6 +530,7 @@ app/
 │   ├── canonicalization.py     # Entity alias resolution + fuzzy match
 │   ├── chunking.py             # Structure-aware document chunking
 │   ├── reranker.py             # Cross-encoder reranker (bge-reranker-v2-m3)
+│   ├── translation.py          # Foreign language detection + LLM translation
 │   ├── ontology_templates.py   # YAML → Pydantic extraction templates + validation
 │   └── storage.py              # MinIO storage operations
 ├── workers/
