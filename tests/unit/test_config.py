@@ -74,7 +74,7 @@ class TestRerankerConfig:
     def test_new_reranker_config_defaults(self):
         """Reranker config fields should exist with correct defaults."""
         from app.config import Settings
-        s = Settings()
+        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
         assert s.reranker_model == "BAAI/bge-reranker-v2-m3"
         assert s.reranker_device in ("cpu", "cuda")
         assert s.reranker_enabled is True
@@ -84,7 +84,7 @@ class TestRerankerConfig:
     def test_docling_graph_client_defaults(self):
         """Docling-Graph client settings should have correct defaults."""
         from app.config import Settings
-        s = Settings()
+        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
         assert s.docling_graph_base_url == "http://docling-graph:8002"
         assert s.docling_graph_concurrency == 2
         assert s.docling_graph_timeout == 300
