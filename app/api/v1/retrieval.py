@@ -617,6 +617,8 @@ async def _expand_via_cross_modal(
 
     This is the fallback for documents ingested before chunk_links existed.
     """
+    from app.config import get_settings
+    s = get_settings()
     driver = get_neo4j_async_driver()
 
     query = """
@@ -624,12 +626,12 @@ async def _expand_via_cross_modal(
         WHERE target.chunk_id <> $chunk_id
         RETURN target.chunk_id AS target_chunk_id,
                target.chunk_type AS target_chunk_type
-        LIMIT 5
+        LIMIT $limit
     """
 
     try:
         async with driver.session() as session:
-            result = await session.run(query, chunk_id=chunk_id)
+            result = await session.run(query, chunk_id=chunk_id, limit=s.retrieval_doc_expand_k)
             records = await result.data()
     except Exception as e:
         logger.debug("Cross-modal expansion failed for %s: %s", chunk_id, e)
