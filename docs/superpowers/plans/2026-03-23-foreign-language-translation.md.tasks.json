@@ -1,0 +1,14 @@
+{
+  "planPath": "docs/superpowers/plans/2026-03-23-foreign-language-translation.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Add translation settings to config", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Create translation service module", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Create detect_and_translate pipeline task", "status": "pending", "blockedBy": [2]},
+    {"id": 4, "subject": "Task 4: Update derive_document_metadata for translated markdown", "status": "pending", "blockedBy": [3]},
+    {"id": 5, "subject": "Task 5: Update cleanup paths", "status": "pending", "blockedBy": [3]},
+    {"id": 6, "subject": "Task 6: Add translation API endpoint", "status": "pending", "blockedBy": [3]},
+    {"id": 7, "subject": "Task 7: Add translation toggle to DoclingViewer", "status": "pending", "blockedBy": [6]},
+    {"id": 8, "subject": "Task 8: Run full test suite and verify", "status": "pending", "blockedBy": [4, 5, 7]}
+  ],
+  "lastUpdated": "2026-03-23T20:30:00Z"
+}
