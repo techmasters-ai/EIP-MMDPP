@@ -540,3 +540,19 @@ export async function getDocumentMetadata(
     return null;
   }
 }
+
+export interface DocumentTranslation {
+  document_id: string;
+  detected_language: string;
+  translated_markdown: string;
+}
+
+export async function getDocumentTranslation(documentId: string): Promise<DocumentTranslation | null> {
+  try {
+    const resp = await fetch(`/v1/documents/${documentId}/translation`);
+    if (!resp.ok) return null;
+    return resp.json();
+  } catch {
+    return null;
+  }
+}

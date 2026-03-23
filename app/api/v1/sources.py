@@ -815,6 +815,40 @@ async def get_document_metadata(
     return row[0]
 
 
+@router.get("/documents/{document_id}/translation")
+async def get_document_translation(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Return the translated markdown for a document."""
+    doc = (await db.execute(
+        select(Document).where(Document.id == document_id)
+    )).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    meta = doc.document_metadata or {}
+    if not meta.get("has_translation"):
+        raise HTTPException(404, "No translation available for this document")
+
+    from app.services.storage import download_bytes_sync
+    base_key = f"artifacts/{document_id}"
+    try:
+        md_bytes = download_bytes_sync(
+            settings.minio_bucket_derived,
+            f"{base_key}/docling_document_translated.md",
+        )
+        translated_md = md_bytes.decode("utf-8")
+    except Exception:
+        raise HTTPException(404, "Translation file not found")
+
+    return {
+        "document_id": str(document_id),
+        "detected_language": meta.get("detected_language", "unknown"),
+        "translated_markdown": translated_md,
+    }
+
+
 @router.get("/documents/{document_id}/image-descriptions")
 async def get_document_image_descriptions(
     document_id: uuid.UUID,
