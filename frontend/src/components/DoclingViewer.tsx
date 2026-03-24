@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
-import { getDoclingRawJson, getDoclingDocument, getDocumentMetadata, getDocumentImageDescriptions, getDocumentTranslation } from "../api/client";
-import type { ImageDescription } from "../api/client";
+import { getDoclingRawJson, getDoclingDocument, getDocumentMetadata, getDocumentImageDescriptions, getElementTranslations } from "../api/client";
+import type { ImageDescription, ElementTranslation } from "../api/client";
 
 interface DoclingViewerProps {
   documentId: string;
@@ -8,7 +8,7 @@ interface DoclingViewerProps {
   onClose: () => void;
 }
 
-type ViewMode = "document" | "translate" | "json";
+type ViewMode = "document" | "json";
 
 interface DocumentMetadata {
   classification?: string;
@@ -17,6 +17,53 @@ interface DocumentMetadata {
   document_summary?: string;
   detected_language?: string;
   has_translation?: boolean;
+}
+
+function injectTranslationAnnotations(
+  docJson: Record<string, unknown>,
+  translations: ElementTranslation[],
+): Record<string, unknown> {
+  if (!translations.length) return docJson;
+
+  // Build lookup: normalized original text → translated text
+  const translationMap = new Map<string, string>();
+  for (const t of translations) {
+    if (t.original_text && t.translated_text) {
+      translationMap.set(t.original_text.trim(), t.translated_text);
+    }
+  }
+
+  const modified = JSON.parse(JSON.stringify(docJson));
+
+  // Inject into texts
+  const texts = (modified.texts || []) as Array<Record<string, unknown>>;
+  for (const item of texts) {
+    const text = (item.text as string || "").trim();
+    const translation = translationMap.get(text);
+    if (translation) {
+      if (!Array.isArray(item.annotations)) item.annotations = [];
+      (item.annotations as Array<Record<string, unknown>>).push({
+        kind: "description",
+        text: `Translation: ${translation}`,
+      });
+    }
+  }
+
+  // Inject into tables
+  const tables = (modified.tables || []) as Array<Record<string, unknown>>;
+  for (const item of tables) {
+    const text = (item.text as string || "").trim();
+    const translation = translationMap.get(text);
+    if (translation) {
+      if (!Array.isArray(item.annotations)) item.annotations = [];
+      (item.annotations as Array<Record<string, unknown>>).push({
+        kind: "description",
+        text: `Translation: ${translation}`,
+      });
+    }
+  }
+
+  return modified;
 }
 
 function buildDoclingHtml(docJson: Record<string, unknown>): string {
@@ -75,7 +122,8 @@ export function DoclingViewer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ViewMode>("document");
-  const [translatedMd, setTranslatedMd] = useState<string | null>(null);
+  const [translations, setTranslations] = useState<ElementTranslation[]>([]);
+  const [translateActive, setTranslateActive] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -113,10 +161,22 @@ export function DoclingViewer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // When translate is toggled on, fetch translations once
+  useEffect(() => {
+    if (translateActive && translations.length === 0 && metadata?.has_translation) {
+      getElementTranslations(documentId).then(setTranslations);
+    }
+  }, [translateActive, documentId, metadata, translations.length]);
+
+  // Build the iframe HTML — inject translations when active
   const srcdoc = useMemo(() => {
     if (!docJson) return "";
+    if (translateActive && translations.length > 0) {
+      const modified = injectTranslationAnnotations(docJson, translations);
+      return buildDoclingHtml(modified);
+    }
     return buildDoclingHtml(docJson);
-  }, [docJson]);
+  }, [docJson, translateActive, translations]);
 
   return (
     <div className="docling-overlay" onClick={onClose}>
@@ -127,22 +187,15 @@ export function DoclingViewer({
           </h3>
           <div className="docling-mode-toggle">
             <button
-              className={`mode-btn${mode === "document" ? " active" : ""}`}
-              onClick={() => setMode("document")}
+              className={`mode-btn${mode === "document" && !translateActive ? " active" : ""}`}
+              onClick={() => { setMode("document"); setTranslateActive(false); }}
             >
               Document
             </button>
             {metadata && metadata.has_translation && (
               <button
-                className={`mode-btn${mode === "translate" ? " active" : ""}`}
-                onClick={() => {
-                  setMode("translate");
-                  if (!translatedMd) {
-                    getDocumentTranslation(documentId).then((t) => {
-                      setTranslatedMd(t ? t.translated_markdown : "Translation unavailable.");
-                    });
-                  }
-                }}
+                className={`mode-btn${translateActive ? " active" : ""}`}
+                onClick={() => { setMode("document"); setTranslateActive(!translateActive); }}
               >
                 Translate
               </button>
@@ -150,7 +203,7 @@ export function DoclingViewer({
             {docJson && (
               <button
                 className={`mode-btn${mode === "json" ? " active" : ""}`}
-                onClick={() => setMode("json")}
+                onClick={() => { setMode("json"); setTranslateActive(false); }}
               >
                 JSON
               </button>
@@ -196,6 +249,19 @@ export function DoclingViewer({
             </div>
           )}
 
+          {translateActive && metadata?.detected_language && (
+            <div style={{
+              background: "#fff3cd",
+              border: "1px solid #ffc107",
+              borderRadius: "var(--radius, 4px)",
+              padding: "0.5rem 0.75rem",
+              marginBottom: "0.5rem",
+              fontSize: "0.85rem",
+            }}>
+              Hover over elements to see English translation. Translated from {metadata.detected_language}.
+            </div>
+          )}
+
           {docJson && mode === "document" && (
             <iframe
               srcDoc={srcdoc}
@@ -208,38 +274,6 @@ export function DoclingViewer({
               }}
               sandbox="allow-scripts allow-same-origin"
             />
-          )}
-
-          {mode === "translate" && (
-            <div style={{ padding: "1rem", overflowY: "auto", height: "100%" }}>
-              <div style={{
-                background: "#fff3cd",
-                border: "1px solid #ffc107",
-                borderRadius: "var(--radius, 4px)",
-                padding: "0.5rem 0.75rem",
-                marginBottom: "0.75rem",
-                fontSize: "0.85rem",
-              }}>
-                Machine-translated from {metadata?.detected_language || "unknown language"}.
-                Original may contain untranslated technical terms.
-              </div>
-              {translatedMd ? (
-                <pre style={{
-                  whiteSpace: "pre-wrap",
-                  fontFamily: "inherit",
-                  fontSize: "0.9rem",
-                  lineHeight: 1.6,
-                  margin: 0,
-                }}>
-                  {translatedMd}
-                </pre>
-              ) : (
-                <div className="empty-state">
-                  <span className="spinner" />
-                  <p className="mt-sm">Loading translation...</p>
-                </div>
-              )}
-            </div>
           )}
 
           {/* Image description panel for standalone image files (no Docling JSON) */}
