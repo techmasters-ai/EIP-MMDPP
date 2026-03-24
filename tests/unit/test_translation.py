@@ -36,6 +36,13 @@ class TestDetectElementLanguages:
         assert result["non_english_indices"] == [1]
         assert result["document_language"] == "ru"
 
+    def test_short_cjk_text_detected(self):
+        from app.services.translation import detect_element_languages
+        elements = [{"content_text": "参考文献与结束语", "element_type": "heading"}]
+        result = detect_element_languages(elements)
+        assert result["non_english_indices"] == [0]
+        assert result["document_language"] == "zh-cn"
+
     def test_empty_elements(self):
         from app.services.translation import detect_element_languages
         result = detect_element_languages([])

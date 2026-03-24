@@ -5,6 +5,7 @@ flagged elements via Ollama in batches with boundary markers.
 """
 
 import logging
+import re
 from collections import Counter
 
 import httpx
@@ -19,9 +20,13 @@ logger = logging.getLogger(__name__)
 DetectorFactory.seed = 0
 
 _MIN_DETECT_LENGTH = 50
+_MIN_DETECT_LENGTH_CJK = 5
 _BATCH_CHAR_LIMIT = 2000
 _BOUNDARY = "\n---ELEMENT_BOUNDARY---\n"
 _BOUNDARY_STRIPPED = "---ELEMENT_BOUNDARY---"
+
+# CJK Unicode ranges: Chinese, Japanese, Korean characters
+_CJK_RANGE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
 
 
 def detect_element_languages(elements: list[dict]) -> dict:
@@ -41,7 +46,8 @@ def detect_element_languages(elements: list[dict]) -> dict:
 
     for i, elem in enumerate(elements):
         text = elem.get("content_text", "") or ""
-        if len(text) < _MIN_DETECT_LENGTH:
+        min_len = _MIN_DETECT_LENGTH_CJK if _CJK_RANGE.search(text) else _MIN_DETECT_LENGTH
+        if len(text) < min_len:
             continue
         try:
             langs = detect_langs(text)
