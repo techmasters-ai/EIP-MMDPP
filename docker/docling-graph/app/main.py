@@ -53,6 +53,10 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "")
 GRAPH_EXTRACTION_CHUNK_SIZE = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_SIZE", "100000"))
 GRAPH_EXTRACTION_CHUNK_OVERLAP = int(os.environ.get("GRAPH_EXTRACTION_CHUNK_OVERLAP", "2000"))
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "64000"))
+DOCLING_GRAPH_LLM_TIMEOUT = int(os.environ.get("DOCLING_GRAPH_LLM_TIMEOUT", "10800"))
+
+# Set LiteLLM global timeout (default 3h — Ollama serializes GPU requests)
+litellm.request_timeout = float(DOCLING_GRAPH_LLM_TIMEOUT)
 
 # Pre-compiled regex patterns for JSON extraction from LLM output
 _RE_THINK_TAGS = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL)
