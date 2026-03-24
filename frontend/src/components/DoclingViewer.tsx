@@ -19,7 +19,19 @@ interface DocumentMetadata {
   has_translation?: boolean;
 }
 
-function injectTranslationAnnotations(
+/**
+ * Normalize Unicode characters to match the backend's _normalize_text().
+ * The DB stores content_text with dashes/spaces normalized to ASCII,
+ * but the Docling JSON retains raw Unicode — apply the same mapping here.
+ */
+function normalizeText(text: string): string {
+  return text
+    .replace(/[\u2010\u2011\u2012\u2013\u2014]/g, "-")
+    .replace(/[\u00a0\u202f]/g, " ")
+    .trim();
+}
+
+function injectTranslations(
   docJson: Record<string, unknown>,
   translations: ElementTranslation[],
 ): Record<string, unknown> {
@@ -29,37 +41,22 @@ function injectTranslationAnnotations(
   const translationMap = new Map<string, string>();
   for (const t of translations) {
     if (t.original_text && t.translated_text) {
-      translationMap.set(t.original_text.trim(), t.translated_text);
+      translationMap.set(normalizeText(t.original_text), t.translated_text);
     }
   }
 
   const modified = JSON.parse(JSON.stringify(docJson));
 
-  // Inject into texts
-  const texts = (modified.texts || []) as Array<Record<string, unknown>>;
-  for (const item of texts) {
-    const text = (item.text as string || "").trim();
-    const translation = translationMap.get(text);
-    if (translation) {
-      if (!Array.isArray(item.annotations)) item.annotations = [];
-      (item.annotations as Array<Record<string, unknown>>).push({
-        kind: "description",
-        text: `Translation: ${translation}`,
-      });
-    }
-  }
-
-  // Inject into tables
-  const tables = (modified.tables || []) as Array<Record<string, unknown>>;
-  for (const item of tables) {
-    const text = (item.text as string || "").trim();
-    const translation = translationMap.get(text);
-    if (translation) {
-      if (!Array.isArray(item.annotations)) item.annotations = [];
-      (item.annotations as Array<Record<string, unknown>>).push({
-        kind: "description",
-        text: `Translation: ${translation}`,
-      });
+  // Append translation to item.text — this only affects the hover tooltip,
+  // NOT the page layout (which renders bounding-box rects over page images).
+  for (const key of ["texts", "tables"] as const) {
+    const items = (modified[key] || []) as Array<Record<string, unknown>>;
+    for (const item of items) {
+      const text = normalizeText(item.text as string || "");
+      const translation = translationMap.get(text);
+      if (translation) {
+        item.text = translation;
+      }
     }
   }
 
@@ -172,7 +169,7 @@ export function DoclingViewer({
   const srcdoc = useMemo(() => {
     if (!docJson) return "";
     if (translateActive && translations.length > 0) {
-      const modified = injectTranslationAnnotations(docJson, translations);
+      const modified = injectTranslations(docJson, translations);
       return buildDoclingHtml(modified);
     }
     return buildDoclingHtml(docJson);
