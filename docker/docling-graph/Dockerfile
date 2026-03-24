@@ -75,14 +75,14 @@ COPY --from=fips-bypass /tmp/fips_disabled /usr/local/lib/fips_disabled
 RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -f /usr/local/lib/libfips_bypass.so
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 ARG CACHE_BUST
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
+RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so pip install --no-cache-dir --upgrade -r requirements.txt \
+    && rm -f /usr/local/lib/libfips_bypass.so
 
 COPY app/ ./app/
 
