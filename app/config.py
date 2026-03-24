@@ -178,10 +178,10 @@ class Settings(BaseSettings):
     prepare_retry_delay: int = 30
     prepare_soft_time_limit: int = 4200
     prepare_time_limit: int = 4260
-    embed_max_retries: int = 2
+    embed_max_retries: int = 10
     embed_retry_delay: int = 60
-    embed_soft_time_limit: int = 300
-    embed_time_limit: int = 360
+    embed_soft_time_limit: int = 1800
+    embed_time_limit: int = 1860
     graph_max_retries: int = 2
     graph_retry_delay: int = 60
     graph_soft_time_limit: int = 1800
