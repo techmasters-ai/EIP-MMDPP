@@ -556,3 +556,19 @@ export async function getDocumentTranslation(documentId: string): Promise<Docume
     return null;
   }
 }
+
+export interface ElementTranslation {
+  element_uid: string;
+  original_text: string;
+  translated_text: string;
+}
+
+export async function getElementTranslations(documentId: string): Promise<ElementTranslation[]> {
+  try {
+    const res = await fetch(`/v1/documents/${documentId}/element-translations`);
+    if (res.status === 404) return [];
+    return handleResponse<ElementTranslation[]>(res);
+  } catch {
+    return [];
+  }
+}

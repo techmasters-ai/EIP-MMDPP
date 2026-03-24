@@ -849,6 +849,34 @@ async def get_document_translation(
     }
 
 
+@router.get("/documents/{document_id}/element-translations")
+async def get_element_translations(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Return per-element translations for DoclingViewer tooltip overlay."""
+    from app.models.ingest import DocumentElement
+
+    elements = (await db.execute(
+        select(DocumentElement).where(
+            DocumentElement.document_id == document_id,
+            DocumentElement.translated_text.isnot(None),
+        )
+    )).scalars().all()
+
+    if not elements:
+        raise HTTPException(404, "No translations available")
+
+    return [
+        {
+            "element_uid": str(e.element_uid),
+            "original_text": e.content_text,
+            "translated_text": e.translated_text,
+        }
+        for e in elements
+    ]
+
+
 @router.get("/documents/{document_id}/image-descriptions")
 async def get_document_image_descriptions(
     document_id: uuid.UUID,
