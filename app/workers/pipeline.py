@@ -1637,7 +1637,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         element_dicts = [
             {
                 "element_type": elem.element_type,
-                "content_text": elem.content_text,
+                "content_text": elem.translated_text or elem.content_text,
                 "page_number": elem.page_number,
                 "section_path": elem.section_path,
                 "element_uid": str(elem.element_uid) if elem.element_uid else "",
@@ -1645,7 +1645,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 "heading_level": elem.heading_level,
             }
             for elem in elements
-            if elem.content_text
+            if (elem.translated_text or elem.content_text)
         ]
         structured_chunks = structure_aware_chunk(element_dicts)
 
@@ -2195,7 +2195,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
-        full_text = "\n\n".join(e.content_text for e in elements if e.content_text)
+        full_text = "\n\n".join((e.translated_text or e.content_text) for e in elements if (e.translated_text or e.content_text))
 
         # Prepend document metadata (summary, classification) for richer graph context
         from sqlalchemy import text as sa_text
