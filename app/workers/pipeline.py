@@ -1232,7 +1232,7 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
         for idx in non_english_indices:
             new_text = translated_texts[idx]
             if new_text and new_text != elements[idx].content_text:
-                elements[idx].content_text = new_text
+                elements[idx].translated_text = new_text
                 elements_translated += 1
 
         if elements_translated:
@@ -1242,7 +1242,7 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
         # and upload as docling_document_translated.md
         md_parts = []
         for i, elem in enumerate(elements):
-            text = translated_texts[i] or elem.content_text or ""
+            text = elem.translated_text or elem.content_text or ""
             if elem.element_type == "heading":
                 md_parts.append(f"## {text}")
             else:
