@@ -296,6 +296,7 @@ class DocumentElement(Base):
     heading_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     parent_element_uid: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     content_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    translated_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     storage_bucket: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     storage_key: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     element_metadata: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
