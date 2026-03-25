@@ -55,7 +55,7 @@ def extract_document_metadata(markdown: str, classification_text: str | None = N
     settings = get_settings()
     model = settings.doc_analysis_llm_model
     timeout = settings.doc_analysis_timeout
-    url = f"{settings.ollama_base_url}/v1/chat/completions"
+    url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
 
     # Shared client for connection reuse across parallel calls (httpx.Client is thread-safe)
     client = httpx.Client(timeout=timeout)
@@ -199,7 +199,7 @@ def _describe_single_image(
 ) -> str | None:
     """Send a single image to the multimodal LLM for description."""
     try:
-        url = f"{settings.ollama_base_url}/v1/chat/completions"
+        url = f"{settings.get_ollama_vlm_url()}/v1/chat/completions"
         messages = [
             {
                 "role": "user",

@@ -59,7 +59,7 @@ def embed_texts(texts: list[str], batch_size: int = 64, *, query: bool = False) 
             texts = [f"Represent this sentence: {t}" for t in texts]
 
     client = _get_http_client()
-    api_url = f"{settings.ollama_base_url}/v1/embeddings"
+    api_url = f"{settings.get_ollama_embedding_url()}/v1/embeddings"
     all_embeddings: list[list[float]] = []
 
     # Process in batches

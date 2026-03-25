@@ -79,10 +79,22 @@ class Settings(BaseSettings):
     # and other LLM-dependent features (openai | ollama | mock).
     llm_provider: str = "ollama"
 
-    # Ollama connection (used by GraphRAG report generation)
+    # Ollama connection
     ollama_base_url: str = "http://localhost:11434"
+    ollama_llm_base_url: str = ""   # chat/reasoning models — falls back to ollama_base_url
+    ollama_vlm_base_url: str = ""   # vision/image models — falls back to ollama_base_url
+    ollama_embedding_base_url: str = ""  # embedding models — falls back to ollama_base_url
     ollama_num_ctx: int = 16384
     ollama_think: str = ""  # "low", "medium", "high" for gpt-oss thinking level
+
+    def get_ollama_llm_url(self) -> str:
+        return self.ollama_llm_base_url or self.ollama_base_url
+
+    def get_ollama_vlm_url(self) -> str:
+        return self.ollama_vlm_base_url or self.ollama_base_url
+
+    def get_ollama_embedding_url(self) -> str:
+        return self.ollama_embedding_base_url or self.ollama_base_url
     llm_max_tokens: int = 64000
 
     # --- Docling-Graph service (entity/relationship extraction) ---
@@ -159,6 +171,8 @@ class Settings(BaseSettings):
     translation_model: str = "gpt-oss:120b"
     translation_timeout: int = 300
     translation_prompt: str = "Translate the following text to English. If the text is already in English, return it unchanged. Preserve all markdown formatting including headings (#), bullet points, tables, and code blocks. Preserve technical designators, model numbers, NATO reporting names, and military identifiers verbatim — do not transliterate or translate them (e.g., keep С-75, ЗРК, 9М38 as-is). Preserve all numbers, units, and acronyms. Preserve ---ELEMENT_BOUNDARY--- markers exactly as they appear. Return only the translated text with no commentary."
+    translation_min_detect_length: int = 5
+    translation_detect_threshold: float = 0.5
     translation_soft_time_limit: int = 3600
     translation_time_limit: int = 3660
 

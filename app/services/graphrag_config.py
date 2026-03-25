@@ -55,11 +55,16 @@ def build_graphrag_config(settings) -> GraphRagConfig:
         call_args=ollama_call_args,
     )
 
+    # Embedding may run on a different Ollama instance
+    embedding_api_base = api_base
+    if settings.graphrag_llm_provider == "ollama":
+        embedding_api_base = f"{settings.get_ollama_embedding_url()}/v1"
+
     embedding_model = ModelConfig(
         model_provider="openai",
         model=settings.graphrag_embedding_model,
         api_key=api_key,
-        api_base=api_base,
+        api_base=embedding_api_base,
     )
 
     # Reserve tokens for the system prompt and LLM generation output;

@@ -5,7 +5,6 @@ flagged elements via Ollama in batches with boundary markers.
 """
 
 import logging
-import re
 from collections import Counter
 
 import httpx
@@ -19,14 +18,9 @@ logger = logging.getLogger(__name__)
 # Deterministic detection
 DetectorFactory.seed = 0
 
-_MIN_DETECT_LENGTH = 50
-_MIN_DETECT_LENGTH_CJK = 5
 _BATCH_CHAR_LIMIT = 2000
 _BOUNDARY = "\n---ELEMENT_BOUNDARY---\n"
 _BOUNDARY_STRIPPED = "---ELEMENT_BOUNDARY---"
-
-# CJK Unicode ranges: Chinese, Japanese, Korean characters
-_CJK_RANGE = re.compile(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]')
 
 
 def detect_element_languages(elements: list[dict]) -> dict:
@@ -41,18 +35,21 @@ def detect_element_languages(elements: list[dict]) -> dict:
             "non_english_indices": [0, 2, 5],  # indices needing translation
         }
     """
+    settings = get_settings()
+    min_detect_length = settings.translation_min_detect_length
+    detect_threshold = settings.translation_detect_threshold
+
     non_english: list[int] = []
     lang_counts: Counter = Counter()
 
     for i, elem in enumerate(elements):
         text = elem.get("content_text", "") or ""
-        min_len = _MIN_DETECT_LENGTH_CJK if _CJK_RANGE.search(text) else _MIN_DETECT_LENGTH
-        if len(text) < min_len:
+        if len(text) < min_detect_length:
             continue
         try:
             langs = detect_langs(text)
             top = langs[0]
-            if top.lang != "en" and top.prob > 0.7:
+            if top.lang != "en" and top.prob > detect_threshold:
                 non_english.append(i)
                 lang_counts[top.lang] += 1
         except LangDetectException:
@@ -80,7 +77,7 @@ def translate_elements(
 
     # Resolve settings and create client once for all batches
     settings = get_settings()
-    url = f"{settings.ollama_base_url}/v1/chat/completions"
+    url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
     model = settings.translation_model
     prompt = settings.translation_prompt.replace("\\n", "\n")
     timeout = settings.translation_timeout

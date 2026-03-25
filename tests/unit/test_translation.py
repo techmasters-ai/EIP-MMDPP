@@ -21,9 +21,17 @@ class TestDetectElementLanguages:
 
     def test_short_text_skipped(self):
         from app.services.translation import detect_element_languages
-        elements = [{"content_text": "Short", "element_type": "text"}]
+        elements = [{"content_text": "Hi", "element_type": "text"}]
         result = detect_element_languages(elements)
         assert result["non_english_indices"] == []
+
+    def test_short_cyrillic_text_detected(self):
+        """Short Cyrillic headings should be detected (min_detect_length=5)."""
+        from app.services.translation import detect_element_languages
+        elements = [{"content_text": "Зенитный Ракетный Комплекс", "element_type": "heading"}]
+        result = detect_element_languages(elements)
+        assert result["non_english_indices"] == [0]
+        assert result["document_language"] == "ru"
 
     def test_mixed_language_document(self):
         from app.services.translation import detect_element_languages
