@@ -67,19 +67,13 @@ def detect_element_languages(elements: list[dict]) -> dict:
         if len(text) < min_detect_length:
             continue
 
-        # If text contains non-Latin characters, flag for translation directly —
-        # langdetect misclassifies mixed-language text as English when English dominates.
+        # Flag elements containing non-Latin characters (Cyrillic, CJK, Arabic, etc.)
+        # Only these need translation — langdetect on short English text produces
+        # too many false positives that dilute batches and confuse the LLM.
         if _NON_LATIN.search(text):
             non_english.append(i)
-            # Try to identify the non-English language for doc-level stats
             detected_lang = _detect_non_english(text, min_detect_length)
             lang_counts[detected_lang or "unknown"] += 1
-            continue
-
-        detected_lang = _detect_non_english(text, min_detect_length)
-        if detected_lang:
-            non_english.append(i)
-            lang_counts[detected_lang] += 1
 
     doc_lang = lang_counts.most_common(1)[0][0] if lang_counts else "en"
     return {

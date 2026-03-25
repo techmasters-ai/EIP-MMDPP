@@ -47,6 +47,18 @@ class TestDetectElementLanguages:
         result = detect_element_languages(elements)
         assert result["non_english_indices"] == [0]
 
+    def test_pure_english_not_flagged(self):
+        """English-only elements should never be flagged, regardless of length."""
+        from app.services.translation import detect_element_languages
+        elements = [
+            {"content_text": "FIFB-22", "element_type": "text"},
+            {"content_text": "PACRIM WEPS", "element_type": "text"},
+            {"content_text": "sukhoi", "element_type": "text"},
+            {"content_text": "This is a long enough English sentence for reliable language detection.", "element_type": "text"},
+        ]
+        result = detect_element_languages(elements)
+        assert result["non_english_indices"] == []
+
     def test_mixed_language_document(self):
         from app.services.translation import detect_element_languages
         elements = [
