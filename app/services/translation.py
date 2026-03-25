@@ -5,6 +5,7 @@ flagged elements via Ollama in batches with boundary markers.
 """
 
 import logging
+import re
 from collections import Counter
 
 import httpx
@@ -19,8 +20,28 @@ logger = logging.getLogger(__name__)
 DetectorFactory.seed = 0
 
 _BATCH_CHAR_LIMIT = 2000
+
+# Non-Latin scripts: Cyrillic, CJK, Arabic, Devanagari, Thai, Hebrew, Korean
+_NON_LATIN = re.compile(
+    r'[\u0400-\u04ff\u4e00-\u9fff\u3040-\u30ff\u0600-\u06ff'
+    r'\u0900-\u097f\u0e00-\u0e7f\u0590-\u05ff\uac00-\ud7af]'
+)
 _BOUNDARY = "\n---ELEMENT_BOUNDARY---\n"
 _BOUNDARY_STRIPPED = "---ELEMENT_BOUNDARY---"
+
+
+def _detect_non_english(text: str, min_length: int) -> str | None:
+    """Return the detected language code if *text* is non-English, else None."""
+    if len(text) < min_length:
+        return None
+    try:
+        langs = detect_langs(text)
+        top = langs[0]
+        if top.lang != "en":
+            return top.lang
+    except LangDetectException:
+        pass
+    return None
 
 
 def detect_element_languages(elements: list[dict]) -> dict:
@@ -37,7 +58,6 @@ def detect_element_languages(elements: list[dict]) -> dict:
     """
     settings = get_settings()
     min_detect_length = settings.translation_min_detect_length
-    detect_threshold = settings.translation_detect_threshold
 
     non_english: list[int] = []
     lang_counts: Counter = Counter()
@@ -46,14 +66,20 @@ def detect_element_languages(elements: list[dict]) -> dict:
         text = elem.get("content_text", "") or ""
         if len(text) < min_detect_length:
             continue
-        try:
-            langs = detect_langs(text)
-            top = langs[0]
-            if top.lang != "en" and top.prob > detect_threshold:
-                non_english.append(i)
-                lang_counts[top.lang] += 1
-        except LangDetectException:
+
+        # If text contains non-Latin characters, flag for translation directly —
+        # langdetect misclassifies mixed-language text as English when English dominates.
+        if _NON_LATIN.search(text):
+            non_english.append(i)
+            # Try to identify the non-English language for doc-level stats
+            detected_lang = _detect_non_english(text, min_detect_length)
+            lang_counts[detected_lang or "unknown"] += 1
             continue
+
+        detected_lang = _detect_non_english(text, min_detect_length)
+        if detected_lang:
+            non_english.append(i)
+            lang_counts[detected_lang] += 1
 
     doc_lang = lang_counts.most_common(1)[0][0] if lang_counts else "en"
     return {

@@ -33,6 +33,20 @@ class TestDetectElementLanguages:
         assert result["non_english_indices"] == [0]
         assert result["document_language"] == "ru"
 
+    def test_mixed_language_element_per_line_detection(self):
+        """Russian lines inside a mostly-English element should be detected."""
+        from app.services.translation import detect_element_languages
+        elements = [{
+            "content_text": (
+                "Almaz S-75 Dvina/Desna/Volkhov\n"
+                "Air Defence System / HQ-2A/B / CSA-1 / SA-2 Guideline\n"
+                "Зенитный Ракетный Комплекс С-75 Двина/Десна/ Волхов"
+            ),
+            "element_type": "heading",
+        }]
+        result = detect_element_languages(elements)
+        assert result["non_english_indices"] == [0]
+
     def test_mixed_language_document(self):
         from app.services.translation import detect_element_languages
         elements = [

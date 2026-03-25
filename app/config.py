@@ -172,7 +172,6 @@ class Settings(BaseSettings):
     translation_timeout: int = 300
     translation_prompt: str = "Translate the following text to English. If the text is already in English, return it unchanged. Preserve all markdown formatting including headings (#), bullet points, tables, and code blocks. Preserve technical designators, model numbers, NATO reporting names, and military identifiers verbatim — do not transliterate or translate them (e.g., keep С-75, ЗРК, 9М38 as-is). Preserve all numbers, units, and acronyms. Preserve ---ELEMENT_BOUNDARY--- markers exactly as they appear. Return only the translated text with no commentary."
     translation_min_detect_length: int = 5
-    translation_detect_threshold: float = 0.5
     translation_soft_time_limit: int = 3600
     translation_time_limit: int = 3660
 
