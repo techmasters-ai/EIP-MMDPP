@@ -135,15 +135,22 @@ def translate_elements(
     if current_batch:
         batches.append(current_batch)
 
+    logger.info("translate_elements: %d batches for %d non-English elements",
+                len(batches), len(non_english_indices))
+
     # Single client for all translation calls (connection reuse)
     with httpx.Client(timeout=timeout) as client:
-        for batch_indices in batches:
+        for batch_num, batch_indices in enumerate(batches):
             if len(batch_indices) == 1:
                 idx = batch_indices[0]
                 translated = _ollama_translate(
                     client, url, model, prompt, elements[idx]["content_text"],
                     timeout=timeout, max_tokens=max_tokens,
                 )
+                logger.info("translate batch %d (single idx=%d): input=%d chars, output=%d chars, changed=%s",
+                            batch_num, idx, len(elements[idx]["content_text"]),
+                            len(translated) if translated else 0,
+                            bool(translated and translated.strip() != elements[idx]["content_text"]))
                 if translated:
                     result[idx] = translated.strip()
             else:
@@ -152,6 +159,10 @@ def translate_elements(
                     client, url, model, prompt, combined,
                     timeout=timeout, max_tokens=max_tokens,
                 )
+                logger.info("translate batch %d (%d elements): input=%d chars, output=%d chars, has_boundary=%s",
+                            batch_num, len(batch_indices), len(combined),
+                            len(translated) if translated else 0,
+                            bool(translated and _BOUNDARY_STRIPPED in translated))
 
                 if translated and _BOUNDARY_STRIPPED in translated:
                     parts = translated.split(_BOUNDARY_STRIPPED)
@@ -159,6 +170,8 @@ def translate_elements(
                         for idx, part in zip(batch_indices, parts):
                             result[idx] = part.strip()
                     else:
+                        logger.info("translate batch %d: boundary count mismatch (got %d, expected %d), falling back",
+                                    batch_num, len(parts), len(batch_indices))
                         _translate_individually(
                             client, url, model, prompt, elements, batch_indices, result,
                             timeout=timeout, max_tokens=max_tokens,
