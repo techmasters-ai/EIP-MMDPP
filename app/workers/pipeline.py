@@ -1409,13 +1409,12 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
-        described_pics = [
-            p for p in updated_json.get("pictures", [])
-            if isinstance(p, dict) and p.get("description")
-        ]
-        # Match by order — first image element gets first described picture
-        for elem, pic in zip(pic_elements, described_pics):
-            desc = pic["description"]
+        all_pics = updated_json.get("pictures", [])
+        # Match by position — Docling pictures[i] corresponds to pic_elements[i]
+        for elem, pic in zip(pic_elements, all_pics):
+            if not isinstance(pic, dict):
+                continue
+            desc = pic.get("description")
             if desc and desc != elem.content_text:
                 elem.content_text = desc
                 pictures_updated += 1
