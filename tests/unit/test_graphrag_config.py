@@ -17,7 +17,7 @@ class TestGraphRAGSettings:
         )
         assert s.graphrag_llm_provider == "ollama"
         assert s.graphrag_llm_model == "llama3.2"
-        assert s.graphrag_llm_api_base == "http://localhost:11434/v1"
+        assert s.graphrag_llm_api_base == ""
         assert s.graphrag_api_key == ""
         assert s.graphrag_embedding_model == "nomic-embed-text"
         assert s.graphrag_data_dir == "/app/graphrag_data"

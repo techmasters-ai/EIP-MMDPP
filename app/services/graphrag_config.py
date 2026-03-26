@@ -35,7 +35,7 @@ def build_graphrag_config(settings) -> GraphRagConfig:
     # Ollama exposes an OpenAI-compatible API at /v1/chat/completions.
     if settings.graphrag_llm_provider == "ollama":
         api_key = settings.graphrag_api_key or "ollama"
-        api_base = settings.graphrag_llm_api_base
+        api_base = settings.graphrag_llm_api_base or f"{settings.get_ollama_llm_url()}/v1"
     else:
         api_key = settings.graphrag_api_key
         api_base = settings.graphrag_llm_api_base or None

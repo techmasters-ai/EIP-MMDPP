@@ -143,7 +143,7 @@ class Settings(BaseSettings):
     # LLM provider for GraphRAG (ollama | openai)
     graphrag_llm_provider: str = "ollama"
     graphrag_llm_model: str = "llama3.2"
-    graphrag_llm_api_base: str = "http://localhost:11434/v1"
+    graphrag_llm_api_base: str = ""  # falls back to get_ollama_llm_url()/v1 for Ollama provider
     graphrag_api_key: str = ""
     # Embedding model for GraphRAG's LanceDB store
     graphrag_embedding_model: str = "nomic-embed-text"
