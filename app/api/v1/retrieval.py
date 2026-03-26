@@ -446,9 +446,13 @@ async def _text_vector_search(
     hits = [h for h in hits if h.get("score", 0.0) >= min_score]
 
     # Map Qdrant results — always fetch chunk_text for content dedup
+    # Exclude image_description modality for basic text search — those are
+    # long VLM-generated analyses that dominate results and belong in multi-modal.
     results = []
     for hit in hits:
         payload = hit.get("payload", {})
+        if payload.get("modality") == "image_description":
+            continue
         results.append(
             QueryResultItem(
                 chunk_id=payload.get("chunk_id"),

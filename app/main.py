@@ -59,6 +59,15 @@ async def lifespan(app: FastAPI):
     ensure_indexes(driver)
     log.info("Neo4j indexes ensured")
 
+    # Preload embedding models so the first query is fast
+    try:
+        from app.services.embedding import embed_texts, embed_text_for_clip
+        embed_texts(["warmup"], query=True)
+        embed_text_for_clip("warmup")
+        log.info("Embedding models preloaded (BGE + CLIP)")
+    except Exception as e:
+        log.warning("Embedding model preload failed (will load on first query)", error=str(e))
+
     yield
 
     from app.db.session import async_engine

@@ -261,12 +261,24 @@ export async function unifiedQuery(params: {
   min_confidence?: number;
   include_context?: boolean;
 }): Promise<UnifiedQueryResponse> {
-  const res = await fetch("/v1/retrieval/query", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ top_k: 10, include_context: true, ...params }),
-  });
-  return handleResponse<UnifiedQueryResponse>(res);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+  try {
+    const res = await fetch("/v1/retrieval/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ top_k: 10, include_context: true, ...params }),
+      signal: controller.signal,
+    });
+    return await handleResponse<UnifiedQueryResponse>(res);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Search timed out. The first query may be slow while models load — please try again.");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // ---------------------------------------------------------------------------
