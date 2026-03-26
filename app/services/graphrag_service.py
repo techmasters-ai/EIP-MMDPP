@@ -340,6 +340,8 @@ def local_search(query: str) -> dict:
         settings = get_settings()
         config = build_graphrag_config(settings)
         data = _load_search_data(settings)
+        if data["communities"].empty or data["community_reports"].empty:
+            return {"response": "", "context": {}, "error": "communities_not_indexed"}
         response, context = _run_local_search(
             config, data, query, settings.graphrag_community_level,
         )
@@ -355,6 +357,8 @@ def global_search(query: str) -> dict:
         settings = get_settings()
         config = build_graphrag_config(settings)
         data = _load_search_data(settings)
+        if data["communities"].empty or data["community_reports"].empty:
+            return {"response": "", "context": {}, "error": "communities_not_indexed"}
         response, context = _run_global_search(
             config, data, query, settings.graphrag_community_level,
         )
@@ -370,6 +374,8 @@ def drift_search(query: str) -> dict:
         settings = get_settings()
         config = build_graphrag_config(settings)
         data = _load_search_data(settings)
+        if data["communities"].empty or data["community_reports"].empty:
+            return {"response": "", "context": {}, "error": "communities_not_indexed"}
         response, context = _run_drift_search(
             config, data, query, settings.graphrag_community_level,
         )

@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from "react";
-import { unifiedQuery, getGraphNeighborhood, type QueryStrategy, type ModalityFilter, type QueryResultItem } from "../api/client";
+import React, { useState, useCallback, useEffect } from "react";
+import { unifiedQuery, getGraphNeighborhood, getRetrievalSettings, type QueryStrategy, type ModalityFilter, type QueryResultItem } from "../api/client";
 import { GraphView, toGraphElements } from "./GraphView";
 import type cytoscape from "cytoscape";
 
@@ -483,11 +483,21 @@ export function QueryPage() {
   const [modalityFilter, setModalityFilter] = useState<ModalityFilter>("all");
   const [topK, setTopK] = useState(10);
   const [rerankerTopN, setRerankerTopN] = useState(20);
+  const [minConfidence, setMinConfidence] = useState(0.1);
   const [results, setResults] = useState<QueryResultItem[] | null>(null);
   const [totalResults, setTotalResults] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
+
+  // Fetch server defaults on mount
+  useEffect(() => {
+    getRetrievalSettings().then((s) => {
+      setTopK(s.top_k);
+      setRerankerTopN(s.reranker_top_n);
+      setMinConfidence(s.min_confidence);
+    }).catch(() => {});  // keep hardcoded defaults on failure
+  }, []);
 
   const selected = MODES[selectedIdx];
   const showImageInput = selected.strategy === "hybrid";
@@ -537,6 +547,7 @@ export function QueryPage() {
         modality_filter: selected.strategy === "hybrid" ? modalityFilter : "all",
         top_k: topK,
         reranker_top_n: rerankerTopN,
+        min_confidence: minConfidence,
         include_context: true,
       });
       setResults(res.results);
@@ -667,6 +678,18 @@ export function QueryPage() {
                 max={200}
                 value={rerankerTopN}
                 onChange={(e) => setRerankerTopN(parseInt(e.target.value, 10) || 20)}
+              />
+            </div>
+            <div className="field" style={{ width: "120px", flexShrink: 0 }}>
+              <label htmlFor="min-confidence">Min Confidence</label>
+              <input
+                id="min-confidence"
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={minConfidence}
+                onChange={(e) => setMinConfidence(parseFloat(e.target.value) || 0)}
               />
             </div>
             <div style={{ paddingBottom: "0" }}>

@@ -258,6 +258,7 @@ export async function unifiedQuery(params: {
   modality_filter: ModalityFilter;
   top_k?: number;
   reranker_top_n?: number;
+  min_confidence?: number;
   include_context?: boolean;
 }): Promise<UnifiedQueryResponse> {
   const res = await fetch("/v1/retrieval/query", {
@@ -437,6 +438,17 @@ export async function getAgentContext(params: {
 // ---------------------------------------------------------------------------
 // GraphRAG Settings & Indexing
 // ---------------------------------------------------------------------------
+
+export interface RetrievalSettings {
+  top_k: number;
+  reranker_top_n: number;
+  min_confidence: number;
+}
+
+export async function getRetrievalSettings(): Promise<RetrievalSettings> {
+  const res = await fetch("/v1/settings/retrieval");
+  return handleResponse<RetrievalSettings>(res);
+}
 
 export interface GraphRAGSettings {
   indexing_enabled: boolean;

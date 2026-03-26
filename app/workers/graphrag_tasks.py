@@ -10,12 +10,16 @@ Both tasks use Redis locks to prevent overlapping runs.
 
 import logging
 
+from app.config import get_settings as _get_settings
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
+_settings = _get_settings()
 
-@celery_app.task(bind=True, soft_time_limit=3600, time_limit=3660)
+
+@celery_app.task(bind=True, soft_time_limit=_settings.graphrag_llm_timeout,
+                 time_limit=_settings.graphrag_llm_timeout + 60)
 def run_graphrag_indexing_task(self) -> dict:
     """Run GraphRAG indexing pipeline as a Celery task."""
     from app.config import get_settings
@@ -29,7 +33,7 @@ def run_graphrag_indexing_task(self) -> dict:
     import redis
 
     r = redis.from_url(settings.celery_broker_url)
-    lock = r.lock("graphrag:indexing:lock", timeout=3600, blocking=False)
+    lock = r.lock("graphrag:indexing:lock", timeout=settings.graphrag_llm_timeout, blocking=False)
 
     if not lock.acquire(blocking=False):
         logger.info("GraphRAG indexing already in progress -- skipping")

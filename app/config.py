@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     # Minimum cosine similarity threshold (below this, results are dropped)
     retrieval_min_score_threshold: float = 0.25
 
+    # Query defaults (exposed via /v1/settings/retrieval for frontend)
+    query_default_min_confidence: float = 0.1
+
     # Embedding batching
     embed_text_batch_size: int = 128
 

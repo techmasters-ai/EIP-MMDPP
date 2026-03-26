@@ -69,6 +69,7 @@ class UnifiedQueryRequest(APIModel):
     filters: Optional[QueryFilters] = None
     top_k: int = Field(default=10, ge=1, le=100)
     reranker_top_n: Optional[int] = Field(default=None, ge=1, le=200, description="Number of candidates to rerank (defaults to server config)")
+    min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Minimum confidence score (0-1) to include in results (defaults to server config)")
     include_context: bool = True
 
     @model_validator(mode="after")

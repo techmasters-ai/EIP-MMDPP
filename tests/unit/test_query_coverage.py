@@ -752,7 +752,9 @@ class TestGraphRAGServiceLocalSearch:
         from app.services.graphrag_service import local_search
 
         mock_gs.return_value = _mock_settings()
-        mock_load.return_value = MagicMock()
+        mock_data = MagicMock()
+        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
+        mock_load.return_value = mock_data
 
         with patch("app.services.graphrag_service._run_local_search") as mock_run:
             mock_run.return_value = ("Local answer", {"entities": []})
@@ -779,7 +781,9 @@ class TestGraphRAGServiceGlobalSearch:
         from app.services.graphrag_service import global_search
 
         mock_gs.return_value = _mock_settings()
-        mock_load.return_value = MagicMock()
+        mock_data = MagicMock()
+        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
+        mock_load.return_value = mock_data
 
         with patch("app.services.graphrag_service._run_global_search") as mock_run:
             mock_run.return_value = ("Global answer", {"reports": []})
@@ -805,7 +809,9 @@ class TestGraphRAGServiceDriftSearch:
         from app.services.graphrag_service import drift_search
 
         mock_gs.return_value = _mock_settings()
-        mock_load.return_value = MagicMock()
+        mock_data = MagicMock()
+        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
+        mock_load.return_value = mock_data
 
         with patch("app.services.graphrag_service._run_drift_search") as mock_run:
             mock_run.return_value = ("Drift answer", {"entities": []})
@@ -831,7 +837,9 @@ class TestGraphRAGServiceBasicSearch:
         from app.services.graphrag_service import basic_search
 
         mock_gs.return_value = _mock_settings()
-        mock_load.return_value = MagicMock()
+        mock_data = MagicMock()
+        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
+        mock_load.return_value = mock_data
 
         with patch("app.services.graphrag_service._run_basic_search") as mock_run:
             mock_run.return_value = ("Basic answer", {"chunks": []})

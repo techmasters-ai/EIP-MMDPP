@@ -72,6 +72,10 @@ async def unified_query(
         logger.warning("Query strategy %s failed: %s", body.strategy, e)
         results = []
 
+    # Filter by minimum confidence
+    if body.min_confidence is not None:
+        results = [r for r in results if r.score >= body.min_confidence]
+
     # Backfill content_text from Postgres for results missing it (pre-existing data)
     if body.include_context:
         await _backfill_content_text(db, results)
@@ -86,6 +90,44 @@ async def unified_query(
         modality_filter=body.modality_filter.value,
         results=results,
         total=len(results),
+    )
+
+
+@router.get("/images/artifact/{artifact_id}")
+async def get_image_by_artifact(
+    artifact_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Stream an image from MinIO by artifact ID (direct lookup, no ImageChunk intermediary)."""
+    sql = text("""
+        SELECT storage_bucket, storage_key
+        FROM ingest.artifacts
+        WHERE id = CAST(:artifact_id AS uuid)
+          AND storage_bucket IS NOT NULL AND storage_key IS NOT NULL
+    """)
+    row = (await db.execute(sql, {"artifact_id": artifact_id})).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    bucket, key = row[0], row[1]
+    try:
+        from app.services.storage import download_bytes_async
+        image_bytes = await download_bytes_async(bucket, key)
+    except Exception as e:
+        logger.warning("Image download failed for artifact %s: %s", artifact_id, e)
+        raise HTTPException(status_code=502, detail="Failed to fetch image from storage")
+
+    ext = key.rsplit(".", 1)[-1].lower() if "." in key else "png"
+    content_type = {
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "tiff": "image/tiff", "tif": "image/tiff", "gif": "image/gif",
+        "webp": "image/webp",
+    }.get(ext, "image/png")
+
+    return StreamingResponse(
+        iter([image_bytes]),
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=3600"},
     )
 
 
@@ -733,6 +775,12 @@ async def _graphrag_local_query(
 
     response = graphrag_result.get("response", "")
     if not response:
+        if graphrag_result.get("error") == "communities_not_indexed":
+            raise HTTPException(
+                status_code=409,
+                detail="GraphRAG indexing has not completed yet. "
+                "Run indexing and wait for community detection to finish.",
+            )
         raise HTTPException(
             status_code=404,
             detail="GraphRAG local: no matching entities found in the knowledge graph.",
@@ -770,6 +818,12 @@ async def _graphrag_global_query(
 
     response = graphrag_result.get("response", "")
     if not response:
+        if graphrag_result.get("error") == "communities_not_indexed":
+            raise HTTPException(
+                status_code=409,
+                detail="GraphRAG indexing has not completed yet. "
+                "Run indexing and wait for community detection to finish.",
+            )
         raise HTTPException(
             status_code=409,
             detail="GraphRAG global: no community reports available. "
@@ -808,6 +862,12 @@ async def _graphrag_drift_query(
 
     response = graphrag_result.get("response", "")
     if not response:
+        if graphrag_result.get("error") == "communities_not_indexed":
+            raise HTTPException(
+                status_code=409,
+                detail="GraphRAG indexing has not completed yet. "
+                "Run indexing and wait for community detection to finish.",
+            )
         return []
 
     return [QueryResultItem(
@@ -1003,31 +1063,27 @@ async def _populate_image_urls(
     if strategy != QueryStrategy.hybrid:
         return
 
-    img_desc_results = [
-        r for r in results
-        if r.modality == "image_description" and r.artifact_id
-    ]
-    if not img_desc_results:
-        return
-
-    artifact_ids = list({str(r.artifact_id) for r in img_desc_results})
-    sql = text("""
-        SELECT artifact_id::text, id::text
-        FROM retrieval.image_chunks
-        WHERE artifact_id = ANY(:artifact_ids)
-    """)
-    rows = (await db.execute(sql, {"artifact_ids": artifact_ids})).fetchall()
-    artifact_to_image_chunk: dict[str, str] = {row[0]: row[1] for row in rows}
-
-    for r in img_desc_results:
-        image_chunk_id = artifact_to_image_chunk.get(str(r.artifact_id))
-        if image_chunk_id:
-            r.image_url = f"/v1/images/{image_chunk_id}"
+    # Image description results — link directly via artifact_id (no ImageChunk intermediary)
+    for r in results:
+        if r.modality == "image_description" and r.artifact_id:
+            r.image_url = f"/v1/images/artifact/{r.artifact_id}"
 
 
 # ---------------------------------------------------------------------------
 # GraphRAG manual indexing trigger
 # ---------------------------------------------------------------------------
+
+
+@router.get("/settings/retrieval")
+async def get_retrieval_settings():
+    """Return query defaults for the frontend."""
+    from app.config import get_settings
+    settings = get_settings()
+    return {
+        "top_k": 10,
+        "reranker_top_n": settings.reranker_top_n,
+        "min_confidence": settings.query_default_min_confidence,
+    }
 
 
 @router.get("/settings/graphrag")

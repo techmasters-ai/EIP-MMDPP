@@ -82,9 +82,9 @@ def _make_mock_search_data():
     """Create minimal mock search data dict."""
     return {
         "entities": pd.DataFrame(columns=["id", "title", "type", "description"]),
-        "communities": pd.DataFrame(columns=["id", "title", "level"]),
+        "communities": pd.DataFrame([{"id": "c1", "title": "Test", "level": 0}]),
         "community_reports": pd.DataFrame(
-            columns=["id", "community_id", "full_content"]
+            [{"id": "r1", "community_id": "c1", "full_content": "Report"}]
         ),
         "text_units": pd.DataFrame(columns=["id", "text"]),
         "relationships": pd.DataFrame(columns=["id", "source", "target"]),

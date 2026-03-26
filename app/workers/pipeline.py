@@ -1365,74 +1365,88 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                 db.commit()
             return {"stage": "derive_picture_descriptions", "status": "skipped"}
 
-        # For Office formats (DOCX/PPTX), Docling's SimplePipeline doesn't
-        # extract actual image bytes. Use python-docx/python-pptx to extract
-        # them and inject into the Docling JSON before describing.
-        from app.models.ingest import Document as DocModel
-        doc = db.get(DocModel, uuid.UUID(document_id))
-        if doc:
-            mime = doc.mime_type or ""
-            if "wordprocessingml" in mime or "msword" in mime:
-                from app.services.office_image_extractor import extract_docx_images, inject_images_into_docling_json
-                file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
-                office_images = extract_docx_images(file_bytes)
-                if office_images:
-                    inject_images_into_docling_json(docling_json, office_images)
-            elif "presentationml" in mime or "ms-powerpoint" in mime:
-                from app.services.office_image_extractor import extract_pptx_images, inject_images_into_docling_json
-                file_bytes = download_bytes_sync(doc.storage_bucket, doc.storage_key)
-                office_images = extract_pptx_images(file_bytes)
-                if office_images:
-                    inject_images_into_docling_json(docling_json, office_images)
-
-        # Enrich pictures with descriptions
-        from app.services.document_analysis import describe_pictures
-        updated_json = describe_pictures(docling_json, document_summary)
-
-        # Write updated JSON back to MinIO
-        upload_bytes_sync(
-            json_mod.dumps(updated_json, ensure_ascii=False, default=str).encode("utf-8"),
-            bucket,
-            f"{base_key}/docling_document.json",
-            content_type="application/json; charset=utf-8",
-        )
-
-        # Persist picture descriptions to DocumentElement rows so downstream
-        # tasks (text chunking, graph extraction) can see them
-        from app.models.ingest import DocumentElement
+        # Describe images from the STORED artifacts (MinIO), not from the
+        # Docling JSON pictures array.  The Docling service returns images in
+        # two places (elements[].image_base64 and document_json.pictures[].image)
+        # and they may not correspond 1:1.  Describing the stored artifacts
+        # guarantees the description matches the image that will be served.
+        from app.models.ingest import DocumentElement, Document as DocModel
+        from app.services.document_analysis import _describe_single_image
         from sqlalchemy import select as sa_select
-        pictures_updated = 0
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import base64
+
         pic_elements = db.execute(
             sa_select(DocumentElement).where(
                 DocumentElement.document_id == uuid.UUID(document_id),
                 DocumentElement.element_type == "image",
+                DocumentElement.storage_key.isnot(None),
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
-        all_pics = updated_json.get("pictures", [])
-        # Match by position — Docling pictures[i] corresponds to pic_elements[i]
-        for elem, pic in zip(pic_elements, all_pics):
-            if not isinstance(pic, dict):
-                continue
-            desc = pic.get("description")
-            if desc and desc != elem.content_text:
-                elem.content_text = desc
-                pictures_updated += 1
+        if not pic_elements:
+            logger.info("derive_picture_descriptions: no image elements with storage for %s", document_id)
+            if run_id:
+                _update_stage_run(db, run_id, "derive_picture_descriptions", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={"pictures_updated": 0})
+                db.commit()
+            return {"stage": "derive_picture_descriptions", "status": "ok", "pictures_updated": 0}
+
+        prompt_template = settings.picture_description_prompt.replace("\\n", "\n")
+        prompt = prompt_template.replace("{document_summary}", document_summary)
+        model = settings.picture_description_model
+        timeout = settings.picture_description_timeout
+
+        # Load each stored image and describe it
+        describable: list[tuple[int, str]] = []  # (element index, base64)
+        for idx, elem in enumerate(pic_elements):
+            try:
+                img_bytes = download_bytes_sync(elem.storage_bucket, elem.storage_key)
+                b64 = base64.b64encode(img_bytes).decode("ascii")
+                describable.append((idx, b64))
+            except Exception as e:
+                logger.warning("Could not load image for element %s: %s", elem.element_uid, e)
+
+        descriptions: dict[int, str] = {}
+        pictures_updated = 0
+
+        if describable:
+            max_workers = min(3, len(describable))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_describe_single_image, b64, prompt, model, timeout, settings): idx
+                    for idx, b64 in describable
+                }
+                for future in as_completed(futures):
+                    elem_idx = futures[future]
+                    try:
+                        desc = future.result()
+                        if desc:
+                            descriptions[elem_idx] = desc
+                    except Exception as e:
+                        logger.warning("Picture description failed for element %d: %s", elem_idx, e)
+
+            # Write descriptions to DocumentElement rows
+            for idx, desc in descriptions.items():
+                elem = pic_elements[idx]
+                if desc != elem.content_text:
+                    elem.content_text = desc
+                    pictures_updated += 1
+
+            logger.info("derive_picture_descriptions: described=%d, updated=%d elements",
+                        len(descriptions), pictures_updated)
         if pictures_updated:
             db.commit()
             logger.info("derive_picture_descriptions: updated %d DocumentElement rows", pictures_updated)
 
         # Also update the markdown in MinIO to include picture descriptions
         # so derive_document_metadata and graph extraction see enriched content
-        try:
-            md_bytes = download_bytes_sync(bucket, f"{base_key}/docling_document.md")
-            markdown = md_bytes.decode("utf-8")
-            appendix_parts = []
-            for pic in described_pics:
-                desc = pic.get("description", "")
-                if desc:
-                    appendix_parts.append(f"[Image Description]: {desc}")
-            if appendix_parts:
+        if descriptions:
+            try:
+                md_bytes = download_bytes_sync(bucket, f"{base_key}/docling_document.md")
+                markdown = md_bytes.decode("utf-8")
+                appendix_parts = [f"[Image Description]: {desc}" for desc in descriptions.values()]
                 enriched_md = markdown + "\n\n## Image Descriptions\n\n" + "\n\n".join(appendix_parts)
                 upload_bytes_sync(
                     enriched_md.encode("utf-8"),
@@ -1440,8 +1454,8 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                     f"{base_key}/docling_document.md",
                     content_type="text/markdown; charset=utf-8",
                 )
-        except Exception as md_err:
-            logger.debug("derive_picture_descriptions: could not update markdown: %s", md_err)
+            except Exception as md_err:
+                logger.debug("derive_picture_descriptions: could not update markdown: %s", md_err)
 
         if run_id:
             _update_stage_run(
