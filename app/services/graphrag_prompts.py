@@ -434,6 +434,16 @@ def _build_ontology_context() -> str:
     return "\n".join(parts)
 
 
+def _get_extraction_prompt(ontology_context: str) -> str:
+    """Return the extraction prompt, using env var override if set."""
+    from app.config import get_settings
+    custom = get_settings().graphrag_extraction_prompt
+    if custom:
+        # Replace {ontology_context} placeholder; leave {entity_types}/{input_text} for GraphRAG
+        return custom.replace("{ontology_context}", ontology_context)
+    return get_entity_extraction_prompt(ontology_context)
+
+
 def write_prompt_files(prompts_dir: Path) -> None:
     """Write all prompt files to disk for GraphRAG to read."""
     prompts_dir.mkdir(parents=True, exist_ok=True)
@@ -441,7 +451,7 @@ def write_prompt_files(prompts_dir: Path) -> None:
     ontology_context = _build_ontology_context()
 
     files = {
-        "extract_graph.txt": get_entity_extraction_prompt(ontology_context),
+        "extract_graph.txt": _get_extraction_prompt(ontology_context),
         "community_report.txt": get_community_report_prompt(),
         "local_search_system_prompt.txt": get_local_search_prompt(),
         "global_search_map_system_prompt.txt": get_global_search_map_prompt(),
