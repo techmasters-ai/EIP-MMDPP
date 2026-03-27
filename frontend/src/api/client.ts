@@ -262,7 +262,7 @@ export async function unifiedQuery(params: {
   include_context?: boolean;
 }): Promise<UnifiedQueryResponse> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout
   try {
     const res = await fetch("/v1/retrieval/query", {
       method: "POST",
