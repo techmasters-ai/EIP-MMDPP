@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from graphrag.config.models.cluster_graph_config import ClusterGraphConfig
+from graphrag.config.models.extract_graph_config import ExtractGraphConfig
 from graphrag.config.models.drift_search_config import DRIFTSearchConfig
 from graphrag.config.models.graph_rag_config import GraphRagConfig
 from graphrag.config.models.local_search_config import LocalSearchConfig
@@ -71,9 +72,23 @@ def build_graphrag_config(settings) -> GraphRagConfig:
     # the rest is the data-context budget GraphRAG can fill.
     ctx_tokens = int(settings.ollama_num_ctx * 0.75)
 
+    # Use ontology entity types for extraction instead of generic defaults
+    from app.services.ontology_templates import load_ontology
+    ontology = load_ontology()
+    entity_types = [
+        e if isinstance(e, str) else e.get("name", "")
+        for e in ontology.get("entity_types", [])
+    ]
+
+    # Full extraction with ontology-guided prompt and entity types.
+    # Uses the military ontology extraction prompt from graphrag_prompts.py
+    # and entity types from the ontology YAML.
     config = GraphRagConfig(
         completion_models={"default_completion_model": chat_model},
         embedding_models={"default_embedding_model": embedding_model},
+        extract_graph=ExtractGraphConfig(
+            entity_types=entity_types,
+        ),
         output_storage=StorageConfig(base_dir=str(output_dir)),
         cache=CacheConfig(storage=StorageConfig(base_dir=str(cache_dir))),
         reporting=ReportingConfig(type="file", base_dir=str(data_dir / "logs")),

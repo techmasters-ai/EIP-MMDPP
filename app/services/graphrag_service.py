@@ -133,13 +133,13 @@ def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
 
 
 def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
-    """Run Microsoft GraphRAG's indexing pipeline on pre-exported Parquet data."""
+    """Run GraphRAG indexing pipeline with ontology-guided extraction."""
     from graphrag.api import build_index
     from graphrag.config.enums import IndexingMethod
 
     config = build_graphrag_config(settings)
 
-    # Load pre-exported text as input documents for GraphRAG
+    # Load pre-exported text units as input documents for GraphRAG
     text_units_path = output_dir / "text_units.parquet"
     if text_units_path.exists():
         text_df = pd.read_parquet(text_units_path)
@@ -151,7 +151,6 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
     else:
         input_docs = None
 
-    # Run indexing
     results = _run_async(build_index(
         config=config,
         method=IndexingMethod.Standard,

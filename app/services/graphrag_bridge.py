@@ -22,35 +22,103 @@ _scoring_weights: dict[str, float] = _ontology.get("scoring_weights", {})
 _DEFAULT_WEIGHT = _scoring_weights.get("default", 0.70)
 
 # GraphRAG expected column schemas
-_ENTITY_COLUMNS = ["id", "title", "type", "description", "human_readable_id"]
+_ENTITY_COLUMNS = ["id", "title", "type", "description", "human_readable_id", "text_unit_ids", "degree"]
 _RELATIONSHIP_COLUMNS = [
-    "id", "source", "target", "description", "weight", "human_readable_id",
+    "id", "source", "target", "description", "weight", "human_readable_id", "text_unit_ids",
 ]
 _TEXT_UNIT_COLUMNS = [
-    "id", "text", "n_tokens", "document_ids", "entity_ids", "relationship_ids",
+    "id", "text", "n_tokens", "document_id", "document_ids", "entity_ids", "relationship_ids",
 ]
 _DOCUMENT_COLUMNS = ["id", "title", "raw_content", "text_unit_ids"]
 
 
+def _synthesize_description(props: dict) -> str:
+    """Build a readable description from entity properties."""
+    name = props.get("name", "")
+    etype = props.get("entity_type", "")
+    desc = props.get("description", "")
+    if desc:
+        return desc
+
+    # Build from available properties
+    parts = [f"{name} is a {etype}."]
+    skip = {"name", "entity_type", "id", "artifact_id", "last_artifact_id", "confidence", "description"}
+    for k, v in props.items():
+        if k in skip or v is None or v == "":
+            continue
+        label = k.replace("_", " ").title()
+        parts.append(f"{label}: {v}")
+    return " ".join(parts)
+
+
 def export_entities(neo4j_driver) -> pd.DataFrame:
-    """Export all Entity nodes from Neo4j into a GraphRAG entities DataFrame."""
+    """Export ALL nodes from Neo4j into a GraphRAG entities DataFrame.
+
+    Includes Entity nodes, Document nodes, ChunkRef nodes, Alias nodes —
+    everything in the graph. Synthesizes descriptions from node properties
+    and populates text_unit_ids from EXTRACTED_FROM -> ChunkRef links.
+    """
     try:
         with neo4j_driver.session() as session:
+            # Get ALL nodes (not just :Entity)
             result = session.run(
-                "MATCH (n:Entity) "
-                "RETURN n.name AS name, n.entity_type AS entity_type, "
-                "n.description AS description, n.id AS id"
+                "MATCH (n) "
+                "WHERE NOT n:ChunkRef "  # Exclude ChunkRef — they become text_unit_ids
+                "RETURN n, labels(n) AS labels"
             )
             rows = []
+            node_id_map: dict[str, str] = {}  # elementId -> stable id
+
             for i, record in enumerate(result):
-                data = record.data()
+                node = record["n"]
+                props = dict(node)
+                labels = record["labels"]
+
+                # Use node's id property, or generate from elementId
+                nid = props.get("id") or str(uuid.uuid5(uuid.NAMESPACE_URL, str(node.element_id)))
+                name = props.get("name") or props.get("filename") or props.get("title") or str(labels[0])
+                etype = props.get("entity_type") or labels[0]
+
+                node_id_map[str(node.element_id)] = nid
+
                 rows.append({
-                    "id": data.get("id") or str(uuid.uuid4()),
-                    "title": data.get("name", ""),
-                    "type": data.get("entity_type", "UNKNOWN"),
-                    "description": data.get("description", ""),
+                    "id": nid,
+                    "title": name,
+                    "type": etype,
+                    "description": _synthesize_description(props),
                     "human_readable_id": i,
+                    "text_unit_ids": [],
+                    "degree": 0,
                 })
+
+            # Populate text_unit_ids from EXTRACTED_FROM -> ChunkRef
+            result = session.run(
+                "MATCH (n)-[:EXTRACTED_FROM]->(c:ChunkRef) "
+                "WHERE NOT n:ChunkRef "
+                "RETURN n.id AS entity_id, c.chunk_id AS chunk_id"
+            )
+            entity_chunks: dict[str, list[str]] = {}
+            for record in result:
+                eid = record["entity_id"]
+                cid = record["chunk_id"]
+                if eid and cid:
+                    entity_chunks.setdefault(eid, []).append(str(cid))
+
+            # Compute degree (all relationships, not just Entity-Entity)
+            result = session.run(
+                "MATCH (n)-[r]-(m) "
+                "WHERE NOT n:ChunkRef AND NOT m:ChunkRef "
+                "RETURN n.id AS entity_id, count(r) AS degree"
+            )
+            entity_degrees: dict[str, int] = {}
+            for record in result:
+                if record["entity_id"]:
+                    entity_degrees[record["entity_id"]] = record["degree"]
+
+            for row in rows:
+                row["text_unit_ids"] = entity_chunks.get(row["id"], [])
+                row["degree"] = entity_degrees.get(row["id"], 0)
+
     except Exception:
         logger.exception("Failed to export entities from Neo4j")
         rows = []
@@ -59,27 +127,99 @@ def export_entities(neo4j_driver) -> pd.DataFrame:
 
 
 def export_relationships(neo4j_driver) -> pd.DataFrame:
-    """Export all relationships from Neo4j into a GraphRAG relationships DataFrame."""
+    """Export ALL relationships from Neo4j into a GraphRAG relationships DataFrame.
+
+    Includes all edges except EXTRACTED_FROM (those become text_unit_ids instead).
+    """
     try:
         with neo4j_driver.session() as session:
+            # Get chunk mappings for text_unit_ids
+            chunk_result = session.run(
+                "MATCH (n)-[:EXTRACTED_FROM]->(c:ChunkRef) "
+                "WHERE NOT n:ChunkRef "
+                "RETURN n.name AS name, c.chunk_id AS chunk_id"
+            )
+            node_chunks: dict[str, list[str]] = {}
+            for record in chunk_result:
+                name = record["name"]
+                cid = record["chunk_id"]
+                if name and cid:
+                    node_chunks.setdefault(name, []).append(str(cid))
+
+            # Export ALL relationships except EXTRACTED_FROM and between ChunkRefs
             result = session.run(
-                "MATCH (a:Entity)-[r]->(b:Entity) "
-                "RETURN a.name AS source, b.name AS target, "
+                "MATCH (a)-[r]->(b) "
+                "WHERE NOT a:ChunkRef AND NOT b:ChunkRef "
+                "AND type(r) <> 'EXTRACTED_FROM' "
+                "RETURN coalesce(a.name, a.filename, labels(a)[0]) AS source, "
+                "coalesce(b.name, b.filename, labels(b)[0]) AS target, "
                 "type(r) AS relationship, r.description AS description"
             )
             rows = []
             for i, record in enumerate(result):
                 data = record.data()
+                src = data.get("source", "")
+                tgt = data.get("target", "")
                 rel_type = data.get("relationship", "")
                 weight = _scoring_weights.get(rel_type, _DEFAULT_WEIGHT)
+
+                shared_chunks = list(set(
+                    node_chunks.get(src, []) + node_chunks.get(tgt, [])
+                ))
+
                 rows.append({
                     "id": str(uuid.uuid4()),
-                    "source": data.get("source", ""),
-                    "target": data.get("target", ""),
-                    "description": data.get("description") or rel_type,
+                    "source": src,
+                    "target": tgt,
+                    "description": data.get("description") or f"{src} {rel_type} {tgt}",
                     "weight": weight,
                     "human_readable_id": i,
+                    "text_unit_ids": shared_chunks,
                 })
+
+            # Add co-occurrence edges: entities that share the same ChunkRef
+            # are likely related. This connects isolated entities to the graph.
+            logger.info("Computing co-occurrence edges from shared text chunks...")
+            cooccur_result = session.run(
+                "MATCH (a)-[:EXTRACTED_FROM]->(c:ChunkRef)<-[:EXTRACTED_FROM]-(b) "
+                "WHERE a <> b AND NOT a:ChunkRef AND NOT b:ChunkRef "
+                "AND id(a) < id(b) "  # avoid duplicates
+                "RETURN coalesce(a.name, labels(a)[0]) AS source, "
+                "coalesce(b.name, labels(b)[0]) AS target, "
+                "count(c) AS shared_chunks, "
+                "collect(c.chunk_id) AS chunk_ids "
+                "ORDER BY shared_chunks DESC"
+            )
+            existing_pairs = {(r["source"], r["target"]) for r in rows}
+            existing_pairs.update({(r["target"], r["source"]) for r in rows})
+            cooccur_count = 0
+            idx = len(rows)
+
+            for record in cooccur_result:
+                src = record["source"]
+                tgt = record["target"]
+                if (src, tgt) in existing_pairs:
+                    continue
+                shared = record["shared_chunks"]
+                # Weight by co-occurrence strength (more shared chunks = stronger)
+                weight = min(0.5 + shared * 0.1, 0.85)
+                chunk_ids = [str(c) for c in record["chunk_ids"] if c]
+
+                rows.append({
+                    "id": str(uuid.uuid4()),
+                    "source": src,
+                    "target": tgt,
+                    "description": f"{src} and {tgt} co-occur in {shared} text chunk(s)",
+                    "weight": weight,
+                    "human_readable_id": idx,
+                    "text_unit_ids": chunk_ids,
+                })
+                existing_pairs.add((src, tgt))
+                idx += 1
+                cooccur_count += 1
+
+            logger.info("Added %d co-occurrence edges", cooccur_count)
+
     except Exception:
         logger.exception("Failed to export relationships from Neo4j")
         rows = []
@@ -102,6 +242,7 @@ def export_text_units(db_session) -> pd.DataFrame:
                 "id": chunk_id,
                 "text": content or "",
                 "n_tokens": len((content or "").split()),
+                "document_id": doc_id or "",
                 "document_ids": [doc_id] if doc_id else [],
                 "entity_ids": [],
                 "relationship_ids": [],

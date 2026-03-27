@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     retrieval_min_score_threshold: float = 0.25
 
     # Query defaults (exposed via /v1/settings/retrieval for frontend)
+    query_default_top_k: int = 20
     query_default_min_confidence: float = 0.1
 
     # Embedding batching

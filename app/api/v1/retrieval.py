@@ -194,10 +194,14 @@ def _apply_reranker(
     if not _s.reranker_enabled or not body.query_text:
         return results
 
+    # Truncate content_text for reranker — long image descriptions (2000+ chars)
+    # make the cross-encoder extremely slow on CPU.  512 chars is enough for
+    # the reranker's max token window.
+    _RERANK_MAX_CHARS = 512
     rerank_input = [
         {
             "chunk_id": str(r.chunk_id or ""),
-            "content_text": r.content_text or "",
+            "content_text": (r.content_text or "")[:_RERANK_MAX_CHARS],
             "score": r.score,
             "artifact_id": r.artifact_id,
             "document_id": r.document_id,
@@ -268,9 +272,9 @@ async def _multi_modal_pipeline(
 
     # Step 4: Filter by modality
     if body.modality_filter == ModalityFilter.text:
-        deduped = [r for r in deduped if r.modality in ("text", "table", "image_description")]
+        deduped = [r for r in deduped if r.modality in ("text", "table")]
     elif body.modality_filter == ModalityFilter.image:
-        deduped = [r for r in deduped if r.modality in ("image", "schematic")]
+        deduped = [r for r in deduped if r.modality in ("image", "schematic", "image_description")]
 
     # Sort by score descending, cap at top_k
     deduped.sort(key=lambda x: x.score, reverse=True)
@@ -448,10 +452,11 @@ async def _text_vector_search(
     # Map Qdrant results — always fetch chunk_text for content dedup
     # Exclude image_description modality for basic text search — those are
     # long VLM-generated analyses that dominate results and belong in multi-modal.
+    exclude_img_desc = body.strategy == QueryStrategy.basic
     results = []
     for hit in hits:
         payload = hit.get("payload", {})
-        if payload.get("modality") == "image_description":
+        if exclude_img_desc and payload.get("modality") == "image_description":
             continue
         results.append(
             QueryResultItem(
@@ -1084,7 +1089,7 @@ async def get_retrieval_settings():
     from app.config import get_settings
     settings = get_settings()
     return {
-        "top_k": 10,
+        "top_k": settings.query_default_top_k,
         "reranker_top_n": settings.reranker_top_n,
         "min_confidence": settings.query_default_min_confidence,
     }
