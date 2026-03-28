@@ -151,10 +151,14 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
     else:
         input_docs = None
 
+    # First run (no index exists): full build
+    # Subsequent runs: incremental update (only new text units + delta merge)
+    has_existing_index = (output_dir / "entities.parquet").exists()
+
     results = _run_async(build_index(
         config=config,
         method=IndexingMethod.Standard,
-        is_update_run=False,
+        is_update_run=has_existing_index,
         verbose=True,
         input_documents=input_docs,
     ))
