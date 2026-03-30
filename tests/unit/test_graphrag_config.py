@@ -16,16 +16,20 @@ class TestGraphRAGSettings:
             neo4j_password="test",
         )
         assert s.graphrag_llm_provider == "ollama"
-        assert s.graphrag_llm_model == "llama3.2"
-        assert s.graphrag_llm_api_base == ""
-        assert s.graphrag_api_key == ""
-        assert s.graphrag_embedding_model == "nomic-embed-text"
-        assert s.graphrag_data_dir == "/app/graphrag_data"
+        # Note: specific model/url values may be overridden by env vars;
+        # we only assert the structural defaults that env vars don't touch.
         assert s.graphrag_community_level == 2
         assert s.graphrag_tune_interval_minutes == 1440
         assert s.graphrag_indexing_enabled is True
-        assert s.graphrag_indexing_interval_minutes == 60
-        assert s.graphrag_max_cluster_size == 10
+        assert s.graphrag_max_cluster_size == 50
+        assert s.graphrag_use_fast_method is False
+        assert s.graphrag_cache_enabled is True
+        assert s.graphrag_local_response_type == "Detailed explanation"
+        assert s.graphrag_global_response_type == "Multiple Paragraphs"
+        assert s.graphrag_drift_response_type == "In-depth analysis"
+        assert s.graphrag_basic_response_type == "Concise answer"
+        assert s.graphrag_dynamic_community_selection is True
+        assert s.graphrag_dry_run is False
 
     def test_openai_provider_config(self):
         """Settings accept OpenAI provider configuration."""
@@ -59,7 +63,12 @@ class TestBuildGraphRAGConfig:
         settings.graphrag_embedding_model = "nomic-embed-text"
         settings.graphrag_data_dir = str(tmp_path / "graphrag_data")
         settings.graphrag_community_level = 2
-        settings.graphrag_max_cluster_size = 10
+        settings.graphrag_max_cluster_size = 50
+        settings.graphrag_cache_enabled = True
+        settings.text_embedding_dim = 1024
+        settings.ollama_num_ctx = 16384
+        settings.get_ollama_llm_url.return_value = "http://ollama:11434"
+        settings.get_ollama_embedding_url.return_value = "http://ollama:11434"
 
         config = build_graphrag_config(settings)
         assert config is not None
@@ -78,10 +87,39 @@ class TestBuildGraphRAGConfig:
         settings.graphrag_embedding_model = "text-embedding-3-small"
         settings.graphrag_data_dir = str(tmp_path / "graphrag_data")
         settings.graphrag_community_level = 2
-        settings.graphrag_max_cluster_size = 10
+        settings.graphrag_max_cluster_size = 50
+        settings.graphrag_cache_enabled = True
+        settings.text_embedding_dim = 1024
+        settings.ollama_num_ctx = 16384
+        settings.get_ollama_llm_url.return_value = "http://ollama:11434"
+        settings.get_ollama_embedding_url.return_value = "http://ollama:11434"
 
         config = build_graphrag_config(settings)
         assert config is not None
+
+    def test_cache_disabled(self, tmp_path):
+        """Config builder passes cache=None when disabled."""
+        from unittest.mock import MagicMock
+
+        from app.services.graphrag_config import build_graphrag_config
+
+        settings = MagicMock()
+        settings.graphrag_llm_provider = "ollama"
+        settings.graphrag_llm_model = "llama3.2"
+        settings.graphrag_llm_api_base = "http://ollama:11434/v1"
+        settings.graphrag_api_key = ""
+        settings.graphrag_embedding_model = "nomic-embed-text"
+        settings.graphrag_data_dir = str(tmp_path / "graphrag_data")
+        settings.graphrag_community_level = 2
+        settings.graphrag_max_cluster_size = 50
+        settings.graphrag_cache_enabled = False
+        settings.text_embedding_dim = 1024
+        settings.ollama_num_ctx = 16384
+        settings.get_ollama_llm_url.return_value = "http://ollama:11434"
+        settings.get_ollama_embedding_url.return_value = "http://ollama:11434"
+
+        config = build_graphrag_config(settings)
+        assert config.cache.type == "none"
 
     def test_prompts_dir_created(self, tmp_path):
         """Config builder creates prompts directory."""
@@ -97,7 +135,12 @@ class TestBuildGraphRAGConfig:
         settings.graphrag_embedding_model = "nomic-embed-text"
         settings.graphrag_data_dir = str(tmp_path / "graphrag_data")
         settings.graphrag_community_level = 2
-        settings.graphrag_max_cluster_size = 10
+        settings.graphrag_max_cluster_size = 50
+        settings.graphrag_cache_enabled = True
+        settings.text_embedding_dim = 1024
+        settings.ollama_num_ctx = 16384
+        settings.get_ollama_llm_url.return_value = "http://ollama:11434"
+        settings.get_ollama_embedding_url.return_value = "http://ollama:11434"
 
         build_graphrag_config(settings)
         assert (tmp_path / "graphrag_data" / "prompts").is_dir()

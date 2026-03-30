@@ -188,8 +188,6 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir
             logger.warning("Failed to backup output/ before update", exc_info=True)
 
     # Logging callback so we can see exactly which workflow is running
-    from graphrag.callbacks.workflow_callbacks import WorkflowCallbacks as _WFCallbacks
-
     class _LoggingCallbacks:
         def pipeline_start(self, names):
             logger.info("GraphRAG pipeline starting: %d workflows: %s", len(names), names)
@@ -343,7 +341,7 @@ def _load_search_data(settings) -> dict:
 
 
 def _run_local_search(config, data: dict, query: str, community_level: int,
-                      response_type: str, dynamic_community_selection: bool):
+                      response_type: str):
     """Run GraphRAG local search."""
     from graphrag.api import local_search as graphrag_local
 
@@ -434,7 +432,6 @@ def local_search(query: str) -> dict:
         response, context = _run_local_search(
             config, data, query, settings.graphrag_community_level,
             settings.graphrag_local_response_type,
-            settings.graphrag_dynamic_community_selection,
         )
         return {"response": response, "context": _serialize_context(context)}
     except Exception:
