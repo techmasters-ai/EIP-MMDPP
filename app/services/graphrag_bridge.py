@@ -1,10 +1,11 @@
 """Postgres -> GraphRAG input bridge layer.
 
-Exports documents (full text) and text units from Postgres into pandas
-DataFrames for Microsoft GraphRAG's indexing pipeline. GraphRAG owns
-entity/relationship extraction via its LLM pipeline.
+Exports documents (full text) from Postgres into pandas DataFrames for
+Microsoft GraphRAG's indexing pipeline. GraphRAG owns entity/relationship
+extraction via its LLM pipeline.
 """
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -65,9 +66,13 @@ def export_documents(db_session) -> pd.DataFrame:
         rows = []
         for doc_id, doc_info in docs.items():
             full_text = "\n\n".join(doc_texts.get(doc_id, []))
+            # Append content hash to title so GraphRAG's delta comparison
+            # detects modified documents (it compares by title only).
+            content_hash = hashlib.md5(full_text.encode()).hexdigest()[:8]
+            title = f"{doc_info['title']}_{content_hash}"
             rows.append({
                 "id": doc_info["id"],
-                "title": doc_info["title"],
+                "title": title,
                 "text": full_text,
             })
 

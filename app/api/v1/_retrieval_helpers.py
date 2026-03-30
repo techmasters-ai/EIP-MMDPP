@@ -92,16 +92,19 @@ def deduplicate_results(results: list[QueryResultItem]) -> list[QueryResultItem]
 def diversify_results(results: list[QueryResultItem]) -> list[QueryResultItem]:
     """Content-level dedupe: keep highest-scoring entry per unique text.
 
-    Deduplicates across documents — identical text from different PDFs
-    keeps only the highest-scoring result. Non-text modalities (image,
-    graph_node) and items without content_text pass through.
+    Deduplicates across documents — near-identical text from different PDFs
+    keeps only the highest-scoring result. Uses first 200 chars of normalized
+    text as the dedup key to catch chunks that differ only in trailing content
+    or minor formatting. Non-text modalities (image, graph_node) and items
+    without content_text pass through.
     """
     best: dict[str, QueryResultItem] = {}
     for r in results:
         if r.modality in ("image", "graph_node") or not r.content_text:
             best[str(id(r))] = r
             continue
-        normalized = r.content_text.strip().lower()
+        # Use first 200 chars for fuzzy cross-document dedup
+        normalized = " ".join(r.content_text.strip().lower().split())[:200]
         if normalized not in best or r.score > best[normalized].score:
             best[normalized] = r
     return list(best.values())

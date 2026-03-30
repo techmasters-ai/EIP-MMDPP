@@ -44,16 +44,18 @@ def build_graphrag_config(settings) -> GraphRagConfig:
     # Pass num_ctx so Ollama allocates the correct context window.
     # Without this, Ollama uses the model's built-in default which may
     # be too small for GraphRAG's community report prompts.
-    ollama_call_args = {}
+    # Pass timeout so LiteLLM doesn't use its 600s default.
+    # Also pass num_ctx so Ollama allocates the correct context window.
+    call_args = {"timeout": float(settings.graphrag_llm_timeout)}
     if settings.graphrag_llm_provider == "ollama":
-        ollama_call_args["num_ctx"] = settings.ollama_num_ctx
+        call_args["num_ctx"] = settings.ollama_num_ctx
 
     chat_model = ModelConfig(
         model_provider="openai",
         model=settings.graphrag_llm_model,
         api_key=api_key,
         api_base=api_base,
-        call_args=ollama_call_args,
+        call_args=call_args,
     )
 
     # Embedding may run on a different Ollama instance
