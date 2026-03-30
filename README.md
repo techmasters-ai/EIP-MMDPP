@@ -350,16 +350,56 @@ See `ontology/ontology.yaml` for the full schema.
 
 ## GraphRAG
 
-Community detection and cross-community search powered by Microsoft's `graphrag` library:
+Community detection and cross-community search powered by Microsoft's `graphrag` library. GraphRAG owns the full extraction pipeline — it reads documents from Postgres, chunks them, extracts entities/relationships via LLM, detects communities (Leiden clustering), generates community reports, and produces text embeddings for search.
 
-- **Indexing**: Celery Beat runs Leiden/Louvain community detection on the Neo4j graph, then generates LLM community reports (configurable interval via `GRAPHRAG_INDEXING_INTERVAL_MINUTES`). Manual trigger: `POST /v1/graphrag/index` dispatches the task immediately (Redis lock prevents overlapping runs)
-- **Local search**: Entity-centric retrieval with community report context — finds relevant entities via Neo4j fulltext index and enriches results with their community summaries and full node properties
-- **Global search**: Cross-community summarization — retrieves and ranks community reports for broad analytical questions
+### Architecture
 
-**Prerequisites**: GraphRAG queries require data in the knowledge graph:
-- **Local search** needs entities in Neo4j — ensure documents have been ingested with successful graph extraction (`derive_ontology_graph` task must complete without errors)
-- **Global search** needs community reports — ensure `GRAPHRAG_INDEXING_ENABLED=true` (default) and that at least one indexing cycle has run after entities exist in Neo4j
-- If prerequisites are not met, the API returns explicit errors (404 for no entity matches, 409 for missing community reports) instead of silent empty results
+```
+Postgres documents ──→ Bridge (export_all) ──→ input/documents.parquet
+                                                    │
+                                               GraphRAG Pipeline
+                                                    │
+                                        ┌───────────┴────────────┐
+                                        ▼                        ▼
+                                   First run:              Subsequent runs:
+                                 IndexingMethod.Standard  is_update_run=True
+                                   (full build)           (incremental delta)
+                                        │                        │
+                                        ▼                        ▼
+                              output/entities.parquet    update_output/{ts}/delta/
+                              output/relationships.parquet   → merged into output/
+                              output/communities.parquet
+                              output/community_reports.parquet
+                              output/text_units.parquet
+```
+
+**Neo4j and GraphRAG serve different purposes**: Neo4j stores the document structure graph (chunk links, same-page edges) and ontology entities for real-time traversal during multi-modal search expansion. GraphRAG owns community-based search with its own LLM-extracted entity graph stored in Parquet files.
+
+### Indexing
+
+- **Scheduled**: Celery Beat runs indexing on configurable interval (`GRAPHRAG_INDEXING_INTERVAL_MINUTES`, default 1440)
+- **Manual**: `POST /v1/graphrag/index` dispatches immediately (Redis lock prevents overlapping runs)
+- **Incremental**: First run does full extraction; subsequent runs use `is_update_run=True` for delta-only processing. Previous output is backed up before updates; restored on failure
+- **Stale lock cleanup**: Redis locks are automatically cleared on worker startup (prevents stuck locks from killed containers)
+- **Dry-run**: Set `GRAPHRAG_DRY_RUN=true` to validate config without running indexing
+- **Extraction prompt**: Configurable via `GRAPHRAG_EXTRACTION_PROMPT` env var (includes military ontology by default)
+- **Method**: Standard (LLM-based, default) or Fast (NLP-based, `GRAPHRAG_USE_FAST_METHOD=true`)
+- **Cache**: LLM response caching enabled by default (`GRAPHRAG_CACHE_ENABLED`); unchanged text units skip LLM calls on re-runs
+
+### Search (4 modes)
+
+| Mode | API Strategy | Description | Key Settings |
+|---|---|---|---|
+| **Local** | `graphrag_local` | Entity-centric retrieval with community context | `GRAPHRAG_LOCAL_RESPONSE_TYPE`, `GRAPHRAG_DYNAMIC_COMMUNITY_SELECTION` |
+| **Global** | `graphrag_global` | Cross-community summarization for broad questions | `GRAPHRAG_GLOBAL_RESPONSE_TYPE`, `GRAPHRAG_DYNAMIC_COMMUNITY_SELECTION` |
+| **DRIFT** | `graphrag_drift` | Community-informed expansion search | `GRAPHRAG_DRIFT_RESPONSE_TYPE` |
+| **Basic** | `graphrag_basic` | Vector search over text units | `GRAPHRAG_BASIC_RESPONSE_TYPE` |
+
+All response types, community level, and dynamic community selection are configurable via env vars.
+
+### Prerequisites
+- GraphRAG queries require at least one successful indexing cycle (`GRAPHRAG_INDEXING_ENABLED=true`)
+- API returns 409 for missing community reports instead of silent empty results
 
 ## Web UI
 
@@ -562,6 +602,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.25 | Image description tooltips: hover tooltips on embedded images via Docling web component (`kind: "description"` annotation fix), persistent description panel for standalone image documents, image-descriptions API endpoint, `SoftTimeLimitExceeded` handler for `derive_picture_descriptions`, configurable picture description timeouts, stage_run status fix for skipped stages (prevents false PARTIAL_COMPLETE on .txt and other non-image documents) | Complete |
 | 2.26 | Image description text search: LLM-generated image descriptions split into sections and embedded as BGE text vectors in `eip_text_chunks` (searchable via standard text queries), `image_description` modality with SAME_ARTIFACT chunk_links between sections, image URL resolution via artifact_id batch lookup, modality filter update. Graph expansion fixes: pass `query_text` to doc-structure fusion for military ID bonus, ontology re-scoring preserves relation weights, cross-modal expansion uses fusion formula, deprecated asyncio API fixes, configurable cross-modal LIMIT, dead code cleanup. Picture description timeout tripled (3h). GraphRAG LLM timeout configurable (default 3h). DoclingViewer page centering. | Complete |
 | 2.27 | Foreign language translation: per-element language detection (`langdetect`) + LLM translation in ingest pipeline, translated text stored alongside original in MinIO, all downstream stages (metadata, chunking, embeddings, ontology) operate on English translation, classification marking detection uses original text, translation API endpoint, DoclingViewer "Translate" toggle with language banner | Complete |
+| 2.28 | GraphRAG architecture overhaul: separated bridge input/ from GraphRAG output/ (fixed overwrite bug), fixed `_get_method()` double-suffix bug (`standard-update-update`), removed dead Neo4j entity/relationship bridge exports (Path A — GraphRAG owns extraction), fixed double-chunking (pass full documents not pre-chunked), fixed auto-tune prompt filename mismatch, incremental indexing with pre-update backup/restore, stale Redis lock cleanup on worker startup, configurable response types per search method, cache toggle, fast method option, dry-run mode, dynamic community selection, covariates support, increased default cluster size (10→50) | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -583,7 +624,10 @@ app/
 ├── services/
 │   ├── docling_client.py       # HTTP client for Docling conversion service
 │   ├── docling_graph_service.py # HTTP client for Docling-Graph extraction service
-│   ├── graphrag_service.py     # GraphRAG community detection, reports, search
+│   ├── graphrag_service.py     # GraphRAG indexing (extraction, communities, reports) + search
+│   ├── graphrag_bridge.py      # Postgres → GraphRAG input bridge (document export)
+│   ├── graphrag_config.py      # GraphRAG configuration builder
+│   ├── graphrag_prompts.py     # Military ontology prompts for extraction + search
 │   ├── neo4j_graph.py          # Neo4j Cypher operations (sync + async)
 │   ├── qdrant_store.py         # Qdrant vector upsert/search
 │   ├── canonicalization.py     # Entity alias resolution + fuzzy match

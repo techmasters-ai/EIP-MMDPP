@@ -141,7 +141,7 @@ class Settings(BaseSettings):
     # GraphRAG (Microsoft GraphRAG — community detection + reports + search)
     graphrag_indexing_enabled: bool = True
     graphrag_indexing_interval_minutes: int = 60
-    graphrag_max_cluster_size: int = 10
+    graphrag_max_cluster_size: int = 50
     graphrag_community_level: int = 2
     graphrag_data_dir: str = "/app/graphrag_data"
     # LLM provider for GraphRAG (ollama | openai)
@@ -158,6 +158,19 @@ class Settings(BaseSettings):
     graphrag_extraction_prompt: str = ""
     # Auto-tuning schedule (minutes, default 24h)
     graphrag_tune_interval_minutes: int = 1440
+    # Use Fast method (NLP-based) instead of Standard (LLM-based) for extraction
+    graphrag_use_fast_method: bool = False
+    # Enable/disable LLM response cache for extraction
+    graphrag_cache_enabled: bool = True
+    # Search response type per method (controls answer format)
+    graphrag_local_response_type: str = "Detailed explanation"
+    graphrag_global_response_type: str = "Multiple Paragraphs"
+    graphrag_drift_response_type: str = "In-depth analysis"
+    graphrag_basic_response_type: str = "Concise answer"
+    # Dynamic community selection (auto-select relevant communities)
+    graphrag_dynamic_community_selection: bool = True
+    # Dry-run mode: validate config and export data without running indexing
+    graphrag_dry_run: bool = False
 
     # Document Analysis (LLM metadata extraction)
     doc_analysis_enabled: bool = True

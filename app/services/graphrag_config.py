@@ -90,7 +90,8 @@ def build_graphrag_config(settings) -> GraphRagConfig:
             entity_types=entity_types,
         ),
         output_storage=StorageConfig(base_dir=str(output_dir)),
-        cache=CacheConfig(storage=StorageConfig(base_dir=str(cache_dir))),
+        update_output_storage=StorageConfig(base_dir=str(data_dir / "update_output")),
+        cache=CacheConfig(storage=StorageConfig(base_dir=str(cache_dir))) if settings.graphrag_cache_enabled else None,
         reporting=ReportingConfig(type="file", base_dir=str(data_dir / "logs")),
         vector_store=VectorStoreConfig(
             db_uri=str(output_dir / "lancedb"),

@@ -1,12 +1,13 @@
 """Microsoft GraphRAG integration -- indexing, search, and prompt tuning.
 
-Replaces the custom community detection/report implementation with
-Microsoft's GraphRAG library. Uses the Neo4j ontology graph built by
-Docling-Graph as input via the bridge layer.
+GraphRAG owns the full extraction pipeline: chunking, entity/relationship
+extraction (LLM), community detection, report generation, and embeddings.
+The bridge layer only exports documents from Postgres as input.
 """
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -101,9 +102,12 @@ _patch_embedding_sanitization()
 def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
     """Run the full GraphRAG indexing pipeline.
 
-    1. Export Neo4j entities/relationships + Postgres text units to Parquet
-    2. Run GraphRAG community detection + report generation + embeddings
+    1. Export documents from Postgres to input/
+    2. Run GraphRAG: chunking, extraction, communities, reports, embeddings
     3. Returns stats dict with communities_created and reports_generated
+
+    neo4j_driver is accepted for API compatibility but no longer used —
+    GraphRAG owns entity/relationship extraction.
     """
     settings = get_settings()
     if not settings.graphrag_indexing_enabled:
@@ -112,11 +116,13 @@ def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
     try:
         data_dir = Path(settings.graphrag_data_dir)
         output_dir = data_dir / "output"
+        input_dir = data_dir / "input"
 
-        # Step 1: Bridge -- export ontology graph to Parquet
-        stats = export_all(neo4j_driver, db_session, output_dir)
-        if stats.get("entities", 0) == 0:
-            logger.info("No entities in graph -- skipping GraphRAG indexing")
+        # Step 1: Bridge -- export documents to input/ (separate from
+        # GraphRAG's output/ which it owns for index artifacts)
+        stats = export_all(db_session, input_dir)
+        if stats.get("documents", 0) == 0:
+            logger.info("No documents found -- skipping GraphRAG indexing")
             return {"communities_created": 0, "reports_generated": 0}
 
         # Ensure prompts are written
@@ -124,7 +130,7 @@ def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
         write_prompt_files(prompts_dir)
 
         # Step 2: Run GraphRAG pipeline
-        result = _run_graphrag_pipeline(settings, data_dir, output_dir)
+        result = _run_graphrag_pipeline(settings, data_dir, output_dir, input_dir)
         return result
 
     except Exception:
@@ -132,60 +138,141 @@ def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
         return {"communities_created": 0, "reports_generated": 0}
 
 
-def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
+def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir: Path) -> dict:
     """Run GraphRAG indexing pipeline with ontology-guided extraction."""
     from graphrag.api import build_index
     from graphrag.config.enums import IndexingMethod
 
     config = build_graphrag_config(settings)
 
-    # Load pre-exported text units as input documents for GraphRAG
-    text_units_path = output_dir / "text_units.parquet"
-    if text_units_path.exists():
-        text_df = pd.read_parquet(text_units_path)
+    # Load documents exported by bridge as input
+    docs_path = input_dir / "documents.parquet"
+    if docs_path.exists():
+        docs_df = pd.read_parquet(docs_path)
         input_docs = pd.DataFrame({
-            "id": text_df["id"],
-            "text": text_df["text"],
-            "title": text_df["id"],
+            "id": docs_df["id"],
+            "text": docs_df["text"],
+            "title": docs_df["title"],
         })
     else:
         input_docs = None
 
-    # First run (no index exists): full build
-    # Subsequent runs: incremental update (only new text units + delta merge)
+    # First run: no GraphRAG-produced index in output/ yet → full build
+    # Subsequent runs: GraphRAG's own entities.parquet exists → incremental update
+    # Note: output/ is exclusively owned by GraphRAG; input/ is the bridge export
+    #
+    # GraphRAG's _get_method() appends "-update" when is_update_run=True,
+    # so we always pass IndexingMethod.Standard (or Fast) and let
+    # is_update_run control whether it becomes "standard-update".
     has_existing_index = (output_dir / "entities.parquet").exists()
 
-    results = _run_async(build_index(
-        config=config,
-        method=IndexingMethod.Standard,
-        is_update_run=has_existing_index,
-        verbose=True,
-        input_documents=input_docs,
-    ))
+    use_fast = settings.graphrag_use_fast_method
+    base_method = IndexingMethod.Fast if use_fast else IndexingMethod.Standard
 
-    communities_created = 0
-    reports_generated = 0
+    logger.info(
+        "GraphRAG indexing mode: %s%s (entities.parquet exists=%s)",
+        "fast" if use_fast else "standard",
+        "-update" if has_existing_index else "",
+        has_existing_index,
+    )
 
+    # Backup output before update run (#13: failure recovery)
+    backup_dir = data_dir / "output_backup"
+    if has_existing_index:
+        try:
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            shutil.copytree(output_dir, backup_dir)
+            logger.info("Backed up output/ to output_backup/ before update")
+        except Exception:
+            logger.warning("Failed to backup output/ before update", exc_info=True)
+
+    # Logging callback so we can see exactly which workflow is running
+    from graphrag.callbacks.workflow_callbacks import WorkflowCallbacks as _WFCallbacks
+
+    class _LoggingCallbacks:
+        def pipeline_start(self, names):
+            logger.info("GraphRAG pipeline starting: %d workflows: %s", len(names), names)
+
+        def pipeline_end(self, results):
+            errors = [r for r in results if r.error]
+            logger.info("GraphRAG pipeline finished: %d workflows, %d errors", len(results), len(errors))
+
+        def workflow_start(self, name, instance):
+            logger.info(">>> GraphRAG workflow STARTED: %s", name)
+
+        def workflow_end(self, name, instance):
+            logger.info("<<< GraphRAG workflow ENDED: %s", name)
+
+        def progress(self, progress):
+            if progress.total_items and progress.total_items > 0:
+                logger.info("    GraphRAG progress: %s — %s/%s",
+                            progress.description or "?",
+                            progress.completed_items, progress.total_items)
+
+        def pipeline_error(self, error):
+            logger.error("GraphRAG pipeline error: %s", error)
+
+    try:
+        results = _run_async(build_index(
+            config=config,
+            method=base_method,
+            is_update_run=has_existing_index,
+            verbose=True,
+            input_documents=input_docs,
+            callbacks=[_LoggingCallbacks()],
+        ))
+    except Exception:
+        # Restore backup on failure (#13)
+        if has_existing_index and backup_dir.exists():
+            logger.warning("Indexing failed, restoring output/ from backup")
+            try:
+                shutil.rmtree(output_dir)
+                shutil.copytree(backup_dir, output_dir)
+            except Exception:
+                logger.exception("Failed to restore output/ from backup")
+        raise
+
+    has_errors = False
     for result in results:
         if result.error:
             logger.warning(
                 "GraphRAG workflow %s error: %s",
                 result.workflow, result.error,
             )
+            has_errors = True
         else:
             logger.info("GraphRAG workflow %s completed", result.workflow)
+
+    # If workflows had errors and this was an update, restore backup
+    if has_errors and has_existing_index and backup_dir.exists():
+        logger.warning("Update had errors, restoring output/ from backup")
+        try:
+            shutil.rmtree(output_dir)
+            shutil.copytree(backup_dir, output_dir)
+        except Exception:
+            logger.exception("Failed to restore output/ from backup")
 
     # Sanitize all output parquets — bge-m3 produces NaN on non-breaking
     # hyphens (U+2011) and similar Unicode chars that gpt-oss generates.
     _sanitize_output_parquets(output_dir)
 
     # Count outputs
+    communities_created = 0
+    reports_generated = 0
     communities_path = output_dir / "communities.parquet"
     reports_path = output_dir / "community_reports.parquet"
     if communities_path.exists():
         communities_created = len(pd.read_parquet(communities_path))
     if reports_path.exists():
         reports_generated = len(pd.read_parquet(reports_path))
+
+    # Clean up backup on success
+    if not has_errors and backup_dir.exists():
+        try:
+            shutil.rmtree(backup_dir)
+        except Exception:
+            pass
 
     return {
         "communities_created": communities_created,
@@ -194,13 +281,7 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path) -> dict:
 
 
 def _sanitize_output_parquets(output_dir: Path) -> None:
-    """Sanitize Unicode chars in all output parquets that cause NaN in bge-m3.
-
-    The LLM (gpt-oss) generates en dashes, non-breaking hyphens and narrow
-    no-break spaces which produce NaN embeddings from bge-m3.  We rewrite
-    the parquets with safe ASCII equivalents so that subsequent embedding
-    or re-indexing runs succeed.
-    """
+    """Sanitize Unicode chars in all output parquets that cause NaN in bge-m3."""
     replacements = str.maketrans({
         "\u2011": "-", "\u2010": "-", "\u2012": "-",
         "\u2013": "-", "\u2014": "-", "\u202f": " ", "\u00a0": " ",
@@ -250,7 +331,7 @@ def _load_search_data(settings) -> dict:
     data = {}
     for name in (
         "entities", "communities", "community_reports",
-        "text_units", "relationships",
+        "text_units", "relationships", "covariates",
     ):
         path = output_dir / f"{name}.parquet"
         if path.exists():
@@ -261,9 +342,12 @@ def _load_search_data(settings) -> dict:
     return data
 
 
-def _run_local_search(config, data: dict, query: str, community_level: int):
+def _run_local_search(config, data: dict, query: str, community_level: int,
+                      response_type: str, dynamic_community_selection: bool):
     """Run GraphRAG local search."""
     from graphrag.api import local_search as graphrag_local
+
+    covariates = data["covariates"] if not data["covariates"].empty else None
 
     return _run_async(graphrag_local(
         config=config,
@@ -272,14 +356,15 @@ def _run_local_search(config, data: dict, query: str, community_level: int):
         community_reports=data["community_reports"],
         text_units=data["text_units"],
         relationships=data["relationships"],
-        covariates=None,
+        covariates=covariates,
         community_level=community_level,
-        response_type="Detailed explanation",
+        response_type=response_type,
         query=query,
     ))
 
 
-def _run_global_search(config, data: dict, query: str, community_level: int):
+def _run_global_search(config, data: dict, query: str, community_level: int,
+                       response_type: str, dynamic_community_selection: bool):
     """Run GraphRAG global search."""
     from graphrag.api import global_search as graphrag_global
 
@@ -289,13 +374,14 @@ def _run_global_search(config, data: dict, query: str, community_level: int):
         communities=data["communities"],
         community_reports=data["community_reports"],
         community_level=community_level,
-        dynamic_community_selection=True,
-        response_type="Multiple Paragraphs",
+        dynamic_community_selection=dynamic_community_selection,
+        response_type=response_type,
         query=query,
     ))
 
 
-def _run_drift_search(config, data: dict, query: str, community_level: int):
+def _run_drift_search(config, data: dict, query: str, community_level: int,
+                      response_type: str):
     """Run GraphRAG DRIFT search."""
     from graphrag.api import drift_search as graphrag_drift
 
@@ -307,19 +393,19 @@ def _run_drift_search(config, data: dict, query: str, community_level: int):
         text_units=data["text_units"],
         relationships=data["relationships"],
         community_level=community_level,
-        response_type="In-depth analysis",
+        response_type=response_type,
         query=query,
     ))
 
 
-def _run_basic_search(config, data: dict, query: str):
+def _run_basic_search(config, data: dict, query: str, response_type: str):
     """Run GraphRAG basic search."""
     from graphrag.api import basic_search as graphrag_basic
 
     return _run_async(graphrag_basic(
         config=config,
         text_units=data["text_units"],
-        response_type="Concise answer",
+        response_type=response_type,
         query=query,
     ))
 
@@ -347,6 +433,8 @@ def local_search(query: str) -> dict:
             return {"response": "", "context": {}, "error": "communities_not_indexed"}
         response, context = _run_local_search(
             config, data, query, settings.graphrag_community_level,
+            settings.graphrag_local_response_type,
+            settings.graphrag_dynamic_community_selection,
         )
         return {"response": response, "context": _serialize_context(context)}
     except Exception:
@@ -364,6 +452,8 @@ def global_search(query: str) -> dict:
             return {"response": "", "context": {}, "error": "communities_not_indexed"}
         response, context = _run_global_search(
             config, data, query, settings.graphrag_community_level,
+            settings.graphrag_global_response_type,
+            settings.graphrag_dynamic_community_selection,
         )
         return {"response": response, "context": _serialize_context(context)}
     except Exception:
@@ -381,6 +471,7 @@ def drift_search(query: str) -> dict:
             return {"response": "", "context": {}, "error": "communities_not_indexed"}
         response, context = _run_drift_search(
             config, data, query, settings.graphrag_community_level,
+            settings.graphrag_drift_response_type,
         )
         return {"response": response, "context": _serialize_context(context)}
     except Exception:
@@ -394,7 +485,9 @@ def basic_search(query: str) -> dict:
         settings = get_settings()
         config = build_graphrag_config(settings)
         data = _load_search_data(settings)
-        response, context = _run_basic_search(config, data, query)
+        response, context = _run_basic_search(
+            config, data, query, settings.graphrag_basic_response_type,
+        )
         return {"response": response, "context": _serialize_context(context)}
     except Exception:
         logger.exception("GraphRAG basic search failed")
@@ -428,7 +521,7 @@ def run_auto_tune() -> dict:
         # Write tuned prompts to prompts dir
         prompts_dir = data_dir / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
-        (prompts_dir / "entity_extraction.txt").write_text(entity_prompt)
+        (prompts_dir / "extract_graph.txt").write_text(entity_prompt)
         (prompts_dir / "entity_summarization.txt").write_text(
             entity_summary_prompt
         )

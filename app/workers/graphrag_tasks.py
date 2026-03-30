@@ -1,11 +1,12 @@
 """GraphRAG Celery tasks -- indexing and prompt auto-tuning.
 
-Indexing: scheduled hourly (configurable), exports Neo4j graph to Parquet,
-runs Microsoft GraphRAG community detection + report generation.
+Indexing: scheduled hourly (configurable), exports documents to Parquet,
+runs Microsoft GraphRAG extraction + community detection + report generation.
 
 Auto-tuning: scheduled daily (configurable), refines prompts based on corpus.
 
 Both tasks use Redis locks to prevent overlapping runs.
+Lock cleanup runs on worker startup to clear stale locks from killed containers.
 """
 
 import logging
@@ -16,6 +17,29 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 _settings = _get_settings()
+
+
+def cleanup_stale_locks():
+    """Clear stale GraphRAG Redis locks on worker startup.
+
+    When containers are killed mid-indexing, Redis locks persist until TTL
+    expires (up to 16+ hours). This clears them so the next scheduled run
+    can proceed.
+    """
+    import redis
+
+    try:
+        r = redis.from_url(_settings.celery_broker_url)
+        for key in ("graphrag:indexing:lock", "graphrag:tuning:lock"):
+            if r.exists(key):
+                r.delete(key)
+                logger.info("Cleared stale Redis lock: %s", key)
+    except Exception:
+        logger.warning("Failed to cleanup stale GraphRAG locks", exc_info=True)
+
+
+# Run cleanup on module import (worker startup)
+cleanup_stale_locks()
 
 
 @celery_app.task(bind=True, soft_time_limit=_settings.graphrag_llm_timeout,
@@ -29,6 +53,14 @@ def run_graphrag_indexing_task(self) -> dict:
     settings = get_settings()
     if not settings.graphrag_indexing_enabled:
         return {"skipped": True}
+
+    # Dry-run mode: validate config without running indexing
+    if settings.graphrag_dry_run:
+        from app.services.graphrag_config import build_graphrag_config
+        config = build_graphrag_config(settings)
+        logger.info("GraphRAG dry-run: config validated successfully. model=%s, provider=%s",
+                     settings.graphrag_llm_model, settings.graphrag_llm_provider)
+        return {"dry_run": True, "config_valid": True}
 
     import redis
 

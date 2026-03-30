@@ -19,8 +19,16 @@ def _mock_settings(**overrides):
     s.graphrag_embedding_model = "nomic-embed-text"
     s.graphrag_data_dir = "/tmp/test_graphrag"
     s.graphrag_community_level = 2
-    s.graphrag_max_cluster_size = 10
+    s.graphrag_max_cluster_size = 50
     s.graphrag_tune_interval_minutes = 1440
+    s.graphrag_use_fast_method = False
+    s.graphrag_cache_enabled = True
+    s.graphrag_local_response_type = "Detailed explanation"
+    s.graphrag_global_response_type = "Multiple Paragraphs"
+    s.graphrag_drift_response_type = "In-depth analysis"
+    s.graphrag_basic_response_type = "Concise answer"
+    s.graphrag_dynamic_community_selection = True
+    s.graphrag_dry_run = False
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -40,9 +48,9 @@ class TestRunGraphragIndexing:
         result = run_graphrag_indexing(MagicMock(), MagicMock())
         assert result == {"communities_created": 0, "reports_generated": 0}
 
-    @patch("app.services.graphrag_service.export_all", return_value={"entities": 0})
+    @patch("app.services.graphrag_service.export_all", return_value={"documents": 0})
     @patch("app.services.graphrag_service.get_settings")
-    def test_empty_graph_returns_zeros(self, mock_gs, mock_export):
+    def test_empty_documents_returns_zeros(self, mock_gs, mock_export):
         from app.services.graphrag_service import run_graphrag_indexing
 
         mock_gs.return_value = _mock_settings()
@@ -56,7 +64,7 @@ class TestRunGraphragIndexing:
         from app.services.graphrag_service import run_graphrag_indexing
 
         mock_gs.return_value = _mock_settings()
-        mock_export.return_value = {"entities": 5, "relationships": 3}
+        mock_export.return_value = {"documents": 5}
         mock_pipeline.return_value = {"communities_created": 2, "reports_generated": 2}
 
         result = run_graphrag_indexing(MagicMock(), MagicMock())
@@ -88,6 +96,7 @@ def _make_mock_search_data():
         ),
         "text_units": pd.DataFrame(columns=["id", "text"]),
         "relationships": pd.DataFrame(columns=["id", "source", "target"]),
+        "covariates": pd.DataFrame(),
     }
 
 
