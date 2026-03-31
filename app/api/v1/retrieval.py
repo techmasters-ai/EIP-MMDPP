@@ -21,6 +21,8 @@ from app.api.v1._retrieval_helpers import (
 )
 from app.db.session import get_async_session, get_neo4j_async_driver, get_qdrant_async_client
 from app.schemas.retrieval import (
+    GraphRAGJobStatusResponse,
+    GraphRAGJobSubmitResponse,
     ModalityFilter,
     QueryResultItem,
     QueryStrategy,
@@ -1116,6 +1118,118 @@ async def get_graphrag_settings():
         "indexing_interval_minutes": settings.graphrag_indexing_interval_minutes,
         "last_indexing_at": last_indexing_at,
     }
+
+
+# ---------------------------------------------------------------------------
+# Async GraphRAG query — submit / status / result
+# ---------------------------------------------------------------------------
+
+_GRAPHRAG_STRATEGIES = {"graphrag_local", "graphrag_global", "graphrag_drift", "graphrag_basic"}
+
+
+@router.post("/retrieval/graphrag/submit", response_model=GraphRAGJobSubmitResponse,
+             status_code=202)
+async def submit_graphrag_query(body: UnifiedQueryRequest):
+    """Submit a GraphRAG query as an async job. Returns a job_id for polling."""
+    if body.strategy.value not in _GRAPHRAG_STRATEGIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Strategy must be one of {sorted(_GRAPHRAG_STRATEGIES)}, "
+            f"got '{body.strategy.value}'",
+        )
+
+    from app.workers.graphrag_tasks import run_graphrag_query_task
+
+    request_dict = body.model_dump(mode="json")
+    task = run_graphrag_query_task.delay(request_dict)
+
+    # Track job ID in Redis so we can distinguish real jobs from bogus IDs
+    import redis
+    from app.config import get_settings
+    settings = get_settings()
+    try:
+        r = redis.from_url(settings.celery_broker_url)
+        r.set(f"graphrag:job:{task.id}", "1", ex=86400)
+    except Exception:
+        pass  # Non-fatal: status endpoint falls back to Celery state
+
+    return GraphRAGJobSubmitResponse(job_id=str(task.id), status="pending")
+
+
+@router.get("/retrieval/graphrag/status/{job_id}", response_model=GraphRAGJobStatusResponse)
+async def get_graphrag_query_status(job_id: str):
+    """Poll the status of an async GraphRAG query job."""
+    import redis
+    from app.config import get_settings
+    from app.workers.celery_app import celery_app
+
+    settings = get_settings()
+
+    # Check tracking key first — reject bogus IDs
+    try:
+        r = redis.from_url(settings.celery_broker_url)
+        if not r.exists(f"graphrag:job:{job_id}"):
+            raise HTTPException(status_code=404, detail="Job not found or expired")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Redis unavailable — fall through to Celery check
+
+    result = celery_app.AsyncResult(job_id)
+    state = result.state  # PENDING, STARTED, SUCCESS, FAILURE, REVOKED
+
+    status_map = {
+        "PENDING": "pending",
+        "STARTED": "running",
+        "SUCCESS": "completed",
+        "FAILURE": "failed",
+        "REVOKED": "failed",
+    }
+    status = status_map.get(state, "pending")
+
+    error = None
+    if state == "FAILURE":
+        error = str(result.result) if result.result else "Task failed"
+    elif state == "SUCCESS" and isinstance(result.result, dict):
+        error = result.result.get("error")
+        if error:
+            status = "failed"
+
+    return GraphRAGJobStatusResponse(job_id=job_id, status=status, error=error)
+
+
+@router.get("/retrieval/graphrag/result/{job_id}")
+async def get_graphrag_query_result(job_id: str):
+    """Fetch the result of a completed async GraphRAG query job."""
+    import redis
+    from app.config import get_settings
+    from app.workers.celery_app import celery_app
+
+    settings = get_settings()
+
+    # Check tracking key
+    try:
+        r = redis.from_url(settings.celery_broker_url)
+        if not r.exists(f"graphrag:job:{job_id}"):
+            raise HTTPException(status_code=404, detail="Job not found or expired")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    result = celery_app.AsyncResult(job_id)
+
+    if result.state != "SUCCESS":
+        raise HTTPException(status_code=409, detail="Job still in progress")
+
+    data = result.result
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="Unexpected result format")
+
+    if "error" in data:
+        raise HTTPException(status_code=422, detail=data["error"])
+
+    return data
 
 
 @router.post("/graphrag/index")
