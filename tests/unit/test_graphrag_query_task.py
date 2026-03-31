@@ -9,7 +9,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# Stub graphrag/pandas if not available (same pattern as test_query_coverage.py)
+# Stub graphrag/pandas if not available (same pattern as test_query_coverage.py).
+# Only install stubs when the real packages are genuinely unavailable to avoid
+# contaminating other test modules that rely on real imports.
 class _AutoStubModule(types.ModuleType):
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -17,6 +19,17 @@ class _AutoStubModule(types.ModuleType):
         mock = MagicMock()
         setattr(self, name, mock)
         return mock
+
+
+def _try_import(name: str) -> bool:
+    """Return True if the top-level package can be imported."""
+    top = name.split(".")[0]
+    try:
+        __import__(top)
+        return True
+    except ImportError:
+        return False
+
 
 for mod_name in [
     "pandas", "graphrag", "graphrag.api", "graphrag.api.prompt_tune",
@@ -33,7 +46,7 @@ for mod_name in [
     "graphrag.config.models.embeddings_config",
     "graphrag.config.models.text_embedding_config",
     "graphrag.query", "litellm",
-    "nest_asyncio2", "graphrag.index.update",
+    "nest_asyncio2", "graphrag.index", "graphrag.index.update",
     "graphrag.index.update.incremental_index",
     "graphrag_llm", "graphrag_llm.config", "graphrag_llm.config.model_config",
     "graphrag_llm.embedding", "graphrag_llm.embedding.lite_llm_embedding",
@@ -42,8 +55,8 @@ for mod_name in [
     "graphrag_vectors", "graphrag_vectors.vector_store_config",
     "lancedb",
 ]:
-    if mod_name not in sys.modules:
-        sys.modules[mod_name] = _AutoStubModule(mod_name)
+    if not _try_import(mod_name):
+        sys.modules.setdefault(mod_name, _AutoStubModule(mod_name))
 
 # Pre-import graphrag_service so @patch can resolve it, and stub Redis so the
 # module-level cleanup_stale_locks() call in graphrag_tasks doesn't fail.

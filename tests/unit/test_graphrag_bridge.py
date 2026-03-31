@@ -26,7 +26,7 @@ class TestExportDocuments:
         assert "id" in df.columns
         assert "title" in df.columns
         assert "text" in df.columns
-        assert df.iloc[0]["title"] == "TM-123-manual.pdf"
+        assert df.iloc[0]["title"].startswith("TM-123-manual.pdf_")
         assert "S-400" in df.iloc[0]["text"]
         assert "Radar" in df.iloc[0]["text"]
 

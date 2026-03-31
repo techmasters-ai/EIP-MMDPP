@@ -27,6 +27,8 @@ pytest.importorskip("asyncpg", reason="asyncpg not installed")
 # ---------------------------------------------------------------------------
 # Stub heavy external deps that aren't in the test venv (pandas, graphrag, etc.)
 # This must happen before any app module that depends on them is imported.
+# Only install stubs if the real packages are genuinely unavailable -- otherwise
+# the stubs contaminate other test modules that rely on real imports.
 # ---------------------------------------------------------------------------
 
 class _AutoStubModule(types.ModuleType):
@@ -40,18 +42,29 @@ class _AutoStubModule(types.ModuleType):
         return mock
 
 
+def _try_import(name: str) -> bool:
+    """Return True if the top-level package can be imported."""
+    top = name.split(".")[0]
+    try:
+        __import__(top)
+        return True
+    except ImportError:
+        return False
+
+
 # pandas stub (graphrag_service, graphrag_bridge import it at top level)
-if "pandas" not in sys.modules:
+if not _try_import("pandas"):
     _pd_stub = _AutoStubModule("pandas")
     _pd_stub.DataFrame = MagicMock  # type: ignore[attr-defined]
     _pd_stub.read_parquet = MagicMock(return_value=MagicMock())  # type: ignore[attr-defined]
     sys.modules["pandas"] = _pd_stub
 
-# graphrag ecosystem stubs
-for _mod_name in (
+# graphrag ecosystem stubs -- only installed when the real packages are missing
+_GRAPHRAG_STUBS = (
     "graphrag", "graphrag.api", "graphrag.api.prompt_tune",
     "graphrag.config", "graphrag.config.enums", "graphrag.config.models",
     "graphrag.config.models.cluster_graph_config",
+    "graphrag.config.models.extract_graph_config",
     "graphrag.config.models.drift_search_config",
     "graphrag.config.models.graph_rag_config",
     "graphrag.config.models.local_search_config",
@@ -61,15 +74,18 @@ for _mod_name in (
     "graphrag.config.models.parallelization_parameters_config",
     "graphrag.config.models.embeddings_config",
     "graphrag.config.models.text_embedding_config",
+    "graphrag.index", "graphrag.index.update",
+    "graphrag.index.update.incremental_index",
     "graphrag_cache", "graphrag_cache.cache_config",
     "graphrag_llm", "graphrag_llm.config", "graphrag_llm.config.model_config",
     "graphrag_llm.embedding", "graphrag_llm.embedding.lite_llm_embedding",
     "graphrag_storage", "graphrag_storage.storage_config",
     "graphrag_vectors", "graphrag_vectors.vector_store_config",
-    "lancedb",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = _AutoStubModule(_mod_name)
+    "lancedb", "litellm", "nest_asyncio2",
+)
+for _mod_name in _GRAPHRAG_STUBS:
+    if not _try_import(_mod_name):
+        sys.modules.setdefault(_mod_name, _AutoStubModule(_mod_name))
 
 pytestmark = pytest.mark.unit
 
@@ -168,7 +184,10 @@ class TestTextVectorSearch:
     async def test_returns_results_from_qdrant(self):
         from app.api.v1.retrieval import _text_vector_search
 
-        hits = [_make_qdrant_hit(score=0.9), _make_qdrant_hit(score=0.7)]
+        hits = [
+            _make_qdrant_hit(score=0.9, chunk_text="Radar system primary specs."),
+            _make_qdrant_hit(score=0.7, chunk_text="Missile guidance subsystem details."),
+        ]
 
         with patch("app.api.v1.retrieval.get_qdrant_async_client"), \
              patch("app.api.v1.retrieval._build_qdrant_filters", return_value=None), \
@@ -915,7 +934,7 @@ class TestDiversifyResults:
         assert len(result) == 1
         assert result[0].score == 0.9
 
-    def test_different_pages_not_deduped(self):
+    def test_different_pages_same_text_deduped(self):
         from app.api.v1._retrieval_helpers import diversify_results
 
         doc_id = uuid.uuid4()
@@ -923,8 +942,11 @@ class TestDiversifyResults:
                         content_text="Same text", score=0.9, modality="text")
         b = _make_item(chunk_id=uuid.uuid4(), document_id=doc_id, page_number=2,
                         content_text="Same text", score=0.5, modality="text")
+        # Cross-document dedup now deduplicates by normalized text content
+        # regardless of page number, keeping the highest-scoring result
         result = diversify_results([a, b])
-        assert len(result) == 2
+        assert len(result) == 1
+        assert result[0].score == 0.9
 
     def test_image_modality_passes_through(self):
         from app.api.v1._retrieval_helpers import diversify_results
