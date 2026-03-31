@@ -1,0 +1,13 @@
+{
+  "planPath": "docs/superpowers/plans/2026-03-31-async-graphrag-queries.md",
+  "tasks": [
+    {"id": 0, "subject": "Task 1: Add response schemas", "status": "pending"},
+    {"id": 1, "subject": "Task 2: Add Celery task for GraphRAG queries", "status": "pending", "blockedBy": [0]},
+    {"id": 2, "subject": "Task 3: Add the 3 API endpoints", "status": "pending", "blockedBy": [0, 1]},
+    {"id": 3, "subject": "Task 4: Add frontend API functions", "status": "pending"},
+    {"id": 4, "subject": "Task 5: Update QueryPage to use async polling", "status": "pending", "blockedBy": [3]},
+    {"id": 5, "subject": "Task 6: Add unit tests", "status": "pending", "blockedBy": [1]},
+    {"id": 6, "subject": "Task 7: End-to-end verification", "status": "pending", "blockedBy": [2, 4, 5]}
+  ],
+  "lastUpdated": "2026-03-31T15:00:00Z"
+}
