@@ -1,5 +1,15 @@
 import React, { useState, useCallback, useEffect } from "react";
-import { unifiedQuery, getGraphNeighborhood, getRetrievalSettings, type QueryStrategy, type ModalityFilter, type QueryResultItem } from "../api/client";
+import {
+  unifiedQuery,
+  submitGraphRAGQuery,
+  getGraphRAGQueryStatus,
+  getGraphRAGQueryResult,
+  getGraphNeighborhood,
+  getRetrievalSettings,
+  type QueryStrategy,
+  type ModalityFilter,
+  type QueryResultItem,
+} from "../api/client";
 import { GraphView, toGraphElements } from "./GraphView";
 import type cytoscape from "cytoscape";
 
@@ -490,6 +500,20 @@ export function QueryPage() {
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
 
+  const pollTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const isGraphRAG = (strategy: QueryStrategy) =>
+    strategy.startsWith("graphrag_");
+
   // Fetch server defaults on mount
   useEffect(() => {
     getRetrievalSettings().then((s) => {
@@ -539,24 +563,72 @@ export function QueryPage() {
     setElapsed(null);
     const t0 = performance.now();
 
+    // Cancel any in-flight polling from a previous query
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+
     try {
-      const res = await unifiedQuery({
-        query_text: queryText.trim() || undefined,
-        query_image: queryImage || undefined,
-        strategy: selected.strategy,
-        modality_filter: selected.strategy === "hybrid" ? modalityFilter : "all",
-        top_k: topK,
-        reranker_top_n: rerankerTopN,
-        min_confidence: minConfidence,
-        include_context: true,
-      });
-      setResults(res.results);
-      setTotalResults(res.total);
-      setElapsed(Math.round(performance.now() - t0));
+      if (isGraphRAG(selected.strategy)) {
+        // Async path: submit -> poll -> fetch
+        const { job_id } = await submitGraphRAGQuery({
+          query_text: queryText.trim() || undefined,
+          strategy: selected.strategy,
+          top_k: topK,
+          min_confidence: minConfidence,
+          include_context: true,
+        });
+
+        // Poll with exponential backoff: 1s, 2s, 4s, 8s, capped at 10s
+        let delay = 1000;
+        const poll = async () => {
+          try {
+            const status = await getGraphRAGQueryStatus(job_id);
+            if (status.status === "completed") {
+              const res = await getGraphRAGQueryResult(job_id);
+              setResults(res.results);
+              setTotalResults(res.total);
+              setElapsed(Math.round(performance.now() - t0));
+              setLoading(false);
+            } else if (status.status === "failed") {
+              setError(status.error || "GraphRAG query failed");
+              setLoading(false);
+            } else {
+              // Still pending/running — schedule next poll
+              delay = Math.min(delay * 2, 10000);
+              pollTimeoutRef.current = setTimeout(() => void poll(), delay);
+            }
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Polling failed");
+            setLoading(false);
+          }
+        };
+
+        pollTimeoutRef.current = setTimeout(() => void poll(), delay);
+      } else {
+        // Sync path: basic & hybrid
+        const res = await unifiedQuery({
+          query_text: queryText.trim() || undefined,
+          query_image: queryImage || undefined,
+          strategy: selected.strategy,
+          modality_filter: selected.strategy === "hybrid" ? modalityFilter : "all",
+          top_k: topK,
+          reranker_top_n: rerankerTopN,
+          min_confidence: minConfidence,
+          include_context: true,
+        });
+        setResults(res.results);
+        setTotalResults(res.total);
+        setElapsed(Math.round(performance.now() - t0));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
     } finally {
-      setLoading(false);
+      // Only clear loading for sync path; async path clears in poll callback
+      if (!isGraphRAG(selected.strategy)) {
+        setLoading(false);
+      }
     }
   };
 
