@@ -397,6 +397,16 @@ Postgres documents ──→ Bridge (export_all) ──→ input/documents.parqu
 
 All response types, community level, and dynamic community selection are configurable via env vars.
 
+### Async Query Execution
+
+GraphRAG queries involve LLM calls that can take 1-3+ minutes. To prevent browser timeout errors, all 4 search modes use an async job pattern:
+
+1. **Submit**: `POST /v1/retrieval/graphrag/submit` — dispatches query as a Celery task, returns `job_id` immediately
+2. **Poll**: `GET /v1/retrieval/graphrag/status/{job_id}` — returns `pending`, `running`, `completed`, or `failed`
+3. **Fetch**: `GET /v1/retrieval/graphrag/result/{job_id}` — returns full `UnifiedQueryResponse` when complete
+
+The frontend polls with exponential backoff (1s → 10s cap). Results are stored in Redis for 24h. The synchronous `POST /v1/retrieval/query` endpoint still works for all strategies (backward compatible).
+
 ### Prerequisites
 - GraphRAG queries require at least one successful indexing cycle (`GRAPHRAG_INDEXING_ENABLED=true`)
 - API returns 409 for missing community reports instead of silent empty results
@@ -603,6 +613,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.26 | Image description text search: LLM-generated image descriptions split into sections and embedded as BGE text vectors in `eip_text_chunks` (searchable via standard text queries), `image_description` modality with SAME_ARTIFACT chunk_links between sections, image URL resolution via artifact_id batch lookup, modality filter update. Graph expansion fixes: pass `query_text` to doc-structure fusion for military ID bonus, ontology re-scoring preserves relation weights, cross-modal expansion uses fusion formula, deprecated asyncio API fixes, configurable cross-modal LIMIT, dead code cleanup. Picture description timeout tripled (3h). GraphRAG LLM timeout configurable (default 3h). DoclingViewer page centering. | Complete |
 | 2.27 | Foreign language translation: per-element language detection (`langdetect`) + LLM translation in ingest pipeline, translated text stored alongside original in MinIO, all downstream stages (metadata, chunking, embeddings, ontology) operate on English translation, classification marking detection uses original text, translation API endpoint, DoclingViewer "Translate" toggle with language banner | Complete |
 | 2.28 | GraphRAG architecture overhaul: separated bridge input/ from GraphRAG output/ (fixed overwrite bug), fixed `_get_method()` double-suffix bug (`standard-update-update`), removed dead Neo4j entity/relationship bridge exports (Path A — GraphRAG owns extraction), fixed double-chunking (pass full documents not pre-chunked), fixed auto-tune prompt filename mismatch, incremental indexing with pre-update backup/restore, stale Redis lock cleanup on worker startup, configurable response types per search method, cache toggle, fast method option, dry-run mode, dynamic community selection, covariates support, increased default cluster size (10→50) | Complete |
+| 2.29 | Async GraphRAG queries: submit/poll/fetch pattern via Celery tasks to eliminate browser timeout on long-running LLM queries (1-3+ min), exponential backoff polling in frontend, Redis job tracking for bogus ID detection, monkey-patch for GraphRAG incremental indexing `update_final_documents` NaN bug | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |

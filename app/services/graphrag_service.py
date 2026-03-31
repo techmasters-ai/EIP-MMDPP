@@ -138,6 +138,36 @@ def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
         return {"communities_created": 0, "reports_generated": 0}
 
 
+def _patch_concat_dataframes():
+    """Fix graphrag#update_final_documents 'arange: cannot compute length'.
+
+    When old_df is empty or human_readable_id contains NaN,
+    old_df["human_readable_id"].max() returns NaN, which makes
+    np.arange(NaN, ...) fail.  Patch to default initial_id to 0.
+    """
+    import numpy as np
+    from graphrag.index.update import incremental_index
+
+    async def _safe_concat(name, previous_table_provider, delta_table_provider,
+                           output_table_provider):
+        old_df = await previous_table_provider.read_dataframe(name)
+        delta_df = await delta_table_provider.read_dataframe(name)
+
+        max_id = old_df["human_readable_id"].max() if len(old_df) > 0 else -1
+        initial_id = int(max_id + 1) if not pd.isna(max_id) else 0
+        delta_df["human_readable_id"] = np.arange(
+            initial_id, initial_id + len(delta_df),
+        )
+        final_df = pd.concat([old_df, delta_df], ignore_index=True, copy=False)
+        await output_table_provider.write_dataframe(name, final_df)
+        return final_df
+
+    incremental_index.concat_dataframes = _safe_concat
+
+
+_patch_concat_dataframes()
+
+
 def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir: Path) -> dict:
     """Run GraphRAG indexing pipeline with ontology-guided extraction."""
     from graphrag.api import build_index
