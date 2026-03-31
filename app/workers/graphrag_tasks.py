@@ -126,7 +126,7 @@ def run_graphrag_auto_tune_task(self) -> dict:
             pass
 
 
-@celery_app.task(soft_time_limit=600, time_limit=660)
+@celery_app.task(soft_time_limit=6000, time_limit=6060)
 def run_graphrag_query_task(request_dict: dict) -> dict:
     """Run a GraphRAG query as an async Celery task.
 
