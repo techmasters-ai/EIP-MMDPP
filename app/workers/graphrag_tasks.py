@@ -126,14 +126,6 @@ def run_graphrag_auto_tune_task(self) -> dict:
             pass
 
 
-_GRAPHRAG_SEARCH_FN = {
-    "graphrag_local": "local_search",
-    "graphrag_global": "global_search",
-    "graphrag_drift": "drift_search",
-    "graphrag_basic": "basic_search",
-}
-
-
 @celery_app.task(soft_time_limit=300, time_limit=360)
 def run_graphrag_query_task(request_dict: dict) -> dict:
     """Run a GraphRAG query as an async Celery task.
@@ -141,20 +133,28 @@ def run_graphrag_query_task(request_dict: dict) -> dict:
     Returns a serialized UnifiedQueryResponse dict on success,
     or a dict with an 'error' key on failure.
     """
-    from app.services import graphrag_service
+    from app.services.graphrag_service import (
+        basic_search, drift_search, global_search, local_search,
+    )
+
+    _search_fns = {
+        "graphrag_local": local_search,
+        "graphrag_global": global_search,
+        "graphrag_drift": drift_search,
+        "graphrag_basic": basic_search,
+    }
 
     strategy = request_dict.get("strategy", "")
     query_text = request_dict.get("query_text", "")
     min_confidence = request_dict.get("min_confidence")
 
-    fn_name = _GRAPHRAG_SEARCH_FN.get(strategy)
-    if not fn_name:
+    search_fn = _search_fns.get(strategy)
+    if not search_fn:
         return {"error": f"Invalid GraphRAG strategy: {strategy}"}
 
     if not query_text:
         return {"error": "query_text is required for GraphRAG queries"}
 
-    search_fn = getattr(graphrag_service, fn_name)
     try:
         graphrag_result = search_fn(query_text)
     except Exception as exc:

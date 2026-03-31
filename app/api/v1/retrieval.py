@@ -1126,6 +1126,36 @@ async def get_graphrag_settings():
 
 _GRAPHRAG_STRATEGIES = {"graphrag_local", "graphrag_global", "graphrag_drift", "graphrag_basic"}
 
+_CELERY_STATUS_MAP = {
+    "PENDING": "pending",
+    "STARTED": "running",
+    "SUCCESS": "completed",
+    "FAILURE": "failed",
+    "REVOKED": "failed",
+}
+
+_graphrag_redis: "redis.Redis | None" = None
+
+
+def _get_graphrag_redis():
+    global _graphrag_redis
+    if _graphrag_redis is None:
+        import redis
+        from app.config import get_settings
+        _graphrag_redis = redis.from_url(get_settings().celery_broker_url)
+    return _graphrag_redis
+
+
+def _check_job_exists(job_id: str):
+    """Raise 404 if the job tracking key is missing from Redis."""
+    try:
+        if not _get_graphrag_redis().exists(f"graphrag:job:{job_id}"):
+            raise HTTPException(status_code=404, detail="Job not found or expired")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Redis unavailable — fall through to Celery check
+
 
 @router.post("/retrieval/graphrag/submit", response_model=GraphRAGJobSubmitResponse,
              status_code=202)
@@ -1143,15 +1173,10 @@ async def submit_graphrag_query(body: UnifiedQueryRequest):
     request_dict = body.model_dump(mode="json")
     task = run_graphrag_query_task.delay(request_dict)
 
-    # Track job ID in Redis so we can distinguish real jobs from bogus IDs
-    import redis
-    from app.config import get_settings
-    settings = get_settings()
     try:
-        r = redis.from_url(settings.celery_broker_url)
-        r.set(f"graphrag:job:{task.id}", "1", ex=86400)
+        _get_graphrag_redis().set(f"graphrag:job:{task.id}", "1", ex=86400)
     except Exception:
-        pass  # Non-fatal: status endpoint falls back to Celery state
+        pass
 
     return GraphRAGJobSubmitResponse(job_id=str(task.id), status="pending")
 
@@ -1159,39 +1184,20 @@ async def submit_graphrag_query(body: UnifiedQueryRequest):
 @router.get("/retrieval/graphrag/status/{job_id}", response_model=GraphRAGJobStatusResponse)
 async def get_graphrag_query_status(job_id: str):
     """Poll the status of an async GraphRAG query job."""
-    import redis
-    from app.config import get_settings
     from app.workers.celery_app import celery_app
 
-    settings = get_settings()
+    _check_job_exists(job_id)
 
-    # Check tracking key first — reject bogus IDs
-    try:
-        r = redis.from_url(settings.celery_broker_url)
-        if not r.exists(f"graphrag:job:{job_id}"):
-            raise HTTPException(status_code=404, detail="Job not found or expired")
-    except HTTPException:
-        raise
-    except Exception:
-        pass  # Redis unavailable — fall through to Celery check
-
-    result = celery_app.AsyncResult(job_id)
-    state = result.state  # PENDING, STARTED, SUCCESS, FAILURE, REVOKED
-
-    status_map = {
-        "PENDING": "pending",
-        "STARTED": "running",
-        "SUCCESS": "completed",
-        "FAILURE": "failed",
-        "REVOKED": "failed",
-    }
-    status = status_map.get(state, "pending")
+    async_result = celery_app.AsyncResult(job_id)
+    state = async_result.state
+    backend_result = async_result.result
+    status = _CELERY_STATUS_MAP.get(state, "pending")
 
     error = None
     if state == "FAILURE":
-        error = str(result.result) if result.result else "Task failed"
-    elif state == "SUCCESS" and isinstance(result.result, dict):
-        error = result.result.get("error")
+        error = str(backend_result) if backend_result else "Task failed"
+    elif state == "SUCCESS" and isinstance(backend_result, dict):
+        error = backend_result.get("error")
         if error:
             status = "failed"
 
@@ -1201,28 +1207,15 @@ async def get_graphrag_query_status(job_id: str):
 @router.get("/retrieval/graphrag/result/{job_id}")
 async def get_graphrag_query_result(job_id: str):
     """Fetch the result of a completed async GraphRAG query job."""
-    import redis
-    from app.config import get_settings
     from app.workers.celery_app import celery_app
 
-    settings = get_settings()
+    _check_job_exists(job_id)
 
-    # Check tracking key
-    try:
-        r = redis.from_url(settings.celery_broker_url)
-        if not r.exists(f"graphrag:job:{job_id}"):
-            raise HTTPException(status_code=404, detail="Job not found or expired")
-    except HTTPException:
-        raise
-    except Exception:
-        pass
-
-    result = celery_app.AsyncResult(job_id)
-
-    if result.state != "SUCCESS":
+    async_result = celery_app.AsyncResult(job_id)
+    if async_result.state != "SUCCESS":
         raise HTTPException(status_code=409, detail="Job still in progress")
 
-    data = result.result
+    data = async_result.result
     if not isinstance(data, dict):
         raise HTTPException(status_code=500, detail="Unexpected result format")
 

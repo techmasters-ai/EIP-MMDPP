@@ -2,7 +2,7 @@
 
 import uuid
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import Field, model_validator
 
@@ -125,5 +125,5 @@ class GraphRAGJobSubmitResponse(APIModel):
 
 class GraphRAGJobStatusResponse(APIModel):
     job_id: str
-    status: str  # pending | running | completed | failed
+    status: Literal["pending", "running", "completed", "failed"]
     error: Optional[str] = None
