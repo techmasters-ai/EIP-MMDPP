@@ -279,10 +279,10 @@ cmd_logs() {
   local service="${1:-}"
   if [[ -n "${service}" ]]; then
     info "Streaming logs for '${service}' (Ctrl+C to stop)..."
-    dc logs -f "${service}"
+    dc --profile split logs -f "${service}"
   else
     info "Streaming all service logs (Ctrl+C to stop)..."
-    dc logs -f
+    dc --profile split logs -f
   fi
 }
 
