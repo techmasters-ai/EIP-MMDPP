@@ -124,3 +124,80 @@ def run_graphrag_auto_tune_task(self) -> dict:
             lock.release()
         except Exception:
             pass
+
+
+_GRAPHRAG_SEARCH_FN = {
+    "graphrag_local": "local_search",
+    "graphrag_global": "global_search",
+    "graphrag_drift": "drift_search",
+    "graphrag_basic": "basic_search",
+}
+
+
+@celery_app.task(soft_time_limit=300, time_limit=360)
+def run_graphrag_query_task(request_dict: dict) -> dict:
+    """Run a GraphRAG query as an async Celery task.
+
+    Returns a serialized UnifiedQueryResponse dict on success,
+    or a dict with an 'error' key on failure.
+    """
+    from app.services import graphrag_service
+
+    strategy = request_dict.get("strategy", "")
+    query_text = request_dict.get("query_text", "")
+    min_confidence = request_dict.get("min_confidence")
+
+    fn_name = _GRAPHRAG_SEARCH_FN.get(strategy)
+    if not fn_name:
+        return {"error": f"Invalid GraphRAG strategy: {strategy}"}
+
+    if not query_text:
+        return {"error": "query_text is required for GraphRAG queries"}
+
+    search_fn = getattr(graphrag_service, fn_name)
+    try:
+        graphrag_result = search_fn(query_text)
+    except Exception as exc:
+        logger.exception("GraphRAG %s query failed", strategy)
+        return {"error": str(exc)}
+
+    response = graphrag_result.get("response", "")
+    if not response:
+        error_key = graphrag_result.get("error", "")
+        if error_key == "communities_not_indexed":
+            return {
+                "error": "GraphRAG indexing has not completed yet. "
+                "Run indexing and wait for community detection to finish.",
+            }
+        if strategy in ("graphrag_local", "graphrag_global"):
+            return {"error": f"GraphRAG {strategy}: no results found."}
+        return _build_response(strategy, query_text, [])
+
+    result_item = {
+        "score": 1.0,
+        "modality": "graphrag_response",
+        "content_text": response,
+        "classification": "UNCLASSIFIED",
+        "context": {
+            "source": strategy,
+            "graphrag_context": graphrag_result.get("context", {}),
+        },
+    }
+
+    results = [result_item]
+
+    if min_confidence is not None:
+        results = [r for r in results if r["score"] >= min_confidence]
+
+    return _build_response(strategy, query_text, results)
+
+
+def _build_response(strategy: str, query_text: str, results: list[dict]) -> dict:
+    return {
+        "query_text": query_text,
+        "query_image": None,
+        "strategy": strategy,
+        "modality_filter": "all",
+        "results": results,
+        "total": len(results),
+    }

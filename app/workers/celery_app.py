@@ -41,6 +41,7 @@ celery_app.conf.update(
         "app.workers.trusted_data_tasks.index_trusted_submission": {"queue": "trusted"},
         "app.workers.graphrag_tasks.run_graphrag_indexing_task": {"queue": "graph"},
         "app.workers.graphrag_tasks.run_graphrag_auto_tune_task": {"queue": "graph"},
+        "app.workers.graphrag_tasks.run_graphrag_query_task": {"queue": "graph"},
         "app.workers.pipeline._chord_error_handler": {"queue": "ingest"},
     },
     # Task result expiry
