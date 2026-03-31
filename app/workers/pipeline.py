@@ -1660,7 +1660,11 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             for elem in elements
             if (elem.translated_text or elem.content_text)
         ]
-        structured_chunks = structure_aware_chunk(element_dicts)
+        structured_chunks = structure_aware_chunk(
+            element_dicts,
+            max_chunk_tokens=settings.chunk_max_tokens,
+            overlap_tokens=settings.chunk_overlap_tokens,
+        )
 
         # Build a lookup from element_uid to the ORM element for artifact_id / bounding_box
         elem_by_uid: dict[str, DocumentElement] = {
