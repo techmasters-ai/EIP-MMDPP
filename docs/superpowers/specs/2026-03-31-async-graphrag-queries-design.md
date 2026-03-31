@@ -75,31 +75,38 @@ class GraphRAGJobStatusResponse(APIModel):
 
 ## Celery Task
 
-New file: `app/workers/graphrag_query_tasks.py`
+Add the new task to the existing `app/workers/graphrag_tasks.py` (co-locate with indexing/tuning tasks).
 
 One task: `run_graphrag_query_task`
 
-- Receives serialized `UnifiedQueryRequest` dict
+- Receives serialized `UnifiedQueryRequest` dict (with UUIDs as strings for JSON serialization)
 - Routes to the `graph` queue (same workers with access to GraphRAG data volume)
 - `soft_time_limit=300` (5 min), `time_limit=360` (6 min)
 - No Redis lock needed (concurrent queries are fine)
 
 The task:
 1. Deserializes the request
-2. Calls the appropriate search function (`local_search`, `global_search`, `drift_search`, `basic_search`) from `graphrag_service`
-3. Applies min_confidence filtering
-4. Backfills content_text from Postgres
-5. Populates presigned image URLs
-6. Returns the serialized `UnifiedQueryResponse` dict
+2. Calls the appropriate search function (`local_search`, `global_search`, `drift_search`, `basic_search`) from `graphrag_service` — these are sync functions that internally use `_run_async()` with `asyncio.new_event_loop()`, which works fine in Celery's threaded workers (same pattern as `run_graphrag_indexing_task`)
+3. Constructs the `QueryResultItem` list and `UnifiedQueryResponse` envelope — replicating the response-building logic from the async `_graphrag_*_query` wrappers in `retrieval.py` (modality, context source label, score). This is straightforward since each wrapper is ~15 lines.
+4. Applies min_confidence filtering on the result list
+5. Returns the response dict via `UnifiedQueryResponse.model_dump(mode="json")` to ensure UUIDs serialize as strings for the Redis JSON result backend
+
+Note: `_backfill_content_text` and `_populate_image_urls` are not needed — GraphRAG results return modality `"graphrag_response"` with `content_text` already populated from the LLM response, and no image URLs apply.
 
 Precondition errors (indexing not complete, no community reports) are caught and returned as a result dict with an `error` field, so the status endpoint surfaces them as `failed` with the message.
+
+### Job tracking
+
+On submit, store a tracking key in Redis: `SET graphrag:job:{job_id} 1 EX 86400`. The status endpoint checks for this key first — if absent, return 404 ("Job not found or expired"). This distinguishes a real pending task from a garbage/typo job ID (Celery returns `PENDING` for both).
 
 ## Task Routing
 
 Add to `celery_app.py` task_routes:
 ```python
-"app.workers.graphrag_query_tasks.run_graphrag_query_task": {"queue": "graph"},
+"app.workers.graphrag_tasks.run_graphrag_query_task": {"queue": "graph"},
 ```
+
+No change to `include` needed — `app.workers.graphrag_tasks` is already in the include list.
 
 ## Frontend Changes
 
@@ -115,10 +122,10 @@ No AbortController timeout needed on any of these (all return quickly).
 ### `frontend/src/components/QueryPage.tsx`
 
 Modify `handleQuery`:
-- If strategy is `graphrag_*`: submit -> poll status every 3s -> on `completed` fetch result -> set results
+- If strategy is `graphrag_*`: submit -> poll status with backoff (1s, 2s, 4s, 8s, capped at 10s) -> on `completed` fetch result -> set results
 - If strategy is `basic` or `hybrid`: unchanged (sync `unifiedQuery` call)
 - On `failed`: display error from status response
-- Polling interval cleared on component unmount to prevent leaks
+- Polling uses chained `setTimeout` (not `setInterval`) for backoff; pending timeout cleared on unmount
 - Loading spinner stays active during polling (same UX)
 
 ## Error Handling
@@ -128,10 +135,12 @@ Modify `handleQuery`:
 | Invalid strategy on submit | 400 error |
 | Indexing not complete | Task returns error, status shows `failed` with message |
 | Task timeout (>5 min) | Celery `SoftTimeLimitExceeded`, status shows `failed` |
-| Worker crash mid-query | `acks_late` redelivers task, polling continues |
+| Worker crash mid-query | `task_reject_on_worker_lost=True` rejects immediately back to queue; polling continues |
 | Result fetched before completion | 409 "Job still in progress" |
 | Job ID not found / expired | 404 "Job not found or expired" |
 | Frontend navigates away during poll | `clearInterval` on unmount, task completes in background |
+| Bogus/typo job ID | 404 via Redis tracking key check (not Celery's phantom PENDING) |
+| Rapid-fire submissions | No explicit rate limit — `graph` queue worker count (1-2) naturally limits parallelism; excess tasks queue |
 
 ## What Doesn't Change
 
@@ -145,7 +154,7 @@ Modify `handleQuery`:
 
 | File | Change |
 |------|--------|
-| `app/workers/graphrag_query_tasks.py` | **New** - Celery task |
+| `app/workers/graphrag_tasks.py` | Add `run_graphrag_query_task` |
 | `app/api/v1/retrieval.py` | 3 new endpoints (submit, status, result) |
 | `app/schemas/retrieval.py` | 2 new schemas |
 | `app/workers/celery_app.py` | Task route for new task |
