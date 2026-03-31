@@ -116,3 +116,14 @@ class DoclingDocumentResponse(APIModel):
     markdown: str
     document_json: dict[str, Any]
     images: list[DoclingImageRef] = []
+
+
+class GraphRAGJobSubmitResponse(APIModel):
+    job_id: str
+    status: str  # always "pending"
+
+
+class GraphRAGJobStatusResponse(APIModel):
+    job_id: str
+    status: str  # pending | running | completed | failed
+    error: Optional[str] = None
