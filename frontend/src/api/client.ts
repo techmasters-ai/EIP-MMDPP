@@ -282,6 +282,50 @@ export async function unifiedQuery(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Async GraphRAG Query (submit / poll / fetch)
+// ---------------------------------------------------------------------------
+
+export interface GraphRAGJobSubmitResponse {
+  job_id: string;
+  status: string;
+}
+
+export interface GraphRAGJobStatusResponse {
+  job_id: string;
+  status: "pending" | "running" | "completed" | "failed";
+  error?: string | null;
+}
+
+export async function submitGraphRAGQuery(params: {
+  query_text?: string;
+  strategy: QueryStrategy;
+  top_k?: number;
+  min_confidence?: number;
+  include_context?: boolean;
+}): Promise<GraphRAGJobSubmitResponse> {
+  const res = await fetch("/v1/retrieval/graphrag/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ top_k: 10, include_context: true, ...params }),
+  });
+  return handleResponse<GraphRAGJobSubmitResponse>(res);
+}
+
+export async function getGraphRAGQueryStatus(
+  jobId: string,
+): Promise<GraphRAGJobStatusResponse> {
+  const res = await fetch(`/v1/retrieval/graphrag/status/${jobId}`);
+  return handleResponse<GraphRAGJobStatusResponse>(res);
+}
+
+export async function getGraphRAGQueryResult(
+  jobId: string,
+): Promise<UnifiedQueryResponse> {
+  const res = await fetch(`/v1/retrieval/graphrag/result/${jobId}`);
+  return handleResponse<UnifiedQueryResponse>(res);
+}
+
+// ---------------------------------------------------------------------------
 // Graph Store
 // ---------------------------------------------------------------------------
 
