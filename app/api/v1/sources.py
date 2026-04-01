@@ -765,16 +765,70 @@ async def get_docling_document(
     )
 
 
+def _inject_image_description_annotations(
+    doc_json: dict,
+    descriptions: list[dict],
+) -> None:
+    """Inject image description annotations into Docling JSON pictures.
+
+    Matches pictures to descriptions by page number + positional order
+    within each page. Both originate from the same Docling conversion,
+    so ordering is authoritative.
+
+    Mutates doc_json in place.
+
+    Note: The ``annotations`` field on Docling items is deprecated in newer
+    docling-core versions. This uses it because the <docling-tooltip> web
+    component reads annotations with kind="description" to render tooltips.
+    """
+    from collections import defaultdict
+
+    pictures = doc_json.get("pictures", [])
+    if not pictures or not descriptions:
+        return
+
+    # Group descriptions by page
+    descs_by_page: dict[int, list[dict]] = defaultdict(list)
+    for desc in descriptions:
+        pg = desc.get("page_number")
+        if pg is not None:
+            descs_by_page[pg].append(desc)
+
+    # Group pictures by page (from prov)
+    pics_by_page: dict[int, list[dict]] = defaultdict(list)
+    for pic in pictures:
+        prov = pic.get("prov")
+        if prov and len(prov) > 0:
+            pg = prov[0].get("page_no")
+            if pg is not None:
+                pics_by_page[pg].append(pic)
+
+    # Zip-match within each page
+    for page_no, page_pics in pics_by_page.items():
+        page_descs = descs_by_page.get(page_no, [])
+        for pic, desc in zip(page_pics, page_descs):
+            if not isinstance(pic.get("annotations"), list):
+                pic["annotations"] = []
+            pic["annotations"].append({
+                "kind": "description",
+                "text": desc["content_text"],
+                "provenance": "llm-generated",
+            })
+
+
 @router.get("/documents/{document_id}/docling-raw")
 async def get_docling_raw_json(
     document_id: uuid.UUID,
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Stream the raw DoclingDocument JSON from MinIO.
+    """Return the DoclingDocument JSON enriched with image description annotations.
 
     Returns the full DoclingDocument including base64 page images,
-    intended for the <docling-img> web component viewer.
+    intended for the <docling-img> web component viewer. Image descriptions
+    from the pipeline are injected as annotations so <docling-tooltip>
+    renders them on hover.
     """
+    import json as _json
     from fastapi.responses import Response
     from app.services.storage import download_bytes_async
 
@@ -793,7 +847,42 @@ async def get_docling_raw_json(
             detail="DoclingDocument JSON not available. Re-ingest to generate.",
         )
 
-    return Response(content=json_bytes, media_type="application/json")
+    doc_json = _json.loads(json_bytes)
+
+    # Standalone image guard: if Docling produced no usable content,
+    # return 404 so the viewer falls through to the standalone fallback
+    # panel which shows the raw image + description text.
+    if not doc_json.get("pictures") and not doc_json.get("texts"):
+        raise HTTPException(
+            status_code=404,
+            detail="DoclingDocument has no content elements. Use standalone viewer.",
+        )
+
+    # Inject image description annotations for <docling-tooltip>
+    from sqlalchemy import text
+
+    rows = (await db.execute(
+        text("""
+            SELECT page_number, content_text
+            FROM ingest.document_elements
+            WHERE document_id = cast(:doc_id AS uuid)
+              AND element_type = 'image'
+              AND content_text IS NOT NULL
+              AND length(content_text) > 10
+            ORDER BY element_order
+        """),
+        {"doc_id": str(document_id)},
+    )).fetchall()
+
+    if rows:
+        descriptions = [
+            {"page_number": row[0], "content_text": row[1]}
+            for row in rows
+        ]
+        _inject_image_description_annotations(doc_json, descriptions)
+
+    enriched_bytes = _json.dumps(doc_json).encode("utf-8")
+    return Response(content=enriched_bytes, media_type="application/json")
 
 
 @router.get("/documents/{document_id}/metadata")
