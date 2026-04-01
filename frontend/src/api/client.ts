@@ -517,9 +517,14 @@ export async function getGraphRAGSettings(): Promise<GraphRAGSettings> {
   return handleResponse<GraphRAGSettings>(res);
 }
 
-export async function triggerGraphRAGIndexing(): Promise<{ status: string; task_id: string }> {
-  const res = await fetch("/v1/graphrag/index", { method: "POST" });
-  return handleResponse<{ status: string; task_id: string }>(res);
+export async function triggerGraphRAGUpdate(): Promise<{ status: string; mode: string; task_id: string }> {
+  const res = await fetch("/v1/graphrag/update", { method: "POST" });
+  return handleResponse<{ status: string; mode: string; task_id: string }>(res);
+}
+
+export async function triggerGraphRAGFullReindex(): Promise<{ status: string; mode: string; task_id: string }> {
+  const res = await fetch("/v1/graphrag/index?confirm=true", { method: "POST" });
+  return handleResponse<{ status: string; mode: string; task_id: string }>(res);
 }
 
 // ---------------------------------------------------------------------------

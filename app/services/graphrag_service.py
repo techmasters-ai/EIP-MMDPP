@@ -99,12 +99,17 @@ _patch_embedding_sanitization()
 # ---------------------------------------------------------------------------
 
 
-def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
-    """Run the full GraphRAG indexing pipeline.
+def run_graphrag_indexing(neo4j_driver, db_session, *, mode: str = "auto") -> dict:
+    """Run the GraphRAG indexing pipeline.
 
-    1. Export documents from Postgres to input/
-    2. Run GraphRAG: chunking, extraction, communities, reports, embeddings
-    3. Returns stats dict with communities_created and reports_generated
+    Modes (matching the GraphRAG CLI commands):
+      - "index":  Full rebuild from scratch (like ``graphrag index``).
+                  Replaces the entire existing index.
+      - "update": Incremental update only (like ``graphrag update``).
+                  Processes only new/modified documents via delta detection.
+                  Halts immediately when there is nothing new.
+      - "auto":   Auto-detect — uses "update" when a previous index exists,
+                  otherwise falls back to "index".  Used by the scheduled task.
 
     neo4j_driver is accepted for API compatibility but no longer used —
     GraphRAG owns entity/relationship extraction.
@@ -130,7 +135,7 @@ def run_graphrag_indexing(neo4j_driver, db_session) -> dict:
         write_prompt_files(prompts_dir)
 
         # Step 2: Run GraphRAG pipeline
-        result = _run_graphrag_pipeline(settings, data_dir, output_dir, input_dir)
+        result = _run_graphrag_pipeline(settings, data_dir, output_dir, input_dir, mode=mode)
         return result
 
     except Exception:
@@ -168,35 +173,46 @@ def _patch_concat_dataframes():
 _patch_concat_dataframes()
 
 
-def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir: Path) -> dict:
-    """Run GraphRAG indexing pipeline with ontology-guided extraction."""
+def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir: Path,
+                           *, mode: str = "auto") -> dict:
+    """Run GraphRAG indexing pipeline with ontology-guided extraction.
+
+    mode controls is_update_run, matching the GraphRAG CLI:
+      - "index":  is_update_run=False  (like ``graphrag index``)
+      - "update": is_update_run=True   (like ``graphrag update``)
+      - "auto":   detect from existing index state
+    """
     from graphrag.api import build_index
     from graphrag.config.enums import IndexingMethod
 
     config = build_graphrag_config(settings)
 
-    # First run: no GraphRAG-produced index in output/ yet → full build
-    # Subsequent runs: GraphRAG's own entities.parquet exists → incremental update
-    # Note: output/ is exclusively owned by GraphRAG; input/ is the bridge export
-    #
-    # GraphRAG's _get_method() appends "-update" when is_update_run=True,
-    # so we always pass IndexingMethod.Standard (or Fast) and let
-    # is_update_run control whether it becomes "standard-update".
     has_existing_index = (output_dir / "entities.parquet").exists()
+
+    # Resolve mode → is_update_run, matching the GraphRAG CLI:
+    #   graphrag index  → is_update_run=False (full rebuild)
+    #   graphrag update → is_update_run=True  (incremental)
+    if mode == "index":
+        is_update_run = False
+    elif mode == "update":
+        is_update_run = True
+    else:  # "auto" — scheduled task path
+        is_update_run = has_existing_index
 
     use_fast = settings.graphrag_use_fast_method
     base_method = IndexingMethod.Fast if use_fast else IndexingMethod.Standard
 
     logger.info(
-        "GraphRAG indexing mode: %s%s (entities.parquet exists=%s)",
+        "GraphRAG indexing: mode=%s, method=%s%s (entities.parquet exists=%s)",
+        mode,
         "fast" if use_fast else "standard",
-        "-update" if has_existing_index else "",
+        "-update" if is_update_run else "",
         has_existing_index,
     )
 
     # Backup output before update run (#13: failure recovery)
     backup_dir = data_dir / "output_backup"
-    if has_existing_index:
+    if is_update_run and has_existing_index:
         try:
             if backup_dir.exists():
                 shutil.rmtree(backup_dir)
@@ -231,22 +247,21 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir
 
     # Do NOT pass input_documents — let GraphRAG load from input_storage
     # (CSV files in input/) via its own load_input_documents or
-    # load_update_documents workflow. This matches the CLI `graphrag update`
-    # behavior: on update runs, load_update_documents calls get_delta_docs()
-    # to compare titles against previously indexed documents, and returns
-    # stop=True when no new docs are found, halting the pipeline immediately.
-    # Passing input_documents would bypass this delta detection entirely.
+    # load_update_documents workflow. This matches the CLI behavior:
+    #   graphrag index  → load_input_documents (full build)
+    #   graphrag update → load_update_documents → get_delta_docs() → stop=True if empty
+    # Passing input_documents would bypass delta detection entirely.
     try:
         results = _run_async(build_index(
             config=config,
             method=base_method,
-            is_update_run=has_existing_index,
+            is_update_run=is_update_run,
             verbose=True,
             callbacks=[_LoggingCallbacks()],
         ))
     except Exception:
         # Restore backup on failure (#13)
-        if has_existing_index and backup_dir.exists():
+        if is_update_run and backup_dir.exists():
             logger.warning("Indexing failed, restoring output/ from backup")
             try:
                 shutil.rmtree(output_dir)
@@ -267,7 +282,7 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir
             logger.info("GraphRAG workflow %s completed", result.workflow)
 
     # If workflows had errors and this was an update, restore backup
-    if has_errors and has_existing_index and backup_dir.exists():
+    if has_errors and is_update_run and backup_dir.exists():
         logger.warning("Update had errors, restoring output/ from backup")
         try:
             shutil.rmtree(output_dir)

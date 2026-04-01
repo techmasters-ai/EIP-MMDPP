@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ingestGraphEntity, ingestGraphRelationship, queryGraph, getGraphNeighborhood, getGraphRAGSettings, triggerGraphRAGIndexing, type QueryResultItem, type GraphRAGSettings } from "../api/client";
+import { ingestGraphEntity, ingestGraphRelationship, queryGraph, getGraphNeighborhood, getGraphRAGSettings, triggerGraphRAGUpdate, triggerGraphRAGFullReindex, type QueryResultItem, type GraphRAGSettings } from "../api/client";
 import type cytoscape from "cytoscape";
 import { GraphView, toGraphElements } from "./GraphView";
 
@@ -424,15 +424,37 @@ function GraphIndexingPanel() {
     return () => clearInterval(id);
   }, [settings, computeRemaining]);
 
-  const handleTrigger = async () => {
+  const handleUpdate = async () => {
     setTriggering(true);
     setStatus(null);
     setError(null);
     try {
-      const res = await triggerGraphRAGIndexing();
-      setStatus(`Indexing started (task ${res.task_id.slice(0, 8)}...)`);
+      const res = await triggerGraphRAGUpdate();
+      setStatus(`Incremental update started (task ${res.task_id.slice(0, 8)}...)`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to trigger indexing");
+      setError(err instanceof Error ? err.message : "Failed to trigger update");
+    } finally {
+      setTriggering(false);
+    }
+  };
+
+  const handleFullReindex = async () => {
+    const confirmed = window.confirm(
+      "WARNING: This will remove the existing GraphRAG index and rebuild it " +
+      "from scratch. All entities, communities, and reports will be re-extracted. " +
+      "This operation can take several hours for large document collections.\n\n" +
+      "Are you sure you want to proceed?"
+    );
+    if (!confirmed) return;
+
+    setTriggering(true);
+    setStatus(null);
+    setError(null);
+    try {
+      const res = await triggerGraphRAGFullReindex();
+      setStatus(`Full reindex started (task ${res.task_id.slice(0, 8)}...)`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to trigger full reindex");
     } finally {
       setTriggering(false);
     }
@@ -474,13 +496,22 @@ function GraphIndexingPanel() {
         )}
       </div>
 
-      <button
-        className="btn btn-primary"
-        onClick={handleTrigger}
-        disabled={triggering}
-      >
-        {triggering ? "Starting..." : "Run Indexing Now"}
-      </button>
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        <button
+          className="btn btn-primary"
+          onClick={handleUpdate}
+          disabled={triggering}
+        >
+          {triggering ? "Starting..." : "Update Index"}
+        </button>
+        <button
+          className="btn btn-danger"
+          onClick={handleFullReindex}
+          disabled={triggering}
+        >
+          {triggering ? "Starting..." : "Force Full Reindex"}
+        </button>
+      </div>
 
       {status && <div className="alert alert-success mt-sm">{status}</div>}
       {error && <div className="alert alert-error mt-sm">{error}</div>}

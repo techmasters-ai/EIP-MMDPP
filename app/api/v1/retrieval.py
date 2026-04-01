@@ -1226,15 +1226,47 @@ async def get_graphrag_query_result(job_id: str):
 
 
 @router.post("/graphrag/index")
-async def trigger_graphrag_indexing():
-    """Dispatch GraphRAG indexing as a Celery task.
+async def trigger_graphrag_full_reindex(confirm: bool = False):
+    """Full rebuild of the GraphRAG index from scratch.
+
+    Equivalent to ``graphrag index`` — re-extracts all entities, rebuilds
+    communities and reports.  Use after changing prompts, ontology, or model.
+
+    Requires ``confirm=true`` because this replaces the existing index and
+    can take significant time (hours for large corpora).
+
+    The task is idempotent -- a Redis lock prevents overlapping runs.
+    """
+    if not confirm:
+        return {
+            "status": "confirmation_required",
+            "warning": (
+                "This will remove the existing GraphRAG index and rebuild it "
+                "from scratch. This operation can take several hours for large "
+                "document collections. All entities, communities, and reports "
+                "will be re-extracted. Pass confirm=true to proceed."
+            ),
+        }
+
+    from app.workers.graphrag_tasks import run_graphrag_indexing_task
+
+    task = run_graphrag_indexing_task.apply_async(kwargs={"mode": "index"})
+    return {"status": "indexing_started", "mode": "index", "task_id": str(task.id)}
+
+
+@router.post("/graphrag/update")
+async def trigger_graphrag_update():
+    """Incremental update of the GraphRAG index.
+
+    Equivalent to ``graphrag update`` — only processes new/modified documents
+    via delta detection.  Halts immediately when there is nothing new.
 
     The task is idempotent -- a Redis lock prevents overlapping runs.
     """
     from app.workers.graphrag_tasks import run_graphrag_indexing_task
 
-    task = run_graphrag_indexing_task.delay()
-    return {"status": "indexing_started", "task_id": str(task.id)}
+    task = run_graphrag_indexing_task.apply_async(kwargs={"mode": "update"})
+    return {"status": "indexing_started", "mode": "update", "task_id": str(task.id)}
 
 
 @router.post("/graphrag/tune")

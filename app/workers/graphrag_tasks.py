@@ -1,7 +1,9 @@
 """GraphRAG Celery tasks -- indexing and prompt auto-tuning.
 
-Indexing: scheduled hourly (configurable), exports documents to Parquet,
-runs Microsoft GraphRAG extraction + community detection + report generation.
+Indexing modes (matching the GraphRAG CLI):
+  - mode="index":  Full rebuild (``graphrag index``), triggered via API.
+  - mode="update": Incremental update (``graphrag update``), triggered via API.
+  - mode="auto":   Auto-detect, used by the scheduled task.
 
 Auto-tuning: scheduled daily (configurable), refines prompts based on corpus.
 
@@ -44,8 +46,12 @@ cleanup_stale_locks()
 
 @celery_app.task(bind=True, soft_time_limit=_settings.graphrag_llm_timeout,
                  time_limit=_settings.graphrag_llm_timeout + 60)
-def run_graphrag_indexing_task(self) -> dict:
-    """Run GraphRAG indexing pipeline as a Celery task."""
+def run_graphrag_indexing_task(self, *, mode: str = "auto") -> dict:
+    """Run GraphRAG indexing pipeline as a Celery task.
+
+    mode: "index" (full rebuild), "update" (incremental), "auto" (detect).
+    The scheduled beat task uses "auto". Manual API triggers pass explicit modes.
+    """
     from app.config import get_settings
     from app.db.session import get_neo4j_driver, get_sync_session
     from app.services.graphrag_service import run_graphrag_indexing
@@ -75,8 +81,8 @@ def run_graphrag_indexing_task(self) -> dict:
         neo4j_driver = get_neo4j_driver()
         db = get_sync_session()
         try:
-            stats = run_graphrag_indexing(neo4j_driver, db)
-            logger.info("GraphRAG indexing complete: %s", stats)
+            stats = run_graphrag_indexing(neo4j_driver, db, mode=mode)
+            logger.info("GraphRAG indexing complete (mode=%s): %s", mode, stats)
 
             # Record completion timestamp for the UI countdown
             import datetime
