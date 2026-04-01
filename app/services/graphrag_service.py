@@ -196,14 +196,46 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir
     # is_update_run control whether it becomes "standard-update".
     has_existing_index = (output_dir / "entities.parquet").exists()
 
+    # Delta detection: when passing input_documents directly to build_index(),
+    # GraphRAG removes its load_update_documents workflow (which calls
+    # get_delta_docs). Without it, ALL documents are treated as new and the
+    # full extraction pipeline re-runs on every document. We must compute the
+    # delta ourselves and skip the run entirely when there are no new docs.
+    if has_existing_index and input_docs is not None:
+        prev_docs_path = output_dir / "documents.parquet"
+        if prev_docs_path.exists():
+            prev_docs = pd.read_parquet(prev_docs_path)
+            previous_titles = set(prev_docs["title"].unique())
+            delta_docs = input_docs[~input_docs["title"].isin(previous_titles)]
+            logger.info(
+                "Delta detection: %d input docs, %d previously indexed, %d new",
+                len(input_docs), len(previous_titles), len(delta_docs),
+            )
+            if len(delta_docs) == 0:
+                logger.info("No new documents detected -- skipping GraphRAG update")
+                communities_created = 0
+                reports_generated = 0
+                communities_path = output_dir / "communities.parquet"
+                reports_path = output_dir / "community_reports.parquet"
+                if communities_path.exists():
+                    communities_created = len(pd.read_parquet(communities_path))
+                if reports_path.exists():
+                    reports_generated = len(pd.read_parquet(reports_path))
+                return {
+                    "communities_created": communities_created,
+                    "reports_generated": reports_generated,
+                }
+            input_docs = delta_docs
+
     use_fast = settings.graphrag_use_fast_method
     base_method = IndexingMethod.Fast if use_fast else IndexingMethod.Standard
 
     logger.info(
-        "GraphRAG indexing mode: %s%s (entities.parquet exists=%s)",
+        "GraphRAG indexing mode: %s%s (entities.parquet exists=%s, input_docs=%d)",
         "fast" if use_fast else "standard",
         "-update" if has_existing_index else "",
         has_existing_index,
+        len(input_docs) if input_docs is not None else 0,
     )
 
     # Backup output before update run (#13: failure recovery)

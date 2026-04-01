@@ -169,79 +169,362 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 
 ## API Endpoints (v1)
 
+### Health & Operations
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/health` | Liveness probe — returns `{"status": "ok"}` |
+| `GET` | `/v1/health/ready` | Readiness probe — checks Postgres, Redis, MinIO; returns `{"status": "ready"|"degraded", "checks": {...}}` |
+
 ### Sources & Document Upload
-- `POST /v1/sources` — create a document collection
-- `POST /v1/sources/{id}/documents` — upload a document (streams to MinIO, triggers pipeline; 409 on duplicate unless previous upload FAILED)
-- `GET /v1/documents/{id}/status` — poll pipeline status (includes stage summary)
-- `GET /v1/documents/{id}/stages` — detailed pipeline stage diagnostics
-- `POST /v1/documents/{id}/reingest` — re-run pipeline (`{"mode": "full|embeddings_only|graph_only"}`); resets status to PENDING; returns 409 if already PROCESSING
-- `POST /v1/documents/{id}/cancel` — cancel a PROCESSING document: revokes Celery task chain, cleans up Redis locks, hard-deletes all data (Qdrant vectors, Neo4j graph, MinIO objects, DB records)
-- `DELETE /v1/documents/{id}` — hard-delete a non-processing document and all derived data
-- `DELETE /v1/sources/{id}/documents` — delete all documents in a source (409 if any are PROCESSING)
-- `GET /v1/documents/{id}/metadata` — LLM-extracted document metadata (summary, date, classification, source)
-- `GET /v1/documents/{id}/docling` — DoclingDocument viewer (markdown + JSON + image injection)
-- `GET /v1/documents/{id}/docling-raw` — raw DoclingDocument JSON stream
-- `GET /v1/documents/{id}/image-descriptions` — LLM-generated descriptions for image elements
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/sources` | Create a document source/collection |
+| `GET` | `/v1/sources` | List all sources |
+| `POST` | `/v1/sources/{id}/documents` | Upload document (multipart file → MinIO, triggers pipeline; 409 on duplicate unless previous FAILED) |
+| `GET` | `/v1/sources/{id}/documents` | List documents in a source |
+| `GET` | `/v1/documents/{id}/status` | Poll pipeline status (includes stage summary) |
+| `POST` | `/v1/documents/batch-status` | Batch status check for multiple document IDs |
+| `GET` | `/v1/documents/{id}/stages` | Detailed pipeline stage diagnostics (per-stage status, attempt, metrics, error) |
+| `POST` | `/v1/documents/{id}/reingest` | Re-run pipeline — `{"mode": "full|embeddings_only|graph_only"}`; 409 if already PROCESSING |
+| `POST` | `/v1/documents/{id}/cancel` | Cancel PROCESSING document — revokes Celery tasks, cleans up all data stores |
+| `DELETE` | `/v1/documents/{id}` | Hard-delete a non-processing document and all derived data |
+| `DELETE` | `/v1/sources/{id}/documents` | Delete all documents in a source (409 if any are PROCESSING) |
+| `GET` | `/v1/documents/{id}/metadata` | LLM-extracted document metadata (summary, date, classification, source) |
+| `GET` | `/v1/documents/{id}/docling` | DoclingDocument viewer (markdown + JSON + image injection) |
+| `GET` | `/v1/documents/{id}/docling-raw` | Raw DoclingDocument JSON stream with base64 images |
+| `GET` | `/v1/documents/{id}/translation` | Translated markdown for non-English documents |
+| `GET` | `/v1/documents/{id}/element-translations` | Per-element translations for DoclingViewer overlay |
+| `GET` | `/v1/documents/{id}/image-descriptions` | LLM-generated descriptions for image elements |
+| `GET` | `/v1/documents/{id}/artifacts` | List extracted artifacts (images, tables, schematics) |
+| `GET` | `/v1/artifacts/{id}` | Get single artifact by ID |
+| `GET` | `/v1/documents/{id}/artifacts/{artifact_id}/image` | Stream artifact image from MinIO |
+
+**Create a source and upload a document:**
+
+```python
+import requests
+
+BASE = "http://localhost:8000/v1"
+
+# Create source
+source = requests.post(f"{BASE}/sources", json={"name": "intel-reports", "description": "Field reports"}).json()
+
+# Upload document
+with open("report.pdf", "rb") as f:
+    resp = requests.post(
+        f"{BASE}/sources/{source['id']}/documents",
+        files={"file": ("report.pdf", f, "application/pdf")},
+    )
+doc = resp.json()
+
+# Poll until complete
+import time
+while True:
+    status = requests.get(f"{BASE}/documents/{doc['id']}/status").json()
+    print(status["pipeline_status"])
+    if status["pipeline_status"] in ("COMPLETE", "FAILED", "ERROR", "PARTIAL_COMPLETE"):
+        break
+    time.sleep(5)
+```
 
 ### Directory Watcher
-- `POST /v1/watch-dirs` — register a directory for auto-ingest
-- `DELETE /v1/watch-dirs/{id}` — remove watch directory
-- Per-directory `poll_interval_seconds` respected (directories only scanned when enough time has elapsed since last scan)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/watch-dirs` | Register a directory for auto-ingest |
+| `GET` | `/v1/watch-dirs` | List all registered watch directories |
+| `DELETE` | `/v1/watch-dirs/{id}` | Remove watch directory |
+
+Per-directory `poll_interval_seconds` respected (directories only scanned when enough time has elapsed since last scan).
 
 ### Graph Store (Neo4j)
-- `POST /v1/graph/ingest/entity` — create an entity node
-- `POST /v1/graph/ingest/relationship` — create a relationship edge
-- `POST /v1/graph/query` — Cypher traversal query
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/graph/ingest/entity` | Create/update an entity node |
+| `POST` | `/v1/graph/ingest/relationship` | Create/update a relationship edge |
+| `POST` | `/v1/graph/query` | Search knowledge graph by entity name with hop traversal |
+| `POST` | `/v1/graph/neighborhood` | Get entity's full neighborhood graph for visualization |
+
+```python
+# Search the knowledge graph
+resp = requests.post(f"{BASE}/graph/query", json={
+    "query": "S-300",
+    "top_k": 10,
+    "hop_count": 2,
+})
+for node in resp.json():
+    print(node["modality"], node["content_text"], node["score"])
+```
 
 ### Trusted Data
-- `POST /v1/trusted-data/ingest` — propose knowledge (status: PROPOSED)
-- `GET /v1/trusted-data/proposals` — list submissions (filterable by status)
-- `POST /v1/trusted-data/proposals/{id}/approve` — curator approves → enqueues Celery task to embed + index in Qdrant
-- `POST /v1/trusted-data/proposals/{id}/reject` — curator rejects
-- `POST /v1/trusted-data/proposals/{id}/reindex` — re-enqueue failed/pending indexing
-- `POST /v1/trusted-data/query` — search approved trusted data (direct Qdrant vector search)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/trusted-data/ingest` | Propose knowledge for trusted data layer (status: PROPOSED) |
+| `GET` | `/v1/trusted-data/proposals` | List submissions (filterable by `?status=`) |
+| `POST` | `/v1/trusted-data/proposals/{id}/approve` | Curator approves → enqueues Celery task to embed + index in Qdrant |
+| `POST` | `/v1/trusted-data/proposals/{id}/reject` | Curator rejects submission |
+| `POST` | `/v1/trusted-data/proposals/{id}/reindex` | Re-enqueue failed/pending indexing |
+| `POST` | `/v1/trusted-data/query` | Search approved trusted data (Qdrant vector search) |
+
+```python
+# Submit trusted knowledge
+submission = requests.post(f"{BASE}/trusted-data/ingest", json={
+    "content": "The SA-2 Guideline uses a Fan Song fire control radar.",
+    "source_context": "Field manual FM-2024-001",
+    "confidence": 0.95,
+}).json()
+
+# Approve it
+requests.post(f"{BASE}/trusted-data/proposals/{submission['id']}/approve", json={"notes": "Verified"})
+
+# Search trusted data
+results = requests.post(f"{BASE}/trusted-data/query", json={
+    "query": "SA-2 fire control radar",
+    "top_k": 5,
+}).json()
+```
+
+### Feedback & Governance
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/feedback` | Submit a correction on a retrieved result (auto-creates patch) |
+| `GET` | `/v1/patches` | List patches (filterable by `?state=`) |
+| `GET` | `/v1/patches/{id}` | Get a patch by ID |
+| `POST` | `/v1/patches/{id}/approve` | Curator approves a patch (dual-approval required for graph mutations) |
+| `POST` | `/v1/patches/{id}/reject` | Curator rejects a patch |
+| `POST` | `/v1/patches/{id}/apply` | Apply an approved patch to the data platform |
+
+All Neo4j graph mutations (node/edge create, update, delete) require **dual-curator approval**. Text and classification corrections require a single curator.
 
 ### Unified Retrieval
 
-```json
-POST /v1/retrieval/query
-{
-  "query_text": "Patriot PAC-3 guidance computer specifications",
-  "strategy": "hybrid",
-  "modality_filter": "all",
-  "top_k": 10,
-  "include_context": true
-}
-```
+**Endpoint:** `POST /v1/retrieval/query`
 
-Response returns a flat ranked results list:
+**Request schema (`UnifiedQueryRequest`):**
 
-```json
-{
-  "strategy": "hybrid",
-  "modality_filter": "all",
-  "results": [
-    { "chunk_id": "...", "score": 0.92, "modality": "text", "content_text": "..." },
-    { "chunk_id": "...", "score": 0.78, "modality": "image", "content_text": "..." }
-  ],
-  "total": 2
-}
-```
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `query_text` | `string` | — | Text query (max 4096 chars). Required unless `query_image` is provided. |
+| `query_image` | `string` | `null` | Base64-encoded PNG/JPG image or artifact UUID reference. Only used by `hybrid` strategy. |
+| `strategy` | `string` | `"basic"` | One of: `basic`, `hybrid`, `graphrag_local`, `graphrag_global`, `graphrag_drift`, `graphrag_basic` |
+| `modality_filter` | `string` | `"all"` | `all`, `text`, or `image`. Only affects `hybrid` strategy. |
+| `top_k` | `int` | `10` | Number of results to return (1-100) |
+| `include_context` | `bool` | `true` | Include full chunk text in results |
+| `min_confidence` | `float` | `null` | Minimum score threshold (0.0-1.0); defaults to server config |
+| `reranker_top_n` | `int` | `null` | Candidates to rerank (1-200); defaults to server config |
+| `filters` | `object` | `null` | Filter by `classification`, `modalities`, `source_ids`, `document_ids` |
 
-Query strategies:
+**Response schema (`UnifiedQueryResponse`):**
 
-| Strategy | Modality Filter | Input | Pipeline | Output |
-|---|---|---|---|---|
-| `basic` | `all` | Text only | BGE vector search (Qdrant) | Text chunks |
-| `hybrid` | `text` | Text or image | Full multi-modal pipeline | Filtered to text |
-| `hybrid` | `image` | Text or image | Full multi-modal pipeline | Filtered to images |
-| `hybrid` | `all` | Text or image | Full multi-modal pipeline | All results |
-| `graphrag_local` | `all` | Text | Entity-centric + community reports | Entity matches with community context |
-| `graphrag_global` | `all` | Text | Cross-community summarization | Community reports ranked by relevance |
-| `graphrag_drift` | `all` | Text | Community-informed expansion | DRIFT search with entity/community context |
-| `graphrag_basic` | `all` | Text | Vector search over text units | Direct text unit search via GraphRAG |
+| Field | Type | Description |
+|---|---|---|
+| `query_text` | `string` | Echo of the query text |
+| `query_image` | `string` | Truncated echo of query image (first 100 chars) |
+| `strategy` | `string` | Strategy used |
+| `modality_filter` | `string` | Modality filter applied |
+| `results` | `array` | Ranked list of `QueryResultItem` objects (see below) |
+| `total` | `int` | Number of results returned |
+
+**Result item schema (`QueryResultItem`):**
+
+| Field | Type | Description |
+|---|---|---|
+| `chunk_id` | `uuid` | Chunk identifier (null for GraphRAG responses) |
+| `artifact_id` | `uuid` | Source artifact identifier |
+| `document_id` | `uuid` | Source document identifier |
+| `score` | `float` | Relevance score |
+| `modality` | `string` | `text`, `image`, `table`, `schematic`, `image_description`, or `graphrag_response` |
+| `content_text` | `string` | Chunk text or LLM-generated response |
+| `page_number` | `int` | Source page number |
+| `classification` | `string` | Security classification (default: `UNCLASSIFIED`) |
+| `context` | `object` | Graph neighbors, GraphRAG context (`{source, graphrag_context: {entities, community_reports}}`) |
+| `image_url` | `string` | API proxy URL for image results (`/v1/images/{chunk_id}`) |
+
+**Query strategies:**
+
+| Strategy | Modality Filter | Input | Pipeline | Output | Speed |
+|---|---|---|---|---|---|
+| `basic` | `all` | Text only | BGE vector search (Qdrant) | Ranked text/table chunks | Fast (1-3s) |
+| `hybrid` | `all`/`text`/`image` | Text and/or image | Full multi-modal pipeline | Mixed text, image, table, schematic chunks | Medium (5-15s) |
+| `graphrag_local` | `all` | Text only | Entity-centric + community reports | Single LLM-generated response with entity context | Slow (30-90s) |
+| `graphrag_global` | `all` | Text only | Cross-community summarization | Single LLM-generated multi-paragraph summary | Slow (30-90s) |
+| `graphrag_drift` | `all` | Text only | Community-informed expansion (DRIFT) | Single LLM-generated in-depth analysis | Slowest (30-120s) |
+| `graphrag_basic` | `all` | Text only | Vector search over text units | Single LLM-generated concise answer | Medium (5-15s) |
 
 > **Backward compatibility**: The legacy `mode` field (e.g. `"mode": "text_only"`) is still accepted and maps to the corresponding `strategy` + `modality_filter` combination.
+
+#### 1. Basic Text Query
+
+BGE vector search over text chunks in Qdrant. No LLM calls, no graph expansion.
+
+```python
+import requests
+
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "radar signal processing specifications",
+    "strategy": "basic",
+    "top_k": 5,
+    "include_context": True,
+})
+data = resp.json()
+for item in data["results"]:
+    print(f"[{item['score']:.3f}] {item['modality']}: {item['content_text'][:100]}")
+```
+
+#### 2. Multi-Modal Query (Hybrid)
+
+Full pipeline: BGE text + CLIP image search → Neo4j graph expansion → ontology traversal → weighted fusion scoring → cross-encoder reranking. Accepts text, base64 image, or both.
+
+```python
+import base64, requests
+
+# Text-only hybrid (searches text AND images)
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "VHF radar internal components",
+    "strategy": "hybrid",
+    "modality_filter": "all",  # "all", "text", or "image"
+    "top_k": 5,
+})
+data = resp.json()
+for item in data["results"]:
+    print(f"[{item['score']:.3f}] {item['modality']}: {item['content_text'][:100]}")
+    if item.get("image_url"):
+        print(f"  Image: http://localhost:8000{item['image_url']}")
+
+# Image-based search (base64-encoded)
+with open("photo.png", "rb") as f:
+    image_b64 = base64.b64encode(f.read()).decode()
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_image": image_b64,
+    "strategy": "hybrid",
+    "modality_filter": "image",
+    "top_k": 5,
+})
+
+# Combined text + image search
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "missile launcher diagram",
+    "query_image": image_b64,
+    "strategy": "hybrid",
+    "modality_filter": "all",
+    "top_k": 5,
+})
+```
+
+#### 3. GraphRAG Local Query
+
+Entity-centric search with community context reports. Returns a detailed LLM-generated response. Requires at least one successful GraphRAG indexing cycle.
+
+```python
+import requests
+
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "What are the key components of the S-300 air defense system?",
+    "strategy": "graphrag_local",
+    "top_k": 10,
+}, timeout=120)
+
+data = resp.json()
+# GraphRAG returns a single result with modality="graphrag_response"
+result = data["results"][0]
+print(result["content_text"])  # LLM-generated detailed explanation
+ctx = result.get("context", {}).get("graphrag_context", {})
+print(f"Entities: {len(ctx.get('entities', []))}")
+print(f"Community reports: {len(ctx.get('community_reports', []))}")
+```
+
+#### 4. GraphRAG Global Query
+
+Cross-community summarization for broad, holistic questions. Synthesizes answers across all community boundaries.
+
+```python
+import requests
+
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "What are the major categories of air defense systems and how do they compare?",
+    "strategy": "graphrag_global",
+    "top_k": 10,
+}, timeout=120)
+
+data = resp.json()
+print(data["results"][0]["content_text"])  # Multi-paragraph summary
+```
+
+#### 5. GraphRAG Drift Query
+
+Community-informed expansion search (Microsoft DRIFT algorithm). Iteratively expands across communities for nuanced queries.
+
+```python
+import requests
+
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "How do radar warning receivers interact with electronic countermeasure systems?",
+    "strategy": "graphrag_drift",
+    "top_k": 10,
+}, timeout=180)
+
+data = resp.json()
+print(data["results"][0]["content_text"])  # In-depth analysis
+```
+
+#### 6. GraphRAG Basic Query
+
+Vector search over GraphRAG-extracted text units. Fastest GraphRAG method, works with partial indexing.
+
+```python
+import requests
+
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "SA-2 Guideline missile specifications",
+    "strategy": "graphrag_basic",
+    "top_k": 10,
+}, timeout=60)
+
+data = resp.json()
+print(data["results"][0]["content_text"])  # Concise answer
+```
+
+#### Using Filters
+
+All strategies support optional filters to narrow results:
+
+```python
+import requests
+
+resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
+    "query_text": "radar specifications",
+    "strategy": "basic",
+    "top_k": 10,
+    "min_confidence": 0.5,
+    "reranker_top_n": 30,
+    "filters": {
+        "classification": "UNCLASSIFIED",
+        "modalities": ["text", "table"],
+        "document_ids": ["550e8400-e29b-41d4-a716-446655440000"],
+    },
+})
+```
+
+### Image Proxy
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/images/{chunk_id}` | Stream image from MinIO for an image chunk (1-hour cache) |
+| `GET` | `/v1/images/artifact/{artifact_id}` | Stream image from MinIO by artifact ID (direct lookup) |
+
+Image-modality results include an `image_url` served via the API proxy, which streams from MinIO with 1-hour cache headers. This avoids exposing Docker-internal MinIO hostnames in presigned URLs and works in air-gapped environments.
+
+### Retrieval Settings
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/settings/retrieval` | Query defaults: `{top_k, reranker_top_n, min_confidence}` |
+| `GET` | `/v1/settings/graphrag` | GraphRAG config: `{indexing_enabled, indexing_interval_minutes, last_indexing_at}` |
 
 The hybrid pipeline runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → independent re-scoring of expanded chunks → weighted fusion scoring → deduplicate → cross-encoder reranking (bge-reranker-v2-m3) → min score threshold filter → rank → filter by modality.
 
@@ -310,29 +593,21 @@ Image description sections (ranks 1–3) share the same `artifact_id` and `image
 
 ### Agent / LangGraph Context
 
-```
-GET /v1/agent/context
-  ?query=Patriot+PAC-3+guidance+computer
-  &strategy=basic
-  &top_k=10
-  &include_sources=true
-```
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/agent/context` | Pre-formatted markdown context string for LLM prompt injection |
 
-Returns a pre-formatted markdown context string for direct injection into an LLM prompt. Supports all query strategies. Accepts `strategy` + `modality_filter` params (and the deprecated `mode` param for backward compatibility).
+Query params: `query` (required), `strategy`, `modality_filter`, `top_k`, `include_sources`.
+
+Returns `{query, strategy, modality_filter, total_results, context, sources}`. Supports all query strategies.
 
 ```python
 # LangGraph usage example
 resp = requests.get("http://localhost:8000/v1/agent/context",
-                    params={"query": query, "strategy": "basic"})
-system_msg = f"Use this context:\n\n{resp.json()['context']}"
+                    params={"query": "Patriot PAC-3 guidance", "strategy": "basic", "top_k": 10})
+data = resp.json()
+system_msg = f"Use this context:\n\n{data['context']}"
 ```
-
-### Governance
-- `POST /v1/feedback` — submit a correction on a retrieved result
-- `POST /v1/patches/{id}/approve` — curator approves a patch
-- `POST /v1/patches/{id}/apply` — apply an approved patch
-
-All Neo4j graph mutations (node/edge create, update, delete) require **dual-curator approval**. Text and classification corrections require a single curator.
 
 ## Ontology
 
@@ -401,11 +676,50 @@ All response types, community level, and dynamic community selection are configu
 
 GraphRAG queries involve LLM calls that can take 1-3+ minutes. To prevent browser timeout errors, all 4 search modes use an async job pattern:
 
-1. **Submit**: `POST /v1/retrieval/graphrag/submit` — dispatches query as a Celery task, returns `job_id` immediately
-2. **Poll**: `GET /v1/retrieval/graphrag/status/{job_id}` — returns `pending`, `running`, `completed`, or `failed`
-3. **Fetch**: `GET /v1/retrieval/graphrag/result/{job_id}` — returns full `UnifiedQueryResponse` when complete
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/retrieval/graphrag/submit` | Submit query as Celery task, returns `{job_id, status: "pending"}` (HTTP 202) |
+| `GET` | `/v1/retrieval/graphrag/status/{job_id}` | Poll status: `pending`, `running`, `completed`, or `failed` |
+| `GET` | `/v1/retrieval/graphrag/result/{job_id}` | Fetch full `UnifiedQueryResponse` when complete (409 if still running) |
 
 The frontend polls with exponential backoff (1s → 10s cap). Results are stored in Redis for 24h. The synchronous `POST /v1/retrieval/query` endpoint still works for all strategies (backward compatible).
+
+```python
+import time, requests
+
+BASE = "http://localhost:8000/v1"
+
+# Step 1: Submit
+job = requests.post(f"{BASE}/retrieval/graphrag/submit", json={
+    "query_text": "What are the key components of the S-300 system?",
+    "strategy": "graphrag_local",
+}).json()
+job_id = job["job_id"]
+
+# Step 2: Poll with exponential backoff
+delay = 1.0
+while True:
+    time.sleep(delay)
+    status = requests.get(f"{BASE}/retrieval/graphrag/status/{job_id}").json()
+    print(f"Status: {status['status']}")
+    if status["status"] == "completed":
+        break
+    if status["status"] == "failed":
+        print(f"Error: {status.get('error')}")
+        break
+    delay = min(delay * 1.5, 10.0)
+
+# Step 3: Fetch result
+result = requests.get(f"{BASE}/retrieval/graphrag/result/{job_id}").json()
+print(result["results"][0]["content_text"])
+```
+
+### GraphRAG Indexing & Tuning
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/graphrag/index` | Dispatch GraphRAG indexing as Celery task (idempotent via Redis lock) |
+| `POST` | `/v1/graphrag/tune` | Dispatch GraphRAG prompt auto-tuning as Celery task |
 
 ### Prerequisites
 - GraphRAG queries require at least one successful indexing cycle (`GRAPHRAG_INDEXING_ENABLED=true`)
