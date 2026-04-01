@@ -54,7 +54,7 @@ class TestExportDocuments:
 
 
 class TestExportAll:
-    def test_writes_parquet_file(self, tmp_path):
+    def test_writes_csv_file(self, tmp_path):
         from app.services.graphrag_bridge import export_all
 
         db = MagicMock()
@@ -65,7 +65,7 @@ class TestExportAll:
 
         stats = export_all(db, tmp_path)
 
-        assert (tmp_path / "documents.parquet").exists()
+        assert (tmp_path / "documents.csv").exists()
         assert stats["documents"] == 1
 
     def test_empty_db_returns_zero(self, tmp_path):

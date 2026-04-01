@@ -84,7 +84,12 @@ def export_documents(db_session) -> pd.DataFrame:
 
 
 def export_all(db_session, output_dir: Path) -> dict:
-    """Export documents to input/ for GraphRAG indexing.
+    """Export documents to input/ as CSV for GraphRAG indexing.
+
+    GraphRAG's native input reader loads CSV files from input_storage.
+    This lets load_update_documents run its own delta detection via
+    get_delta_docs() (title-based comparison), halting the pipeline
+    immediately when there are no new documents.
 
     Returns dict with counts of exported items.
     """
@@ -92,7 +97,7 @@ def export_all(db_session, output_dir: Path) -> dict:
 
     documents_df = export_documents(db_session)
     documents_df = _sanitize_text_columns(documents_df)
-    documents_df.to_parquet(output_dir / "documents.parquet", index=False)
+    documents_df.to_csv(output_dir / "documents.csv", index=False)
 
     stats = {
         "documents": len(documents_df),

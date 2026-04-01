@@ -175,18 +175,6 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir
 
     config = build_graphrag_config(settings)
 
-    # Load documents exported by bridge as input
-    docs_path = input_dir / "documents.parquet"
-    if docs_path.exists():
-        docs_df = pd.read_parquet(docs_path)
-        input_docs = pd.DataFrame({
-            "id": docs_df["id"],
-            "text": docs_df["text"],
-            "title": docs_df["title"],
-        })
-    else:
-        input_docs = None
-
     # First run: no GraphRAG-produced index in output/ yet → full build
     # Subsequent runs: GraphRAG's own entities.parquet exists → incremental update
     # Note: output/ is exclusively owned by GraphRAG; input/ is the bridge export
@@ -196,46 +184,14 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir
     # is_update_run control whether it becomes "standard-update".
     has_existing_index = (output_dir / "entities.parquet").exists()
 
-    # Delta detection: when passing input_documents directly to build_index(),
-    # GraphRAG removes its load_update_documents workflow (which calls
-    # get_delta_docs). Without it, ALL documents are treated as new and the
-    # full extraction pipeline re-runs on every document. We must compute the
-    # delta ourselves and skip the run entirely when there are no new docs.
-    if has_existing_index and input_docs is not None:
-        prev_docs_path = output_dir / "documents.parquet"
-        if prev_docs_path.exists():
-            prev_docs = pd.read_parquet(prev_docs_path)
-            previous_titles = set(prev_docs["title"].unique())
-            delta_docs = input_docs[~input_docs["title"].isin(previous_titles)]
-            logger.info(
-                "Delta detection: %d input docs, %d previously indexed, %d new",
-                len(input_docs), len(previous_titles), len(delta_docs),
-            )
-            if len(delta_docs) == 0:
-                logger.info("No new documents detected -- skipping GraphRAG update")
-                communities_created = 0
-                reports_generated = 0
-                communities_path = output_dir / "communities.parquet"
-                reports_path = output_dir / "community_reports.parquet"
-                if communities_path.exists():
-                    communities_created = len(pd.read_parquet(communities_path))
-                if reports_path.exists():
-                    reports_generated = len(pd.read_parquet(reports_path))
-                return {
-                    "communities_created": communities_created,
-                    "reports_generated": reports_generated,
-                }
-            input_docs = delta_docs
-
     use_fast = settings.graphrag_use_fast_method
     base_method = IndexingMethod.Fast if use_fast else IndexingMethod.Standard
 
     logger.info(
-        "GraphRAG indexing mode: %s%s (entities.parquet exists=%s, input_docs=%d)",
+        "GraphRAG indexing mode: %s%s (entities.parquet exists=%s)",
         "fast" if use_fast else "standard",
         "-update" if has_existing_index else "",
         has_existing_index,
-        len(input_docs) if input_docs is not None else 0,
     )
 
     # Backup output before update run (#13: failure recovery)
@@ -273,13 +229,19 @@ def _run_graphrag_pipeline(settings, data_dir: Path, output_dir: Path, input_dir
         def pipeline_error(self, error):
             logger.error("GraphRAG pipeline error: %s", error)
 
+    # Do NOT pass input_documents — let GraphRAG load from input_storage
+    # (CSV files in input/) via its own load_input_documents or
+    # load_update_documents workflow. This matches the CLI `graphrag update`
+    # behavior: on update runs, load_update_documents calls get_delta_docs()
+    # to compare titles against previously indexed documents, and returns
+    # stop=True when no new docs are found, halting the pipeline immediately.
+    # Passing input_documents would bypass this delta detection entirely.
     try:
         results = _run_async(build_index(
             config=config,
             method=base_method,
             is_update_run=has_existing_index,
             verbose=True,
-            input_documents=input_docs,
             callbacks=[_LoggingCallbacks()],
         ))
     except Exception:

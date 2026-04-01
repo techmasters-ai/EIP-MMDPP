@@ -10,6 +10,8 @@ from graphrag.config.models.graph_rag_config import GraphRagConfig
 from graphrag.config.models.local_search_config import LocalSearchConfig
 from graphrag.config.models.reporting_config import ReportingConfig
 from graphrag_cache.cache_config import CacheConfig
+from graphrag_input import InputConfig
+from graphrag_input.input_type import InputType
 from graphrag_llm.config.model_config import ModelConfig
 from graphrag_storage.storage_config import StorageConfig
 from graphrag_vectors.vector_store_config import VectorStoreConfig
@@ -85,9 +87,20 @@ def build_graphrag_config(settings) -> GraphRagConfig:
     # Full extraction with ontology-guided prompt and entity types.
     # Uses the military ontology extraction prompt from graphrag_prompts.py
     # and entity types from the ontology YAML.
+    input_dir = data_dir / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+
     config = GraphRagConfig(
         completion_models={"default_completion_model": chat_model},
         embedding_models={"default_embedding_model": embedding_model},
+        input=InputConfig(
+            type=InputType.Csv,
+            file_pattern=".*\\.csv$",
+            id_column="id",
+            title_column="title",
+            text_column="text",
+        ),
+        input_storage=StorageConfig(base_dir=str(input_dir)),
         extract_graph=ExtractGraphConfig(
             entity_types=entity_types,
         ),
