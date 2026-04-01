@@ -127,6 +127,9 @@ def _dedupe_extracted_elements(chunks: list) -> tuple[list, int]:
     """Remove exact duplicate extracted elements conservatively.
 
     Dedup key: (modality, page_number, section_path, content_text, bounding_box).
+    For image/schematic elements, the dedup key also includes a hash of the raw
+    image bytes so that different images on the same page are NOT treated as
+    duplicates (they often share empty text and null bounding boxes).
     Preserves first-occurrence order. Keeps duplicates across different pages/sections.
     """
     seen: set[str] = set()
@@ -134,6 +137,13 @@ def _dedupe_extracted_elements(chunks: list) -> tuple[list, int]:
     for chunk in chunks:
         section_path = (getattr(chunk, "metadata", None) or {}).get("section_path", "")
         key = f"{chunk.modality}|{chunk.page_number}|{section_path}|{chunk.chunk_text}|{chunk.bounding_box}"
+        # Images often have empty text + null bbox, so two different images on
+        # the same page produce identical keys.  Include a hash of the raw
+        # image bytes to distinguish them.
+        if chunk.modality in ("image", "schematic") and getattr(chunk, "raw_image_bytes", None):
+            import hashlib
+            img_hash = hashlib.sha256(chunk.raw_image_bytes).hexdigest()[:12]
+            key = f"{key}|{img_hash}"
         if key in seen:
             continue
         seen.add(key)

@@ -219,3 +219,53 @@ class TestStandaloneImageSynthesis:
 
         result = _synthesize_standalone_image(b"\x89PNG", "image/png")
         assert result is not None  # synthesis always produces if image mime
+
+
+class TestDedupeExtractedElements:
+    """Verify that dedup preserves distinct images on the same page."""
+
+    def test_different_images_same_page_not_deduped(self):
+        """Two different images on the same page should both be kept."""
+        from app.workers.pipeline import _dedupe_extracted_elements
+        from app.services.extraction import ExtractedChunk
+
+        img_a = ExtractedChunk(
+            chunk_text="", modality="image", page_number=8,
+            raw_image_bytes=b"\x89PNG_image_A",
+        )
+        img_b = ExtractedChunk(
+            chunk_text="", modality="image", page_number=8,
+            raw_image_bytes=b"\x89PNG_image_B",
+        )
+        result, dropped = _dedupe_extracted_elements([img_a, img_b])
+        assert len(result) == 2
+        assert dropped == 0
+
+    def test_identical_images_same_page_deduped(self):
+        """Two identical images on the same page should be deduped to one."""
+        from app.workers.pipeline import _dedupe_extracted_elements
+        from app.services.extraction import ExtractedChunk
+
+        same_bytes = b"\x89PNG_same_image"
+        img_a = ExtractedChunk(
+            chunk_text="", modality="image", page_number=8,
+            raw_image_bytes=same_bytes,
+        )
+        img_b = ExtractedChunk(
+            chunk_text="", modality="image", page_number=8,
+            raw_image_bytes=same_bytes,
+        )
+        result, dropped = _dedupe_extracted_elements([img_a, img_b])
+        assert len(result) == 1
+        assert dropped == 1
+
+    def test_text_elements_still_deduped_normally(self):
+        """Text elements with identical content on same page still dedup."""
+        from app.workers.pipeline import _dedupe_extracted_elements
+        from app.services.extraction import ExtractedChunk
+
+        txt_a = ExtractedChunk(chunk_text="Hello world", modality="text", page_number=1)
+        txt_b = ExtractedChunk(chunk_text="Hello world", modality="text", page_number=1)
+        result, dropped = _dedupe_extracted_elements([txt_a, txt_b])
+        assert len(result) == 1
+        assert dropped == 1
