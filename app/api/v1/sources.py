@@ -979,6 +979,7 @@ async def get_document_image_descriptions(
             DocumentElement.element_uid,
             DocumentElement.content_text,
             DocumentElement.page_number,
+            DocumentElement.artifact_id,
         ).where(
             DocumentElement.document_id == document_id,
             DocumentElement.element_type == "image",
@@ -991,6 +992,7 @@ async def get_document_image_descriptions(
             "element_uid": str(r.element_uid),
             "content_text": r.content_text,
             "page_number": r.page_number,
+            "artifact_id": str(r.artifact_id) if r.artifact_id else None,
         }
         for r in rows
     ]

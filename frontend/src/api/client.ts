@@ -588,6 +588,7 @@ export interface ImageDescription {
   element_uid: string;
   content_text: string;
   page_number: number | null;
+  artifact_id: string | null;
 }
 
 export async function getDocumentImageDescriptions(

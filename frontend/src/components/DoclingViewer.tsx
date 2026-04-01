@@ -273,25 +273,36 @@ export function DoclingViewer({
             />
           )}
 
-          {/* Image description panel for standalone image files (no Docling JSON) */}
+          {/* Standalone image display + description panel (no Docling JSON) */}
           {!docJson && imageDescriptions.length > 0 && mode === "document" && (
-            <div style={{
-              border: "1px solid var(--color-border)",
-              borderRadius: "var(--radius)",
-              padding: "0.75rem 1rem",
-              marginBottom: "0.5rem",
-              background: "var(--color-surface-2)",
-              fontSize: "0.85rem",
-            }}>
-              <div style={{ fontWeight: 600, marginBottom: "0.5rem", color: "var(--color-text-muted)" }}>
-                AI Image Analysis
-              </div>
-              {imageDescriptions.map((desc) => (
-                <div key={desc.element_uid} style={{ maxHeight: "300px", overflowY: "auto", whiteSpace: "pre-line", lineHeight: 1.5 }}>
-                  {desc.content_text}
+            <>
+              {imageDescriptions.map((desc) => desc.artifact_id && (
+                <div key={`img-${desc.element_uid}`} style={{ textAlign: "center", marginBottom: "0.75rem" }}>
+                  <img
+                    src={`/v1/images/artifact/${desc.artifact_id}`}
+                    alt={`Image ${desc.element_uid}`}
+                    style={{ maxWidth: "100%", maxHeight: "500px", borderRadius: "var(--radius)", boxShadow: "0 0.25rem 0.5rem rgba(0,0,0,0.15)" }}
+                  />
                 </div>
               ))}
-            </div>
+              <div style={{
+                border: "1px solid var(--color-border)",
+                borderRadius: "var(--radius)",
+                padding: "0.75rem 1rem",
+                marginBottom: "0.5rem",
+                background: "var(--color-surface-2)",
+                fontSize: "0.85rem",
+              }}>
+                <div style={{ fontWeight: 600, marginBottom: "0.5rem", color: "var(--color-text-muted)" }}>
+                  AI Image Analysis
+                </div>
+                {imageDescriptions.map((desc) => (
+                  <div key={desc.element_uid} style={{ maxHeight: "300px", overflowY: "auto", whiteSpace: "pre-line", lineHeight: 1.5 }}>
+                    {desc.content_text}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
 
           {/* Plain text fallback for .txt and files without Docling JSON */}
