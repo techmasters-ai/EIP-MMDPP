@@ -171,3 +171,51 @@ class TestPipelineStatusConstants:
         assert STATUS_COMPLETE == "COMPLETE"
         assert STATUS_PARTIAL_COMPLETE == "PARTIAL_COMPLETE"
         assert STATUS_FAILED == "FAILED"
+
+
+class TestStandaloneImageSynthesis:
+    """Verify that standalone image files get a synthesized element
+    when Docling returns 0 elements."""
+
+    def test_synthesis_produces_one_image_element(self):
+        """When Docling returns 0 elements for an image MIME type,
+        _synthesize_standalone_image should produce a single image ExtractedChunk."""
+        from app.workers.pipeline import _synthesize_standalone_image
+        from app.services.extraction import ExtractedChunk
+
+        fake_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        result = _synthesize_standalone_image(fake_bytes, "image/png")
+
+        assert result is not None
+        assert len(result) == 1
+        chunk = result[0]
+        assert isinstance(chunk, ExtractedChunk)
+        assert chunk.modality == "image"
+        assert chunk.chunk_text == ""
+        assert chunk.page_number == 1
+        assert chunk.raw_image_bytes == fake_bytes
+        assert chunk.metadata["label"] == "picture"
+        assert chunk.metadata["ext"] == "png"
+
+    def test_synthesis_returns_none_for_non_image(self):
+        """Non-image MIME types should return None (no synthesis)."""
+        from app.workers.pipeline import _synthesize_standalone_image
+
+        result = _synthesize_standalone_image(b"hello", "application/pdf")
+        assert result is None
+
+    def test_synthesis_handles_jpeg_extension(self):
+        """JPEG MIME should produce ext='jpeg'."""
+        from app.workers.pipeline import _synthesize_standalone_image
+
+        result = _synthesize_standalone_image(b"\xff\xd8\xff", "image/jpeg")
+        assert result is not None
+        assert result[0].metadata["ext"] == "jpeg"
+
+    def test_synthesis_always_produces_for_image_mime(self):
+        """The function always produces for image MIME — the caller
+        guards on len(result.elements) == 0."""
+        from app.workers.pipeline import _synthesize_standalone_image
+
+        result = _synthesize_standalone_image(b"\x89PNG", "image/png")
+        assert result is not None  # synthesis always produces if image mime

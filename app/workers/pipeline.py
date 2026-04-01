@@ -141,6 +141,29 @@ def _dedupe_extracted_elements(chunks: list) -> tuple[list, int]:
     return result, len(chunks) - len(result)
 
 
+def _synthesize_standalone_image(file_bytes: bytes, mime_type: str) -> list | None:
+    """Synthesize a single image element for standalone image files.
+
+    When Docling returns 0 elements for an image MIME type, create an
+    ExtractedChunk so the pipeline can CLIP-embed and LLM-describe it.
+
+    Returns a list with one ExtractedChunk, or None if mime_type is not an image.
+    """
+    if not mime_type.startswith("image/"):
+        return None
+
+    from app.services.extraction import ExtractedChunk
+
+    ext = mime_type.split("/")[-1]  # e.g. "png", "jpeg", "tiff"
+    return [ExtractedChunk(
+        chunk_text="",
+        modality="image",
+        page_number=1,
+        raw_image_bytes=file_bytes,
+        metadata={"label": "picture", "ext": ext},
+        bounding_box=None,
+    )]
+
 
 def _update_document_status(
     document_id: str,
@@ -759,6 +782,18 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 "prepare_document: %d elements after dedup (%d duplicates dropped) for %s",
                 len(result.elements), _dups_dropped, document_id,
             )
+
+        # 4b. Standalone image fallback — synthesize element when Docling
+        #     returns 0 elements for an image file (JPEG, PNG, TIFF, etc.)
+        if len(result.elements) == 0 and mime_type.startswith("image/"):
+            synthesized = _synthesize_standalone_image(file_bytes, mime_type)
+            if synthesized:
+                result.elements = synthesized
+                result.num_pages = max(result.num_pages, 1)
+                logger.info(
+                    "prepare_document: synthesized standalone image element for %s (mime=%s)",
+                    document_id, mime_type,
+                )
 
         # 5. Build element_uids, then persist Artifacts with deterministic IDs
         element_uids: list[str] = []
