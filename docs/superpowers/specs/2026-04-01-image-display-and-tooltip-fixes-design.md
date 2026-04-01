@@ -30,7 +30,7 @@ After Docling returns 0 elements and deduplication runs, detect the case where:
 
 Synthesize a single `ExtractedChunk`:
 - `modality = "image"`
-- `chunk_text = None`
+- `chunk_text = ""` (empty string — `ExtractedChunk.chunk_text` is typed `str`, not `Optional[str]`)
 - `raw_image_bytes = file_bytes` (the original uploaded file)
 - `page_number = 1`
 - `metadata = {"label": "picture", "ext": <extension from mime>}`
@@ -54,20 +54,25 @@ The existing pipeline then:
 
 Instead of returning the raw Docling JSON directly, enrich it with image description annotations before returning.
 
-**Steps:**
+**Standalone image guard:** If the Docling JSON has `pictures: []` AND `texts: []` (i.e., Docling produced no usable content — typical for standalone images), return 404. This causes the frontend's `getDoclingRawJson` to fail, setting `docJson = null`, which triggers the standalone fallback panel (`!docJson && imageDescriptions.length > 0`) that displays the raw image and description text. Without this guard, the viewer would render an empty Docling page.
+
+**Steps (for documents with pictures):**
 1. Parse the JSON bytes from MinIO into a dict
-2. Query DB for image descriptions: all `document_elements` where `document_id` matches, `element_type = 'image'`, and `content_text IS NOT NULL`, ordered by `element_order`
-3. Group descriptions by `page_number`
-4. Group `docJson["pictures"]` by `prov[0].page_no`
-5. For each page, zip pictures and descriptions in positional order
-6. For each matched pair, append `{"kind": "description", "text": content_text}` to `picture["annotations"]`
-7. Re-serialize to JSON and return
+2. If `pictures` and `texts` are both empty, return 404 (standalone image fallback)
+3. Query DB for image descriptions using `await db.execute(...)` (async — this endpoint uses `AsyncSession`): all `document_elements` where `document_id` matches, `element_type = 'image'`, and `content_text IS NOT NULL`, ordered by `element_order`
+4. Group descriptions by `page_number`
+5. Group `docJson["pictures"]` by `prov[0].page_no` (guard against empty `prov` list — use `prov[0].get("page_no")` if `prov` exists, else skip)
+6. For each page, zip pictures and descriptions in positional order
+7. For each matched pair, append `{"kind": "description", "text": content_text, "provenance": "llm-generated"}` to `picture["annotations"]`
+8. Re-serialize to JSON and return
 
 **Matching rationale:** Both the pictures array and the document_elements table are produced from the same Docling conversion in document reading order. Grouping by page and matching positionally within each page is authoritative because both data sources originate from the same `prepare_document` run.
 
-**Safety:** If picture count != description count on a page, match as many as possible (zip behavior) and skip extras. This handles edge cases like failed description generation for some images.
+**Safety:** If picture count != description count on a page, match as many as possible (zip behavior) and skip extras. This handles edge cases like failed description generation for some images. Pictures with empty `prov` arrays are skipped (no page to match on).
 
-**Scope:** ~30 lines added to the endpoint.
+**Note:** The `annotations` field on Docling items is deprecated in newer docling-core versions. Add a code comment flagging this for future maintainability.
+
+**Scope:** ~35 lines added to the endpoint.
 
 ### No Frontend Changes Required
 
@@ -86,6 +91,6 @@ The existing `imageDescriptions` state and fetch in `DoclingViewer.tsx` remain f
 
 ## Testing
 
-- **Standalone image:** Upload a JPEG/PNG. Verify pipeline creates 1 element, generates description, CLIP embeds. Verify DoclingViewer shows the image and description panel.
+- **Standalone image:** Upload a JPEG/PNG. Verify pipeline creates 1 element, generates description, CLIP embeds. Verify DoclingViewer shows the "AI Image Analysis" panel with the description (standalone fallback path).
 - **PDF tooltips:** Open a PDF with images in DoclingViewer. Hover over an image. Verify the "AI Image Analysis" tooltip appears with the LLM description scrolling.
-- **Edge cases:** Document with no images (no change). Document with images but no descriptions yet (empty annotations, no tooltip). Standalone image with Docling returning >0 elements (shouldn't trigger synthesis).
+- **Edge cases:** Document with no images (no change). Document with images but no descriptions yet (empty annotations, no tooltip). Standalone image with Docling returning >0 elements (shouldn't trigger synthesis). Document where some images failed description generation (zip handles mismatched counts gracefully).
