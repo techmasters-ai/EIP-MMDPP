@@ -1,7 +1,7 @@
 """Celery application configuration."""
 
 from celery import Celery
-from celery.schedules import crontab
+from celery.signals import worker_process_shutdown
 
 from app.config import get_settings
 
@@ -75,3 +75,17 @@ celery_app.conf.update(
         ),
     },
 )
+
+
+@worker_process_shutdown.connect
+def _on_worker_process_shutdown(**kwargs):
+    """Cleanly drain LiteLLM background tasks on worker shutdown."""
+    import logging
+
+    try:
+        from app.services.graphrag_service import close_graphrag_loop
+        close_graphrag_loop()
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "GraphRAG loop cleanup on shutdown failed", exc_info=True,
+        )

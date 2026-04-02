@@ -160,6 +160,38 @@ class TestDriftSearch:
 
         assert result["response"] == "DRIFT answer"
 
+    @patch("app.services.graphrag_service._load_search_data")
+    @patch("app.services.graphrag_service.get_settings")
+    def test_primer_parse_error_surfaces(self, mock_gs, mock_load):
+        from app.services.graphrag_runtime_patches import DriftPrimerParseError
+        from app.services.graphrag_service import drift_search
+
+        mock_gs.return_value = _mock_settings()
+        mock_load.return_value = _make_mock_search_data()
+
+        with patch("app.services.graphrag_service._run_drift_search") as mock_run:
+            mock_run.side_effect = DriftPrimerParseError("truncated JSON")
+            result = drift_search("test")
+
+        assert result["error"] == "drift_primer_parse_failed"
+        assert "truncated JSON" in result["error_detail"]
+        assert result["response"] == ""
+
+    @patch("app.services.graphrag_service._load_search_data")
+    @patch("app.services.graphrag_service.get_settings")
+    def test_generic_error_surfaces(self, mock_gs, mock_load):
+        from app.services.graphrag_service import drift_search
+
+        mock_gs.return_value = _mock_settings()
+        mock_load.return_value = _make_mock_search_data()
+
+        with patch("app.services.graphrag_service._run_drift_search") as mock_run:
+            mock_run.side_effect = RuntimeError("LLM timeout")
+            result = drift_search("test")
+
+        assert result["error"] == "drift_search_failed"
+        assert result["response"] == ""
+
 
 class TestBasicSearch:
     @patch("app.services.graphrag_service._load_search_data")

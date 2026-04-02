@@ -140,7 +140,8 @@ class TestRunGraphRAGQueryTask:
         assert "indexing has not completed" in result["error"]
 
     @patch("app.services.graphrag_service.drift_search")
-    def test_drift_empty_returns_no_error(self, mock_search):
+    def test_drift_empty_no_error_key_returns_empty_success(self, mock_search):
+        """Genuine no-data (no error key) still returns empty success."""
         mock_search.return_value = {"response": ""}
         from app.workers.graphrag_tasks import run_graphrag_query_task
         result = run_graphrag_query_task(
@@ -148,6 +149,36 @@ class TestRunGraphRAGQueryTask:
         )
         assert "error" not in result
         assert result["total"] == 0
+
+    @patch("app.services.graphrag_service.drift_search")
+    def test_drift_error_key_surfaces_as_failure(self, mock_search):
+        """DRIFT with an error key should return an error, not empty success."""
+        mock_search.return_value = {
+            "response": "",
+            "error": "drift_primer_parse_failed",
+            "error_detail": "truncated JSON",
+        }
+        from app.workers.graphrag_tasks import run_graphrag_query_task
+        result = run_graphrag_query_task(
+            {"strategy": "graphrag_drift", "query_text": "test"}
+        )
+        assert "error" in result
+        assert "drift_primer_parse_failed" in result["error"]
+
+    @patch("app.services.graphrag_service.drift_search")
+    def test_drift_search_failed_error_surfaces(self, mock_search):
+        """DRIFT with drift_search_failed error key should surface."""
+        mock_search.return_value = {
+            "response": "",
+            "error": "drift_search_failed",
+            "error_detail": "Internal DRIFT search error",
+        }
+        from app.workers.graphrag_tasks import run_graphrag_query_task
+        result = run_graphrag_query_task(
+            {"strategy": "graphrag_drift", "query_text": "test"}
+        )
+        assert "error" in result
+        assert "drift_search_failed" in result["error"]
 
     @patch("app.services.graphrag_service.basic_search")
     def test_basic_empty_returns_no_error(self, mock_search):

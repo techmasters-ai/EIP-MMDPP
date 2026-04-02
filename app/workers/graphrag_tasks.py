@@ -168,13 +168,16 @@ def run_graphrag_query_task(request_dict: dict) -> dict:
         return {"error": str(exc)}
 
     response = graphrag_result.get("response", "")
+    error_key = graphrag_result.get("error", "")
     if not response:
-        error_key = graphrag_result.get("error", "")
         if error_key == "communities_not_indexed":
             return {
                 "error": "GraphRAG indexing has not completed yet. "
                 "Run indexing and wait for community detection to finish.",
             }
+        if error_key:
+            detail = graphrag_result.get("error_detail", "")
+            return {"error": f"GraphRAG {strategy} failed: {error_key}. {detail}".strip()}
         if strategy in ("graphrag_local", "graphrag_global"):
             return {"error": f"GraphRAG {strategy}: no results found."}
         return _build_response(strategy, query_text, [])

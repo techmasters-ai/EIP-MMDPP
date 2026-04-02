@@ -8,6 +8,7 @@ The bridge layer only exports documents from Postgres as input.
 import asyncio
 import logging
 import shutil
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -46,18 +47,51 @@ if _graphrag_think:
         logger.debug("OllamaConfig not available — skipping think override")
 
 
-def _run_async(coro):
-    """Run an async coroutine from a sync context (threadpool thread).
+_LOOP_LOCAL = threading.local()
 
-    Creates a fresh event loop to avoid conflicts with uvloop in the main
-    thread.  asyncio.run() fails under uvloop because it cannot patch the
-    running loop type.
+
+def _get_graphrag_loop() -> asyncio.AbstractEventLoop:
+    """Get or create a persistent event loop for the current worker thread.
+
+    Reusing a single loop per thread keeps LiteLLM's background logging
+    coroutines alive instead of destroying them after every request.
     """
-    loop = asyncio.new_event_loop()
+    loop = getattr(_LOOP_LOCAL, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        _LOOP_LOCAL.loop = loop
+    return loop
+
+
+def _run_async(coro):
+    """Run an async coroutine from a sync context (worker thread).
+
+    Uses a persistent per-thread event loop to avoid destroying LiteLLM's
+    background logging tasks on every call.
+    """
+    return _get_graphrag_loop().run_until_complete(coro)
+
+
+def close_graphrag_loop():
+    """Shut down the persistent event loop for the current thread.
+
+    Call this from Celery worker_process_shutdown to cleanly drain
+    LiteLLM's background logging tasks.
+    """
+    loop = getattr(_LOOP_LOCAL, "loop", None)
+    if not loop or loop.is_closed():
+        return
+    pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    except Exception:
+        pass
+    loop.close()
+    _LOOP_LOCAL.loop = None
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +139,14 @@ def _patch_embedding_sanitization():
 
 
 _patch_embedding_sanitization()
+
+# ---------------------------------------------------------------------------
+# DRIFT primer: replace strict JSON parsing with tolerant multi-strategy
+# ---------------------------------------------------------------------------
+
+from app.services.graphrag_runtime_patches import install_graphrag_runtime_patches
+
+install_graphrag_runtime_patches()
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +567,8 @@ def global_search(query: str) -> dict:
 
 def drift_search(query: str) -> dict:
     """Community-informed expansion search."""
+    from app.services.graphrag_runtime_patches import DriftPrimerParseError
+
     try:
         settings = get_settings()
         config = build_graphrag_config(settings)
@@ -542,9 +586,22 @@ def drift_search(query: str) -> dict:
             "sources": sources,
             "context": _serialize_context(context),
         }
+    except DriftPrimerParseError as exc:
+        logger.exception("GraphRAG DRIFT primer parse failed")
+        return {
+            "response": "",
+            "context": {},
+            "error": "drift_primer_parse_failed",
+            "error_detail": str(exc),
+        }
     except Exception:
         logger.exception("GraphRAG DRIFT search failed")
-        return {"response": "", "context": {}}
+        return {
+            "response": "",
+            "context": {},
+            "error": "drift_search_failed",
+            "error_detail": "Internal DRIFT search error; check worker logs.",
+        }
 
 
 def basic_search(query: str) -> dict:

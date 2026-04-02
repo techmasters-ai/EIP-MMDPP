@@ -872,12 +872,18 @@ async def _graphrag_drift_query(
     )
 
     response = graphrag_result.get("response", "")
+    error_key = graphrag_result.get("error", "")
     if not response:
-        if graphrag_result.get("error") == "communities_not_indexed":
+        if error_key == "communities_not_indexed":
             raise HTTPException(
                 status_code=409,
                 detail="GraphRAG indexing has not completed yet. "
                 "Run indexing and wait for community detection to finish.",
+            )
+        if error_key:
+            raise HTTPException(
+                status_code=422,
+                detail=f"GraphRAG DRIFT search failed: {error_key}",
             )
         return []
 

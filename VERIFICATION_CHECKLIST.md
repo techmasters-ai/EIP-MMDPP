@@ -108,6 +108,8 @@
 | GraphRAG drift search (community-informed expansion) | Cannot detect novel concepts | `strategy=graphrag_drift`; receive in-depth analysis | 2.9 |
 | GraphRAG basic search (vector over text units) | No simple fallback when community detection fails | `strategy=graphrag_basic`; receive concise answer | 2.9 |
 | GraphRAG precondition checks (409 if indexing not complete) | Silent empty results confuse user | Query before indexing returns 409; after indexing returns results | 2.13 |
+| GraphRAG DRIFT error surfacing (422/error key on primer parse failure) | DRIFT silently returns empty results on malformed LLM JSON | Induce bad JSON from model; sync endpoint returns 422; async job shows "failed" status with error detail | 2.33 |
+| DRIFT primer tolerant JSON parsing (5-strategy recovery) | DRIFT fails on think-tag-wrapped or truncated JSON from Ollama | Run DRIFT with Ollama thinking model; primer parses JSON despite reasoning wrappers | 2.33 |
 | Async GraphRAG queries (submit/poll/fetch via Celery) | Long queries timeout in browser | Submit query; poll status; fetch results asynchronously | 2.29 |
 | GraphRAG citation provenance (all 4 search types) | Facts in GraphRAG responses have no source attribution | Run GraphRAG Local query; response contains [n] citations; sources array has entities + documents | 2.32 |
 
@@ -212,6 +214,7 @@ These features have broken before and should be tested carefully after any chang
 12. **Translation tooltips** (2.27) — Must not break image description annotations.
 13. **Ontology subgraph orphans** (2.31) — Specification entities must connect to parent systems via SPECIFIED_BY. Test with "missile" search; click graph circle; verify multi-node subgraph.
 14. **GraphRAG citation parsing** (2.32) — LLM must produce ## Sources block. Test all 4 strategies; verify sources array populated.
+15. **DRIFT primer JSON tolerance** (2.33) — Ollama thinking models wrap JSON in reasoning tags. DRIFT must parse through wrappers; failures must surface as errors, not empty results.
 
 ---
 
