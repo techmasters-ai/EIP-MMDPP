@@ -51,6 +51,7 @@ class QueryResultItem(APIModel):
     chunk_id: Optional[uuid.UUID] = None
     artifact_id: Optional[uuid.UUID] = None
     document_id: Optional[uuid.UUID] = None
+    document_name: Optional[str] = None
     score: float
     modality: str  # text | image | table | schematic | graph_node
     content_text: Optional[str] = None

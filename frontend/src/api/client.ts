@@ -41,6 +41,7 @@ export interface QueryResultItem {
   chunk_id?: string;
   artifact_id?: string;
   document_id?: string;
+  document_name?: string;
   score: number;
   modality: string;
   content_text?: string;

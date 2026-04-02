@@ -25,9 +25,10 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.qdrant_url == "http://qdrant:6333"
 
-    def test_graphrag_defaults(self):
+    def test_graphrag_defaults(self, monkeypatch):
+        monkeypatch.delenv("GRAPHRAG_MAX_CLUSTER_SIZE", raising=False)
         from app.config import Settings
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.graphrag_indexing_enabled is True
         assert s.graphrag_max_cluster_size == 50
         assert isinstance(s.graphrag_llm_model, str)

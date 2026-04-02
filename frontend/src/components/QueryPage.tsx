@@ -224,6 +224,12 @@ function MetadataDetail({ item }: { item: QueryResultItem }) {
               <td style={{ padding: "0.2rem 0.5rem", fontFamily: "monospace" }}>{item.document_id}</td>
             </tr>
           )}
+          {item.document_name && (
+            <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
+              <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>document_name</td>
+              <td style={{ padding: "0.2rem 0.5rem" }}>{item.document_name}</td>
+            </tr>
+          )}
           <tr style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
             <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500 }}>score</td>
             <td style={{ padding: "0.2rem 0.5rem" }}>{item.score.toFixed(4)}</td>
@@ -469,6 +475,9 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         <span className="badge badge-info">{item.modality}</span>
         {item.classification && item.classification !== "UNCLASSIFIED" && (
           <span className="badge badge-error">{item.classification}</span>
+        )}
+        {item.document_name && (
+          <span className="text-xs text-muted" title={item.document_name}>{item.document_name}</span>
         )}
         {item.page_number != null && (
           <span className="text-xs text-muted">p.{item.page_number}</span>

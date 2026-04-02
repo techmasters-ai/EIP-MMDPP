@@ -6,8 +6,9 @@ pytestmark = pytest.mark.unit
 
 
 class TestGraphRAGSettings:
-    def test_default_graphrag_settings(self):
+    def test_default_graphrag_settings(self, monkeypatch):
         """New GraphRAG settings have correct defaults."""
+        monkeypatch.delenv("GRAPHRAG_MAX_CLUSTER_SIZE", raising=False)
         from app.config import Settings
 
         s = Settings(

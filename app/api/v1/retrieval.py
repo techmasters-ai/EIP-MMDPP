@@ -82,6 +82,9 @@ async def unified_query(
     if body.include_context:
         await _backfill_content_text(db, results)
 
+    # Populate document names from ingest.documents
+    await _backfill_document_names(db, results)
+
     # Populate presigned image URLs for image-modality results
     await _populate_image_urls(db, results, strategy=body.strategy)
 
@@ -1058,6 +1061,32 @@ async def _backfill_content_text(
         cid = str(r.chunk_id)
         if cid in text_map:
             r.content_text = text_map[cid]
+
+
+async def _backfill_document_names(
+    db: AsyncSession, results: list[QueryResultItem]
+) -> None:
+    """Batch-fill document_name from ingest.documents for results that have a document_id."""
+    needs_name = [
+        r for r in results
+        if r.document_name is None and r.document_id is not None
+    ]
+    if not needs_name:
+        return
+
+    doc_ids = list({str(r.document_id) for r in needs_name})
+
+    sql = text("""
+        SELECT id::text, filename FROM ingest.documents
+        WHERE id = ANY(:ids)
+    """)
+    rows = (await db.execute(sql, {"ids": doc_ids})).fetchall()
+    name_map = {row[0]: row[1] for row in rows if row[1]}
+
+    for r in needs_name:
+        did = str(r.document_id)
+        if did in name_map:
+            r.document_name = name_map[did]
 
 
 async def _populate_image_urls(

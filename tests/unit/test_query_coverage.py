@@ -1024,13 +1024,14 @@ class TestPopulateImageUrls:
 # 12. unified_query endpoint routing
 # ---------------------------------------------------------------------------
 
+@patch("app.api.v1.retrieval._backfill_document_names", new_callable=AsyncMock)
 class TestUnifiedQueryRouting:
     """Tests verifying that unified_query dispatches to the correct handler."""
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._text_vector_search", new_callable=AsyncMock)
-    async def test_basic_strategy_calls_text_vector_search(self, mock_text, mock_urls):
+    async def test_basic_strategy_calls_text_vector_search(self, mock_text, mock_urls, _mock_doc_names):
         from app.api.v1.retrieval import unified_query
 
         mock_text.return_value = [_make_item(score=0.9)]
@@ -1047,7 +1048,7 @@ class TestUnifiedQueryRouting:
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._multi_modal_pipeline", new_callable=AsyncMock)
-    async def test_hybrid_strategy_calls_multi_modal(self, mock_mm, mock_urls):
+    async def test_hybrid_strategy_calls_multi_modal(self, mock_mm, mock_urls, _mock_doc_names):
         from app.api.v1.retrieval import unified_query
 
         mock_mm.return_value = [_make_item(score=0.85)]
@@ -1063,7 +1064,7 @@ class TestUnifiedQueryRouting:
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._graphrag_local_query", new_callable=AsyncMock)
-    async def test_graphrag_local_strategy(self, mock_local, mock_urls):
+    async def test_graphrag_local_strategy(self, mock_local, mock_urls, _mock_doc_names):
         from app.api.v1.retrieval import unified_query
 
         mock_local.return_value = [_make_item(score=1.0, modality="graphrag_response")]
@@ -1079,7 +1080,7 @@ class TestUnifiedQueryRouting:
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._graphrag_global_query", new_callable=AsyncMock)
-    async def test_graphrag_global_strategy(self, mock_global, mock_urls):
+    async def test_graphrag_global_strategy(self, mock_global, mock_urls, _mock_doc_names):
         from app.api.v1.retrieval import unified_query
 
         mock_global.return_value = [_make_item(score=1.0, modality="graphrag_response")]
@@ -1095,7 +1096,7 @@ class TestUnifiedQueryRouting:
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._graphrag_drift_query", new_callable=AsyncMock)
-    async def test_graphrag_drift_strategy(self, mock_drift, mock_urls):
+    async def test_graphrag_drift_strategy(self, mock_drift, mock_urls, _mock_doc_names):
         from app.api.v1.retrieval import unified_query
 
         mock_drift.return_value = [_make_item(score=1.0, modality="graphrag_response")]
@@ -1111,7 +1112,7 @@ class TestUnifiedQueryRouting:
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._graphrag_basic_query", new_callable=AsyncMock)
-    async def test_graphrag_basic_strategy(self, mock_basic, mock_urls):
+    async def test_graphrag_basic_strategy(self, mock_basic, mock_urls, _mock_doc_names):
         from app.api.v1.retrieval import unified_query
 
         mock_basic.return_value = [_make_item(score=1.0, modality="graphrag_response")]
@@ -1127,7 +1128,7 @@ class TestUnifiedQueryRouting:
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
     @patch("app.api.v1.retrieval._text_vector_search", new_callable=AsyncMock, side_effect=RuntimeError("fail"))
-    async def test_exception_returns_empty_results(self, mock_text, mock_urls):
+    async def test_exception_returns_empty_results(self, mock_text, mock_urls, _mock_doc_names):
         from app.api.v1.retrieval import unified_query
 
         mock_urls.return_value = None
