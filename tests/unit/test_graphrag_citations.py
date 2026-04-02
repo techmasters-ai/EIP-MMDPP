@@ -164,9 +164,9 @@ class TestResolveCitations:
 
 
 class TestParseNativeMarkers:
-    """Tests for GraphRAG native 【Data: ...】 format parsing."""
+    """Tests for GraphRAG native [Data: ...] format parsing."""
 
-    def test_parses_sources_marker(self):
+    def test_parses_unicode_bracket_sources(self):
         from app.services.graphrag_citations import _parse_native_markers
 
         text = "Fan Song provides guidance 【Data: Sources (348, 349, 351)】."
@@ -176,10 +176,28 @@ class TestParseNativeMarkers:
         assert 1 in parsed
         assert parsed[1]["text_unit_ids"] == [348, 349, 351]
 
+    def test_parses_regular_bracket_sources(self):
+        from app.services.graphrag_citations import _parse_native_markers
+
+        text = "Fan Song provides guidance [Data: Sources (348, 349, 351)]."
+        clean, parsed = _parse_native_markers(text)
+        assert "[Data:" not in clean
+        assert "[1]" in clean
+        assert parsed[1]["text_unit_ids"] == [348, 349, 351]
+
+    def test_parses_bold_bracket_sources(self):
+        from app.services.graphrag_citations import _parse_native_markers
+
+        text = "Fan Song provides guidance **[Data: Sources (348, 349, 351)]**."
+        clean, parsed = _parse_native_markers(text)
+        assert "**" not in clean or clean.count("**") == 0
+        assert "[1]" in clean
+        assert parsed[1]["text_unit_ids"] == [348, 349, 351]
+
     def test_parses_entities_marker(self):
         from app.services.graphrag_citations import _parse_native_markers
 
-        text = "The SA-2 system 【Data: Entities (3293, 416)】 is deployed."
+        text = "The SA-2 system [Data: Entities (3293, 416)] is deployed."
         clean, parsed = _parse_native_markers(text)
         assert "[1]" in clean
         assert parsed[1]["entity_ids"] == [3293, 416]
@@ -187,16 +205,25 @@ class TestParseNativeMarkers:
     def test_parses_relationships_marker(self):
         from app.services.graphrag_citations import _parse_native_markers
 
-        text = "Uses command guidance 【Data: Relationships (5628)】."
+        text = "Uses command guidance [Data: Relationships (5628)]."
         clean, parsed = _parse_native_markers(text)
         assert parsed[1]["relationship_ids"] == [5628]
+
+    def test_parses_compound_marker(self):
+        from app.services.graphrag_citations import _parse_native_markers
+
+        text = "Evidence **[Data: Sources (357, 363); Claims (5, 6)]**."
+        clean, parsed = _parse_native_markers(text)
+        assert "[1]" in clean
+        assert parsed[1]["text_unit_ids"] == [357, 363]
+        assert parsed[1]["claim_ids"] == [5, 6]
 
     def test_deduplicates_identical_markers(self):
         from app.services.graphrag_citations import _parse_native_markers
 
         text = (
-            "First mention 【Data: Sources (348, 349)】 "
-            "and again 【Data: Sources (348, 349)】."
+            "First mention [Data: Sources (348, 349)] "
+            "and again [Data: Sources (348, 349)]."
         )
         clean, parsed = _parse_native_markers(text)
         assert len(parsed) == 1
@@ -206,8 +233,8 @@ class TestParseNativeMarkers:
         from app.services.graphrag_citations import _parse_native_markers
 
         text = (
-            "Fact A 【Data: Sources (100, 200)】 "
-            "and fact B 【Data: Entities (3293)】."
+            "Fact A [Data: Sources (100, 200)] "
+            "and fact B [Data: Entities (3293)]."
         )
         clean, parsed = _parse_native_markers(text)
         assert len(parsed) == 2
@@ -319,12 +346,22 @@ class TestProcessCitationsFallback:
             }),
         }
 
-    def test_falls_back_to_native_format(self, sample_data):
+    def test_falls_back_to_native_unicode_format(self, sample_data):
         from app.services.graphrag_citations import process_citations
 
         text = "The system works 【Data: Entities (100)】."
         clean, sources = process_citations(text, sample_data, "graphrag_local")
         assert "【Data:" not in clean
+        assert "[1]" in clean
+        assert len(sources) == 1
+        assert sources[0]["entities"][0]["title"] == "TEST ENTITY"
+
+    def test_falls_back_to_native_regular_bracket_format(self, sample_data):
+        from app.services.graphrag_citations import process_citations
+
+        text = "The system works **[Data: Entities (100)]**."
+        clean, sources = process_citations(text, sample_data, "graphrag_local")
+        assert "[Data:" not in clean
         assert "[1]" in clean
         assert len(sources) == 1
         assert sources[0]["entities"][0]["title"] == "TEST ENTITY"

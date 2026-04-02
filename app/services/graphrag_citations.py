@@ -39,9 +39,20 @@ _RE_SOURCE_TEXT = re.compile(r'Source:\s*"(.+?)"')
 # Document title hash suffix: "Title_a3b2c1d4" -> "Title"
 _RE_TITLE_HASH = re.compile(r"_[0-9a-f]{8}$")
 
-# GraphRAG native format: 【Data: Sources (348, 349, 351, 352, 368)】
+# GraphRAG native format — multiple bracket styles and optional bold:
+#   【Data: Sources (348, 349)】
+#   [Data: Sources (348, 349)]
+#   **[Data: Sources (348, 349); Claims (5, 6)]**
+# The marker may contain multiple semicolon-separated sections.
 _RE_NATIVE_MARKER = re.compile(
-    r"【Data:\s*(Sources|Entities|Relationships)\s*\(([^)]+)\)】"
+    r"\*{0,2}[【\[]Data:\s*"
+    r"((?:(?:Sources|Entities|Relationships|Claims|Reports)"
+    r"\s*\([^)]*\)(?:\s*;\s*)?)+)"
+    r"[】\]]\*{0,2}"
+)
+# Extract individual sections: "Sources (348, 349)" from the compound group
+_RE_NATIVE_SECTION = re.compile(
+    r"(Sources|Entities|Relationships|Claims|Reports)\s*\(([^)]*)\)"
 )
 
 
@@ -252,49 +263,58 @@ def resolve_citations(
 def _parse_native_markers(
     response_text: str,
 ) -> tuple[str, dict[int, dict[str, Any]]]:
-    """Parse GraphRAG native 【Data: ...】 markers into numbered citations.
+    """Parse GraphRAG native [Data: ...] markers into numbered citations.
 
-    Each unique combination of IDs within a marker type becomes a citation.
-    The markers are replaced with [n] in the returned clean text.
+    Handles multiple bracket styles (【】, [], with optional ** bold),
+    compound markers (Sources + Claims in one marker), and the full set
+    of GraphRAG section types (Sources, Entities, Relationships, Claims,
+    Reports).
+
+    Each unique marker becomes a citation. The markers are replaced with
+    [n] in the returned clean text.
 
     Returns (clean_text, parsed_citations).
     """
-    # Collect all unique markers in order of first appearance
     marker_to_num: dict[str, int] = {}
     citations: dict[int, dict[str, Any]] = {}
     counter = 1
 
     for match in _RE_NATIVE_MARKER.finditer(response_text):
-        kind = match.group(1)  # Sources, Entities, or Relationships
-        ids_str = match.group(2)  # "348, 349, 351"
-        ids = [int(x.strip()) for x in ids_str.split(",") if x.strip().isdigit()]
-        if not ids:
+        marker_key = match.group(0)
+        if marker_key in marker_to_num:
             continue
 
-        # Use the full marker text as dedup key
-        marker_key = match.group(0)
-        if marker_key not in marker_to_num:
-            marker_to_num[marker_key] = counter
-            num = counter
-            counter += 1
+        marker_to_num[marker_key] = counter
+        num = counter
+        counter += 1
 
-            entry: dict[str, Any] = {}
+        entry: dict[str, Any] = {}
+        compound = match.group(1)  # e.g. "Sources (348, 349); Claims (5, 6)"
+
+        for section in _RE_NATIVE_SECTION.finditer(compound):
+            kind = section.group(1)
+            ids = [int(x.strip()) for x in section.group(2).split(",") if x.strip().isdigit()]
+            if not ids:
+                continue
             if kind == "Sources":
-                entry["text_unit_ids"] = ids
+                entry.setdefault("text_unit_ids", []).extend(ids)
             elif kind == "Entities":
-                entry["entity_ids"] = ids
+                entry.setdefault("entity_ids", []).extend(ids)
             elif kind == "Relationships":
-                entry["relationship_ids"] = ids
+                entry.setdefault("relationship_ids", []).extend(ids)
+            elif kind == "Claims":
+                entry.setdefault("claim_ids", []).extend(ids)
+            elif kind == "Reports":
+                entry.setdefault("report_ids", []).extend(ids)
+
+        if entry:
             citations[num] = entry
-        # else: reuse existing citation number
 
     if not citations:
         return response_text, {}
 
-    # Replace markers with [n] in text
     def _replace(m: re.Match) -> str:
-        key = m.group(0)
-        num = marker_to_num.get(key)
+        num = marker_to_num.get(m.group(0))
         return f"[{num}]" if num else ""
 
     clean = _RE_NATIVE_MARKER.sub(_replace, response_text)
