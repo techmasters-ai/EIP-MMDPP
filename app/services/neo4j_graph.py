@@ -179,30 +179,35 @@ def upsert_relationships_batch(
     driver,
     edges: list[dict[str, Any]],
 ) -> int:
-    """Batch upsert relationships grouped by label triple. Returns count created.
+    """Batch upsert relationships grouped by relationship label. Returns count created.
 
     Each dict must have: from_name, from_type, to_name, to_type, rel_type,
     artifact_id, confidence, props.
+
+    Nodes are matched by name only (not entity type label) so that
+    relationships succeed even when the LLM returns a slightly different
+    entity type than the one used during entity creation.
+
+    Note: name-only matching assumes entity names are unique within the
+    graph.  If two entities share a name with different types, this may
+    create an unintended relationship — acceptable trade-off given the
+    domain (military system names are distinct).
     """
     from collections import defaultdict
 
-    by_labels: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    by_rel: dict[str, list[dict]] = defaultdict(list)
     for e in edges:
-        key = (
-            _sanitize_label(e["from_type"]),
-            _sanitize_label(e["to_type"]),
-            _sanitize_label(e["rel_type"]),
-        )
-        by_labels[key].append(e)
+        rel_label = _sanitize_label(e["rel_type"])
+        by_rel[rel_label].append(e)
 
     total = 0
     try:
         with driver.session() as session:
-            for (from_label, to_label, rel_label), group in by_labels.items():
+            for rel_label, group in by_rel.items():
                 query = f"""
                     UNWIND $edges AS edge
-                    MATCH (a:Entity:{from_label} {{name: edge.from_name}})
-                    MATCH (b:Entity:{to_label} {{name: edge.to_name}})
+                    MATCH (a:Entity {{name: edge.from_name}})
+                    MATCH (b:Entity {{name: edge.to_name}})
                     MERGE (a)-[r:{rel_label} {{artifact_id: edge.artifact_id}}]->(b)
                     ON CREATE SET r += edge.props
                     ON MATCH SET r.confidence = CASE
