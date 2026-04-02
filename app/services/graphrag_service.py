@@ -382,6 +382,7 @@ def _load_search_data(settings) -> dict:
     for name in (
         "entities", "communities", "community_reports",
         "text_units", "relationships", "covariates",
+        "documents",
     ):
         path = output_dir / f"{name}.parquet"
         if path.exists():
@@ -485,7 +486,13 @@ def local_search(query: str) -> dict:
             config, data, query, settings.graphrag_community_level,
             settings.graphrag_local_response_type,
         )
-        return {"response": response, "context": _serialize_context(context)}
+        from app.services.graphrag_citations import process_citations
+        clean_response, sources = process_citations(response, data, "graphrag_local")
+        return {
+            "response": clean_response,
+            "sources": sources,
+            "context": _serialize_context(context),
+        }
     except Exception:
         logger.exception("GraphRAG local search failed")
         return {"response": "", "context": {}}
@@ -504,7 +511,13 @@ def global_search(query: str) -> dict:
             settings.graphrag_global_response_type,
             settings.graphrag_dynamic_community_selection,
         )
-        return {"response": response, "context": _serialize_context(context)}
+        from app.services.graphrag_citations import process_citations
+        clean_response, sources = process_citations(response, data, "graphrag_global")
+        return {
+            "response": clean_response,
+            "sources": sources,
+            "context": _serialize_context(context),
+        }
     except Exception:
         logger.exception("GraphRAG global search failed")
         return {"response": "", "context": {}}
@@ -522,7 +535,13 @@ def drift_search(query: str) -> dict:
             config, data, query, settings.graphrag_community_level,
             settings.graphrag_drift_response_type,
         )
-        return {"response": response, "context": _serialize_context(context)}
+        from app.services.graphrag_citations import process_citations
+        clean_response, sources = process_citations(response, data, "graphrag_drift")
+        return {
+            "response": clean_response,
+            "sources": sources,
+            "context": _serialize_context(context),
+        }
     except Exception:
         logger.exception("GraphRAG DRIFT search failed")
         return {"response": "", "context": {}}
@@ -537,7 +556,13 @@ def basic_search(query: str) -> dict:
         response, context = _run_basic_search(
             config, data, query, settings.graphrag_basic_response_type,
         )
-        return {"response": response, "context": _serialize_context(context)}
+        from app.services.graphrag_citations import process_citations
+        clean_response, sources = process_citations(response, data, "graphrag_basic")
+        return {
+            "response": clean_response,
+            "sources": sources,
+            "context": _serialize_context(context),
+        }
     except Exception:
         logger.exception("GraphRAG basic search failed")
         return {"response": "", "context": {}}
