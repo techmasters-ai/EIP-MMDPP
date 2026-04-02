@@ -109,6 +109,7 @@
 | GraphRAG basic search (vector over text units) | No simple fallback when community detection fails | `strategy=graphrag_basic`; receive concise answer | 2.9 |
 | GraphRAG precondition checks (409 if indexing not complete) | Silent empty results confuse user | Query before indexing returns 409; after indexing returns results | 2.13 |
 | Async GraphRAG queries (submit/poll/fetch via Celery) | Long queries timeout in browser | Submit query; poll status; fetch results asynchronously | 2.29 |
+| GraphRAG citation provenance (all 4 search types) | Facts in GraphRAG responses have no source attribution | Run GraphRAG Local query; response contains [n] citations; sources array has entities + documents | 2.32 |
 
 ---
 
@@ -210,6 +211,7 @@ These features have broken before and should be tested carefully after any chang
 11. **Chunk_links traversal** (2.8, 2.26) — Structure expansion must include all link types.
 12. **Translation tooltips** (2.27) — Must not break image description annotations.
 13. **Ontology subgraph orphans** (2.31) — Specification entities must connect to parent systems via SPECIFIED_BY. Test with "missile" search; click graph circle; verify multi-node subgraph.
+14. **GraphRAG citation parsing** (2.32) — LLM must produce ## Sources block. Test all 4 strategies; verify sources array populated.
 
 ---
 
@@ -233,7 +235,7 @@ These features have broken before and should be tested carefully after any chang
 5. Verify standalone image upload + viewer
 
 ### Regression Test (60 min)
-Run against all 12 Known Fragile Features listed above.
+Run against all 14 Known Fragile Features listed above.
 
 ---
 
