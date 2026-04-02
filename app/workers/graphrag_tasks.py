@@ -182,10 +182,11 @@ def run_graphrag_query_task(request_dict: dict) -> dict:
     result_item = {
         "score": 1.0,
         "modality": "graphrag_response",
-        "content_text": response,
+        "content_text": graphrag_result.get("response", response),
         "classification": "UNCLASSIFIED",
         "context": {
             "source": strategy,
+            "sources": graphrag_result.get("sources", []),
             "graphrag_context": graphrag_result.get("context", {}),
         },
     }

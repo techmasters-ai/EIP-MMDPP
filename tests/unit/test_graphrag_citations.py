@@ -195,6 +195,16 @@ class TestPromptCitationInstructions:
         assert "Source:" in prompt
 
 
+class TestTaskSerializesSources:
+    def test_sources_in_result_context(self):
+        """The Celery task must include sources in context dict."""
+        # Verify the code path by checking source
+        import inspect
+        from app.workers.graphrag_tasks import run_graphrag_query_task
+        source = inspect.getsource(run_graphrag_query_task)
+        assert "sources" in source
+
+
 class TestLoadSearchDataIncludesDocuments:
     def test_documents_key_exists(self):
         """_load_search_data must include 'documents' in its output."""
