@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     graphrag_embedding_model: str = "nomic-embed-text"
     # LLM request timeout for GraphRAG search/indexing (seconds, default 3h)
     graphrag_llm_timeout: int = 10800
+    # Thinking level for GraphRAG Ollama calls ("", "low", "medium", "high").
+    # Falls back to ollama_think if empty.  Set to "medium" to reduce
+    # empty-content responses from thinking models on structured JSON prompts.
+    graphrag_ollama_think: str = ""
     # Custom extraction prompt (if empty, uses built-in military ontology prompt).
     # May include {ontology_context} placeholder for dynamic Neo4j examples.
     graphrag_extraction_prompt: str = ""
