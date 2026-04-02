@@ -1,0 +1,10 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-02-fix-ontology-subgraph-orphans.md",
+  "tasks": [
+    {"id": 0, "subject": "Task 1: Fix upsert_relationships_batch — name-only entity matching", "status": "completed"},
+    {"id": 1, "subject": "Task 2: Add co-occurrence fallback in get_neighborhood_graph_async", "status": "completed", "blockedBy": [0]},
+    {"id": 2, "subject": "Task 3: Improve relationship extraction prompt for SPECIFIED_BY", "status": "completed"},
+    {"id": 3, "subject": "Task 4: Rebuild containers, re-process documents, and verify", "status": "pending", "blockedBy": [0, 1, 2]}
+  ],
+  "lastUpdated": "2026-04-02T17:45:00Z"
+}
