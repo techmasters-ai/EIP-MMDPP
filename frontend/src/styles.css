@@ -758,3 +758,20 @@ input:focus, select:focus, textarea:focus {
   margin: 0;
   overflow-x: auto;
 }
+
+/* ---------- Citation links ---------- */
+.citation-link {
+  color: var(--color-primary, #2A5A8A);
+  font-weight: 600;
+  font-size: 0.8em;
+  text-decoration: none;
+  vertical-align: super;
+  cursor: pointer;
+}
+.citation-link:hover {
+  text-decoration: underline;
+}
+.source-entry:target {
+  outline: 2px solid var(--color-primary, #2A5A8A);
+  outline-offset: 2px;
+}
