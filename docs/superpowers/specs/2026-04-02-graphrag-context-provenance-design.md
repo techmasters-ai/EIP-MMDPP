@@ -74,8 +74,8 @@ The `provenance` key is an array of community reports. Each report contains its 
 |----------|-------------------|
 | **Local** | Community reports with entities, relationships, text_units, covariates grouped under each report |
 | **Drift** | Same as Local (Drift uses LocalSearch internally) |
-| **Global** | Community reports with report_content; entities/relationships/text_units may be sparse (global operates at community level) |
-| **Basic** | Single entry with no report info; text_units populated from the `sources` context key with source documents resolved |
+| **Global** | Community reports with report_content only. The global search context builder does **not** include entities, relationships, or text_units — only report DataFrames. Entity/relationship/text_unit lists will be empty for every report. |
+| **Basic** | Single entry with no report info; text_units populated from the context `sources` key with source documents resolved |
 
 ### Backend Module: `app/services/graphrag_provenance.py`
 
@@ -90,26 +90,38 @@ def build_provenance(
 ```
 
 **Parameters:**
-- `context` — the context_records dict returned by GraphRAG's search (second element of the tuple). Keys: `reports`, `entities`, `relationships`, `sources`/`text_units`, `covariates`.
-- `data` — the full loaded Parquet data from `_load_search_data()`, including `communities`, `text_units`, and `documents` DataFrames needed for resolution.
+- `context` — the context_records dict returned by GraphRAG's search (second element of the tuple). Known keys vary by strategy:
+  - Local/Drift: `"reports"`, `"entities"`, `"relationships"`, `"sources"` (text units), `"claims"` (covariates)
+  - Global: `"reports"` only
+  - Basic: `"sources"` only (text units)
+  - Note: covariates are keyed as `"claims"` (not `"covariates"`) in the context dict.
+- `data` — the full loaded Parquet data from `_load_search_data()`, including `communities`, `community_reports`, `text_units`, and `documents` DataFrames needed for resolution.
 - `strategy` — the search strategy string, used to handle per-strategy differences.
+
+**ID type mismatch:** The context DataFrames use `human_readable_id` (integer) as their `"id"` column, but `data["communities"]` stores `entity_ids` and `relationship_ids` as UUID strings. The join must go through the full Parquet DataFrames (`data["entities"]`, `data["relationships"]`) to map between the two ID spaces.
 
 **Logic:**
 
-1. For each report in `context["reports"]`:
-   a. Get the report's `community` ID (integer field)
-   b. Look up that community in `data["communities"]` to get `entity_ids`, `relationship_ids`, `text_unit_ids`
-   c. Filter `context["entities"]` to those whose `id` is in the community's `entity_ids`
-   d. Filter `context["relationships"]` to those whose `id` is in the community's `relationship_ids`
-   e. Filter `context["text_units"]` (or `context["sources"]`) to those whose `id` is in the community's `text_unit_ids`
-   f. Filter `context["covariates"]` (if present) similarly
-   g. For each entity/relationship/text_unit/covariate, resolve `text_unit_ids` -> `data["text_units"]` -> `document_ids` -> `data["documents"]` to get `source_documents` with `document_id` and `document_title` (hash suffix stripped)
+1. For each report row in `context["reports"]`:
+   a. Match the context report back to `data["community_reports"]` by `human_readable_id` (the `"id"` column in context corresponds to the `human_readable_id` column in the Parquet)
+   b. Read the `community` field (integer) from the matched Parquet row
+   c. Look up that community in `data["communities"]` to get `entity_ids` (UUID list), `relationship_ids` (UUID list), `text_unit_ids` (UUID list)
+   d. Filter `context["entities"]` to those whose title matches entities in the community (join context `"id"` -> `data["entities"]["human_readable_id"]` -> check if `data["entities"]["id"]` is in the community's `entity_ids`)
+   e. Same join pattern for `context["relationships"]`
+   f. Same for `context["sources"]` (text units) — join context `"id"` -> `data["text_units"]["human_readable_id"]` -> check if `data["text_units"]["id"]` is in the community's `text_unit_ids`
+   g. Same for `context.get("claims")` (covariates, if present)
+   h. For each entity/relationship, resolve document provenance: entity/relationship row in full Parquet -> `text_unit_ids` (UUID list) -> `data["text_units"]` rows -> `document_id` (singular string field) -> `data["documents"]` row -> `title` (hash suffix stripped)
+   i. For each text_unit, resolve document provenance: join context `"id"` back to `data["text_units"]` by `human_readable_id` -> `document_id` -> `data["documents"]`
 
-2. For **basic search** (no community reports): create a single provenance entry with empty report fields and populate `text_units` from context.
+2. For **global search** (reports only, no entities/relationships/text_units in context): each provenance entry has the report content but empty entity/relationship/text_unit/covariate lists.
 
-3. Return the list of provenance entries.
+3. For **basic search** (no community reports): create a single provenance entry with empty report fields and populate `text_units` from the context `"sources"` key. Resolve document provenance by joining the context `"id"` (human_readable_id) back to `data["text_units"]` to get `document_id`.
 
-**Document title cleaning:** Strip the `_[0-9a-f]{8}` hash suffix from document titles (same regex already used in the citation module).
+4. Return the list of provenance entries.
+
+**Document title cleaning:** Strip the `_[0-9a-f]{8}` hash suffix from document titles.
+
+**Document ID field:** The `text_units` Parquet uses `document_id` (singular string, not a list). Handle `None` values gracefully.
 
 ### Backend Integration: `app/services/graphrag_service.py`
 
@@ -137,7 +149,9 @@ return {
 }
 ```
 
-`_load_search_data()` adds `"communities"` to the list of loaded Parquet files (alongside the already-added `"documents"`).
+`_load_search_data()` already loads `"communities"` and `"documents"` — no change needed there.
+
+**Think-tag stripping:** The current `process_citations` strips `<think>`/`<thinking>` tags from the response. This must be preserved in `graphrag_service.py` before returning the response text, so tags from Ollama thinking models don't leak into `content_text`. Add a `_strip_think_tags()` utility to `graphrag_service.py` and apply it to `response` before returning.
 
 ### Task Serialization: `app/workers/graphrag_tasks.py`
 
@@ -247,7 +261,7 @@ Update Known Fragile Features item 14:
 | Create | `app/services/graphrag_provenance.py` | Context-based provenance builder |
 | Create | `tests/unit/test_graphrag_provenance.py` | Provenance builder tests |
 | Modify | `app/services/graphrag_prompts.py` | Revert citation instruction additions |
-| Modify | `app/services/graphrag_service.py` | Wire provenance builder, add communities to data load |
+| Modify | `app/services/graphrag_service.py` | Wire provenance builder, add think-tag stripping |
 | Modify | `app/workers/graphrag_tasks.py` | Replace sources with provenance in result |
 | Modify | `frontend/src/components/QueryPage.tsx` | Replace citation components with ProvenancePanel |
 | Modify | `frontend/src/styles.css` | Replace citation CSS with provenance CSS |
@@ -255,9 +269,13 @@ Update Known Fragile Features item 14:
 
 ## Edge Cases
 
-- **No community reports** (basic search): Single provenance entry with empty report fields, text_units populated from context `sources` key.
+- **No community reports** (basic search): Single provenance entry with empty report fields, text_units populated from context `"sources"` key.
+- **Global search** (reports only): Provenance entries have report_content but empty entity/relationship/text_unit/covariate lists because the global context builder only includes reports.
 - **Community not found in communities.parquet**: Log warning, include report with empty entity/relationship/text_unit lists. The report content itself is still valuable.
+- **Report not matched back to Parquet**: If the context report's `human_readable_id` doesn't match any row in `data["community_reports"]`, skip the community join and include the report with empty member lists.
 - **Entity belongs to multiple communities**: Entity appears under each community report it belongs to. Duplication is acceptable — each community provides different analytical context.
 - **Empty context** (search returns no results): `provenance` is an empty array `[]`.
-- **null document_ids on text_units**: Skip document resolution for that text_unit; `source_documents` will be empty. Don't crash.
+- **null document_id on text_units**: The `document_id` field is singular (string or None). Skip document resolution when None; `source_documents` will be empty. Don't crash.
 - **Document title hash suffix**: Strip `_[0-9a-f]{8}$` pattern from document titles for display.
+- **Think tags in response**: Strip `<think>`/`<thinking>` tags from response text before returning, preserving current behavior.
+- **Context dict key variations**: Use defensive `.get()` with empty DataFrame fallbacks for all context keys. Log warnings for unexpected context structure.
