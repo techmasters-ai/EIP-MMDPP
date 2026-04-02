@@ -1,11 +1,15 @@
 """Unit tests for relationship extraction prompt content."""
-import sys
+import importlib.util
 from pathlib import Path
 import pytest
 
-# docling-graph lives in a separate container; add its source to sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "docker" / "docling-graph"))
-from app.prompts import get_relationship_prompt
+# docling-graph lives in a separate container; use importlib to avoid
+# collision with the main app package on sys.path.
+_prompts_path = Path(__file__).resolve().parents[2] / "docker" / "docling-graph" / "app" / "prompts.py"
+_spec = importlib.util.spec_from_file_location("docling_graph_prompts", _prompts_path)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+get_relationship_prompt = _mod.get_relationship_prompt
 
 pytestmark = pytest.mark.unit
 
