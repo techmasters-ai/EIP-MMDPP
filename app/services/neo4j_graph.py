@@ -586,7 +586,7 @@ async def get_neighborhood_graph_async(
 
     query = f"""
         MATCH (start:Entity {{name: $name}})
-        OPTIONAL MATCH path = (start)-[*1..{hop_count}]-(neighbor:Entity)
+        MATCH path = (start)-[*1..{hop_count}]-(neighbor:Entity)
         WITH start, relationships(path) AS rels, nodes(path) AS path_nodes
         UNWIND range(0, size(rels)-1) AS idx
         WITH start,
@@ -673,6 +673,44 @@ async def get_neighborhood_graph_async(
                     nodes_map[center_id] = center
         except Exception as e:
             logger.warning("get_neighborhood_graph_async fallback failed for '%s': %s", entity_name, e)
+
+    # Co-occurrence fallback: when no Entity-to-Entity edges exist, find
+    # entities extracted from the same source chunks via ChunkRef nodes.
+    if not edges and center is not None:
+        center_id = center.get("id", entity_name)
+        try:
+            cooccur_q = """
+                MATCH (start:Entity {name: $name})-[:EXTRACTED_FROM]->(c:ChunkRef)
+                      <-[:EXTRACTED_FROM]-(other:Entity)
+                WHERE other.name <> $name
+                RETURN DISTINCT
+                    properties(other) AS other_props,
+                    other.entity_type AS other_type
+                LIMIT $limit
+            """
+            async with driver.session() as session:
+                result = await session.run(
+                    cooccur_q, name=entity_name, limit=limit,
+                )
+                records = await result.data()
+                for r in records:
+                    other_props = r.get("other_props") or {}
+                    other_id = other_props.get("id") or other_props.get("name")
+                    if not other_id or other_id in nodes_map:
+                        continue
+                    node = dict(other_props)
+                    node["entity_type"] = r["other_type"]
+                    nodes_map[other_id] = node
+                    edges.append({
+                        "source": center_id,
+                        "target": other_id,
+                        "rel_type": "CO_OCCURS_WITH",
+                    })
+        except Exception as e:
+            logger.warning(
+                "get_neighborhood_graph_async co-occurrence query failed for '%s': %s",
+                entity_name, e,
+            )
 
     return {
         "center": center,
