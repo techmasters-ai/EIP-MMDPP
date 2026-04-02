@@ -82,6 +82,8 @@
 | Post-extraction validation (_validate_entity_types, _validate_properties) | Invalid types/properties pollute graph | Extraction result validated before persistence; invalid properties dropped | 2.24 |
 | Entity alias resolution (exact -> alias -> fuzzy match -> new) | "S-75" and "SA-2 Dvina" are separate entities; expansion incomplete | Ingest 2 docs with alternate names; query returns unified entity | 2.9 |
 | Batch Neo4j writes via UNWIND | Per-node writes cause 100s of round-trips; ingest hangs | Large doc with 1000+ entities ingested in <30s | 2.16 |
+| Relationship upsert matches by name only (not entity type) | Entity-type mismatches silently drop relationships | Ingest doc; verify SPECIFIED_BY edges exist between systems and specifications | 2.31 |
+| SPECIFIED_BY prompt instructions in relationship extraction | Specification entities orphaned from parent systems | Ingest doc with specs; Neo4j has SPECIFIED_BY edges from system → spec | 2.31 |
 | Idempotent Neo4j writes (MERGE) | Re-ingest creates duplicate entities | Reingest same doc; entity count unchanged | 2.8 |
 | Classification preserved on conflict | Reingest overwrites human-curated classification | Set classification to SECRET, reingest; verify still SECRET | 2.23 |
 
@@ -177,6 +179,7 @@
 | Terminal status badges (green/red/amber) | Cannot distinguish success from failure | Color-coded badges for all terminal states | 2.11 |
 | Directory Monitor (register/remove watch dirs) | Cannot set up auto-ingest | Directory Monitor page lists active dirs; add/remove works | 2.5 |
 | Graph Explorer (entity/relationship search + creation) | Cannot explore or curate knowledge graph | Search and creation forms with full ontology | 2.5, 2.11 |
+| Graph Explorer subgraph view (neighborhood visualization) | Clicking graph circle shows only 1 node for orphan entities | Search entity; click graph circle; see multi-node subgraph (direct edges or CO_OCCURS_WITH) | 2.31 |
 | Trusted Data panel (submit/approve/reject/search) | Cannot interact with trusted data layer | Submission form, approval queue, search interface | 2.6 |
 
 ---
@@ -206,6 +209,7 @@ These features have broken before and should be tested carefully after any chang
 10. **Image description text search** (2.26) — Descriptions must appear in text search results.
 11. **Chunk_links traversal** (2.8, 2.26) — Structure expansion must include all link types.
 12. **Translation tooltips** (2.27) — Must not break image description annotations.
+13. **Ontology subgraph orphans** (2.31) — Specification entities must connect to parent systems via SPECIFIED_BY. Test with "missile" search; click graph circle; verify multi-node subgraph.
 
 ---
 
