@@ -186,6 +186,12 @@ def get_relationship_prompt(
         "identify relationships between them.\n\n"
         f"Known entities:\n{entity_lines}\n\n"
         f"{rel_section}\n\n"
+        "IMPORTANT — connect SPECIFICATION entities to their parent systems:\n"
+        "For each SPECIFICATION entity in the list above, determine which system "
+        "entity it belongs to and create a SPECIFIED_BY relationship "
+        "(e.g., MISSILE_SYSTEM → SPECIFIED_BY → SPECIFICATION). "
+        "Specifications describe measurable parameters (range, altitude, frequency, "
+        "power, speed, time) of a system — connect each one.\n\n"
         "Return only relationships supported by the text. "
         "Each relationship must connect two of the known entities listed above."
     )

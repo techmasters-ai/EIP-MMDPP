@@ -503,6 +503,8 @@ def _extract_relationships(text: str, entities_context: list[dict]) -> list[dict
         f"=== TEXT ===\n{text}\n=== END TEXT ===\n\n"
         "Return a JSON object with a single key 'relationships' containing an array. "
         "Each relationship object must have: from_name, from_type, rel_type, to_name, to_type, confidence (0.0-1.0).\n"
+        "IMPORTANT: For every SPECIFICATION entity, create a SPECIFIED_BY edge from "
+        "the system it describes to the specification.\n"
         "Example: {\"relationships\": [{\"from_name\": \"AN/MPQ-53\", \"from_type\": \"RADAR_SYSTEM\", "
         "\"rel_type\": \"INSTALLED_ON\", \"to_name\": \"Patriot\", \"to_type\": \"PLATFORM\", \"confidence\": 0.9}]}\n"
         "Return ONLY valid JSON."
