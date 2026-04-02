@@ -161,3 +161,35 @@ class TestResolveCitations:
         sources = resolve_citations(parsed, sample_data, "local")
         title = sources[0]["source_documents"][0]["document_title"]
         assert title == "Red SAM"  # hash suffix stripped
+
+
+class TestPromptCitationInstructions:
+    def test_local_prompt_has_id_citation_instruction(self):
+        from app.services.graphrag_prompts import get_local_search_prompt
+        prompt = get_local_search_prompt()
+        assert "[n]" in prompt or "inline citation" in prompt.lower()
+        assert "## Sources" in prompt
+        assert "Entity:" in prompt and "Relationship:" in prompt
+
+    def test_global_reduce_prompt_has_name_citation_instruction(self):
+        from app.services.graphrag_prompts import get_global_search_reduce_prompt
+        prompt = get_global_search_reduce_prompt()
+        assert "[n]" in prompt or "inline citation" in prompt.lower()
+        assert "## Sources" in prompt
+        assert "Entity:" in prompt
+
+    def test_global_map_prompt_has_no_citation_instruction(self):
+        from app.services.graphrag_prompts import get_global_search_map_prompt
+        prompt = get_global_search_map_prompt()
+        assert "## Sources" not in prompt
+
+    def test_drift_prompt_has_id_citation_instruction(self):
+        from app.services.graphrag_prompts import get_drift_search_prompt
+        prompt = get_drift_search_prompt()
+        assert "## Sources" in prompt
+
+    def test_basic_prompt_has_text_citation_instruction(self):
+        from app.services.graphrag_prompts import get_basic_search_prompt
+        prompt = get_basic_search_prompt()
+        assert "## Sources" in prompt
+        assert "Source:" in prompt

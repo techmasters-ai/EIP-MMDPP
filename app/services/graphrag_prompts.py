@@ -121,6 +121,18 @@ When answering:
 Answer the following question using the provided context data. Be specific and
 ground your answer in the entities and relationships provided.
 
+IMPORTANT — Inline Citations:
+Insert [n] citation markers in your response for every factual claim.
+After your response, append a "## Sources" section listing each citation.
+Format: [n] Entity: ENTITY_NAME (ID), Relationship: REL_ID
+Use the numeric IDs from the entity and relationship tables provided above.
+Example:
+The SA-2 uses command guidance [1] with Fan Song tracking [2].
+
+## Sources
+[1] Entity: SA-2 GUIDELINE (3349), Relationship: 4276
+[2] Entity: SNR-75 FAN SONG (1494), Relationship: 3494
+
 {query}
 """
 
@@ -176,6 +188,17 @@ Question: {query}
 Provide a comprehensive, well-structured answer that synthesizes findings
 across all relevant communities. If no relevant information was found,
 state that clearly.
+
+IMPORTANT — Inline Citations:
+Insert [n] citation markers in your response for every factual claim.
+After your response, append a "## Sources" section listing each citation.
+Format: [n] Entity: ENTITY_NAME
+Cite the entity names referenced in the analyst reports.
+Example:
+The SA-2 system provides medium-altitude defense [1].
+
+## Sources
+[1] Entity: SA-2 GUIDELINE
 """
 
 
@@ -199,6 +222,12 @@ When analyzing expanded context:
 
 Provide a thorough, technically detailed analysis that leverages the expanded
 context to give a more complete picture than a simple entity lookup would provide.
+
+IMPORTANT — Inline Citations:
+Insert [n] citation markers in your response for every factual claim.
+After your response, append a "## Sources" section listing each citation.
+Format: [n] Entity: ENTITY_NAME (ID), Relationship: REL_ID
+Use the numeric IDs from the entity and relationship data provided above.
 
 ---
 {context_data}
@@ -227,6 +256,12 @@ When answering:
 - Be specific about system names, designators, and parameters
 - Distinguish between different variants and configurations
 - Cite or reference the source text where appropriate
+
+IMPORTANT — Inline Citations:
+Insert [n] citation markers in your response for every factual claim.
+After your response, append a "## Sources" section listing each citation.
+Format: [n] Source: "first 50 characters of the source text excerpt..."
+Reference the text excerpts provided above.
 
 ---
 {context_data}
