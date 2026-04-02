@@ -27,12 +27,16 @@ The LLM receives different context data depending on the search type. The citati
 
 | Search Type | LLM Sees Entity IDs? | Citation Format | Resolution Method |
 |---|---|---|---|
-| **Local** | Yes (`short_id` in context tables) | `[n] Entity: NAME (ID), Relationship: ID` | Look up by `human_readable_id` |
-| **Drift** | Yes (same as Local) | `[n] Entity: NAME (ID), Relationship: ID` | Look up by `human_readable_id` |
+| **Local** | Yes (`short_id` in context tables) | `[n] Entity: NAME (ID), Relationship: ID` | Look up by `human_readable_id` (exposed as `short_id` in GraphRAG data model) |
+| **Drift** | Yes (same as Local) | `[n] Entity: NAME (ID), Relationship: ID` | Look up by `human_readable_id` (exposed as `short_id` in GraphRAG data model) |
 | **Global** | No (only community report text) | `[n] Entity: NAME` | Match by `title` in entities DataFrame |
 | **Basic** | No (only raw text chunks) | `[n] Source: "first 50 chars of text..."` | Match by text content in text_units DataFrame |
 
-### Instruction added to each prompt
+### Instruction placement
+
+Citation instructions are added to each prompt except `get_global_search_map_prompt()`. The map prompt extracts key points from individual community reports — citations belong in the **reduce** prompt where the LLM synthesizes the final answer. Adding citations to the map prompt would produce nested/conflicting citation formats.
+
+### Instruction added to each prompt (except global map)
 
 Each prompt gets an additional instruction block telling the LLM to:
 1. Insert inline `[n]` citations (sequential numbering) referencing the specific source that supports each claim
@@ -125,6 +129,7 @@ For **Basic** search, `entities` and `relationships` arrays will be empty; only 
 | `<think>` tags in response | Strip before parsing |
 | Global search name match fails | Skip that citation, log warning |
 | Basic search text match fails | Skip that citation, log warning |
+| text_unit has null `document_id` | Omit `source_documents` for that citation (return empty array) |
 
 ### Data access
 
