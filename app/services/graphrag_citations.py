@@ -399,6 +399,38 @@ def _resolve_native_citations(
     return sources
 
 
+def _quality_gate(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop sources if most citations resolved to empty content.
+
+    If >50% of citations have no entities, no relationships, and no
+    source_documents, the parser likely failed — return empty rather
+    than showing misleading/broken citations.
+
+    Also strip individual citations that are completely empty.
+    """
+    if not sources:
+        return sources
+
+    non_empty = [
+        s for s in sources
+        if s.get("entities") or s.get("relationships") or s.get("source_documents")
+    ]
+
+    # If less than half resolved to anything useful, discard all
+    if len(non_empty) < len(sources) * 0.5:
+        logger.info(
+            "Citation quality gate: %d/%d citations empty, discarding all",
+            len(sources) - len(non_empty), len(sources),
+        )
+        return []
+
+    # Re-number surviving citations contiguously
+    for i, s in enumerate(non_empty, 1):
+        s["citation"] = i
+
+    return non_empty
+
+
 def process_citations(
     response_text: str,
     data: dict[str, pd.DataFrame],
@@ -407,7 +439,10 @@ def process_citations(
     """Top-level function: strip, parse, resolve citations.
 
     Tries our prompted ## Sources format first. Falls back to parsing
-    GraphRAG's native 【Data: Sources/Entities/Relationships (...)】 markers.
+    GraphRAG's native [Data: Sources/Entities/Relationships (...)] markers.
+
+    Applies a quality gate: if most citations resolve to empty content,
+    returns no sources rather than broken ones.
 
     Returns (clean_response_text, sources_array).
     """
@@ -420,13 +455,17 @@ def process_citations(
         parsed = parse_citation_block(block, strategy)
         if parsed:
             sources = resolve_citations(parsed, data, strategy)
-            return clean, sources
+            sources = _quality_gate(sources)
+            if sources:
+                return clean, sources
+            # Quality gate rejected — fall through to native parser
 
-    # Fallback: parse GraphRAG native 【Data: ...】 markers
+    # Fallback: parse GraphRAG native [Data: ...] markers
     if _RE_NATIVE_MARKER.search(text):
         clean_native, parsed_native = _parse_native_markers(text)
         if parsed_native:
             sources = _resolve_native_citations(parsed_native, data)
+            sources = _quality_gate(sources)
             return clean_native, sources
 
-    return text, []
+    return clean if block else text, []

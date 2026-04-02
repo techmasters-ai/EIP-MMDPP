@@ -387,6 +387,48 @@ class TestProcessCitationsFallback:
         assert sources == []
 
 
+class TestQualityGate:
+    def test_discards_mostly_empty_sources(self):
+        from app.services.graphrag_citations import _quality_gate
+
+        sources = [
+            {"citation": 1, "entities": [], "relationships": [{"id": 1}], "source_documents": []},
+            {"citation": 2, "entities": [], "relationships": [], "source_documents": []},
+            {"citation": 3, "entities": [], "relationships": [], "source_documents": []},
+            {"citation": 4, "entities": [], "relationships": [], "source_documents": []},
+        ]
+        result = _quality_gate(sources)
+        assert result == []  # 3/4 empty > 50%
+
+    def test_keeps_mostly_populated_sources(self):
+        from app.services.graphrag_citations import _quality_gate
+
+        sources = [
+            {"citation": 1, "entities": [{"id": 1}], "relationships": [], "source_documents": []},
+            {"citation": 2, "entities": [{"id": 2}], "relationships": [], "source_documents": []},
+            {"citation": 3, "entities": [], "relationships": [], "source_documents": []},
+        ]
+        result = _quality_gate(sources)
+        assert len(result) == 2
+        assert result[0]["citation"] == 1
+        assert result[1]["citation"] == 2
+
+    def test_empty_input_returns_empty(self):
+        from app.services.graphrag_citations import _quality_gate
+
+        assert _quality_gate([]) == []
+
+    def test_all_populated_passes(self):
+        from app.services.graphrag_citations import _quality_gate
+
+        sources = [
+            {"citation": 1, "entities": [{"id": 1}], "relationships": [], "source_documents": []},
+            {"citation": 2, "entities": [], "relationships": [{"id": 2}], "source_documents": []},
+        ]
+        result = _quality_gate(sources)
+        assert len(result) == 2
+
+
 class TestPromptCitationInstructions:
     def test_local_prompt_has_id_citation_instruction(self):
         from app.services.graphrag_prompts import get_local_search_prompt
