@@ -1,9 +1,17 @@
 """Parse and resolve inline citations from GraphRAG LLM responses.
 
-Supports three citation formats depending on search strategy:
-- ID-based (Local/Drift): [n] Entity: NAME (human_readable_id), Relationship: id
-- Name-based (Global): [n] Entity: NAME
-- Text-based (Basic): [n] Source: "text excerpt..."
+Supports two citation styles:
+
+1. **Our prompted format** — `## Sources` block with `[n]` markers:
+   - ID-based (Local/Drift): [n] Entity: NAME (human_readable_id), Relationship: id
+   - Name-based (Global): [n] Entity: NAME
+   - Text-based (Basic): [n] Source: "text excerpt..."
+
+2. **GraphRAG native format** — inline `【Data: ...】` markers produced by the
+   graphrag library's own prompts:
+   - 【Data: Sources (348, 349, 351)】  — text_unit human_readable_ids
+   - 【Data: Entities (3293, 416)】     — entity human_readable_ids
+   - 【Data: Relationships (5628)】     — relationship human_readable_ids
 """
 
 import logging
@@ -30,6 +38,11 @@ _RE_SOURCE_TEXT = re.compile(r'Source:\s*"(.+?)"')
 
 # Document title hash suffix: "Title_a3b2c1d4" -> "Title"
 _RE_TITLE_HASH = re.compile(r"_[0-9a-f]{8}$")
+
+# GraphRAG native format: 【Data: Sources (348, 349, 351, 352, 368)】
+_RE_NATIVE_MARKER = re.compile(
+    r"【Data:\s*(Sources|Entities|Relationships)\s*\(([^)]+)\)】"
+)
 
 
 def strip_sources_block(response_text: str) -> tuple[str, str]:
@@ -236,6 +249,136 @@ def resolve_citations(
     return sources
 
 
+def _parse_native_markers(
+    response_text: str,
+) -> tuple[str, dict[int, dict[str, Any]]]:
+    """Parse GraphRAG native 【Data: ...】 markers into numbered citations.
+
+    Each unique combination of IDs within a marker type becomes a citation.
+    The markers are replaced with [n] in the returned clean text.
+
+    Returns (clean_text, parsed_citations).
+    """
+    # Collect all unique markers in order of first appearance
+    marker_to_num: dict[str, int] = {}
+    citations: dict[int, dict[str, Any]] = {}
+    counter = 1
+
+    for match in _RE_NATIVE_MARKER.finditer(response_text):
+        kind = match.group(1)  # Sources, Entities, or Relationships
+        ids_str = match.group(2)  # "348, 349, 351"
+        ids = [int(x.strip()) for x in ids_str.split(",") if x.strip().isdigit()]
+        if not ids:
+            continue
+
+        # Use the full marker text as dedup key
+        marker_key = match.group(0)
+        if marker_key not in marker_to_num:
+            marker_to_num[marker_key] = counter
+            num = counter
+            counter += 1
+
+            entry: dict[str, Any] = {}
+            if kind == "Sources":
+                entry["text_unit_ids"] = ids
+            elif kind == "Entities":
+                entry["entity_ids"] = ids
+            elif kind == "Relationships":
+                entry["relationship_ids"] = ids
+            citations[num] = entry
+        # else: reuse existing citation number
+
+    if not citations:
+        return response_text, {}
+
+    # Replace markers with [n] in text
+    def _replace(m: re.Match) -> str:
+        key = m.group(0)
+        num = marker_to_num.get(key)
+        return f"[{num}]" if num else ""
+
+    clean = _RE_NATIVE_MARKER.sub(_replace, response_text)
+    return clean, citations
+
+
+def _resolve_native_citations(
+    parsed: dict[int, dict[str, Any]],
+    data: dict[str, pd.DataFrame],
+) -> list[dict[str, Any]]:
+    """Resolve native-format citations (text_unit_ids, entity_ids, relationship_ids).
+
+    These use human_readable_id values from the Parquet data.
+    """
+    ent_df = data.get("entities", pd.DataFrame())
+    rel_df = data.get("relationships", pd.DataFrame())
+    tu_df = data.get("text_units", pd.DataFrame())
+    sources: list[dict[str, Any]] = []
+
+    for num in sorted(parsed.keys()):
+        citation = parsed[num]
+        entry: dict[str, Any] = {
+            "citation": num,
+            "entities": [],
+            "relationships": [],
+            "source_documents": [],
+        }
+        all_tu_ids: list[str] = []
+
+        # Resolve entity human_readable_ids
+        for eid in citation.get("entity_ids", []):
+            if ent_df.empty:
+                continue
+            rows = ent_df[ent_df["human_readable_id"] == eid]
+            if rows.empty:
+                continue
+            row = rows.iloc[0]
+            entry["entities"].append({
+                "id": int(eid),
+                "title": str(row.get("title", "")),
+                "type": str(row.get("type", "")),
+                "description": str(row.get("description", "")),
+            })
+            tu_ids = row.get("text_unit_ids")
+            if tu_ids is not None:
+                all_tu_ids.extend(
+                    tu_ids if hasattr(tu_ids, "__iter__") and not isinstance(tu_ids, str) else []
+                )
+
+        # Resolve relationship human_readable_ids
+        for rid in citation.get("relationship_ids", []):
+            if rel_df.empty:
+                continue
+            rows = rel_df[rel_df["human_readable_id"] == rid]
+            if rows.empty:
+                continue
+            row = rows.iloc[0]
+            entry["relationships"].append({
+                "id": int(rid),
+                "source": str(row.get("source", "")),
+                "target": str(row.get("target", "")),
+                "description": str(row.get("description", "")),
+            })
+            tu_ids = row.get("text_unit_ids")
+            if tu_ids is not None:
+                all_tu_ids.extend(
+                    tu_ids if hasattr(tu_ids, "__iter__") and not isinstance(tu_ids, str) else []
+                )
+
+        # Resolve text_unit human_readable_ids directly to source documents
+        for tu_hrid in citation.get("text_unit_ids", []):
+            if tu_df.empty:
+                continue
+            rows = tu_df[tu_df["human_readable_id"] == tu_hrid]
+            if rows.empty:
+                continue
+            all_tu_ids.append(str(rows.iloc[0]["id"]))
+
+        entry["source_documents"] = _resolve_text_unit_docs(all_tu_ids, data)
+        sources.append(entry)
+
+    return sources
+
+
 def process_citations(
     response_text: str,
     data: dict[str, pd.DataFrame],
@@ -243,13 +386,27 @@ def process_citations(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Top-level function: strip, parse, resolve citations.
 
+    Tries our prompted ## Sources format first. Falls back to parsing
+    GraphRAG's native 【Data: Sources/Entities/Relationships (...)】 markers.
+
     Returns (clean_response_text, sources_array).
     """
-    clean, block = strip_sources_block(response_text)
-    if not block:
-        return clean, []
-    parsed = parse_citation_block(block, strategy)
-    if not parsed:
-        return clean, []
-    sources = resolve_citations(parsed, data, strategy)
-    return clean, sources
+    # Strip think tags first
+    text = _RE_THINK_TAGS.sub("", response_text).strip()
+
+    # Try our prompted format first
+    clean, block = strip_sources_block(text)
+    if block:
+        parsed = parse_citation_block(block, strategy)
+        if parsed:
+            sources = resolve_citations(parsed, data, strategy)
+            return clean, sources
+
+    # Fallback: parse GraphRAG native 【Data: ...】 markers
+    if _RE_NATIVE_MARKER.search(text):
+        clean_native, parsed_native = _parse_native_markers(text)
+        if parsed_native:
+            sources = _resolve_native_citations(parsed_native, data)
+            return clean_native, sources
+
+    return text, []
