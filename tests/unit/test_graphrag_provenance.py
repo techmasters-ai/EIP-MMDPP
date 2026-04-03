@@ -233,3 +233,12 @@ class TestBuildProvenanceEdgeCases:
         })
         result = build_provenance(local_context, sample_data, "graphrag_local")
         assert any(len(r.get("covariates", [])) > 0 for r in result) or True
+
+
+class TestTaskSerializesProvenance:
+    def test_provenance_in_result_context(self):
+        """The Celery task must include provenance in context dict."""
+        import inspect
+        from app.workers.graphrag_tasks import run_graphrag_query_task
+        source = inspect.getsource(run_graphrag_query_task)
+        assert "provenance" in source

@@ -189,7 +189,7 @@ def run_graphrag_query_task(request_dict: dict) -> dict:
         "classification": "UNCLASSIFIED",
         "context": {
             "source": strategy,
-            "sources": graphrag_result.get("sources", []),
+            "provenance": graphrag_result.get("provenance", []),
             "graphrag_context": graphrag_result.get("context", {}),
         },
     }
