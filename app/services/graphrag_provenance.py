@@ -166,6 +166,8 @@ def _build_report_provenance(
     community_entity_uuids: set[str],
     community_rel_uuids: set[str],
     community_tu_uuids: set[str],
+    *,
+    entity_fallback: bool = True,
 ) -> dict[str, Any]:
     """Build a single provenance entry for one community report.
 
@@ -230,6 +232,10 @@ def _build_report_provenance(
                 if not parquet_rows.empty:
                     tu_ids = parquet_rows.iloc[0].get("text_unit_ids")
                     ent_type = str(parquet_rows.iloc[0].get("type", ""))
+            elif not uuid:
+                logger.debug(
+                    "Provenance: no UUID mapping for entity HRID %d", hrid_int,
+                )
 
             source = _resolve_source_info(
                 tu_ids if isinstance(tu_ids, list) else [], tu_df, doc_df,
@@ -246,6 +252,43 @@ def _build_report_provenance(
             }
             _include_extra_columns(ent_entry, row, {"id", "entity", "title"})
             entry["entities"].append(ent_entry)
+
+    # Parquet fallback: when entities are still empty, load directly from
+    # Parquet via community membership or report content references.
+    # Skipped for global search (entity_fallback=False).
+    if entity_fallback and not entry["entities"] and not ent_parquet.empty:
+        uuids_to_load: set[str] = set()
+        if community_entity_uuids:
+            uuids_to_load = community_entity_uuids
+        elif refs["entities"]:
+            uuids_to_load = {
+                ent_hrid_to_uuid[h]
+                for h in refs["entities"]
+                if h in ent_hrid_to_uuid
+            }
+        if uuids_to_load:
+            logger.info(
+                "Provenance: context has no entities; loading %d from Parquet",
+                len(uuids_to_load),
+            )
+        for uuid in uuids_to_load:
+            parquet_rows = ent_parquet[ent_parquet["id"] == uuid]
+            if parquet_rows.empty:
+                continue
+            prow = parquet_rows.iloc[0]
+            tu_ids = prow.get("text_unit_ids")
+            source = _resolve_source_info(
+                tu_ids if isinstance(tu_ids, list) else [], tu_df, doc_df,
+            )
+            entry["entities"].append({
+                "id": int(prow.get("human_readable_id", 0)),
+                "entity": str(prow.get("title", "")),
+                "description": str(prow.get("description", "")),
+                "type": str(prow.get("type", "")),
+                "document_name": source["document_name"],
+                "document_id": source["document_id"],
+                "original_text": source["original_text"],
+            })
 
     # --- Relationships ---
     ctx_rels = _ensure_df(context.get("relationships", pd.DataFrame()))
@@ -266,10 +309,20 @@ def _build_report_provenance(
 
             uuid = rel_hrid_to_uuid.get(hrid_int)
             tu_ids = None
-            if uuid and not rel_parquet.empty:
+            if not uuid:
+                logger.debug(
+                    "Provenance: no UUID mapping for relationship HRID %d",
+                    hrid_int,
+                )
+            elif not rel_parquet.empty:
                 parquet_rows = rel_parquet[rel_parquet["id"] == uuid]
                 if not parquet_rows.empty:
                     tu_ids = parquet_rows.iloc[0].get("text_unit_ids")
+                    if not tu_ids:
+                        logger.debug(
+                            "Provenance: relationship %s (HRID %d) has no text_unit_ids",
+                            uuid, hrid_int,
+                        )
 
             source = _resolve_source_info(
                 tu_ids if isinstance(tu_ids, list) else [], tu_df, doc_df,
@@ -413,9 +466,11 @@ def build_provenance(
                     report_hrid,
                 )
 
+        use_entity_fallback = strategy not in ("graphrag_global", "global")
         entry = _build_report_provenance(
             report_row, context, data,
             community_entity_uuids, community_rel_uuids, community_tu_uuids,
+            entity_fallback=use_entity_fallback,
         )
         provenance.append(entry)
 

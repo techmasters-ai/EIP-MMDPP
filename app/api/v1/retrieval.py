@@ -82,6 +82,9 @@ async def unified_query(
     if body.include_context:
         await _backfill_content_text(db, results)
 
+    # Backfill page_number from Postgres for results missing it
+    await _backfill_page_numbers(db, results)
+
     # Populate document names from ingest.documents
     await _backfill_document_names(db, results)
 
@@ -1061,6 +1064,39 @@ async def _backfill_content_text(
         cid = str(r.chunk_id)
         if cid in text_map:
             r.content_text = text_map[cid]
+
+
+async def _backfill_page_numbers(
+    db: AsyncSession, results: list[QueryResultItem]
+) -> None:
+    """Batch-fill page_number from Postgres for results missing it.
+
+    Handles Qdrant points whose payload lacks page_number.
+    Queries both text_chunks and image_chunks tables.
+    """
+    missing = [
+        r for r in results
+        if r.page_number is None and r.chunk_id is not None
+    ]
+    if not missing:
+        return
+
+    chunk_ids = [str(r.chunk_id) for r in missing]
+
+    sql = text("""
+        SELECT id::text, page_number FROM retrieval.text_chunks
+        WHERE id = ANY(:ids) AND page_number IS NOT NULL
+        UNION ALL
+        SELECT id::text, page_number FROM retrieval.image_chunks
+        WHERE id = ANY(:ids) AND page_number IS NOT NULL
+    """)
+    rows = (await db.execute(sql, {"ids": chunk_ids})).fetchall()
+    page_map = {row[0]: row[1] for row in rows}
+
+    for r in missing:
+        cid = str(r.chunk_id)
+        if cid in page_map:
+            r.page_number = page_map[cid]
 
 
 async def _backfill_document_names(

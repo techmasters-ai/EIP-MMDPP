@@ -292,6 +292,68 @@ class TestFallbackFiltering:
         assert 500 in rel_ids
         assert 600 not in rel_ids
 
+    def test_parquet_fallback_when_context_has_no_entities(self, sample_data):
+        """When context has no entities key, load from Parquet via community UUIDs."""
+        from app.services.graphrag_provenance import build_provenance
+        context = {
+            "reports": pd.DataFrame({
+                "id": [0],
+                "title": ["SA-2 & Fan Song Community"],
+                "content": ["# SA-2 & Fan Song\n\nDetailed report..."],
+            }),
+            "relationships": pd.DataFrame({
+                "id": [500],
+                "source": ["SA-2 GUIDELINE"],
+                "target": ["FAN SONG"],
+                "description": ["Uses for guidance"],
+            }),
+            # NOTE: no "entities" key at all
+        }
+        result = build_provenance(context, sample_data, "graphrag_local")
+        assert len(result) == 1
+        # Entities should be loaded from Parquet via community membership
+        entity_names = [e["entity"] for e in result[0]["entities"]]
+        assert "FAN SONG" in entity_names
+        assert "SA-2 GUIDELINE" in entity_names
+        # SPOON REST is in community 20, not community 10
+        assert "SPOON REST" not in entity_names
+
+    def test_parquet_fallback_entities_have_document_info(self, sample_data):
+        """Parquet-loaded entities should still have document resolution."""
+        from app.services.graphrag_provenance import build_provenance
+        context = {
+            "reports": pd.DataFrame({
+                "id": [0],
+                "title": ["SA-2 & Fan Song Community"],
+                "content": ["# Report..."],
+            }),
+            # no entities
+        }
+        result = build_provenance(context, sample_data, "graphrag_local")
+        fan_song = [e for e in result[0]["entities"] if e["entity"] == "FAN SONG"]
+        assert len(fan_song) == 1
+        assert fan_song[0]["document_name"] == "Red SAM"
+        assert fan_song[0]["document_id"] == "doc-uuid-1"
+        assert "SA-2 Guideline" in fan_song[0]["original_text"]
+
+    def test_parquet_fallback_via_references(self, sample_data):
+        """When community UUIDs empty but report references entities, load from Parquet."""
+        from app.services.graphrag_provenance import build_provenance
+        sample_data["communities"] = pd.DataFrame()
+        context = {
+            "reports": pd.DataFrame({
+                "id": [0],
+                "title": ["Test"],
+                "content": ["Text [Data: Entities (100, 200)]"],
+            }),
+            # no entities in context
+        }
+        result = build_provenance(context, sample_data, "graphrag_local")
+        entity_ids = [e["id"] for e in result[0]["entities"]]
+        assert 100 in entity_ids
+        assert 200 in entity_ids
+        assert 300 not in entity_ids
+
     def test_include_all_when_no_filter(self, sample_data):
         """When no community UUIDs and no [Data:] refs, include all context items."""
         from app.services.graphrag_provenance import build_provenance
