@@ -96,7 +96,7 @@ def _build_report_provenance(
     }
 
     # Filter context entities to this community
-    ctx_entities = context.get("entities", pd.DataFrame())
+    ctx_entities = _ensure_df(context.get("entities", pd.DataFrame()))
     if not ctx_entities.empty and community_entity_uuids:
         for _, row in ctx_entities.iterrows():
             hrid = row.get("id")
@@ -121,7 +121,7 @@ def _build_report_provenance(
                 })
 
     # Filter context relationships to this community
-    ctx_rels = context.get("relationships", pd.DataFrame())
+    ctx_rels = _ensure_df(context.get("relationships", pd.DataFrame()))
     if not ctx_rels.empty and community_rel_uuids:
         for _, row in ctx_rels.iterrows():
             hrid = row.get("id")
@@ -144,7 +144,7 @@ def _build_report_provenance(
                 })
 
     # Filter context text_units (keyed as "sources") to this community
-    ctx_sources = context.get("sources", pd.DataFrame())
+    ctx_sources = _ensure_df(context.get("sources", pd.DataFrame()))
     if not ctx_sources.empty and community_tu_uuids:
         for _, row in ctx_sources.iterrows():
             hrid = row.get("id")
@@ -166,7 +166,7 @@ def _build_report_provenance(
                 })
 
     # Filter context covariates (keyed as "claims") to this community
-    ctx_claims = context.get("claims", pd.DataFrame())
+    ctx_claims = _ensure_df(context.get("claims", pd.DataFrame()))
     if not ctx_claims.empty:
         for _, row in ctx_claims.iterrows():
             entry["covariates"].append({
@@ -176,6 +176,20 @@ def _build_report_provenance(
             })
 
     return entry
+
+
+def _ensure_df(value) -> pd.DataFrame:
+    """Coerce a context value to a DataFrame.
+
+    GraphRAG context dicts may contain DataFrames or plain lists (e.g. empty
+    ``[]``).  This normalises both forms so callers can safely use ``.empty``,
+    ``.iterrows()``, etc.
+    """
+    if isinstance(value, pd.DataFrame):
+        return value
+    if isinstance(value, list):
+        return pd.DataFrame(value) if value else pd.DataFrame()
+    return pd.DataFrame()
 
 
 def build_provenance(
@@ -196,13 +210,13 @@ def build_provenance(
     Returns:
         List of provenance entries, one per community report.
     """
-    ctx_reports = context.get("reports", pd.DataFrame())
+    ctx_reports = _ensure_df(context.get("reports", pd.DataFrame()))
     cr_parquet = data.get("community_reports", pd.DataFrame())
     comm_parquet = data.get("communities", pd.DataFrame())
 
     # Basic search: no reports, just text units
     if strategy in ("graphrag_basic", "basic"):
-        ctx_sources = context.get("sources", pd.DataFrame())
+        ctx_sources = _ensure_df(context.get("sources", pd.DataFrame()))
         if ctx_sources.empty:
             return []
         tu_df = data.get("text_units", pd.DataFrame())

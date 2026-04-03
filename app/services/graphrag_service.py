@@ -7,6 +7,7 @@ The bridge layer only exports documents from Postgres as input.
 
 import asyncio
 import logging
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -139,6 +140,18 @@ def _patch_embedding_sanitization():
 
 
 _patch_embedding_sanitization()
+
+# ---------------------------------------------------------------------------
+# Think-tag stripping
+# ---------------------------------------------------------------------------
+
+_RE_THINK_TAGS = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL)
+
+
+def _strip_think_tags(text: str) -> str:
+    """Strip <think>/<thinking> tags from LLM response text."""
+    return _RE_THINK_TAGS.sub("", text).strip()
+
 
 # ---------------------------------------------------------------------------
 # DRIFT primer: replace strict JSON parsing with tolerant multi-strategy
@@ -518,6 +531,8 @@ def _serialize_context(context):
 
 def local_search(query: str) -> dict:
     """Entity-centric search with community context."""
+    from app.services.graphrag_provenance import build_provenance
+
     try:
         settings = get_settings()
         config = build_graphrag_config(settings)
@@ -528,8 +543,10 @@ def local_search(query: str) -> dict:
             config, data, query, settings.graphrag_community_level,
             settings.graphrag_local_response_type,
         )
+        provenance = build_provenance(context, data, "graphrag_local")
         return {
-            "response": response,
+            "response": _strip_think_tags(response),
+            "provenance": provenance,
             "context": _serialize_context(context),
         }
     except Exception:
@@ -539,6 +556,8 @@ def local_search(query: str) -> dict:
 
 def global_search(query: str) -> dict:
     """Cross-community summarization for broad questions."""
+    from app.services.graphrag_provenance import build_provenance
+
     try:
         settings = get_settings()
         config = build_graphrag_config(settings)
@@ -550,8 +569,10 @@ def global_search(query: str) -> dict:
             settings.graphrag_global_response_type,
             settings.graphrag_dynamic_community_selection,
         )
+        provenance = build_provenance(context, data, "graphrag_global")
         return {
-            "response": response,
+            "response": _strip_think_tags(response),
+            "provenance": provenance,
             "context": _serialize_context(context),
         }
     except Exception:
@@ -561,6 +582,7 @@ def global_search(query: str) -> dict:
 
 def drift_search(query: str) -> dict:
     """Community-informed expansion search."""
+    from app.services.graphrag_provenance import build_provenance
     from app.services.graphrag_runtime_patches import DriftPrimerParseError
 
     try:
@@ -573,8 +595,10 @@ def drift_search(query: str) -> dict:
             config, data, query, settings.graphrag_community_level,
             settings.graphrag_drift_response_type,
         )
+        provenance = build_provenance(context, data, "graphrag_drift")
         return {
-            "response": response,
+            "response": _strip_think_tags(response),
+            "provenance": provenance,
             "context": _serialize_context(context),
         }
     except DriftPrimerParseError as exc:
@@ -597,6 +621,8 @@ def drift_search(query: str) -> dict:
 
 def basic_search(query: str) -> dict:
     """Vector search over text units."""
+    from app.services.graphrag_provenance import build_provenance
+
     try:
         settings = get_settings()
         config = build_graphrag_config(settings)
@@ -604,8 +630,10 @@ def basic_search(query: str) -> dict:
         response, context = _run_basic_search(
             config, data, query, settings.graphrag_basic_response_type,
         )
+        provenance = build_provenance(context, data, "graphrag_basic")
         return {
-            "response": response,
+            "response": _strip_think_tags(response),
+            "provenance": provenance,
             "context": _serialize_context(context),
         }
     except Exception:

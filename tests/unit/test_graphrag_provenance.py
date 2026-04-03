@@ -178,6 +178,23 @@ class TestBuildProvenanceBasic:
         assert len(result[0]["text_units"]) == 2
 
 
+class TestThinkTagStripping:
+    def test_strips_think_tags(self):
+        from app.services.graphrag_service import _strip_think_tags
+        text = "<think>reasoning here</think>The SA-2 uses command guidance."
+        assert _strip_think_tags(text) == "The SA-2 uses command guidance."
+
+    def test_strips_thinking_tags(self):
+        from app.services.graphrag_service import _strip_think_tags
+        text = "<thinking>deep thought</thinking>Result here."
+        assert _strip_think_tags(text) == "Result here."
+
+    def test_no_tags_unchanged(self):
+        from app.services.graphrag_service import _strip_think_tags
+        text = "Plain response."
+        assert _strip_think_tags(text) == "Plain response."
+
+
 class TestBuildProvenanceEdgeCases:
     def test_empty_context(self, sample_data):
         from app.services.graphrag_provenance import build_provenance
