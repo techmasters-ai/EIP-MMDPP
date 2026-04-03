@@ -14,6 +14,7 @@ import httpx
 import redis as redis_lib
 
 from app.config import get_settings
+from app.services.ontology_templates import load_ontology
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,22 @@ class DoclingGraphCapacityError(RuntimeError):
     """
 
 
+def _resolve_ontology(
+    ontology_definition: dict[str, Any] | None,
+    ontology_version: str | None,
+) -> tuple[dict[str, Any], str]:
+    """Return (effective_ontology, effective_version) from explicit args or active registry."""
+    ontology = ontology_definition or load_ontology()
+    version = ontology_version or str(ontology.get("version") or "")
+    return ontology, version
+
+
 def extract_graph(
     text: str,
     document_id: str,
     *,
     ontology_version: str | None = None,
+    ontology_definition: dict[str, Any] | None = None,
     template_group: str | None = None,
     mode: str = "entities",
     entities_context: list[dict] | None = None,
@@ -58,14 +70,18 @@ def extract_graph(
     settings = get_settings()
     url = f"{settings.docling_graph_base_url}/extract"
     timeout = settings.docling_graph_timeout
+    effective_ontology, effective_ontology_version = _resolve_ontology(
+        ontology_definition, ontology_version,
+    )
 
     payload: dict[str, Any] = {
         "document_id": document_id,
         "text": text,
         "mode": mode,
+        "ontology_definition": effective_ontology,
     }
-    if ontology_version:
-        payload["ontology_version"] = ontology_version
+    if effective_ontology_version:
+        payload["ontology_version"] = effective_ontology_version
     if template_group:
         payload["template_group"] = template_group
     if entities_context is not None:
@@ -130,6 +146,9 @@ def extract_graph(
 def extract_graph_all(
     text: str,
     document_id: str,
+    *,
+    ontology_definition: dict[str, Any] | None = None,
+    ontology_version: str | None = None,
 ) -> dict[str, Any]:
     """Extract all entities (5 groups in parallel) + relationships in one call.
 
@@ -141,6 +160,9 @@ def extract_graph_all(
     settings = get_settings()
     url = f"{settings.docling_graph_base_url}/extract-all"
     timeout = settings.docling_graph_timeout
+    effective_ontology, effective_ontology_version = _resolve_ontology(
+        ontology_definition, ontology_version,
+    )
 
     # --- Redis concurrency gate ---
     r = _get_redis()
@@ -171,7 +193,12 @@ def extract_graph_all(
     try:
         response = httpx.post(
             url,
-            json={"document_id": document_id, "text": text},
+            json={
+                "document_id": document_id,
+                "text": text,
+                "ontology_definition": effective_ontology,
+                "ontology_version": effective_ontology_version,
+            },
             timeout=timeout,
         )
         response.raise_for_status()

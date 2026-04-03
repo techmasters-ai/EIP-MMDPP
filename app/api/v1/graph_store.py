@@ -1,17 +1,22 @@
-"""Graph (Neo4j) — direct entity/relationship ingest and Cypher query endpoints."""
+"""Graph (Neo4j) — direct entity/relationship ingest and deterministic query endpoints."""
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_neo4j_async_driver
+from app.db.session import get_async_session, get_neo4j_async_driver
 from app.schemas.graph_store import (
     GraphEntityIngest,
     GraphIngestResponse,
+    GraphEntityResult,
     GraphNeighborhoodRequest,
     GraphNeighborhoodResponse,
     GraphQueryRequest,
     GraphRelationshipIngest,
+    SystemDossierResponse,
+    SystemQueryRequest,
+    SystemSectionResponse,
 )
 from app.schemas.retrieval import QueryResultItem
 
@@ -146,3 +151,48 @@ async def get_neighborhood(
         nodes=result["nodes"],
         edges=result["edges"],
     )
+
+
+# Legacy deterministic dossier endpoints — kept for backward compatibility.
+# New ontology-driven dossier queries should use the query profiles system
+# at /query-profiles/search/section and /query-profiles/search/dossier.
+@router.post("/graph/system-dossier", response_model=SystemDossierResponse)
+async def get_system_dossier(
+    body: SystemQueryRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> SystemDossierResponse:
+    """Return a deterministic, provenance-backed dossier for one system."""
+    from app.services.neo4j_dossier_service import (
+        SystemNotFoundError,
+        build_system_dossier,
+    )
+
+    driver = get_neo4j_async_driver()
+    try:
+        return await build_system_dossier(driver, db, body)
+    except SystemNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+async def _system_section(body: SystemQueryRequest, db: AsyncSession, section: str) -> SystemSectionResponse:
+    from app.services.neo4j_dossier_service import SystemNotFoundError, build_section_response
+    driver = get_neo4j_async_driver()
+    try:
+        return await build_section_response(driver, db, body, section)
+    except SystemNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/graph/system-components", response_model=SystemSectionResponse)
+async def get_system_components(body: SystemQueryRequest, db: AsyncSession = Depends(get_async_session)):
+    return await _system_section(body, db, "components")
+
+
+@router.post("/graph/system-rf-parameters", response_model=SystemSectionResponse)
+async def get_system_rf_parameters(body: SystemQueryRequest, db: AsyncSession = Depends(get_async_session)):
+    return await _system_section(body, db, "rf_parameters")
+
+
+@router.post("/graph/system-performance", response_model=SystemSectionResponse)
+async def get_system_performance(body: SystemQueryRequest, db: AsyncSession = Depends(get_async_session)):
+    return await _system_section(body, db, "performance")

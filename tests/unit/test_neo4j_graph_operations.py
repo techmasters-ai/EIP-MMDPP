@@ -64,9 +64,13 @@ class TestUpsertRelationship:
         driver, session = mock_neo4j_driver
         upsert_relationship(driver, "A", "Type A", "B", "Type B", "rel type", "a1", 0.5)
         query = session.run.call_args.args[0]
-        assert "Type_A" in query
-        assert "Type_B" in query
+        # Relationship label is sanitized into the Cypher template
         assert "rel_type" in query
+        # Entity matching uses parameterized (name, entity_type) — not labels
+        assert "$from_name" in query
+        assert "$from_type" in query
+        assert "$to_name" in query
+        assert "$to_type" in query
 
     def test_exception_returns_false(self, mock_neo4j_driver):
         from app.services.neo4j_graph import upsert_relationship
@@ -436,10 +440,11 @@ class TestEnsureIndexes:
         from app.services.neo4j_graph import ensure_indexes
         driver, session = mock_neo4j_driver
         ensure_indexes(driver)
-        assert session.run.call_count == 3
+        assert session.run.call_count == 4
         queries = [c.args[0] for c in session.run.call_args_list]
         assert any("entity_name_fulltext" in q for q in queries)
         assert any("document_id_unique" in q for q in queries)
+        assert any("entity_name_type_lookup" in q for q in queries)
 
     def test_exception_propagates(self, mock_neo4j_driver):
         from app.services.neo4j_graph import ensure_indexes

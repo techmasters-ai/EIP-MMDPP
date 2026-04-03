@@ -96,9 +96,12 @@ def upsert_relationship(
     confidence: float,
     properties: Optional[dict[str, Any]] = None,
 ) -> bool:
-    """Create or update a directed relationship between two entity nodes."""
-    from_label = _sanitize_label(from_type)
-    to_label = _sanitize_label(to_type)
+    """Create or update a directed relationship between two entity nodes.
+
+    NOTE: Matches on (name, entity_type) to avoid cross-type collisions.
+    Existing graphs extracted with name-only matching may need re-extraction
+    if entity types are inconsistent across extraction passes.
+    """
     rel_label = _sanitize_label(rel_type)
 
     rel_props = dict(properties or {})
@@ -106,8 +109,8 @@ def upsert_relationship(
     rel_props["confidence"] = confidence
 
     query = f"""
-        MATCH (a:Entity:{from_label} {{name: $from_name}})
-        MATCH (b:Entity:{to_label} {{name: $to_name}})
+        MATCH (a:Entity {{name: $from_name, entity_type: $from_type}})
+        MATCH (b:Entity {{name: $to_name, entity_type: $to_type}})
         MERGE (a)-[r:{rel_label} {{artifact_id: $artifact_id}}]->(b)
         ON CREATE SET r += $props
         ON MATCH SET r.confidence = CASE
@@ -122,7 +125,9 @@ def upsert_relationship(
             session.run(
                 query,
                 from_name=from_name,
+                from_type=from_type,
                 to_name=to_name,
+                to_type=to_type,
                 artifact_id=artifact_id,
                 confidence=confidence,
                 props=rel_props,
@@ -184,14 +189,9 @@ def upsert_relationships_batch(
     Each dict must have: from_name, from_type, to_name, to_type, rel_type,
     artifact_id, confidence, props.
 
-    Nodes are matched by name only (not entity type label) so that
-    relationships succeed even when the LLM returns a slightly different
-    entity type than the one used during entity creation.
-
-    Note: name-only matching assumes entity names are unique within the
-    graph.  If two entities share a name with different types, this may
-    create an unintended relationship — acceptable trade-off given the
-    domain (military system names are distinct).
+    NOTE: Matches on (name, entity_type) to avoid cross-type collisions.
+    Existing graphs extracted with name-only matching may need re-extraction
+    if entity types are inconsistent across extraction passes.
     """
     from collections import defaultdict
 
@@ -206,8 +206,8 @@ def upsert_relationships_batch(
             for rel_label, group in by_rel.items():
                 query = f"""
                     UNWIND $edges AS edge
-                    MATCH (a:Entity {{name: edge.from_name}})
-                    MATCH (b:Entity {{name: edge.to_name}})
+                    MATCH (a:Entity {{name: edge.from_name, entity_type: edge.from_type}})
+                    MATCH (b:Entity {{name: edge.to_name, entity_type: edge.to_type}})
                     MERGE (a)-[r:{rel_label} {{artifact_id: edge.artifact_id}}]->(b)
                     ON CREATE SET r += edge.props
                     ON MATCH SET r.confidence = CASE
@@ -888,6 +888,11 @@ def ensure_indexes(driver) -> None:
         """
         CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS
         FOR (n:Entity) ON EACH [n.name, n.canonical_name, n.entity_type]
+        """,
+        # Composite lookup index for deterministic dossier queries and typed edge upserts
+        """
+        CREATE INDEX entity_name_type_lookup IF NOT EXISTS
+        FOR (e:Entity) ON (e.name, e.entity_type)
         """,
         # Uniqueness constraint on Document node
         """

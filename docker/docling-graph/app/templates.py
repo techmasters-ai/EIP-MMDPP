@@ -71,6 +71,57 @@ def get_ontology_version(ontology: dict[str, Any]) -> str:
     return ontology.get("version", "unknown")
 
 
+def _entity_type_names(ontology: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for entity_type in ontology.get("entity_types", []):
+        if isinstance(entity_type, str):
+            names.append(entity_type)
+        elif isinstance(entity_type, dict) and entity_type.get("name"):
+            names.append(str(entity_type["name"]))
+    return names
+
+
+def resolve_group_map(
+    ontology: dict[str, Any],
+    default_group_map: dict[str, list[str]] | None = None,
+) -> dict[str, list[str]]:
+    """Resolve extraction groups for an ontology.
+
+    If the ontology provides `extraction_groups`, use that mapping. Otherwise
+    fall back to the legacy five-group map filtered to the entity types present
+    in the ontology, then add a `custom` bucket for any uncategorized types.
+    """
+    entity_names = set(_entity_type_names(ontology))
+    configured = ontology.get("extraction_groups")
+    group_map: dict[str, list[str]] = {}
+
+    if isinstance(configured, dict):
+        for group_name, members in configured.items():
+            if not isinstance(group_name, str) or not isinstance(members, list):
+                continue
+            normalized = [
+                str(member).strip()
+                for member in members
+                if isinstance(member, str) and member.strip() in entity_names
+            ]
+            if normalized:
+                group_map[group_name.strip()] = normalized
+
+    if not group_map:
+        base_group_map = default_group_map or GROUP_MAP
+        for group_name, members in base_group_map.items():
+            normalized = [member for member in members if member in entity_names]
+            if normalized:
+                group_map[group_name] = normalized
+
+    assigned = {member for members in group_map.values() for member in members}
+    remaining = [name for name in _entity_type_names(ontology) if name not in assigned]
+    if remaining:
+        group_map["custom"] = remaining
+
+    return group_map
+
+
 def _build_entity_model(
     name: str, props_schema: dict[str, Any]
 ) -> type[BaseModel]:
@@ -127,8 +178,10 @@ def build_templates(ontology: dict[str, Any]) -> dict[str, dict[str, type[BaseMo
         if desc and name in entity_models:
             entity_models[name].__doc__ = desc
 
+    group_map = resolve_group_map(ontology)
+
     templates: dict[str, dict[str, type[BaseModel]]] = {}
-    for group_name, member_names in GROUP_MAP.items():
+    for group_name, member_names in group_map.items():
         group_models: dict[str, type[BaseModel]] = {}
         for entity_name in member_names:
             if entity_name not in entity_models:
@@ -148,11 +201,11 @@ def build_templates(ontology: dict[str, Any]) -> dict[str, dict[str, type[BaseMo
         get_ontology_version(ontology),
     )
 
-    _register_edges(ontology)
+    register_edges(ontology)
     return templates
 
 
-def _register_edges(ontology: dict[str, Any]) -> None:
+def register_edges(ontology: dict[str, Any]) -> None:
     """Try to register relationship types with docling_graph.utils.edge.
 
     If the module is not available (older docling-graph versions), log a

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -26,6 +28,10 @@ class ExtractionRequest(BaseModel):
     entities_context: list[dict] | None = Field(
         None,
         description="For mode='relationships': list of {name, entity_type} dicts from prior entity passes.",
+    )
+    ontology_definition: dict[str, Any] | None = Field(
+        None,
+        description="Optional request-scoped ontology definition. When provided, it overrides the startup ontology for this extraction call.",
     )
 
 

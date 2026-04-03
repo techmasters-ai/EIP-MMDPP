@@ -259,6 +259,23 @@ for node in resp.json():
     print(node["modality"], node["content_text"], node["score"])
 ```
 
+### Ontology Registry & Query Profiles
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/query-profiles/registries` | List all registries |
+| `POST` | `/v1/query-profiles/registries` | Create a new registry |
+| `GET` | `/v1/query-profiles/registries/{id}` | Get a single registry |
+| `PUT` | `/v1/query-profiles/registries/{id}` | Update a registry |
+| `POST` | `/v1/query-profiles/registries/{id}/activate` | Set as the active registry |
+| `POST` | `/v1/query-profiles/registries/{id}/profiles` | Add a query profile |
+| `PUT` | `/v1/query-profiles/registries/{id}/profiles/{pid}` | Update a query profile |
+| `DELETE` | `/v1/query-profiles/registries/{id}/profiles/{pid}` | Delete a query profile |
+| `GET` | `/v1/query-profiles` | Get active registry's exposed profiles |
+| `GET` | `/v1/query-profiles/default-template` | Get starter template with pre-built profiles |
+| `POST` | `/v1/query-profiles/search/section` | Execute a section profile graph traversal |
+| `POST` | `/v1/query-profiles/search/dossier` | Execute a dossier (multi-section) search |
+
 ### Trusted Data
 
 | Method | Endpoint | Description |
@@ -623,6 +640,293 @@ The knowledge graph uses a 5-layer ontology grounded in DoDAF DM2 concepts:
 
 See `ontology/ontology.yaml` for the full schema.
 
+## Creating Custom Queries
+
+Custom queries let you define deterministic graph traversal patterns that surface specific entity relationships from Neo4j. Once created, they appear as options in the Search Documents dropdown alongside the built-in retrieval modes.
+
+### Overview
+
+The system works in three layers:
+
+1. **Ontology Registry** — Holds your ontology definition (entity types, relationship types, validation rules).
+2. **Section Profiles** — Define a single traversal pattern (e.g., "find all components of a system").
+3. **Dossier Profiles** — Bundle multiple section profiles into a compound report (e.g., "full system dossier = components + RF parameters + performance").
+
+### Step-by-Step: Creating Your First Custom Query
+
+#### Step 1: Create an Ontology Registry
+
+1. Navigate to the **Ontology & Query Profiles** page.
+2. Click **Create New Registry**.
+3. Give it a name (e.g., "My Custom Ontology").
+4. In the **Ontology Definition** JSON editor, paste or edit your ontology. You can start with the repository default by clicking **Load Default Ontology**.
+5. Click **Save** and then **Activate** the registry.
+
+The ontology definition must include `entity_types` and `relationship_types`. Here is a minimal example:
+
+```json
+{
+  "version": "1.0",
+  "entity_types": [
+    {
+      "name": "PLATFORM",
+      "description": "Military platform or vehicle",
+      "properties": {
+        "properties": {
+          "designation": { "type": "string" },
+          "country_of_origin": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "RADAR_SYSTEM",
+      "description": "Radar or sensor system",
+      "properties": {
+        "properties": {
+          "designation": { "type": "string" },
+          "frequency_band": { "type": "string" }
+        }
+      }
+    }
+  ],
+  "relationship_types": [
+    {
+      "name": "HAS_COMPONENT",
+      "description": "System contains this component",
+      "source_type": "PLATFORM",
+      "target_type": "RADAR_SYSTEM"
+    }
+  ]
+}
+```
+
+#### Step 2: Create a Section Profile
+
+A section profile defines one traversal pattern from a root entity through the graph.
+
+1. Switch to the **Query Profiles** tab (enabled once an active registry exists).
+2. Click **Add Section Profile**.
+3. Fill in the form:
+   - **ID**: `platform_radars` (unique identifier, no spaces)
+   - **Label**: `Platform Radars` (shown in the Search dropdown)
+   - **Root Entity Types**: Select `PLATFORM` (the types a user can search for)
+   - **Target Entity Types**: Select `RADAR_SYSTEM` (the types to return as results)
+   - **Traversal**: Add one step:
+     - **Direction**: Outward
+     - **Relationship Types**: `HAS_COMPONENT`
+     - **Min/Max Hops**: 1 / 2
+   - **Exposed**: Check this box so it appears in the Search dropdown
+4. Click **Save**.
+
+**What this does**: When a user types "Patriot" in the Search page with this profile selected, the system:
+1. Resolves "Patriot" to a `PLATFORM` entity in Neo4j (via alias + fulltext matching).
+2. Traverses outward along `HAS_COMPONENT` edges (1-2 hops).
+3. Filters results to only `RADAR_SYSTEM` entity types.
+4. Returns matching radar systems with their properties, aliases, and supporting evidence.
+
+#### Step 3: Create a Dossier Profile (Optional)
+
+A dossier bundles multiple section profiles into one compound query.
+
+1. Click **Add Dossier Profile**.
+2. Fill in:
+   - **ID**: `system_dossier`
+   - **Label**: `Full System Dossier`
+   - **Root Entity Types**: Select all system types (`PLATFORM`, `RADAR_SYSTEM`, etc.)
+   - **Section Profiles**: Select the section profiles to include (e.g., `platform_radars`, `system_components`, `rf_parameters`)
+   - **Exposed**: Check this box
+3. Click **Save**.
+
+When a user runs this dossier, each section executes independently and results are grouped by section in the response.
+
+#### Step 4: Use in Search
+
+1. Go to the **Search Documents** page.
+2. Open the **Query mode** dropdown — your custom profiles appear under a "Query Profiles" group.
+3. Select your profile (e.g., "Platform Radars").
+4. Type an entity name (e.g., "S-300" or "Patriot").
+5. Click **Search**.
+
+Results show entity properties, relationship paths, aliases, and evidence from source documents.
+
+### Using Starter Profiles
+
+Instead of building profiles from scratch, you can seed pre-built profiles:
+
+1. On the **Query Profiles** tab, click **Load Starter Profiles**.
+2. The system generates section and dossier profiles based on the active ontology's relationship types.
+3. Review the generated profiles and edit them as needed.
+4. The default starter profiles include:
+   - **System Components** — finds subsystems, components, and assemblies
+   - **RF Parameters** — finds frequency bands, emissions, waveforms, and antennas
+   - **System Performance** — finds capabilities, performance specs, and engagement timelines
+   - **System Dossier** — combines all three sections above
+
+### Key Concepts
+
+**Root Entity Types**: The entity types a user can search for. If a user types "AN/MPQ-65", the system looks for entities matching that name among the root types.
+
+**Target Entity Types**: The entity types returned as results. After finding the root entity, the traversal follows relationship edges and returns only entities matching the target types.
+
+**Traversals**: Each traversal is a sequence of steps through the graph. A step specifies:
+- **Direction**: `out` (follow edges forward) or `in` (follow edges backward)
+- **Relationship Types**: Which edge types to follow (e.g., `HAS_COMPONENT`, `SPECIFIED_BY`)
+- **Min/Max Hops**: How far to traverse (1-4 hops)
+
+Multiple traversals create parallel paths. For example, to find both components and specifications of a system, define two traversals: one following `HAS_COMPONENT` and another following `SPECIFIED_BY`.
+
+**Exposed**: Only profiles marked as "exposed" appear in the Search Documents dropdown. Use this to keep work-in-progress profiles hidden while developing them.
+
+### API Usage (curl / Python)
+
+All query profile operations are available via REST API. Below are examples for the most common workflows.
+
+**Create a registry with an ontology:**
+
+```bash
+# Create and activate a registry
+curl -X POST http://localhost:8000/v1/query-profiles/registries \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My Custom Ontology",
+    "ontology_version": "1.0",
+    "ontology_definition": {
+      "version": "1.0",
+      "entity_types": [
+        {"name": "PLATFORM", "description": "Military platform", "properties": {"properties": {"designation": {"type": "string"}}}},
+        {"name": "RADAR_SYSTEM", "description": "Radar system", "properties": {"properties": {"designation": {"type": "string"}}}}
+      ],
+      "relationship_types": [
+        {"name": "HAS_COMPONENT", "source_type": "PLATFORM", "target_type": "RADAR_SYSTEM"}
+      ]
+    },
+    "is_active": true
+  }'
+```
+
+**Add a section profile:**
+
+```bash
+# Add a section profile to the active registry (replace REGISTRY_ID)
+curl -X POST http://localhost:8000/v1/query-profiles/registries/REGISTRY_ID/profiles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "platform_radars",
+    "label": "Platform Radars",
+    "kind": "section",
+    "exposed": true,
+    "root_entity_types": ["PLATFORM"],
+    "target_entity_types": ["RADAR_SYSTEM"],
+    "traversals": [
+      {
+        "steps": [
+          {"direction": "out", "rel_types": ["HAS_COMPONENT"], "min_hops": 1, "max_hops": 2}
+        ]
+      }
+    ]
+  }'
+```
+
+**Search with a section profile:**
+
+```bash
+# Search for radars associated with "Patriot"
+curl -X POST http://localhost:8000/v1/query-profiles/search/section \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profile_id": "platform_radars",
+    "query_text": "Patriot",
+    "top_k": 25,
+    "include_aliases": true,
+    "include_evidence": true,
+    "evidence_top_k": 3
+  }'
+```
+
+**Search with a dossier profile:**
+
+```bash
+# Run a full system dossier (returns multiple sections)
+curl -X POST http://localhost:8000/v1/query-profiles/search/dossier \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profile_id": "system_dossier",
+    "query_text": "S-300",
+    "top_k": 25
+  }'
+```
+
+**Python example (full workflow):**
+
+```python
+import requests
+
+BASE = "http://localhost:8000/v1"
+
+# 1. Create and activate a registry
+registry = requests.post(f"{BASE}/query-profiles/registries", json={
+    "name": "Defense Ontology",
+    "ontology_definition": {
+        "version": "1.0",
+        "entity_types": [
+            {"name": "PLATFORM", "description": "Military platform",
+             "properties": {"properties": {"designation": {"type": "string"}}}},
+            {"name": "RADAR_SYSTEM", "description": "Radar system",
+             "properties": {"properties": {"frequency_band": {"type": "string"}}}},
+        ],
+        "relationship_types": [
+            {"name": "HAS_COMPONENT", "source_type": "PLATFORM", "target_type": "RADAR_SYSTEM"},
+        ],
+    },
+    "is_active": True,
+}).json()
+registry_id = registry["id"]
+
+# 2. Add a section profile
+requests.post(f"{BASE}/query-profiles/registries/{registry_id}/profiles", json={
+    "id": "platform_radars",
+    "label": "Platform Radars",
+    "kind": "section",
+    "exposed": True,
+    "root_entity_types": ["PLATFORM"],
+    "target_entity_types": ["RADAR_SYSTEM"],
+    "traversals": [{"steps": [
+        {"direction": "out", "rel_types": ["HAS_COMPONENT"], "min_hops": 1, "max_hops": 2},
+    ]}],
+})
+
+# 3. Search for radars on the S-300 platform
+result = requests.post(f"{BASE}/query-profiles/search/section", json={
+    "profile_id": "platform_radars",
+    "query_text": "S-300",
+    "include_aliases": True,
+    "include_evidence": True,
+}).json()
+
+print(f"Root entity: {result['resolved_root']['name']}")
+for item in result["items"]:
+    print(f"  {item['name']} ({item['entity_type']}) — "
+          f"via {' -> '.join(item['relationship_types'])}")
+```
+
+**Get the starter template (pre-built profiles for the repository ontology):**
+
+```bash
+curl http://localhost:8000/v1/query-profiles/default-template | python -m json.tool
+```
+
+**List exposed profiles for the active registry:**
+
+```bash
+curl http://localhost:8000/v1/query-profiles
+```
+
+### Limitations
+
+- Custom queries only search the Neo4j knowledge graph. They do not perform vector/semantic search.
+- Entities must exist in Neo4j (via document ingestion + graph extraction) before they can be found.
+- Changing the active ontology does not retroactively re-extract already-ingested documents. Re-ingest documents to apply a new ontology.
+
 ## GraphRAG
 
 Community detection and cross-community search powered by Microsoft's `graphrag` library. GraphRAG owns the full extraction pipeline — it reads documents from Postgres, chunks them, extracts entities/relationships via LLM, detects communities (Leiden clustering), generates community reports, and produces text embeddings for search.
@@ -731,7 +1035,9 @@ React 18 + TypeScript + Vite single-page application served by the API container
 
 ### Search Documents (`QueryPage`)
 
-Six query modes with a mode selector bar:
+A dropdown selector groups query modes into two categories:
+
+**Retrieval modes** (always available):
 
 | Mode | Strategy | Description |
 |---|---|---|
@@ -741,6 +1047,10 @@ Six query modes with a mode selector bar:
 | **GraphRAG Global** | `graphrag_global` | Cross-community summarization for broad analytical questions |
 | **GraphRAG Drift** | `graphrag_drift` | Community-informed expansion search |
 | **GraphRAG Basic** | `graphrag_basic` | Vector search over text units |
+
+**Query Profile modes** (appear when an active registry has exposed profiles):
+
+Custom ontology-driven graph traversal queries. These are defined via the Ontology & Query Profiles page and appear automatically in the dropdown once exposed. See [Creating Custom Queries](#creating-custom-queries) below.
 
 **Result cards** show:
 - Always-visible text preview (first ~300 chars of `content_text`)
@@ -762,6 +1072,7 @@ Drag-and-drop or click-to-upload with real-time pipeline status polling. Support
 - **Ingest** — unified ingest page with upload + status overview
 - **Directory Monitor** — register/remove watch directories for auto-ingest
 - **Graph Explorer** — Neo4j entity/relationship search + manual creation (full ontology support)
+- **Ontology & Query Profiles** — create/manage ontology registries and build custom graph traversal queries (see [Creating Custom Queries](#creating-custom-queries))
 - **Trusted Data** — submit, approve/reject, reindex, and search human-reviewed knowledge
 
 ## Ingest Pipeline

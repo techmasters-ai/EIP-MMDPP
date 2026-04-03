@@ -1,4 +1,4 @@
-"""Unit tests for upsert_relationships_batch name-only matching."""
+"""Unit tests for upsert_relationships_batch (name, entity_type) matching."""
 from unittest.mock import MagicMock
 import pytest
 
@@ -6,8 +6,8 @@ pytestmark = pytest.mark.unit
 
 
 class TestUpsertRelationshipsBatch:
-    def test_cypher_matches_by_name_not_type(self, mock_neo4j_driver):
-        """MATCH clause should use Entity {name: ...} without type label."""
+    def test_cypher_matches_by_name_and_entity_type(self, mock_neo4j_driver):
+        """MATCH clause should use Entity {name: ..., entity_type: ...}."""
         from app.services.neo4j_graph import upsert_relationships_batch
 
         driver, session = mock_neo4j_driver
@@ -26,9 +26,14 @@ class TestUpsertRelationshipsBatch:
         upsert_relationships_batch(driver, edges)
 
         query = session.run.call_args.args[0]
+        # Entity type labels should NOT appear in the MATCH clause
         assert ":EQUIPMENT_SYSTEM" not in query
         assert ":SPECIFICATION" not in query
-        assert "{name: edge.from_name}" in query
+        # Matching uses parameterized (name, entity_type) pair
+        assert "edge.from_name" in query
+        assert "edge.from_type" in query
+        assert "edge.to_name" in query
+        assert "edge.to_type" in query
 
     def test_groups_by_rel_type_only(self, mock_neo4j_driver):
         """Edges with same rel_type but different entity types go in one batch."""

@@ -26,12 +26,13 @@ class TestEnsureIndexes:
 
         ensure_indexes(driver)
 
-        # Should have run 3 statements (fulltext index, constraint, index)
-        assert session.run.call_count == 3
+        # 4 statements: fulltext index, constraint, chunk_ref index, composite name+type index
+        assert session.run.call_count == 4
         calls = [c.args[0] for c in session.run.call_args_list]
         assert any("entity_name_fulltext" in c for c in calls)
         assert any("document_id_unique" in c for c in calls)
         assert any("chunk_ref_chunk_id" in c for c in calls)
+        assert any("entity_name_type_lookup" in c for c in calls)
 
     def test_exception_propagates(self):
         from app.services.neo4j_graph import ensure_indexes
@@ -57,8 +58,8 @@ class TestEnsureIndexes:
         ensure_indexes(driver)
         ensure_indexes(driver)
 
-        # 3 statements × 2 calls = 6
-        assert session.run.call_count == 6
+        # 4 statements × 2 calls = 8
+        assert session.run.call_count == 8
 
 
 # ---------------------------------------------------------------------------

@@ -45,3 +45,52 @@ class GraphNeighborhoodResponse(APIModel):
     center: Optional[dict[str, Any]] = None
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
+
+
+class SystemQueryRequest(APIModel):
+    system_name: str = Field(..., min_length=1, max_length=4096)
+    include_aliases: bool = True
+    include_variants: bool = False
+    include_evidence: bool = True
+    evidence_top_k: int = Field(default=3, ge=1, le=10)
+    top_k: int = Field(default=25, ge=1, le=100)
+
+
+class GraphEvidenceItem(APIModel):
+    chunk_id: Optional[uuid.UUID] = None
+    chunk_type: str
+    artifact_id: Optional[uuid.UUID] = None
+    document_id: Optional[uuid.UUID] = None
+    document_name: Optional[str] = None
+    modality: str
+    page_number: Optional[int] = None
+    classification: str = "UNCLASSIFIED"
+    content_text: Optional[str] = None
+
+
+class GraphEntityResult(APIModel):
+    node_id: Optional[str] = None
+    name: str
+    entity_type: str
+    canonical_name: Optional[str] = None
+    score: Optional[float] = None
+    hop_count: Optional[int] = None
+    relationship_types: list[str] = Field(default_factory=list)
+    properties: dict[str, Any] = Field(default_factory=dict)
+    aliases: list[str] = Field(default_factory=list)
+    evidence: list[GraphEvidenceItem] = Field(default_factory=list)
+
+
+class SystemSectionResponse(APIModel):
+    resolved_system: GraphEntityResult
+    items: list[GraphEntityResult] = Field(default_factory=list)
+    total: int = 0
+
+
+class SystemDossierResponse(APIModel):
+    resolved_system: GraphEntityResult
+    aliases: list[str] = Field(default_factory=list)
+    components: list[GraphEntityResult] = Field(default_factory=list)
+    rf_parameters: list[GraphEntityResult] = Field(default_factory=list)
+    performance_characteristics: list[GraphEntityResult] = Field(default_factory=list)
+    organizations_platforms: list[GraphEntityResult] = Field(default_factory=list)

@@ -1,35 +1,182 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { ingestGraphEntity, ingestGraphRelationship, queryGraph, getGraphNeighborhood, getGraphRAGSettings, triggerGraphRAGUpdate, triggerGraphRAGFullReindex, type QueryResultItem, type GraphRAGSettings } from "../api/client";
+import {
+  getActiveQueryProfiles,
+  ingestGraphEntity,
+  ingestGraphRelationship,
+  queryGraph,
+  getGraphNeighborhood,
+  getGraphRAGSettings,
+  triggerGraphRAGUpdate,
+  triggerGraphRAGFullReindex,
+  type QueryProfileDefinition,
+  type QueryProfileRegistry,
+  type QueryResultItem,
+  type GraphRAGSettings,
+} from "../api/client";
+import { uniqueSorted, normalizeNamedList } from "../utils/ontologyHelpers";
 import type cytoscape from "cytoscape";
 import { GraphView, toGraphElements } from "./GraphView";
+import { QueryProfileRegistryPage } from "./QueryProfileRegistryPage";
 
-const ENTITY_TYPES = [
-  // Military assets
-  "RadarSystem", "MissileSystem", "AirDefenseArtillerySystem",
-  "IntegratedAirDefenseSystem", "ElectronicWarfareSystem", "FireControlSystem",
-  "LauncherSystem", "WeaponSystem", "Platform", "Subsystem", "Component",
-  // EM/RF
-  "FrequencyBand", "Waveform", "Modulation", "RFEmission", "RFSignature",
-  "Antenna", "Transmitter", "Receiver", "SignalProcessingChain", "ScanPattern",
-  // Weapon
-  "Seeker", "GuidanceMethod", "MissilePerformance", "PropulsionStack",
-  // Operational
-  "Capability", "EngagementTimeline", "RadarPerformance",
-  // Reference
-  "Organization", "Document", "Assertion",
+const DEFAULT_ENTITY_TYPES = [
+  "EQUIPMENT_SYSTEM",
+  "RADAR_SYSTEM",
+  "MISSILE_SYSTEM",
+  "PLATFORM",
+  "SUBSYSTEM",
+  "COMPONENT",
+  "SPECIFICATION",
+  "CAPABILITY",
+  "ORGANIZATION",
+  "DOCUMENT",
+  "ASSERTION",
 ];
 
-type Tab = "search" | "entity" | "relationship" | "indexing";
+const DEFAULT_REL_TYPES = [
+  "PART_OF",
+  "HAS_SUBSYSTEM",
+  "HAS_COMPONENT",
+  "HAS_STAGE",
+  "OPERATED_BY",
+  "MANUFACTURED_BY",
+  "INSTALLED_ON",
+  "DEPLOYED_ON",
+  "ASSOCIATED_WITH",
+  "OPERATES_IN_BAND",
+  "USES_WAVEFORM",
+  "USES_MODULATION",
+  "EMITS",
+  "RADIATES",
+  "RECEIVES",
+  "HAS_SIGNATURE",
+  "HAS_SCAN",
+  "HAS_RECEIVER",
+  "HAS_TRANSMITTER",
+  "HAS_ANTENNA",
+  "HAS_PROCESSING_CHAIN",
+  "HAS_PERFORMANCE",
+  "SPECIFIED_BY",
+  "CUES",
+  "GUIDES",
+  "TRACKS",
+  "ENGAGES",
+  "DETECTS",
+  "DESIGNATES",
+  "SUPPORTS_ENGAGEMENT_OF",
+  "HAS_GUIDANCE",
+  "HAS_PROPULSION",
+  "HAS_SEEKER",
+];
+
+interface ValidationRule {
+  source: string;
+  relationship: string;
+  target: string;
+}
+
+interface OntologyOptions {
+  registryName: string | null;
+  ontologyName: string | null;
+  entityTypes: string[];
+  relationshipTypes: string[];
+  validationMatrix: ValidationRule[];
+}
+
+
+function deriveEntityTypes(
+  registry: QueryProfileRegistry | null,
+  profiles: QueryProfileDefinition[],
+): string[] {
+  const ontologyTypes = normalizeNamedList(registry?.ontology_definition?.entity_types);
+  const profileTypes = profiles.flatMap((profile) => [
+    ...profile.root_entity_types,
+    ...profile.target_entity_types,
+  ]);
+  return uniqueSorted([...ontologyTypes, ...profileTypes, ...DEFAULT_ENTITY_TYPES]);
+}
+
+function deriveRelationshipTypes(
+  registry: QueryProfileRegistry | null,
+  profiles: QueryProfileDefinition[],
+): string[] {
+  const ontologyTypes = normalizeNamedList(registry?.ontology_definition?.relationship_types);
+  const profileTypes = profiles.flatMap((profile) =>
+    profile.traversals.flatMap((traversal) =>
+      traversal.steps.flatMap((step) => step.rel_types),
+    ),
+  );
+  return uniqueSorted([...ontologyTypes, ...profileTypes, ...DEFAULT_REL_TYPES]);
+}
+
+function deriveValidationMatrix(registry: QueryProfileRegistry | null): ValidationRule[] {
+  const raw = registry?.ontology_definition?.validation_matrix;
+  if (!Array.isArray(raw)) return [];
+
+  const normalized = raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const source = record.source ?? record.source_type;
+    const relationship = record.relationship ?? record.rel_type;
+    const target = record.target ?? record.target_type;
+    if (
+      typeof source !== "string" ||
+      typeof relationship !== "string" ||
+      typeof target !== "string"
+    ) {
+      return [];
+    }
+    return [{
+      source: source.trim(),
+      relationship: relationship.trim(),
+      target: target.trim(),
+    }];
+  });
+
+  return normalized.sort((a, b) => {
+    const left = `${a.source}:${a.relationship}:${a.target}`;
+    const right = `${b.source}:${b.relationship}:${b.target}`;
+    return left.localeCompare(right);
+  });
+}
+
+function buildOntologyOptions(
+  registry: QueryProfileRegistry | null,
+  profiles: QueryProfileDefinition[],
+): OntologyOptions {
+  return {
+    registryName: registry?.name ?? null,
+    ontologyName: (registry?.ontology_name as string | null | undefined) ?? null,
+    entityTypes: deriveEntityTypes(registry, profiles),
+    relationshipTypes: deriveRelationshipTypes(registry, profiles),
+    validationMatrix: deriveValidationMatrix(registry),
+  };
+}
+
+type Tab = "search" | "entity" | "relationship" | "indexing" | "profiles";
 
 const TAB_LABELS: Record<Tab, string> = {
   search: "Search",
   entity: "Add Entity",
   relationship: "Add Relationship",
   indexing: "Graph Indexing",
+  profiles: "Ontology and Query Profiles",
 };
 
 export function GraphExplorer() {
   const [tab, setTab] = useState<Tab>("search");
+  const [ontologyOptions, setOntologyOptions] = useState<OntologyOptions>(() =>
+    buildOntologyOptions(null, []),
+  );
+
+  useEffect(() => {
+    getActiveQueryProfiles()
+      .then((payload) => {
+        setOntologyOptions(buildOntologyOptions(payload.registry, payload.exposed_profiles));
+      })
+      .catch(() => {
+        setOntologyOptions(buildOntologyOptions(null, []));
+      });
+  }, []);
 
   return (
     <div>
@@ -46,9 +193,16 @@ export function GraphExplorer() {
       </div>
 
       {tab === "search" && <GraphSearch />}
-      {tab === "entity" && <EntityForm />}
-      {tab === "relationship" && <RelationshipForm />}
+      {tab === "entity" && <EntityForm entityTypes={ontologyOptions.entityTypes} />}
+      {tab === "relationship" && (
+        <RelationshipForm
+          entityTypes={ontologyOptions.entityTypes}
+          relationshipTypes={ontologyOptions.relationshipTypes}
+          validationMatrix={ontologyOptions.validationMatrix}
+        />
+      )}
       {tab === "indexing" && <GraphIndexingPanel />}
+      {tab === "profiles" && <QueryProfileRegistryPage />}
     </div>
   );
 }
@@ -201,13 +355,19 @@ function GraphSearch() {
   );
 }
 
-function EntityForm() {
-  const [entityType, setEntityType] = useState("EQUIPMENT_SYSTEM");
+function EntityForm({ entityTypes }: { entityTypes: string[] }) {
+  const [entityType, setEntityType] = useState(entityTypes[0] ?? DEFAULT_ENTITY_TYPES[0]);
   const [name, setName] = useState("");
   const [propsJson, setPropsJson] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!entityTypes.includes(entityType)) {
+      setEntityType(entityTypes[0] ?? DEFAULT_ENTITY_TYPES[0]);
+    }
+  }, [entityType, entityTypes]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -246,7 +406,7 @@ function EntityForm() {
           <div className="field">
             <label htmlFor="entity-type">Entity type</label>
             <select id="entity-type" value={entityType} onChange={(e) => setEntityType(e.target.value)}>
-              {ENTITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {entityTypes.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
           <div className="field" style={{ flex: 1 }}>
@@ -281,33 +441,48 @@ function EntityForm() {
   );
 }
 
-function RelationshipForm() {
+function RelationshipForm({
+  entityTypes,
+  relationshipTypes,
+  validationMatrix,
+}: {
+  entityTypes: string[];
+  relationshipTypes: string[];
+  validationMatrix: ValidationRule[];
+}) {
   const [fromEntity, setFromEntity] = useState("");
-  const [fromType, setFromType] = useState("EQUIPMENT_SYSTEM");
+  const [fromType, setFromType] = useState(entityTypes[0] ?? DEFAULT_ENTITY_TYPES[0]);
   const [toEntity, setToEntity] = useState("");
-  const [toType, setToType] = useState("COMPONENT");
-  const [relType, setRelType] = useState("CONTAINS");
+  const [toType, setToType] = useState(entityTypes[1] ?? entityTypes[0] ?? DEFAULT_ENTITY_TYPES[0]);
+  const [relType, setRelType] = useState(relationshipTypes[0] ?? DEFAULT_REL_TYPES[0]);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const REL_TYPES = [
-    // Identity/Typing
-    "is_a", "instance_of", "subclass_of", "alias_of",
-    // Whole-Part (DoDAF DM2)
-    "part_of", "contains", "has_subsystem", "has_component", "has_stage",
-    // Installation/Association
-    "installed_on", "deployed_on", "associated_with", "operated_by", "manufactured_by",
-    // EM/RF Technical
-    "operates_in_band", "uses_waveform", "uses_modulation", "emits", "radiates",
-    "receives", "processes", "has_signature", "has_scan", "has_receiver",
-    "has_transmitter", "has_antenna", "has_processing_chain", "has_performance",
-    // Weapon/Engagement
-    "cues", "guides", "tracks", "engages", "defends", "detects", "designates",
-    "launches", "supports_engagement_of", "has_guidance", "has_propulsion", "has_seeker",
-    // Provenance
-    "supported_by", "mentioned_in", "derived_from", "reviewed_by", "about",
-  ];
+  useEffect(() => {
+    if (!entityTypes.includes(fromType)) {
+      setFromType(entityTypes[0] ?? DEFAULT_ENTITY_TYPES[0]);
+    }
+    if (!entityTypes.includes(toType)) {
+      setToType(entityTypes[1] ?? entityTypes[0] ?? DEFAULT_ENTITY_TYPES[0]);
+    }
+  }, [entityTypes, fromType, toType]);
+
+  const filteredRelationshipTypes = React.useMemo(() => {
+    if (validationMatrix.length === 0) {
+      return relationshipTypes;
+    }
+    const matches = validationMatrix
+      .filter((rule) => rule.source === fromType && rule.target === toType)
+      .map((rule) => rule.relationship);
+    return matches.length > 0 ? uniqueSorted(matches) : relationshipTypes;
+  }, [fromType, relationshipTypes, toType, validationMatrix]);
+
+  useEffect(() => {
+    if (!filteredRelationshipTypes.includes(relType)) {
+      setRelType(filteredRelationshipTypes[0] ?? relationshipTypes[0] ?? DEFAULT_REL_TYPES[0]);
+    }
+  }, [filteredRelationshipTypes, relType, relationshipTypes]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -350,7 +525,7 @@ function RelationshipForm() {
           <div className="field">
             <label>From type</label>
             <select value={fromType} onChange={(e) => setFromType(e.target.value)}>
-              {ENTITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {entityTypes.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
         </div>
@@ -358,8 +533,15 @@ function RelationshipForm() {
         <div className="field">
           <label>Relationship type</label>
           <select value={relType} onChange={(e) => setRelType(e.target.value)}>
-            {REL_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            {filteredRelationshipTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
+          {validationMatrix.length > 0 && (
+            <div className="text-xs text-muted" style={{ marginTop: "0.25rem" }}>
+              {filteredRelationshipTypes.length === relationshipTypes.length
+                ? "Showing all ontology relationship types"
+                : `Filtered by validation matrix for ${fromType} -> ${toType}`}
+            </div>
+          )}
         </div>
 
         <div className="field-row" style={{ gap: "1rem" }}>
@@ -375,7 +557,7 @@ function RelationshipForm() {
           <div className="field">
             <label>To type</label>
             <select value={toType} onChange={(e) => setToType(e.target.value)}>
-              {ENTITY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {entityTypes.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
         </div>

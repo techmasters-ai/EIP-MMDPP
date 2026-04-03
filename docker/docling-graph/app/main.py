@@ -11,6 +11,8 @@ Extraction modes:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
 import json as json_mod
 import logging
 import os
@@ -31,7 +33,14 @@ from app.schemas import (
     ExtractionRequest,
     ExtractionResponse,
 )
-from app.templates import GROUP_MAP, build_templates, get_ontology_version, load_ontology
+from app.templates import (
+    GROUP_MAP,
+    build_templates,
+    get_ontology_version,
+    load_ontology,
+    register_edges,
+    resolve_group_map,
+)
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -72,10 +81,19 @@ _RE_ANSWER_MARKERS = [
 # ---------------------------------------------------------------------------
 _templates: dict[str, dict[str, type[BaseModel]]] | None = None
 _ontology_version: str | None = None
+_group_map: dict[str, list[str]] = {}
 # Pre-built schema descriptions per group (built from ontology YAML at startup)
 _group_schema_prompts: dict[str, str] = {}
 # Auto-generated relationship type context from ontology (for relationship extraction prompt)
 _relationship_prompt_context: str = ""
+
+
+@dataclass(frozen=True)
+class RuntimeExtractionContext:
+    ontology_version: str | None
+    group_map: dict[str, list[str]]
+    group_schema_prompts: dict[str, str]
+    relationship_prompt_context: str
 
 
 def _patch_node_id_registry() -> None:
@@ -135,7 +153,10 @@ def _configure_ollama_provider() -> None:
         logger.warning("Could not set OllamaConfig.num_ctx — LiteLLM version may differ")
 
 
-def _build_group_schema_prompts(ontology: dict[str, Any]) -> dict[str, str]:
+def _build_group_schema_prompts(
+    ontology: dict[str, Any],
+    group_map: dict[str, list[str]] | None = None,
+) -> dict[str, str]:
     """Build entity schema description strings from the ontology for each group.
 
     These are embedded in the LLM prompt so the model knows exactly what
@@ -147,7 +168,8 @@ def _build_group_schema_prompts(ontology: dict[str, Any]) -> dict[str, str]:
         et_index[et["name"]] = et
 
     prompts: dict[str, str] = {}
-    for group_name, member_names in GROUP_MAP.items():
+    effective_group_map = group_map or resolve_group_map(ontology)
+    for group_name, member_names in effective_group_map.items():
         lines: list[str] = []
         for entity_name in member_names:
             et = et_index.get(entity_name)
@@ -221,7 +243,7 @@ def _build_relationship_prompt_context(ontology: dict[str, Any]) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load ontology and build templates at startup."""
-    global _templates, _ontology_version, _group_schema_prompts, _relationship_prompt_context
+    global _templates, _ontology_version, _group_map, _group_schema_prompts, _relationship_prompt_context
 
     _patch_node_id_registry()
     _configure_ollama_provider()
@@ -229,14 +251,15 @@ async def lifespan(app: FastAPI):
     try:
         ontology = load_ontology(ONTOLOGY_PATH)
         _ontology_version = get_ontology_version(ontology)
+        _group_map = resolve_group_map(ontology)
         _templates = build_templates(ontology)
-        _group_schema_prompts = _build_group_schema_prompts(ontology)
+        _group_schema_prompts = _build_group_schema_prompts(ontology, _group_map)
         _relationship_prompt_context = _build_relationship_prompt_context(ontology)
         logger.info(
-            "Docling-Graph service ready — ontology v%s, %d templates, %d group prompts, relationship context %d chars",
+            "Docling-Graph service ready — ontology v%s, %d groups, %d templates, relationship context %d chars",
             _ontology_version,
+            len(_group_map),
             sum(len(g) for g in _templates.values()),
-            len(_group_schema_prompts),
             len(_relationship_prompt_context),
         )
     except Exception:
@@ -244,6 +267,56 @@ async def lifespan(app: FastAPI):
 
     yield
     logger.info("Docling-Graph service shutting down.")
+
+
+def _startup_runtime_context() -> RuntimeExtractionContext:
+    if _templates is None:
+        raise RuntimeError("Service not ready — templates not loaded")
+    return RuntimeExtractionContext(
+        ontology_version=_ontology_version,
+        group_map=_group_map or GROUP_MAP,
+        group_schema_prompts=_group_schema_prompts,
+        relationship_prompt_context=_relationship_prompt_context,
+    )
+
+
+_runtime_context_cache: dict[str, RuntimeExtractionContext] = {}
+
+
+def _ontology_hash(ontology: dict[str, Any]) -> str:
+    raw = json_mod.dumps(ontology, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _resolve_runtime_context(
+    ontology_definition: dict[str, Any] | None,
+) -> RuntimeExtractionContext:
+    if not ontology_definition:
+        return _startup_runtime_context()
+
+    key = _ontology_hash(ontology_definition)
+    cached = _runtime_context_cache.get(key)
+    if cached is not None:
+        return cached
+
+    runtime_group_map = resolve_group_map(ontology_definition)
+    if not runtime_group_map:
+        raise HTTPException(
+            status_code=422,
+            detail="The supplied ontology definition does not contain any extractable entity types",
+        )
+
+    register_edges(ontology_definition)
+    ctx = RuntimeExtractionContext(
+        ontology_version=get_ontology_version(ontology_definition),
+        group_map=runtime_group_map,
+        group_schema_prompts=_build_group_schema_prompts(ontology_definition, runtime_group_map),
+        relationship_prompt_context=_build_relationship_prompt_context(ontology_definition),
+    )
+    # Keep only the most recent entry to bound memory
+    _runtime_context_cache.clear()
+    _runtime_context_cache[key] = ctx
+    return ctx
 
 
 app = FastAPI(
@@ -427,16 +500,21 @@ def _parse_json_from_llm(raw: str | None) -> dict | list | None:
 # ---------------------------------------------------------------------------
 # Entity extraction — direct LLM (1 call per group, returns array of entities)
 # ---------------------------------------------------------------------------
-def _extract_entities_for_group(text: str, group_name: str) -> list[dict]:
+def _extract_entities_for_group(
+    text: str,
+    group_name: str,
+    group_schema_prompts: dict[str, str],
+    group_map: dict[str, list[str]],
+) -> list[dict]:
     """Extract all entities for one ontology group via a single LLM call.
 
     Returns a list of entity dicts with keys: name, entity_type, confidence, properties.
     """
     from app.prompts import GROUP_PROMPTS, GROUP_FEW_SHOT_EXAMPLES
 
-    schema_desc = _group_schema_prompts.get(group_name, "")
+    schema_desc = group_schema_prompts.get(group_name, "")
     system_prompt = GROUP_PROMPTS.get(group_name, "You are an entity extraction assistant.")
-    entity_type_names = GROUP_MAP.get(group_name, [])
+    entity_type_names = group_map.get(group_name, [])
     example = GROUP_FEW_SHOT_EXAMPLES.get(group_name, "")
 
     user_prompt = (
@@ -493,11 +571,15 @@ def _extract_entities_for_group(text: str, group_name: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Relationship extraction — direct LLM
 # ---------------------------------------------------------------------------
-def _extract_relationships(text: str, entities_context: list[dict]) -> list[dict]:
+def _extract_relationships(
+    text: str,
+    entities_context: list[dict],
+    relationship_prompt_context: str,
+) -> list[dict]:
     """Extract relationships between known entities via a single LLM call."""
     from app.prompts import get_relationship_prompt
 
-    system_prompt = get_relationship_prompt(entities_context, _relationship_prompt_context)
+    system_prompt = get_relationship_prompt(entities_context, relationship_prompt_context)
     user_prompt = (
         f"Analyze this text and extract relationships between the known entities:\n\n"
         f"=== TEXT ===\n{text}\n=== END TEXT ===\n\n"
@@ -563,7 +645,10 @@ def _dedup_entities(entities: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Full extraction — chunked entities + global relationships
 # ---------------------------------------------------------------------------
-def _run_full_extraction(text: str) -> tuple[list[dict], list[dict]]:
+def _run_full_extraction(
+    text: str,
+    runtime: RuntimeExtractionContext,
+) -> tuple[list[dict], list[dict]]:
     """Extract entities from text chunks, then relationships from the full text.
 
     Entity extraction is chunked to stay within context window limits.
@@ -573,7 +658,7 @@ def _run_full_extraction(text: str) -> tuple[list[dict], list[dict]]:
     Returns (entities, relationships) as raw dicts.
     """
     chunks = _chunk_text(text, GRAPH_EXTRACTION_CHUNK_SIZE, GRAPH_EXTRACTION_CHUNK_OVERLAP)
-    group_names = list(GROUP_MAP.keys())
+    group_names = list(runtime.group_map.keys())
 
     # Phase 1: Entity extraction — per chunk, all groups in parallel per chunk
     all_entities: list[dict] = []
@@ -582,7 +667,13 @@ def _run_full_extraction(text: str) -> tuple[list[dict], list[dict]]:
     with ThreadPoolExecutor(max_workers=len(group_names)) as pool:
         for chunk_idx, chunk in enumerate(chunks):
             futures = {
-                pool.submit(_extract_entities_for_group, chunk, group): group
+                pool.submit(
+                    _extract_entities_for_group,
+                    chunk,
+                    group,
+                    runtime.group_schema_prompts,
+                    runtime.group_map,
+                ): group
                 for group in group_names
             }
             for future in as_completed(futures):
@@ -609,7 +700,11 @@ def _run_full_extraction(text: str) -> tuple[list[dict], list[dict]]:
         for e in all_entities
         if e.get("name")
     ]
-    all_relationships = _extract_relationships(text, entities_context)
+    all_relationships = _extract_relationships(
+        text,
+        entities_context,
+        runtime.relationship_prompt_context,
+    )
     rel_elapsed = time.monotonic() - t1
 
     logger.info(
@@ -624,7 +719,9 @@ def _run_full_extraction(text: str) -> tuple[list[dict], list[dict]]:
 # Mock responses
 # ---------------------------------------------------------------------------
 def _mock_extraction_response(
-    mode: str = "entities", template_group: str | None = None
+    mode: str = "entities",
+    template_group: str | None = None,
+    ontology_version: str | None = None,
 ) -> ExtractionResponse:
     """Return a canned response for testing (LLM_PROVIDER=mock)."""
     mock_entities = [
@@ -644,15 +741,16 @@ def _mock_extraction_response(
             to_type="RADAR_SYSTEM", confidence=0.85,
         ),
     ]
+    effective_ontology_version = ontology_version or _ontology_version
 
     if mode == "relationships":
         return ExtractionResponse(
             entities=[], relationships=mock_relationships,
-            ontology_version=_ontology_version, model="mock", provider="mock",
+            ontology_version=effective_ontology_version, model="mock", provider="mock",
         )
     return ExtractionResponse(
         entities=mock_entities, relationships=[],
-        ontology_version=_ontology_version, model="mock", provider="mock",
+        ontology_version=effective_ontology_version, model="mock", provider="mock",
     )
 
 
@@ -665,8 +763,10 @@ _VALID_MODES = {"entities", "relationships"}
 @app.post("/extract", response_model=ExtractionResponse)
 async def extract(request: ExtractionRequest):
     """Extract entities or relationships from document text (single group)."""
-    if _templates is None:
+    if _templates is None and not request.ontology_definition:
         raise HTTPException(status_code=503, detail="Service not ready — templates not loaded")
+
+    runtime = _resolve_runtime_context(request.ontology_definition)
 
     if request.mode not in _VALID_MODES:
         raise HTTPException(
@@ -674,14 +774,18 @@ async def extract(request: ExtractionRequest):
             detail=f"Unknown mode '{request.mode}'; valid modes: {sorted(_VALID_MODES)}",
         )
 
-    if request.template_group is not None and request.template_group not in (_templates or {}):
+    if request.template_group is not None and request.template_group not in runtime.group_map:
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown template_group '{request.template_group}'; valid groups: {sorted((_templates or {}).keys())}",
+            detail=f"Unknown template_group '{request.template_group}'; valid groups: {sorted(runtime.group_map.keys())}",
         )
 
-    if request.ontology_version and request.ontology_version != _ontology_version:
-        logger.warning("Ontology version mismatch: request=%s, loaded=%s", request.ontology_version, _ontology_version)
+    if request.ontology_version and request.ontology_version != runtime.ontology_version:
+        logger.warning(
+            "Ontology version mismatch: request=%s, runtime=%s",
+            request.ontology_version,
+            runtime.ontology_version,
+        )
 
     logger.info(
         "Extracting from document %s (%d chars, group=%s, mode=%s)",
@@ -690,11 +794,18 @@ async def extract(request: ExtractionRequest):
     )
 
     if LLM_PROVIDER == "mock":
-        return _mock_extraction_response(mode=request.mode, template_group=request.template_group)
+        return _mock_extraction_response(
+            mode=request.mode,
+            template_group=request.template_group,
+            ontology_version=runtime.ontology_version,
+        )
 
     if request.mode == "relationships":
         rel_dicts = await run_in_threadpool(
-            _extract_relationships, request.text, request.entities_context or [],
+            _extract_relationships,
+            request.text,
+            request.entities_context or [],
+            runtime.relationship_prompt_context,
         )
         relationships = [
             ExtractedRelationshipResponse(
@@ -707,12 +818,18 @@ async def extract(request: ExtractionRequest):
         ]
         return ExtractionResponse(
             entities=[], relationships=relationships,
-            ontology_version=_ontology_version, model=LLM_MODEL, provider=LLM_PROVIDER,
+            ontology_version=runtime.ontology_version, model=LLM_MODEL, provider=LLM_PROVIDER,
         )
 
     # Entity extraction — direct LLM call for the group
-    group = request.template_group or next(iter(GROUP_MAP))
-    entity_dicts = await run_in_threadpool(_extract_entities_for_group, request.text, group)
+    group = request.template_group or next(iter(runtime.group_map))
+    entity_dicts = await run_in_threadpool(
+        _extract_entities_for_group,
+        request.text,
+        group,
+        runtime.group_schema_prompts,
+        runtime.group_map,
+    )
     entities = [
         ExtractedEntityResponse(
             name=e.get("name", ""), entity_type=e.get("entity_type", "UNKNOWN"),
@@ -728,7 +845,7 @@ async def extract(request: ExtractionRequest):
     )
     return ExtractionResponse(
         entities=entities, relationships=[],
-        ontology_version=_ontology_version, model=LLM_MODEL, provider=LLM_PROVIDER,
+        ontology_version=runtime.ontology_version, model=LLM_MODEL, provider=LLM_PROVIDER,
     )
 
 
@@ -739,6 +856,8 @@ class FullExtractionRequest(BaseModel):
     """Request body for the /extract-all endpoint."""
     document_id: str
     text: str
+    ontology_version: str | None = None
+    ontology_definition: dict[str, Any] | None = None
 
 
 @app.post("/extract-all", response_model=ExtractionResponse)
@@ -747,18 +866,31 @@ async def extract_all(request: FullExtractionRequest):
 
     This is ~10x faster than calling /extract for each group sequentially.
     """
-    if _templates is None:
+    if _templates is None and not request.ontology_definition:
         raise HTTPException(status_code=503, detail="Service not ready — templates not loaded")
+
+    runtime = _resolve_runtime_context(request.ontology_definition)
+
+    if request.ontology_version and request.ontology_version != runtime.ontology_version:
+        logger.warning(
+            "extract-all ontology version mismatch: request=%s, runtime=%s",
+            request.ontology_version,
+            runtime.ontology_version,
+        )
 
     logger.info(
         "extract-all: document %s (%d chars, %d groups)",
-        request.document_id, len(request.text), len(GROUP_MAP),
+        request.document_id, len(request.text), len(runtime.group_map),
     )
 
     if LLM_PROVIDER == "mock":
-        return _mock_extraction_response()
+        return _mock_extraction_response(ontology_version=runtime.ontology_version)
 
-    entity_dicts, rel_dicts = await run_in_threadpool(_run_full_extraction, request.text)
+    entity_dicts, rel_dicts = await run_in_threadpool(
+        _run_full_extraction,
+        request.text,
+        runtime,
+    )
 
     entities = [
         ExtractedEntityResponse(
@@ -785,5 +917,5 @@ async def extract_all(request: FullExtractionRequest):
 
     return ExtractionResponse(
         entities=entities, relationships=relationships,
-        ontology_version=_ontology_version, model=LLM_MODEL, provider=LLM_PROVIDER,
+        ontology_version=runtime.ontology_version, model=LLM_MODEL, provider=LLM_PROVIDER,
     )

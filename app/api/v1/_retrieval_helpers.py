@@ -6,11 +6,13 @@ the DB session / asyncpg dependency chain (same pattern as _agent_helpers.py).
 
 import re
 from functools import lru_cache
-from pathlib import Path
-
-import yaml
 
 from app.schemas.retrieval import QueryResultItem, UnifiedQueryRequest
+from app.services.ontology_templates import (
+    get_ontology_cache_signature,
+    load_ontology,
+    register_invalidation_hook,
+)
 
 # ---------------------------------------------------------------------------
 # Config-backed constants (lazy-loaded to avoid import-time settings issues)
@@ -37,22 +39,23 @@ def get_ontology_decay() -> float:
 
 
 # ---------------------------------------------------------------------------
-# Ontology relation weights (loaded from ontology YAML)
+# Ontology relation weights (loaded from the active ontology registry)
 # ---------------------------------------------------------------------------
-
-_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "ontology" / "ontology.yaml"
 
 
 @lru_cache(maxsize=1)
-def _load_scoring_weights() -> dict[str, float]:
-    """Load ontology relation scoring weights from ontology.yaml."""
-    with open(_ONTOLOGY_PATH) as f:
-        data = yaml.safe_load(f)
+def _load_scoring_weights(cache_key: str) -> dict[str, float]:
+    """Load ontology relation scoring weights for the current ontology cache key."""
+    del cache_key  # cache key exists purely for invalidation
+    data = load_ontology()
     return data.get("scoring_weights", {})
 
 
+register_invalidation_hook(_load_scoring_weights.cache_clear)
+
+
 def get_ontology_relation_weights() -> dict[str, float]:
-    return _load_scoring_weights()
+    return _load_scoring_weights(get_ontology_cache_signature())
 
 
 # ---------------------------------------------------------------------------

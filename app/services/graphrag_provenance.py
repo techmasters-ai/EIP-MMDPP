@@ -32,6 +32,23 @@ _RE_TYPE_IDS = re.compile(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _to_id_list(val: Any) -> list:
+    """Normalize a Parquet list-column value to a plain Python list.
+
+    Parquet stores list columns as numpy arrays; this converts them so
+    truthiness checks (``if not ids:``) work without numpy ambiguity errors.
+    """
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    if hasattr(val, "tolist"):  # numpy array
+        return val.tolist()
+    if hasattr(val, "__iter__") and not isinstance(val, (str, bytes)):
+        return list(val)
+    return []
+
+
 def _safe_value(val: Any) -> Any:
     """Convert a single pandas/numpy value to a JSON-safe Python type."""
     if val is None:
@@ -225,12 +242,12 @@ def _build_report_provenance(
 
             # Resolve source document + original text via Parquet
             uuid = ent_hrid_to_uuid.get(hrid_int)
-            tu_ids = None
+            tu_ids: list = []
             ent_type = ""
             if uuid and not ent_parquet.empty:
                 parquet_rows = ent_parquet[ent_parquet["id"] == uuid]
                 if not parquet_rows.empty:
-                    tu_ids = parquet_rows.iloc[0].get("text_unit_ids")
+                    tu_ids = _to_id_list(parquet_rows.iloc[0].get("text_unit_ids"))
                     ent_type = str(parquet_rows.iloc[0].get("type", ""))
             elif not uuid:
                 logger.debug(
@@ -238,7 +255,7 @@ def _build_report_provenance(
                 )
 
             source = _resolve_source_info(
-                tu_ids if isinstance(tu_ids, list) else [], tu_df, doc_df,
+                tu_ids, tu_df, doc_df,
             )
 
             ent_entry: dict[str, Any] = {
@@ -276,9 +293,9 @@ def _build_report_provenance(
             if parquet_rows.empty:
                 continue
             prow = parquet_rows.iloc[0]
-            tu_ids = prow.get("text_unit_ids")
+            tu_ids = _to_id_list(prow.get("text_unit_ids"))
             source = _resolve_source_info(
-                tu_ids if isinstance(tu_ids, list) else [], tu_df, doc_df,
+                tu_ids, tu_df, doc_df,
             )
             entry["entities"].append({
                 "id": int(prow.get("human_readable_id", 0)),
@@ -308,7 +325,7 @@ def _build_report_provenance(
                     continue
 
             uuid = rel_hrid_to_uuid.get(hrid_int)
-            tu_ids = None
+            tu_ids: list = []
             if not uuid:
                 logger.debug(
                     "Provenance: no UUID mapping for relationship HRID %d",
@@ -317,7 +334,7 @@ def _build_report_provenance(
             elif not rel_parquet.empty:
                 parquet_rows = rel_parquet[rel_parquet["id"] == uuid]
                 if not parquet_rows.empty:
-                    tu_ids = parquet_rows.iloc[0].get("text_unit_ids")
+                    tu_ids = _to_id_list(parquet_rows.iloc[0].get("text_unit_ids"))
                     if not tu_ids:
                         logger.debug(
                             "Provenance: relationship %s (HRID %d) has no text_unit_ids",
@@ -325,7 +342,7 @@ def _build_report_provenance(
                         )
 
             source = _resolve_source_info(
-                tu_ids if isinstance(tu_ids, list) else [], tu_df, doc_df,
+                tu_ids, tu_df, doc_df,
             )
 
             rel_entry: dict[str, Any] = {
@@ -353,10 +370,10 @@ def _build_report_provenance(
                 if uuid:
                     parquet_rows = cov_parquet[cov_parquet["id"] == uuid]
                     if not parquet_rows.empty:
-                        tu_ids = parquet_rows.iloc[0].get("text_unit_ids")
+                        tu_ids = _to_id_list(parquet_rows.iloc[0].get("text_unit_ids"))
 
             source = _resolve_source_info(
-                tu_ids if isinstance(tu_ids, list) else [], tu_df, doc_df,
+                tu_ids, tu_df, doc_df,
             )
 
             cov_entry: dict[str, Any] = {
@@ -451,15 +468,9 @@ def build_provenance(
                     comm_match = comm_parquet[comm_parquet["community"] == community_id]
                     if not comm_match.empty:
                         comm_row = comm_match.iloc[0]
-                        ent_ids = comm_row.get("entity_ids")
-                        if isinstance(ent_ids, list):
-                            community_entity_uuids = set(ent_ids)
-                        rel_ids = comm_row.get("relationship_ids")
-                        if isinstance(rel_ids, list):
-                            community_rel_uuids = set(rel_ids)
-                        tu_ids = comm_row.get("text_unit_ids")
-                        if isinstance(tu_ids, list):
-                            community_tu_uuids = set(tu_ids)
+                        community_entity_uuids = set(_to_id_list(comm_row.get("entity_ids")))
+                        community_rel_uuids = set(_to_id_list(comm_row.get("relationship_ids")))
+                        community_tu_uuids = set(_to_id_list(comm_row.get("text_unit_ids")))
             else:
                 logger.warning(
                     "Provenance: report hrid=%s not found in community_reports Parquet",

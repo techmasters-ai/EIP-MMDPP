@@ -559,6 +559,246 @@ export async function getGraphNeighborhood(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Query Profiles
+// ---------------------------------------------------------------------------
+
+export interface QueryProfileStep {
+  direction: "out" | "in";
+  rel_types: string[];
+  min_hops: number;
+  max_hops: number;
+}
+
+export interface QueryProfileTraversal {
+  steps: QueryProfileStep[];
+}
+
+export interface QueryProfileDefinition {
+  id: string;
+  label: string;
+  description?: string | null;
+  kind: "section" | "dossier";
+  exposed: boolean;
+  root_entity_types: string[];
+  target_entity_types: string[];
+  traversals: QueryProfileTraversal[];
+  section_profile_ids: string[];
+  placeholder_query?: string | null;
+}
+
+export interface QueryProfileRegistry {
+  id: string;
+  name: string;
+  description?: string | null;
+  source_id?: string | null;
+  ontology_name?: string | null;
+  ontology_version?: string | null;
+  ontology_definition?: Record<string, unknown> | null;
+  profiles: QueryProfileDefinition[];
+  is_active: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QueryProfileRegistryTemplate {
+  name: string;
+  description?: string | null;
+  source_id?: string | null;
+  ontology_name?: string | null;
+  ontology_version?: string | null;
+  ontology_definition?: Record<string, unknown> | null;
+  profiles: QueryProfileDefinition[];
+  is_active: boolean;
+}
+
+export interface ActiveQueryProfilesResponse {
+  registry: QueryProfileRegistry | null;
+  exposed_profiles: QueryProfileDefinition[];
+}
+
+export interface GraphProfileEntityResult {
+  node_id?: string | null;
+  name: string;
+  entity_type: string;
+  canonical_name?: string | null;
+  score?: number | null;
+  hop_count?: number | null;
+  relationship_types: string[];
+  properties: Record<string, unknown>;
+  aliases: string[];
+  evidence: Array<{
+    chunk_id?: string | null;
+    chunk_type: string;
+    artifact_id?: string | null;
+    document_id?: string | null;
+    document_name?: string | null;
+    modality: string;
+    page_number?: number | null;
+    classification: string;
+    content_text?: string | null;
+  }>;
+}
+
+export interface QueryProfileSectionResponse {
+  registry_id?: string | null;
+  profile_id: string;
+  profile_label: string;
+  resolved_root: GraphProfileEntityResult;
+  items: GraphProfileEntityResult[];
+  total: number;
+}
+
+export interface QueryProfileDossierSection {
+  profile_id: string;
+  profile_label: string;
+  items: GraphProfileEntityResult[];
+  total: number;
+}
+
+export interface QueryProfileDossierResponse {
+  registry_id?: string | null;
+  profile_id: string;
+  profile_label: string;
+  resolved_root: GraphProfileEntityResult;
+  aliases: string[];
+  sections: QueryProfileDossierSection[];
+}
+
+export async function listQueryProfileRegistries(): Promise<QueryProfileRegistry[]> {
+  const res = await fetch("/v1/query-profiles/registries");
+  return handleResponse<QueryProfileRegistry[]>(res);
+}
+
+export async function createQueryProfileRegistry(params: {
+  name: string;
+  description?: string;
+  source_id?: string | null;
+  ontology_name?: string;
+  ontology_version?: string;
+  ontology_definition?: Record<string, unknown> | null;
+  profiles: QueryProfileDefinition[];
+  is_active?: boolean;
+}): Promise<QueryProfileRegistry> {
+  const res = await fetch("/v1/query-profiles/registries", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<QueryProfileRegistry>(res);
+}
+
+export async function updateQueryProfileRegistry(
+  registryId: string,
+  params: {
+    name?: string;
+    description?: string;
+    source_id?: string | null;
+    ontology_name?: string;
+    ontology_version?: string;
+    ontology_definition?: Record<string, unknown> | null;
+    profiles?: QueryProfileDefinition[];
+    is_active?: boolean;
+  },
+): Promise<QueryProfileRegistry> {
+  const res = await fetch(`/v1/query-profiles/registries/${registryId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<QueryProfileRegistry>(res);
+}
+
+export async function activateQueryProfileRegistry(
+  registryId: string,
+): Promise<QueryProfileRegistry> {
+  const res = await fetch(`/v1/query-profiles/registries/${registryId}/activate`, {
+    method: "POST",
+  });
+  return handleResponse<QueryProfileRegistry>(res);
+}
+
+export async function createRegistryQueryProfile(
+  registryId: string,
+  profile: QueryProfileDefinition,
+): Promise<QueryProfileRegistry> {
+  const res = await fetch(`/v1/query-profiles/registries/${registryId}/profiles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(profile),
+  });
+  return handleResponse<QueryProfileRegistry>(res);
+}
+
+export async function updateRegistryQueryProfile(
+  registryId: string,
+  profileId: string,
+  profile: QueryProfileDefinition,
+): Promise<QueryProfileRegistry> {
+  const res = await fetch(
+    `/v1/query-profiles/registries/${registryId}/profiles/${profileId}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(profile),
+    },
+  );
+  return handleResponse<QueryProfileRegistry>(res);
+}
+
+export async function deleteRegistryQueryProfile(
+  registryId: string,
+  profileId: string,
+): Promise<QueryProfileRegistry> {
+  const res = await fetch(`/v1/query-profiles/registries/${registryId}/profiles/${profileId}`, {
+    method: "DELETE",
+  });
+  return handleResponse<QueryProfileRegistry>(res);
+}
+
+export async function getActiveQueryProfiles(): Promise<ActiveQueryProfilesResponse> {
+  const res = await fetch("/v1/query-profiles");
+  return handleResponse<ActiveQueryProfilesResponse>(res);
+}
+
+export async function getDefaultQueryProfileTemplate(): Promise<QueryProfileRegistryTemplate> {
+  const res = await fetch("/v1/query-profiles/default-template");
+  return handleResponse<QueryProfileRegistryTemplate>(res);
+}
+
+export async function searchQueryProfileSection(params: {
+  profile_id: string;
+  query_text: string;
+  include_aliases?: boolean;
+  include_evidence?: boolean;
+  evidence_top_k?: number;
+  top_k?: number;
+}): Promise<QueryProfileSectionResponse> {
+  const res = await fetch("/v1/query-profiles/search/section", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<QueryProfileSectionResponse>(res);
+}
+
+export async function searchQueryProfileDossier(params: {
+  profile_id: string;
+  query_text: string;
+  include_aliases?: boolean;
+  include_evidence?: boolean;
+  evidence_top_k?: number;
+  top_k?: number;
+}): Promise<QueryProfileDossierResponse> {
+  const res = await fetch("/v1/query-profiles/search/dossier", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<QueryProfileDossierResponse>(res);
+}
+
+// ---------------------------------------------------------------------------
 // Docling Document
 // ---------------------------------------------------------------------------
 

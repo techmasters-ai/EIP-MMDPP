@@ -1,11 +1,15 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import {
+  getActiveQueryProfiles,
   unifiedQuery,
   submitGraphRAGQuery,
   getGraphRAGQueryStatus,
   getGraphRAGQueryResult,
   getGraphNeighborhood,
   getRetrievalSettings,
+  searchQueryProfileDossier,
+  searchQueryProfileSection,
+  type QueryProfileDefinition,
   type QueryStrategy,
   type ModalityFilter,
   type QueryResultItem,
@@ -13,39 +17,65 @@ import {
 import { GraphView, toGraphElements } from "./GraphView";
 import type cytoscape from "cytoscape";
 
-interface ModePreset {
+interface RetrievalModePreset {
+  kind: "retrieval";
+  key: string;
   strategy: QueryStrategy;
   label: string;
   description: string;
 }
 
-const MODES: ModePreset[] = [
+interface GraphProfileModePreset {
+  kind: "graph_profile";
+  key: string;
+  profileId: string;
+  profileKind: "section" | "dossier";
+  label: string;
+  description: string;
+  placeholder?: string | null;
+}
+
+type ModePreset = RetrievalModePreset | GraphProfileModePreset;
+
+const BASE_MODES: RetrievalModePreset[] = [
   {
+    kind: "retrieval",
+    key: "basic",
     strategy: "basic",
     label: "Text Basic",
     description: "Simple BGE vector RAG search on text chunks",
   },
   {
+    kind: "retrieval",
+    key: "hybrid",
     strategy: "hybrid",
     label: "Multi-Modal",
     description: "Hybrid pipeline (vectors + graph expansion)",
   },
   {
+    kind: "retrieval",
+    key: "graphrag_local",
     strategy: "graphrag_local",
     label: "GraphRAG Local",
     description: "Entity-centric retrieval with community context reports",
   },
   {
+    kind: "retrieval",
+    key: "graphrag_global",
     strategy: "graphrag_global",
     label: "GraphRAG Global",
     description: "Cross-community summarization for broad questions",
   },
   {
+    kind: "retrieval",
+    key: "graphrag_drift",
     strategy: "graphrag_drift",
     label: "GraphRAG Drift",
     description: "Community-informed expansion search (DRIFT)",
   },
   {
+    kind: "retrieval",
+    key: "graphrag_basic",
     strategy: "graphrag_basic",
     label: "GraphRAG Basic",
     description: "Vector search over GraphRAG text units",
@@ -57,6 +87,26 @@ const MODALITY_OPTIONS: { value: ModalityFilter; label: string }[] = [
   { value: "text", label: "Text Only" },
   { value: "image", label: "Images Only" },
 ];
+
+function isRetrievalMode(mode: ModePreset): mode is RetrievalModePreset {
+  return mode.kind === "retrieval";
+}
+
+function isGraphProfileMode(mode: ModePreset): mode is GraphProfileModePreset {
+  return mode.kind === "graph_profile";
+}
+
+function toGraphProfileMode(profile: QueryProfileDefinition): GraphProfileModePreset {
+  return {
+    kind: "graph_profile",
+    key: `profile:${profile.id}`,
+    profileId: profile.id,
+    profileKind: profile.kind,
+    label: profile.label,
+    description: profile.description || "Deterministic graph traversal from the active query profile registry",
+    placeholder: profile.placeholder_query,
+  };
+}
 
 function scoreColor(score: number): string {
   if (score >= 0.85) return "var(--color-success)";
@@ -267,6 +317,9 @@ function MetadataDetail({ item }: { item: QueryResultItem }) {
 /** Extract entity names from GraphRAG context if graph data is present. */
 function extractGraphEntities(ctx: Record<string, unknown> | undefined): string[] {
   if (!ctx) return [];
+  if (ctx.source === "graph_profile" && typeof ctx.entity_name === "string") {
+    return [ctx.entity_name];
+  }
   const gctx = ctx.graphrag_context as Record<string, unknown> | undefined;
   if (!gctx) return [];
 
@@ -461,6 +514,87 @@ function ProvenanceReportEntry({ entry }: { entry: ProvenanceEntry }) {
   );
 }
 
+function buildGraphProfileContentText(
+  name: string,
+  entityType: string,
+  relationshipTypes: string[],
+  properties: Record<string, unknown>,
+): string {
+  const summaryKeys = ["description", "summary", "value", "units", "designation", "frequency", "range"];
+  const summaryParts = summaryKeys
+    .map((key) => {
+      const value = properties[key];
+      if (value === undefined || value === null || value === "") return null;
+      return `${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`;
+    })
+    .filter(Boolean);
+
+  const lines = [
+    `${name} (${entityType})`,
+    relationshipTypes.length > 0 ? `Via: ${relationshipTypes.join(" -> ")}` : null,
+    ...summaryParts,
+  ].filter(Boolean);
+
+  return lines.join("\n");
+}
+
+function mapGraphProfileItemToResult(
+  item: {
+    name: string;
+    entity_type: string;
+    canonical_name?: string | null;
+    score?: number | null;
+    hop_count?: number | null;
+    relationship_types: string[];
+    properties: Record<string, unknown>;
+    aliases: string[];
+    evidence: Array<{
+      chunk_id?: string | null;
+      artifact_id?: string | null;
+      document_id?: string | null;
+      document_name?: string | null;
+      modality: string;
+      page_number?: number | null;
+      classification: string;
+      content_text?: string | null;
+    }>;
+  },
+  context: Record<string, unknown>,
+): QueryResultItem {
+  const primaryEvidence = item.evidence[0];
+  const derivedScore =
+    item.score ?? (item.hop_count != null ? Math.max(0.2, 1 / (item.hop_count + 1)) : 0.75);
+
+  return {
+    chunk_id: primaryEvidence?.chunk_id ?? undefined,
+    artifact_id: primaryEvidence?.artifact_id ?? undefined,
+    document_id: primaryEvidence?.document_id ?? undefined,
+    document_name: primaryEvidence?.document_name ?? undefined,
+    score: derivedScore,
+    modality: "graph_profile",
+    content_text: buildGraphProfileContentText(
+      item.name,
+      item.entity_type,
+      item.relationship_types,
+      item.properties,
+    ),
+    page_number: primaryEvidence?.page_number ?? undefined,
+    classification: primaryEvidence?.classification ?? "UNCLASSIFIED",
+    context: {
+      source: "graph_profile",
+      entity_name: item.name,
+      entity_type: item.entity_type,
+      canonical_name: item.canonical_name,
+      relationship_types: item.relationship_types,
+      hop_count: item.hop_count,
+      properties: item.properties,
+      aliases: item.aliases,
+      evidence: item.evidence,
+      ...context,
+    },
+  };
+}
+
 /* ---------- Result card ---------- */
 function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -476,10 +610,11 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const isGraphRAGGlobal = ctx?.source === "graphrag_global";
   const isGraphRAGDrift = ctx?.source === "graphrag_drift";
   const isGraphRAGBasic = ctx?.source === "graphrag_basic";
+  const isGraphProfile = ctx?.source === "graph_profile";
 
   // Show graph toggle only for GraphRAG results that contain entity/graph data
   const isGraphRAG = isGraphRAGLocal || isGraphRAGGlobal || isGraphRAGDrift || isGraphRAGBasic;
-  const graphEntities = isGraphRAG ? extractGraphEntities(ctx) : [];
+  const graphEntities = isGraphRAG || isGraphProfile ? extractGraphEntities(ctx) : [];
   const hasGraphData = graphEntities.length > 0;
   const provenance = (ctx?.provenance as ProvenanceEntry[] | undefined) || [];
 
@@ -538,6 +673,12 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
     provenanceLabel = "GraphRAG Drift: community-informed expansion";
   } else if (isGraphRAGBasic) {
     provenanceLabel = "GraphRAG Basic: text unit vector search";
+  } else if (isGraphProfile) {
+    const profileLabel = ctx?.profile_label as string | undefined;
+    const sectionLabel = ctx?.section_label as string | undefined;
+    provenanceLabel = sectionLabel
+      ? `Query Profile: ${profileLabel || "Graph Profile"} / ${sectionLabel}`
+      : `Query Profile: ${profileLabel || "Graph Profile"}`;
   }
 
   // Preview: first 300 chars always visible
@@ -670,6 +811,8 @@ export function QueryPage() {
   const [queryImage, setQueryImage] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [profileModes, setProfileModes] = useState<GraphProfileModePreset[]>([]);
+  const [activeRegistryName, setActiveRegistryName] = useState<string | null>(null);
   const [modalityFilter, setModalityFilter] = useState<ModalityFilter>("all");
   const [topK, setTopK] = useState(10);
   const [rerankerTopN, setRerankerTopN] = useState(20);
@@ -694,6 +837,8 @@ export function QueryPage() {
   const isGraphRAG = (strategy: QueryStrategy) =>
     strategy.startsWith("graphrag_");
 
+  const allModes = useMemo(() => [...BASE_MODES, ...profileModes], [profileModes]);
+
   // Fetch server defaults on mount
   useEffect(() => {
     getRetrievalSettings().then((s) => {
@@ -703,8 +848,36 @@ export function QueryPage() {
     }).catch(() => {});  // keep hardcoded defaults on failure
   }, []);
 
-  const selected = MODES[selectedIdx];
-  const showImageInput = selected.strategy === "hybrid";
+  useEffect(() => {
+    getActiveQueryProfiles()
+      .then((payload) => {
+        setActiveRegistryName(
+          payload.registry?.name
+            ?? (payload.exposed_profiles.length > 0 ? "Current ontology template" : null),
+        );
+        setProfileModes(payload.exposed_profiles.map(toGraphProfileMode));
+      })
+      .catch(() => {
+        setActiveRegistryName(null);
+        setProfileModes([]);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (selectedIdx >= allModes.length) {
+      setSelectedIdx(0);
+    }
+  }, [allModes.length, selectedIdx]);
+
+  const selected = allModes[selectedIdx] ?? BASE_MODES[0];
+  const retrievalSelected = isRetrievalMode(selected) ? selected : null;
+  const selectedIsRetrieval = retrievalSelected !== null;
+  const selectedIsGraphProfile = isGraphProfileMode(selected);
+  const selectedIsGraphRAG = retrievalSelected ? isGraphRAG(retrievalSelected.strategy) : false;
+  const showImageInput = retrievalSelected?.strategy === "hybrid";
+  const queryPlaceholder = selectedIsGraphProfile
+    ? (selected.placeholder || "e.g. exact entity name")
+    : "e.g. Patriot PAC-3 guidance computer specifications";
 
   const handleImageFile = useCallback((file: File) => {
     const reader = new FileReader();
@@ -730,7 +903,7 @@ export function QueryPage() {
     setImagePreview(null);
   };
 
-  const hasQuery = queryText.trim() || queryImage;
+  const hasQuery = selectedIsGraphProfile ? queryText.trim() : (queryText.trim() || queryImage);
 
   const handleQuery = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -750,11 +923,58 @@ export function QueryPage() {
     }
 
     try {
-      if (isGraphRAG(selected.strategy)) {
+      if (selectedIsGraphProfile) {
+        if (selected.profileKind === "dossier") {
+          const res = await searchQueryProfileDossier({
+            profile_id: selected.profileId,
+            query_text: queryText.trim(),
+            include_aliases: true,
+            include_evidence: true,
+            evidence_top_k: 3,
+            top_k: topK,
+          });
+          const flattened = res.sections.flatMap((section) =>
+            section.items.map((item) =>
+              mapGraphProfileItemToResult(item, {
+                profile_id: res.profile_id,
+                profile_label: res.profile_label,
+                registry_id: res.registry_id,
+                section_id: section.profile_id,
+                section_label: section.profile_label,
+                resolved_root: res.resolved_root,
+                root_aliases: res.aliases,
+              }),
+            ),
+          );
+          setResults(flattened);
+          setTotalResults(flattened.length);
+          setElapsed(Math.round(performance.now() - t0));
+        } else {
+          const res = await searchQueryProfileSection({
+            profile_id: selected.profileId,
+            query_text: queryText.trim(),
+            include_aliases: true,
+            include_evidence: true,
+            evidence_top_k: 3,
+            top_k: topK,
+          });
+          const flattened = res.items.map((item) =>
+            mapGraphProfileItemToResult(item, {
+              profile_id: res.profile_id,
+              profile_label: res.profile_label,
+              registry_id: res.registry_id,
+              resolved_root: res.resolved_root,
+            }),
+          );
+          setResults(flattened);
+          setTotalResults(flattened.length);
+          setElapsed(Math.round(performance.now() - t0));
+        }
+      } else if (retrievalSelected && isGraphRAG(retrievalSelected.strategy)) {
         // Async path: submit -> poll -> fetch
         const { job_id } = await submitGraphRAGQuery({
           query_text: queryText.trim() || undefined,
-          strategy: selected.strategy,
+          strategy: retrievalSelected.strategy,
           top_k: topK,
           min_confidence: minConfidence,
           include_context: true,
@@ -786,13 +1006,13 @@ export function QueryPage() {
         };
 
         pollTimeoutRef.current = setTimeout(() => void poll(), delay);
-      } else {
+      } else if (retrievalSelected) {
         // Sync path: basic & hybrid
         const res = await unifiedQuery({
           query_text: queryText.trim() || undefined,
           query_image: queryImage || undefined,
-          strategy: selected.strategy,
-          modality_filter: selected.strategy === "hybrid" ? modalityFilter : "all",
+          strategy: retrievalSelected.strategy,
+          modality_filter: retrievalSelected.strategy === "hybrid" ? modalityFilter : "all",
           top_k: topK,
           reranker_top_n: rerankerTopN,
           min_confidence: minConfidence,
@@ -806,7 +1026,7 @@ export function QueryPage() {
       setError(err instanceof Error ? err.message : "Query failed");
     } finally {
       // Only clear loading for sync path; async path clears in poll callback
-      if (!isGraphRAG(selected.strategy)) {
+      if (!selectedIsGraphRAG) {
         setLoading(false);
       }
     }
@@ -817,26 +1037,41 @@ export function QueryPage() {
       <div className="card card-body">
         <form onSubmit={(e) => void handleQuery(e)}>
           <div className="field">
-            <label>Query mode</label>
-            <div className="mode-selector" style={{ marginBottom: "1rem" }}>
-              {MODES.map((m, i) => (
-                <button
-                  key={m.strategy}
-                  type="button"
-                  className={`mode-btn${selectedIdx === i ? " active" : ""}`}
-                  title={m.description}
-                  onClick={() => {
-                    setSelectedIdx(i);
-                    setModalityFilter("all");
-                  }}
-                >
-                  {m.label}
-                </button>
-              ))}
+            <label htmlFor="query-mode-select">Query mode</label>
+            <select
+              id="query-mode-select"
+              value={selectedIdx}
+              onChange={(e) => {
+                setSelectedIdx(parseInt(e.target.value, 10));
+                setModalityFilter("all");
+              }}
+              style={{ marginBottom: "0.5rem" }}
+            >
+              <optgroup label="Retrieval">
+                {BASE_MODES.map((m, i) => (
+                  <option key={m.key} value={i}>
+                    {m.label} — {m.description}
+                  </option>
+                ))}
+              </optgroup>
+              {profileModes.length > 0 && (
+                <optgroup label={activeRegistryName ? `Query Profiles (${activeRegistryName})` : "Query Profiles"}>
+                  {profileModes.map((m, i) => (
+                    <option key={m.key} value={BASE_MODES.length + i}>
+                      {m.label} — {m.description}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+            <div className="text-xs text-muted" style={{ marginBottom: "1rem" }}>
+              {activeRegistryName
+                ? `Active query profile registry: ${activeRegistryName}`
+                : "No active query profile registry. Configure one to expose ontology-specific exact graph query modes."}
             </div>
 
             {/* Modality sub-filter for Multi-Modal */}
-            {selected.strategy === "hybrid" && (
+            {retrievalSelected?.strategy === "hybrid" && (
               <div className="mode-selector" style={{ marginBottom: "1rem" }}>
                 {MODALITY_OPTIONS.map((opt) => (
                   <button
@@ -900,11 +1135,13 @@ export function QueryPage() {
 
           <div className="field-row" style={{ alignItems: "flex-end" }}>
             <div className="field" style={{ flex: 1 }}>
-              <label htmlFor="query-input">Search query</label>
+              <label htmlFor="query-input">
+                {selectedIsGraphProfile ? "Root entity" : "Search query"}
+              </label>
               <input
                 id="query-input"
                 type="search"
-                placeholder="e.g. Patriot PAC-3 guidance computer specifications"
+                placeholder={queryPlaceholder}
                 value={queryText}
                 onChange={(e) => setQueryText(e.target.value)}
                 autoFocus
@@ -921,29 +1158,33 @@ export function QueryPage() {
                 onChange={(e) => setTopK(parseInt(e.target.value, 10) || 10)}
               />
             </div>
-            <div className="field" style={{ width: "110px", flexShrink: 0 }}>
-              <label htmlFor="reranker-top-n">Reranker Top N</label>
-              <input
-                id="reranker-top-n"
-                type="number"
-                min={1}
-                max={200}
-                value={rerankerTopN}
-                onChange={(e) => setRerankerTopN(parseInt(e.target.value, 10) || 20)}
-              />
-            </div>
-            <div className="field" style={{ width: "120px", flexShrink: 0 }}>
-              <label htmlFor="min-confidence">Min Confidence</label>
-              <input
-                id="min-confidence"
-                type="number"
-                min={0}
-                max={1}
-                step={0.05}
-                value={minConfidence}
-                onChange={(e) => setMinConfidence(parseFloat(e.target.value) || 0)}
-              />
-            </div>
+            {selectedIsRetrieval && !selectedIsGraphRAG && (
+              <div className="field" style={{ width: "110px", flexShrink: 0 }}>
+                <label htmlFor="reranker-top-n">Reranker Top N</label>
+                <input
+                  id="reranker-top-n"
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={rerankerTopN}
+                  onChange={(e) => setRerankerTopN(parseInt(e.target.value, 10) || 20)}
+                />
+              </div>
+            )}
+            {selectedIsRetrieval && (
+              <div className="field" style={{ width: "120px", flexShrink: 0 }}>
+                <label htmlFor="min-confidence">Min Confidence</label>
+                <input
+                  id="min-confidence"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={minConfidence}
+                  onChange={(e) => setMinConfidence(parseFloat(e.target.value) || 0)}
+                />
+              </div>
+            )}
             <div style={{ paddingBottom: "0" }}>
               <button
                 type="submit"

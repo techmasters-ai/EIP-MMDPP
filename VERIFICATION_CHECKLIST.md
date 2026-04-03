@@ -82,7 +82,7 @@
 | Post-extraction validation (_validate_entity_types, _validate_properties) | Invalid types/properties pollute graph | Extraction result validated before persistence; invalid properties dropped | 2.24 |
 | Entity alias resolution (exact -> alias -> fuzzy match -> new) | "S-75" and "SA-2 Dvina" are separate entities; expansion incomplete | Ingest 2 docs with alternate names; query returns unified entity | 2.9 |
 | Batch Neo4j writes via UNWIND | Per-node writes cause 100s of round-trips; ingest hangs | Large doc with 1000+ entities ingested in <30s | 2.16 |
-| Relationship upsert matches by name only (not entity type) | Entity-type mismatches silently drop relationships | Ingest doc; verify SPECIFIED_BY edges exist between systems and specifications | 2.31 |
+| Relationship upsert matches by (name, entity_type) pair | Cross-type name collisions create wrong edges | Ingest doc with same-name entities of different types; verify distinct nodes with correct edges | 2.34 |
 | SPECIFIED_BY prompt instructions in relationship extraction | Specification entities orphaned from parent systems | Ingest doc with specs; Neo4j has SPECIFIED_BY edges from system → spec | 2.31 |
 | Idempotent Neo4j writes (MERGE) | Re-ingest creates duplicate entities | Reingest same doc; entity count unchanged | 2.8 |
 | Classification preserved on conflict | Reingest overwrites human-curated classification | Set classification to SECRET, reingest; verify still SECRET | 2.23 |
@@ -112,6 +112,30 @@
 | DRIFT primer tolerant JSON parsing (5-strategy recovery) | DRIFT fails on think-tag-wrapped or truncated JSON from Ollama | Run DRIFT with Ollama thinking model; primer parses JSON despite reasoning wrappers | 2.33 |
 | Async GraphRAG queries (submit/poll/fetch via Celery) | Long queries timeout in browser | Submit query; poll status; fetch results asynchronously | 2.29 |
 | GraphRAG context provenance (all 4 search types) | GraphRAG responses lack source traceability | Run GraphRAG Local query; provenance array contains community reports with entities + source documents | 2.32 |
+
+---
+
+## 3b. ONTOLOGY REGISTRY & QUERY PROFILES
+
+| Feature | What breaks without it | Verify | Phase |
+|---|---|---|---|
+| Active registry ontology as shared backend loader | Backend ignores custom ontology; uses only repo YAML | Create registry with custom ontology, activate; `load_ontology()` returns registry ontology | 2.34 |
+| Ontology cache TTL (5s) + explicit invalidation | Stale ontology served after registry update | Update active registry ontology; within 1s new ontology is returned by `load_ontology()` | 2.34 |
+| Scoring weights cache invalidation on ontology change | Retrieval scoring uses stale weights after ontology switch | Activate registry with different `scoring_weights`; next retrieval uses new weights | 2.34 |
+| Docling-Graph receives ontology_definition per request | Extraction uses startup YAML instead of active registry | Activate registry; ingest doc; Docling-Graph logs show registry ontology version | 2.34 |
+| Docling-Graph RuntimeExtractionContext caching | Prompt rebuilding on every request (performance) | Same ontology sent repeatedly; second call uses cached context | 2.34 |
+| Query profile registry CRUD (create, list, get, update, activate) | Cannot manage ontology registries | Create registry via UI; list shows it; activate toggles `is_active` | 2.34 |
+| Per-profile CRUD (append, update, delete) | Cannot manage individual query profiles | Add section profile; update its traversals; delete it | 2.34 |
+| Dossier profile references validated | Dossier references non-existent section; search fails | Create dossier with missing `section_profile_ids`; API returns 400 | 2.34 |
+| Section profile deletion blocked if dossier references it | Deleting section breaks referencing dossier silently | Delete section referenced by dossier; API returns 400 | 2.34 |
+| Section search (POST /v1/query-profiles/search/section) | Cannot execute single-profile graph traversal | Search with section profile_id + entity name; receive traversal results | 2.34 |
+| Dossier search (POST /v1/query-profiles/search/dossier) | Cannot execute multi-section compound query | Search with dossier profile_id; receive sections with items | 2.34 |
+| Root entity resolution (alias + fulltext) | Search for entity alias returns 404 | Search "SA-2" when canonical name is "S-75 Dvina"; entity resolves correctly | 2.34 |
+| Query profile modes in Search page dropdown | Custom query profiles not accessible from search UI | Activate registry with exposed profiles; Search page dropdown shows them | 2.34 |
+| Profiles tab disabled until active registry exists | User creates profiles without ontology context | No active registry; Profiles tab greyed out or empty state shown | 2.34 |
+| Starter profiles seeded from repository ontology | User must build profiles from scratch | Click seed button; pre-built section/dossier profiles populate | 2.34 |
+| Neo4j composite index (entity_name_type_lookup) | Slow (name, entity_type) lookups on large graphs | `ensure_indexes` creates composite index; relationship queries use it | 2.34 |
+| Extraction groups from ontology (with custom catch-all) | Custom entity types not grouped for extraction | Ontology with custom types; Docling-Graph groups them (custom bucket for uncategorized) | 2.34 |
 
 ---
 
@@ -176,7 +200,7 @@
 
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| 6-mode query selector (basic, hybrid, 4x graphrag) | User stuck with default strategy | Query page has mode selector; each runs correct query | 2.11 |
+| Query mode dropdown (6 retrieval modes + dynamic query profiles) | User stuck with default strategy | Query page dropdown shows all modes in grouped optgroups; each runs correct query | 2.11, 2.34 |
 | Modality sub-filter (text, image, all) for hybrid | Cannot isolate result types | Filter visible when hybrid selected; affects results | 2.11 |
 | Live status polling with terminal state detection | UI polls forever; wastes resources | Polling stops at COMPLETE/FAILED/PARTIAL_COMPLETE/ERROR | 2.11 |
 | Terminal status badges (green/red/amber) | Cannot distinguish success from failure | Color-coded badges for all terminal states | 2.11 |
@@ -215,6 +239,9 @@ These features have broken before and should be tested carefully after any chang
 13. **Ontology subgraph orphans** (2.31) — Specification entities must connect to parent systems via SPECIFIED_BY. Test with "missile" search; click graph circle; verify multi-node subgraph.
 14. **GraphRAG context provenance** (2.32) — Depends on communities.parquet having entity_ids/relationship_ids. Test all 4 strategies; verify provenance array populated with source_documents.
 15. **DRIFT primer JSON tolerance** (2.33) — Ollama thinking models wrap JSON in reasoning tags. DRIFT must parse through wrappers; failures must surface as errors, not empty results.
+16. **Neo4j (name, entity_type) matching** (2.34) — Relationship upsert now matches on both name and entity_type. Existing graphs with inconsistent type casing may need re-extraction.
+17. **Ontology cache invalidation chain** (2.34) — `invalidate_ontology_cache()` must clear both the ontology TTL cache and the scoring weights LRU cache. Test by switching active registry and verifying new weights take effect.
+18. **Query profile dossier search** (2.34) — Dossier search compiles multi-section Cypher unions. Test with profiles that have multiple traversals with different hop ranges.
 
 ---
 
@@ -238,7 +265,7 @@ These features have broken before and should be tested carefully after any chang
 5. Verify standalone image upload + viewer
 
 ### Regression Test (60 min)
-Run against all 14 Known Fragile Features listed above.
+Run against all 18 Known Fragile Features listed above.
 
 ---
 
