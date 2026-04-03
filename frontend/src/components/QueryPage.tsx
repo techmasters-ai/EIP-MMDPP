@@ -292,89 +292,173 @@ function extractGraphEntities(ctx: Record<string, unknown> | undefined): string[
   return [];
 }
 
-/* ---------- Citation components ---------- */
+/* ---------- Provenance types and components ---------- */
 
-/** Clickable citation marker that scrolls to the matching source entry. */
-function CitationLink({ num }: { num: number }) {
-  return (
-    <a
-      href={`#citation-${num}`}
-      className="citation-link"
-      title={`Source [${num}]`}
-      onClick={(e) => {
-        e.preventDefault();
-        document.getElementById(`citation-${num}`)?.scrollIntoView({ behavior: "smooth" });
-      }}
-    >
-      [{num}]
-    </a>
-  );
+interface ProvenanceSourceDoc {
+  document_id: string;
+  document_title: string;
 }
 
-interface SourceEntry {
-  citation: number;
-  entities: Array<{ id: number; title: string; type: string; description: string }>;
-  relationships: Array<{ id: number; source: string; target: string; description: string }>;
-  source_documents: Array<{ document_id: string; document_title: string; source_text: string }>;
+interface ProvenanceEntity {
+  id: number;
+  title: string;
+  type: string;
+  description: string;
+  source_documents: ProvenanceSourceDoc[];
 }
 
-function SourcesPanel({ sources }: { sources: SourceEntry[] }) {
-  if (!sources || sources.length === 0) return null;
+interface ProvenanceRelationship {
+  id: number;
+  source: string;
+  target: string;
+  description: string;
+  source_documents: ProvenanceSourceDoc[];
+}
+
+interface ProvenanceTextUnit {
+  id: number;
+  text: string;
+  source_documents: ProvenanceSourceDoc[];
+}
+
+interface ProvenanceCovariate {
+  id: number;
+  description: string;
+  source_documents: ProvenanceSourceDoc[];
+}
+
+interface ProvenanceEntry {
+  report_id: string | null;
+  report_title: string | null;
+  report_content: string | null;
+  entities: ProvenanceEntity[];
+  relationships: ProvenanceRelationship[];
+  text_units: ProvenanceTextUnit[];
+  covariates: ProvenanceCovariate[];
+}
+
+function DocBadges({ docs }: { docs: ProvenanceSourceDoc[] }) {
+  if (!docs || docs.length === 0) return null;
   return (
-    <div className="sources-panel" style={{
-      marginTop: "1rem",
-      borderTop: "1px solid var(--color-border)",
-      paddingTop: "0.75rem",
-    }}>
-      <div style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Sources</div>
-      {sources.map((s) => (
-        <div key={s.citation} id={`citation-${s.citation}`} className="source-entry" style={{
-          marginBottom: "0.75rem",
-          padding: "0.5rem",
-          background: "var(--color-surface-2)",
-          borderRadius: "var(--radius)",
-          fontSize: "0.85rem",
-        }}>
-          <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>[{s.citation}]</div>
-          {s.entities.map((e) => (
-            <div key={e.id} style={{ marginBottom: "0.25rem" }}>
-              <span className="badge badge-info" style={{ marginRight: "0.25rem" }}>{e.type}</span>
-              <strong>{e.title}</strong>
-              {e.description && <span className="text-muted"> &mdash; {e.description.slice(0, 150)}</span>}
-            </div>
-          ))}
-          {s.relationships.map((r) => (
-            <div key={r.id} className="text-sm text-muted" style={{ marginBottom: "0.25rem" }}>
-              {r.source} &rarr; {r.target}: {r.description.slice(0, 150)}
-            </div>
-          ))}
-          {s.source_documents.map((d) => (
-            <div key={d.document_id} className="text-xs text-muted" style={{ marginTop: "0.25rem" }}>
-              {d.document_title}
-              {d.source_text && (
-                <pre style={{ margin: "0.25rem 0 0", whiteSpace: "pre-wrap", fontSize: "0.75rem" }}>
-                  {d.source_text.slice(0, 300)}{d.source_text.length > 300 ? "..." : ""}
-                </pre>
-              )}
-            </div>
-          ))}
-        </div>
+    <div className="prov-doc-badges">
+      {docs.map((d) => (
+        <span key={d.document_id} className="prov-doc-badge" title={d.document_id}>
+          {d.document_title || d.document_id}
+        </span>
       ))}
     </div>
   );
 }
 
-/** Replace [n] citation markers in text with clickable CitationLink elements. */
-function renderWithCitations(text: string, hasSources: boolean): React.ReactNode {
-  if (!hasSources) return text;
-  const parts = text.split(/(\[\d+\])/g);
-  return parts.map((part, i) => {
-    const match = part.match(/^\[(\d+)\]$/);
-    if (match) {
-      return <CitationLink key={i} num={parseInt(match[1], 10)} />;
-    }
-    return part;
-  });
+function CollapsibleSection({ title, count, children }: {
+  title: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  if (count === 0) return null;
+  return (
+    <div className="prov-section">
+      <button className="prov-section-toggle" onClick={() => setOpen((v) => !v)}>
+        {open ? "\u25BC" : "\u25B6"} {title} ({count})
+      </button>
+      {open && <div className="prov-section-content">{children}</div>}
+    </div>
+  );
+}
+
+function ProvenancePanel({ provenance }: { provenance: ProvenanceEntry[] }) {
+  const [open, setOpen] = useState(false);
+
+  if (!provenance || provenance.length === 0) return null;
+
+  const reportCount = provenance.filter((p) => p.report_id).length;
+  const label = reportCount > 0
+    ? `Provenance (${reportCount} community report${reportCount !== 1 ? "s" : ""})`
+    : "Provenance";
+
+  return (
+    <div className="provenance-panel">
+      <button
+        className="prov-toggle"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "\u25BC" : "\u25B6"} {label}
+      </button>
+      {open && provenance.map((entry, i) => (
+        <ProvenanceReportEntry key={entry.report_id || i} entry={entry} />
+      ))}
+    </div>
+  );
+}
+
+function ProvenanceReportEntry({ entry }: { entry: ProvenanceEntry }) {
+  const [open, setOpen] = useState(false);
+  const [contentOpen, setContentOpen] = useState(false);
+
+  return (
+    <div className="prov-report">
+      <button className="prov-report-toggle" onClick={() => setOpen((v) => !v)}>
+        {open ? "\u25BC" : "\u25B6"} {entry.report_title || "Source Texts"}
+      </button>
+      {open && (
+        <div className="prov-report-content">
+          {entry.report_content && (
+            <div className="prov-section">
+              <button className="prov-section-toggle" onClick={() => setContentOpen((v) => !v)}>
+                {contentOpen ? "\u25BC" : "\u25B6"} Report Content
+              </button>
+              {contentOpen && (
+                <pre className="prov-report-text">{entry.report_content}</pre>
+              )}
+            </div>
+          )}
+
+          <CollapsibleSection title="Entities" count={entry.entities.length}>
+            {entry.entities.map((e) => (
+              <div key={e.id} className="prov-item">
+                <div>
+                  <span className="badge badge-info" style={{ marginRight: "0.25rem" }}>{e.type}</span>
+                  <strong>{e.title}</strong>
+                  {e.description && <span className="text-muted"> &mdash; {e.description.slice(0, 150)}</span>}
+                </div>
+                <DocBadges docs={e.source_documents} />
+              </div>
+            ))}
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Relationships" count={entry.relationships.length}>
+            {entry.relationships.map((r) => (
+              <div key={r.id} className="prov-item">
+                <div className="text-sm">
+                  {r.source} &rarr; {r.target}: {r.description.slice(0, 150)}
+                </div>
+                <DocBadges docs={r.source_documents} />
+              </div>
+            ))}
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Source Texts" count={entry.text_units.length}>
+            {entry.text_units.map((t) => (
+              <div key={t.id} className="prov-item">
+                <pre className="prov-text-chunk">{t.text}</pre>
+                <DocBadges docs={t.source_documents} />
+              </div>
+            ))}
+          </CollapsibleSection>
+
+          <CollapsibleSection title="Covariates" count={entry.covariates.length}>
+            {entry.covariates.map((c) => (
+              <div key={c.id} className="prov-item">
+                <div className="text-sm">{c.description}</div>
+                <DocBadges docs={c.source_documents} />
+              </div>
+            ))}
+          </CollapsibleSection>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ---------- Result card ---------- */
@@ -397,8 +481,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const isGraphRAG = isGraphRAGLocal || isGraphRAGGlobal || isGraphRAGDrift || isGraphRAGBasic;
   const graphEntities = isGraphRAG ? extractGraphEntities(ctx) : [];
   const hasGraphData = graphEntities.length > 0;
-  const sources = (ctx?.sources as SourceEntry[] | undefined) || [];
-  const hasSources = sources.length > 0;
+  const provenance = (ctx?.provenance as ProvenanceEntry[] | undefined) || [];
 
   const handleToggleGraph = async () => {
     if (graphOpen) {
@@ -529,9 +612,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
 
       {/* Text preview — always visible */}
       {preview && (
-        <p className="result-text">
-          {isGraphRAG && hasSources ? renderWithCitations(preview, true) : preview}
-        </p>
+        <p className="result-text">{preview}</p>
       )}
 
       {/* GraphRAG graph view (when toggled and entity data present) */}
@@ -573,12 +654,10 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
           {displayText && displayText.length > previewLen && (
             <div style={{ marginBottom: "0.5rem" }}>
               <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Full Text</div>
-              <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>
-                {isGraphRAG && hasSources ? renderWithCitations(displayText, true) : displayText}
-              </p>
+              <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>{displayText}</p>
             </div>
           )}
-          {isGraphRAG && hasSources && <SourcesPanel sources={sources} />}
+          {isGraphRAG && provenance.length > 0 && <ProvenancePanel provenance={provenance} />}
           <MetadataDetail item={item} />
         </div>
       )}

@@ -759,19 +759,76 @@ input:focus, select:focus, textarea:focus {
   overflow-x: auto;
 }
 
-/* ---------- Citation links ---------- */
-.citation-link {
-  color: var(--color-primary, #2A5A8A);
-  font-weight: 600;
-  font-size: 0.8em;
-  text-decoration: none;
-  vertical-align: super;
+/* ---------- Provenance panel ---------- */
+.provenance-panel {
+  margin-top: 1rem;
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.75rem;
+}
+.prov-toggle,
+.prov-report-toggle,
+.prov-section-toggle {
+  background: none;
+  border: none;
   cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.25rem 0;
+  color: inherit;
+  text-align: left;
+  width: 100%;
 }
-.citation-link:hover {
-  text-decoration: underline;
+.prov-toggle:hover,
+.prov-report-toggle:hover,
+.prov-section-toggle:hover {
+  color: var(--color-primary, #2A5A8A);
 }
-.source-entry:target {
-  outline: 2px solid var(--color-primary, #2A5A8A);
-  outline-offset: 2px;
+.prov-report {
+  margin-left: 0.5rem;
+  margin-top: 0.25rem;
+}
+.prov-report-content {
+  margin-left: 1rem;
+}
+.prov-section {
+  margin-top: 0.25rem;
+}
+.prov-section-content {
+  margin-left: 0.75rem;
+}
+.prov-item {
+  margin-bottom: 0.5rem;
+  padding: 0.375rem;
+  background: var(--color-surface-2);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+.prov-doc-badges {
+  margin-top: 0.25rem;
+}
+.prov-doc-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: var(--color-primary, #2A5A8A);
+  background: var(--color-surface-1, #f0f4f8);
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  margin-right: 0.25rem;
+}
+.prov-report-text {
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  background: var(--color-surface-2);
+  padding: 0.75rem;
+  border-radius: var(--radius);
+  margin: 0.25rem 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.prov-text-chunk {
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
 }
