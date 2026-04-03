@@ -11,10 +11,41 @@ Current patches:
 
 import inspect
 import logging
+from typing import Any
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_content(model_response: Any) -> str:
+    """Extract usable text from a graphrag_llm completion response.
+
+    Thinking models (Ollama with think=medium/high) may leave ``content``
+    empty and place the answer in a reasoning field instead.  Mirrors the
+    fallback chain in docling-graph's ``_extract_llm_content``.
+    """
+    raw = model_response.content or ""
+    if raw.strip():
+        return raw
+
+    msg = model_response.choices[0].message
+    for attr in ("reasoning_content", "reasoning", "thinking"):
+        val = getattr(msg, attr, None) or ""
+        if isinstance(val, str) and val.strip():
+            logger.info(
+                "DRIFT primer: content empty — falling back to %s (%d chars)",
+                attr, len(val),
+            )
+            return val
+
+    blocks = getattr(msg, "thinking_blocks", None)
+    if blocks:
+        logger.info("DRIFT primer: content empty — falling back to thinking_blocks")
+        return str(blocks)
+
+    return ""
+
 
 _PATCHES_INSTALLED = False
 
@@ -106,7 +137,7 @@ def _patch_drift_primer() -> None:
             max_completion_tokens=self.config.primer_llm_max_tokens,
         )
 
-        raw = model_response.content or ""
+        raw = _extract_content(model_response)
 
         parsed = parse_llm_json_loose(raw)
         if not isinstance(parsed, dict):

@@ -102,6 +102,70 @@ class TestDriftPrimerPatch:
             assert DRIFTPrimer.decompose_query is original
 
 
+class TestExtractContent:
+    """Tests for _extract_content reasoning-field fallback."""
+
+    def _make_response(self, content=None, reasoning_content=None,
+                       reasoning=None, thinking=None, thinking_blocks=None):
+        msg = MagicMock()
+        msg.content = content
+        msg.reasoning_content = reasoning_content
+        msg.reasoning = reasoning
+        msg.thinking = thinking
+        msg.thinking_blocks = thinking_blocks
+        resp = MagicMock()
+        resp.content = content or ""
+        resp.choices = [MagicMock()]
+        resp.choices[0].message = msg
+        return resp
+
+    def test_returns_content_when_present(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response(content='{"query": "test"}')
+        assert _extract_content(resp) == '{"query": "test"}'
+
+    def test_falls_back_to_reasoning_content(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response(content=None, reasoning_content='{"query": "test"}')
+        assert _extract_content(resp) == '{"query": "test"}'
+
+    def test_falls_back_to_reasoning(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response(content=None, reasoning='{"query": "test"}')
+        assert _extract_content(resp) == '{"query": "test"}'
+
+    def test_falls_back_to_thinking(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response(content=None, thinking='{"query": "test"}')
+        assert _extract_content(resp) == '{"query": "test"}'
+
+    def test_falls_back_to_thinking_blocks(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response(content=None, thinking_blocks=[{"type": "thinking", "thinking": "data"}])
+        result = _extract_content(resp)
+        assert "thinking" in result
+
+    def test_returns_empty_when_all_none(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response()
+        assert _extract_content(resp) == ""
+
+    def test_prefers_content_over_reasoning(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response(
+            content='{"from": "content"}',
+            reasoning_content='{"from": "reasoning"}',
+        )
+        assert _extract_content(resp) == '{"from": "content"}'
+
+    def test_whitespace_only_content_falls_back(self):
+        from app.services.graphrag_runtime_patches import _extract_content
+        resp = self._make_response(content="   \n  ", reasoning_content='{"query": "test"}')
+        # model_response.content returns "   \n  " which is truthy but whitespace-only
+        resp.content = "   \n  "
+        assert _extract_content(resp) == '{"query": "test"}'
+
+
 class TestDriftPrimerParseError:
     def test_is_exception(self):
         from app.services.graphrag_runtime_patches import DriftPrimerParseError
