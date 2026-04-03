@@ -528,11 +528,8 @@ def local_search(query: str) -> dict:
             config, data, query, settings.graphrag_community_level,
             settings.graphrag_local_response_type,
         )
-        from app.services.graphrag_citations import process_citations
-        clean_response, sources = process_citations(response, data, "graphrag_local")
         return {
-            "response": clean_response,
-            "sources": sources,
+            "response": response,
             "context": _serialize_context(context),
         }
     except Exception:
@@ -553,11 +550,8 @@ def global_search(query: str) -> dict:
             settings.graphrag_global_response_type,
             settings.graphrag_dynamic_community_selection,
         )
-        from app.services.graphrag_citations import process_citations
-        clean_response, sources = process_citations(response, data, "graphrag_global")
         return {
-            "response": clean_response,
-            "sources": sources,
+            "response": response,
             "context": _serialize_context(context),
         }
     except Exception:
@@ -579,11 +573,8 @@ def drift_search(query: str) -> dict:
             config, data, query, settings.graphrag_community_level,
             settings.graphrag_drift_response_type,
         )
-        from app.services.graphrag_citations import process_citations
-        clean_response, sources = process_citations(response, data, "graphrag_drift")
         return {
-            "response": clean_response,
-            "sources": sources,
+            "response": response,
             "context": _serialize_context(context),
         }
     except DriftPrimerParseError as exc:
@@ -613,11 +604,8 @@ def basic_search(query: str) -> dict:
         response, context = _run_basic_search(
             config, data, query, settings.graphrag_basic_response_type,
         )
-        from app.services.graphrag_citations import process_citations
-        clean_response, sources = process_citations(response, data, "graphrag_basic")
         return {
-            "response": clean_response,
-            "sources": sources,
+            "response": response,
             "context": _serialize_context(context),
         }
     except Exception:
