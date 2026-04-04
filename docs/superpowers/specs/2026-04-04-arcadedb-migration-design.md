@@ -226,7 +226,7 @@ community_runs: id, status (PENDING|RUNNING|COMPLETE|FAILED), trigger (SCHEDULED
 
 ### Community detection flow
 
-1. Run Louvain on full graph (ArcadeDB native algo, seconds for 100K+ nodes)
+1. Run community detection algorithm (Louvain or Leiden per COMMUNITY_DETECTION_ALGORITHM setting) on full graph (ArcadeDB native, seconds for 100K+ nodes)
 2. For each community, fetch member entities
 3. Compute membership_hash = SHA-256(sorted member names)
 4. Diff against stored reports: unchanged hash = skip, changed/new = regenerate, dissolved = delete
@@ -379,7 +379,7 @@ Added: community-detection
 
 ## Section 7: Files Changed
 
-### Files deleted (35 files)
+### Files deleted (34 files + 1 directory)
 
 Services (8): app/services/graphrag_service.py, app/services/graphrag_config.py, app/services/graphrag_bridge.py, app/services/graphrag_prompts.py, app/services/graphrag_runtime_patches.py, app/services/graphrag_provenance.py, app/services/neo4j_graph.py, app/services/neo4j_dossier_service.py
 
