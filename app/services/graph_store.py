@@ -1,0 +1,404 @@
+"""Backend-agnostic GraphStore Protocol.
+
+All graph + vector operations in the application flow through this Protocol,
+allowing graph backends (Neo4j, ArcadeDB, etc.) to be swapped without
+touching the rest of the codebase.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProvenanceMetadata:
+    """Provenance information linking a graph element back to a source document."""
+
+    document_id: str
+    page_numbers: list[int] = field(default_factory=list)
+    upload_datetime: str | None = None
+    document_datetime: str | None = None
+
+
+@dataclass
+class NodeRecord:
+    """A graph node to be created or updated."""
+
+    entity_type: str
+    identity_fields: dict[str, Any]
+    name: str
+    properties: dict[str, Any] = field(default_factory=dict)
+    extraction_confidence: float = 1.0
+
+
+@dataclass
+class RelationshipRecord:
+    """A directed relationship between two graph nodes."""
+
+    from_type: str
+    from_identity: dict[str, Any]
+    to_type: str
+    to_identity: dict[str, Any]
+    rel_type: str
+    properties: dict[str, Any] = field(default_factory=dict)
+    extraction_confidence: float = 1.0
+
+
+@dataclass
+class GraphEntityResult:
+    """A graph entity returned from a query."""
+
+    node_id: str
+    name: str
+    entity_type: str
+    canonical_name: str | None = None
+    extraction_confidence: float | None = None
+    properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SchemaSyncReport:
+    """Summary of a schema-sync operation."""
+
+    types_created: int = 0
+    properties_added: int = 0
+    indexes_created: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class GraphStore(Protocol):
+    """Abstract interface for graph + vector storage backends.
+
+    Implementations must provide both async methods (for FastAPI request
+    handlers) and sync variants (for Celery workers and other sync contexts).
+    """
+
+    # ------------------------------------------------------------------
+    # Node operations
+    # ------------------------------------------------------------------
+
+    async def upsert_node(
+        self,
+        record: NodeRecord,
+        provenance: ProvenanceMetadata | None = None,
+    ) -> str:
+        """Upsert a single node and return its backend ID."""
+        ...
+
+    async def upsert_nodes_batch(
+        self,
+        records: list[NodeRecord],
+        provenance: ProvenanceMetadata | None = None,
+    ) -> list[str]:
+        """Upsert multiple nodes and return their backend IDs."""
+        ...
+
+    async def upsert_document_node(
+        self,
+        document_id: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Upsert the root Document node for a document and return its ID."""
+        ...
+
+    async def create_text_chunk_vertex(
+        self,
+        chunk_id: str,
+        text: str,
+        document_id: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Create a TextChunk vertex and return its backend ID."""
+        ...
+
+    async def create_image_chunk_vertex(
+        self,
+        chunk_id: str,
+        document_id: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Create an ImageChunk vertex and return its backend ID."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Edge / relationship operations
+    # ------------------------------------------------------------------
+
+    async def upsert_relationship(
+        self,
+        record: RelationshipRecord,
+        provenance: ProvenanceMetadata | None = None,
+    ) -> str:
+        """Upsert a single relationship and return its backend ID."""
+        ...
+
+    async def upsert_relationships_batch(
+        self,
+        records: list[RelationshipRecord],
+        provenance: ProvenanceMetadata | None = None,
+    ) -> list[str]:
+        """Upsert multiple relationships and return their backend IDs."""
+        ...
+
+    async def create_structural_edge(
+        self,
+        from_id: str,
+        to_id: str,
+        rel_type: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Create a structural edge (e.g. EXTRACTED_FROM) and return its ID."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Query operations
+    # ------------------------------------------------------------------
+
+    async def search_nodes(
+        self,
+        entity_type: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 20,
+    ) -> list[GraphEntityResult]:
+        """Search for nodes matching optional filters."""
+        ...
+
+    async def resolve_root_entity(
+        self,
+        name: str,
+        entity_type: str | None = None,
+    ) -> GraphEntityResult | None:
+        """Resolve a name to its canonical root entity."""
+        ...
+
+    async def fulltext_search(
+        self,
+        query: str,
+        entity_types: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[GraphEntityResult]:
+        """Full-text search across node properties."""
+        ...
+
+    async def get_neighborhood(
+        self,
+        node_id: str,
+        depth: int = 1,
+        rel_types: list[str] | None = None,
+    ) -> list[GraphEntityResult]:
+        """Return nodes in the k-hop neighbourhood of *node_id*."""
+        ...
+
+    async def get_neighborhood_graph(
+        self,
+        node_id: str,
+        depth: int = 1,
+        rel_types: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return neighbourhood as a {nodes, edges} dict."""
+        ...
+
+    async def get_ontology_linked_chunks(
+        self,
+        node_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return text/image chunks that mention *node_id* via ontology edges."""
+        ...
+
+    async def get_graph_stats(self) -> dict[str, Any]:
+        """Return backend-level graph statistics."""
+        ...
+
+    async def get_relationship_count(
+        self,
+        rel_type: str | None = None,
+    ) -> int:
+        """Return the number of relationships, optionally filtered by type."""
+        ...
+
+    async def get_co_extracted_entities(
+        self,
+        node_id: str,
+        limit: int = 10,
+    ) -> list[GraphEntityResult]:
+        """Return entities that co-occur with *node_id* in the same source chunk."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Alias operations
+    # ------------------------------------------------------------------
+
+    async def create_alias(
+        self,
+        node_id: str,
+        alias: str,
+    ) -> None:
+        """Attach an alias string to an existing node."""
+        ...
+
+    async def search_by_alias(
+        self,
+        alias: str,
+        entity_type: str | None = None,
+    ) -> list[GraphEntityResult]:
+        """Find nodes by alias."""
+        ...
+
+    async def set_canonical_name(
+        self,
+        node_id: str,
+        canonical_name: str,
+    ) -> None:
+        """Set the canonical name on a node."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Vector operations
+    # ------------------------------------------------------------------
+
+    async def vector_search(
+        self,
+        embedding: list[float],
+        entity_types: list[str] | None = None,
+        limit: int = 10,
+        score_threshold: float | None = None,
+    ) -> list[GraphEntityResult]:
+        """ANN search over node embeddings."""
+        ...
+
+    async def set_vertex_embedding(
+        self,
+        node_id: str,
+        embedding: list[float],
+        model_name: str | None = None,
+    ) -> None:
+        """Attach a vector embedding to a node."""
+        ...
+
+    async def cross_model_search(
+        self,
+        text_embedding: list[float],
+        image_embedding: list[float],
+        limit: int = 10,
+    ) -> list[GraphEntityResult]:
+        """Search using both text and image embeddings simultaneously."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Lifecycle operations
+    # ------------------------------------------------------------------
+
+    async def delete_document_graph(
+        self,
+        document_id: str,
+    ) -> int:
+        """Delete all graph elements associated with *document_id*.
+
+        Returns the number of elements deleted.
+        """
+        ...
+
+    async def sync_schema(self) -> SchemaSyncReport:
+        """Ensure the backend schema matches the current ontology."""
+        ...
+
+    async def ensure_indexes(self) -> None:
+        """Create any missing indexes required for efficient queries."""
+        ...
+
+    async def ensure_ready(self) -> None:
+        """Block until the backend is ready to accept operations."""
+        ...
+
+    # ------------------------------------------------------------------
+    # Sync variants (for Celery workers and other sync contexts)
+    # ------------------------------------------------------------------
+
+    def upsert_node_sync(
+        self,
+        record: NodeRecord,
+        provenance: ProvenanceMetadata | None = None,
+    ) -> str:
+        """Synchronous variant of :meth:`upsert_node`."""
+        ...
+
+    def upsert_nodes_batch_sync(
+        self,
+        records: list[NodeRecord],
+        provenance: ProvenanceMetadata | None = None,
+    ) -> list[str]:
+        """Synchronous variant of :meth:`upsert_nodes_batch`."""
+        ...
+
+    def upsert_relationships_batch_sync(
+        self,
+        records: list[RelationshipRecord],
+        provenance: ProvenanceMetadata | None = None,
+    ) -> list[str]:
+        """Synchronous variant of :meth:`upsert_relationships_batch`."""
+        ...
+
+    def create_structural_edge_sync(
+        self,
+        from_id: str,
+        to_id: str,
+        rel_type: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Synchronous variant of :meth:`create_structural_edge`."""
+        ...
+
+    def set_vertex_embedding_sync(
+        self,
+        node_id: str,
+        embedding: list[float],
+        model_name: str | None = None,
+    ) -> None:
+        """Synchronous variant of :meth:`set_vertex_embedding`."""
+        ...
+
+    def create_text_chunk_vertex_sync(
+        self,
+        chunk_id: str,
+        text: str,
+        document_id: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Synchronous variant of :meth:`create_text_chunk_vertex`."""
+        ...
+
+    def create_image_chunk_vertex_sync(
+        self,
+        chunk_id: str,
+        document_id: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Synchronous variant of :meth:`create_image_chunk_vertex`."""
+        ...
+
+    def delete_document_graph_sync(
+        self,
+        document_id: str,
+    ) -> int:
+        """Synchronous variant of :meth:`delete_document_graph`."""
+        ...
+
+    def ensure_ready_sync(self) -> None:
+        """Synchronous variant of :meth:`ensure_ready`."""
+        ...
+
+    def close_sync(self) -> None:
+        """Release any held resources (connections, thread pools, etc.)."""
+        ...
