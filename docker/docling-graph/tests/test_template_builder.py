@@ -133,3 +133,63 @@ class TestBuildTemplates:
         model_cls = templates["RADAR_SYSTEM"]
         instance = model_cls(system_name="Tombstone")
         assert instance.system_name == "Tombstone"
+
+
+class TestEdgeFields:
+    def test_radar_system_has_installed_on_edge(self):
+        from app.template_builder import build_templates_with_edges
+        ontology = _load_ontology()
+        templates = build_templates_with_edges(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        assert "installed_on" in model_cls.model_fields
+        field = model_cls.model_fields["installed_on"]
+        assert field.json_schema_extra == {"edge_label": "INSTALLED_ON"}
+
+    def test_radar_system_has_multiple_edges(self):
+        from app.template_builder import build_templates_with_edges
+        ontology = _load_ontology()
+        templates = build_templates_with_edges(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        fields = model_cls.model_fields
+        # Multiple edges from validation_matrix
+        assert "has_antenna" in fields
+        assert "uses_waveform" in fields
+        assert "has_performance" in fields
+
+    def test_one_to_many_edge_is_list(self):
+        from app.template_builder import build_templates_with_edges
+        ontology = _load_ontology()
+        templates = build_templates_with_edges(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        field = model_cls.model_fields["has_antenna"]
+        # one_to_many → default_factory=list
+        assert field.default_factory is not None
+        assert field.default_factory() == []
+
+    def test_one_to_one_edge_is_optional(self):
+        from app.template_builder import build_templates_with_edges
+        ontology = _load_ontology()
+        templates = build_templates_with_edges(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        # HAS_PROCESSING_CHAIN is one_to_one → Optional (not required)
+        field = model_cls.model_fields["has_processing_chain"]
+        assert not field.is_required()
+        assert field.default is None
+
+    def test_no_edge_for_invalid_source(self):
+        from app.template_builder import build_templates_with_edges
+        ontology = _load_ontology()
+        templates = build_templates_with_edges(ontology)
+        # IF_AMPLIFIER has PART_OF → RECEIVER in validation_matrix
+        model_cls = templates["IF_AMPLIFIER"]
+        assert "part_of" in model_cls.model_fields
+
+    def test_specification_has_specified_by_edge(self):
+        from app.template_builder import build_templates_with_edges
+        ontology = _load_ontology()
+        templates = build_templates_with_edges(ontology)
+        # EQUIPMENT_SYSTEM has SPECIFIED_BY edge
+        model_cls = templates["EQUIPMENT_SYSTEM"]
+        assert "specified_by" in model_cls.model_fields
+        field = model_cls.model_fields["specified_by"]
+        assert field.json_schema_extra == {"edge_label": "SPECIFIED_BY"}

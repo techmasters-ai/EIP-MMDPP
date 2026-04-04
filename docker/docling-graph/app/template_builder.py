@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 import logging
-from typing import Any, Optional, Type
+from collections import defaultdict
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -83,10 +84,8 @@ def _build_single_template(entity_type_def: dict[str, Any]) -> tuple[str, type[B
             field_kwargs["examples"] = [example]
 
         if prop_name in id_fields:
-            # Required field: annotation only, no default
             field_definitions[prop_name] = (py_type, Field(**field_kwargs))
         else:
-            # Optional field with default None
             field_definitions[prop_name] = (Optional[py_type], Field(default=None, **field_kwargs))
 
     model_cls = create_model(
@@ -112,3 +111,116 @@ def build_templates(ontology: dict[str, Any]) -> dict[str, type[BaseModel]]:
         templates[name] = model_cls
         logger.debug("Built template %s (id_fields=%s)", name, model_cls.model_config.get("graph_id_fields"))
     return templates
+
+
+def _build_edge_map(ontology: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    """Build a mapping from source entity type → list of edge definitions.
+
+    Each edge definition is a dict with keys: rel_type, target_type, cardinality.
+    Entries are deduplicated on (source, rel_type, target_type). When the same
+    source+rel_type appears with multiple target types, one entry per unique target
+    is kept; the caller groups by field name (rel_type.lower()).
+    """
+    cardinality_map: dict[str, str] = {
+        rel_def["name"]: rel_def.get("cardinality", "many_to_many")
+        for rel_def in ontology.get("relationship_types", [])
+        if rel_def.get("name")
+    }
+
+    seen: set[tuple[str, str, str]] = set()
+    edge_map: dict[str, list[dict[str, str]]] = defaultdict(list)
+
+    for entry in ontology.get("validation_matrix", []):
+        source = entry.get("source", "")
+        rel_type = entry.get("relationship", "")
+        target = entry.get("target", "")
+        if not (source and rel_type and target):
+            continue
+
+        key = (source, rel_type, target)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        edge_map[source].append(
+            {"rel_type": rel_type, "target_type": target, "cardinality": cardinality_map.get(rel_type, "many_to_many")}
+        )
+
+    return dict(edge_map)
+
+
+def build_templates_with_edges(ontology: dict[str, Any]) -> dict[str, type[BaseModel]]:
+    """Extend base templates with edge fields derived from the validation_matrix.
+
+    For each entity type that appears as a source in the validation_matrix, edge
+    fields are added to the Pydantic model.  Field names are the lowercase
+    relationship type (e.g. ``installed_on``, ``has_antenna``).
+
+    Cardinality rules:
+    - one_to_one / many_to_one  → ``Optional[TargetModel] = Field(default=None, ...)``
+    - one_to_many / many_to_many → ``list[TargetModel] = Field(default_factory=list, ...)``
+
+    When the same relationship type points to multiple target types for the same
+    source (e.g. ASSOCIATED_WITH → MISSILE_SYSTEM and AIR_DEFENSE_ARTILLERY_SYSTEM),
+    the edge field uses BaseModel as the annotation.
+
+    Returns a new dict mapping safe class name → extended model class.
+    """
+    base_templates = build_templates(ontology)
+    edge_map = _build_edge_map(ontology)
+
+    # Build a reverse lookup once: safe_name → ontology_name (only matters for reserved words)
+    reverse_reserved = {v: k for k, v in RESERVED_WORD_MAP.items()}
+
+    result: dict[str, type[BaseModel]] = {}
+
+    for safe_name, base_model in base_templates.items():
+        ontology_name = reverse_reserved.get(safe_name, safe_name)
+        edges = edge_map.get(ontology_name, [])
+
+        if not edges:
+            result[safe_name] = base_model
+            continue
+
+        existing_fields: dict[str, Any] = {
+            name: (info.annotation, info)
+            for name, info in base_model.model_fields.items()
+        }
+
+        # Group by field name to detect same rel_type pointing at multiple targets
+        edges_by_field: dict[str, list[dict[str, str]]] = defaultdict(list)
+        for edge_def in edges:
+            edges_by_field[edge_def["rel_type"].lower()].append(edge_def)
+
+        edge_fields: dict[str, Any] = {}
+        for field_name, field_edges in edges_by_field.items():
+            rel_type = field_edges[0]["rel_type"]
+            cardinality = field_edges[0]["cardinality"]
+
+            unique_targets = {e["target_type"] for e in field_edges}
+            if len(unique_targets) == 1:
+                target_safe = RESERVED_WORD_MAP.get(next(iter(unique_targets)), next(iter(unique_targets)))
+                target_model: type[BaseModel] = base_templates.get(target_safe, BaseModel)
+            else:
+                target_model = BaseModel
+
+            if cardinality in ("one_to_one", "many_to_one"):
+                edge_fields[field_name] = (
+                    Optional[target_model],
+                    Field(default=None, json_schema_extra={"edge_label": rel_type}),
+                )
+            else:
+                edge_fields[field_name] = (
+                    list[target_model],
+                    Field(default_factory=list, json_schema_extra={"edge_label": rel_type}),
+                )
+
+        new_model = create_model(
+            safe_name,
+            __config__=base_model.model_config,
+            **{**existing_fields, **edge_fields},
+        )
+        result[safe_name] = new_model
+        logger.debug("Built edge-extended template %s with %d edge fields", safe_name, len(edge_fields))
+
+    return result
