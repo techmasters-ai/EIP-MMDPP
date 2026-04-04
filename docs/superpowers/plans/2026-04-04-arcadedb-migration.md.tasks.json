@@ -1,0 +1,20 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-04-arcadedb-migration.md",
+  "tasks": [
+    {"id": 21, "subject": "Task 1: GraphStore Protocol + data classes", "status": "pending"},
+    {"id": 22, "subject": "Task 2: ArcadeDB HTTP client", "status": "pending", "blockedBy": [21]},
+    {"id": 23, "subject": "Task 3: ArcadeDB GraphStore implementation", "status": "pending", "blockedBy": [21, 22]},
+    {"id": 24, "subject": "Task 4: Schema sync from ontology", "status": "pending", "blockedBy": [22]},
+    {"id": 25, "subject": "Task 5: Session + config wiring", "status": "pending", "blockedBy": [23, 24]},
+    {"id": 26, "subject": "Task 6: Remove GraphRAG completely", "status": "pending", "blockedBy": [25]},
+    {"id": 27, "subject": "Task 7: Remove Neo4j + wire GraphStore", "status": "pending", "blockedBy": [25, 26]},
+    {"id": 28, "subject": "Task 8: Remove Qdrant + vector migration", "status": "pending", "blockedBy": [25, 27]},
+    {"id": 29, "subject": "Task 9: Pipeline migration", "status": "pending", "blockedBy": [27, 28]},
+    {"id": 30, "subject": "Task 10: Community detection + global query", "status": "pending", "blockedBy": [29]},
+    {"id": 31, "subject": "Task 11: Docker infrastructure", "status": "pending", "blockedBy": [25]},
+    {"id": 32, "subject": "Task 12: Frontend updates", "status": "pending", "blockedBy": [26]},
+    {"id": 33, "subject": "Task 13: Test cleanup + new tests", "status": "pending", "blockedBy": [27, 28, 29, 30]},
+    {"id": 34, "subject": "Task 14: Final verification", "status": "pending", "blockedBy": [33, 31, 32]}
+  ],
+  "lastUpdated": "2026-04-04T19:00:00Z"
+}
