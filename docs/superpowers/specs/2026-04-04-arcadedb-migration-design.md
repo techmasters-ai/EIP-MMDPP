@@ -34,19 +34,66 @@ Major architectural refactor:
 
 The ArcadeDB schema is generated directly from the ontology definition. Each ontology entity type becomes an ArcadeDB vertex type with schema-full typed properties. Each ontology relationship type becomes an ArcadeDB edge type. When the ontology changes via the UI (new registry activated), a schema sync function diffs against the current schema and applies additive changes.
 
-### Common metadata on ALL vertex and edge types
+### Common metadata on entity vertex types (BaseEntity)
 
-Every vertex and edge gets these properties automatically:
+Entity vertices are shared across documents via MERGE on identity fields. They do NOT carry a singular source_document_id. Provenance is tracked via EXTRACTED_FROM edges to TextChunk/ImageChunk vertices.
 
 | Property | Type | Required | Purpose |
 |----------|------|----------|---------|
-| source_document_id | STRING | MANDATORY | Which document this came from |
-| page_number | INTEGER | | Page in source document |
-| upload_datetime | DATETIME | | When document was uploaded |
-| document_datetime | DATETIME | | Date extracted from document via LLM |
-| confidence | DOUBLE | | Extraction confidence 0.0-1.0 |
+| id | STRING | MANDATORY | UUID assigned at creation |
+| name | STRING | MANDATORY | Human-readable identifier (populated from primary identity field) |
+| entity_type | STRING | MANDATORY | Ontology entity type |
+| canonical_name | STRING | | Canonicalized form (set during canonicalization) |
+| confidence | DOUBLE | | Highest confidence seen across all extractions |
 | created_at | DATETIME | | Record creation time |
 | updated_at | DATETIME | | Last modification time |
+
+Note: `name` is populated from whichever field is the entity type's primary human-readable identifier. For types where the identity field IS `name` (e.g., RADAR_SYSTEM), it's the same value. For types like DOCUMENT, `name` is populated from `title`. For FIGURE, from `figure_id`. This preserves the generic entity contract that search, dossier, and query profiles depend on.
+
+### Identity fields per entity type
+
+Entity dedup uses the entity type's identity fields (from ontology graph_id_fields), NOT a universal `name`:
+- RADAR_SYSTEM: merges on `name`
+- DOCUMENT: merges on `document_id`
+- FIGURE: merges on `figure_id`
+- SPECIFICATION: merges on `(parameter, value)`
+- See companion Docling-Graph spec for complete derivation rules.
+
+### Common metadata on structural vertex types (TextChunk, ImageChunk, Document)
+
+These are document-scoped (not shared across documents):
+
+| Property | Type | Required | Purpose |
+|----------|------|----------|---------|
+| document_id | STRING | MANDATORY | Which document this belongs to |
+| page_number | INTEGER | | Page in source document |
+| created_at | DATETIME | | Record creation time |
+
+### Common metadata on ontology relationship edge types
+
+Relationship edges can be established by multiple documents:
+
+| Property | Type | Required | Purpose |
+|----------|------|----------|---------|
+| document_ids | LIST | MANDATORY | All documents that established this relationship |
+| confidence | DOUBLE | | Highest confidence seen |
+| created_at | DATETIME | | Record creation time |
+| updated_at | DATETIME | | Last modification time |
+
+### Common metadata on structural edge types (CONTAINS_TEXT, CONTAINS_IMAGE, SAME_PAGE, EXTRACTED_FROM)
+
+These are document-scoped:
+
+| Property | Type | Required | Purpose |
+|----------|------|----------|---------|
+| document_id | STRING | MANDATORY | Which document this edge belongs to |
+| confidence | DOUBLE | | Extraction confidence |
+| created_at | DATETIME | | Record creation time |
+
+EXTRACTED_FROM edges additionally carry:
+| page_numbers | LIST | | Pages where entity was found in this chunk's document |
+| upload_datetime | DATETIME | | When the source document was uploaded |
+| document_datetime | DATETIME | | Date extracted from document via LLM |
 
 ### Vertex types from ontology (46 types across 5 layers)
 
@@ -107,8 +154,14 @@ Every vertex and edge gets these properties automatically:
 - TEST_EVENT: name, date, location, test_type, outcome
 
 **Structural vertex types (system-internal, not from ontology):**
-- ChunkRef: chunk_id, chunk_type, document_id, page_number + common metadata
-- Alias: alias_name + common metadata
+- TextChunk: chunk_id (FK to PostgreSQL), document_id, page_number, modality, classification, text_embedding (LIST, 1024-dim BGE) -- replaces ChunkRef for text. PostgreSQL remains authoritative for chunk content; ArcadeDB carries embedding + filter metadata.
+- ImageChunk: chunk_id (FK to PostgreSQL), document_id, artifact_id, page_number, description, image_embedding (LIST, 512-dim CLIP) -- replaces ChunkRef for images.
+- TrustedTextChunk: chunk_id, document_id, content_text, text_embedding (LIST, 1024-dim BGE), source, classification -- trusted-data semantic search (replaces Qdrant eip_trusted_text collection).
+- Document: document_id, title, upload_datetime, document_datetime
+- Alias: alias_name
+- CommunityReport: community_id, membership_hash, title, summary, member_count, key_entities (LIST), key_relationships (LIST), report_embedding (LIST, 1024-dim BGE), model_name, generated_at -- authoritative store for community reports (no PostgreSQL table).
+
+Note: ChunkRef is eliminated. TextChunk/ImageChunk vertices serve the same structural role (targets of EXTRACTED_FROM edges, sources of CONTAINS_TEXT/CONTAINS_IMAGE edges) but also carry embeddings for vector search.
 
 ### Edge types from ontology (50 types)
 
@@ -195,21 +248,34 @@ Low-level httpx wrapper for ArcadeDB HTTP API. All endpoints include the databas
 
 ### Stages unchanged
 
-prepare_document, detect_and_translate, derive_document_metadata, derive_picture_descriptions, derive_text_chunks_and_embeddings, derive_image_embeddings, finalize_document -- no graph involvement.
+prepare_document, detect_and_translate, derive_document_metadata, derive_picture_descriptions, finalize_document -- no graph involvement.
 
 ### Stages modified
 
+**derive_text_chunks_and_embeddings:** Creates PostgreSQL rows (unchanged) + ArcadeDB TextChunk vertices with text_embedding property (replaces Qdrant upsert). This stage becomes a graph writer.
+
+**derive_image_embeddings:** Creates PostgreSQL rows (unchanged) + ArcadeDB ImageChunk vertices with image_embedding property (replaces Qdrant upsert). This stage becomes a graph writer.
+
 **derive_ontology_graph:** Replace get_neo4j_driver() with get_graph_store(). Replace upsert_nodes_batch/upsert_relationships_batch with GraphStore equivalents. ProvenanceMetadata built from document metadata and passed with every write. Confidence quality gates and validation matrix enforcement remain. Uses ArcadeDB batch endpoint for bulk import (single HTTP call for 50-200 entities + 100-500 relationships per document).
 
-**derive_structure_links:** Replace all Neo4j node/edge creation with GraphStore equivalents. Document, ChunkRef, CONTAINS_TEXT, CONTAINS_IMAGE, SAME_PAGE, EXTRACTED_FROM edges all through GraphStore. Page number propagated to every edge.
+**derive_structure_links:** Creates ArcadeDB Document vertex + structural edges (CONTAINS_TEXT, CONTAINS_IMAGE, SAME_PAGE) connecting Document to existing TextChunk/ImageChunk vertices (which already exist from embedding stages). Also creates EXTRACTED_FROM edges from entities to TextChunk/ImageChunk vertices. No longer creates separate chunk pointer nodes -- TextChunk/ImageChunk vertices serve that role.
 
-**derive_canonicalization:** Replace fulltext_search_entity with graph_store.search_nodes. Replace create_alias_edge with graph_store.create_structural_edge. Fuzzy matching threshold (0.8) unchanged.
+**derive_canonicalization:** Replace fulltext_search_entity with graph_store.fulltext_search. Replace create_alias_edge with graph_store.create_alias. Fuzzy matching threshold (0.8) unchanged.
 
-**purge_document / purge_document_derivations:** Replace Cypher deletion with graph_store.delete_document_graph(document_id). Deletes all vertices and edges where source_document_id matches.
+**purge_document / purge_document_derivations:** `graph_store.delete_document_graph(document_id)` is invoked INSIDE the existing document-delete orchestration, not as a standalone replacement. Full delete flow:
+
+1. Delete MinIO artifacts (raw + derived)
+2. Delete DocumentElements from PostgreSQL
+3. Delete TextChunk/ImageChunk rows from PostgreSQL
+4. Delete ChunkLinks from PostgreSQL
+5. Delete PipelineRun/StageRun from PostgreSQL
+6. Delete DocumentGraphExtraction from PostgreSQL
+7. `graph_store.delete_document_graph(document_id)` -- deletes ArcadeDB Document vertex, TextChunk/ImageChunk vertices for that document, structural edges, EXTRACTED_FROM edges for that document. Removes document_id from relationship edge document_ids lists; deletes edges with empty lists. Orphan entity cleanup: delete entity vertices with zero remaining EXTRACTED_FROM edges.
+8. Delete Document row from PostgreSQL
 
 ### Provenance propagation
 
-Every graph write carries ProvenanceMetadata (source_document_id, page_number, upload_datetime, document_datetime), constructed once per document at the start of derive_ontology_graph.
+Entity provenance tracked via EXTRACTED_FROM edges (document_id, page_numbers, upload_datetime, document_datetime). Structural edges carry document_id. Ontology relationship edges carry document_ids (LIST).
 
 ### Post-ingest community detection hook
 
@@ -223,20 +289,20 @@ After finalize_document completes, if COMMUNITY_DETECTION_POST_INGEST_ENABLED is
 - community_tasks.py: Celery tasks (scheduled, manual, post-ingest)
 - app/api/v1/community.py: API endpoints
 
-### PostgreSQL tables
+### Storage
 
-community_reports: id, community_id, membership_hash, title, summary, member_count, key_entities (JSONB), key_relationships (JSONB), generated_at, model_name, created_at
+Community reports are CommunityReport vertices in ArcadeDB (authoritative store). No PostgreSQL community_reports table.
 
-community_runs: id, status (PENDING|RUNNING|COMPLETE|FAILED), trigger (SCHEDULED|MANUAL|POST_INGEST), total_communities, reports_generated, reports_reused, detection_duration_ms, report_duration_ms, error_message, started_at, completed_at, created_at
+community_runs table stays in PostgreSQL (pipeline state): id, status (PENDING|RUNNING|COMPLETE|FAILED), trigger (SCHEDULED|MANUAL|POST_INGEST), total_communities, reports_generated, reports_reused, detection_duration_ms, report_duration_ms, error_message, started_at, completed_at, created_at
 
 ### Community detection flow
 
-1. Run community detection algorithm (Louvain or Leiden per COMMUNITY_DETECTION_ALGORITHM setting) on full graph (ArcadeDB native, seconds for 100K+ nodes)
+1. Run community detection algorithm (Louvain or Leiden per COMMUNITY_DETECTION_ALGORITHM setting) on domain-entity projected subgraph (see Addendum: Community Detection Graph Projection)
 2. For each community, fetch member entities
-3. Compute membership_hash = SHA-256(sorted member names)
-4. Diff against stored reports: unchanged hash = skip, changed/new = regenerate, dissolved = delete
-5. For changed communities: fetch entities + edges + evidence chunks, build LLM prompt, generate report, store
-6. Update community_runs record
+3. Compute membership_hash = SHA-256(sorted (entity_type, name) tuples) -- hashes type+name pairs to prevent cross-type collisions and remain stable across alias/canonical-name changes
+4. Diff against stored CommunityReport vertices: unchanged hash = skip, changed/new = regenerate, dissolved = delete
+5. For changed communities: fetch entities + edges + evidence chunks, build LLM prompt, generate report, embed report, store as CommunityReport vertex with report_embedding
+6. Update community_runs record in PostgreSQL
 
 ### LLM report prompt
 
@@ -244,7 +310,7 @@ Configurable via COMMUNITY_REPORT_LLM_PROMPT env var. Template supports {entitie
 
 ### Global query flow
 
-1. Embed query text (BGE) and search community report embeddings in Qdrant (eip_community_reports collection)
+1. Embed query text (BGE) and search CommunityReport vertices via `vectorNeighbors('CommunityReport[report_embedding]', :query_vector, :top_k)` in ArcadeDB
 2. Rank communities by relevance (top_k configurable)
 3. Fetch full reports + key entities + key relationships for top communities
 4. LLM synthesis: combine reports into comprehensive answer citing source documents
@@ -384,9 +450,9 @@ Added: community-detection
 
 ## Section 7: Files Changed
 
-### Files deleted (34 files + 1 directory)
+### Files deleted (35 files + 1 directory)
 
-Services (8): app/services/graphrag_service.py, app/services/graphrag_config.py, app/services/graphrag_bridge.py, app/services/graphrag_prompts.py, app/services/graphrag_runtime_patches.py, app/services/graphrag_provenance.py, app/services/neo4j_graph.py, app/services/neo4j_dossier_service.py
+Services (9): app/services/graphrag_service.py, app/services/graphrag_config.py, app/services/graphrag_bridge.py, app/services/graphrag_prompts.py, app/services/graphrag_runtime_patches.py, app/services/graphrag_provenance.py, app/services/neo4j_graph.py, app/services/neo4j_dossier_service.py, app/services/qdrant_store.py
 
 Workers (1): app/workers/graphrag_tasks.py
 
@@ -414,33 +480,26 @@ Unit tests (15): tests/unit/test_arcadedb_client.py, tests/unit/test_arcadedb_gr
 
 Integration tests (8): tests/integration/test_arcadedb_integration.py, tests/integration/test_arcadedb_schema_sync_integration.py, tests/integration/test_arcadedb_batch_integration.py, tests/integration/test_arcadedb_community_integration.py, tests/integration/test_graph_store_api_integration.py, tests/integration/test_community_api_integration.py, tests/integration/test_query_profiles_integration.py, tests/integration/test_pipeline_graph_integration.py
 
-### Files modified (30+ files)
+### Files modified (35+ files)
 
 Config: app/config.py, app/main.py, app/db/session.py
 Schemas: app/schemas/retrieval.py
-API: retrieval.py, graph_store.py, sources.py, agent.py, query_profiles.py, governance.py
+API: retrieval.py, graph_store.py, sources.py, agent.py, query_profiles.py, governance.py, trusted_data.py
 Services: query_profiles.py, canonicalization.py
-Workers: pipeline.py, celery_app.py
-Models: app/models/retrieval.py
-Docker: docker-compose.yml, docker-compose.test.yml, docker/docling/Dockerfile, docker/docling-graph/Dockerfile
+Workers: pipeline.py (derive_ontology_graph, derive_text_chunks_and_embeddings, derive_image_embeddings, derive_structure_links, purge), celery_app.py, trusted_data_tasks.py
+Models: app/models/retrieval.py (remove qdrant_point_id), app/models/trusted_data.py (remove qdrant_point_id)
+Docker: docker-compose.yml (remove neo4j + qdrant services), docker-compose.test.yml, docker/docling/Dockerfile, docker/docling-graph/Dockerfile
 Env: env.example, .env.test
 Frontend: client.ts, QueryPage.tsx, QueryProfileRegistryPage.tsx, GraphExplorer.tsx, App.tsx
 Other: manage.sh, .gitignore, example_queries.py, README.md, VERIFICATION_CHECKLIST.md, pyproject.toml, uv.lock
 Tests: test_config.py, test_query_coverage.py, test_retrieval_schemas.py, test_startup_bootstrap.py, tests/conftest.py
 
-### Additional files deleted (Qdrant elimination)
-
-app/services/qdrant_store.py
-
-### Additional files modified (Qdrant elimination)
-
-app/workers/pipeline.py (derive_text_chunks_and_embeddings, derive_image_embeddings: Qdrant -> ArcadeDB vertex properties)
-docker-compose.yml (remove qdrant service)
-
 ### Dependencies
 
-Removed: neo4j>=5.25.0, graphrag>=3.0.0, pyarrow>=14.0.0, qdrant-client>=1.13.0
+Removed: neo4j>=5.25.0, graphrag>=3.0.0, pyarrow>=14.0.0, qdrant-client>=1.13.0, pgvector>=0.3.6
 Added: httpx>=0.27.0
+
+Note: pgvector removed because vector search is handled by ArcadeDB, not PostgreSQL extensions.
 
 ## Addendum: Qdrant Elimination
 
@@ -458,7 +517,20 @@ CREATE INDEX ON ImageChunk (image_embedding) LSM_VECTOR METADATA {dimensions: 51
 CREATE INDEX ON CommunityReport (report_embedding) LSM_VECTOR METADATA {dimensions: 1024, similarity: 'COSINE', quantization: 'INT8', addHierarchy: true}
 ```
 
-TextChunk and ImageChunk replace the lightweight ChunkRef pointer vertex. Chunks ARE vertices with content and embeddings -- no data duplication across stores.
+TextChunk and ImageChunk replace the lightweight ChunkRef pointer vertex. PostgreSQL `retrieval.text_chunks` and `retrieval.image_chunks` tables remain authoritative for chunk content, section hierarchy, translated text, and relational metadata. ArcadeDB TextChunk/ImageChunk vertices carry chunk_id (FK to PostgreSQL), embedding, and minimal filter metadata. `chunk_id` is the stable bridge between stores. `qdrant_point_id` column dropped from PostgreSQL chunk models.
+
+### Trusted-data migration
+
+Trusted-data semantic search moves entirely from Qdrant to ArcadeDB:
+- `eip_trusted_text` Qdrant collection -> TrustedTextChunk vertex type with LSM_VECTOR index
+- `qdrant_point_id` on trusted-data models -> removed
+- `app/api/v1/trusted_data.py`, `app/workers/trusted_data_tasks.py`, `app/models/trusted_data.py` modified to use GraphStore vector_search()
+
+```sql
+CREATE INDEX ON TrustedTextChunk (text_embedding) LSM_VECTOR METADATA {
+    dimensions: 1024, similarity: 'COSINE', quantization: 'INT8', addHierarchy: true
+}
+```
 
 ### Cross-model queries
 

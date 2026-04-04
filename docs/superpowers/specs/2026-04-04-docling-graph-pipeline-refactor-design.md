@@ -74,22 +74,46 @@ Across instances:
 
 | Ontology concept | Docling-graph template concept |
 |---|---|
-| Entity type | Pydantic model with `graph_id_fields=["name"]` |
+| Entity type | Pydantic model with `graph_id_fields` derived per type (see rules below) |
 | Entity properties | Typed fields with `Field(description=..., examples=[...])` |
 | Relationship (from validation_matrix) | `edge()` field on source entity template |
 | Property enums | `Literal` types or string with description listing valid values |
 | Cardinality one_to_one | `Optional[TargetType] = edge(label=...)` |
 | Cardinality one_to_many / many_to_many | `List[TargetType] = edge(label=..., default_factory=list)` |
 
+### graph_id_fields derivation rules
+
+Each entity type gets `graph_id_fields` derived from its ontology properties, NOT a universal default:
+
+1. If properties include `name` or `system_name` -> use that (e.g., RADAR_SYSTEM, PLATFORM, COMPONENT)
+2. If properties include a field with `_id` suffix -> use that (e.g., DOCUMENT -> `document_id`, FIGURE -> `figure_id`, TABLE -> `table_id`)
+3. If properties include `title` or `heading` -> use that (e.g., SECTION -> `heading`)
+4. For types with composite identity -> use multiple fields (e.g., SPECIFICATION -> `["parameter", "value"]`)
+5. Fallback -> first required property, or first property if none required
+
+Examples:
+- RADAR_SYSTEM: `graph_id_fields=["name"]` (has `name` in properties, mapped from system_name)
+- DOCUMENT: `graph_id_fields=["document_id"]`
+- FIGURE: `graph_id_fields=["figure_id"]`
+- TABLE: `graph_id_fields=["table_id"]`
+- SECTION: `graph_id_fields=["heading"]`
+- SPECIFICATION: `graph_id_fields=["parameter", "value"]`
+- ASSERTION: `graph_id_fields=["assertion_text"]`
+
 ### Generation rules
 
-1. All fields Optional except `name` -- extraction may not find every property
-2. `graph_id_fields=["name"]` for all entity types -- stable dedup by name
+1. All fields Optional except the identity field(s) -- extraction may not find every property
+2. `graph_id_fields` derived per entity type (see rules above) -- stable dedup by identity
 3. Edge fields generated from validation_matrix: for each row where source=THIS_TYPE, create an edge field pointing to the target type
 4. Field descriptions from ontology property descriptions -- guide the LLM during extraction
 5. Field examples from ontology property examples -- help the LLM produce correct formats
 6. Reserved word handling: TABLE -> TABLE_REF mapping applied transparently
 7. Templates rebuilt at startup and when per-request ontology_definition provided (cached by ontology hash)
+8. Domain-specific extraction heuristics from current prompts.py preserved via: (a) field descriptions with extraction hints (e.g., "Look in Methods section"), (b) edge() fields encoding valid relationships from validation_matrix, (c) validation pass for heuristics that cannot be expressed as template structure (e.g., SPECIFICATION->SPECIFIED_BY enforcement)
+
+### Library version requirements
+
+The service does not pin a specific docling-graph version (manage.sh --start pulls latest from the GitHub repo). Instead, it validates the required API surface at startup and fails fast with a clear error if missing. Required surface: run_pipeline(), PipelineConfig with extraction_contract="delta", delta resolvers, delta normalizer, gleaning, structured output, edge() helper, graph_id_fields support.
 
 ## Section 3: Pipeline Configuration Builder
 
@@ -204,14 +228,22 @@ Response: {
 
 ### Graph serialization
 
-NetworkX graph serialized via `node_link_data()`. Each node carries type, name, properties, and `_provenance` (batch_id, chunk_index, page_numbers). Each edge carries source, target, label, confidence, and `_provenance`.
+NetworkX graph serialized via `node_link_data()`. Each node carries type, identity fields, properties, and `_provenance` (batch_id, chunk_index, page_numbers). Each edge carries source, target, label, confidence, and `_provenance`.
+
+### Provenance granularity
+
+Delta provenance provides `batch_id` and `chunk_index` per node. The pipeline maps `chunk_index` to DocumentElement `element_uid` values (via chunker boundary metadata from the DoclingDocument), then to `chunk_id` values (via the existing derive_structure_links element-to-chunk mapping). This preserves element-level EXTRACTED_FROM edge granularity -- entities link to specific chunks, not every chunk on a page. Page numbers are a secondary attribute on the provenance, not the primary linking key.
+
+### Adapter layer for graph_json persistence
+
+The pipeline task `derive_ontology_graph` transforms the NetworkX node-link response into the existing `DocumentGraphExtraction.graph_json` contract (`{nodes, edges, mentions, _ingest_filter}`) before PostgreSQL storage. Downstream consumers of graph_json see the same structure as today. No rewrite of audit/test consumers needed.
 
 ### Key differences from current contract
 
 - Input: DoclingDocument JSON instead of flat text
 - Output: NetworkX graph instead of flat entity/relationship lists
 - Dedup: Built-in via graph_id_fields + delta resolvers
-- Provenance: Per-node page numbers from delta normalizer
+- Provenance: Per-node chunk_index mapped to element_uid then chunk_id (element-level granularity)
 - Relationships: Embedded in templates via edge() + validation pass
 - Node IDs: Stable from docling-graph NodeIDRegistry
 
@@ -223,17 +255,18 @@ The `/extract` single-group endpoint is removed. All extraction goes through `/e
 
 ### derive_ontology_graph -- new flow
 
-1. Load DoclingDocument JSON from `document.docling_document_json` (persisted during prepare_document)
+1. Retrieve DoclingDocument JSON from MinIO (already persisted by prepare_document in eip-derived bucket)
 2. POST to docling-graph `/extract-all` with DoclingDocument JSON
 3. Receive NetworkX graph JSON with provenance
 4. Apply confidence quality gates (final filter)
 5. Import nodes and edges into ArcadeDB via GraphStore
-6. Build EXTRACTED_FROM edges from provenance page_numbers
-7. Store graph_json in PostgreSQL audit trail
+6. Build EXTRACTED_FROM edges from provenance chunk_index -> element_uid -> chunk_id mapping
+7. Transform NetworkX response to graph_json contract via adapter layer
+8. Store graph_json in PostgreSQL audit trail (DocumentGraphExtraction)
 
-### prepare_document change
+### prepare_document -- no change needed
 
-Persist DoclingDocument JSON alongside DocumentElements. New `docling_document_json` JSONB column on `ingest.documents` table.
+`prepare_document` already uploads `docling_document.json` to MinIO (`eip-derived` bucket). No new PostgreSQL column needed. `derive_ontology_graph` downloads it from MinIO when needed.
 
 ### derive_text_chunks_and_embeddings change
 
@@ -265,15 +298,34 @@ CREATE INDEX ON ImageChunk (image_embedding) LSM_VECTOR METADATA {
 CREATE INDEX ON CommunityReport (report_embedding) LSM_VECTOR METADATA {
     dimensions: 1024, similarity: 'COSINE', quantization: 'INT8', addHierarchy: true
 }
+CREATE INDEX ON TrustedTextChunk (text_embedding) LSM_VECTOR METADATA {
+    dimensions: 1024, similarity: 'COSINE', quantization: 'INT8', addHierarchy: true
+}
 ```
 
 ### New vertex types
 
-TextChunk: chunk_id, document_id, content_text, page_number, modality, classification, text_embedding (LIST) + common metadata
+TextChunk: chunk_id (FK to PostgreSQL), document_id, page_number, modality, classification, text_embedding (LIST, 1024-dim)
+ImageChunk: chunk_id (FK to PostgreSQL), document_id, artifact_id, page_number, description, image_embedding (LIST, 512-dim)
+TrustedTextChunk: chunk_id, document_id, content_text, text_embedding (LIST, 1024-dim), source, classification
+CommunityReport: community_id, membership_hash, title, summary, member_count, key_entities, key_relationships, report_embedding (LIST, 1024-dim), model_name, generated_at
 
-ImageChunk: chunk_id, document_id, artifact_id, page_number, description, image_embedding (LIST) + common metadata
+### Chunk data ownership
 
-CommunityReport: community_id, membership_hash, title, summary, member_count, key_entities, key_relationships, report_embedding (LIST), model_name, generated_at + common metadata
+PostgreSQL `retrieval.text_chunks` and `retrieval.image_chunks` tables remain authoritative for chunk content, section hierarchy, translated text, and relational metadata. ArcadeDB TextChunk/ImageChunk vertices carry chunk_id (FK to PostgreSQL), embedding, and minimal filter metadata (document_id, page_number, modality, classification). The embedding moves from Qdrant to ArcadeDB. The chunk content stays in PostgreSQL. `chunk_id` is the stable bridge between stores. `qdrant_point_id` column on PostgreSQL chunk models is dropped.
+
+### Community report ownership
+
+ArcadeDB is authoritative for community reports (CommunityReport vertices). The `community_reports` PostgreSQL table is removed. `community_runs` (pipeline state) stays in PostgreSQL.
+
+### Trusted-data migration
+
+Trusted-data semantic search moves entirely from Qdrant to ArcadeDB:
+- `eip_trusted_text` Qdrant collection -> TrustedTextChunk vertex type with LSM_VECTOR index
+- `qdrant_point_id` on trusted-data models -> removed
+- `app/api/v1/trusted_data.py` -> uses GraphStore vector_search() instead of Qdrant
+- `app/workers/trusted_data_tasks.py` -> writes to ArcadeDB instead of Qdrant
+- `app/models/trusted_data.py` -> qdrant_point_id column removed
 
 ### Hybrid retrieval -- cross-model queries
 
@@ -356,9 +408,10 @@ Removed: test_direct_extraction.py, test_prompts.py
 
 ### Main application
 
-Modified: pipeline.py (derive_ontology_graph, derive_text_chunks_and_embeddings, derive_image_embeddings), docling_graph_service.py, config.py, retrieval.py (hybrid strategy), models/ingest.py
+Modified: pipeline.py (derive_ontology_graph, derive_text_chunks_and_embeddings, derive_image_embeddings, derive_structure_links), docling_graph_service.py, config.py, retrieval.py (hybrid strategy), trusted_data.py, trusted_data_tasks.py, models/trusted_data.py (remove qdrant_point_id), models/retrieval.py (remove qdrant_point_id)
 Removed: app/services/qdrant_store.py
-New migration: add docling_document_json column to ingest.documents
+
+Note: derive_text_chunks_and_embeddings and derive_image_embeddings become graph writers (creating ArcadeDB TextChunk/ImageChunk vertices with embeddings). derive_structure_links changes shape (creates Document vertex + structural edges to existing TextChunk/ImageChunk vertices, no longer creates separate chunk pointer nodes).
 
 ### Docker
 
@@ -368,3 +421,4 @@ Modified: docker-compose.yml (remove qdrant), docker-compose.test.yml (remove qd
 
 Removed from docling-graph service: litellm, json-repair
 Removed from main app: qdrant-client
+Note: docling-graph is NOT version-pinned. manage.sh --start pulls latest from GitHub repo. Service validates required API surface at startup.
