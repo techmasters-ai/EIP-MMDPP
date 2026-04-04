@@ -1,65 +1,47 @@
-"""Pydantic request/response models for the Docling-Graph extraction service."""
+"""Request and response models for the Docling-Graph extraction service."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
 
 class ExtractionRequest(BaseModel):
-    """Request body for the /extract endpoint."""
-
-    document_id: str = Field(..., description="Internal document identifier")
-    text: str = Field(..., description="Plain text to extract entities/relationships from")
-    ontology_version: str | None = Field(
-        None,
-        description="Expected ontology version; logged as warning on mismatch",
-    )
-    template_group: str | None = Field(
-        None,
-        description="Ontology layer group to extract (reference, equipment, rf_signal, weapon, operational). "
-        "If None, uses legacy single-template behavior.",
-    )
-    mode: str = Field(
-        "entities",
-        description="Extraction mode: 'entities' for entity extraction, 'relationships' for relationship-only pass.",
-    )
-    entities_context: list[dict] | None = Field(
-        None,
-        description="For mode='relationships': list of {name, entity_type} dicts from prior entity passes.",
-    )
-    ontology_definition: dict[str, Any] | None = Field(
-        None,
-        description="Optional request-scoped ontology definition. When provided, it overrides the startup ontology for this extraction call.",
-    )
+    """Request body for /extract-all endpoint."""
+    document_id: str = Field(..., description="UUID of the document being processed")
+    docling_document_json: dict[str, Any] = Field(..., description="Full DoclingDocument JSON (skips re-conversion)")
+    ontology_definition: Optional[dict[str, Any]] = Field(default=None, description="Optional per-request ontology override")
+    ontology_version: Optional[str] = Field(default=None, description="Expected ontology version (logged if mismatched)")
 
 
-class ExtractedEntityResponse(BaseModel):
-    """A single extracted entity."""
-
-    name: str
-    entity_type: str
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    properties: dict = Field(default_factory=dict)
-
-
-class ExtractedRelationshipResponse(BaseModel):
-    """A single extracted relationship between two entities."""
-
-    from_name: str
-    from_type: str
-    rel_type: str
-    to_name: str
-    to_type: str
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+class ExtractionMetadata(BaseModel):
+    """Metadata about the extraction pipeline run."""
+    node_count: int = 0
+    edge_count: int = 0
+    node_types: dict[str, int] = Field(default_factory=dict)
+    edge_types: dict[str, int] = Field(default_factory=dict)
+    extraction_contract: str = "delta"
+    gleaning_passes: int = 0
+    resolvers_applied: bool = False
+    quality_gate_passed: bool = True
+    validation_pass_applied: bool = False
+    validation_pass_edges_added: int = 0
 
 
 class ExtractionResponse(BaseModel):
-    """Full response from the /extract endpoint."""
+    """Response body for /extract-all endpoint."""
+    graph: dict[str, Any] = Field(..., description="Serialized NetworkX graph (node-link JSON)")
+    metadata: ExtractionMetadata = Field(default_factory=ExtractionMetadata)
+    model: str = "unknown"
+    provider: str = "docling-graph"
+    ontology_version: Optional[str] = None
 
-    entities: list[ExtractedEntityResponse] = Field(default_factory=list)
-    relationships: list[ExtractedRelationshipResponse] = Field(default_factory=list)
-    ontology_version: str | None = None
-    model: str | None = None
-    provider: str | None = None
+
+class HealthResponse(BaseModel):
+    """Response body for /health endpoint."""
+    status: str = "ok"
+    ontology_version: Optional[str] = None
+    template_count: int = 0
+    extraction_contract: str = "delta"
+    pipeline_version: str = "unknown"
