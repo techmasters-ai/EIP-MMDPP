@@ -1,163 +1,74 @@
-"""Tests for the /extract endpoint with template_group and mode routing."""
-
-from __future__ import annotations
-
-import os
-import sys
-from pathlib import Path
-
+"""Tests for /extract-all endpoint with pipeline-based contract."""
 import pytest
-
-# Ensure the app package is importable
-_DOCLING_GRAPH_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_DOCLING_GRAPH_ROOT))
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_ONTOLOGY_PATH = _REPO_ROOT / "ontology" / "ontology.yaml"
+import networkx as nx
+from unittest.mock import MagicMock, patch
+from fastapi.testclient import TestClient
 
 
-@pytest.fixture()
-def mock_templates():
-    from app.templates import build_templates, load_ontology
+@pytest.fixture
+def mock_pipeline_context():
+    graph = nx.DiGraph()
+    graph.add_node("RADAR_SYSTEM_Tombstone", type="RADAR_SYSTEM", name="Tombstone",
+                   _provenance={"batch_id": 0, "chunk_index": 0, "page_numbers": [14]})
+    graph.add_node("FREQUENCY_BAND_S-band", type="FREQUENCY_BAND", name="S-band",
+                   _provenance={"batch_id": 0, "chunk_index": 0, "page_numbers": [14]})
+    graph.add_edge("RADAR_SYSTEM_Tombstone", "FREQUENCY_BAND_S-band", label="OPERATES_IN_BAND")
 
-    for p in [_ONTOLOGY_PATH, Path(os.environ.get("ONTOLOGY_PATH", "/ontology/ontology.yaml"))]:
-        if p.exists():
-            ontology = load_ontology(p)
-            return build_templates(ontology)
-    pytest.skip("Ontology file not found")
-
-
-@pytest.fixture()
-def client(mock_templates):
-    from app import main
-
-    main._templates = mock_templates
-    main._ontology_version = "3.0.0"
-
-    from fastapi.testclient import TestClient
-
-    return TestClient(main.app)
+    ctx = MagicMock()
+    ctx.knowledge_graph = graph
+    ctx.graph_metadata = MagicMock(node_count=2, edge_count=1,
+                                    node_types={"RADAR_SYSTEM": 1, "FREQUENCY_BAND": 1},
+                                    edge_types={"OPERATES_IN_BAND": 1})
+    return ctx
 
 
-class TestExtractEndpointGrouped:
-    def test_mock_mode_with_group(self, client):
-        import app.main as m
+@pytest.fixture
+def client(mock_pipeline_context):
+    from pydantic import BaseModel
+    dummy_template = type("DummyEntity", (BaseModel,), {"__annotations__": {"name": str}})
 
-        orig = m.LLM_PROVIDER
-        m.LLM_PROVIDER = "mock"
-        try:
-            resp = client.post(
-                "/extract",
-                json={
-                    "document_id": "test-123",
-                    "text": "The AN/MPQ-53 radar operates in C-band.",
-                    "template_group": "equipment",
-                    "mode": "entities",
-                },
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "entities" in data
-            assert data["provider"] == "mock"
-        finally:
-            m.LLM_PROVIDER = orig
+    with patch("app.main.run_extraction_pipeline", return_value=mock_pipeline_context), \
+         patch("app.main._templates", {"DummyEntity": dummy_template}):
+        from app.main import app
+        with TestClient(app) as c:
+            # Ensure semaphore and templates are set after lifespan startup
+            import app.main as m
+            m._templates = {"DummyEntity": dummy_template}
+            yield c
 
-    def test_mock_mode_relationships(self, client):
-        import app.main as m
 
-        orig = m.LLM_PROVIDER
-        m.LLM_PROVIDER = "mock"
-        try:
-            resp = client.post(
-                "/extract",
-                json={
-                    "document_id": "test-123",
-                    "text": "The AN/MPQ-53 radar is installed on the Patriot system.",
-                    "mode": "relationships",
-                    "entities_context": [
-                        {"name": "AN/MPQ-53", "entity_type": "RADAR_SYSTEM"},
-                        {"name": "Patriot", "entity_type": "MISSILE_SYSTEM"},
-                    ],
-                },
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "relationships" in data
-            # In relationship mode, entities should be empty
-            assert data["entities"] == []
-        finally:
-            m.LLM_PROVIDER = orig
-
-    def test_mock_mode_entities_no_relationships(self, client):
-        """Entity mode should return entities but no relationships."""
-        import app.main as m
-
-        orig = m.LLM_PROVIDER
-        m.LLM_PROVIDER = "mock"
-        try:
-            resp = client.post(
-                "/extract",
-                json={
-                    "document_id": "test-123",
-                    "text": "The AN/MPQ-53 radar operates in C-band.",
-                    "template_group": "equipment",
-                    "mode": "entities",
-                },
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert len(data["entities"]) > 0
-            assert data["relationships"] == []
-        finally:
-            m.LLM_PROVIDER = orig
-
-    def test_legacy_no_group(self, client):
-        """Request with no template_group should still work (backward compat)."""
-        import app.main as m
-
-        orig = m.LLM_PROVIDER
-        m.LLM_PROVIDER = "mock"
-        try:
-            resp = client.post(
-                "/extract",
-                json={
-                    "document_id": "test-123",
-                    "text": "Some text.",
-                },
-            )
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "entities" in data
-            assert "relationships" in data
-        finally:
-            m.LLM_PROVIDER = orig
-
-    def test_invalid_group_returns_422(self, client):
-        resp = client.post(
-            "/extract",
-            json={
-                "document_id": "test-123",
-                "text": "Some text.",
-                "template_group": "nonexistent",
-                "mode": "entities",
-            },
-        )
-        assert resp.status_code == 422
-
-    def test_invalid_mode_returns_422(self, client):
-        resp = client.post(
-            "/extract",
-            json={
-                "document_id": "test-123",
-                "text": "Some text.",
-                "mode": "invalid_mode",
-            },
-        )
-        assert resp.status_code == 422
-
-    def test_health_includes_groups(self, client):
-        resp = client.get("/health")
+class TestExtractAll:
+    def test_returns_networkx_graph(self, client):
+        resp = client.post("/extract-all", json={
+            "document_id": "test-001",
+            "docling_document_json": {"schema_name": "DoclingDocument", "version": "1.0"},
+        })
         assert resp.status_code == 200
         data = resp.json()
-        assert "groups" in data
-        assert set(data["groups"]) == {"reference", "equipment", "rf_signal", "weapon", "operational"}
+        assert "graph" in data
+        assert "nodes" in data["graph"]
+        assert "links" in data["graph"]
+
+    def test_returns_metadata(self, client):
+        resp = client.post("/extract-all", json={
+            "document_id": "test-001",
+            "docling_document_json": {"schema_name": "DoclingDocument"},
+        })
+        data = resp.json()
+        assert data["metadata"]["node_count"] == 2
+        assert data["metadata"]["edge_count"] == 1
+
+    def test_rejects_missing_document_id(self, client):
+        resp = client.post("/extract-all", json={"docling_document_json": {}})
+        assert resp.status_code == 422
+
+    def test_rejects_missing_docling_document(self, client):
+        resp = client.post("/extract-all", json={"document_id": "test"})
+        assert resp.status_code == 422
+
+
+class TestHealth:
+    def test_health_returns_ok(self, client):
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
