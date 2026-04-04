@@ -1,4 +1,14 @@
 import pytest
+import yaml
+from pathlib import Path
+from pydantic import BaseModel
+
+ONTOLOGY_PATH = Path(__file__).parent.parent.parent.parent / "ontology" / "ontology.yaml"
+
+
+def _load_ontology():
+    with open(ONTOLOGY_PATH) as f:
+        return yaml.safe_load(f)
 
 
 class TestGraphIdFieldsDerivation:
@@ -49,3 +59,77 @@ class TestGraphIdFieldsDerivation:
         from app.template_builder import derive_graph_id_fields
         props = {"name": {"type": "string"}, "component_id": {"type": "string"}}
         assert derive_graph_id_fields("COMPONENT", props) == ["name"]
+
+
+class TestBuildTemplates:
+    def test_builds_model_for_entity_type(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        assert "RADAR_SYSTEM" in templates
+        assert issubclass(templates["RADAR_SYSTEM"], BaseModel)
+
+    def test_model_has_graph_id_fields(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        assert model_cls.model_config.get("graph_id_fields") == ["system_name"]
+
+    def test_model_has_typed_fields(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        fields = model_cls.model_fields
+        assert "system_name" in fields
+        assert "nomenclature" in fields
+        assert "radar_type" in fields
+
+    def test_all_fields_optional_except_identity(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        fields = model_cls.model_fields
+        # system_name is identity — required (no default)
+        assert fields["system_name"].is_required()
+        # nomenclature is not identity — optional
+        assert not fields["nomenclature"].is_required()
+
+    def test_field_descriptions_from_ontology(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        desc = model_cls.model_fields["system_name"].description
+        assert desc and len(desc) > 0
+
+    def test_all_ontology_entity_types_have_templates(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        # Only entity_types with properties (not relationship types)
+        entity_types = [
+            et for et in ontology["entity_types"]
+            if et.get("properties", {}).get("properties")
+        ]
+        for et in entity_types:
+            name = et["name"]
+            safe_name = "TABLE_REF" if name == "TABLE" else name
+            assert safe_name in templates, f"Missing template for {name}"
+
+    def test_reserved_word_table_mapped(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        assert "TABLE" not in templates
+        assert "TABLE_REF" in templates
+
+    def test_model_instantiation(self):
+        from app.template_builder import build_templates
+        ontology = _load_ontology()
+        templates = build_templates(ontology)
+        model_cls = templates["RADAR_SYSTEM"]
+        instance = model_cls(system_name="Tombstone")
+        assert instance.system_name == "Tombstone"
