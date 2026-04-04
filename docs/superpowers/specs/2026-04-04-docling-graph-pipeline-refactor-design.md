@@ -306,7 +306,7 @@ CREATE INDEX ON TrustedTextChunk (text_embedding) LSM_VECTOR METADATA {
 ### New vertex types
 
 TextChunk: chunk_id (FK to PostgreSQL), document_id, page_number, modality, classification, text_embedding (LIST, 1024-dim)
-ImageChunk: chunk_id (FK to PostgreSQL), document_id, artifact_id, page_number, description, image_embedding (LIST, 512-dim)
+ImageChunk: chunk_id (FK to PostgreSQL), document_id, artifact_id, page_number, image_embedding (LIST, 512-dim) -- description stays in PostgreSQL
 TrustedTextChunk: chunk_id, document_id, content_text, text_embedding (LIST, 1024-dim), source, classification
 CommunityReport: community_id, membership_hash, title, summary, member_count, key_entities, key_relationships, report_embedding (LIST, 1024-dim), model_name, generated_at
 

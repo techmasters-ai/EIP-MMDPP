@@ -44,7 +44,7 @@ Entity vertices are shared across documents via MERGE on identity fields. They d
 | name | STRING | MANDATORY | Human-readable identifier (populated from primary identity field) |
 | entity_type | STRING | MANDATORY | Ontology entity type |
 | canonical_name | STRING | | Canonicalized form (set during canonicalization) |
-| confidence | DOUBLE | | Highest confidence seen across all extractions |
+| extraction_confidence | DOUBLE | | Highest extraction confidence seen across all extractions (named to avoid collision with ontology domain properties like ASSERTION.confidence) |
 | created_at | DATETIME | | Record creation time |
 | updated_at | DATETIME | | Last modification time |
 
@@ -76,7 +76,7 @@ Relationship edges can be established by multiple documents:
 | Property | Type | Required | Purpose |
 |----------|------|----------|---------|
 | document_ids | LIST | MANDATORY | All documents that established this relationship |
-| confidence | DOUBLE | | Highest confidence seen |
+| extraction_confidence | DOUBLE | | Highest extraction confidence seen |
 | created_at | DATETIME | | Record creation time |
 | updated_at | DATETIME | | Last modification time |
 
@@ -87,7 +87,7 @@ These are document-scoped:
 | Property | Type | Required | Purpose |
 |----------|------|----------|---------|
 | document_id | STRING | MANDATORY | Which document this edge belongs to |
-| confidence | DOUBLE | | Extraction confidence |
+| extraction_confidence | DOUBLE | | Extraction confidence |
 | created_at | DATETIME | | Record creation time |
 
 EXTRACTED_FROM edges additionally carry:
@@ -155,7 +155,7 @@ EXTRACTED_FROM edges additionally carry:
 
 **Structural vertex types (system-internal, not from ontology):**
 - TextChunk: chunk_id (FK to PostgreSQL), document_id, page_number, modality, classification, text_embedding (LIST, 1024-dim BGE) -- replaces ChunkRef for text. PostgreSQL remains authoritative for chunk content; ArcadeDB carries embedding + filter metadata.
-- ImageChunk: chunk_id (FK to PostgreSQL), document_id, artifact_id, page_number, description, image_embedding (LIST, 512-dim CLIP) -- replaces ChunkRef for images.
+- ImageChunk: chunk_id (FK to PostgreSQL), document_id, artifact_id, page_number, image_embedding (LIST, 512-dim CLIP) -- replaces ChunkRef for images. Description stays in PostgreSQL.
 - TrustedTextChunk: chunk_id, document_id, content_text, text_embedding (LIST, 1024-dim BGE), source, classification -- trusted-data semantic search (replaces Qdrant eip_trusted_text collection).
 - Document: document_id, title, upload_datetime, document_datetime
 - Alias: alias_name
@@ -214,7 +214,7 @@ app/services/arcadedb_community.py   -- Community detection + LLM reports
 Everything upstream (pipeline, retrieval, query profiles, API endpoints) depends only on this interface.
 
 Methods:
-- Node operations: upsert_node, upsert_nodes_batch, upsert_document_node, upsert_chunk_ref
+- Node operations: upsert_node, upsert_nodes_batch, upsert_document_node, create_text_chunk_vertex, create_image_chunk_vertex
 - Edge operations: upsert_relationship, upsert_relationships_batch, create_structural_edge, batch_create_entity_chunk_edges
 - Query operations: search_nodes, get_neighborhood, get_neighborhood_graph, get_ontology_linked_chunks, get_graph_stats
 - Document lifecycle: delete_document_graph
@@ -325,13 +325,9 @@ Also removed from app/schemas/retrieval.py:
 - _MODE_MAP backward-compat entries for graphrag_local, graphrag_global, graphrag_drift
 - Add "global" to _MODE_MAP if backward compat is maintained
 
-### Qdrant collection for community reports
+### Community report vector search
 
-A new Qdrant collection `eip_community_reports` stores embeddings of community report summaries for global query vector search:
-- Created by arcadedb_community.py during first community detection run
-- Dimension: 1024 (BGE-large, matching text chunk embeddings)
-- Distance: Cosine
-- Payload: community_id, title, member_count, generated_at
+Community report embeddings are stored on CommunityReport vertices in ArcadeDB with a `report_embedding` property and LSM_VECTOR index (see Addendum: Qdrant Elimination). Searched via `vectorNeighbors('CommunityReport[report_embedding]', :query_vector, :top_k)`.
 
 ### Scheduling & triggers
 
@@ -482,17 +478,27 @@ Integration tests (8): tests/integration/test_arcadedb_integration.py, tests/int
 
 ### Files modified (35+ files)
 
-Config: app/config.py, app/main.py, app/db/session.py
-Schemas: app/schemas/retrieval.py
-API: retrieval.py, graph_store.py, sources.py, agent.py, query_profiles.py, governance.py, trusted_data.py
+Config: app/config.py (remove Qdrant/Neo4j settings, remove pgvector settings, add ArcadeDB/community settings), app/main.py (remove Qdrant bootstrap, remove Neo4j bootstrap), app/db/session.py (remove Qdrant client init, remove Neo4j driver init, add GraphStore init)
+Schemas: app/schemas/retrieval.py, app/schemas/trusted_data.py (remove qdrant_point_id from response schema)
+API: retrieval.py, graph_store.py, sources.py, agent.py, query_profiles.py, governance.py (re-embed path: write to ArcadeDB via graph_store.set_vertex_embedding instead of chunk.embedding), trusted_data.py
 Services: query_profiles.py, canonicalization.py
 Workers: pipeline.py (derive_ontology_graph, derive_text_chunks_and_embeddings, derive_image_embeddings, derive_structure_links, purge), celery_app.py, trusted_data_tasks.py
-Models: app/models/retrieval.py (remove qdrant_point_id), app/models/trusted_data.py (remove qdrant_point_id)
-Docker: docker-compose.yml (remove neo4j + qdrant services), docker-compose.test.yml, docker/docling/Dockerfile, docker/docling-graph/Dockerfile
+Models: app/models/retrieval.py (remove `from pgvector.sqlalchemy import Vector`, drop `embedding` columns, drop `qdrant_point_id` columns), app/models/trusted_data.py (drop `qdrant_point_id`)
+Docker: docker-compose.yml (remove neo4j + qdrant services), docker-compose.test.yml, docker/docling/Dockerfile, docker/docling-graph/Dockerfile, docker/postgres/init/01_extensions.sql (remove pgvector extension), docker/postgres/Dockerfile (remove pgvector installation if present)
 Env: env.example, .env.test
 Frontend: client.ts, QueryPage.tsx, QueryProfileRegistryPage.tsx, GraphExplorer.tsx, App.tsx
 Other: manage.sh, .gitignore, example_queries.py, README.md, VERIFICATION_CHECKLIST.md, pyproject.toml, uv.lock
 Tests: test_config.py, test_query_coverage.py, test_retrieval_schemas.py, test_startup_bootstrap.py, tests/conftest.py
+
+### New Alembic migrations
+
+1. Drop `embedding` (Vector) column from `retrieval.text_chunks`
+2. Drop `embedding` (Vector) column from `retrieval.image_chunks`
+3. Drop `qdrant_point_id` column from `retrieval.text_chunks`
+4. Drop `qdrant_point_id` column from `retrieval.image_chunks`
+5. Drop `qdrant_point_id` column from trusted-data model (if applicable)
+6. Add `community_runs` table to `retrieval` schema
+7. Remove `pgvector` extension from PostgreSQL (DROP EXTENSION IF EXISTS vector)
 
 ### Dependencies
 
@@ -560,7 +566,7 @@ MinIO: object storage (uploaded docs, extracted images)
 
 ## Addendum: Provenance Model (Revised)
 
-Entity nodes are shared across documents via MERGE on (name, entity_type). They do NOT carry a mandatory singular source_document_id. Provenance is tracked via EXTRACTED_FROM edges.
+Entity nodes are shared across documents via MERGE on (entity_type, identity_fields...). The `name` field is a display/search property, NOT the merge key. Entities do NOT carry a mandatory singular source_document_id. Provenance is tracked via EXTRACTED_FROM edges.
 
 ### Entity vertex provenance
 
@@ -635,7 +641,7 @@ Every non-pipeline Neo4j touch point explicitly mapped to GraphStore:
 
 | Current code | Current behavior | GraphStore replacement |
 |---|---|---|
-| sources.py:494 (document hard-delete) | Cypher DELETE on Document/ChunkRef nodes | graph_store.delete_document_graph(document_id) |
+| sources.py:494 (document hard-delete) | Cypher DELETE on Document/TextChunk/ImageChunk nodes | graph_store.delete_document_graph(document_id) |
 | pipeline.py:1546 (purge_document) | Cypher DELETE on structural subgraph | graph_store.delete_document_graph_sync(document_id) |
 | graph_store.py:27 (manual entity ingest) | get_neo4j_async_driver() + upsert_node() | graph_store.upsert_node() |
 | graph_store.py:61 (manual relationship ingest) | get_neo4j_async_driver() + upsert_relationship() | graph_store.upsert_relationship() |
@@ -651,7 +657,7 @@ Current Cypher:
 ```cypher
 MATCH (root:Entity {name: $name, entity_type: 'RADAR_SYSTEM'})
 MATCH (root)-[:HAS_COMPONENT]->(component:Entity)
-OPTIONAL MATCH (component)-[:EXTRACTED_FROM]->(chunk:ChunkRef)
+OPTIONAL MATCH (component)-[:EXTRACTED_FROM]->(chunk:TextChunk)
 RETURN component, collect(chunk.chunk_id) AS evidence
 ```
 
@@ -703,7 +709,12 @@ ORDER BY score DESC LIMIT :top_k
 ### Celery worker startup
 
 1. Create sync ArcadeDBClient (httpx sync)
-2. No schema sync (API handles that)
+2. No full schema sync (API handles that)
+3. Graph-writing tasks call `graph_store.ensure_ready_sync()` before first write:
+   - Verify database exists (retry with backoff if not)
+   - Verify required vertex/edge types exist (retry if not)
+   - If types missing after retries, raise and let Celery retry the task
+   - Idempotent and safe for concurrent workers
 
 ### Celery Beat schedule changes
 
