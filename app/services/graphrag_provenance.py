@@ -415,38 +415,6 @@ def build_provenance(
     cr_parquet = data.get("community_reports", pd.DataFrame())
     comm_parquet = data.get("communities", pd.DataFrame())
 
-    # Basic search: no reports, just text units
-    if strategy in ("graphrag_basic", "basic"):
-        ctx_sources = _ensure_df(context.get("sources", pd.DataFrame()))
-        if ctx_sources.empty:
-            return []
-        tu_df = data.get("text_units", pd.DataFrame())
-        doc_df = data.get("documents", pd.DataFrame())
-        tu_hrid_to_uuid = _build_hrid_to_uuid_map(tu_df)
-        text_units = []
-        for _, row in ctx_sources.iterrows():
-            hrid = row.get("id")
-            uuid = tu_hrid_to_uuid.get(int(hrid)) if hrid is not None else None
-            doc_id = None
-            if uuid and not tu_df.empty:
-                parquet_rows = tu_df[tu_df["id"] == uuid]
-                if not parquet_rows.empty:
-                    doc_id = parquet_rows.iloc[0].get("document_id")
-            text_units.append({
-                "id": int(hrid) if hrid is not None else 0,
-                "text": str(row.get("text", "")),
-                "source_documents": _resolve_doc(doc_id, doc_df),
-            })
-        return [{
-            "report_id": None,
-            "report_title": None,
-            "report_content": None,
-            "entities": [],
-            "relationships": [],
-            "text_units": text_units,
-            "covariates": [],
-        }]
-
     # No reports in context -> empty provenance
     if ctx_reports.empty:
         return []

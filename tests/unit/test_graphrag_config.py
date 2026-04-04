@@ -29,7 +29,6 @@ class TestGraphRAGSettings:
         assert isinstance(s.graphrag_local_response_type, str) and s.graphrag_local_response_type
         assert isinstance(s.graphrag_global_response_type, str) and s.graphrag_global_response_type
         assert isinstance(s.graphrag_drift_response_type, str) and s.graphrag_drift_response_type
-        assert isinstance(s.graphrag_basic_response_type, str) and s.graphrag_basic_response_type
         assert s.graphrag_dynamic_community_selection is True
         assert s.graphrag_dry_run is False
 

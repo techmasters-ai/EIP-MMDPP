@@ -26,7 +26,6 @@ def _mock_settings(**overrides):
     s.graphrag_local_response_type = "Detailed explanation"
     s.graphrag_global_response_type = "Multiple Paragraphs"
     s.graphrag_drift_response_type = "In-depth analysis"
-    s.graphrag_basic_response_type = "Concise answer"
     s.graphrag_dynamic_community_selection = True
     s.graphrag_dry_run = False
     for k, v in overrides.items():
@@ -193,17 +192,3 @@ class TestDriftSearch:
         assert result["response"] == ""
 
 
-class TestBasicSearch:
-    @patch("app.services.graphrag_service._load_search_data")
-    @patch("app.services.graphrag_service.get_settings")
-    def test_returns_results(self, mock_gs, mock_load):
-        from app.services.graphrag_service import basic_search
-
-        mock_gs.return_value = _mock_settings()
-        mock_load.return_value = _make_mock_search_data()
-
-        with patch("app.services.graphrag_service._run_basic_search") as mock_run:
-            mock_run.return_value = ("Basic answer", {"chunks": []})
-            result = basic_search("simple query")
-
-        assert result["response"] == "Basic answer"

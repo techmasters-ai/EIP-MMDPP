@@ -4,7 +4,7 @@ Covers:
 - _text_vector_search (basic text search via Qdrant)
 - _image_vector_search (image search via Qdrant)
 - _multi_modal_pipeline (hybrid text+image search)
-- _graphrag_local_query, _graphrag_global_query, _graphrag_drift_query, _graphrag_basic_query
+- _graphrag_local_query, _graphrag_global_query, _graphrag_drift_query
 - _merge_seed_results (result merging)
 - _build_qdrant_filters (filter builder)
 - _apply_reranker (cross-encoder reranking)
@@ -578,53 +578,6 @@ class TestGraphRAGDriftQuery:
             assert results == []
 
 
-class TestGraphRAGBasicQuery:
-    """Tests for _graphrag_basic_query."""
-
-    @pytest.mark.asyncio
-    async def test_no_query_text_returns_empty(self):
-        from app.api.v1.retrieval import _graphrag_basic_query
-        from app.schemas.retrieval import UnifiedQueryRequest
-
-        body = UnifiedQueryRequest.model_construct(
-            query_text=None, query_image="base64data", strategy="graphrag_basic",
-            modality_filter="all", top_k=10, include_context=True,
-        )
-        db = AsyncMock()
-        results = await _graphrag_basic_query(db, body)
-        assert results == []
-
-    @pytest.mark.asyncio
-    async def test_returns_basic_result(self):
-        from app.api.v1.retrieval import _graphrag_basic_query
-
-        mock_basic = MagicMock(return_value={
-            "response": "Based on text units: missile range data...",
-            "context": {"chunks": ["c1"]},
-        })
-
-        with patch("app.services.graphrag_service.basic_search", mock_basic):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_basic")
-            results = await _graphrag_basic_query(db, body)
-
-        assert len(results) == 1
-        assert results[0].context["source"] == "graphrag_basic"
-        assert results[0].score == 1.0
-
-    @pytest.mark.asyncio
-    async def test_empty_response_returns_empty_list(self):
-        from app.api.v1.retrieval import _graphrag_basic_query
-
-        mock_basic = MagicMock(return_value={"response": "", "context": {}})
-
-        with patch("app.services.graphrag_service.basic_search", mock_basic):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_basic")
-            results = await _graphrag_basic_query(db, body)
-            assert results == []
-
-
 # ---------------------------------------------------------------------------
 # 5. _merge_seed_results
 # ---------------------------------------------------------------------------
@@ -845,34 +798,6 @@ class TestGraphRAGServiceDriftSearch:
 
         mock_gs.return_value = _mock_settings()
         result = drift_search("test")
-        assert result["response"] == ""
-
-
-class TestGraphRAGServiceBasicSearch:
-    @patch("app.services.graphrag_service._load_search_data")
-    @patch("app.services.graphrag_service.build_graphrag_config")
-    @patch("app.services.graphrag_service.get_settings")
-    def test_success(self, mock_gs, mock_config, mock_load):
-        from app.services.graphrag_service import basic_search
-
-        mock_gs.return_value = _mock_settings()
-        mock_data = MagicMock()
-        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
-        mock_load.return_value = mock_data
-
-        with patch("app.services.graphrag_service._run_basic_search") as mock_run:
-            mock_run.return_value = ("Basic answer", {"chunks": []})
-            result = basic_search("simple query")
-
-        assert result["response"] == "Basic answer"
-
-    @patch("app.services.graphrag_service._load_search_data", side_effect=Exception("oops"))
-    @patch("app.services.graphrag_service.get_settings")
-    def test_exception_returns_empty(self, mock_gs, mock_load):
-        from app.services.graphrag_service import basic_search
-
-        mock_gs.return_value = _mock_settings()
-        result = basic_search("test")
         assert result["response"] == ""
 
 
@@ -1109,22 +1034,6 @@ class TestUnifiedQueryRouting:
 
         mock_drift.assert_awaited_once()
         assert response.strategy == "graphrag_drift"
-
-    @pytest.mark.asyncio
-    @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
-    @patch("app.api.v1.retrieval._graphrag_basic_query", new_callable=AsyncMock)
-    async def test_graphrag_basic_strategy(self, mock_basic, mock_urls, _mock_doc_names, _mock_page_numbers):
-        from app.api.v1.retrieval import unified_query
-
-        mock_basic.return_value = [_make_item(score=1.0, modality="graphrag_response")]
-        mock_urls.return_value = None
-
-        body = _make_body(strategy="graphrag_basic", top_k=5, include_context=False)
-        db = AsyncMock()
-        response = await unified_query(body, db)
-
-        mock_basic.assert_awaited_once()
-        assert response.strategy == "graphrag_basic"
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)

@@ -62,8 +62,6 @@ async def unified_query(
             results = await _graphrag_global_query(db, body)
         elif body.strategy == QueryStrategy.graphrag_drift:
             results = await _graphrag_drift_query(db, body)
-        elif body.strategy == QueryStrategy.graphrag_basic:
-            results = await _graphrag_basic_query(db, body)
         elif body.strategy == QueryStrategy.hybrid:
             results = await _multi_modal_pipeline(db, body)
         else:
@@ -906,40 +904,6 @@ async def _graphrag_drift_query(
 
 
 # ---------------------------------------------------------------------------
-# GraphRAG basic search -- vector search over text units
-# ---------------------------------------------------------------------------
-
-async def _graphrag_basic_query(
-    db: AsyncSession, body: UnifiedQueryRequest
-) -> list[QueryResultItem]:
-    """Vector search over text units (Microsoft GraphRAG basic)."""
-    if not body.query_text:
-        return []
-
-    from app.services.graphrag_service import basic_search
-
-    loop = asyncio.get_running_loop()
-    graphrag_result = await loop.run_in_executor(
-        None, basic_search, body.query_text,
-    )
-
-    response = graphrag_result.get("response", "")
-    if not response:
-        return []
-
-    return [QueryResultItem(
-        score=1.0,
-        modality="graphrag_response",
-        content_text=response,
-        classification="UNCLASSIFIED",
-        context={
-            "source": "graphrag_basic",
-            "graphrag_context": graphrag_result.get("context", {}),
-        },
-    )]
-
-
-# ---------------------------------------------------------------------------
 # Batch chunk lookups (fixes N+1 query pattern)
 # ---------------------------------------------------------------------------
 
@@ -1195,7 +1159,7 @@ async def get_graphrag_settings():
 # Async GraphRAG query — submit / status / result
 # ---------------------------------------------------------------------------
 
-_GRAPHRAG_STRATEGIES = {"graphrag_local", "graphrag_global", "graphrag_drift", "graphrag_basic"}
+_GRAPHRAG_STRATEGIES = {"graphrag_local", "graphrag_global", "graphrag_drift"}
 
 _CELERY_STATUS_MAP = {
     "PENDING": "pending",

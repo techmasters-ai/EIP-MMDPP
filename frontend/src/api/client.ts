@@ -51,7 +51,7 @@ export interface QueryResultItem {
   image_url?: string;
 }
 
-export type QueryStrategy = "basic" | "hybrid" | "graphrag_local" | "graphrag_global" | "graphrag_drift" | "graphrag_basic";
+export type QueryStrategy = "basic" | "hybrid" | "graphrag_local" | "graphrag_global" | "graphrag_drift";
 export type ModalityFilter = "all" | "text" | "image";
 
 export interface UnifiedQueryResponse {

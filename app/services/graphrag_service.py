@@ -504,18 +504,6 @@ def _run_drift_search(config, data: dict, query: str, community_level: int,
     ))
 
 
-def _run_basic_search(config, data: dict, query: str, response_type: str):
-    """Run GraphRAG basic search."""
-    from graphrag.api import basic_search as graphrag_basic
-
-    return _run_async(graphrag_basic(
-        config=config,
-        text_units=data["text_units"],
-        response_type=response_type,
-        query=query,
-    ))
-
-
 def _serialize_context(context):
     """Convert GraphRAG context (may contain DataFrames) to JSON-serializable form."""
     if isinstance(context, pd.DataFrame):
@@ -617,28 +605,6 @@ def drift_search(query: str) -> dict:
             "error": "drift_search_failed",
             "error_detail": "Internal DRIFT search error; check worker logs.",
         }
-
-
-def basic_search(query: str) -> dict:
-    """Vector search over text units."""
-    from app.services.graphrag_provenance import build_provenance
-
-    try:
-        settings = get_settings()
-        config = build_graphrag_config(settings)
-        data = _load_search_data(settings)
-        response, context = _run_basic_search(
-            config, data, query, settings.graphrag_basic_response_type,
-        )
-        provenance = build_provenance(context, data, "graphrag_basic")
-        return {
-            "response": _strip_think_tags(response),
-            "provenance": provenance,
-            "context": _serialize_context(context),
-        }
-    except Exception:
-        logger.exception("GraphRAG basic search failed")
-        return {"response": "", "context": {}}
 
 
 # ---------------------------------------------------------------------------

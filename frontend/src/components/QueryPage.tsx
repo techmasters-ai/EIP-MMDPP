@@ -73,13 +73,6 @@ const BASE_MODES: RetrievalModePreset[] = [
     label: "GraphRAG Drift",
     description: "Community-informed expansion search (DRIFT)",
   },
-  {
-    kind: "retrieval",
-    key: "graphrag_basic",
-    strategy: "graphrag_basic",
-    label: "GraphRAG Basic",
-    description: "Vector search over GraphRAG text units",
-  },
 ];
 
 const MODALITY_OPTIONS: { value: ModalityFilter; label: string }[] = [
@@ -609,11 +602,10 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   const isGraphRAGLocal = ctx?.source === "graphrag_local";
   const isGraphRAGGlobal = ctx?.source === "graphrag_global";
   const isGraphRAGDrift = ctx?.source === "graphrag_drift";
-  const isGraphRAGBasic = ctx?.source === "graphrag_basic";
   const isGraphProfile = ctx?.source === "graph_profile";
 
   // Show graph toggle only for GraphRAG results that contain entity/graph data
-  const isGraphRAG = isGraphRAGLocal || isGraphRAGGlobal || isGraphRAGDrift || isGraphRAGBasic;
+  const isGraphRAG = isGraphRAGLocal || isGraphRAGGlobal || isGraphRAGDrift;
   const graphEntities = isGraphRAG || isGraphProfile ? extractGraphEntities(ctx) : [];
   const hasGraphData = graphEntities.length > 0;
   const provenance = (ctx?.provenance as ProvenanceEntry[] | undefined) || [];
@@ -671,8 +663,6 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
     provenanceLabel = `GraphRAG Global: ${title || "community report"}`;
   } else if (isGraphRAGDrift) {
     provenanceLabel = "GraphRAG Drift: community-informed expansion";
-  } else if (isGraphRAGBasic) {
-    provenanceLabel = "GraphRAG Basic: text unit vector search";
   } else if (isGraphProfile) {
     const profileLabel = ctx?.profile_label as string | undefined;
     const sectionLabel = ctx?.section_label as string | undefined;

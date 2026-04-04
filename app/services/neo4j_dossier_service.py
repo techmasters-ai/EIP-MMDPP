@@ -106,15 +106,14 @@ SYSTEM_ALIASES_QUERY = """
 
 SYSTEM_COMPONENTS_QUERY = """
     MATCH (root:Entity {id: $root_id})
-    CALL {
-        WITH root
+    CALL (root) {
         MATCH path = (root)-[:HAS_SUBSYSTEM|HAS_COMPONENT|HAS_STAGE*1..3]->(n:Entity)
         RETURN n, [rel IN relationships(path) | type(rel)] AS rel_types, length(path) AS hop_count
         UNION
-        WITH root
         MATCH path = (root)<-[:PART_OF*1..3]-(n:Entity)
         RETURN n, [rel IN relationships(path) | type(rel)] AS rel_types, length(path) AS hop_count
     }
+    WITH n, rel_types, hop_count
     WHERE n.id IS NOT NULL AND n.id <> $root_id
     RETURN n.id AS node_id,
            n.name AS name,
@@ -128,8 +127,7 @@ SYSTEM_COMPONENTS_QUERY = """
 
 SYSTEM_RF_QUERY = """
     MATCH (root:Entity {id: $root_id})
-    CALL {
-        WITH root
+    CALL (root) {
         MATCH path = (root)-[
             :OPERATES_IN_BAND|:USES_WAVEFORM|:USES_MODULATION|:EMITS|:RADIATES|:RECEIVES|
             :HAS_SIGNATURE|:HAS_SCAN|:HAS_ANTENNA|:HAS_TRANSMITTER|:HAS_RECEIVER|
@@ -137,7 +135,6 @@ SYSTEM_RF_QUERY = """
         ]->(n:Entity)
         RETURN n, [rel IN relationships(path) | type(rel)] AS rel_types, length(path) AS hop_count
         UNION
-        WITH root
         MATCH (root)-[:HAS_SUBSYSTEM|HAS_COMPONENT|HAS_STAGE]->(part:Entity)
         MATCH path = (part)-[
             :OPERATES_IN_BAND|:USES_WAVEFORM|:USES_MODULATION|:EMITS|:RADIATES|:RECEIVES|
@@ -146,6 +143,7 @@ SYSTEM_RF_QUERY = """
         ]->(n:Entity)
         RETURN n, ['HAS_SUBSYSTEM'] + [rel IN relationships(path) | type(rel)] AS rel_types, 1 + length(path) AS hop_count
     }
+    WITH n, rel_types, hop_count
     WHERE n.id IS NOT NULL
       AND n.id <> $root_id
       AND n.entity_type IN $rf_types
@@ -161,15 +159,13 @@ SYSTEM_RF_QUERY = """
 
 SYSTEM_PERFORMANCE_QUERY = """
     MATCH (root:Entity {id: $root_id})
-    CALL {
-        WITH root
+    CALL (root) {
         MATCH path = (root)-[
             :HAS_PERFORMANCE|:PROVIDES|:SPECIFIED_BY|:TRACKS|:GUIDES|:DETECTS|:ENGAGES|
             :CUES|:DESIGNATES|:SUPPORTS_ENGAGEMENT_OF|:HAS_GUIDANCE|:HAS_TIMELINE*1..2
         ]->(n:Entity)
         RETURN n, [rel IN relationships(path) | type(rel)] AS rel_types, length(path) AS hop_count
         UNION
-        WITH root
         MATCH (root)-[:HAS_SUBSYSTEM|HAS_COMPONENT|HAS_STAGE]->(part:Entity)
         MATCH path = (part)-[
             :HAS_PERFORMANCE|:PROVIDES|:SPECIFIED_BY|:TRACKS|:GUIDES|:DETECTS|:ENGAGES|
@@ -177,6 +173,7 @@ SYSTEM_PERFORMANCE_QUERY = """
         ]->(n:Entity)
         RETURN n, ['HAS_SUBSYSTEM'] + [rel IN relationships(path) | type(rel)] AS rel_types, 1 + length(path) AS hop_count
     }
+    WITH n, rel_types, hop_count
     WHERE n.id IS NOT NULL
       AND n.id <> $root_id
       AND n.entity_type IN $performance_types

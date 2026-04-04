@@ -174,7 +174,6 @@ class Settings(BaseSettings):
     graphrag_local_response_type: str = "Detailed explanation"
     graphrag_global_response_type: str = "Multiple Paragraphs"
     graphrag_drift_response_type: str = "In-depth analysis"
-    graphrag_basic_response_type: str = "Concise answer"
     # Dynamic community selection (auto-select relevant communities)
     graphrag_dynamic_community_selection: bool = True
     # Dry-run mode: validate config and export data without running indexing

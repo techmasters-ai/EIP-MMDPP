@@ -15,7 +15,6 @@ class QueryStrategy(str, Enum):
     graphrag_local = "graphrag_local"
     graphrag_global = "graphrag_global"
     graphrag_drift = "graphrag_drift"
-    graphrag_basic = "graphrag_basic"
 
 
 class ModalityFilter(str, Enum):
@@ -33,7 +32,6 @@ _MODE_MAP: dict[str, tuple[QueryStrategy, ModalityFilter]] = {
     "graphrag_local": (QueryStrategy.graphrag_local, ModalityFilter.all),
     "graphrag_global": (QueryStrategy.graphrag_global, ModalityFilter.all),
     "graphrag_drift": (QueryStrategy.graphrag_drift, ModalityFilter.all),
-    "graphrag_basic": (QueryStrategy.graphrag_basic, ModalityFilter.all),
     # Also accept new strategy names directly as mode
     "basic": (QueryStrategy.basic, ModalityFilter.all),
     "hybrid": (QueryStrategy.hybrid, ModalityFilter.all),

@@ -402,26 +402,6 @@ class TestBuildProvenanceGlobal:
 
 
 # ---------------------------------------------------------------------------
-# Basic search provenance
-# ---------------------------------------------------------------------------
-
-class TestBuildProvenanceBasic:
-    def test_basic_has_text_units_no_report(self, sample_data):
-        from app.services.graphrag_provenance import build_provenance
-        context = {
-            "sources": pd.DataFrame({
-                "id": [0, 1],
-                "text": ["The SA-2 Guideline...", "Spoon Rest..."],
-            }),
-        }
-        result = build_provenance(context, sample_data, "graphrag_basic")
-        assert len(result) == 1
-        assert result[0]["report_id"] is None
-        assert result[0]["report_title"] is None
-        assert len(result[0]["text_units"]) == 2
-
-
-# ---------------------------------------------------------------------------
 # Think-tag stripping
 # ---------------------------------------------------------------------------
 
@@ -465,16 +445,6 @@ class TestBuildProvenanceEdgeCases:
         assert len(result) == 1
         assert result[0]["report_content"] == "Some content"
         assert result[0]["entities"] == []
-
-    def test_null_document_id(self, sample_data):
-        from app.services.graphrag_provenance import build_provenance
-        sample_data["text_units"].at[0, "document_id"] = None
-        context = {
-            "sources": pd.DataFrame({"id": [0], "text": ["Some text"]}),
-        }
-        result = build_provenance(context, sample_data, "graphrag_basic")
-        assert len(result) == 1
-        assert result[0]["text_units"][0]["source_documents"] == []
 
     def test_covariates_keyed_as_claims(self, sample_data, local_context):
         from app.services.graphrag_provenance import build_provenance

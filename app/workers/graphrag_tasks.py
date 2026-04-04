@@ -140,14 +140,13 @@ def run_graphrag_query_task(request_dict: dict) -> dict:
     or a dict with an 'error' key on failure.
     """
     from app.services.graphrag_service import (
-        basic_search, drift_search, global_search, local_search,
+        drift_search, global_search, local_search,
     )
 
     _search_fns = {
         "graphrag_local": local_search,
         "graphrag_global": global_search,
         "graphrag_drift": drift_search,
-        "graphrag_basic": basic_search,
     }
 
     strategy = request_dict.get("strategy", "")

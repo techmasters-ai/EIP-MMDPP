@@ -18,13 +18,13 @@ pytestmark = pytest.mark.unit
 class TestQueryStrategy:
     def test_all_strategy_values_exist(self):
         from app.schemas.retrieval import QueryStrategy
-        expected = {"basic", "hybrid", "graphrag_local", "graphrag_global", "graphrag_drift", "graphrag_basic"}
+        expected = {"basic", "hybrid", "graphrag_local", "graphrag_global", "graphrag_drift"}
         actual = {m.value for m in QueryStrategy}
         assert actual == expected
 
-    def test_has_six_members(self):
+    def test_has_five_members(self):
         from app.schemas.retrieval import QueryStrategy
-        assert len(QueryStrategy) == 6
+        assert len(QueryStrategy) == 5
 
     def test_strategy_string_values(self):
         from app.schemas.retrieval import QueryStrategy

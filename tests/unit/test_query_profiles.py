@@ -273,7 +273,7 @@ class TestCompileTraversalArm:
         cypher = _compile_traversal_arm(traversal)
 
         # Must reference the root alias and produce outward arrow.
-        assert "WITH root" in cypher
+        assert "(root)" in cypher
         assert "->(" in cypher
         assert "[:HAS_COMPONENT*1..2]" in cypher
         assert "RETURN n" in cypher

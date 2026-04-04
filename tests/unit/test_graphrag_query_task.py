@@ -115,20 +115,6 @@ class TestRunGraphRAGQueryTask:
         assert result["total"] == 1
         assert result["results"][0]["context"]["source"] == "graphrag_drift"
 
-    @patch("app.services.graphrag_service.basic_search")
-    def test_basic_search_success(self, mock_search):
-        mock_search.return_value = {
-            "response": "Basic text unit match.",
-            "context": {},
-        }
-        from app.workers.graphrag_tasks import run_graphrag_query_task
-        result = run_graphrag_query_task(
-            {"strategy": "graphrag_basic", "query_text": "missile"}
-        )
-        assert result["strategy"] == "graphrag_basic"
-        assert result["total"] == 1
-        assert result["results"][0]["context"]["source"] == "graphrag_basic"
-
     @patch("app.services.graphrag_service.local_search")
     def test_communities_not_indexed_error(self, mock_search):
         mock_search.return_value = {"response": "", "error": "communities_not_indexed"}
@@ -179,16 +165,6 @@ class TestRunGraphRAGQueryTask:
         )
         assert "error" in result
         assert "drift_search_failed" in result["error"]
-
-    @patch("app.services.graphrag_service.basic_search")
-    def test_basic_empty_returns_no_error(self, mock_search):
-        mock_search.return_value = {"response": ""}
-        from app.workers.graphrag_tasks import run_graphrag_query_task
-        result = run_graphrag_query_task(
-            {"strategy": "graphrag_basic", "query_text": "test"}
-        )
-        assert "error" not in result
-        assert result["total"] == 0
 
     @patch("app.services.graphrag_service.global_search")
     def test_global_empty_returns_error(self, mock_search):

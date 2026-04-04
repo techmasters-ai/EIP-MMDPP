@@ -119,12 +119,15 @@ _ALIAS_QUERY = """
     MATCH (node:Entity)-[:HAS_ALIAS]->(a:Alias)
     WHERE toLower(a.alias_name) = toLower($query)
       AND (size($root_types) = 0 OR node.entity_type IN $root_types)
+    OPTIONAL MATCH (node)-[r]->(:Entity)
+    WITH node, count(r) AS rel_count
     RETURN node.id AS node_id,
            node.name AS name,
            node.canonical_name AS canonical_name,
            node.entity_type AS entity_type,
            properties(node) AS properties,
-           100.0 AS score
+           100.0 AS score,
+           rel_count
     LIMIT 10
 """
 
@@ -132,12 +135,32 @@ _FULLTEXT_QUERY = """
     CALL db.index.fulltext.queryNodes('entity_name_fulltext', $query)
     YIELD node, score
     WHERE size($root_types) = 0 OR node.entity_type IN $root_types
+    OPTIONAL MATCH (node)-[r]->(:Entity)
+    WITH node, score, count(r) AS rel_count
     RETURN node.id AS node_id,
            node.name AS name,
            node.canonical_name AS canonical_name,
            node.entity_type AS entity_type,
            properties(node) AS properties,
-           score
+           score,
+           rel_count
+    LIMIT 10
+"""
+
+_ALIAS_OF_QUERY = """
+    MATCH (other:Entity)
+    WHERE toLower(other.name) = toLower($query)
+    MATCH (node:Entity)-[:ALIAS_OF]-(other)
+    WHERE size($root_types) = 0 OR node.entity_type IN $root_types
+    OPTIONAL MATCH (node)-[r]->(:Entity)
+    WITH node, count(r) AS rel_count
+    RETURN node.id AS node_id,
+           node.name AS name,
+           node.canonical_name AS canonical_name,
+           node.entity_type AS entity_type,
+           properties(node) AS properties,
+           99.0 AS score,
+           rel_count
     LIMIT 10
 """
 
@@ -145,6 +168,25 @@ _ALIASES_BY_NODE_ID_QUERY = """
     MATCH (node:Entity {id: $node_id})
     OPTIONAL MATCH (node)-[:HAS_ALIAS]->(a:Alias)
     RETURN collect(DISTINCT a.alias_name) AS aliases
+"""
+
+_COEXTRACTED_FALLBACK_QUERY = """
+    MATCH (origin:Entity {id: $node_id})-[:EXTRACTED_FROM]->(c:ChunkRef)<-[:EXTRACTED_FROM]-(sibling:Entity)
+    WHERE sibling.id <> $node_id
+      AND (size($root_types) = 0 OR sibling.entity_type IN $root_types)
+    WITH sibling, count(DISTINCT c) AS shared_chunks
+    OPTIONAL MATCH (sibling)-[r]->(m:Entity)
+    WITH sibling, shared_chunks, count(r) AS rel_count
+    WHERE rel_count > 0
+    RETURN sibling.id AS node_id,
+           sibling.name AS name,
+           sibling.canonical_name AS canonical_name,
+           sibling.entity_type AS entity_type,
+           properties(sibling) AS properties,
+           toFloat(shared_chunks) AS score,
+           rel_count
+    ORDER BY rel_count DESC, shared_chunks DESC
+    LIMIT 5
 """
 
 _EVIDENCE_REFS_QUERY = """
@@ -418,7 +460,7 @@ def _normalize(value: str) -> str:
 
 async def _run_neo4j_query(driver, cypher: str, **params) -> list[dict[str, Any]]:
     async with driver.session() as session:
-        result = await session.run(cypher, **params)
+        result = await session.run(cypher, parameters=params)
         return await result.data()
 
 
@@ -431,11 +473,12 @@ def _select_best_candidate(
 
     wanted = _normalize(requested_name)
 
-    def _rank(candidate: dict[str, Any]) -> tuple[int, float]:
+    def _rank(candidate: dict[str, Any]) -> tuple[int, int, float]:
         name = _normalize(str(candidate.get("name", "")))
         canonical = _normalize(str(candidate.get("canonical_name", "") or ""))
         exact = 1 if wanted in {name, canonical} else 0
-        return exact, float(candidate.get("score", 0.0) or 0.0)
+        connected = 1 if int(candidate.get("rel_count", 0) or 0) > 0 else 0
+        return exact, connected, float(candidate.get("score", 0.0) or 0.0)
 
     return max(candidates, key=_rank)
 
@@ -538,6 +581,12 @@ async def resolve_root_entity(
         query=request.query_text,
         root_types=root_types,
     )
+    alias_of_matches = await _run_neo4j_query(
+        driver,
+        _ALIAS_OF_QUERY,
+        query=request.query_text,
+        root_types=root_types,
+    )
     fulltext_matches = await _run_neo4j_query(
         driver,
         _FULLTEXT_QUERY,
@@ -545,11 +594,32 @@ async def resolve_root_entity(
         root_types=root_types,
     )
 
-    candidate = _select_best_candidate(alias_matches + fulltext_matches, request.query_text)
+    all_matches = alias_matches + alias_of_matches + fulltext_matches
+    candidate = _select_best_candidate(all_matches, request.query_text)
     if candidate is None:
         raise QueryRootNotFoundError(
             f"No matching root entity found for '{request.query_text}'"
         )
+
+    # If the best candidate has no domain relationships, try co-extracted
+    # siblings from ALL zero-rel candidates (different entity nodes for the
+    # same name may be linked to different chunks).
+    if int(candidate.get("rel_count", 0) or 0) == 0:
+        all_candidates = all_matches
+        zero_rel_ids = list(dict.fromkeys(
+            c["node_id"] for c in all_candidates
+            if c.get("node_id") and int(c.get("rel_count", 0) or 0) == 0
+        ))
+        for node_id in zero_rel_ids:
+            fallback_rows = await _run_neo4j_query(
+                driver,
+                _COEXTRACTED_FALLBACK_QUERY,
+                node_id=node_id,
+                root_types=root_types,
+            )
+            if fallback_rows:
+                candidate = fallback_rows[0]
+                break
 
     resolved = _build_entity_result(candidate)
     if request.include_aliases and resolved.node_id:
@@ -582,7 +652,7 @@ def _step_pattern(start_alias: str, end_alias: str, step: QueryProfileStep) -> s
 
 
 def _compile_traversal_arm(traversal: QueryProfileTraversal) -> str:
-    lines = ["WITH root"]
+    lines = []
     rel_exprs: list[str] = []
     hop_exprs: list[str] = []
     current_alias = "root"
@@ -614,9 +684,10 @@ def _compile_section_query(profile: QueryProfileDefinition) -> str:
     )
     return f"""
     MATCH (root:Entity {{id: $root_id}})
-    CALL {{
+    CALL (root) {{
         {arms}
     }}
+    WITH n, rel_types, hop_count
     WHERE n.id IS NOT NULL
       AND n.id <> $root_id
       AND (size($target_entity_types) = 0 OR n.entity_type IN $target_entity_types)

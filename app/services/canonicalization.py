@@ -159,6 +159,11 @@ def _fuzzy_match(driver, name: str, entity_type: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Property-based alias derivation
+# ---------------------------------------------------------------------------
+
+# Entity properties whose values should become aliases for the entity.
 def _set_canonical_name(driver, name: str, entity_type: str, canonical: str) -> None:
     """Set the canonical_name property on an entity node."""
     query = """
