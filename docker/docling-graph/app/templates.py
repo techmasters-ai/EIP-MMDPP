@@ -169,7 +169,6 @@ def build_templates(ontology: dict[str, Any]) -> dict[str, dict[str, type[BaseMo
     # docling-graph expects a single Pydantic model class per run_pipeline call.
     # We store individual entity models grouped by layer so the service can
     # iterate through each entity type within a group.
-    from app.prompts import GROUP_PROMPTS
 
     # Add ontology descriptions to entity model docstrings
     for et in entity_types:
