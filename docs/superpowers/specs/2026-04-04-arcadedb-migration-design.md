@@ -1,16 +1,21 @@
 # ArcadeDB Migration Design
 
 **Date:** 2026-04-04
-**Status:** Approved
-**Scope:** Remove Microsoft GraphRAG, replace Neo4j with ArcadeDB, add community-based global query
+**Status:** Approved (Revised)
+**Scope:** Remove Microsoft GraphRAG, replace Neo4j with ArcadeDB, eliminate Qdrant (vectors consolidated into ArcadeDB), add community-based global query
 
 ## Overview
 
 Major architectural refactor:
 1. Completely remove Microsoft GraphRAG (library, services, UI, tests, config)
 2. Replace Neo4j with ArcadeDB using server/client model
-3. Add ArcadeDB-native global query via community detection + LLM summarization
-4. Preserve ingest pipeline behavior, multimodal query, query profiles, and API response schemas
+3. Eliminate Qdrant -- vector search consolidated into ArcadeDB's native LSMVectorIndex (HNSW)
+4. Add ArcadeDB-native global query via community detection + LLM summarization
+5. Preserve ingest pipeline behavior, multimodal query, query profiles, and API response schemas
+
+**Companion spec:** See `2026-04-04-docling-graph-pipeline-refactor-design.md` for the Docling-Graph service refactor that executes before this migration.
+
+**Migration strategy:** Full reingest of all documents after refactor. No data migration from Neo4j or Qdrant. ArcadeDB starts empty.
 
 ## Design Decisions
 
@@ -423,10 +428,251 @@ Frontend: client.ts, QueryPage.tsx, QueryProfileRegistryPage.tsx, GraphExplorer.
 Other: manage.sh, .gitignore, example_queries.py, README.md, VERIFICATION_CHECKLIST.md, pyproject.toml, uv.lock
 Tests: test_config.py, test_query_coverage.py, test_retrieval_schemas.py, test_startup_bootstrap.py, tests/conftest.py
 
+### Additional files deleted (Qdrant elimination)
+
+app/services/qdrant_store.py
+
+### Additional files modified (Qdrant elimination)
+
+app/workers/pipeline.py (derive_text_chunks_and_embeddings, derive_image_embeddings: Qdrant -> ArcadeDB vertex properties)
+docker-compose.yml (remove qdrant service)
+
 ### Dependencies
 
-Removed: neo4j>=5.25.0, graphrag>=3.0.0, pyarrow>=14.0.0
+Removed: neo4j>=5.25.0, graphrag>=3.0.0, pyarrow>=14.0.0, qdrant-client>=1.13.0
 Added: httpx>=0.27.0
+
+## Addendum: Qdrant Elimination
+
+Qdrant is eliminated. ArcadeDB's native LSMVectorIndex (HNSW/Vamana via JVector 4.0.0) replaces all vector search.
+
+### Vector vertex types and indexes
+
+TextChunk: chunk_id, document_id, content_text, page_number, modality, classification, text_embedding (LIST, 1024-dim BGE)
+ImageChunk: chunk_id, document_id, artifact_id, page_number, description, image_embedding (LIST, 512-dim CLIP)
+CommunityReport: community_id, membership_hash, title, summary, member_count, key_entities, key_relationships, report_embedding (LIST, 1024-dim BGE), model_name, generated_at
+
+```sql
+CREATE INDEX ON TextChunk (text_embedding) LSM_VECTOR METADATA {dimensions: 1024, similarity: 'COSINE', quantization: 'INT8', addHierarchy: true}
+CREATE INDEX ON ImageChunk (image_embedding) LSM_VECTOR METADATA {dimensions: 512, similarity: 'COSINE', quantization: 'INT8'}
+CREATE INDEX ON CommunityReport (report_embedding) LSM_VECTOR METADATA {dimensions: 1024, similarity: 'COSINE', quantization: 'INT8', addHierarchy: true}
+```
+
+TextChunk and ImageChunk replace the lightweight ChunkRef pointer vertex. Chunks ARE vertices with content and embeddings -- no data duplication across stores.
+
+### Cross-model queries
+
+Hybrid retrieval uses native ArcadeDB cross-model queries:
+
+```sql
+-- Semantic search + graph expansion in one query
+SELECT chunk.*, entity.name, entity.entity_type
+FROM (
+    SELECT expand(vectorNeighbors('TextChunk[text_embedding]', :query_vector, :top_k))
+) AS chunk
+LET entity = chunk.in('EXTRACTED_FROM')
+```
+
+Same API endpoints, same UnifiedQueryResponse contract. Internal implementation uses single-database queries instead of multi-service round trips.
+
+### Docker changes
+
+Removed: qdrant service, qdrant_data volume, qdrant_test_data volume
+Removed env vars: QDRANT_URL, QDRANT_HTTP_PORT, QDRANT_GRPC_PORT, QDRANT_API_KEY
+
+### Architecture: 2 stores instead of 4
+
+PostgreSQL: relational data, pipeline state, audit trail
+ArcadeDB: graph + vectors + search + community detection
+MinIO: object storage (uploaded docs, extracted images)
+
+## Addendum: Provenance Model (Revised)
+
+Entity nodes are shared across documents via MERGE on (name, entity_type). They do NOT carry a mandatory singular source_document_id. Provenance is tracked via EXTRACTED_FROM edges.
+
+### Entity vertex provenance
+
+- `id` STRING (MANDATORY) -- UUID assigned at creation
+- `name` STRING (MANDATORY)
+- `entity_type` STRING (MANDATORY)
+- `canonical_name` STRING
+- `confidence` DOUBLE -- highest confidence seen across all extractions
+- `created_at` DATETIME
+- `updated_at` DATETIME
+- No mandatory source_document_id on entity vertices
+
+### Provenance via EXTRACTED_FROM edges
+
+Each EXTRACTED_FROM edge carries:
+- `document_id` STRING (MANDATORY) -- which document this extraction came from
+- `page_numbers` LIST -- pages where entity was found
+- `upload_datetime` DATETIME
+- `document_datetime` DATETIME
+- `confidence` DOUBLE
+- `created_at` DATETIME
+
+An entity mentioned in 3 documents has 3+ EXTRACTED_FROM edges pointing to different TextChunk/ImageChunk vertices.
+
+### Document deletion
+
+1. Delete Document vertex for that document
+2. Delete TextChunk/ImageChunk vertices where document_id matches
+3. Delete CONTAINS_TEXT, CONTAINS_IMAGE, SAME_PAGE edges for that document
+4. Delete EXTRACTED_FROM edges where document_id matches
+5. Orphan cleanup: delete entity vertices with zero remaining EXTRACTED_FROM edges
+
+### Relationship edge provenance
+
+Relationship edges (ontology relationships between entities) carry:
+- `document_ids` LIST -- all documents that established this relationship
+- `confidence` DOUBLE -- highest confidence seen
+- `created_at` DATETIME
+- `updated_at` DATETIME
+
+Document deletion removes the document_id from the list. If the list becomes empty, the edge is deleted.
+
+## Addendum: Expanded GraphStore Protocol
+
+The GraphStore Protocol includes these additional methods for root resolution and canonicalization:
+
+```python
+# Root resolution (full chain: alias -> fulltext -> relationship-count tie-break -> co-extraction fallback)
+async def resolve_root_entity(self, query_text: str, root_types: list[str], top_k: int) -> list[GraphEntityResult]: ...
+
+# Alias operations
+async def create_alias(self, entity_type: str, entity_name: str, alias_name: str) -> None: ...
+async def search_by_alias(self, alias_name: str, entity_types: list[str]) -> list[GraphEntityResult]: ...
+async def set_canonical_name(self, entity_type: str, entity_name: str, canonical_name: str) -> None: ...
+
+# Fulltext with scoring
+async def fulltext_search(self, query_text: str, entity_types: list[str] | None, top_k: int) -> list[tuple[GraphEntityResult, float]]: ...
+
+# Tie-breaking and fallback
+async def get_relationship_count(self, entity_type: str, entity_name: str) -> int: ...
+async def get_co_extracted_entities(self, document_id: str, entity_types: list[str]) -> list[GraphEntityResult]: ...
+
+# Vector operations (replaces Qdrant)
+async def vector_search(self, vertex_type: str, embedding_property: str, query_vector: list[float], top_k: int, filters: dict | None = None) -> list[dict]: ...
+async def set_vertex_embedding(self, vertex_type: str, vertex_id: str, embedding_property: str, embedding: list[float]) -> None: ...
+async def cross_model_search(self, query_vector: list[float], top_k: int, expand_edges: list[str] | None = None, filters: dict | None = None) -> list[dict]: ...
+```
+
+## Addendum: Non-Pipeline Neo4j Dependencies
+
+Every non-pipeline Neo4j touch point explicitly mapped to GraphStore:
+
+| Current code | Current behavior | GraphStore replacement |
+|---|---|---|
+| sources.py:494 (document hard-delete) | Cypher DELETE on Document/ChunkRef nodes | graph_store.delete_document_graph(document_id) |
+| pipeline.py:1546 (purge_document) | Cypher DELETE on structural subgraph | graph_store.delete_document_graph_sync(document_id) |
+| graph_store.py:27 (manual entity ingest) | get_neo4j_async_driver() + upsert_node() | graph_store.upsert_node() |
+| graph_store.py:61 (manual relationship ingest) | get_neo4j_async_driver() + upsert_relationship() | graph_store.upsert_relationship() |
+| graph_store.py:92 (graph query) | get_neo4j_async_driver() + search_nodes_async() | graph_store.search_nodes() |
+| graph_store.py:137 (neighborhood) | get_neo4j_async_driver() + get_neighborhood_graph_async() | graph_store.get_neighborhood_graph() |
+| governance.py:351 (comment about AGE) | Comment only, no Neo4j code | Remove comment |
+
+## Addendum: Query Translation Examples
+
+### System components traversal
+
+Current Cypher:
+```cypher
+MATCH (root:Entity {name: $name, entity_type: 'RADAR_SYSTEM'})
+MATCH (root)-[:HAS_COMPONENT]->(component:Entity)
+OPTIONAL MATCH (component)-[:EXTRACTED_FROM]->(chunk:ChunkRef)
+RETURN component, collect(chunk.chunk_id) AS evidence
+```
+
+ArcadeDB SQL:
+```sql
+SELECT component.name, component.entity_type, component.*,
+       list(chunk.chunk_id) AS evidence
+FROM (
+    SELECT expand(out('HAS_COMPONENT')) FROM RADAR_SYSTEM WHERE name = :name
+) AS component
+LET chunk = component.out('EXTRACTED_FROM')
+GROUP BY component.name, component.entity_type
+```
+
+### Multi-step traversal (2-hop with evidence)
+
+ArcadeDB SQL:
+```sql
+SELECT target.name, target.entity_type, target.*,
+       target.out('EXTRACTED_FROM').chunk_id AS evidence_chunks
+FROM (
+    SELECT expand(out('HAS_SUBSYSTEM', 'HAS_COMPONENT'){1,3})
+    FROM RADAR_SYSTEM WHERE name = :name
+) AS target
+```
+
+### Root resolution (fulltext + alias)
+
+ArcadeDB SQL:
+```sql
+-- Fulltext search on entity names
+SELECT *, $score AS score FROM BaseEntity
+WHERE name LUCENE :query_text
+AND entity_type IN [:root_types]
+ORDER BY score DESC LIMIT :top_k
+```
+
+## Addendum: Startup Bootstrap and Worker Scheduler
+
+### API startup (main.py lifespan)
+
+1. Create ArcadeDBClient (httpx async)
+2. Create/open database if not exists
+3. Load active ontology from PostgreSQL
+4. `graph_store.sync_schema(ontology)` -- create/update vertex/edge types, properties, indexes, vector indexes
+5. `graph_store.ensure_indexes()` -- verify all indexes exist
+6. Log "ArcadeDB schema synced, N types, M indexes"
+
+### Celery worker startup
+
+1. Create sync ArcadeDBClient (httpx sync)
+2. No schema sync (API handles that)
+
+### Celery Beat schedule changes
+
+Removed: graphrag-indexing, graphrag-auto-tune
+Added: community-detection (configurable interval, default 60 min)
+Kept: directory watcher, other existing schedules
+
+### Worker shutdown
+
+Removed: close_graphrag_loop() cleanup
+Added: graph_store.close_sync() to release httpx client
+
+## Addendum: Schema Sync Triggers (Complete List)
+
+Schema sync fires on:
+1. API startup
+2. Ontology registry activation (POST /registries/{id}/activate)
+3. Active registry update (PUT /registries/{id} when registry is_active=true)
+4. Manual endpoint (POST /v1/admin/schema/sync)
+
+## Addendum: Transport Decision
+
+httpx (HTTP/JSON) is the canonical transport. One transport, one code path. The PostgreSQL wire protocol is documented in the risk matrix as a contingency but is NOT implemented unless HTTP proves unworkable.
+
+## Addendum: API Breaking Changes (Explicit)
+
+UnifiedQueryResponse schema preserved. Query profile response schemas unchanged.
+
+Intentional breaking changes (per GraphRAG removal requirements):
+- QueryStrategy enum: graphrag_local, graphrag_global, graphrag_drift removed. global added.
+- GraphRAGJobSubmitResponse, GraphRAGJobStatusResponse removed.
+- Async GraphRAG job endpoints removed.
+- _MODE_MAP backward-compat entries for graphrag_* removed. "global" added.
+
+## Addendum: Community Detection Graph Projection
+
+Community detection runs on a projected subgraph of domain entities only:
+
+Include vertex types: all ontology entity types (BaseEntity subtypes excluding Document, TextChunk, ImageChunk, Alias, CommunityReport)
+Include edge types: all ontology relationship types (50 types)
+Exclude: structural vertices (Document, TextChunk, ImageChunk, Alias, CommunityReport) and structural edges (CONTAINS_TEXT, CONTAINS_IMAGE, SAME_PAGE, EXTRACTED_FROM, HAS_ALIAS)
 
 ## Risks and Mitigations
 
@@ -449,12 +695,17 @@ Added: httpx>=0.27.0
 6. Multimodal query works with ArcadeDB-backed data
 7. Query profiles and prescribable ontology work with ArcadeDB
 8. Query profile API response schemas unchanged
-9. Every node and edge contains source_document_id and page_number
-10. Both upload_datetime and document_datetime persisted
+9. Entity provenance tracked via EXTRACTED_FROM edges with document_id and page_numbers
+10. Both upload_datetime and document_datetime persisted on EXTRACTED_FROM edges
 11. .env and env.example cleaned of GraphRAG/Neo4j variables
 12. Docker configuration cleaned of GraphRAG/Neo4j services
 13. Tests pass with full unit and integration coverage
 14. No stale imports, dead code, or orphaned config
 15. Global query via community detection works end-to-end
 16. Community detection is schedulable, manually triggerable, and has post-ingest hook
-17. Schema syncs from ontology and updates when ontology changes
+17. Schema syncs from ontology and updates when ontology changes (including active registry PUT edits)
+18. No remaining runtime dependencies on Qdrant
+19. All vector search uses ArcadeDB LSMVectorIndex
+20. Text and image embeddings stored as ArcadeDB vertex properties
+21. Cross-model graph+vector queries used by hybrid retrieval strategy
+22. Document deletion correctly handles shared entity vertices via EXTRACTED_FROM edge removal + orphan cleanup
