@@ -16,7 +16,7 @@ Major architectural refactor:
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Query language | ArcadeDB SQL | Native, fullest feature coverage |
+| Query language | ArcadeDB SQL (primary), Cypher for graph algorithms | SQL for graph operations and DDL; Cypher CALL...YIELD syntax for community detection algorithms (algo.louvain, algo.leiden). HTTP API language parameter set per request. |
 | Global query | Community detection (Louvain/Leiden) + LLM reports | Pre-computed, fast query-time, uses ArcadeDB native algorithms |
 | Python client | httpx async (HTTP/JSON API) | Matches FastAPI async pattern, no extra driver dependency |
 | Schema mode | Schema-full | Catches errors early, enables query optimization, matches structured ontology |
@@ -49,7 +49,7 @@ Every vertex and edge gets these properties automatically:
 - DOCUMENT: title, document_id, document_number, classification, publication_date, source_type, issuing_org, language
 - SECTION: heading, page_start, page_end
 - FIGURE: figure_id, caption, page, figure_type
-- TABLE_REF: table_id, caption, page (TABLE_REF avoids ArcadeDB reserved word TABLE)
+- TABLE_REF: table_id, caption, page (TABLE_REF is the ArcadeDB type name; the ontology YAML retains `TABLE` as the entity name. The mapping is handled in `arcadedb_schema.py` via a RESERVED_WORD_MAP: `{"TABLE": "TABLE_REF"}`. All downstream code uses the ontology name `TABLE` -- the rename is transparent, applied only at the ArcadeDB schema layer. Validation matrix lookups, extraction, and query profiles all use `TABLE`; the GraphStore translates to `TABLE_REF` internally.)
 - SPREADSHEET: workbook_name, sheet_name
 - ASSERTION: assertion_text, confidence, extraction_method, review_status
 - STANDARD: designation, title, issuing_org, version, supersedes
@@ -165,12 +165,13 @@ Methods:
 
 ### ArcadeDBClient (transport layer)
 
-Low-level httpx wrapper for ArcadeDB HTTP API:
-- Token-based auth with automatic refresh on 401
-- query() for read-only operations (POST /api/v1/query)
-- command() for write operations (POST /api/v1/command)
-- batch() for bulk import (POST /api/v1/batch)
-- begin/commit/rollback for explicit transactions
+Low-level httpx wrapper for ArcadeDB HTTP API. All endpoints include the database name as a path parameter.
+
+- Token-based auth: POST /api/v1/login with Basic Auth returns bearer token (expires after configurable inactivity, default 30 min). On 401, the client re-authenticates via /api/v1/login (not a refresh -- ArcadeDB has no refresh endpoint). Client stores credentials to re-authenticate automatically.
+- query(database, ...) for read-only operations: POST /api/v1/query/{database}
+- command(database, ...) for write operations: POST /api/v1/command/{database}
+- batch(database, ...) for bulk import: POST /api/v1/batch/{database}
+- begin(database)/commit(database, session_id)/rollback(database, session_id) for explicit transactions
 - Both async (httpx.AsyncClient for FastAPI) and sync (httpx.Client for Celery) variants
 - Singleton lifecycle: created at startup, closed at shutdown
 
@@ -244,9 +245,22 @@ Configurable via COMMUNITY_REPORT_LLM_PROMPT env var. Template supports {entitie
 4. LLM synthesis: combine reports into comprehensive answer citing source documents
 5. Return as UnifiedQueryResponse with strategy="global", modality="community_report"
 
-### Query strategy enum
+### Query strategy enum and schema cleanup
 
-basic, hybrid, global (removed: graphrag_local, graphrag_global, graphrag_drift)
+QueryStrategy enum becomes: basic, hybrid, global (removed: graphrag_local, graphrag_global, graphrag_drift)
+
+Also removed from app/schemas/retrieval.py:
+- GraphRAGJobSubmitResponse, GraphRAGJobStatusResponse classes (only used for async GraphRAG queries)
+- _MODE_MAP backward-compat entries for graphrag_local, graphrag_global, graphrag_drift
+- Add "global" to _MODE_MAP if backward compat is maintained
+
+### Qdrant collection for community reports
+
+A new Qdrant collection `eip_community_reports` stores embeddings of community report summaries for global query vector search:
+- Created by arcadedb_community.py during first community detection run
+- Dimension: 1024 (BGE-large, matching text chunk embeddings)
+- Distance: Cosine
+- Payload: community_id, title, member_count, generated_at
 
 ### Scheduling & triggers
 
@@ -320,16 +334,43 @@ Docling and Docling-Graph install from local clone during Docker build (pip inst
 
 All repo/ directories are gitignored.
 
-### Volumes
+### Service dependency updates
 
-Removed: neo4j_data, graphrag_data
-Added: arcadedb_data
+All services that depended on `neo4j: condition: service_healthy` must change to `arcadedb: condition: service_healthy`:
+- api
+- worker (default mode)
+- worker-graph (split mode, currently line 366-367 in docker-compose.yml)
+
+### Volume and mount cleanup
+
+Volumes removed: neo4j_data, graphrag_data
+
+Volume mounts removed from api, worker, worker-graph, and beat services:
+- `graphrag_data:/app/graphrag_data` (present on api, worker, worker-graph, beat)
+- `./docker/neo4j:/docker-entrypoint-initdb.d` (on neo4j service, deleted with service)
+
+Volumes added: arcadedb_data
 
 ### Environment variables
 
 Removed: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_BOLT_PORT, NEO4J_HTTP_PORT, and all 20+ GRAPHRAG_* variables.
 
-Added: ARCADEDB_URL, ARCADEDB_USER, ARCADEDB_PASSWORD, ARCADEDB_DATABASE, ARCADEDB_HTTP_PORT, ARCADEDB_GRPC_PORT, and all COMMUNITY_* variables.
+Added (with defaults):
+- ARCADEDB_URL=http://arcadedb:2480
+- ARCADEDB_USER=root
+- ARCADEDB_PASSWORD=eip_arcadedb_secret
+- ARCADEDB_DATABASE=eip_knowledge_graph
+- ARCADEDB_HTTP_PORT=2480
+- ARCADEDB_GRPC_PORT=2424
+- COMMUNITY_DETECTION_ENABLED=true
+- COMMUNITY_DETECTION_INTERVAL_MINUTES=60
+- COMMUNITY_DETECTION_POST_INGEST_ENABLED=true
+- COMMUNITY_DETECTION_POST_INGEST_THRESHOLD=5
+- COMMUNITY_DETECTION_ALGORITHM=leiden (options: louvain, leiden)
+- COMMUNITY_DETECTION_RESOLUTION=1.0 (Leiden only; Louvain uses tolerance instead)
+- COMMUNITY_DETECTION_MAX_ITERATIONS=20
+- COMMUNITY_REPORT_LLM_MODEL=llama3.2
+- COMMUNITY_REPORT_LLM_PROMPT=(default military domain prompt)
 
 ### Celery Beat
 
@@ -338,33 +379,35 @@ Added: community-detection
 
 ## Section 7: Files Changed
 
-### Files deleted (34 files)
+### Files deleted (35 files)
 
-Services: graphrag_service.py, graphrag_config.py, graphrag_bridge.py, graphrag_prompts.py, graphrag_runtime_patches.py, graphrag_provenance.py, neo4j_graph.py, neo4j_dossier_service.py
+Services (8): app/services/graphrag_service.py, app/services/graphrag_config.py, app/services/graphrag_bridge.py, app/services/graphrag_prompts.py, app/services/graphrag_runtime_patches.py, app/services/graphrag_provenance.py, app/services/neo4j_graph.py, app/services/neo4j_dossier_service.py
 
-Workers: graphrag_tasks.py
+Workers (1): app/workers/graphrag_tasks.py
 
-Docker: docker/neo4j/init.cypher
+Docker (1 directory): docker/neo4j/ (contains init.cypher)
 
-Scripts: scripts/migrate_age_to_neo4j.py
+Scripts (1): scripts/migrate_age_to_neo4j.py
 
-Tests (15 files): test_graphrag_service.py, test_graphrag_config.py, test_graphrag_bridge.py, test_graphrag_provenance.py, test_graphrag_prompts.py, test_graphrag_runtime_patches.py, test_graphrag_query_task.py, test_neo4j_graph_operations.py, test_graph_service.py, test_neighborhood_graph.py, test_extracted_from_edges.py, test_upsert_relationships_batch.py, test_canonicalization.py, test_graph_store_api.py (integration), test_pipeline_graph.py (integration)
+Tests (15): tests/unit/test_graphrag_service.py, tests/unit/test_graphrag_config.py, tests/unit/test_graphrag_bridge.py, tests/unit/test_graphrag_provenance.py, tests/unit/test_graphrag_prompts.py, tests/unit/test_graphrag_runtime_patches.py, tests/unit/test_graphrag_query_task.py, tests/unit/test_neo4j_graph_operations.py, tests/unit/test_graph_service.py, tests/unit/test_neighborhood_graph.py, tests/unit/test_extracted_from_edges.py, tests/unit/test_upsert_relationships_batch.py, tests/unit/test_canonicalization.py, tests/integration/test_graph_store_api.py, tests/integration/test_pipeline_graph.py
 
-Docs (8 files): All GraphRAG plans and specs
+Docs (8): docs/superpowers/plans/2026-03-17-microsoft-graphrag-integration.md, docs/superpowers/plans/2026-03-18-graphrag-fixes-and-drift-basic.md, docs/superpowers/plans/2026-03-31-async-graphrag-queries.md, docs/superpowers/plans/2026-04-02-graphrag-context-provenance.md, docs/superpowers/plans/2026-04-02-graphrag-citation-provenance.md, docs/superpowers/specs/2026-03-31-async-graphrag-queries-design.md, docs/superpowers/specs/2026-04-02-graphrag-context-provenance-design.md, docs/superpowers/specs/2026-04-02-graphrag-citation-provenance-design.md
 
-### Files created (18 files)
+### Files created (33 files)
 
-Services: graph_store.py, arcadedb_client.py, arcadedb_graph.py, arcadedb_schema.py, arcadedb_community.py, dossier_service.py
+Services (6): app/services/graph_store.py, app/services/arcadedb_client.py, app/services/arcadedb_graph.py, app/services/arcadedb_schema.py, app/services/arcadedb_community.py, app/services/dossier_service.py
 
-Workers: community_tasks.py
+Workers (1): app/workers/community_tasks.py
 
-API: app/api/v1/community.py
+API (1): app/api/v1/community.py
 
-Migration: alembic/versions/XXXX_add_community_tables.py
+Docker (1): docker/arcadedb/Dockerfile
 
-Unit tests (10): test_arcadedb_client.py, test_arcadedb_graph.py, test_arcadedb_schema.py, test_arcadedb_community.py, test_community_tasks.py, test_graph_store_protocol.py, test_dossier_service.py, test_query_profiles_arcadedb.py, test_pipeline_graph_operations.py, test_pipeline_structure_links.py, test_pipeline_canonicalization.py, test_retrieval_global_query.py, test_retrieval_strategies.py, test_community_api.py, test_provenance_metadata.py
+Migration (1): alembic/versions/XXXX_add_community_tables.py
 
-Integration tests (8): test_arcadedb_integration.py, test_arcadedb_schema_sync_integration.py, test_arcadedb_batch_integration.py, test_arcadedb_community_integration.py, test_graph_store_api_integration.py, test_community_api_integration.py, test_query_profiles_integration.py, test_pipeline_graph_integration.py
+Unit tests (15): tests/unit/test_arcadedb_client.py, tests/unit/test_arcadedb_graph.py, tests/unit/test_arcadedb_schema.py, tests/unit/test_arcadedb_community.py, tests/unit/test_community_tasks.py, tests/unit/test_graph_store_protocol.py, tests/unit/test_dossier_service.py, tests/unit/test_query_profiles_arcadedb.py, tests/unit/test_pipeline_graph_operations.py, tests/unit/test_pipeline_structure_links.py, tests/unit/test_pipeline_canonicalization.py, tests/unit/test_retrieval_global_query.py, tests/unit/test_retrieval_strategies.py, tests/unit/test_community_api.py, tests/unit/test_provenance_metadata.py
+
+Integration tests (8): tests/integration/test_arcadedb_integration.py, tests/integration/test_arcadedb_schema_sync_integration.py, tests/integration/test_arcadedb_batch_integration.py, tests/integration/test_arcadedb_community_integration.py, tests/integration/test_graph_store_api_integration.py, tests/integration/test_community_api_integration.py, tests/integration/test_query_profiles_integration.py, tests/integration/test_pipeline_graph_integration.py
 
 ### Files modified (30+ files)
 
