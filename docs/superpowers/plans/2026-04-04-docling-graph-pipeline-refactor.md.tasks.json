@@ -1,0 +1,16 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-04-docling-graph-pipeline-refactor.md",
+  "tasks": [
+    {"id": 11, "subject": "Task 1: Template Builder — graph_id_fields derivation", "status": "pending"},
+    {"id": 12, "subject": "Task 2: Template Builder — Pydantic model generation", "status": "pending", "blockedBy": [11]},
+    {"id": 13, "subject": "Task 3: Template Builder — edge() fields from validation matrix", "status": "pending", "blockedBy": [12]},
+    {"id": 14, "subject": "Task 4: Config Builder — PipelineConfig from env vars", "status": "pending"},
+    {"id": 15, "subject": "Task 5: Schemas — new request/response models", "status": "pending", "blockedBy": [14]},
+    {"id": 16, "subject": "Task 6: Main.py — thin FastAPI wrapper", "status": "pending", "blockedBy": [13, 14, 15]},
+    {"id": 17, "subject": "Task 7: Delete obsolete files and update requirements", "status": "pending", "blockedBy": [16]},
+    {"id": 18, "subject": "Task 8: Validation pass — post-extraction relationship check", "status": "pending", "blockedBy": [16]},
+    {"id": 19, "subject": "Task 9: Update existing templates test", "status": "pending", "blockedBy": [17]},
+    {"id": 20, "subject": "Task 10: Integration test with mock pipeline", "status": "pending", "blockedBy": [16, 18]}
+  ],
+  "lastUpdated": "2026-04-04T18:00:00Z"
+}
