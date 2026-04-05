@@ -537,7 +537,7 @@ export function QueryProfileRegistryPage() {
           </div>
 
           <p className="text-sm text-muted" style={{ marginTop: 0 }}>
-            The ontology definition becomes the shared ontology source for ingest, GraphRAG extraction context,
+            The ontology definition becomes the shared ontology source for ingest, graph extraction context,
             and ontology-driven search helpers once its registry is active. Query profiles are deterministic search
             endpoints layered on top of that ontology.
           </p>
@@ -654,7 +654,7 @@ export function QueryProfileRegistryPage() {
                 />
                 <div className="text-sm text-muted" style={{ marginTop: "0.5rem", marginBottom: "1rem" }}>
                   Save and activate this registry before you create query profiles. The active ontology is what the
-                  query-profile builder, ingest path, GraphRAG extraction context, and ontology-weighted retrieval
+                  query-profile builder, ingest path, graph extraction context, and ontology-weighted retrieval
                   helpers will use.
                 </div>
               </div>

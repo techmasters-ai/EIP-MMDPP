@@ -39,7 +39,7 @@ export function App() {
           <div className="page">
             <h1 className="page-title">Graph Explorer</h1>
             <p className="page-subtitle">
-              Browse and add entities and relationships in the Neo4j knowledge graph.
+              Browse and add entities and relationships in the knowledge graph.
             </p>
             <GraphExplorer />
           </div>

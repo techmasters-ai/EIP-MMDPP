@@ -2,9 +2,6 @@ import React, { useState, useCallback, useEffect, useMemo } from "react";
 import {
   getActiveQueryProfiles,
   unifiedQuery,
-  submitGraphRAGQuery,
-  getGraphRAGQueryStatus,
-  getGraphRAGQueryResult,
   getGraphNeighborhood,
   getRetrievalSettings,
   searchQueryProfileDossier,
@@ -54,24 +51,10 @@ const BASE_MODES: RetrievalModePreset[] = [
   },
   {
     kind: "retrieval",
-    key: "graphrag_local",
-    strategy: "graphrag_local",
-    label: "GraphRAG Local",
-    description: "Entity-centric retrieval with community context reports",
-  },
-  {
-    kind: "retrieval",
-    key: "graphrag_global",
-    strategy: "graphrag_global",
-    label: "GraphRAG Global",
-    description: "Cross-community summarization for broad questions",
-  },
-  {
-    kind: "retrieval",
-    key: "graphrag_drift",
-    strategy: "graphrag_drift",
-    label: "GraphRAG Drift",
-    description: "Community-informed expansion search (DRIFT)",
+    key: "global",
+    strategy: "global",
+    label: "Global Research",
+    description: "Cross-community synthesis for broad research questions",
   },
 ];
 
@@ -158,84 +141,23 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
   );
 }
 
-/* ---------- GraphRAG Local: Entity explorer ---------- */
-function GraphRAGLocalDetail({ ctx }: { ctx: Record<string, unknown> }) {
-  const entity = ctx.entity as Record<string, unknown> | undefined;
-  const reports = ctx.community_reports as Array<Record<string, unknown>> | undefined;
+/* ---------- Global query: synthesized answer from community reports ---------- */
+function GlobalQueryDetail({ result }: { result: QueryResultItem }) {
+  const ctx = result.context as Record<string, unknown> | undefined;
+  const communities = ctx?.communities as Array<Record<string, unknown>> | undefined;
 
   return (
-    <div style={{ marginTop: "0.5rem" }}>
-      {entity && (
-        <div style={{ marginBottom: "0.75rem" }}>
-          <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
-            Entity: {String(entity.name || "")}
-            {entity.entity_type ? (
-              <span className="badge badge-info" style={{ marginLeft: "0.5rem" }}>
-                {String(entity.entity_type)}
-              </span>
-            ) : null}
-          </div>
-          <table style={{ fontSize: "0.85rem", borderCollapse: "collapse", width: "100%" }}>
-            <tbody>
-              {Object.entries(entity)
-                .filter(([k]) => k !== "name" && k !== "entity_type")
-                .map(([k, v]) => (
-                  <tr key={k} style={{ borderBottom: "1px solid var(--color-border, #e0e0e0)" }}>
-                    <td style={{ padding: "0.2rem 0.5rem", fontWeight: 500, whiteSpace: "nowrap", verticalAlign: "top" }}>{k}</td>
-                    <td style={{ padding: "0.2rem 0.5rem", wordBreak: "break-word" }}>
-                      {typeof v === "object" ? JSON.stringify(v) : String(v ?? "")}
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {reports && reports.length > 0 && (
-        <div>
-          <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>Community Reports</div>
-          {reports.map((r, i) => (
-            <div key={i} style={{ marginBottom: "0.5rem", padding: "0.5rem", background: "var(--color-bg-muted, #f5f5f5)", borderRadius: "4px" }}>
-              {r.title ? <div style={{ fontWeight: 500 }}>{String(r.title)}</div> : null}
-              {r.summary ? <div className="text-sm" style={{ marginTop: "0.25rem" }}>{String(r.summary)}</div> : null}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------- GraphRAG Global: Community report explorer ---------- */
-function GraphRAGGlobalDetail({ ctx }: { ctx: Record<string, unknown> }) {
-  const [showFull, setShowFull] = useState(false);
-  const reportText = ctx.report_text as string | undefined;
-
-  return (
-    <div style={{ marginTop: "0.5rem" }}>
-      <div style={{ marginBottom: "0.25rem" }}>
-        {ctx.community_title ? (
-          <span style={{ fontWeight: 600 }}>{String(ctx.community_title)}</span>
-        ) : null}
-        {ctx.level != null && (
-          <span className="text-xs text-muted" style={{ marginLeft: "0.5rem" }}>Level {String(ctx.level)}</span>
-        )}
-        {ctx.community_id ? (
-          <span className="text-xs text-muted" style={{ marginLeft: "0.5rem" }}>ID: {String(ctx.community_id)}</span>
-        ) : null}
+    <div className="space-y-4">
+      <div className="prose max-w-none">
+        {result.content_text || "No results"}
       </div>
-      {reportText && (
-        <>
-          <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>
-            {showFull ? reportText : reportText.slice(0, 500) + (reportText.length > 500 ? "\u2026" : "")}
-          </p>
-          {reportText.length > 500 && (
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowFull((v) => !v)}>
-              {showFull ? "Show less" : "Show full report"}
-            </button>
-          )}
-        </>
+      {communities && communities.length > 0 && (
+        <details className="mt-4">
+          <summary className="cursor-pointer text-sm text-gray-500">
+            Sources ({communities.length} communities)
+          </summary>
+          {/* Community source details */}
+        </details>
       )}
     </div>
   );
@@ -307,34 +229,12 @@ function MetadataDetail({ item }: { item: QueryResultItem }) {
   );
 }
 
-/** Extract entity names from GraphRAG context if graph data is present. */
+/** Extract entity names from graph profile context if present. */
 function extractGraphEntities(ctx: Record<string, unknown> | undefined): string[] {
   if (!ctx) return [];
   if (ctx.source === "graph_profile" && typeof ctx.entity_name === "string") {
     return [ctx.entity_name];
   }
-  const gctx = ctx.graphrag_context as Record<string, unknown> | undefined;
-  if (!gctx) return [];
-
-  // GraphRAG local/drift context includes entities as array of objects
-  const entities = gctx.entities as Array<Record<string, unknown>> | undefined;
-  if (Array.isArray(entities) && entities.length > 0) {
-    return entities
-      .map((e) => (e.title as string) || (e.name as string) || "")
-      .filter(Boolean);
-  }
-
-  // Fallback: check for reports with entity references
-  const reports = gctx.reports as Array<Record<string, unknown>> | undefined;
-  if (Array.isArray(reports)) {
-    const names: string[] = [];
-    for (const r of reports) {
-      const title = (r.title as string) || (r.entity_name as string);
-      if (title) names.push(title);
-    }
-    if (names.length > 0) return names;
-  }
-
   return [];
 }
 
@@ -599,14 +499,10 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
 
   const displayText = item.content_text;
   const ctx = item.context as Record<string, unknown> | undefined;
-  const isGraphRAGLocal = ctx?.source === "graphrag_local";
-  const isGraphRAGGlobal = ctx?.source === "graphrag_global";
-  const isGraphRAGDrift = ctx?.source === "graphrag_drift";
+  const isGlobal = ctx?.source === "global";
   const isGraphProfile = ctx?.source === "graph_profile";
 
-  // Show graph toggle only for GraphRAG results that contain entity/graph data
-  const isGraphRAG = isGraphRAGLocal || isGraphRAGGlobal || isGraphRAGDrift;
-  const graphEntities = isGraphRAG || isGraphProfile ? extractGraphEntities(ctx) : [];
+  const graphEntities = isGraphProfile ? extractGraphEntities(ctx) : [];
   const hasGraphData = graphEntities.length > 0;
   const provenance = (ctx?.provenance as ProvenanceEntry[] | undefined) || [];
 
@@ -655,14 +551,8 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   } else if (ctx?.source === "cross_modal") {
     const edge = ctx.edge_type as string | undefined;
     if (edge) provenanceLabel = `Via graph bridge: ${edge}`;
-  } else if (isGraphRAGLocal) {
-    const entityType = ctx.entity_type as string | undefined;
-    provenanceLabel = `GraphRAG Local: ${entityType || "entity"} match`;
-  } else if (isGraphRAGGlobal) {
-    const title = ctx.community_title as string | undefined;
-    provenanceLabel = `GraphRAG Global: ${title || "community report"}`;
-  } else if (isGraphRAGDrift) {
-    provenanceLabel = "GraphRAG Drift: community-informed expansion";
+  } else if (isGlobal) {
+    provenanceLabel = "Global Research: cross-community synthesis";
   } else if (isGraphProfile) {
     const profileLabel = ctx?.profile_label as string | undefined;
     const sectionLabel = ctx?.section_label as string | undefined;
@@ -746,7 +636,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         <p className="result-text">{preview}</p>
       )}
 
-      {/* GraphRAG graph view (when toggled and entity data present) */}
+      {/* Graph view (when toggled and entity data present) */}
       {graphOpen && (
         graphLoading ? (
           <div className="graph-view-container" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -765,11 +655,8 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         )
       )}
 
-      {/* GraphRAG Local: entity details always shown inline */}
-      {isGraphRAGLocal && ctx && <GraphRAGLocalDetail ctx={ctx} />}
-
-      {/* GraphRAG Global: community report inline */}
-      {isGraphRAGGlobal && ctx && <GraphRAGGlobalDetail ctx={ctx} />}
+      {/* Global query: synthesized answer */}
+      {isGlobal && <GlobalQueryDetail result={item} />}
 
       {/* Show details toggle — full text + all metadata */}
       <button
@@ -788,7 +675,7 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
               <p className="text-sm" style={{ whiteSpace: "pre-wrap" }}>{displayText}</p>
             </div>
           )}
-          {isGraphRAG && provenance.length > 0 && <ProvenancePanel provenance={provenance} />}
+          {provenance.length > 0 && <ProvenancePanel provenance={provenance} />}
           <MetadataDetail item={item} />
         </div>
       )}
@@ -812,20 +699,6 @@ export function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
-
-  const pollTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollTimeoutRef.current) {
-        clearTimeout(pollTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const isGraphRAG = (strategy: QueryStrategy) =>
-    strategy.startsWith("graphrag_");
 
   const allModes = useMemo(() => [...BASE_MODES, ...profileModes], [profileModes]);
 
@@ -863,7 +736,6 @@ export function QueryPage() {
   const retrievalSelected = isRetrievalMode(selected) ? selected : null;
   const selectedIsRetrieval = retrievalSelected !== null;
   const selectedIsGraphProfile = isGraphProfileMode(selected);
-  const selectedIsGraphRAG = retrievalSelected ? isGraphRAG(retrievalSelected.strategy) : false;
   const showImageInput = retrievalSelected?.strategy === "hybrid";
   const queryPlaceholder = selectedIsGraphProfile
     ? (selected.placeholder || "e.g. exact entity name")
@@ -905,12 +777,6 @@ export function QueryPage() {
     setTotalResults(0);
     setElapsed(null);
     const t0 = performance.now();
-
-    // Cancel any in-flight polling from a previous query
-    if (pollTimeoutRef.current) {
-      clearTimeout(pollTimeoutRef.current);
-      pollTimeoutRef.current = null;
-    }
 
     try {
       if (selectedIsGraphProfile) {
@@ -960,44 +826,8 @@ export function QueryPage() {
           setTotalResults(flattened.length);
           setElapsed(Math.round(performance.now() - t0));
         }
-      } else if (retrievalSelected && isGraphRAG(retrievalSelected.strategy)) {
-        // Async path: submit -> poll -> fetch
-        const { job_id } = await submitGraphRAGQuery({
-          query_text: queryText.trim() || undefined,
-          strategy: retrievalSelected.strategy,
-          top_k: topK,
-          min_confidence: minConfidence,
-          include_context: true,
-        });
-
-        // Poll with exponential backoff: 1s, 2s, 4s, 8s, capped at 10s
-        let delay = 1000;
-        const poll = async () => {
-          try {
-            const status = await getGraphRAGQueryStatus(job_id);
-            if (status.status === "completed") {
-              const res = await getGraphRAGQueryResult(job_id);
-              setResults(res.results);
-              setTotalResults(res.total);
-              setElapsed(Math.round(performance.now() - t0));
-              setLoading(false);
-            } else if (status.status === "failed") {
-              setError(status.error || "GraphRAG query failed");
-              setLoading(false);
-            } else {
-              // Still pending/running — schedule next poll
-              delay = Math.min(delay * 2, 10000);
-              pollTimeoutRef.current = setTimeout(() => void poll(), delay);
-            }
-          } catch (err) {
-            setError(err instanceof Error ? err.message : "Polling failed");
-            setLoading(false);
-          }
-        };
-
-        pollTimeoutRef.current = setTimeout(() => void poll(), delay);
       } else if (retrievalSelected) {
-        // Sync path: basic & hybrid
+        // Sync path: basic, hybrid, and global
         const res = await unifiedQuery({
           query_text: queryText.trim() || undefined,
           query_image: queryImage || undefined,
@@ -1015,10 +845,7 @@ export function QueryPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
     } finally {
-      // Only clear loading for sync path; async path clears in poll callback
-      if (!selectedIsGraphRAG) {
-        setLoading(false);
-      }
+      setLoading(false);
     }
   };
 
@@ -1148,7 +975,7 @@ export function QueryPage() {
                 onChange={(e) => setTopK(parseInt(e.target.value, 10) || 10)}
               />
             </div>
-            {selectedIsRetrieval && !selectedIsGraphRAG && (
+            {selectedIsRetrieval && (
               <div className="field" style={{ width: "110px", flexShrink: 0 }}>
                 <label htmlFor="reranker-top-n">Reranker Top N</label>
                 <input
