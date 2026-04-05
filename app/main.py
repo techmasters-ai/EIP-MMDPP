@@ -53,8 +53,7 @@ async def lifespan(app: FastAPI):
         graph_store = get_graph_store()
         ontology = load_ontology()
         if ontology:
-            from app.services.arcadedb_schema import sync_schema_from_ontology
-            report = await sync_schema_from_ontology(graph_store._client, graph_store._database, ontology)
+            report = await graph_store.sync_schema(ontology)
             log.info("ArcadeDB schema synced",
                      types_created=report.types_created,
                      properties_added=report.properties_added,

@@ -47,18 +47,13 @@ async def run_community_detection(
     max_iterations = settings.community_detection_max_iterations
 
     # Build algorithm params
-    algo_params = f"maxIterations: {max_iterations}"
+    algo_params: dict[str, Any] = {"maxIterations": max_iterations}
     if algorithm == "leiden":
-        algo_params += f", resolution: {resolution}"
+        algo_params["resolution"] = resolution
 
     # Step 1: Run community detection algorithm on domain entities
     try:
-        results = await graph_store._client.query(
-            graph_store._database, "cypher",
-            f"CALL algo.{algorithm}({{{algo_params}}}) YIELD node, communityId "
-            f"RETURN node.name AS name, node.entity_type AS entity_type, "
-            f"communityId AS community_id",
-        )
+        results = await graph_store.run_community_algorithm(algorithm, algo_params)
     except Exception as exc:
         logger.error("Community detection algorithm failed: %s", exc)
         return {"status": "FAILED", "error": str(exc)}
@@ -79,10 +74,7 @@ async def run_community_detection(
 
     # Step 3: Load existing hashes for incremental diffing
     try:
-        existing_rows = await graph_store._client.query(
-            graph_store._database, "sql",
-            "SELECT community_id, membership_hash FROM CommunityReport",
-        )
+        existing_rows = await graph_store.get_community_reports()
         existing_hashes: dict[int, str] = {
             r["community_id"]: r["membership_hash"] for r in existing_rows
         }
@@ -110,43 +102,30 @@ async def run_community_detection(
 
         # Upsert CommunityReport vertex
         try:
-            await graph_store._client.command(
-                graph_store._database, "sql",
-                "UPDATE CommunityReport SET title = :title, summary = :summary, "
-                "member_count = :count, membership_hash = :hash, "
-                "generated_at = sysdate(), model_name = :model "
-                "UPSERT WHERE community_id = :cid",
-                params={
-                    "cid": cid,
-                    "title": report["title"],
-                    "summary": report["summary"],
-                    "count": len(members),
-                    "hash": new_hash,
-                    "model": os.environ.get(
-                        "COMMUNITY_REPORT_LLM_MODEL",
-                        settings.community_report_llm_model,
-                    ),
-                },
+            report_rid = await graph_store.upsert_community_report(
+                community_id=cid,
+                title=report["title"],
+                summary=report["summary"],
+                member_count=len(members),
+                membership_hash=new_hash,
+                model_name=os.environ.get(
+                    "COMMUNITY_REPORT_LLM_MODEL",
+                    settings.community_report_llm_model,
+                ),
             )
         except Exception as exc:
             logger.warning("Failed to upsert community report %d: %s", cid, exc)
             continue
 
         # Attach embedding if we have one
-        if report_embedding:
+        if report_embedding and report_rid:
             try:
-                rids = await graph_store._client.query(
-                    graph_store._database, "sql",
-                    "SELECT @rid AS rid FROM CommunityReport WHERE community_id = :cid",
-                    params={"cid": cid},
+                await graph_store.set_vertex_embedding(
+                    "CommunityReport",
+                    report_rid,
+                    "report_embedding",
+                    report_embedding,
                 )
-                if rids:
-                    await graph_store.set_vertex_embedding(
-                        "CommunityReport",
-                        str(rids[0]["rid"]),
-                        "report_embedding",
-                        report_embedding,
-                    )
             except Exception as exc:
                 logger.warning("Failed to set embedding for community %d: %s", cid, exc)
 

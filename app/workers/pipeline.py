@@ -1766,9 +1766,10 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     },
                 )
                 graph_store.set_vertex_embedding_sync(
-                    node_id=rid,
+                    vertex_type="TextChunk",
+                    vertex_id=rid,
+                    embedding_property="text_embedding",
                     embedding=embedding,
-                    model_name=model_version,
                 )
                 chunks_created += 1
 
@@ -1863,9 +1864,10 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     },
                 )
                 graph_store.set_vertex_embedding_sync(
-                    node_id=rid,
+                    vertex_type="TextChunk",
+                    vertex_id=rid,
+                    embedding_property="text_embedding",
                     embedding=emb,
-                    model_name=model_version,
                 )
                 img_desc_chunks_created += 1
 
@@ -2056,10 +2058,10 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                         },
                     )
                     graph_store.set_vertex_embedding_sync(
-                        node_id=rid,
-                        embedding=img_embedding,
-                        model_name=model_version,
+                        vertex_type="ImageChunk",
+                        vertex_id=rid,
                         embedding_property="image_embedding",
+                        embedding=img_embedding,
                     )
                     chunks_created += 1
 
@@ -2422,14 +2424,14 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                  soft_time_limit=settings.finalize_soft_time_limit,
                  time_limit=settings.finalize_time_limit)
 def derive_structure_links(self, document_id: str, run_id: str | None = None) -> dict:
-    """Generate chunk_links and structural AGE edges.
+    """Generate chunk_links and structural ArcadeDB edges.
 
     Creates:
     - NEXT_CHUNK links between consecutive text_chunks
     - SAME_PAGE links between text and image chunks on same page
     - SAME_SECTION links for chunks sharing section_path
-    - DOCUMENT node, CHUNK_REF nodes, CONTAINS/SAME_PAGE AGE edges
-    - EXTRACTED_FROM edges linking ontology entities to chunk refs
+    - DOCUMENT node, TextChunk/ImageChunk vertices, CONTAINS/SAME_PAGE ArcadeDB edges
+    - EXTRACTED_FROM edges linking ontology entities to chunk vertices
     """
     from app.models.ingest import Document, DocumentElement, Artifact
     from app.models.retrieval import TextChunk, ImageChunk, ChunkLink

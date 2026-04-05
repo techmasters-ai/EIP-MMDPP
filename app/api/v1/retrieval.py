@@ -1008,7 +1008,7 @@ async def _global_query(body: UnifiedQueryRequest) -> UnifiedQueryResponse:
 
 
 # ---------------------------------------------------------------------------
-# GraphRAG manual indexing trigger
+# Retrieval settings
 # ---------------------------------------------------------------------------
 
 

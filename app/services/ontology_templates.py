@@ -1,4 +1,4 @@
-"""Ontology loading and type-name helpers for GraphRAG and retrieval.
+"""Ontology loading and type-name helpers for graph extraction and retrieval.
 
 Extraction prompt building and Pydantic extraction models have moved to
 the Docling-Graph Docker service.

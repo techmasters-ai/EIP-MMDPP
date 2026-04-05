@@ -69,9 +69,10 @@ def index_trusted_submission(self, submission_id: str):
             },
         )
         graph_store.set_vertex_embedding_sync(
-            node_id=rid,
+            vertex_type="TrustedTextChunk",
+            vertex_id=rid,
+            embedding_property="text_embedding",
             embedding=vector,
-            model_name=settings.text_embedding_model,
         )
 
         # Update submission

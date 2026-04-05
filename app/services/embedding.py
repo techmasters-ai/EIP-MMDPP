@@ -1,6 +1,6 @@
 """Embedding services.
 
-Text: Ollama API with bge-large (1024-dim) — shared by both text ingest and GraphRAG
+Text: Ollama API with bge-large (1024-dim) — shared by both text ingest and community reports
 Image: OpenCLIP ViT-B/32 (512-dim) for cross-modal search
 
 Text embeddings are served by Ollama's OpenAI-compatible /v1/embeddings endpoint.

@@ -355,5 +355,5 @@ async def _apply_patch_payload(db: AsyncSession, patch: Patch) -> None:
             chunk.classification = patched["classification"]
 
     elif "graph_store" in target_table:
-        # Phase 2: implement AGE graph mutation via Cypher
+        # Phase 2: implement ArcadeDB graph mutation
         pass

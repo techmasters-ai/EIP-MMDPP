@@ -405,8 +405,8 @@ async def delete_document(
     """Hard-delete a document and all its derived data.
 
     Removes: DB records (document, artifacts, document_elements, text_chunks,
-    image_chunks, chunk_links, graph_extractions), Qdrant vectors, graph
-    nodes/edges, and MinIO objects (raw file + derived artifacts).
+    image_chunks, chunk_links, graph_extractions), ArcadeDB graph/vector data,
+    and MinIO objects (raw file + derived artifacts).
     """
     doc = await db.get(Document, document_id)
     if not doc:

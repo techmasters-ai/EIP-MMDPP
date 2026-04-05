@@ -461,7 +461,7 @@ class TestAdditionalOperations:
         store = _graph(client)
         embedding = [0.1, 0.2, 0.3]
 
-        await store.set_vertex_embedding("#1:0", embedding)
+        await store.set_vertex_embedding("TextChunk", "#1:0", "text_embedding", embedding)
 
         client.command.assert_called_once()
         sql = client.command.call_args.args[2]

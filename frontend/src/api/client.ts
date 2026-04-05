@@ -448,7 +448,7 @@ export async function getAgentContext(params: {
 }
 
 // ---------------------------------------------------------------------------
-// GraphRAG Settings & Indexing
+// Settings
 // ---------------------------------------------------------------------------
 
 export interface RetrievalSettings {

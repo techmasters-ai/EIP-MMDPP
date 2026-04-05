@@ -1,7 +1,7 @@
 """Deterministic dossier queries for system-centric exact retrieval via GraphStore.
 
-Replaces neo4j_dossier_service.py. Uses fixed GraphStore method calls with
-parameter binding only -- no dynamic query generation from natural language.
+Uses fixed GraphStore method calls with parameter binding only -- no dynamic
+query generation from natural language.
 """
 
 from __future__ import annotations

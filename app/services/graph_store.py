@@ -289,9 +289,10 @@ class GraphStore(Protocol):
 
     async def set_vertex_embedding(
         self,
-        node_id: str,
+        vertex_type: str,
+        vertex_id: str,
+        embedding_property: str,
         embedding: list[float],
-        model_name: str | None = None,
     ) -> None:
         """Attach a vector embedding to a node by RID."""
         ...
@@ -315,6 +316,48 @@ class GraphStore(Protocol):
         ...
 
     # ------------------------------------------------------------------
+    # Community operations
+    # ------------------------------------------------------------------
+
+    async def run_community_algorithm(
+        self,
+        algorithm: str,
+        params: dict,
+    ) -> list[dict]:
+        """Run a community detection algorithm and return per-node results."""
+        ...
+
+    async def get_community_reports(self) -> list[dict]:
+        """Return all existing CommunityReport rows."""
+        ...
+
+    async def upsert_community_report(
+        self,
+        community_id: int,
+        title: str,
+        summary: str,
+        member_count: int,
+        membership_hash: str,
+        model_name: str,
+    ) -> str:
+        """Upsert a CommunityReport vertex and return its RID."""
+        ...
+
+    async def list_community_reports(
+        self,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return community reports (summary view) up to *limit*."""
+        ...
+
+    async def get_community_report(
+        self,
+        community_id: int,
+    ) -> dict | None:
+        """Return a single community report by community_id, or None."""
+        ...
+
+    # ------------------------------------------------------------------
     # Lifecycle operations
     # ------------------------------------------------------------------
 
@@ -328,7 +371,10 @@ class GraphStore(Protocol):
         """
         ...
 
-    async def sync_schema(self) -> SchemaSyncReport:
+    async def sync_schema(
+        self,
+        ontology: dict | None = None,
+    ) -> SchemaSyncReport:
         """Ensure the backend schema matches the current ontology."""
         ...
 
@@ -380,9 +426,10 @@ class GraphStore(Protocol):
 
     def set_vertex_embedding_sync(
         self,
-        node_id: str,
+        vertex_type: str,
+        vertex_id: str,
+        embedding_property: str,
         embedding: list[float],
-        model_name: str | None = None,
     ) -> None:
         """Synchronous variant of :meth:`set_vertex_embedding`."""
         ...

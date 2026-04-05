@@ -572,20 +572,16 @@ class ArcadeDBGraphStore:
 
     async def set_vertex_embedding(
         self,
-        node_id: str,
+        vertex_type: str,
+        vertex_id: str,
+        embedding_property: str,
         embedding: list[float],
-        model_name: str | None = None,
-        embedding_property: str = "text_embedding",
     ) -> None:
         """Attach a vector embedding to a node."""
-        model_set = ""
         params: dict[str, Any] = {"embedding": embedding}
-        if model_name:
-            model_set = ", embedding_model = :model_name"
-            params["model_name"] = model_name
 
         sql = (
-            f"UPDATE {node_id} SET {embedding_property} = :embedding{model_set}, "
+            f"UPDATE {vertex_id} SET {embedding_property} = :embedding, "
             f"updated_at = sysdate()"
         )
         await self._client.command(self._database, "sql", sql, params)
@@ -646,6 +642,84 @@ class ArcadeDBGraphStore:
         return [_to_entity(r) for r in combined[:limit]]
 
     # ==================================================================
+    # Community operations
+    # ==================================================================
+
+    async def run_community_algorithm(
+        self,
+        algorithm: str,
+        params: dict,
+    ) -> list[dict]:
+        """Run a community detection algorithm and return per-node results."""
+        algo_params = ", ".join(f"{k}: {v}" for k, v in params.items())
+        cypher = (
+            f"CALL algo.{algorithm}({{{algo_params}}}) YIELD node, communityId "
+            f"RETURN node.name AS name, node.entity_type AS entity_type, "
+            f"communityId AS community_id"
+        )
+        return await self._client.query(self._database, "cypher", cypher)
+
+    async def get_community_reports(self) -> list[dict]:
+        """Return all existing CommunityReport rows."""
+        return await self._client.query(
+            self._database, "sql",
+            "SELECT community_id, membership_hash FROM CommunityReport",
+        )
+
+    async def upsert_community_report(
+        self,
+        community_id: int,
+        title: str,
+        summary: str,
+        member_count: int,
+        membership_hash: str,
+        model_name: str,
+    ) -> str:
+        """Upsert a CommunityReport vertex and return its RID."""
+        sql = (
+            "UPDATE CommunityReport SET title = :title, summary = :summary, "
+            "member_count = :count, membership_hash = :hash, "
+            "generated_at = sysdate(), model_name = :model "
+            "UPSERT WHERE community_id = :cid"
+        )
+        result = await self._client.command(
+            self._database, "sql", sql,
+            params={
+                "cid": community_id,
+                "title": title,
+                "summary": summary,
+                "count": member_count,
+                "hash": membership_hash,
+                "model": model_name,
+            },
+        )
+        return _rid(result)
+
+    async def list_community_reports(
+        self,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return community reports (summary view) up to *limit*."""
+        return await self._client.query(
+            self._database, "sql",
+            "SELECT community_id, title, summary, member_count, generated_at "
+            "FROM CommunityReport ORDER BY community_id LIMIT :limit",
+            params={"limit": limit},
+        )
+
+    async def get_community_report(
+        self,
+        community_id: int,
+    ) -> dict | None:
+        """Return a single community report by community_id, or None."""
+        rows = await self._client.query(
+            self._database, "sql",
+            "SELECT * FROM CommunityReport WHERE community_id = :cid",
+            params={"cid": community_id},
+        )
+        return rows[0] if rows else None
+
+    # ==================================================================
     # Lifecycle operations
     # ==================================================================
 
@@ -672,7 +746,18 @@ class ArcadeDBGraphStore:
         result = await self._client.command(self._database, "sql", sql, params)
         total += _count(result)
 
-        # 4. Orphan cleanup: remove entities with no remaining EXTRACTED_FROM edges
+        # 4. Remove document_id from relationship edge document_ids lists
+        # Delete edges where document_ids becomes empty
+        await self._client.command(self._database, "sql",
+            "UPDATE E SET document_ids = document_ids.remove(:doc_id) "
+            "WHERE document_ids CONTAINS :doc_id",
+            params=params,
+        )
+        await self._client.command(self._database, "sql",
+            "DELETE EDGE WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
+        )
+
+        # 5. Orphan cleanup: remove entities with no remaining EXTRACTED_FROM edges
         orphan_sql = (
             "DELETE VERTEX FROM V WHERE @cat NOT IN "
             "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
@@ -684,8 +769,22 @@ class ArcadeDBGraphStore:
 
         return total
 
-    async def sync_schema(self) -> SchemaSyncReport:
-        """Ensure the backend schema matches the current ontology."""
+    async def sync_schema(
+        self,
+        ontology: dict | None = None,
+    ) -> SchemaSyncReport:
+        """Ensure the backend schema matches the current ontology.
+
+        If *ontology* is provided, delegates to the full ontology-driven
+        ``sync_schema_from_ontology``.  Otherwise falls back to creating
+        the core structural types only.
+        """
+        if ontology is not None:
+            from app.services.arcadedb_schema import sync_schema_from_ontology
+            return await sync_schema_from_ontology(
+                self._client, self._database, ontology,
+            )
+
         report = SchemaSyncReport()
 
         # Core vertex types
@@ -867,20 +966,16 @@ class ArcadeDBGraphStore:
 
     def set_vertex_embedding_sync(
         self,
-        node_id: str,
+        vertex_type: str,
+        vertex_id: str,
+        embedding_property: str,
         embedding: list[float],
-        model_name: str | None = None,
-        embedding_property: str = "text_embedding",
     ) -> None:
         """Synchronous embedding set."""
-        model_set = ""
         params: dict[str, Any] = {"embedding": embedding}
-        if model_name:
-            model_set = ", embedding_model = :model_name"
-            params["model_name"] = model_name
 
         sql = (
-            f"UPDATE {node_id} SET {embedding_property} = :embedding{model_set}, "
+            f"UPDATE {vertex_id} SET {embedding_property} = :embedding, "
             f"updated_at = sysdate()"
         )
         self._client.command_sync(self._database, "sql", sql, params)
@@ -979,6 +1074,17 @@ class ArcadeDBGraphStore:
         ]:
             result = self._client.command_sync(self._database, "sql", sql, params)
             total += _count(result)
+
+        # Remove document_id from relationship edge document_ids lists
+        # Delete edges where document_ids becomes empty
+        self._client.command_sync(self._database, "sql",
+            "UPDATE E SET document_ids = document_ids.remove(:doc_id) "
+            "WHERE document_ids CONTAINS :doc_id",
+            params,
+        )
+        self._client.command_sync(self._database, "sql",
+            "DELETE EDGE WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
+        )
 
         orphan_sql = (
             "DELETE VERTEX FROM V WHERE @cat NOT IN "

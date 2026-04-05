@@ -71,11 +71,7 @@ async def list_reports():
     from app.db.session import get_graph_store
 
     graph_store = get_graph_store()
-    reports = await graph_store._client.query(
-        graph_store._database, "sql",
-        "SELECT community_id, title, summary, member_count, generated_at "
-        "FROM CommunityReport ORDER BY community_id LIMIT 100",
-    )
+    reports = await graph_store.list_community_reports(limit=100)
     return {"reports": reports, "total": len(reports)}
 
 
@@ -85,11 +81,7 @@ async def get_report(community_id: int):
     from app.db.session import get_graph_store
 
     graph_store = get_graph_store()
-    reports = await graph_store._client.query(
-        graph_store._database, "sql",
-        "SELECT * FROM CommunityReport WHERE community_id = :cid",
-        params={"cid": community_id},
-    )
-    if not reports:
+    report = await graph_store.get_community_report(community_id)
+    if not report:
         raise HTTPException(status_code=404, detail="Community not found")
-    return reports[0]
+    return report
