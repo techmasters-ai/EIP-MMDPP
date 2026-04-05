@@ -161,8 +161,19 @@ services:
       GRAPH_EXTRACTION_CHUNK_OVERLAP: ${GRAPH_EXTRACTION_CHUNK_OVERLAP:-2000}
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-64000}
       DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-10800}
+      # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
+      DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
     ports:
       - "${DOCLING_GRAPH_PORT:-8002}:8002"
+    # GPU reservation needed for VLM mode (DOCLING_GRAPH_BACKEND=vlm).
+    # Uncomment the deploy block below when using VLM extraction.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     extra_hosts:
       - "ollama:host-gateway"
     healthcheck:

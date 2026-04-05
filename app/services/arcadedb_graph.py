@@ -613,15 +613,20 @@ class ArcadeDBGraphStore:
         name: str,
         entity_type: str | None = None,
     ) -> GraphEntityResult | None:
-        """Resolve a name to its canonical root entity."""
-        type_filter = ""
+        """Resolve a name to its canonical root entity.
+
+        When *entity_type* is provided, queries that specific type to leverage
+        type-specific indexes.  Falls back to ``V`` when type is unknown.
+        """
         params: dict[str, Any] = {"name": name}
+        source = entity_type if entity_type else "V"
+        type_filter = ""
         if entity_type:
             type_filter = " AND entity_type = :entity_type"
             params["entity_type"] = entity_type
 
         sql = (
-            f"SELECT *, @rid AS node_id FROM V "
+            f"SELECT *, @rid AS node_id FROM {source} "
             f"WHERE name = :name{type_filter} LIMIT 1"
         )
         rows = await self._client.query(self._database, "sql", sql, params)
@@ -814,46 +819,36 @@ class ArcadeDBGraphStore:
 
     async def vector_search(
         self,
-        embedding: list[float],
-        entity_types: list[str] | None = None,
-        limit: int = 10,
+        vertex_type: str,
+        embedding_property: str,
+        query_vector: list[float],
+        top_k: int = 10,
         score_threshold: float | None = None,
     ) -> list[GraphEntityResult]:
-        """ANN search over node embeddings via vectorNeighbors."""
+        """ANN search over node embeddings via vectorNeighbors.
+
+        Parameters
+        ----------
+        vertex_type:
+            The ArcadeDB vertex type to search (e.g. "TextChunk", "ImageChunk").
+        embedding_property:
+            The embedding property on that vertex type (e.g. "text_embedding").
+        query_vector:
+            The query embedding vector.
+        top_k:
+            Maximum number of results.
+        score_threshold:
+            Optional minimum similarity score filter.
+        """
+        index_name = f"{vertex_type}[{embedding_property}]"
         sql = (
             "SELECT *, @rid AS node_id "
-            "FROM (SELECT expand(vectorNeighbors('TextChunk[text_embedding]', "
+            f"FROM (SELECT expand(vectorNeighbors('{index_name}', "
             ":query_vector, :top_k)))"
         )
         params: dict[str, Any] = {
-            "query_vector": embedding,
-            "top_k": limit,
-        }
-        rows = await self._client.query(self._database, "sql", sql, params)
-        results = [_to_entity(r) for r in rows]
-
-        if score_threshold is not None:
-            results = [
-                r for r in results
-                if (r.extraction_confidence or 0) >= score_threshold
-            ]
-        return results
-
-    async def image_vector_search(
-        self,
-        embedding: list[float],
-        limit: int = 10,
-        score_threshold: float | None = None,
-    ) -> list[GraphEntityResult]:
-        """ANN search over ImageChunk embeddings via vectorNeighbors."""
-        sql = (
-            "SELECT *, @rid AS node_id "
-            "FROM (SELECT expand(vectorNeighbors('ImageChunk[image_embedding]', "
-            ":query_vector, :top_k)))"
-        )
-        params: dict[str, Any] = {
-            "query_vector": embedding,
-            "top_k": limit,
+            "query_vector": query_vector,
+            "top_k": top_k,
         }
         rows = await self._client.query(self._database, "sql", sql, params)
         results = [_to_entity(r) for r in rows]
@@ -907,18 +902,20 @@ class ArcadeDBGraphStore:
         limit: int = 10,
     ) -> list[GraphEntityResult]:
         """Search using both text and image embeddings + graph traversal."""
+        text_index = "TextChunk[text_embedding]"
+        image_index = "ImageChunk[image_embedding]"
         sql = (
             "SELECT chunk.*, entity.name AS entity_name, "
             "entity.entity_type AS entity_entity_type "
             "FROM ("
-            "  SELECT expand(vectorNeighbors('TextChunk[text_embedding]', "
+            f"  SELECT expand(vectorNeighbors('{text_index}', "
             "  :text_vector, :top_k))"
             ") AS chunk "
             "LET entity = chunk.in('EXTRACTED_FROM')"
         )
         img_sql = (
             "SELECT *, @rid AS node_id "
-            "FROM (SELECT expand(vectorNeighbors('ImageChunk[image_embedding]', "
+            f"FROM (SELECT expand(vectorNeighbors('{image_index}', "
             ":image_vector, :top_k)))"
         )
         text_rows, img_rows = await asyncio.gather(
@@ -1630,15 +1627,20 @@ class ArcadeDBGraphStore:
         name: str,
         entity_type: str | None = None,
     ) -> GraphEntityResult | None:
-        """Synchronous root entity resolution."""
-        type_filter = ""
+        """Synchronous root entity resolution.
+
+        When *entity_type* is provided, queries that specific type to leverage
+        type-specific indexes.  Falls back to ``V`` when type is unknown.
+        """
         params: dict[str, Any] = {"name": name}
+        source = entity_type if entity_type else "V"
+        type_filter = ""
         if entity_type:
             type_filter = " AND entity_type = :entity_type"
             params["entity_type"] = entity_type
 
         sql = (
-            f"SELECT *, @rid AS node_id FROM V "
+            f"SELECT *, @rid AS node_id FROM {source} "
             f"WHERE name = :name{type_filter} LIMIT 1"
         )
         rows = self._client.query_sync(self._database, "sql", sql, params)

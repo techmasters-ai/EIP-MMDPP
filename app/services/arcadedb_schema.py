@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from app.services.graph_store import SchemaSyncReport
 
 logger = logging.getLogger(__name__)
 
-RESERVED_WORD_MAP = {"TABLE": "TABLE_REF"}
+# Loaded from the shared JSON file so both the main app and docling-graph
+# service use the same mapping (see ontology/arcadedb_reserved_words.json).
+_RESERVED_WORDS_PATH = Path(__file__).resolve().parents[2] / "ontology" / "arcadedb_reserved_words.json"
+try:
+    RESERVED_WORD_MAP: dict[str, str] = json.loads(_RESERVED_WORDS_PATH.read_text())
+except Exception:
+    RESERVED_WORD_MAP = {"TABLE": "TABLE_REF"}
 
 _YAML_TO_ARCADE: dict[str, str] = {
     "string": "STRING",

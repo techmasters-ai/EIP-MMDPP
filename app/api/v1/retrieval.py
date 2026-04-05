@@ -431,9 +431,7 @@ async def _text_vector_search(
 
     graph_store = get_graph_store()
     hits = await graph_store.vector_search(
-        embedding=query_embedding,
-        entity_types=["TextChunk"],
-        limit=oversample,
+        "TextChunk", "text_embedding", query_embedding, oversample,
     )
 
     # Filter by minimum score threshold
@@ -515,9 +513,8 @@ async def _image_vector_search(
     )
 
     graph_store = get_graph_store()
-    hits = await graph_store.image_vector_search(
-        embedding=query_embedding,
-        limit=oversample,
+    hits = await graph_store.vector_search(
+        "ImageChunk", "image_embedding", query_embedding, oversample,
     )
 
     # Filter by minimum score threshold

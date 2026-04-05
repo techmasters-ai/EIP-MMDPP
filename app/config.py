@@ -114,12 +114,18 @@ class Settings(BaseSettings):
     # false (default), invalid triples are logged and skipped silently.
     graph_reject_invalid_relationships: bool = False
 
+    # Governance: when true, graph mutation patches require two distinct
+    # curator approvals before they can be applied.  When false (default),
+    # a single approval is sufficient.
+    governance_dual_approval_required: bool = False
+
     # ArcadeDB
     arcadedb_url: str = "http://arcadedb:2480"
     arcadedb_user: str = "root"
     arcadedb_password: str = "eip_arcadedb_secret"
     arcadedb_database: str = "eip_knowledge_graph"
     arcadedb_ready_cache_seconds: float = 60.0
+    arcadedb_slow_query_threshold_seconds: float = 1.0
 
     # Community detection
     community_detection_enabled: bool = True

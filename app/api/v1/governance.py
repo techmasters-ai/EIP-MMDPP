@@ -176,7 +176,16 @@ async def approve_patch(
     body: PatchApprovalCreate,
     db: AsyncSession = Depends(get_async_session),
 ) -> PatchResponse:
-    """Curator approves a patch. For graph mutations, a second curator must approve."""
+    """Curator approves a patch.
+
+    When ``GOVERNANCE_DUAL_APPROVAL_REQUIRED`` is enabled and the patch
+    targets a graph mutation, two distinct curators must approve before the
+    patch can transition to ``DUAL_APPROVED``.  When the setting is
+    disabled, a single approval is sufficient and the patch goes directly
+    to ``APPROVED``.
+    """
+    from app.config import get_settings
+
     # TODO(Phase 3): use actual authenticated curator ID
     curator_id = uuid.UUID("00000000-0000-0000-0000-000000000002")
 
@@ -213,9 +222,19 @@ async def approve_patch(
     )
     db.add(approval)
 
-    # Transition state
-    if patch.requires_dual_approval and patch.state == PatchState.approved.value:
-        patch.state = PatchState.dual_approved.value
+    settings = get_settings()
+    dual_required = (
+        settings.governance_dual_approval_required
+        and patch.requires_dual_approval
+    )
+
+    if dual_required:
+        # Count existing approved decisions + the one just added
+        approved_count = sum(1 for a in approvals if a.decision == "approved") + 1
+        if approved_count >= 2:
+            patch.state = PatchState.dual_approved.value
+        else:
+            patch.state = PatchState.approved.value
     else:
         patch.state = PatchState.approved.value
 

@@ -75,7 +75,12 @@ _graph_store = None
 
 
 def get_graph_store():
-    """Returns the singleton GraphStore instance."""
+    """Returns the singleton GraphStore instance.
+
+    The singleton pattern ensures httpx connection pools are reused across
+    all FastAPI requests and Celery tasks within the same process, avoiding
+    per-request TCP overhead.
+    """
     global _graph_store
     if _graph_store is None:
         from app.services.arcadedb_client import ArcadeDBClient
@@ -86,4 +91,9 @@ def get_graph_store():
             password=settings.arcadedb_password,
         )
         _graph_store = ArcadeDBGraphStore(client, settings.arcadedb_database)
+        logger.info(
+            "ArcadeDB GraphStore singleton created (url=%s, db=%s, pool=httpx-default)",
+            settings.arcadedb_url,
+            settings.arcadedb_database,
+        )
     return _graph_store

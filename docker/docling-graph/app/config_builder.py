@@ -1,38 +1,81 @@
-"""Environment variables → PipelineConfig construction."""
+"""Environment variables → PipelineConfig construction.
+
+Uses pydantic_settings.BaseSettings for type-safe env var parsing.
+"""
 
 from __future__ import annotations
 
-import os
 import logging
 from typing import Any, Type
 
 from pydantic import BaseModel
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
 
-def _env_str(key: str, default: str) -> str:
-    return os.environ.get(key, default)
+class DoclingGraphSettings(BaseSettings):
+    """Typed settings sourced from environment variables."""
 
-def _env_int(key: str, default: int) -> int:
-    val = os.environ.get(key)
-    return int(val) if val is not None else default
+    model_config = SettingsConfigDict(
+        env_prefix="",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
-def _env_float(key: str, default: float) -> float:
-    val = os.environ.get(key)
-    return float(val) if val is not None else default
+    # LLM provider and model
+    docling_graph_llm_provider: str = "ollama"
+    docling_graph_llm_model: str = "granite3-dense:8b"
+    docling_graph_extraction_contract: str = "delta"
+    docling_graph_processing_mode: str = "many-to-one"
 
-def _env_bool(key: str, default: bool) -> bool:
-    val = os.environ.get(key)
-    if val is None:
-        return default
-    return val.lower() in ("true", "1", "yes")
+    # Chunking
+    docling_graph_use_chunking: bool = True
+    docling_graph_chunk_max_tokens: int = 512
+    docling_graph_llm_batch_token_size: int = 2048
+    docling_graph_parallel_workers: int = 2
+    docling_graph_batch_split_max_retries: int = 1
 
-def _env_int_or_none(key: str, default: int | None) -> int | None:
-    val = os.environ.get(key)
-    if val is None or val == "":
-        return default
-    return int(val)
+    # Delta resolvers
+    docling_graph_resolvers_enabled: bool = True
+    docling_graph_resolvers_mode: str = "semantic"
+    docling_graph_resolver_fuzzy_threshold: float = 0.8
+    docling_graph_resolver_semantic_threshold: float = 0.8
+
+    # Delta quality
+    docling_graph_quality_require_root: bool = True
+    docling_graph_quality_min_instances: int = 20
+    docling_graph_quality_max_parent_miss: int = 4
+    docling_graph_quality_adaptive_parent: bool = True
+
+    # Delta normalizer
+    docling_graph_normalizer_validate_paths: bool = True
+    docling_graph_normalizer_canonicalize_ids: bool = True
+    docling_graph_normalizer_strip_nested: bool = True
+    docling_graph_normalizer_attach_provenance: bool = True
+
+    # Delta identity filter
+    docling_graph_identity_filter_enabled: bool = True
+    docling_graph_identity_filter_strict: bool = False
+
+    # Gleaning
+    docling_graph_gleaning_enabled: bool = True
+    docling_graph_gleaning_max_passes: int = 1
+
+    # Structured output
+    docling_graph_structured_output: bool = True
+    docling_graph_structured_sparse_check: bool = True
+
+    # LLM overrides
+    docling_graph_llm_temperature: float = 0.1
+    docling_graph_llm_max_tokens: int | None = 64000
+    docling_graph_llm_timeout: int = 10800
+    ollama_llm_base_url: str = "http://ollama:11434"
+    docling_graph_llm_context_limit: int | None = None
+    docling_graph_llm_max_output_tokens: int | None = None
+
+    # Backend: "llm" or "vlm"
+    docling_graph_backend: str = "llm"
 
 
 def build_pipeline_config(
@@ -42,50 +85,52 @@ def build_pipeline_config(
     """Build a PipelineConfig from environment variables."""
     from docling_graph import PipelineConfig
 
+    settings = DoclingGraphSettings()
+
     config_kwargs: dict[str, Any] = {
         "source": source,
-        "backend": "llm",
+        "backend": settings.docling_graph_backend,
         "inference": "local",
-        "provider_override": _env_str("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
-        "model_override": _env_str("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
-        "extraction_contract": _env_str("DOCLING_GRAPH_EXTRACTION_CONTRACT", "delta"),
-        "processing_mode": _env_str("DOCLING_GRAPH_PROCESSING_MODE", "many-to-one"),
-        "use_chunking": _env_bool("DOCLING_GRAPH_USE_CHUNKING", True),
-        "chunk_max_tokens": _env_int("DOCLING_GRAPH_CHUNK_MAX_TOKENS", 512),
-        "llm_batch_token_size": _env_int("DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE", 2048),
-        "parallel_workers": _env_int("DOCLING_GRAPH_PARALLEL_WORKERS", 2),
-        "staged_pass_retries": _env_int("DOCLING_GRAPH_BATCH_SPLIT_MAX_RETRIES", 1),
-        "delta_resolvers_enabled": _env_bool("DOCLING_GRAPH_RESOLVERS_ENABLED", True),
-        "delta_resolvers_mode": _env_str("DOCLING_GRAPH_RESOLVERS_MODE", "semantic"),
-        "delta_resolver_fuzzy_threshold": _env_float("DOCLING_GRAPH_RESOLVER_FUZZY_THRESHOLD", 0.8),
-        "delta_resolver_semantic_threshold": _env_float("DOCLING_GRAPH_RESOLVER_SEMANTIC_THRESHOLD", 0.8),
-        "delta_quality_require_root": _env_bool("DOCLING_GRAPH_QUALITY_REQUIRE_ROOT", True),
-        "delta_quality_min_instances": _env_int("DOCLING_GRAPH_QUALITY_MIN_INSTANCES", 20),
-        "delta_quality_max_parent_lookup_miss": _env_int("DOCLING_GRAPH_QUALITY_MAX_PARENT_MISS", 4),
-        "delta_quality_adaptive_parent_lookup": _env_bool("DOCLING_GRAPH_QUALITY_ADAPTIVE_PARENT", True),
-        "delta_normalizer_validate_paths": _env_bool("DOCLING_GRAPH_NORMALIZER_VALIDATE_PATHS", True),
-        "delta_normalizer_canonicalize_ids": _env_bool("DOCLING_GRAPH_NORMALIZER_CANONICALIZE_IDS", True),
-        "delta_normalizer_strip_nested_properties": _env_bool("DOCLING_GRAPH_NORMALIZER_STRIP_NESTED", True),
-        "delta_normalizer_attach_provenance": _env_bool("DOCLING_GRAPH_NORMALIZER_ATTACH_PROVENANCE", True),
-        "delta_identity_filter_enabled": _env_bool("DOCLING_GRAPH_IDENTITY_FILTER_ENABLED", True),
-        "delta_identity_filter_strict": _env_bool("DOCLING_GRAPH_IDENTITY_FILTER_STRICT", False),
-        "gleaning_enabled": _env_bool("DOCLING_GRAPH_GLEANING_ENABLED", True),
-        "gleaning_max_passes": _env_int("DOCLING_GRAPH_GLEANING_MAX_PASSES", 1),
-        "structured_output": _env_bool("DOCLING_GRAPH_STRUCTURED_OUTPUT", True),
-        "structured_sparse_check": _env_bool("DOCLING_GRAPH_STRUCTURED_SPARSE_CHECK", True),
+        "provider_override": settings.docling_graph_llm_provider,
+        "model_override": settings.docling_graph_llm_model,
+        "extraction_contract": settings.docling_graph_extraction_contract,
+        "processing_mode": settings.docling_graph_processing_mode,
+        "use_chunking": settings.docling_graph_use_chunking,
+        "chunk_max_tokens": settings.docling_graph_chunk_max_tokens,
+        "llm_batch_token_size": settings.docling_graph_llm_batch_token_size,
+        "parallel_workers": settings.docling_graph_parallel_workers,
+        "staged_pass_retries": settings.docling_graph_batch_split_max_retries,
+        "delta_resolvers_enabled": settings.docling_graph_resolvers_enabled,
+        "delta_resolvers_mode": settings.docling_graph_resolvers_mode,
+        "delta_resolver_fuzzy_threshold": settings.docling_graph_resolver_fuzzy_threshold,
+        "delta_resolver_semantic_threshold": settings.docling_graph_resolver_semantic_threshold,
+        "delta_quality_require_root": settings.docling_graph_quality_require_root,
+        "delta_quality_min_instances": settings.docling_graph_quality_min_instances,
+        "delta_quality_max_parent_lookup_miss": settings.docling_graph_quality_max_parent_miss,
+        "delta_quality_adaptive_parent_lookup": settings.docling_graph_quality_adaptive_parent,
+        "delta_normalizer_validate_paths": settings.docling_graph_normalizer_validate_paths,
+        "delta_normalizer_canonicalize_ids": settings.docling_graph_normalizer_canonicalize_ids,
+        "delta_normalizer_strip_nested_properties": settings.docling_graph_normalizer_strip_nested,
+        "delta_normalizer_attach_provenance": settings.docling_graph_normalizer_attach_provenance,
+        "delta_identity_filter_enabled": settings.docling_graph_identity_filter_enabled,
+        "delta_identity_filter_strict": settings.docling_graph_identity_filter_strict,
+        "gleaning_enabled": settings.docling_graph_gleaning_enabled,
+        "gleaning_max_passes": settings.docling_graph_gleaning_max_passes,
+        "structured_output": settings.docling_graph_structured_output,
+        "structured_sparse_check": settings.docling_graph_structured_sparse_check,
         "llm_overrides": {
             "generation": {
-                "temperature": _env_float("DOCLING_GRAPH_LLM_TEMPERATURE", 0.1),
-                "max_tokens": _env_int_or_none("DOCLING_GRAPH_LLM_MAX_TOKENS", 64000),
+                "temperature": settings.docling_graph_llm_temperature,
+                "max_tokens": settings.docling_graph_llm_max_tokens,
             },
             "reliability": {
-                "timeout_s": _env_int("DOCLING_GRAPH_LLM_TIMEOUT", 10800),
+                "timeout_s": settings.docling_graph_llm_timeout,
             },
             "connection": {
-                "base_url": _env_str("OLLAMA_LLM_BASE_URL", "http://ollama:11434"),
+                "base_url": settings.ollama_llm_base_url,
             },
-            "context_limit": _env_int_or_none("DOCLING_GRAPH_LLM_CONTEXT_LIMIT", None),
-            "max_output_tokens": _env_int_or_none("DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS", None),
+            "context_limit": settings.docling_graph_llm_context_limit,
+            "max_output_tokens": settings.docling_graph_llm_max_output_tokens,
         },
         "dump_to_disk": False,
     }

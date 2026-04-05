@@ -1,4 +1,4 @@
-"""Docling-Graph extraction service — thin wrapper around run_pipeline()."""
+"""Docling-Graph extraction service -- thin wrapper around run_pipeline()."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any
 
 import networkx as nx
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from app.config_builder import build_pipeline_config
 from app.schemas import (
@@ -24,13 +24,6 @@ from app.schemas import (
 from app.template_builder import build_templates_with_edges
 
 logger = logging.getLogger(__name__)
-
-# Module-level state
-_templates: dict[str, Any] = {}
-_ontology_version: str | None = None
-_extraction_semaphore: asyncio.Semaphore | None = None
-_ontology_cache: dict[str, dict[str, Any]] = {}
-_pipeline_version: str = "unknown"
 
 ONTOLOGY_PATH = os.environ.get("ONTOLOGY_PATH", "/ontology/ontology.yaml")
 MAX_CONCURRENT = int(os.environ.get("DOCLING_GRAPH_MAX_CONCURRENT_EXTRACTIONS", "2"))
@@ -49,21 +42,23 @@ def _validate_library_surface() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _templates, _ontology_version, _extraction_semaphore, _pipeline_version
+    app.state.pipeline_version = _validate_library_surface()
+    logger.info("docling-graph library version: %s", app.state.pipeline_version)
 
-    _pipeline_version = _validate_library_surface()
-    logger.info("docling-graph library version: %s", _pipeline_version)
+    app.state.templates = {}
+    app.state.ontology_version = None
+    app.state.ontology_cache = {}
 
     if os.path.exists(ONTOLOGY_PATH):
         with open(ONTOLOGY_PATH) as f:
             ontology = yaml.safe_load(f)
-        _ontology_version = ontology.get("version")
-        _templates = build_templates_with_edges(ontology)
-        logger.info("Loaded ontology v%s (%d templates)", _ontology_version, len(_templates))
+        app.state.ontology_version = ontology.get("version")
+        app.state.templates = build_templates_with_edges(ontology)
+        logger.info("Loaded ontology v%s (%d templates)", app.state.ontology_version, len(app.state.templates))
     else:
         logger.warning("Ontology not found at %s", ONTOLOGY_PATH)
 
-    _extraction_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    app.state.extraction_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     yield
     logger.info("Shutting down")
 
@@ -71,16 +66,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Docling-Graph Extraction Service", version="2.0.0", lifespan=lifespan)
 
 
-def _resolve_templates(ontology_definition: dict[str, Any] | None) -> dict[str, Any]:
+def _resolve_templates(request: Request, ontology_definition: dict[str, Any] | None) -> dict[str, Any]:
     if ontology_definition is None:
-        return _templates
+        return request.app.state.templates
     ont_hash = hashlib.sha256(json.dumps(ontology_definition, sort_keys=True).encode()).hexdigest()[:16]
-    if ont_hash in _ontology_cache:
-        return _ontology_cache[ont_hash]
+    cache = request.app.state.ontology_cache
+    if ont_hash in cache:
+        return cache[ont_hash]
     templates = build_templates_with_edges(ontology_definition)
-    _ontology_cache[ont_hash] = templates
-    if len(_ontology_cache) > 2:
-        del _ontology_cache[next(iter(_ontology_cache))]
+    cache[ont_hash] = templates
+    if len(cache) > 2:
+        del cache[next(iter(cache))]
     return templates
 
 
@@ -118,32 +114,33 @@ def _apply_validation_edges(graph: nx.DiGraph, new_edges: list[dict[str, Any]]) 
 
 
 @app.get("/health", response_model=HealthResponse)
-async def health():
+async def health(request: Request):
     return HealthResponse(
-        ontology_version=_ontology_version,
-        template_count=len(_templates),
+        ontology_version=request.app.state.ontology_version,
+        template_count=len(request.app.state.templates),
         extraction_contract=os.environ.get("DOCLING_GRAPH_EXTRACTION_CONTRACT", "delta"),
-        pipeline_version=_pipeline_version,
+        pipeline_version=request.app.state.pipeline_version,
     )
 
 
 @app.post("/extract-all", response_model=ExtractionResponse)
-async def extract_all(request: ExtractionRequest):
-    if _extraction_semaphore is None:
+async def extract_all(request: Request, body: ExtractionRequest):
+    semaphore = request.app.state.extraction_semaphore
+    if semaphore is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
-    templates = _resolve_templates(request.ontology_definition)
+    templates = _resolve_templates(request, body.ontology_definition)
     if not templates:
         raise HTTPException(status_code=422, detail="No templates available")
 
-    if request.ontology_version and request.ontology_version != _ontology_version:
-        logger.warning("Ontology version mismatch: request=%s server=%s", request.ontology_version, _ontology_version)
+    if body.ontology_version and body.ontology_version != request.app.state.ontology_version:
+        logger.warning("Ontology version mismatch: request=%s server=%s", body.ontology_version, request.app.state.ontology_version)
 
-    async with _extraction_semaphore:
+    async with semaphore:
         try:
-            context = await asyncio.to_thread(run_extraction_pipeline, request.docling_document_json, templates)
+            context = await asyncio.to_thread(run_extraction_pipeline, body.docling_document_json, templates)
         except Exception as exc:
-            logger.exception("Pipeline failed for %s", request.document_id)
+            logger.exception("Pipeline failed for %s", body.document_id)
             raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
 
     graph = context.knowledge_graph
@@ -163,5 +160,5 @@ async def extract_all(request: ExtractionRequest):
         metadata=metadata,
         model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
         provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
-        ontology_version=_ontology_version,
+        ontology_version=request.app.state.ontology_version,
     )

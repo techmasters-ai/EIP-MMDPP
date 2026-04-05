@@ -247,7 +247,7 @@ class TestImageVectorSearch:
         hits = [_make_graph_entity(score=0.75, modality="image")]
 
         mock_graph_store = AsyncMock()
-        mock_graph_store.image_vector_search = AsyncMock(return_value=hits)
+        mock_graph_store.vector_search = AsyncMock(return_value=hits)
 
         with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_text_for_clip", return_value=[0.1] * 512), \
@@ -282,7 +282,7 @@ class TestImageVectorSearch:
         ]
 
         mock_graph_store = AsyncMock()
-        mock_graph_store.image_vector_search = AsyncMock(return_value=hits)
+        mock_graph_store.vector_search = AsyncMock(return_value=hits)
 
         with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_text_for_clip", return_value=[0.1] * 512), \

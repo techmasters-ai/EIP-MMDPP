@@ -222,23 +222,35 @@ class TestVectorSearchUsesVectorNeighbors:
         store = _graph(client)
 
         embedding = [0.1] * 384
-        await store.vector_search(embedding, limit=5)
+        await store.vector_search("TextChunk", "text_embedding", embedding, top_k=5)
 
         client.query.assert_called_once()
         sql = client.query.call_args.args[2]
         assert "vectorNeighbors" in sql
+        assert "TextChunk[text_embedding]" in sql
 
     async def test_vector_search_passes_limit(self):
         """Limit should appear in the SQL."""
         client = _make_client(query_result=[])
         store = _graph(client)
 
-        await store.vector_search([0.1] * 384, limit=15)
+        await store.vector_search("TextChunk", "text_embedding", [0.1] * 384, top_k=15)
 
         sql = client.query.call_args.args[2]
-        # The limit value or param reference should be in the query
         params = client.query.call_args.args[3] if len(client.query.call_args.args) > 3 else client.query.call_args.kwargs.get("params", {})
         assert params.get("top_k") == 15 or "15" in sql
+
+    async def test_vector_search_image_chunk(self):
+        """Should build correct index for ImageChunk."""
+        client = _make_client(query_result=[
+            {"@rid": "#3:0", "name": "img-1", "entity_type": "ImageChunk"},
+        ])
+        store = _graph(client)
+
+        await store.vector_search("ImageChunk", "image_embedding", [0.1] * 512, top_k=5)
+
+        sql = client.query.call_args.args[2]
+        assert "ImageChunk[image_embedding]" in sql
 
 
 # ---------------------------------------------------------------------------

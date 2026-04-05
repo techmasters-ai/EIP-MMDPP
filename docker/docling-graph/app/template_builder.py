@@ -1,15 +1,23 @@
 """Ontology YAML → Pydantic templates with edge() fields and graph_id_fields."""
 
 from __future__ import annotations
+import json
 import logging
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 logger = logging.getLogger(__name__)
 
-RESERVED_WORD_MAP: dict[str, str] = {"TABLE": "TABLE_REF"}
+# Loaded from the shared JSON file so both the main app and docling-graph
+# service use the same mapping (see ontology/arcadedb_reserved_words.json).
+_RESERVED_WORDS_PATH = Path(__file__).resolve().parents[1] / "ontology" / "arcadedb_reserved_words.json"
+try:
+    RESERVED_WORD_MAP: dict[str, str] = json.loads(_RESERVED_WORDS_PATH.read_text())
+except Exception:
+    RESERVED_WORD_MAP = {"TABLE": "TABLE_REF"}
 
 _TYPE_MAP: dict[str, type] = {
     "string": str,

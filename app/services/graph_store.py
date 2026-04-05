@@ -302,21 +302,13 @@ class GraphStore(Protocol):
 
     async def vector_search(
         self,
-        embedding: list[float],
-        entity_types: list[str] | None = None,
-        limit: int = 10,
+        vertex_type: str,
+        embedding_property: str,
+        query_vector: list[float],
+        top_k: int = 10,
         score_threshold: float | None = None,
     ) -> list[GraphEntityResult]:
-        """ANN search over text node embeddings."""
-        ...
-
-    async def image_vector_search(
-        self,
-        embedding: list[float],
-        limit: int = 10,
-        score_threshold: float | None = None,
-    ) -> list[GraphEntityResult]:
-        """ANN search over image node embeddings."""
+        """ANN search over node embeddings for a given vertex type and property."""
         ...
 
     async def set_vertex_embedding(

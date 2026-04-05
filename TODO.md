@@ -629,6 +629,39 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
+### 27. LLM-based entity mention resolution
+
+**Status:** Not started.
+**Files:** `app/workers/pipeline.py` (`_build_entity_mentions`), new module TBD
+
+**Current state:**
+- `_build_entity_mentions` uses regex/substring matching to link extracted entities to document chunks.
+- This catches exact text matches but misses: paraphrases ("the fire control radar" → APG-77), abbreviations ("FCR" → APG-77), misspellings, coreferences ("the system" → S-400).
+
+**What needs to be done:**
+1. Add an LLM-based mention resolution mode, configurable via `ENTITY_MENTION_RESOLUTION_MODE` env var (values: `regex`, `llm`, default `regex`).
+2. When `llm` mode is active, send each chunk text along with the entity list to an LLM to determine which entities are mentioned (even implicitly).
+3. Batch chunks to reduce LLM call count (e.g., 10 chunks per call with boundary markers).
+4. Fall back to regex mode on LLM failure.
+5. Benchmark accuracy improvement vs. latency/cost tradeoff.
+
+**Tradeoffs:**
+| | Regex | LLM |
+|---|---|---|
+| Exact mentions | Yes | Yes |
+| Paraphrases | No | Yes |
+| Abbreviations/coreferences | No | Yes |
+| Speed | ~50ms per doc | Minutes (thousands of LLM calls) |
+| Cost | Free | Significant |
+| Determinism | 100% | Non-deterministic |
+
+**Acceptance:**
+- Configurable via env var (regex remains the default)
+- LLM mode produces more complete EXTRACTED_FROM edges
+- Latency is bounded via batching
+
+---
+
 ## Completed During Migration (For Reference)
 
 These items were identified during review but fixed before merging:

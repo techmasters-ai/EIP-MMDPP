@@ -67,12 +67,26 @@ class ArcadeDBClient:
 
     def _get_async_client(self) -> httpx.AsyncClient:
         if self._async_client is None or self._async_client.is_closed:
-            self._async_client = httpx.AsyncClient(timeout=60.0)
+            self._async_client = httpx.AsyncClient(
+                timeout=60.0,
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,
+                    max_connections=20,
+                    keepalive_expiry=30.0,
+                ),
+            )
         return self._async_client
 
     def _get_sync_client(self) -> httpx.Client:
         if self._sync_client is None or self._sync_client.is_closed:
-            self._sync_client = httpx.Client(timeout=60.0)
+            self._sync_client = httpx.Client(
+                timeout=60.0,
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,
+                    max_connections=20,
+                    keepalive_expiry=30.0,
+                ),
+            )
         return self._sync_client
 
     async def _ensure_auth_async(self) -> None:
@@ -84,6 +98,14 @@ class ArcadeDBClient:
             self._login_sync()
 
     # --- Async API ---
+
+    def _get_slow_threshold(self) -> float:
+        """Return the slow query threshold in seconds (cached from settings)."""
+        try:
+            from app.config import get_settings
+            return get_settings().arcadedb_slow_query_threshold_seconds
+        except Exception:
+            return 1.0
 
     async def query(
         self,
@@ -98,6 +120,7 @@ class ArcadeDBClient:
         body: dict[str, Any] = {"language": language, "command": command}
         if params:
             body["params"] = params
+        t0 = time.monotonic()
         resp = await client.post(
             f"{self._base_url}/api/v1/query/{database}",
             json=body,
@@ -110,7 +133,10 @@ class ArcadeDBClient:
                 json=body,
                 headers=self._auth_headers(),
             )
+        elapsed = time.monotonic() - t0
         resp.raise_for_status()
+        if elapsed > self._get_slow_threshold():
+            logger.warning("Slow query (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])
 
     async def command(
@@ -126,6 +152,7 @@ class ArcadeDBClient:
         body: dict[str, Any] = {"language": language, "command": command}
         if params:
             body["params"] = params
+        t0 = time.monotonic()
         resp = await client.post(
             f"{self._base_url}/api/v1/command/{database}",
             json=body,
@@ -138,7 +165,10 @@ class ArcadeDBClient:
                 json=body,
                 headers=self._auth_headers(),
             )
+        elapsed = time.monotonic() - t0
         resp.raise_for_status()
+        if elapsed > self._get_slow_threshold():
+            logger.warning("Slow command (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])
 
     async def batch(
@@ -205,6 +235,7 @@ class ArcadeDBClient:
         body: dict[str, Any] = {"language": language, "command": command}
         if params:
             body["params"] = params
+        t0 = time.monotonic()
         resp = client.post(
             f"{self._base_url}/api/v1/query/{database}",
             json=body,
@@ -217,7 +248,10 @@ class ArcadeDBClient:
                 json=body,
                 headers=self._auth_headers(),
             )
+        elapsed = time.monotonic() - t0
         resp.raise_for_status()
+        if elapsed > self._get_slow_threshold():
+            logger.warning("Slow query_sync (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])
 
     def command_sync(
@@ -233,6 +267,7 @@ class ArcadeDBClient:
         body: dict[str, Any] = {"language": language, "command": command}
         if params:
             body["params"] = params
+        t0 = time.monotonic()
         resp = client.post(
             f"{self._base_url}/api/v1/command/{database}",
             json=body,
@@ -245,7 +280,10 @@ class ArcadeDBClient:
                 json=body,
                 headers=self._auth_headers(),
             )
+        elapsed = time.monotonic() - t0
         resp.raise_for_status()
+        if elapsed > self._get_slow_threshold():
+            logger.warning("Slow command_sync (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])
 
     def batch_sync(
