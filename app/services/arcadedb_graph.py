@@ -281,6 +281,8 @@ class ArcadeDBGraphStore:
         # Cache of valid (source_type, rel_type, target_type) triples. Loaded
         # lazily on first use and refreshed whenever sync_schema is called.
         self._validation_matrix: set[tuple[str, str, str]] | None = None
+        # Time-based ensure_ready cache — avoid repeated schema:database probes.
+        self._last_ready_check: float = 0
 
     # ------------------------------------------------------------------
     # Validation matrix
@@ -1162,16 +1164,28 @@ class ArcadeDBGraphStore:
                 logger.warning("Index creation failed: %s", e)
 
     async def ensure_ready(self) -> None:
-        """Block until the backend is ready, with retry/backoff."""
+        """Block until the backend is ready, with retry/backoff.
+
+        Uses a time-based cache so repeated calls within the same pipeline
+        (e.g., 5 graph-writing stages per document) skip the probe.
+        """
+        from app.config import get_settings as _gs
+        ttl = _gs().arcadedb_ready_cache_seconds
+        if time.monotonic() - self._last_ready_check < ttl:
+            logger.debug("ArcadeDB ready (cached)")
+            return
+
         last_exc: Exception | None = None
         for attempt in range(_READY_MAX_RETRIES):
             try:
-                result = await self._client.query(
+                await self._client.query(
                     self._database, "sql", "SELECT name FROM schema:database",
                 )
+                self._last_ready_check = time.monotonic()
                 logger.info("ArcadeDB ready (attempt %d)", attempt + 1)
                 return
             except Exception as exc:
+                self._last_ready_check = 0
                 last_exc = exc
                 wait = _READY_BACKOFF_BASE * (2 ** attempt)
                 logger.warning(
@@ -1511,16 +1525,24 @@ class ArcadeDBGraphStore:
         return total
 
     def ensure_ready_sync(self) -> None:
-        """Synchronous ensure_ready with retry/backoff."""
+        """Synchronous ensure_ready with time-based caching."""
+        from app.config import get_settings as _gs
+        ttl = _gs().arcadedb_ready_cache_seconds
+        if time.monotonic() - self._last_ready_check < ttl:
+            logger.debug("ArcadeDB ready (cached)")
+            return
+
         last_exc: Exception | None = None
         for attempt in range(_READY_MAX_RETRIES):
             try:
                 self._client.query_sync(
                     self._database, "sql", "SELECT name FROM schema:database",
                 )
+                self._last_ready_check = time.monotonic()
                 logger.info("ArcadeDB ready (attempt %d)", attempt + 1)
                 return
             except Exception as exc:
+                self._last_ready_check = 0
                 last_exc = exc
                 wait = _READY_BACKOFF_BASE * (2 ** attempt)
                 logger.warning(

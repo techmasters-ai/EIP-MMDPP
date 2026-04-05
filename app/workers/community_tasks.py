@@ -5,10 +5,9 @@ from __future__ import annotations
 import logging
 import uuid
 
-import redis as redis_lib
-
 from app.workers.celery_app import celery_app
 from app.config import get_settings
+from app.services.redis_utils import redis_lock
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +39,8 @@ def run_community_detection_task(
     run_id = run_id or str(uuid.uuid4())
 
     # Distributed lock: prevent concurrent detection runs
-    r = redis_lib.Redis.from_url(settings.celery_broker_url)
-    if not r.set(COMMUNITY_LOCK_KEY, run_id, nx=True, ex=COMMUNITY_LOCK_TTL):
+    lock = redis_lock(COMMUNITY_LOCK_KEY, timeout=COMMUNITY_LOCK_TTL, blocking=False)
+    if lock is None:
         logger.info("Community detection already running; skipping run %s", run_id)
         return {"status": "skipped", "reason": "detection already running"}
 
@@ -57,8 +56,10 @@ def run_community_detection_task(
         _record_run_failed(run_id, str(exc))
         raise
     finally:
-        r.delete(COMMUNITY_LOCK_KEY)
-        r.close()
+        try:
+            lock.release()
+        except Exception:
+            pass  # lock may have expired
 
 
 # ---------------------------------------------------------------------------

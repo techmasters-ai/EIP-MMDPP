@@ -59,8 +59,10 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Redis-based semaphore for Docling concurrency control
-_redis_client = redis_lib.Redis.from_url(settings.celery_broker_url)
+# Shared Redis client (singleton connection pool) — also used for Docling
+# concurrency locks and the post-ingest community trigger counter.
+from app.services.redis_utils import get_redis
+_redis_client = get_redis()
 
 # Pipeline status constants
 STATUS_PROCESSING = "PROCESSING"
@@ -2119,37 +2121,47 @@ def _build_entity_mentions(
     Each entity dict must have 'name' and 'entity_type'.
     Short names (≤4 chars) use word-boundary matching to avoid false positives.
     Returns deduplicated list of mention dicts.
+
+    All patterns are pre-compiled once before the element loop to avoid
+    redundant ``re.compile`` calls inside the inner iteration.
     """
     import re
 
-    mentions: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
-
+    # Pre-compile patterns for all entities
+    compiled: list[tuple[str, str, re.Pattern | None, str | None, str]] = []
     for entity in entities:
         name = entity.get("name", "")
         entity_type = entity.get("entity_type", "UNKNOWN")
         if not name.strip():
             continue
-
-        # Short names use word-boundary regex to avoid false positives
-        # (e.g. "RAM" matching "program", "C4" matching "AC400")
         if len(name) <= 4:
-            pattern = re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)
-            match_type = "word_boundary"
+            compiled.append((
+                name, entity_type,
+                re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE),
+                None,
+                "word_boundary",
+            ))
         else:
-            pattern = None
-            name_lower = name.lower()
-            match_type = "substring"
+            compiled.append((
+                name, entity_type, None, name.lower(), "substring",
+            ))
 
-        for elem in elements:
-            content = getattr(elem, "content_text", None) or ""
-            if not content:
-                continue
+    mentions: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
 
+    for elem in elements:
+        content = getattr(elem, "content_text", None) or ""
+        if not content:
+            continue
+        content_lower: str | None = None  # lazily computed
+
+        for name, entity_type, pattern, name_lower, match_type in compiled:
             if pattern is not None:
                 matched = pattern.search(content)
             else:
-                matched = name_lower in content.lower()
+                if content_lower is None:
+                    content_lower = content.lower()
+                matched = name_lower in content_lower  # type: ignore[operator]
 
             if matched:
                 key = (name, entity_type, elem.element_uid)
@@ -3007,8 +3019,8 @@ def _maybe_trigger_post_ingest_community_detection(document_id: str) -> None:
         if not _s.community_detection_post_ingest_enabled:
             return
 
-        import redis as redis_lib
-        r = redis_lib.Redis.from_url(_s.celery_broker_url)
+        from app.services.redis_utils import get_redis as _get_redis
+        r = _get_redis()
         try:
             count = int(r.incr(_POST_INGEST_COUNTER_KEY))
             threshold = _s.community_detection_post_ingest_threshold
@@ -3025,7 +3037,8 @@ def _maybe_trigger_post_ingest_community_detection(document_id: str) -> None:
                     count,
                 )
         finally:
-            r.close()
+            # Shared pool-owned client — do not close here.
+            pass
     except Exception as exc:
         logger.warning(
             "post-ingest community detection trigger failed for %s: %s",

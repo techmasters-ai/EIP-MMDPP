@@ -15,19 +15,9 @@ import redis as redis_lib
 
 from app.config import get_settings
 from app.services.ontology_templates import load_ontology
+from app.services.redis_utils import get_redis as _get_redis
 
 logger = logging.getLogger(__name__)
-
-# Redis client for concurrency gating (initialised lazily)
-_redis_client: redis_lib.Redis | None = None
-
-
-def _get_redis() -> redis_lib.Redis:
-    global _redis_client
-    if _redis_client is None:
-        settings = get_settings()
-        _redis_client = redis_lib.Redis.from_url(settings.celery_broker_url)
-    return _redis_client
 
 
 class DeterministicExtractionError(ValueError):

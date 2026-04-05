@@ -16,11 +16,11 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_redis(lock_acquired: bool = True):
-    r = MagicMock()
-    r.set = MagicMock(return_value=lock_acquired)
-    r.delete = MagicMock()
-    return r
+def _make_lock():
+    """Return a MagicMock with release() as a stub — mimics redis.Redis.lock()."""
+    lock = MagicMock()
+    lock.release = MagicMock()
+    return lock
 
 
 def _mock_settings(**overrides):
@@ -64,24 +64,22 @@ def test_task_skips_when_lock_not_acquired():
     from app.workers.community_tasks import run_community_detection_task
 
     settings = _mock_settings()
-    r = _make_redis(lock_acquired=False)
 
     with (
         patch("app.workers.community_tasks.get_settings", return_value=settings),
-        patch("app.workers.community_tasks.redis_lib.Redis.from_url", return_value=r),
+        patch("app.workers.community_tasks.redis_lock", return_value=None),
     ):
         result = run_community_detection_task.run(mode="incremental")
 
     assert result["status"] == "skipped"
     assert result["reason"] == "detection already running"
-    r.delete.assert_not_called()
 
 
 def test_task_releases_lock_on_success():
     from app.workers.community_tasks import run_community_detection_task
 
     settings = _mock_settings()
-    r = _make_redis(lock_acquired=True)
+    lock = _make_lock()
     detection_result = {
         "status": "COMPLETE",
         "total_communities": 3,
@@ -91,7 +89,7 @@ def test_task_releases_lock_on_success():
 
     with (
         patch("app.workers.community_tasks.get_settings", return_value=settings),
-        patch("app.workers.community_tasks.redis_lib.Redis.from_url", return_value=r),
+        patch("app.workers.community_tasks.redis_lock", return_value=lock),
         patch("app.workers.community_tasks._record_run_start"),
         patch("app.workers.community_tasks._record_run_complete"),
         patch("app.db.session.get_graph_store", return_value=MagicMock()),
@@ -100,18 +98,18 @@ def test_task_releases_lock_on_success():
         result = run_community_detection_task.run(mode="incremental", run_id="test-run-id")
 
     assert result["status"] == "COMPLETE"
-    r.delete.assert_called_once()
+    lock.release.assert_called_once()
 
 
 def test_task_releases_lock_on_failure():
     from app.workers.community_tasks import run_community_detection_task
 
     settings = _mock_settings()
-    r = _make_redis(lock_acquired=True)
+    lock = _make_lock()
 
     with (
         patch("app.workers.community_tasks.get_settings", return_value=settings),
-        patch("app.workers.community_tasks.redis_lib.Redis.from_url", return_value=r),
+        patch("app.workers.community_tasks.redis_lock", return_value=lock),
         patch("app.workers.community_tasks._record_run_start"),
         patch("app.workers.community_tasks._record_run_failed"),
         patch("app.db.session.get_graph_store", return_value=MagicMock()),
@@ -121,7 +119,7 @@ def test_task_releases_lock_on_failure():
         run_community_detection_task.run(mode="incremental", run_id="test-run-id")
 
     # Lock must be released even when the task raises
-    r.delete.assert_called_once()
+    lock.release.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

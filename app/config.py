@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     arcadedb_user: str = "root"
     arcadedb_password: str = "eip_arcadedb_secret"
     arcadedb_database: str = "eip_knowledge_graph"
+    arcadedb_ready_cache_seconds: float = 60.0
 
     # Community detection
     community_detection_enabled: bool = True

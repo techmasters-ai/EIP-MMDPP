@@ -12,11 +12,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Domain entity types for community detection (exclude structural types)
-_STRUCTURAL_TYPES = {
-    "Document", "TextChunk", "ImageChunk", "TrustedTextChunk",
-    "Alias", "CommunityReport", "TABLE_REF",
-}
+# Domain entity types for community detection (exclude structural types).
+# Derived from the schema module's single source of truth.
+from app.services.arcadedb_schema import STRUCTURAL_TYPES as _STRUCTURAL_TYPES
 
 
 def _compute_membership_hash(members: list[dict[str, str]]) -> str:

@@ -889,9 +889,9 @@ class TestCancelDocumentEndpoint:
 
         with patch("app.api.v1.sources._hard_delete_document", new_callable=AsyncMock) as mock_delete:
             with patch("app.workers.celery_app.celery_app") as mock_celery:
-                with patch("redis.Redis.from_url") as mock_redis_cls:
+                with patch("app.services.redis_utils.get_redis") as mock_get_redis:
                     mock_redis = MagicMock()
-                    mock_redis_cls.return_value = mock_redis
+                    mock_get_redis.return_value = mock_redis
 
                     result = await cancel_document(doc_id, db=mock_db)
 
@@ -912,9 +912,9 @@ class TestCancelDocumentEndpoint:
         mock_db.get.return_value = mock_doc
 
         with patch("app.api.v1.sources._hard_delete_document", new_callable=AsyncMock):
-            with patch("redis.Redis.from_url") as mock_redis_cls:
+            with patch("app.services.redis_utils.get_redis") as mock_get_redis:
                 mock_redis = MagicMock()
-                mock_redis_cls.return_value = mock_redis
+                mock_get_redis.return_value = mock_redis
 
                 result = await cancel_document(doc_id, db=mock_db)
 

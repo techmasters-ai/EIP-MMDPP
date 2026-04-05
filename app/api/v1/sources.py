@@ -377,8 +377,8 @@ async def cancel_document(
 
     # 2. Release Redis locks (singleflight + Docling permits)
     try:
-        import redis as redis_lib
-        r = redis_lib.Redis.from_url(settings.celery_broker_url)
+        from app.services.redis_utils import get_redis
+        r = get_redis()
         r.delete(f"prepare:{doc_id_str}")
         for i in range(settings.docling_concurrency):
             r.delete(f"docling:permit:{i}")
@@ -447,8 +447,8 @@ async def delete_all_source_documents(
             except Exception:
                 pass
         try:
-            import redis as _redis_lib
-            _r = _redis_lib.Redis.from_url(settings.celery_broker_url)
+            from app.services.redis_utils import get_redis
+            _r = get_redis()
             _r.delete(f"prepare:{doc_id_str}")
         except Exception:
             pass

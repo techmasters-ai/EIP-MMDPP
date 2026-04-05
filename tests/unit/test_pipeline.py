@@ -289,9 +289,9 @@ class TestPostIngestCommunityTrigger:
         monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_ENABLED", "false")
 
         try:
-            with patch("redis.Redis.from_url") as mock_redis_cls:
+            with patch("app.services.redis_utils.get_redis") as mock_get:
                 _maybe_trigger_post_ingest_community_detection("doc-1")
-                mock_redis_cls.assert_not_called()
+                mock_get.assert_not_called()
         finally:
             get_settings.cache_clear()
 
@@ -309,14 +309,15 @@ class TestPostIngestCommunityTrigger:
             mock_redis = MagicMock()
             mock_redis.incr.return_value = 2
             with (
-                patch("redis.Redis.from_url", return_value=mock_redis),
+                patch("app.services.redis_utils.get_redis", return_value=mock_redis),
                 patch("app.workers.community_tasks.run_community_detection_task") as mock_task,
             ):
                 _maybe_trigger_post_ingest_community_detection("doc-1")
                 mock_redis.incr.assert_called_once_with("community:pending_ingest_count")
                 mock_task.delay.assert_not_called()
                 mock_redis.set.assert_not_called()
-                mock_redis.close.assert_called_once()
+                # Shared client — helper must NOT close it
+                mock_redis.close.assert_not_called()
         finally:
             get_settings.cache_clear()
 
@@ -334,14 +335,14 @@ class TestPostIngestCommunityTrigger:
             mock_redis = MagicMock()
             mock_redis.incr.return_value = 3  # reaches threshold
             with (
-                patch("redis.Redis.from_url", return_value=mock_redis),
+                patch("app.services.redis_utils.get_redis", return_value=mock_redis),
                 patch("app.workers.community_tasks.run_community_detection_task") as mock_task,
             ):
                 _maybe_trigger_post_ingest_community_detection("doc-1")
                 mock_redis.incr.assert_called_once()
                 mock_redis.set.assert_called_once_with("community:pending_ingest_count", 0)
                 mock_task.delay.assert_called_once_with(mode="incremental")
-                mock_redis.close.assert_called_once()
+                mock_redis.close.assert_not_called()
         finally:
             get_settings.cache_clear()
 
@@ -355,7 +356,7 @@ class TestPostIngestCommunityTrigger:
         monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_ENABLED", "true")
 
         try:
-            with patch("redis.Redis.from_url", side_effect=RuntimeError("no redis")):
+            with patch("app.services.redis_utils.get_redis", side_effect=RuntimeError("no redis")):
                 # Must not raise
                 _maybe_trigger_post_ingest_community_detection("doc-1")
         finally:

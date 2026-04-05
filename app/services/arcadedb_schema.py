@@ -105,6 +105,13 @@ _STRUCTURAL_EDGE_PROPS = [
 ]
 
 
+# Exported for use by arcadedb_community.py and other modules that need to
+# distinguish structural (infrastructure) types from domain entity types.
+STRUCTURAL_TYPES: frozenset[str] = frozenset(
+    list(_STRUCTURAL_VERTEX_TYPES.keys()) + ["TABLE_REF"]
+)
+
+
 def _safe_type_name(ontology_name: str) -> str:
     """Map reserved ArcadeDB SQL words to safe alternatives."""
     return RESERVED_WORD_MAP.get(ontology_name, ontology_name)
