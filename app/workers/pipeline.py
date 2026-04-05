@@ -1547,13 +1547,12 @@ def purge_document_derivations(self, document_id: str, run_id: str | None = None
     """Delete stale derived data for a document before re-deriving.
 
     Purges: TextChunks, ImageChunks, ChunkLinks (Postgres),
-    Qdrant vectors (both collections), graph structural subgraph.
+    ArcadeDB graph vertices + vector embeddings.
     Idempotent — safe to call on first ingest (no-op if nothing exists).
     """
     from app.models.retrieval import TextChunk, ImageChunk, ChunkLink
     from app.models.ingest import DocumentGraphExtraction
-    from app.services.qdrant_store import delete_by_document_id
-    from app.db.session import get_graph_store, get_qdrant_client
+    from app.db.session import get_graph_store
     from sqlalchemy import delete as sql_delete
 
     logger.info("purge_document_derivations: document_id=%s", document_id)
@@ -1587,16 +1586,7 @@ def purge_document_derivations(self, document_id: str, run_id: str | None = None
         metrics["graph_extractions_deleted"] = result.rowcount
         db.commit()
 
-        # 2. Qdrant vectors
-        try:
-            qdrant_client = get_qdrant_client()
-            delete_by_document_id(qdrant_client, document_id)
-            metrics["qdrant_purged"] = True
-        except Exception as exc:
-            logger.warning("purge: Qdrant cleanup failed for %s: %s", document_id, exc)
-            metrics["qdrant_purged"] = False
-
-        # 3. Graph store — delete document structural subgraph
+        # 2. ArcadeDB graph — delete document structural subgraph (includes vectors)
         try:
             graph_store = get_graph_store()
             deleted = graph_store.delete_document_graph_sync(document_id)
@@ -1716,13 +1706,10 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
         # Shared variables for both text chunk and image description passes
         _embed_batch = settings.embed_text_batch_size
-        _upsert_batch = settings.qdrant_upsert_batch_size
         model_version = settings.text_embedding_model
 
-        from app.db.session import get_qdrant_client
-        from app.services.qdrant_store import upsert_text_vectors_batch
-        from qdrant_client.models import PointStruct
-        qdrant = get_qdrant_client()
+        from app.db.session import get_graph_store
+        graph_store = get_graph_store()
 
         if all_texts:
             # Batch embedding to limit memory for very large documents
@@ -1730,7 +1717,6 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             for _eb_start in range(0, len(all_texts), _embed_batch):
                 embeddings.extend(embed_texts(all_texts[_eb_start:_eb_start + _embed_batch]))
 
-            qdrant_points: list[PointStruct] = []
             for sc, text, embedding in zip(all_chunk_refs, all_texts, embeddings):
                 # Resolve artifact_id from the first element_uid in this chunk
                 first_uid = sc.element_uids[0] if sc.element_uids else ""
@@ -1745,7 +1731,6 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 ).hexdigest()
 
                 chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
-                qdrant_point_id = chunk_id  # Use same UUID for Qdrant
 
                 chunk_values = {
                     "id": chunk_id,
@@ -1753,43 +1738,38 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     "document_id": uuid.UUID(document_id),
                     "chunk_index": sc.chunk_index,
                     "chunk_text": text,
-                    "embedding": embedding,
                     "modality": sc.modality,
                     "page_number": sc.page_number,
                     "bounding_box": bounding_box,
-                    "qdrant_point_id": qdrant_point_id,
                 }
 
                 stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
                     index_elements=["id"],
                     set_={
                         "chunk_text": chunk_values["chunk_text"],
-                        "embedding": chunk_values["embedding"],
                         "modality": chunk_values["modality"],
-                        "qdrant_point_id": qdrant_point_id,
                     },
                 )
                 db.execute(stmt)
 
-                qdrant_points.append(PointStruct(
-                    id=str(qdrant_point_id),
-                    vector=embedding,
-                    payload={
-                        "chunk_id": str(chunk_id),
-                        "document_id": document_id,
+                # Upsert TextChunk vertex + embedding in ArcadeDB
+                rid = graph_store.create_text_chunk_vertex_sync(
+                    chunk_id=str(chunk_id),
+                    text=text,
+                    document_id=document_id,
+                    properties={
                         "artifact_id": str(artifact_id) if artifact_id else None,
                         "modality": sc.modality,
                         "page_number": sc.page_number,
                         "classification": doc_classification,
-                        "chunk_text": text,
                     },
-                ))
+                )
+                graph_store.set_vertex_embedding_sync(
+                    node_id=rid,
+                    embedding=embedding,
+                    model_name=model_version,
+                )
                 chunks_created += 1
-
-            # Batch upsert text vectors in bounded Qdrant RPCs
-            if qdrant_points:
-                for _qb_start in range(0, len(qdrant_points), _upsert_batch):
-                    upsert_text_vectors_batch(qdrant, qdrant_points[_qb_start:_qb_start + _upsert_batch])
 
         db.commit()
 
@@ -1808,7 +1788,6 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         ).scalars().all()
 
         img_desc_chunks_created = 0
-        img_desc_qdrant_points: list[PointStruct] = []
         img_desc_texts: list[str] = []
         img_desc_chunk_metas: list[dict] = []
 
@@ -1847,7 +1826,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     embed_texts(img_desc_texts[_eb_start:_eb_start + _embed_batch])
                 )
 
-            # Create TextChunk rows and Qdrant points
+            # Create TextChunk rows in Postgres + ArcadeDB vertices with embeddings
             for meta, emb in zip(img_desc_chunk_metas, img_desc_embeddings):
                 chunk_values = {
                     "id": meta["chunk_id"],
@@ -1855,11 +1834,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     "document_id": meta["document_id"],
                     "chunk_index": meta["chunk_index"],
                     "chunk_text": meta["section_text"],
-                    "embedding": emb,
                     "modality": "image_description",
                     "page_number": meta["page_number"],
                     "bounding_box": None,
-                    "qdrant_point_id": meta["chunk_id"],
                     "classification": doc_classification,
                 }
 
@@ -1867,35 +1844,29 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     index_elements=["id"],
                     set_={
                         "chunk_text": chunk_values["chunk_text"],
-                        "embedding": chunk_values["embedding"],
                         "modality": chunk_values["modality"],
-                        "qdrant_point_id": chunk_values["qdrant_point_id"],
                     },
                 )
                 db.execute(stmt)
 
-                img_desc_qdrant_points.append(PointStruct(
-                    id=str(meta["chunk_id"]),
-                    vector=emb,
-                    payload={
-                        "chunk_id": str(meta["chunk_id"]),
-                        "document_id": document_id,
+                # Upsert TextChunk vertex + embedding in ArcadeDB
+                rid = graph_store.create_text_chunk_vertex_sync(
+                    chunk_id=str(meta["chunk_id"]),
+                    text=meta["section_text"],
+                    document_id=document_id,
+                    properties={
                         "artifact_id": str(meta["artifact_id"]),
                         "modality": "image_description",
                         "page_number": meta["page_number"],
                         "classification": doc_classification,
-                        "chunk_text": meta["section_text"],
                     },
-                ))
+                )
+                graph_store.set_vertex_embedding_sync(
+                    node_id=rid,
+                    embedding=emb,
+                    model_name=model_version,
+                )
                 img_desc_chunks_created += 1
-
-            # Batch upsert to Qdrant
-            if img_desc_qdrant_points:
-                for _qb_start in range(0, len(img_desc_qdrant_points), _upsert_batch):
-                    upsert_text_vectors_batch(
-                        qdrant,
-                        img_desc_qdrant_points[_qb_start:_qb_start + _upsert_batch],
-                    )
 
             # SAME_ARTIFACT chunk_links (neighbor-only) between consecutive sections
             from collections import defaultdict
@@ -2041,20 +2012,15 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                 image_embeddings = embed_images(pil_images)
                 model_version = settings.image_embedding_model
 
-                # Get Qdrant client for batch vector upsert
-                from app.db.session import get_qdrant_client
-                from app.services.qdrant_store import upsert_image_vectors_batch
-                from qdrant_client.models import PointStruct
-                qdrant = get_qdrant_client()
+                from app.db.session import get_graph_store
+                graph_store = get_graph_store()
 
-                qdrant_points: list[PointStruct] = []
                 for elem, img_embedding in zip(valid_elements, image_embeddings):
                     chunk_key = hashlib.sha256(
                         f"{document_id}:{elem.element_uid}:{model_version}".encode()
                     ).hexdigest()
 
                     chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
-                    qdrant_point_id = chunk_id
 
                     chunk_values = {
                         "id": chunk_id,
@@ -2062,41 +2028,38 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                         "document_id": uuid.UUID(document_id),
                         "chunk_index": 0,
                         "chunk_text": elem.content_text or None,
-                        "embedding": img_embedding,
                         "modality": "image",
                         "page_number": elem.page_number,
                         "bounding_box": elem.bounding_box,
-                        "qdrant_point_id": qdrant_point_id,
                     }
 
                     stmt = pg_insert(ImageChunk).values(**chunk_values).on_conflict_do_update(
                         index_elements=["id"],
                         set_={
                             "chunk_text": chunk_values["chunk_text"],
-                            "embedding": chunk_values["embedding"],
-                            "qdrant_point_id": qdrant_point_id,
                         },
                     )
                     db.execute(stmt)
 
-                    qdrant_points.append(PointStruct(
-                        id=str(qdrant_point_id),
-                        vector=img_embedding,
-                        payload={
-                            "chunk_id": str(chunk_id),
-                            "document_id": document_id,
+                    # Upsert ImageChunk vertex + embedding in ArcadeDB
+                    rid = graph_store.create_image_chunk_vertex_sync(
+                        chunk_id=str(chunk_id),
+                        document_id=document_id,
+                        properties={
                             "artifact_id": str(elem.artifact_id),
                             "modality": "image",
                             "page_number": elem.page_number,
                             "classification": doc_classification,
                             "chunk_text": elem.content_text or "",
                         },
-                    ))
+                    )
+                    graph_store.set_vertex_embedding_sync(
+                        node_id=rid,
+                        embedding=img_embedding,
+                        model_name=model_version,
+                        embedding_property="image_embedding",
+                    )
                     chunks_created += 1
-
-                # Batch upsert all image vectors in one Qdrant RPC
-                if qdrant_points:
-                    upsert_image_vectors_batch(qdrant, qdrant_points)
 
         db.commit()
 

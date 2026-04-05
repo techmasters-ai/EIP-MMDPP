@@ -1,6 +1,6 @@
 services:
   # ---------------------------------------------------------------------------
-  # PostgreSQL with pgvector
+  # PostgreSQL
   # ---------------------------------------------------------------------------
   postgres:
     build:
@@ -75,27 +75,7 @@ services:
       "
 
   # Neo4j removed — all graph operations now use ArcadeDB via GraphStore
-
-  # ---------------------------------------------------------------------------
-  # Qdrant — vector search engine (replaces pgvector)
-  # ---------------------------------------------------------------------------
-  qdrant:
-    image: qdrant/qdrant:v1.13.2
-    restart: unless-stopped
-    ulimits:
-      nofile:
-        soft: 65535
-        hard: 65535
-    ports:
-      - "${QDRANT_HTTP_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # Qdrant removed — all vector operations now use ArcadeDB LSMVectorIndex
 
   # ---------------------------------------------------------------------------
   # Docling — document conversion service (granite-docling-258M VLM)
@@ -184,8 +164,6 @@ services:
       redis:
         condition: service_healthy
       minio:
-        condition: service_healthy
-      qdrant:
         condition: service_healthy
     env_file:
       - .env
@@ -393,7 +371,6 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
-  qdrant_data:
   model_cache:
   watch_dirs:
   celerybeat_data:

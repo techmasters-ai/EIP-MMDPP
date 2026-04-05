@@ -126,14 +126,6 @@ class Settings(BaseSettings):
     community_report_llm_model: str = "llama3.2"
     community_report_llm_prompt: str = ""
 
-    # Qdrant (vector search — replaces pgvector)
-    qdrant_url: str = "http://qdrant:6333"
-    qdrant_text_collection: str = "eip_text_chunks"
-    qdrant_image_collection: str = "eip_image_chunks"
-    qdrant_trusted_text_collection: str = "eip_trusted_text"
-    qdrant_upsert_batch_size: int = 128
-    qdrant_timeout_seconds: float = 60.0
-
     # Reranker (cross-encoder for retrieval re-scoring)
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_device: str = "cpu"  # cpu | cuda

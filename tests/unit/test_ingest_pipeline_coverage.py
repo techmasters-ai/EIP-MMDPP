@@ -23,29 +23,6 @@ from unittest.mock import MagicMock, AsyncMock, patch, call
 
 import pytest
 
-# Pre-mock pgvector so that importing app.models.retrieval (which
-# app.models.ingest transitively imports) does not fail in the test venv.
-# The Vector type must act as a real SQLAlchemy TypeDecorator for model
-# introspection to succeed.
-if "pgvector" not in sys.modules:
-    from sqlalchemy import types as sa_types
-
-    class _FakeVector(sa_types.UserDefinedType):
-        """Minimal stand-in for pgvector.sqlalchemy.Vector."""
-        cache_ok = True
-
-        def __init__(self, dim=None):
-            self.dim = dim
-
-        def get_col_spec(self):
-            return f"VECTOR({self.dim})" if self.dim else "VECTOR"
-
-    _pgvector_mod = MagicMock()
-    _pgvector_sqla_mod = MagicMock()
-    _pgvector_sqla_mod.Vector = _FakeVector
-    sys.modules["pgvector"] = _pgvector_mod
-    sys.modules["pgvector.sqlalchemy"] = _pgvector_sqla_mod
-
 # Pre-mock python-multipart so that importing app.api.v1.sources (which
 # registers FastAPI routes with UploadFile params) does not fail.
 # FastAPI checks `from python_multipart import __version__` and asserts > "0.0.12",
@@ -779,12 +756,10 @@ class TestPurgeDocumentDerivations:
         mock_result.rowcount = 5
         mock_db.execute.return_value = mock_result
 
-        with patch("app.services.qdrant_store.delete_by_document_id"):
-            with patch("app.db.session.get_qdrant_client", return_value=MagicMock()):
-                with patch("app.db.session.get_graph_store") as mock_gs:
-                    mock_gs.return_value.delete_document_graph_sync.return_value = 0
+        with patch("app.db.session.get_graph_store") as mock_gs:
+            mock_gs.return_value.delete_document_graph_sync.return_value = 0
 
-                    result = purge_document_derivations.run(DOC_ID, RUN_ID)
+            result = purge_document_derivations.run(DOC_ID, RUN_ID)
 
         assert result == DOC_ID
         assert mock_db.execute.call_count >= 4

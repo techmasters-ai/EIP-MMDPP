@@ -35,7 +35,7 @@ async def propose_trusted_data(
     """Submit knowledge for the trusted data layer.
 
     Creates a submission with status PROPOSED. A curator must approve before
-    the content is embedded and indexed in the trusted Qdrant collection.
+    the content is embedded and indexed in ArcadeDB.
     """
     submission = TrustedDataSubmission(
         content=body.content,
@@ -80,7 +80,7 @@ async def approve_proposal(
     body: TrustedDataReview,
     db: AsyncSession = Depends(get_async_session),
 ) -> TrustedDataResponse:
-    """Curator approves a submission → enqueues Celery task for embedding + Qdrant indexing."""
+    """Curator approves a submission → enqueues Celery task for embedding + ArcadeDB indexing."""
     submission = await db.get(TrustedDataSubmission, proposal_id)
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
@@ -194,25 +194,39 @@ async def query_trusted_data(
     body: TrustedDataQueryRequest,
     db: AsyncSession = Depends(get_async_session),
 ) -> TrustedDataQueryResponse:
-    """Search the trusted data Qdrant collection."""
+    """Search the trusted data via ArcadeDB vector search."""
     from app.services.embedding import embed_texts
-    from app.services.qdrant_store import search_trusted_vectors
+    from app.db.session import get_graph_store
 
     vectors = embed_texts([body.query], query=True)
-    results = await search_trusted_vectors(vectors[0], top_k=body.top_k)
+    graph_store = get_graph_store()
+
+    # Search TextChunk vertices that have modality=trusted_text
+    hits = await graph_store.vector_search(
+        embedding=vectors[0],
+        entity_types=["TextChunk"],
+        limit=body.top_k,
+    )
+
+    results = []
+    for hit in hits:
+        props = hit.properties or {}
+        # Only include trusted text results
+        if props.get("modality") != "trusted_text":
+            continue
+        results.append(
+            TrustedDataQueryResult(
+                content_text=props.get("text", hit.name or ""),
+                score=hit.extraction_confidence or 0.0,
+                submission_id=props.get("submission_id"),
+                confidence=props.get("confidence"),
+                classification=props.get("classification"),
+            )
+        )
 
     return TrustedDataQueryResponse(
         query=body.query,
-        results=[
-            TrustedDataQueryResult(
-                content_text=r.get("content_text", ""),
-                score=r.get("score", 0.0),
-                submission_id=r.get("submission_id"),
-                confidence=r.get("confidence"),
-                classification=r.get("classification"),
-            )
-            for r in results
-        ],
+        results=results,
         total=len(results),
     )
 
@@ -232,7 +246,6 @@ def _to_response(submission: TrustedDataSubmission) -> TrustedDataResponse:
         updated_at=submission.updated_at,
         index_status=submission.index_status,
         index_error=submission.index_error,
-        qdrant_point_id=submission.qdrant_point_id,
         embedding_model=submission.embedding_model,
         embedded_at=submission.embedded_at,
     )

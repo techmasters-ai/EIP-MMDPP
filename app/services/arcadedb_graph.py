@@ -544,11 +544,38 @@ class ArcadeDBGraphStore:
             ]
         return results
 
+    async def image_vector_search(
+        self,
+        embedding: list[float],
+        limit: int = 10,
+        score_threshold: float | None = None,
+    ) -> list[GraphEntityResult]:
+        """ANN search over ImageChunk embeddings via vectorNeighbors."""
+        sql = (
+            "SELECT *, @rid AS node_id "
+            "FROM (SELECT expand(vectorNeighbors('ImageChunk[image_embedding]', "
+            ":query_vector, :top_k)))"
+        )
+        params: dict[str, Any] = {
+            "query_vector": embedding,
+            "top_k": limit,
+        }
+        rows = await self._client.query(self._database, "sql", sql, params)
+        results = [_to_entity(r) for r in rows]
+
+        if score_threshold is not None:
+            results = [
+                r for r in results
+                if (r.extraction_confidence or 0) >= score_threshold
+            ]
+        return results
+
     async def set_vertex_embedding(
         self,
         node_id: str,
         embedding: list[float],
         model_name: str | None = None,
+        embedding_property: str = "text_embedding",
     ) -> None:
         """Attach a vector embedding to a node."""
         model_set = ""
@@ -558,8 +585,27 @@ class ArcadeDBGraphStore:
             params["model_name"] = model_name
 
         sql = (
-            f"UPDATE {node_id} SET text_embedding = :embedding{model_set}, "
+            f"UPDATE {node_id} SET {embedding_property} = :embedding{model_set}, "
             f"updated_at = sysdate()"
+        )
+        await self._client.command(self._database, "sql", sql, params)
+
+    async def set_vertex_embedding_by_chunk_id(
+        self,
+        chunk_id: str,
+        embedding: list[float],
+        model_name: str | None = None,
+    ) -> None:
+        """Update embedding on a TextChunk vertex looked up by chunk_id."""
+        model_set = ""
+        params: dict[str, Any] = {"embedding": embedding, "chunk_id": chunk_id}
+        if model_name:
+            model_set = ", embedding_model = :model_name"
+            params["model_name"] = model_name
+
+        sql = (
+            f"UPDATE TextChunk SET text_embedding = :embedding{model_set}, "
+            f"updated_at = sysdate() WHERE chunk_id = :chunk_id"
         )
         await self._client.command(self._database, "sql", sql, params)
 
@@ -824,6 +870,7 @@ class ArcadeDBGraphStore:
         node_id: str,
         embedding: list[float],
         model_name: str | None = None,
+        embedding_property: str = "text_embedding",
     ) -> None:
         """Synchronous embedding set."""
         model_set = ""
@@ -833,7 +880,7 @@ class ArcadeDBGraphStore:
             params["model_name"] = model_name
 
         sql = (
-            f"UPDATE {node_id} SET text_embedding = :embedding{model_set}, "
+            f"UPDATE {node_id} SET {embedding_property} = :embedding{model_set}, "
             f"updated_at = sysdate()"
         )
         self._client.command_sync(self._database, "sql", sql, params)

@@ -1,6 +1,6 @@
 """Unit tests for retrieval pipeline helpers.
 
-Tests _build_qdrant_filters and _merge_seed_results from retrieval.py.
+Tests _merge_seed_results from retrieval.py.
 """
 
 import uuid
@@ -38,67 +38,6 @@ def _make_result_item(**kwargs):
     }
     defaults.update(kwargs)
     return QueryResultItem(**defaults)
-
-
-# ---------------------------------------------------------------------------
-# _build_qdrant_filters
-# ---------------------------------------------------------------------------
-
-class TestBuildQdrantFilters:
-    def test_no_filters_returns_none(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        body = _make_body()
-        assert _build_qdrant_filters(body) is None
-
-    def test_classification_filter(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-        body = _make_body(filters=QueryFilters(classification="SECRET"))
-        result = _build_qdrant_filters(body)
-        assert result is not None
-        assert result["classification"] == "SECRET"
-
-    def test_document_ids_filter(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-        did = uuid.uuid4()
-        body = _make_body(filters=QueryFilters(document_ids=[did]))
-        result = _build_qdrant_filters(body)
-        assert result["document_id"] == [str(did)]
-
-    def test_multiple_document_ids_filter(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-        ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
-        body = _make_body(filters=QueryFilters(document_ids=ids))
-        result = _build_qdrant_filters(body)
-        assert result["document_id"] == [str(d) for d in ids]
-
-    def test_single_modality_filter(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-        body = _make_body(filters=QueryFilters(modalities=["text"]))
-        result = _build_qdrant_filters(body)
-        assert result["modality"] == "text"
-
-    def test_multiple_modalities_included_as_list(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-        body = _make_body(filters=QueryFilters(modalities=["text", "image"]))
-        result = _build_qdrant_filters(body)
-        assert result is not None
-        assert result["modality"] == ["text", "image"]
-
-    def test_combined_filters(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-        body = _make_body(filters=QueryFilters(
-            classification="UNCLASSIFIED",
-            modalities=["text"],
-        ))
-        result = _build_qdrant_filters(body)
-        assert result["classification"] == "UNCLASSIFIED"
-        assert result["modality"] == "text"
 
 
 # ---------------------------------------------------------------------------

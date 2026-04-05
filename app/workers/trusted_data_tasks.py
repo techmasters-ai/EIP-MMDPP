@@ -1,4 +1,4 @@
-"""Celery tasks for trusted data embedding and Qdrant indexing."""
+"""Celery tasks for trusted data embedding and ArcadeDB indexing."""
 
 import logging
 import uuid
@@ -21,7 +21,7 @@ settings = get_settings()
     time_limit=180,
 )
 def index_trusted_submission(self, submission_id: str):
-    """Embed approved text and upsert to trusted Qdrant collection."""
+    """Embed approved text and upsert to ArcadeDB as TrustedTextChunk vertex."""
     from app.models.trusted_data import TrustedDataSubmission
 
     db = _get_db()
@@ -47,22 +47,19 @@ def index_trusted_submission(self, submission_id: str):
         vectors = embed_texts([submission.content])
         vector = vectors[0]
 
-        # Deterministic point ID from submission ID
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"trusted:{submission_id}"))
+        # Upsert TrustedTextChunk vertex in ArcadeDB with embedding
+        from app.db.session import get_graph_store
 
-        # Upsert to trusted collection
-        from app.services.qdrant_store import upsert_trusted_vector
-        from app.db.session import get_qdrant_client
-
-        upsert_trusted_vector(
-            client=get_qdrant_client(),
-            point_id=point_id,
-            vector=vector,
-            payload={
-                "submission_id": submission_id,
-                "content_text": submission.content,
+        graph_store = get_graph_store()
+        rid = graph_store.create_text_chunk_vertex_sync(
+            chunk_id=f"trusted:{submission_id}",
+            text=submission.content,
+            document_id=f"trusted:{submission_id}",
+            properties={
                 "confidence": submission.confidence,
                 "classification": "UNCLASSIFIED",
+                "modality": "trusted_text",
+                "submission_id": submission_id,
                 "reviewed_at": (
                     submission.reviewed_at.isoformat()
                     if submission.reviewed_at
@@ -71,11 +68,15 @@ def index_trusted_submission(self, submission_id: str):
                 "status": submission.status,
             },
         )
+        graph_store.set_vertex_embedding_sync(
+            node_id=rid,
+            embedding=vector,
+            model_name=settings.text_embedding_model,
+        )
 
         # Update submission
         submission.status = "APPROVED_INDEXED"
         submission.index_status = "COMPLETE"
-        submission.qdrant_point_id = uuid.UUID(point_id)
         submission.embedding_model = settings.text_embedding_model
         submission.embedded_at = datetime.now(timezone.utc)
         submission.index_error = None

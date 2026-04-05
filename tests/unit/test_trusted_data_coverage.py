@@ -8,21 +8,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Pre-mock pgvector so importing app.models.retrieval doesn't fail
-if "pgvector" not in sys.modules:
-    from sqlalchemy import types as sa_types
-
-    class _FakeVector(sa_types.UserDefinedType):
-        cache_ok = True
-        def __init__(self, dim=None): self.dim = dim
-        def get_col_spec(self): return f"VECTOR({self.dim})" if self.dim else "VECTOR"
-
-    _pgv = MagicMock()
-    _pgv_sqla = MagicMock()
-    _pgv_sqla.Vector = _FakeVector
-    sys.modules["pgvector"] = _pgv
-    sys.modules["pgvector.sqlalchemy"] = _pgv_sqla
-
 # Pre-mock python-multipart for FastAPI UploadFile
 if "python_multipart" not in sys.modules:
     _pm = _types_mod.ModuleType("python_multipart")
@@ -137,7 +122,7 @@ class TestTrustedDataSchemas:
         )
         assert obj.status == "PROPOSED"
         assert obj.index_status is None
-        assert obj.qdrant_point_id is None
+        assert obj.index_status is None  # qdrant_point_id removed
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +202,7 @@ class TestIndexTrustedSubmission:
     def test_successful_indexing(self, mock_get_db, mock_embed):
         """Successful indexing updates status to APPROVED_INDEXED.
 
-        Note: The task imports get_qdrant_client from app.services.qdrant_store
-        at runtime. We mock the entire import inside the task function scope.
+        The task creates a TextChunk vertex in ArcadeDB and sets the embedding.
         """
         mock_sub = MagicMock()
         mock_sub.id = uuid.uuid4()
@@ -233,29 +217,17 @@ class TestIndexTrustedSubmission:
 
         mock_embed.return_value = [[0.1] * 1024]
 
-        # Mock the lazy import of qdrant functions used inside the task
-        mock_qdrant_mod = MagicMock()
-        mock_qdrant_mod.upsert_trusted_vector = MagicMock()
-        mock_qdrant_mod.get_qdrant_client = MagicMock(return_value=MagicMock())
-
-        import importlib
-        with patch.dict("sys.modules", {}):  # don't clobber
-            with patch("builtins.__import__", side_effect=lambda name, *a, **kw:
-                mock_qdrant_mod if "qdrant_store" in name
-                else importlib.__import__(name, *a, **kw)
-            ):
-                # Simpler approach: directly test the logic
-                pass
-
         from app.workers.trusted_data_tasks import index_trusted_submission
 
-        with patch("app.db.session.get_qdrant_client", return_value=MagicMock()), \
-             patch("app.services.qdrant_store.upsert_trusted_vector"):
+        mock_graph_store = MagicMock()
+        mock_graph_store.create_text_chunk_vertex_sync.return_value = "test-rid"
+        with patch("app.db.session.get_graph_store", return_value=mock_graph_store):
             index_trusted_submission.run(str(mock_sub.id))
 
         assert mock_sub.status == "APPROVED_INDEXED"
         assert mock_sub.index_status == "COMPLETE"
-        assert mock_sub.qdrant_point_id is not None
+        mock_graph_store.create_text_chunk_vertex_sync.assert_called_once()
+        mock_graph_store.set_vertex_embedding_sync.assert_called_once()
 
     @patch("app.services.embedding.embed_texts")
     @patch("app.workers.trusted_data_tasks._get_db")
@@ -310,7 +282,6 @@ class TestToResponse:
         mock_sub.updated_at = now
         mock_sub.index_status = None
         mock_sub.index_error = None
-        mock_sub.qdrant_point_id = None
         mock_sub.embedding_model = None
         mock_sub.embedded_at = None
 
@@ -325,7 +296,6 @@ class TestToResponse:
 
         uid = uuid.uuid4()
         now = datetime.now(timezone.utc)
-        point_id = uuid.uuid4()
 
         mock_sub = MagicMock()
         mock_sub.id = uid
@@ -341,14 +311,12 @@ class TestToResponse:
         mock_sub.updated_at = now
         mock_sub.index_status = "COMPLETE"
         mock_sub.index_error = None
-        mock_sub.qdrant_point_id = point_id
         mock_sub.embedding_model = "bge-m3"
         mock_sub.embedded_at = now
 
         resp = _to_response(mock_sub)
         assert resp.status == "APPROVED_INDEXED"
         assert resp.index_status == "COMPLETE"
-        assert resp.qdrant_point_id == point_id
         assert resp.embedding_model == "bge-m3"
 
 

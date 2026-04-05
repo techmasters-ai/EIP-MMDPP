@@ -1,10 +1,8 @@
 """Unified retrieval endpoint — single multi-modal pipeline with mode-based filtering."""
 
 import asyncio
-import json
 import logging
 import time
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -19,7 +17,7 @@ from app.api.v1._retrieval_helpers import (
     diversify_results as _diversify_results,
     get_cross_modal_decay,
 )
-from app.db.session import get_async_session, get_graph_store, get_qdrant_async_client
+from app.db.session import get_async_session, get_graph_store
 from app.schemas.retrieval import (
     ModalityFilter,
     QueryResultItem,
@@ -43,7 +41,7 @@ async def unified_query(
     """Unified retrieval query.
 
     Modes:
-    - **text_basic**: BGE vector search on text_chunks only (Qdrant)
+    - **text_basic**: BGE vector search on text_chunks only (ArcadeDB)
     - **text_only**: Multi-modal pipeline, filtered to text results
     - **images_only**: Multi-modal pipeline, filtered to image results
     - **multi_modal**: Multi-modal pipeline, all results
@@ -236,14 +234,14 @@ async def _multi_modal_pipeline(
 ) -> list[QueryResultItem]:
     """Shared pipeline: parallel vector search + parallel graph expansion + fusion scoring.
 
-    1. Parallel vector search (text BGE via Qdrant + image CLIP via Qdrant)
+    1. Parallel vector search (text BGE + image CLIP via ArcadeDB)
     2. Parallel per-seed expansion (doc-structure + ontology via GraphStore)
     3. Batch chunk lookups
     4. Score fusion + deduplicate + mode filter + sort + cap
     """
     t0 = time.monotonic()
 
-    # Step 1: Parallel vector searches (Qdrant)
+    # Step 1: Parallel vector searches (ArcadeDB)
     search_tasks: list = []
     if body.query_text:
         search_tasks.append(_text_vector_search(db, body))
@@ -409,7 +407,7 @@ async def _rescore_expanded_chunks(
 
 
 # ---------------------------------------------------------------------------
-# Text vector search — Qdrant on eip_text_chunks (BGE)
+# Text vector search — ArcadeDB TextChunk[text_embedding] (BGE)
 # ---------------------------------------------------------------------------
 
 async def _text_vector_search(
@@ -419,12 +417,8 @@ async def _text_vector_search(
         return []
 
     from app.services.embedding import embed_texts
-    from app.services.qdrant_store import search_text_vectors_async
 
     query_embedding = embed_texts([body.query_text], query=True)[0]
-
-    # Build Qdrant filter from request filters
-    qdrant_filters = _build_qdrant_filters(body)
 
     from app.config import get_settings as _get_settings
     _settings = _get_settings()
@@ -435,37 +429,41 @@ async def _text_vector_search(
         _settings.retrieval_diversity_max_candidates,
     )
 
-    qdrant_client = get_qdrant_async_client()
-    hits = await search_text_vectors_async(
-        qdrant_client,
-        query_vector=query_embedding,
+    graph_store = get_graph_store()
+    hits = await graph_store.vector_search(
+        embedding=query_embedding,
+        entity_types=["TextChunk"],
         limit=oversample,
-        filters=qdrant_filters,
     )
 
     # Filter by minimum score threshold
     min_score = _settings.retrieval_min_score_threshold
-    hits = [h for h in hits if h.get("score", 0.0) >= min_score]
 
-    # Map Qdrant results — always fetch chunk_text for content dedup
     # Exclude image_description modality for basic text search — those are
     # long VLM-generated analyses that dominate results and belong in multi-modal.
     exclude_img_desc = body.strategy == QueryStrategy.basic
     results = []
     for hit in hits:
-        payload = hit.get("payload", {})
-        if exclude_img_desc and payload.get("modality") == "image_description":
+        props = hit.properties or {}
+        score = hit.extraction_confidence or 0.0
+        if score < min_score:
+            continue
+        modality = props.get("modality", "text")
+        if exclude_img_desc and modality == "image_description":
+            continue
+        # Skip trusted_text entries from regular retrieval
+        if modality == "trusted_text":
             continue
         results.append(
             QueryResultItem(
-                chunk_id=payload.get("chunk_id"),
-                artifact_id=payload.get("artifact_id"),
-                document_id=payload.get("document_id"),
-                score=float(hit.get("score", 0.0)),
-                modality=payload.get("modality", "text"),
-                content_text=payload.get("chunk_text"),
-                page_number=payload.get("page_number"),
-                classification=payload.get("classification", "UNCLASSIFIED"),
+                chunk_id=props.get("chunk_id", hit.node_id),
+                artifact_id=props.get("artifact_id"),
+                document_id=props.get("document_id"),
+                score=float(score),
+                modality=modality,
+                content_text=props.get("text") or props.get("chunk_text"),
+                page_number=props.get("page_number"),
+                classification=props.get("classification", "UNCLASSIFIED"),
             )
         )
 
@@ -486,14 +484,13 @@ async def _text_vector_search(
 
 
 # ---------------------------------------------------------------------------
-# Image vector search — Qdrant on eip_image_chunks (CLIP)
+# Image vector search — ArcadeDB ImageChunk[image_embedding] (CLIP)
 # ---------------------------------------------------------------------------
 
 async def _image_vector_search(
     db: AsyncSession, body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
     from app.services.embedding import embed_text_for_clip, embed_images
-    from app.services.qdrant_store import search_image_vectors_async
 
     if body.query_image:
         import base64
@@ -508,8 +505,6 @@ async def _image_vector_search(
     else:
         return []
 
-    qdrant_filters = _build_qdrant_filters(body)
-
     from app.config import get_settings as _get_settings
     settings = _get_settings()
 
@@ -519,60 +514,37 @@ async def _image_vector_search(
         settings.retrieval_diversity_max_candidates,
     )
 
-    qdrant_client = get_qdrant_async_client()
-    hits = await search_image_vectors_async(
-        qdrant_client,
-        query_vector=query_embedding,
+    graph_store = get_graph_store()
+    hits = await graph_store.image_vector_search(
+        embedding=query_embedding,
         limit=oversample,
-        filters=qdrant_filters,
     )
 
     # Filter by minimum score threshold
     min_score = settings.retrieval_min_score_threshold
-    hits = [h for h in hits if h.get("score", 0.0) >= min_score]
 
     results = []
     for hit in hits:
-        payload = hit.get("payload", {})
+        props = hit.properties or {}
+        score = hit.extraction_confidence or 0.0
+        if score < min_score:
+            continue
         results.append(
             QueryResultItem(
-                chunk_id=payload.get("chunk_id"),
-                artifact_id=payload.get("artifact_id"),
-                document_id=payload.get("document_id"),
-                score=float(hit.get("score", 0.0)),
-                modality=payload.get("modality", "image"),
-                content_text=payload.get("chunk_text") if body.include_context else None,
-                page_number=payload.get("page_number"),
-                classification=payload.get("classification", "UNCLASSIFIED"),
+                chunk_id=props.get("chunk_id", hit.node_id),
+                artifact_id=props.get("artifact_id"),
+                document_id=props.get("document_id"),
+                score=float(score),
+                modality=props.get("modality", "image"),
+                content_text=(props.get("text") or props.get("chunk_text")) if body.include_context else None,
+                page_number=props.get("page_number"),
+                classification=props.get("classification", "UNCLASSIFIED"),
             )
         )
 
     # Sort by score and trim to requested top_k
     results.sort(key=lambda r: r.score, reverse=True)
     return results[:body.top_k]
-
-
-# ---------------------------------------------------------------------------
-# Qdrant filter builder
-# ---------------------------------------------------------------------------
-
-def _build_qdrant_filters(body: UnifiedQueryRequest) -> dict[str, Any] | None:
-    """Convert UnifiedQueryRequest filters to Qdrant filter dict."""
-    if not body.filters:
-        return None
-
-    filters: dict[str, Any] = {}
-    if body.filters.classification:
-        filters["classification"] = body.filters.classification
-    if body.filters.document_ids:
-        filters["document_id"] = [str(d) for d in body.filters.document_ids]
-    if body.filters.modalities:
-        if len(body.filters.modalities) == 1:
-            filters["modality"] = body.filters.modalities[0]
-        else:
-            filters["modality"] = list(body.filters.modalities)
-
-    return filters if filters else None
 
 
 # ---------------------------------------------------------------------------
@@ -869,8 +841,8 @@ async def _backfill_content_text(
 ) -> None:
     """Batch-fill content_text from Postgres for results missing it.
 
-    Handles pre-existing Qdrant points that were indexed without chunk_text
-    in their payload.  Queries both text_chunks and image_chunks tables.
+    Handles results where ArcadeDB vertex lacks text content.
+    Queries both text_chunks and image_chunks tables.
     """
     missing = [
         r for r in results
@@ -903,7 +875,6 @@ async def _backfill_page_numbers(
 ) -> None:
     """Batch-fill page_number from Postgres for results missing it.
 
-    Handles Qdrant points whose payload lacks page_number.
     Queries both text_chunks and image_chunks tables.
     """
     missing = [

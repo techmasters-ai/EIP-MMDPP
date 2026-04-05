@@ -1,11 +1,10 @@
 """Comprehensive unit tests for all query/retrieval functionality.
 
 Covers:
-- _text_vector_search (basic text search via Qdrant)
-- _image_vector_search (image search via Qdrant)
+- _text_vector_search (basic text search via ArcadeDB)
+- _image_vector_search (image search via ArcadeDB)
 - _multi_modal_pipeline (hybrid text+image search)
 - _merge_seed_results (result merging)
-- _build_qdrant_filters (filter builder)
 - _apply_reranker (cross-encoder reranking)
 - compute_fusion_score (scoring)
 - deduplicate_results / diversify_results (dedup)
@@ -108,20 +107,28 @@ def _mock_settings(**overrides):
     return s
 
 
-def _make_qdrant_hit(chunk_id=None, score=0.8, modality="text", **extra_payload):
-    """Build a mock Qdrant search hit dict."""
+def _make_graph_entity(chunk_id=None, score=0.8, modality="text", **extra_props):
+    """Build a mock GraphEntityResult for ArcadeDB vector search results."""
+    from app.services.graph_store import GraphEntityResult
+
     cid = chunk_id or str(uuid.uuid4())
-    payload = {
+    props = {
         "chunk_id": cid,
         "artifact_id": str(uuid.uuid4()),
         "document_id": str(uuid.uuid4()),
         "modality": modality,
-        "chunk_text": "Radar system test content.",
+        "text": "Radar system test content.",
         "page_number": 1,
         "classification": "UNCLASSIFIED",
     }
-    payload.update(extra_payload)
-    return {"score": score, "payload": payload}
+    props.update(extra_props)
+    return GraphEntityResult(
+        node_id=cid,
+        name=cid,
+        entity_type="TextChunk" if modality != "image" else "ImageChunk",
+        extraction_confidence=score,
+        properties=props,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -129,21 +136,22 @@ def _make_qdrant_hit(chunk_id=None, score=0.8, modality="text", **extra_payload)
 # ---------------------------------------------------------------------------
 
 class TestTextVectorSearch:
-    """Tests for _text_vector_search (basic text search via Qdrant)."""
+    """Tests for _text_vector_search (basic text search via ArcadeDB)."""
 
     @pytest.mark.asyncio
-    async def test_returns_results_from_qdrant(self):
+    async def test_returns_results_from_arcadedb(self):
         from app.api.v1.retrieval import _text_vector_search
 
         hits = [
-            _make_qdrant_hit(score=0.9, chunk_text="Radar system primary specs."),
-            _make_qdrant_hit(score=0.7, chunk_text="Missile guidance subsystem details."),
+            _make_graph_entity(score=0.9, text="Radar system primary specs."),
+            _make_graph_entity(score=0.7, text="Missile guidance subsystem details."),
         ]
 
-        with patch("app.api.v1.retrieval.get_qdrant_async_client"), \
-             patch("app.api.v1.retrieval._build_qdrant_filters", return_value=None), \
+        mock_graph_store = AsyncMock()
+        mock_graph_store.vector_search = AsyncMock(return_value=hits)
+
+        with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_texts", return_value=[[0.1] * 384]), \
-             patch("app.services.qdrant_store.search_text_vectors_async", new_callable=AsyncMock, return_value=hits), \
              patch("app.config.get_settings", return_value=_mock_settings()):
             db = AsyncMock()
             body = _make_body(top_k=5, include_context=True)
@@ -169,12 +177,16 @@ class TestTextVectorSearch:
     async def test_filters_below_min_score(self):
         from app.api.v1.retrieval import _text_vector_search
 
-        hits = [_make_qdrant_hit(score=0.1), _make_qdrant_hit(score=0.8)]
+        hits = [
+            _make_graph_entity(score=0.1),
+            _make_graph_entity(score=0.8),
+        ]
 
-        with patch("app.api.v1.retrieval.get_qdrant_async_client"), \
-             patch("app.api.v1.retrieval._build_qdrant_filters", return_value=None), \
+        mock_graph_store = AsyncMock()
+        mock_graph_store.vector_search = AsyncMock(return_value=hits)
+
+        with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_texts", return_value=[[0.1] * 384]), \
-             patch("app.services.qdrant_store.search_text_vectors_async", new_callable=AsyncMock, return_value=hits), \
              patch("app.config.get_settings", return_value=_mock_settings()):
             db = AsyncMock()
             body = _make_body(top_k=10, include_context=True)
@@ -187,12 +199,13 @@ class TestTextVectorSearch:
     async def test_strips_content_text_when_not_requested(self):
         from app.api.v1.retrieval import _text_vector_search
 
-        hits = [_make_qdrant_hit(score=0.9)]
+        hits = [_make_graph_entity(score=0.9)]
 
-        with patch("app.api.v1.retrieval.get_qdrant_async_client"), \
-             patch("app.api.v1.retrieval._build_qdrant_filters", return_value=None), \
+        mock_graph_store = AsyncMock()
+        mock_graph_store.vector_search = AsyncMock(return_value=hits)
+
+        with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_texts", return_value=[[0.1] * 384]), \
-             patch("app.services.qdrant_store.search_text_vectors_async", new_callable=AsyncMock, return_value=hits), \
              patch("app.config.get_settings", return_value=_mock_settings()):
             db = AsyncMock()
             body = _make_body(top_k=5, include_context=False)
@@ -205,12 +218,13 @@ class TestTextVectorSearch:
     async def test_respects_top_k(self):
         from app.api.v1.retrieval import _text_vector_search
 
-        hits = [_make_qdrant_hit(score=0.9 - i * 0.02) for i in range(20)]
+        hits = [_make_graph_entity(score=0.9 - i * 0.02) for i in range(20)]
 
-        with patch("app.api.v1.retrieval.get_qdrant_async_client"), \
-             patch("app.api.v1.retrieval._build_qdrant_filters", return_value=None), \
+        mock_graph_store = AsyncMock()
+        mock_graph_store.vector_search = AsyncMock(return_value=hits)
+
+        with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_texts", return_value=[[0.1] * 384]), \
-             patch("app.services.qdrant_store.search_text_vectors_async", new_callable=AsyncMock, return_value=hits), \
              patch("app.config.get_settings", return_value=_mock_settings()):
             db = AsyncMock()
             body = _make_body(top_k=3, include_context=True)
@@ -224,18 +238,19 @@ class TestTextVectorSearch:
 # ---------------------------------------------------------------------------
 
 class TestImageVectorSearch:
-    """Tests for _image_vector_search (CLIP image search via Qdrant)."""
+    """Tests for _image_vector_search (CLIP image search via ArcadeDB)."""
 
     @pytest.mark.asyncio
     async def test_text_to_clip_search(self):
         from app.api.v1.retrieval import _image_vector_search
 
-        hits = [_make_qdrant_hit(score=0.75, modality="image")]
+        hits = [_make_graph_entity(score=0.75, modality="image")]
 
-        with patch("app.api.v1.retrieval.get_qdrant_async_client"), \
-             patch("app.api.v1.retrieval._build_qdrant_filters", return_value=None), \
+        mock_graph_store = AsyncMock()
+        mock_graph_store.image_vector_search = AsyncMock(return_value=hits)
+
+        with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_text_for_clip", return_value=[0.1] * 512), \
-             patch("app.services.qdrant_store.search_image_vectors_async", new_callable=AsyncMock, return_value=hits), \
              patch("app.config.get_settings", return_value=_mock_settings()):
             db = AsyncMock()
             body = _make_body(top_k=5, include_context=True)
@@ -262,14 +277,15 @@ class TestImageVectorSearch:
         from app.api.v1.retrieval import _image_vector_search
 
         hits = [
-            _make_qdrant_hit(score=0.1, modality="image"),
-            _make_qdrant_hit(score=0.6, modality="image"),
+            _make_graph_entity(score=0.1, modality="image"),
+            _make_graph_entity(score=0.6, modality="image"),
         ]
 
-        with patch("app.api.v1.retrieval.get_qdrant_async_client"), \
-             patch("app.api.v1.retrieval._build_qdrant_filters", return_value=None), \
+        mock_graph_store = AsyncMock()
+        mock_graph_store.image_vector_search = AsyncMock(return_value=hits)
+
+        with patch("app.api.v1.retrieval.get_graph_store", return_value=mock_graph_store), \
              patch("app.services.embedding.embed_text_for_clip", return_value=[0.1] * 512), \
-             patch("app.services.qdrant_store.search_image_vectors_async", new_callable=AsyncMock, return_value=hits), \
              patch("app.config.get_settings", return_value=_mock_settings()):
             db = AsyncMock()
             body = _make_body(top_k=10, include_context=True)
@@ -418,45 +434,6 @@ class TestMergeSeedResultsCoverage:
         result = _merge_seed_results([[low], [high]])
         assert len(result) == 1
         assert abs(result[0].score - 0.95) < 1e-6
-
-
-# ---------------------------------------------------------------------------
-# 6. _build_qdrant_filters
-# ---------------------------------------------------------------------------
-
-class TestBuildQdrantFiltersCoverage:
-    """Additional Qdrant filter builder tests."""
-
-    def test_empty_filters_object_returns_none(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-
-        body = _make_body(filters=QueryFilters())
-        assert _build_qdrant_filters(body) is None
-
-    def test_classification_only(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-
-        body = _make_body(filters=QueryFilters(classification="CUI"))
-        result = _build_qdrant_filters(body)
-        assert result == {"classification": "CUI"}
-
-    def test_single_modality_is_string(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-
-        body = _make_body(filters=QueryFilters(modalities=["image"]))
-        result = _build_qdrant_filters(body)
-        assert result["modality"] == "image"
-
-    def test_multiple_modalities_is_list(self):
-        from app.api.v1.retrieval import _build_qdrant_filters
-        from app.schemas.retrieval import QueryFilters
-
-        body = _make_body(filters=QueryFilters(modalities=["text", "table", "image"]))
-        result = _build_qdrant_filters(body)
-        assert result["modality"] == ["text", "table", "image"]
 
 
 # ---------------------------------------------------------------------------

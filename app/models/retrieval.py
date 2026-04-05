@@ -1,20 +1,15 @@
-import os
 import uuid
 from typing import Optional
 
 from sqlalchemy import Float, ForeignKey, Integer, SmallInteger, String, Text, DateTime, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from pgvector.sqlalchemy import Vector
 
 from app.models.base import Base, TimestampMixin
 
-_TEXT_DIM = int(os.environ.get("TEXT_EMBEDDING_DIM", "1024"))
-_IMAGE_DIM = int(os.environ.get("IMAGE_EMBEDDING_DIM", "512"))
-
 
 class TextChunk(Base, TimestampMixin):
-    """A chunk of extracted text content with BGE vector embedding."""
+    """A chunk of extracted text content (vectors stored in ArcadeDB)."""
 
     __tablename__ = "text_chunks"
     __table_args__ = {"schema": "retrieval"}
@@ -38,14 +33,7 @@ class TextChunk(Base, TimestampMixin):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # Text embedding (BGE-large: 1024-dim; controlled by TEXT_EMBEDDING_DIM env var)
-    # Kept during transition — vectors migrate to Qdrant (drop in 0006)
-    embedding: Mapped[Optional[list]] = mapped_column(Vector(_TEXT_DIM), nullable=True)
-
-    # Qdrant point ID (set after vector upsert to Qdrant)
-    qdrant_point_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), nullable=True, index=True
-    )
+    # Vectors now stored in ArcadeDB (TextChunk vertex with text_embedding property)
 
     # Modality and provenance
     modality: Mapped[str] = mapped_column(
@@ -70,7 +58,7 @@ class TextChunk(Base, TimestampMixin):
 
 
 class ImageChunk(Base, TimestampMixin):
-    """A chunk of extracted image content with CLIP vector embedding."""
+    """A chunk of extracted image content (vectors stored in ArcadeDB)."""
 
     __tablename__ = "image_chunks"
     __table_args__ = {"schema": "retrieval"}
@@ -94,14 +82,7 @@ class ImageChunk(Base, TimestampMixin):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     chunk_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # Image embedding (CLIP ViT-B/32: 512-dim; controlled by IMAGE_EMBEDDING_DIM)
-    # Kept during transition — vectors migrate to Qdrant (drop in 0006)
-    embedding: Mapped[Optional[list]] = mapped_column(Vector(_IMAGE_DIM), nullable=True)
-
-    # Qdrant point ID (set after vector upsert to Qdrant)
-    qdrant_point_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), nullable=True, index=True
-    )
+    # Vectors now stored in ArcadeDB (ImageChunk vertex with image_embedding property)
 
     # Modality and provenance
     modality: Mapped[str] = mapped_column(

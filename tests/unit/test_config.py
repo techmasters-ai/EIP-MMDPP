@@ -20,11 +20,6 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.arcadedb_url == "http://arcadedb:2480"
 
-    def test_qdrant_url_default(self):
-        from app.config import Settings
-        s = Settings()
-        assert s.qdrant_url == "http://qdrant:6333"
-
     def test_community_report_model_default(self, monkeypatch):
         from app.config import Settings
         s = Settings(_env_file=None)

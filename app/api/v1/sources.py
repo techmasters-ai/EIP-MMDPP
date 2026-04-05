@@ -482,16 +482,7 @@ async def _hard_delete_document(
 
     doc_id_str = str(document_id)
 
-    # 1. Delete Qdrant vectors
-    try:
-        from app.services.qdrant_store import delete_by_document_id
-        from app.db.session import get_qdrant_client
-        client = get_qdrant_client()
-        delete_by_document_id(client, doc_id_str)
-    except Exception as exc:
-        logger.warning("_hard_delete: Qdrant cleanup failed for %s: %s", doc_id_str, exc)
-
-    # 2. Delete graph data via GraphStore
+    # 1. Delete graph data + vectors via GraphStore (ArcadeDB)
     try:
         from app.db.session import get_graph_store
         graph_store = get_graph_store()

@@ -65,32 +65,13 @@ CEOF
 RUN gcc -shared -fPIC -o /tmp/libfips_bypass.so /tmp/fips_bypass.c -ldl
 
 # ============================================================
-# Stage 2: Postgres 16 + pgvector
+# Stage 2: Postgres 16 (pgvector removed — vectors stored in ArcadeDB)
 # ============================================================
 FROM postgres:16-bookworm
 
-# Install FIPS bypass shim (needed at build-time AND runtime)
+# Install FIPS bypass shim (needed at runtime on FIPS hosts)
 COPY --from=fips-bypass /tmp/libfips_bypass.so /usr/local/lib/
 COPY --from=fips-bypass /tmp/fips_disabled /usr/local/lib/fips_disabled
-
-# Build-time dependencies for compiling pgvector
-RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
-    && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
-    build-essential \
-    git \
-    ca-certificates \
-    postgresql-server-dev-16 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install pgvector (v0.8.0)
-RUN git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector \
-    && cd /tmp/pgvector \
-    && make \
-    && make install \
-    && rm -rf /tmp/pgvector
-
-# Clean up build shim — not needed at runtime
-RUN rm -f /usr/local/lib/libfips_bypass.so
 
 # Copy initialization SQL (runs in alphabetical order on first start)
 COPY init/ /docker-entrypoint-initdb.d/

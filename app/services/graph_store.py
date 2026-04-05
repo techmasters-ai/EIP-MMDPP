@@ -275,7 +275,16 @@ class GraphStore(Protocol):
         limit: int = 10,
         score_threshold: float | None = None,
     ) -> list[GraphEntityResult]:
-        """ANN search over node embeddings."""
+        """ANN search over text node embeddings."""
+        ...
+
+    async def image_vector_search(
+        self,
+        embedding: list[float],
+        limit: int = 10,
+        score_threshold: float | None = None,
+    ) -> list[GraphEntityResult]:
+        """ANN search over image node embeddings."""
         ...
 
     async def set_vertex_embedding(
@@ -284,7 +293,16 @@ class GraphStore(Protocol):
         embedding: list[float],
         model_name: str | None = None,
     ) -> None:
-        """Attach a vector embedding to a node."""
+        """Attach a vector embedding to a node by RID."""
+        ...
+
+    async def set_vertex_embedding_by_chunk_id(
+        self,
+        chunk_id: str,
+        embedding: list[float],
+        model_name: str | None = None,
+    ) -> None:
+        """Update embedding on a vertex looked up by chunk_id."""
         ...
 
     async def cross_model_search(

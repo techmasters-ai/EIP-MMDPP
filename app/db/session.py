@@ -69,35 +69,6 @@ def get_sync_session() -> Session:
 
 
 # ---------------------------------------------------------------------------
-# Qdrant client singletons (sync for Celery, async for FastAPI)
-# ---------------------------------------------------------------------------
-_qdrant_client = None
-_qdrant_async_client = None
-
-
-def get_qdrant_client():
-    """Return a sync Qdrant client (for Celery workers)."""
-    global _qdrant_client
-    if _qdrant_client is None:
-        from qdrant_client import QdrantClient
-
-        _qdrant_client = QdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_seconds)
-        logger.info("Qdrant sync client created: %s (timeout=%ss)", settings.qdrant_url, settings.qdrant_timeout_seconds)
-    return _qdrant_client
-
-
-def get_qdrant_async_client():
-    """Return an async Qdrant client (for FastAPI endpoints)."""
-    global _qdrant_async_client
-    if _qdrant_async_client is None:
-        from qdrant_client import AsyncQdrantClient
-
-        _qdrant_async_client = AsyncQdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_seconds)
-        logger.info("Qdrant async client created: %s (timeout=%ss)", settings.qdrant_url, settings.qdrant_timeout_seconds)
-    return _qdrant_async_client
-
-
-# ---------------------------------------------------------------------------
 # ArcadeDB GraphStore singleton
 # ---------------------------------------------------------------------------
 _graph_store = None

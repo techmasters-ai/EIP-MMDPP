@@ -240,21 +240,6 @@ def mock_graph_store():
 
 
 @pytest.fixture
-def mock_qdrant_client():
-    """Mock Qdrant sync client.
-
-    Usage:
-        client = mock_qdrant_client
-        client.query_points.return_value = ...
-    """
-    client = MagicMock()
-    collections_response = MagicMock()
-    collections_response.collections = []
-    client.get_collections.return_value = collections_response
-    return client
-
-
-@pytest.fixture
 def mock_docling_graph(monkeypatch):
     """Mock docling-graph HTTP client to return a canned extraction response."""
 

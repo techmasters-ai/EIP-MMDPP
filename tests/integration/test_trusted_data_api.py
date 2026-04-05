@@ -126,6 +126,5 @@ async def test_trusted_data_response_has_indexing_fields(async_client):
     data = await _create_submission(async_client)
     assert "index_status" in data
     assert "index_error" in data
-    assert "qdrant_point_id" in data
     assert "embedding_model" in data
     assert "embedded_at" in data

@@ -341,9 +341,16 @@ async def _apply_patch_payload(db: AsyncSession, patch: Patch) -> None:
         patched = jsonpatch.apply_patch(patch.previous_snapshot, operations)
         if "chunk_text" in patched:
             chunk.chunk_text = patched["chunk_text"]
-            # Re-embed on text change (indexing, not querying)
+            # Re-embed on text change — update ArcadeDB vertex embedding
             from app.services.embedding import embed_texts
-            chunk.embedding = embed_texts([chunk.chunk_text])[0]
+            from app.db.session import get_graph_store
+            new_embedding = embed_texts([chunk.chunk_text])[0]
+            graph_store = get_graph_store()
+            # Update ArcadeDB TextChunk vertex embedding by chunk_id
+            await graph_store.set_vertex_embedding_by_chunk_id(
+                chunk_id=str(chunk.id),
+                embedding=new_embedding,
+            )
         if "classification" in patched:
             chunk.classification = patched["classification"]
 

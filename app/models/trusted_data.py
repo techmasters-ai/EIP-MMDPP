@@ -45,9 +45,7 @@ class TrustedDataSubmission(Base, TimestampMixin):
     # Indexing lifecycle
     index_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     index_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    qdrant_point_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
+    # Vectors now stored in ArcadeDB (TrustedTextChunk vertex)
     embedding_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     embedded_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True

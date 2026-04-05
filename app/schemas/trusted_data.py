@@ -30,7 +30,6 @@ class TrustedDataResponse(APIModel):
     # Indexing lifecycle
     index_status: Optional[str] = None
     index_error: Optional[str] = None
-    qdrant_point_id: Optional[uuid.UUID] = None
     embedding_model: Optional[str] = None
     embedded_at: Optional[datetime] = None
 

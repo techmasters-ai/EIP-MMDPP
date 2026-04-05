@@ -46,14 +46,7 @@ async def lifespan(app: FastAPI):
     log = structlog.get_logger()
     log.info("EIP-MMDPP API starting", env=settings.app_env)
 
-    # Bootstrap external stores — fail fast if unavailable
-    from app.services.qdrant_store import ensure_collections
-    from app.db.session import get_qdrant_client
-    client = get_qdrant_client()
-    ensure_collections(client)
-    log.info("Qdrant collections ensured")
-
-    # ArcadeDB schema sync
+    # ArcadeDB schema sync (vectors + graph stored here)
     try:
         from app.db.session import get_graph_store
         from app.services.ontology_templates import load_ontology
