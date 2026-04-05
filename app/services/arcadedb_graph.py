@@ -928,6 +928,42 @@ class ArcadeDBGraphStore:
         result = self._client.command_sync(self._database, "sql", sql, params)
         return _rid(result)
 
+    def get_chunk_rid_sync(
+        self,
+        chunk_id: str,
+        chunk_type: str = "TextChunk",
+    ) -> str | None:
+        """Return the ArcadeDB RID for an existing chunk vertex, or None if not found."""
+        sql = f"SELECT @rid FROM {chunk_type} WHERE chunk_id = :chunk_id LIMIT 1"
+        result = self._client.query_sync(self._database, "sql", sql, {"chunk_id": chunk_id})
+        if result and isinstance(result, list) and len(result) > 0:
+            row = result[0]
+            if isinstance(row, dict):
+                return row.get("@rid") or row.get("rid")
+        return None
+
+    def create_entity_chunk_edge_sync(
+        self,
+        entity_name: str,
+        entity_type: str,
+        chunk_rid: str,
+    ) -> bool:
+        """Create an EXTRACTED_FROM edge from an entity to a chunk vertex.
+
+        Looks up the entity by name+type, then creates the edge to the chunk
+        identified by its ArcadeDB RID.  Returns True if the edge was created,
+        False if the entity vertex could not be found.
+        """
+        entity = self.resolve_root_entity_sync(entity_name, entity_type)
+        if not entity:
+            return False
+        sql = (
+            f"CREATE EDGE EXTRACTED_FROM FROM {entity.node_id} TO {chunk_rid} "
+            f"SET created_at = sysdate()"
+        )
+        self._client.command_sync(self._database, "sql", sql)
+        return True
+
     def delete_document_graph_sync(
         self,
         document_id: str,

@@ -1710,6 +1710,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
         from app.db.session import get_graph_store
         graph_store = get_graph_store()
+        graph_store.ensure_ready_sync()
 
         if all_texts:
             # Batch embedding to limit memory for very large documents
@@ -2014,6 +2015,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
 
                 from app.db.session import get_graph_store
                 graph_store = get_graph_store()
+                graph_store.ensure_ready_sync()
 
                 for elem, img_embedding in zip(valid_elements, image_embeddings):
                     chunk_key = hashlib.sha256(
@@ -2267,6 +2269,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # Import into GraphStore with confidence quality gates (batch)
         from app.services.graph_store import NodeRecord, RelationshipRecord, ProvenanceMetadata
         graph_store = get_graph_store()
+        graph_store.ensure_ready_sync()
         nodes_rejected = 0
         edges_rejected = 0
 
@@ -2588,6 +2591,7 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # Create graph structural edges via GraphStore
         from app.db.session import get_graph_store
         graph_store = get_graph_store()
+        graph_store.ensure_ready_sync()
 
         # Include document metadata as properties
         doc_node_props: dict[str, Any] = {"source_id": str(doc.source_id), "title": doc.filename}
@@ -2610,34 +2614,39 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             properties=doc_node_props,
         ))
 
-        # Create TextChunk and ImageChunk vertices + structural edges
-        for tc in text_chunks:
-            tc_rid = graph_store.create_text_chunk_vertex_sync(str(tc.id), tc.chunk_text or "", document_id)
-            graph_store.create_structural_edge_sync(doc_rid, tc_rid, "CONTAINS_TEXT")
-
-        for ic in image_chunks:
-            ic_rid = graph_store.create_image_chunk_vertex_sync(str(ic.id), document_id)
-            graph_store.create_structural_edge_sync(doc_rid, ic_rid, "CONTAINS_IMAGE")
-
-        # Build RID lookup maps for SAME_PAGE edges
+        # Connect existing TextChunk/ImageChunk vertices (created in embedding stages) to Document
+        # Use get_chunk_rid_sync to look up already-created vertices — do NOT re-create them
         tc_rid_map: dict[str, str] = {}
-        ic_rid_map: dict[str, str] = {}
-        # Re-resolve RIDs (the create calls above returned them, but we need to map chunk_id -> RID)
-        # For simplicity, build the maps from the creation results
         for tc in text_chunks:
-            # TextChunk vertices use chunk_id as lookup key
-            tc_rid_map[str(tc.id)] = str(tc.id)
+            tc_rid = graph_store.get_chunk_rid_sync(str(tc.id), "TextChunk")
+            if tc_rid:
+                tc_rid_map[str(tc.id)] = tc_rid
+                graph_store.create_structural_edge_sync(doc_rid, tc_rid, "CONTAINS_TEXT")
+            else:
+                logger.warning("derive_structure_links: TextChunk vertex not found for chunk %s", tc.id)
+
+        ic_rid_map: dict[str, str] = {}
         for ic in image_chunks:
-            ic_rid_map[str(ic.id)] = str(ic.id)
+            ic_rid = graph_store.get_chunk_rid_sync(str(ic.id), "ImageChunk")
+            if ic_rid:
+                ic_rid_map[str(ic.id)] = ic_rid
+                graph_store.create_structural_edge_sync(doc_rid, ic_rid, "CONTAINS_IMAGE")
+            else:
+                logger.warning("derive_structure_links: ImageChunk vertex not found for chunk %s", ic.id)
 
         for page_num, ics in page_image_map.items():
             tcs = page_text_map.get(page_num, [])
             for ic in ics:
+                ic_rid = ic_rid_map.get(str(ic.id))
+                if not ic_rid:
+                    continue
                 for tc in tcs:
-                    # SAME_PAGE edges between text and image chunks
-                    # Use chunk_ids and let GraphStore resolve them
+                    tc_rid = tc_rid_map.get(str(tc.id))
+                    if not tc_rid:
+                        continue
+                    # SAME_PAGE edges between text and image chunks using resolved RIDs
                     try:
-                        graph_store.create_structural_edge_sync(str(tc.id), str(ic.id), "SAME_PAGE")
+                        graph_store.create_structural_edge_sync(tc_rid, ic_rid, "SAME_PAGE")
                     except Exception:
                         pass  # Best-effort for cross-chunk edges
 
@@ -2717,13 +2726,15 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # Batch-create EXTRACTED_FROM edges via GraphStore
         entity_links = 0
         for (ent_name, ent_type, chunk_id) in edge_tuples:
+            chunk_rid = tc_rid_map.get(chunk_id)
+            if not chunk_rid:
+                continue
             try:
-                graph_store.create_structural_edge_sync(
-                    ent_name,  # will be resolved by entity name in graph
-                    chunk_id,
-                    "EXTRACTED_FROM",
+                created = graph_store.create_entity_chunk_edge_sync(
+                    ent_name, ent_type, chunk_rid,
                 )
-                entity_links += 1
+                if created:
+                    entity_links += 1
             except Exception:
                 pass  # Best-effort: entity may not exist yet
 
@@ -2830,6 +2841,7 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
             db.commit()
 
         graph_store = get_graph_store()
+        graph_store.ensure_ready_sync()
         stats = canonicalize_document_entities(graph_store, document_id)
 
         if run_id:

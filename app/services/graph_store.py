@@ -406,6 +406,26 @@ class GraphStore(Protocol):
         """Synchronous variant of :meth:`create_image_chunk_vertex`."""
         ...
 
+    def get_chunk_rid_sync(
+        self,
+        chunk_id: str,
+        chunk_type: str = "TextChunk",
+    ) -> str | None:
+        """Return the ArcadeDB RID for an existing chunk vertex, or None if not found."""
+        ...
+
+    def create_entity_chunk_edge_sync(
+        self,
+        entity_name: str,
+        entity_type: str,
+        chunk_rid: str,
+    ) -> bool:
+        """Create an EXTRACTED_FROM edge from an entity (looked up by name+type) to a chunk RID.
+
+        Returns True if the edge was created, False if the entity was not found.
+        """
+        ...
+
     def delete_document_graph_sync(
         self,
         document_id: str,
