@@ -52,7 +52,7 @@ async def get_agent_context(
     Query parameters
     ----------------
     - **query**: Search query string
-    - **strategy**: `basic` | `hybrid` | `memory` | `graphrag_local` | `graphrag_global`
+    - **strategy**: `basic` | `hybrid` | `global`
     - **modality_filter**: `all` | `text` | `image`
     - **top_k**: Number of results to include (1–50, default: 10)
     - **include_sources**: Whether to include the `sources` list (default: true)
@@ -76,8 +76,6 @@ async def get_agent_context(
     )
 
     from app.api.v1.retrieval import (
-        _graphrag_global_query,
-        _graphrag_local_query,
         _multi_modal_pipeline,
         _text_vector_search,
     )
@@ -86,10 +84,8 @@ async def get_agent_context(
         results = await _text_vector_search(db, body)
     elif strategy == QueryStrategy.hybrid:
         results = await _multi_modal_pipeline(db, body)
-    elif strategy == QueryStrategy.graphrag_local:
-        results = await _graphrag_local_query(db, body)
-    elif strategy == QueryStrategy.graphrag_global:
-        results = await _graphrag_global_query(db, body)
+    elif strategy == QueryStrategy.global_:
+        raise HTTPException(501, "Global query not yet implemented")
     else:
         results = await _text_vector_search(db, body)
 

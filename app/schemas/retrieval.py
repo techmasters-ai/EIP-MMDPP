@@ -2,7 +2,7 @@
 
 import uuid
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from pydantic import Field, model_validator
 
@@ -12,9 +12,7 @@ from app.schemas.common import APIModel
 class QueryStrategy(str, Enum):
     basic = "basic"
     hybrid = "hybrid"
-    graphrag_local = "graphrag_local"
-    graphrag_global = "graphrag_global"
-    graphrag_drift = "graphrag_drift"
+    global_ = "global"
 
 
 class ModalityFilter(str, Enum):
@@ -29,12 +27,10 @@ _MODE_MAP: dict[str, tuple[QueryStrategy, ModalityFilter]] = {
     "text_only": (QueryStrategy.hybrid, ModalityFilter.text),
     "images_only": (QueryStrategy.hybrid, ModalityFilter.image),
     "multi_modal": (QueryStrategy.hybrid, ModalityFilter.all),
-    "graphrag_local": (QueryStrategy.graphrag_local, ModalityFilter.all),
-    "graphrag_global": (QueryStrategy.graphrag_global, ModalityFilter.all),
-    "graphrag_drift": (QueryStrategy.graphrag_drift, ModalityFilter.all),
     # Also accept new strategy names directly as mode
     "basic": (QueryStrategy.basic, ModalityFilter.all),
     "hybrid": (QueryStrategy.hybrid, ModalityFilter.all),
+    "global": (QueryStrategy.global_, ModalityFilter.all),
 }
 
 
@@ -117,12 +113,3 @@ class DoclingDocumentResponse(APIModel):
     images: list[DoclingImageRef] = []
 
 
-class GraphRAGJobSubmitResponse(APIModel):
-    job_id: str
-    status: str  # always "pending"
-
-
-class GraphRAGJobStatusResponse(APIModel):
-    job_id: str
-    status: Literal["pending", "running", "completed", "failed"]
-    error: Optional[str] = None

@@ -4,17 +4,14 @@ Covers:
 - _text_vector_search (basic text search via Qdrant)
 - _image_vector_search (image search via Qdrant)
 - _multi_modal_pipeline (hybrid text+image search)
-- _graphrag_local_query, _graphrag_global_query, _graphrag_drift_query
 - _merge_seed_results (result merging)
 - _build_qdrant_filters (filter builder)
 - _apply_reranker (cross-encoder reranking)
-- graphrag_service.local_search, global_search, drift_search, basic_search
 - compute_fusion_score (scoring)
 - deduplicate_results / diversify_results (dedup)
 - _populate_image_urls (image URL population)
 """
 
-import sys
 import types
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,7 +22,7 @@ pytest.importorskip("asyncpg", reason="asyncpg not installed")
 
 
 # ---------------------------------------------------------------------------
-# Stub heavy external deps that aren't in the test venv (pandas, graphrag, etc.)
+# Stub heavy external deps that aren't in the test venv
 # This must happen before any app module that depends on them is imported.
 # Only install stubs if the real packages are genuinely unavailable -- otherwise
 # the stubs contaminate other test modules that rely on real imports.
@@ -50,42 +47,6 @@ def _try_import(name: str) -> bool:
         return True
     except ImportError:
         return False
-
-
-# pandas stub (graphrag_service, graphrag_bridge import it at top level)
-if not _try_import("pandas"):
-    _pd_stub = _AutoStubModule("pandas")
-    _pd_stub.DataFrame = MagicMock  # type: ignore[attr-defined]
-    _pd_stub.read_parquet = MagicMock(return_value=MagicMock())  # type: ignore[attr-defined]
-    sys.modules["pandas"] = _pd_stub
-
-# graphrag ecosystem stubs -- only installed when the real packages are missing
-_GRAPHRAG_STUBS = (
-    "graphrag", "graphrag.api", "graphrag.api.prompt_tune",
-    "graphrag.config", "graphrag.config.enums", "graphrag.config.models",
-    "graphrag.config.models.cluster_graph_config",
-    "graphrag.config.models.extract_graph_config",
-    "graphrag.config.models.drift_search_config",
-    "graphrag.config.models.graph_rag_config",
-    "graphrag.config.models.local_search_config",
-    "graphrag.config.models.reporting_config",
-    "graphrag.config.models.llm_config",
-    "graphrag.config.models.llm_parameters_config",
-    "graphrag.config.models.parallelization_parameters_config",
-    "graphrag.config.models.embeddings_config",
-    "graphrag.config.models.text_embedding_config",
-    "graphrag.index", "graphrag.index.update",
-    "graphrag.index.update.incremental_index",
-    "graphrag_cache", "graphrag_cache.cache_config",
-    "graphrag_llm", "graphrag_llm.config", "graphrag_llm.config.model_config",
-    "graphrag_llm.embedding", "graphrag_llm.embedding.lite_llm_embedding",
-    "graphrag_storage", "graphrag_storage.storage_config",
-    "graphrag_vectors", "graphrag_vectors.vector_store_config",
-    "lancedb", "litellm", "nest_asyncio2",
-)
-for _mod_name in _GRAPHRAG_STUBS:
-    if not _try_import(_mod_name):
-        sys.modules.setdefault(_mod_name, _AutoStubModule(_mod_name))
 
 pytestmark = pytest.mark.unit
 
@@ -142,16 +103,6 @@ def _mock_settings(**overrides):
     s.retrieval_weight_same_section = 0.88
     s.retrieval_weight_same_artifact = 0.82
     s.retrieval_weight_same_page = 0.78
-    # GraphRAG settings
-    s.graphrag_indexing_enabled = True
-    s.graphrag_llm_provider = "ollama"
-    s.graphrag_llm_model = "llama3.2"
-    s.graphrag_llm_api_base = "http://ollama:11434/v1"
-    s.graphrag_api_key = ""
-    s.graphrag_embedding_model = "nomic-embed-text"
-    s.graphrag_data_dir = "/tmp/test_graphrag"
-    s.graphrag_community_level = 2
-    s.graphrag_max_cluster_size = 10
     for k, v in overrides.items():
         setattr(s, k, v)
     return s
@@ -430,156 +381,7 @@ class TestMultiModalPipeline:
 
 
 # ---------------------------------------------------------------------------
-# 4. GraphRAG query functions (_graphrag_*_query in retrieval.py)
-# ---------------------------------------------------------------------------
-
-class TestGraphRAGLocalQuery:
-    """Tests for _graphrag_local_query."""
-
-    @pytest.mark.asyncio
-    async def test_no_query_text_returns_empty(self):
-        from app.api.v1.retrieval import _graphrag_local_query
-        from app.schemas.retrieval import UnifiedQueryRequest
-
-        body = UnifiedQueryRequest.model_construct(
-            query_text=None, query_image="base64data", strategy="graphrag_local",
-            modality_filter="all", top_k=10, include_context=True,
-        )
-        db = AsyncMock()
-        results = await _graphrag_local_query(db, body)
-        assert results == []
-
-    @pytest.mark.asyncio
-    async def test_returns_graphrag_result(self):
-        from app.api.v1.retrieval import _graphrag_local_query
-
-        mock_local = MagicMock(return_value={
-            "response": "The S-400 system capabilities include...",
-            "context": {"entities": ["S-400"]},
-        })
-
-        with patch("app.services.graphrag_service.local_search", mock_local):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_local")
-            results = await _graphrag_local_query(db, body)
-
-        assert len(results) == 1
-        assert results[0].modality == "graphrag_response"
-        assert "S-400" in results[0].content_text
-        assert results[0].context["source"] == "graphrag_local"
-        assert results[0].score == 1.0
-
-    @pytest.mark.asyncio
-    async def test_empty_response_raises_404(self):
-        from app.api.v1.retrieval import _graphrag_local_query
-        from fastapi import HTTPException
-
-        mock_local = MagicMock(return_value={"response": "", "context": {}})
-
-        with patch("app.services.graphrag_service.local_search", mock_local):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_local")
-            with pytest.raises(HTTPException) as exc_info:
-                await _graphrag_local_query(db, body)
-            assert exc_info.value.status_code == 404
-
-
-class TestGraphRAGGlobalQuery:
-    """Tests for _graphrag_global_query."""
-
-    @pytest.mark.asyncio
-    async def test_no_query_text_returns_empty(self):
-        from app.api.v1.retrieval import _graphrag_global_query
-        from app.schemas.retrieval import UnifiedQueryRequest
-
-        body = UnifiedQueryRequest.model_construct(
-            query_text=None, query_image="base64data", strategy="graphrag_global",
-            modality_filter="all", top_k=10, include_context=True,
-        )
-        db = AsyncMock()
-        results = await _graphrag_global_query(db, body)
-        assert results == []
-
-    @pytest.mark.asyncio
-    async def test_returns_graphrag_result(self):
-        from app.api.v1.retrieval import _graphrag_global_query
-
-        mock_global = MagicMock(return_value={
-            "response": "Across all communities, threat assessment...",
-            "context": {"reports": ["r1"]},
-        })
-
-        with patch("app.services.graphrag_service.global_search", mock_global):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_global")
-            results = await _graphrag_global_query(db, body)
-
-        assert len(results) == 1
-        assert results[0].context["source"] == "graphrag_global"
-
-    @pytest.mark.asyncio
-    async def test_empty_response_raises_409(self):
-        from app.api.v1.retrieval import _graphrag_global_query
-        from fastapi import HTTPException
-
-        mock_global = MagicMock(return_value={"response": "", "context": {}})
-
-        with patch("app.services.graphrag_service.global_search", mock_global):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_global")
-            with pytest.raises(HTTPException) as exc_info:
-                await _graphrag_global_query(db, body)
-            assert exc_info.value.status_code == 409
-
-
-class TestGraphRAGDriftQuery:
-    """Tests for _graphrag_drift_query."""
-
-    @pytest.mark.asyncio
-    async def test_no_query_text_returns_empty(self):
-        from app.api.v1.retrieval import _graphrag_drift_query
-        from app.schemas.retrieval import UnifiedQueryRequest
-
-        body = UnifiedQueryRequest.model_construct(
-            query_text=None, query_image="base64data", strategy="graphrag_drift",
-            modality_filter="all", top_k=10, include_context=True,
-        )
-        db = AsyncMock()
-        results = await _graphrag_drift_query(db, body)
-        assert results == []
-
-    @pytest.mark.asyncio
-    async def test_returns_drift_result(self):
-        from app.api.v1.retrieval import _graphrag_drift_query
-
-        mock_drift = MagicMock(return_value={
-            "response": "DRIFT analysis of guidance methods...",
-            "context": {"entities": ["guidance"]},
-        })
-
-        with patch("app.services.graphrag_service.drift_search", mock_drift):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_drift")
-            results = await _graphrag_drift_query(db, body)
-
-        assert len(results) == 1
-        assert results[0].context["source"] == "graphrag_drift"
-
-    @pytest.mark.asyncio
-    async def test_empty_response_returns_empty_list(self):
-        from app.api.v1.retrieval import _graphrag_drift_query
-
-        mock_drift = MagicMock(return_value={"response": "", "context": {}})
-
-        with patch("app.services.graphrag_service.drift_search", mock_drift):
-            db = AsyncMock()
-            body = _make_body(strategy="graphrag_drift")
-            results = await _graphrag_drift_query(db, body)
-            assert results == []
-
-
-# ---------------------------------------------------------------------------
-# 5. _merge_seed_results
+# 4. _merge_seed_results (renumbered from 5)
 # ---------------------------------------------------------------------------
 
 class TestMergeSeedResultsCoverage:
@@ -710,95 +512,6 @@ class TestApplyReranker:
         assert len(result) == 2
         assert str(result[0].chunk_id) == cid2
         assert result[0].score == 0.95
-
-
-# ---------------------------------------------------------------------------
-# 8. GraphRAG service functions (patching at lower level)
-# ---------------------------------------------------------------------------
-
-class TestGraphRAGServiceLocalSearch:
-    @patch("app.services.graphrag_service._load_search_data")
-    @patch("app.services.graphrag_service.build_graphrag_config")
-    @patch("app.services.graphrag_service.get_settings")
-    def test_success(self, mock_gs, mock_config, mock_load):
-        from app.services.graphrag_service import local_search
-
-        mock_gs.return_value = _mock_settings()
-        mock_data = MagicMock()
-        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
-        mock_load.return_value = mock_data
-
-        with patch("app.services.graphrag_service._run_local_search") as mock_run:
-            mock_run.return_value = ("Local answer", {"entities": []})
-            result = local_search("test query")
-
-        assert result["response"] == "Local answer"
-
-    @patch("app.services.graphrag_service._load_search_data", side_effect=Exception("boom"))
-    @patch("app.services.graphrag_service.get_settings")
-    def test_exception_returns_empty(self, mock_gs, mock_load):
-        from app.services.graphrag_service import local_search
-
-        mock_gs.return_value = _mock_settings()
-        result = local_search("test query")
-        assert result["response"] == ""
-        assert result["context"] == {}
-
-
-class TestGraphRAGServiceGlobalSearch:
-    @patch("app.services.graphrag_service._load_search_data")
-    @patch("app.services.graphrag_service.build_graphrag_config")
-    @patch("app.services.graphrag_service.get_settings")
-    def test_success(self, mock_gs, mock_config, mock_load):
-        from app.services.graphrag_service import global_search
-
-        mock_gs.return_value = _mock_settings()
-        mock_data = MagicMock()
-        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
-        mock_load.return_value = mock_data
-
-        with patch("app.services.graphrag_service._run_global_search") as mock_run:
-            mock_run.return_value = ("Global answer", {"reports": []})
-            result = global_search("broad question")
-
-        assert result["response"] == "Global answer"
-
-    @patch("app.services.graphrag_service._load_search_data", side_effect=RuntimeError("no data"))
-    @patch("app.services.graphrag_service.get_settings")
-    def test_exception_returns_empty(self, mock_gs, mock_load):
-        from app.services.graphrag_service import global_search
-
-        mock_gs.return_value = _mock_settings()
-        result = global_search("test")
-        assert result["response"] == ""
-
-
-class TestGraphRAGServiceDriftSearch:
-    @patch("app.services.graphrag_service._load_search_data")
-    @patch("app.services.graphrag_service.build_graphrag_config")
-    @patch("app.services.graphrag_service.get_settings")
-    def test_success(self, mock_gs, mock_config, mock_load):
-        from app.services.graphrag_service import drift_search
-
-        mock_gs.return_value = _mock_settings()
-        mock_data = MagicMock()
-        mock_data.__getitem__ = lambda self, k: MagicMock(empty=False)
-        mock_load.return_value = mock_data
-
-        with patch("app.services.graphrag_service._run_drift_search") as mock_run:
-            mock_run.return_value = ("Drift answer", {"entities": []})
-            result = drift_search("guidance question")
-
-        assert result["response"] == "Drift answer"
-
-    @patch("app.services.graphrag_service._load_search_data", side_effect=Exception("crash"))
-    @patch("app.services.graphrag_service.get_settings")
-    def test_exception_returns_empty(self, mock_gs, mock_load):
-        from app.services.graphrag_service import drift_search
-
-        mock_gs.return_value = _mock_settings()
-        result = drift_search("test")
-        assert result["response"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -989,51 +702,16 @@ class TestUnifiedQueryRouting:
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
-    @patch("app.api.v1.retrieval._graphrag_local_query", new_callable=AsyncMock)
-    async def test_graphrag_local_strategy(self, mock_local, mock_urls, _mock_doc_names, _mock_page_numbers):
+    async def test_global_strategy_returns_501(self, mock_urls, _mock_doc_names, _mock_page_numbers):
         from app.api.v1.retrieval import unified_query
+        from fastapi import HTTPException
 
-        mock_local.return_value = [_make_item(score=1.0, modality="graphrag_response")]
         mock_urls.return_value = None
-
-        body = _make_body(strategy="graphrag_local", top_k=5, include_context=False)
+        body = _make_body(strategy="global", top_k=5, include_context=False)
         db = AsyncMock()
-        response = await unified_query(body, db)
-
-        mock_local.assert_awaited_once()
-        assert response.strategy == "graphrag_local"
-
-    @pytest.mark.asyncio
-    @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
-    @patch("app.api.v1.retrieval._graphrag_global_query", new_callable=AsyncMock)
-    async def test_graphrag_global_strategy(self, mock_global, mock_urls, _mock_doc_names, _mock_page_numbers):
-        from app.api.v1.retrieval import unified_query
-
-        mock_global.return_value = [_make_item(score=1.0, modality="graphrag_response")]
-        mock_urls.return_value = None
-
-        body = _make_body(strategy="graphrag_global", top_k=5, include_context=False)
-        db = AsyncMock()
-        response = await unified_query(body, db)
-
-        mock_global.assert_awaited_once()
-        assert response.strategy == "graphrag_global"
-
-    @pytest.mark.asyncio
-    @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
-    @patch("app.api.v1.retrieval._graphrag_drift_query", new_callable=AsyncMock)
-    async def test_graphrag_drift_strategy(self, mock_drift, mock_urls, _mock_doc_names, _mock_page_numbers):
-        from app.api.v1.retrieval import unified_query
-
-        mock_drift.return_value = [_make_item(score=1.0, modality="graphrag_response")]
-        mock_urls.return_value = None
-
-        body = _make_body(strategy="graphrag_drift", top_k=5, include_context=False)
-        db = AsyncMock()
-        response = await unified_query(body, db)
-
-        mock_drift.assert_awaited_once()
-        assert response.strategy == "graphrag_drift"
+        with pytest.raises(HTTPException) as exc_info:
+            await unified_query(body, db)
+        assert exc_info.value.status_code == 501
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)

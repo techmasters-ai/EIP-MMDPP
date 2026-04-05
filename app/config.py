@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     image_embedding_pretrained: str = "openai"
     image_embedding_dim: int = 512
 
-    # LLM provider — controls which LLM backend is used for GraphRAG reports
+    # LLM provider — controls which LLM backend is used for community reports
     # and other LLM-dependent features (openai | ollama | mock).
     llm_provider: str = "ollama"
 
@@ -158,43 +158,6 @@ class Settings(BaseSettings):
 
     # Embedding batching
     embed_text_batch_size: int = 128
-
-    # GraphRAG (Microsoft GraphRAG — community detection + reports + search)
-    graphrag_indexing_enabled: bool = True
-    graphrag_indexing_interval_minutes: int = 60
-    graphrag_max_cluster_size: int = 50
-    graphrag_community_level: int = 2
-    graphrag_data_dir: str = "/app/graphrag_data"
-    # LLM provider for GraphRAG (ollama | openai)
-    graphrag_llm_provider: str = "ollama"
-    graphrag_llm_model: str = "llama3.2"
-    graphrag_llm_api_base: str = ""  # falls back to get_ollama_llm_url()/v1 for Ollama provider
-    graphrag_api_key: str = ""
-    # Embedding model for GraphRAG's LanceDB store
-    graphrag_embedding_model: str = "nomic-embed-text"
-    # LLM request timeout for GraphRAG search/indexing (seconds, default 3h)
-    graphrag_llm_timeout: int = 10800
-    # Thinking level for GraphRAG Ollama calls ("", "low", "medium", "high").
-    # Falls back to ollama_think if empty.  Set to "medium" to reduce
-    # empty-content responses from thinking models on structured JSON prompts.
-    graphrag_ollama_think: str = ""
-    # Custom extraction prompt (if empty, uses built-in military ontology prompt).
-    # May include {ontology_context} placeholder for dynamic Neo4j examples.
-    graphrag_extraction_prompt: str = ""
-    # Auto-tuning schedule (minutes, default 24h)
-    graphrag_tune_interval_minutes: int = 1440
-    # Use Fast method (NLP-based) instead of Standard (LLM-based) for extraction
-    graphrag_use_fast_method: bool = False
-    # Enable/disable LLM response cache for extraction
-    graphrag_cache_enabled: bool = True
-    # Search response type per method (controls answer format)
-    graphrag_local_response_type: str = "Detailed explanation"
-    graphrag_global_response_type: str = "Multiple Paragraphs"
-    graphrag_drift_response_type: str = "In-depth analysis"
-    # Dynamic community selection (auto-select relevant communities)
-    graphrag_dynamic_community_selection: bool = True
-    # Dry-run mode: validate config and export data without running indexing
-    graphrag_dry_run: bool = False
 
     # Document Analysis (LLM metadata extraction)
     doc_analysis_enabled: bool = True

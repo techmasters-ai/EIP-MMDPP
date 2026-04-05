@@ -18,20 +18,19 @@ pytestmark = pytest.mark.unit
 class TestQueryStrategy:
     def test_all_strategy_values_exist(self):
         from app.schemas.retrieval import QueryStrategy
-        expected = {"basic", "hybrid", "graphrag_local", "graphrag_global", "graphrag_drift"}
+        expected = {"basic", "hybrid", "global"}
         actual = {m.value for m in QueryStrategy}
         assert actual == expected
 
-    def test_has_five_members(self):
+    def test_has_three_members(self):
         from app.schemas.retrieval import QueryStrategy
-        assert len(QueryStrategy) == 5
+        assert len(QueryStrategy) == 3
 
     def test_strategy_string_values(self):
         from app.schemas.retrieval import QueryStrategy
         assert QueryStrategy.basic.value == "basic"
         assert QueryStrategy.hybrid.value == "hybrid"
-        assert QueryStrategy.graphrag_local.value == "graphrag_local"
-        assert QueryStrategy.graphrag_global.value == "graphrag_global"
+        assert QueryStrategy.global_.value == "global"
 
     def test_strategy_is_str_enum(self):
         from app.schemas.retrieval import QueryStrategy
@@ -169,15 +168,22 @@ class TestUnifiedQueryRequest:
         with pytest.raises(pydantic.ValidationError):
             self._make(query_text="test", mode="memory")
 
-    def test_legacy_mode_graphrag_local(self):
-        from app.schemas.retrieval import QueryStrategy
-        req = self._make(query_text="test", mode="graphrag_local")
-        assert req.strategy == QueryStrategy.graphrag_local
+    def test_legacy_mode_graphrag_local_rejected(self):
+        """GraphRAG modes removed — should raise validation error."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            self._make(query_text="test", mode="graphrag_local")
 
-    def test_legacy_mode_graphrag_global(self):
+    def test_legacy_mode_graphrag_global_rejected(self):
+        """GraphRAG modes removed — should raise validation error."""
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            self._make(query_text="test", mode="graphrag_global")
+
+    def test_legacy_mode_global_maps_to_global(self):
         from app.schemas.retrieval import QueryStrategy
-        req = self._make(query_text="test", mode="graphrag_global")
-        assert req.strategy == QueryStrategy.graphrag_global
+        req = self._make(query_text="test", mode="global")
+        assert req.strategy == QueryStrategy.global_
 
 
 # ---------------------------------------------------------------------------

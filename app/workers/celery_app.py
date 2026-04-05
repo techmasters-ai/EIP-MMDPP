@@ -1,7 +1,6 @@
 """Celery application configuration."""
 
 from celery import Celery
-from celery.signals import worker_process_shutdown
 
 from app.config import get_settings
 
@@ -14,7 +13,6 @@ celery_app = Celery(
     include=[
         "app.workers.pipeline",
         "app.workers.watcher",
-        "app.workers.graphrag_tasks",
         "app.workers.trusted_data_tasks",
     ],
 )
@@ -39,9 +37,6 @@ celery_app.conf.update(
         "app.workers.pipeline.finalize_document": {"queue": "ingest"},
         "app.workers.watcher.scan_watch_directories": {"queue": "ingest"},
         "app.workers.trusted_data_tasks.index_trusted_submission": {"queue": "trusted"},
-        "app.workers.graphrag_tasks.run_graphrag_indexing_task": {"queue": "graph"},
-        "app.workers.graphrag_tasks.run_graphrag_auto_tune_task": {"queue": "graph"},
-        "app.workers.graphrag_tasks.run_graphrag_query_task": {"queue": "graph"},
         "app.workers.pipeline._chord_error_handler": {"queue": "ingest"},
     },
     # Task result expiry
@@ -59,33 +54,7 @@ celery_app.conf.update(
             "task": "app.workers.watcher.scan_watch_directories",
             "schedule": settings.watch_dir_poll_interval_seconds,
         },
-        **(
-            {
-                "graphrag-indexing": {
-                    "task": "app.workers.graphrag_tasks.run_graphrag_indexing_task",
-                    "schedule": settings.graphrag_indexing_interval_minutes * 60,
-                },
-                "graphrag-auto-tune": {
-                    "task": "app.workers.graphrag_tasks.run_graphrag_auto_tune_task",
-                    "schedule": settings.graphrag_tune_interval_minutes * 60,
-                },
-            }
-            if settings.graphrag_indexing_enabled
-            else {}
-        ),
     },
 )
 
 
-@worker_process_shutdown.connect
-def _on_worker_process_shutdown(**kwargs):
-    """Cleanly drain LiteLLM background tasks on worker shutdown."""
-    import logging
-
-    try:
-        from app.services.graphrag_service import close_graphrag_loop
-        close_graphrag_loop()
-    except Exception:
-        logging.getLogger(__name__).debug(
-            "GraphRAG loop cleanup on shutdown failed", exc_info=True,
-        )

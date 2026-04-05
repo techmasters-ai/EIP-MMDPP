@@ -25,13 +25,10 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.qdrant_url == "http://qdrant:6333"
 
-    def test_graphrag_defaults(self, monkeypatch):
-        monkeypatch.delenv("GRAPHRAG_MAX_CLUSTER_SIZE", raising=False)
+    def test_community_report_model_default(self, monkeypatch):
         from app.config import Settings
         s = Settings(_env_file=None)
-        assert s.graphrag_indexing_enabled is True
-        assert s.graphrag_max_cluster_size == 50
-        assert isinstance(s.graphrag_llm_model, str)
+        assert isinstance(s.community_report_llm_model, str)
 
 
 class TestComputedUrls:
@@ -90,8 +87,8 @@ class TestRerankerConfig:
         assert s.docling_graph_concurrency == 2
         assert s.docling_graph_timeout == 300
 
-    def test_ollama_settings_for_graphrag(self):
-        """Ollama settings used by GraphRAG should still be present."""
+    def test_ollama_settings_present(self):
+        """Ollama settings should be present."""
         from app.config import Settings
         s = Settings(ollama_num_ctx=16384, ollama_base_url="http://localhost:11434")
         assert s.ollama_num_ctx == 16384

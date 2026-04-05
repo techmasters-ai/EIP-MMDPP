@@ -21,8 +21,6 @@ from app.api.v1._retrieval_helpers import (
 )
 from app.db.session import get_async_session, get_neo4j_async_driver, get_qdrant_async_client
 from app.schemas.retrieval import (
-    GraphRAGJobStatusResponse,
-    GraphRAGJobSubmitResponse,
     ModalityFilter,
     QueryResultItem,
     QueryStrategy,
@@ -49,25 +47,19 @@ async def unified_query(
     - **text_only**: Multi-modal pipeline, filtered to text results
     - **images_only**: Multi-modal pipeline, filtered to image results
     - **multi_modal**: Multi-modal pipeline, all results
-    - **memory**: Cognee approved memory search
-    - **graphrag_local**: Entity-centric retrieval with community context reports
-    - **graphrag_global**: Cross-community summarization for broad questions
+    - **global**: Cross-community summarization (community detection — Task 10)
     """
     try:
         if body.strategy == QueryStrategy.basic:
             results = await _text_vector_search(db, body)
-        elif body.strategy == QueryStrategy.graphrag_local:
-            results = await _graphrag_local_query(db, body)
-        elif body.strategy == QueryStrategy.graphrag_global:
-            results = await _graphrag_global_query(db, body)
-        elif body.strategy == QueryStrategy.graphrag_drift:
-            results = await _graphrag_drift_query(db, body)
         elif body.strategy == QueryStrategy.hybrid:
             results = await _multi_modal_pipeline(db, body)
+        elif body.strategy == QueryStrategy.global_:
+            raise HTTPException(501, "Global query not yet implemented")
         else:
             results = []
     except HTTPException:
-        raise  # Let GraphRAG precondition errors propagate as-is
+        raise
     except Exception as e:
         logger.warning("Query strategy %s failed: %s", body.strategy, e)
         results = []
@@ -771,139 +763,6 @@ async def _expand_via_ontology(
 
 
 # ---------------------------------------------------------------------------
-# GraphRAG local search — entity-centric + community reports
-# ---------------------------------------------------------------------------
-
-async def _graphrag_local_query(
-    db: AsyncSession, body: UnifiedQueryRequest
-) -> list[QueryResultItem]:
-    """Entity-centric search with community report context (Microsoft GraphRAG)."""
-    if not body.query_text:
-        return []
-
-    from app.services.graphrag_service import local_search
-
-    loop = asyncio.get_running_loop()
-    graphrag_result = await loop.run_in_executor(
-        None, local_search, body.query_text,
-    )
-
-    response = graphrag_result.get("response", "")
-    if not response:
-        if graphrag_result.get("error") == "communities_not_indexed":
-            raise HTTPException(
-                status_code=409,
-                detail="GraphRAG indexing has not completed yet. "
-                "Run indexing and wait for community detection to finish.",
-            )
-        raise HTTPException(
-            status_code=404,
-            detail="GraphRAG local: no matching entities found in the knowledge graph.",
-        )
-
-    return [QueryResultItem(
-        score=1.0,
-        modality="graphrag_response",
-        content_text=response,
-        classification="UNCLASSIFIED",
-        context={
-            "source": "graphrag_local",
-            "graphrag_context": graphrag_result.get("context", {}),
-        },
-    )]
-
-
-# ---------------------------------------------------------------------------
-# GraphRAG global search -- cross-community summarization
-# ---------------------------------------------------------------------------
-
-async def _graphrag_global_query(
-    db: AsyncSession, body: UnifiedQueryRequest
-) -> list[QueryResultItem]:
-    """Cross-community summarization for broad questions (Microsoft GraphRAG)."""
-    if not body.query_text:
-        return []
-
-    from app.services.graphrag_service import global_search
-
-    loop = asyncio.get_running_loop()
-    graphrag_result = await loop.run_in_executor(
-        None, global_search, body.query_text,
-    )
-
-    response = graphrag_result.get("response", "")
-    if not response:
-        if graphrag_result.get("error") == "communities_not_indexed":
-            raise HTTPException(
-                status_code=409,
-                detail="GraphRAG indexing has not completed yet. "
-                "Run indexing and wait for community detection to finish.",
-            )
-        raise HTTPException(
-            status_code=409,
-            detail="GraphRAG global: no community reports available. "
-            "Run the GraphRAG indexing pipeline first.",
-        )
-
-    return [QueryResultItem(
-        score=1.0,
-        modality="graphrag_response",
-        content_text=response,
-        classification="UNCLASSIFIED",
-        context={
-            "source": "graphrag_global",
-            "graphrag_context": graphrag_result.get("context", {}),
-        },
-    )]
-
-
-# ---------------------------------------------------------------------------
-# GraphRAG DRIFT search -- community-informed expansion
-# ---------------------------------------------------------------------------
-
-async def _graphrag_drift_query(
-    db: AsyncSession, body: UnifiedQueryRequest
-) -> list[QueryResultItem]:
-    """Community-informed expansion search (Microsoft GraphRAG DRIFT)."""
-    if not body.query_text:
-        return []
-
-    from app.services.graphrag_service import drift_search
-
-    loop = asyncio.get_running_loop()
-    graphrag_result = await loop.run_in_executor(
-        None, drift_search, body.query_text,
-    )
-
-    response = graphrag_result.get("response", "")
-    error_key = graphrag_result.get("error", "")
-    if not response:
-        if error_key == "communities_not_indexed":
-            raise HTTPException(
-                status_code=409,
-                detail="GraphRAG indexing has not completed yet. "
-                "Run indexing and wait for community detection to finish.",
-            )
-        if error_key:
-            raise HTTPException(
-                status_code=422,
-                detail=f"GraphRAG DRIFT search failed: {error_key}",
-            )
-        return []
-
-    return [QueryResultItem(
-        score=1.0,
-        modality="graphrag_response",
-        content_text=response,
-        classification="UNCLASSIFIED",
-        context={
-            "source": "graphrag_drift",
-            "graphrag_context": graphrag_result.get("context", {}),
-        },
-    )]
-
-
-# ---------------------------------------------------------------------------
 # Batch chunk lookups (fixes N+1 query pattern)
 # ---------------------------------------------------------------------------
 
@@ -1130,187 +989,6 @@ async def get_retrieval_settings():
         "reranker_top_n": settings.reranker_top_n,
         "min_confidence": settings.query_default_min_confidence,
     }
-
-
-@router.get("/settings/graphrag")
-async def get_graphrag_settings():
-    """Return current GraphRAG configuration (read-only)."""
-    import redis
-    from app.config import get_settings
-
-    settings = get_settings()
-    last_indexing_at = None
-    try:
-        r = redis.from_url(settings.celery_broker_url)
-        val = r.get("graphrag:last_indexed_at")
-        if val:
-            last_indexing_at = val.decode("utf-8")
-    except Exception:
-        pass
-
-    return {
-        "indexing_enabled": settings.graphrag_indexing_enabled,
-        "indexing_interval_minutes": settings.graphrag_indexing_interval_minutes,
-        "last_indexing_at": last_indexing_at,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Async GraphRAG query — submit / status / result
-# ---------------------------------------------------------------------------
-
-_GRAPHRAG_STRATEGIES = {"graphrag_local", "graphrag_global", "graphrag_drift"}
-
-_CELERY_STATUS_MAP = {
-    "PENDING": "pending",
-    "STARTED": "running",
-    "SUCCESS": "completed",
-    "FAILURE": "failed",
-    "REVOKED": "failed",
-}
-
-_graphrag_redis: "redis.Redis | None" = None
-
-
-def _get_graphrag_redis():
-    global _graphrag_redis
-    if _graphrag_redis is None:
-        import redis
-        from app.config import get_settings
-        _graphrag_redis = redis.from_url(get_settings().celery_broker_url)
-    return _graphrag_redis
-
-
-def _check_job_exists(job_id: str):
-    """Raise 404 if the job tracking key is missing from Redis."""
-    try:
-        if not _get_graphrag_redis().exists(f"graphrag:job:{job_id}"):
-            raise HTTPException(status_code=404, detail="Job not found or expired")
-    except HTTPException:
-        raise
-    except Exception:
-        pass  # Redis unavailable — fall through to Celery check
-
-
-@router.post("/retrieval/graphrag/submit", response_model=GraphRAGJobSubmitResponse,
-             status_code=202)
-async def submit_graphrag_query(body: UnifiedQueryRequest):
-    """Submit a GraphRAG query as an async job. Returns a job_id for polling."""
-    if body.strategy.value not in _GRAPHRAG_STRATEGIES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Strategy must be one of {sorted(_GRAPHRAG_STRATEGIES)}, "
-            f"got '{body.strategy.value}'",
-        )
-
-    from app.workers.graphrag_tasks import run_graphrag_query_task
-
-    request_dict = body.model_dump(mode="json")
-    task = run_graphrag_query_task.delay(request_dict)
-
-    try:
-        _get_graphrag_redis().set(f"graphrag:job:{task.id}", "1", ex=86400)
-    except Exception:
-        pass
-
-    return GraphRAGJobSubmitResponse(job_id=str(task.id), status="pending")
-
-
-@router.get("/retrieval/graphrag/status/{job_id}", response_model=GraphRAGJobStatusResponse)
-async def get_graphrag_query_status(job_id: str):
-    """Poll the status of an async GraphRAG query job."""
-    from app.workers.celery_app import celery_app
-
-    _check_job_exists(job_id)
-
-    async_result = celery_app.AsyncResult(job_id)
-    state = async_result.state
-    backend_result = async_result.result
-    status = _CELERY_STATUS_MAP.get(state, "pending")
-
-    error = None
-    if state == "FAILURE":
-        error = str(backend_result) if backend_result else "Task failed"
-    elif state == "SUCCESS" and isinstance(backend_result, dict):
-        error = backend_result.get("error")
-        if error:
-            status = "failed"
-
-    return GraphRAGJobStatusResponse(job_id=job_id, status=status, error=error)
-
-
-@router.get("/retrieval/graphrag/result/{job_id}")
-async def get_graphrag_query_result(job_id: str):
-    """Fetch the result of a completed async GraphRAG query job."""
-    from app.workers.celery_app import celery_app
-
-    _check_job_exists(job_id)
-
-    async_result = celery_app.AsyncResult(job_id)
-    if async_result.state != "SUCCESS":
-        raise HTTPException(status_code=409, detail="Job still in progress")
-
-    data = async_result.result
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=500, detail="Unexpected result format")
-
-    if "error" in data:
-        raise HTTPException(status_code=422, detail=data["error"])
-
-    return data
-
-
-@router.post("/graphrag/index")
-async def trigger_graphrag_full_reindex(confirm: bool = False):
-    """Full rebuild of the GraphRAG index from scratch.
-
-    Equivalent to ``graphrag index`` — re-extracts all entities, rebuilds
-    communities and reports.  Use after changing prompts, ontology, or model.
-
-    Requires ``confirm=true`` because this replaces the existing index and
-    can take significant time (hours for large corpora).
-
-    The task is idempotent -- a Redis lock prevents overlapping runs.
-    """
-    if not confirm:
-        return {
-            "status": "confirmation_required",
-            "warning": (
-                "This will remove the existing GraphRAG index and rebuild it "
-                "from scratch. This operation can take several hours for large "
-                "document collections. All entities, communities, and reports "
-                "will be re-extracted. Pass confirm=true to proceed."
-            ),
-        }
-
-    from app.workers.graphrag_tasks import run_graphrag_indexing_task
-
-    task = run_graphrag_indexing_task.apply_async(kwargs={"mode": "index"})
-    return {"status": "indexing_started", "mode": "index", "task_id": str(task.id)}
-
-
-@router.post("/graphrag/update")
-async def trigger_graphrag_update():
-    """Incremental update of the GraphRAG index.
-
-    Equivalent to ``graphrag update`` — only processes new/modified documents
-    via delta detection.  Halts immediately when there is nothing new.
-
-    The task is idempotent -- a Redis lock prevents overlapping runs.
-    """
-    from app.workers.graphrag_tasks import run_graphrag_indexing_task
-
-    task = run_graphrag_indexing_task.apply_async(kwargs={"mode": "update"})
-    return {"status": "indexing_started", "mode": "update", "task_id": str(task.id)}
-
-
-@router.post("/graphrag/tune")
-async def trigger_graphrag_tuning():
-    """Dispatch GraphRAG prompt auto-tuning as a Celery task."""
-    from app.workers.graphrag_tasks import run_graphrag_auto_tune_task
-
-    task = run_graphrag_auto_tune_task.delay()
-    return {"status": "tuning_started", "task_id": str(task.id)}
 
 
 # ---------------------------------------------------------------------------
