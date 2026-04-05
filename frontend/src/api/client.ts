@@ -96,7 +96,6 @@ export interface TrustedDataSubmission {
   created_at: string;
   index_status?: string;
   index_error?: string;
-  qdrant_point_id?: string;
   embedding_model?: string;
   embedded_at?: string;
 }
@@ -461,27 +460,6 @@ export interface RetrievalSettings {
 export async function getRetrievalSettings(): Promise<RetrievalSettings> {
   const res = await fetch("/v1/settings/retrieval");
   return handleResponse<RetrievalSettings>(res);
-}
-
-export interface GraphRAGSettings {
-  indexing_enabled: boolean;
-  indexing_interval_minutes: number;
-  last_indexing_at: string | null;
-}
-
-export async function getGraphRAGSettings(): Promise<GraphRAGSettings> {
-  const res = await fetch("/v1/settings/graphrag");
-  return handleResponse<GraphRAGSettings>(res);
-}
-
-export async function triggerGraphRAGUpdate(): Promise<{ status: string; mode: string; task_id: string }> {
-  const res = await fetch("/v1/graphrag/update", { method: "POST" });
-  return handleResponse<{ status: string; mode: string; task_id: string }>(res);
-}
-
-export async function triggerGraphRAGFullReindex(): Promise<{ status: string; mode: string; task_id: string }> {
-  const res = await fetch("/v1/graphrag/index?confirm=true", { method: "POST" });
-  return handleResponse<{ status: string; mode: string; task_id: string }>(res);
 }
 
 // ---------------------------------------------------------------------------

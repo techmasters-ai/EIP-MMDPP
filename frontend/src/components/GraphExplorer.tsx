@@ -5,13 +5,9 @@ import {
   ingestGraphRelationship,
   queryGraph,
   getGraphNeighborhood,
-  getGraphRAGSettings,
-  triggerGraphRAGUpdate,
-  triggerGraphRAGFullReindex,
   type QueryProfileDefinition,
   type QueryProfileRegistry,
   type QueryResultItem,
-  type GraphRAGSettings,
 } from "../api/client";
 import { uniqueSorted, normalizeNamedList } from "../utils/ontologyHelpers";
 import type cytoscape from "cytoscape";
@@ -152,13 +148,12 @@ function buildOntologyOptions(
   };
 }
 
-type Tab = "search" | "entity" | "relationship" | "indexing" | "profiles";
+type Tab = "search" | "entity" | "relationship" | "profiles";
 
 const TAB_LABELS: Record<Tab, string> = {
   search: "Search",
   entity: "Add Entity",
   relationship: "Add Relationship",
-  indexing: "Graph Indexing",
   profiles: "Ontology and Query Profiles",
 };
 
@@ -201,7 +196,6 @@ export function GraphExplorer() {
           validationMatrix={ontologyOptions.validationMatrix}
         />
       )}
-      {tab === "indexing" && <GraphIndexingPanel />}
       {tab === "profiles" && <QueryProfileRegistryPage />}
     </div>
   );
@@ -572,131 +566,6 @@ function RelationshipForm({
       </form>
       {error && <div className="alert alert-error mt-sm">{error}</div>}
       {success && <div className="alert alert-success mt-sm">{success}</div>}
-    </div>
-  );
-}
-
-
-function GraphIndexingPanel() {
-  const [settings, setSettings] = useState<GraphRAGSettings | null>(null);
-  const [triggering, setTriggering] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [minutesRemaining, setMinutesRemaining] = useState<number | null>(null);
-
-  const computeRemaining = useCallback((s: GraphRAGSettings) => {
-    if (!s.indexing_enabled || !s.last_indexing_at) {
-      setMinutesRemaining(null);
-      return;
-    }
-    const elapsed = (Date.now() - new Date(s.last_indexing_at).getTime()) / 60000;
-    setMinutesRemaining(Math.max(0, Math.round(s.indexing_interval_minutes - elapsed)));
-  }, []);
-
-  useEffect(() => {
-    getGraphRAGSettings().then((s) => {
-      setSettings(s);
-      computeRemaining(s);
-    });
-  }, [computeRemaining]);
-
-  useEffect(() => {
-    if (!settings) return;
-    const id = setInterval(() => computeRemaining(settings), 60000);
-    return () => clearInterval(id);
-  }, [settings, computeRemaining]);
-
-  const handleUpdate = async () => {
-    setTriggering(true);
-    setStatus(null);
-    setError(null);
-    try {
-      const res = await triggerGraphRAGUpdate();
-      setStatus(`Incremental update started (task ${res.task_id.slice(0, 8)}...)`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to trigger update");
-    } finally {
-      setTriggering(false);
-    }
-  };
-
-  const handleFullReindex = async () => {
-    const confirmed = window.confirm(
-      "WARNING: This will remove the existing GraphRAG index and rebuild it " +
-      "from scratch. All entities, communities, and reports will be re-extracted. " +
-      "This operation can take several hours for large document collections.\n\n" +
-      "Are you sure you want to proceed?"
-    );
-    if (!confirmed) return;
-
-    setTriggering(true);
-    setStatus(null);
-    setError(null);
-    try {
-      const res = await triggerGraphRAGFullReindex();
-      setStatus(`Full reindex started (task ${res.task_id.slice(0, 8)}...)`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to trigger full reindex");
-    } finally {
-      setTriggering(false);
-    }
-  };
-
-  if (!settings) {
-    return <div className="empty-state"><span className="spinner" /> Loading...</div>;
-  }
-
-  return (
-    <div>
-      <div style={{
-        border: "1px solid var(--color-border)",
-        borderRadius: "var(--radius)",
-        padding: "1rem",
-        marginBottom: "1rem",
-        background: "var(--color-surface-2)",
-        fontSize: "0.9rem",
-        lineHeight: 1.8,
-      }}>
-        <div>
-          Automatic indexing is{" "}
-          <strong>{settings.indexing_enabled ? "enabled" : "disabled"}</strong>
-          {settings.indexing_enabled && (
-            <>, running every <strong>{settings.indexing_interval_minutes} minutes</strong></>
-          )}
-        </div>
-        {settings.indexing_enabled && (
-          <div style={{ color: "var(--color-text-muted)" }}>
-            {minutesRemaining !== null
-              ? <>Next auto indexing will run in <strong>{minutesRemaining} minute{minutesRemaining !== 1 ? "s" : ""}</strong></>
-              : "Pending first run"}
-          </div>
-        )}
-        {settings.last_indexing_at && (
-          <div style={{ color: "var(--color-text-muted)", fontSize: "0.8rem" }}>
-            Last indexed: {new Date(settings.last_indexing_at).toLocaleString()}
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        <button
-          className="btn btn-primary"
-          onClick={handleUpdate}
-          disabled={triggering}
-        >
-          {triggering ? "Starting..." : "Update Index"}
-        </button>
-        <button
-          className="btn btn-danger"
-          onClick={handleFullReindex}
-          disabled={triggering}
-        >
-          {triggering ? "Starting..." : "Force Full Reindex"}
-        </button>
-      </div>
-
-      {status && <div className="alert alert-success mt-sm">{status}</div>}
-      {error && <div className="alert alert-error mt-sm">{error}</div>}
     </div>
   );
 }
