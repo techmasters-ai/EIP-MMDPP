@@ -662,6 +662,97 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
+### 28. Use native vectorRRFScore / vectorHybridScore for multi-vector fusion
+
+**Status:** Not started.
+**Files:** `app/api/v1/retrieval.py` (`_multi_modal_pipeline`, `compute_fusion_score`), `app/services/arcadedb_graph.py` (`cross_model_search`)
+
+**Current state:** Multi-vector fusion (text + image) is done Python-side via custom `compute_fusion_score()`. ArcadeDB provides built-in `vectorRRFScore()`, `vectorHybridScore()`, `vectorMultiScore()`, and `vectorNormalizeScores()` SQL functions that do this server-side.
+
+**What needs to be done:** Replace Python-side fusion with a single ArcadeDB SQL query using `vectorRRFScore()` or `vectorHybridScore()`. Eliminates transferring two separate result sets and moves computation to the DB engine.
+
+**Reference:** ArcadeDB Manual Section 6.3.1 (Overview Functions table)
+
+---
+
+### 29. Use MATCH syntax for graph traversal queries
+
+**Status:** Not started.
+**Files:** `app/services/arcadedb_graph.py` (`get_neighborhood`, `get_neighborhood_graph`)
+
+**Current state:** Neighborhood queries use `SELECT expand(both(){1,N}) FROM #rid`. ArcadeDB manual recommends MATCH for graph traversals: "If you are looking for the most efficient way to traverse a graph, we suggest using MATCH instead."
+
+**What needs to be done:** Rewrite to `MATCH {class: V, as: root, where: (@rid = :rid)}.both(){1,:depth} RETURN ...` for cleaner pattern matching and better query plan optimization.
+
+**Reference:** ArcadeDB Manual Section 6.3.1
+
+---
+
+### 30. BucketSelectionStrategy 'thread' for write-heavy types
+
+**Status:** Not started.
+**Files:** `app/services/arcadedb_schema.py`
+
+**Current state:** Default bucket selection causes write contention on parallel pipeline ingestion for TextChunk, ImageChunk, and entity types.
+
+**What needs to be done:** Add `ALTER TYPE TextChunk BucketSelectionStrategy 'thread'` (and similarly for ImageChunk and high-write entity types) as a post-schema-sync step to eliminate contention and ConcurrentModificationException retries.
+
+**Reference:** ArcadeDB Manual Section 5.5.24 (Troubleshooting: "Performance: insertion is slow")
+
+---
+
+### 31. Enable ArcadeDB Prometheus metrics plugin
+
+**Status:** Not started.
+**Files:** `docker-compose.yml`
+
+**Current state:** No database-level metrics are exposed despite having observability infrastructure. ArcadeDB has a built-in `PrometheusMetricsPlugin` exposing cache hits, transaction stats, and query throughput at `/metrics`.
+
+**What needs to be done:** Add `arcadedb.server.plugins=Prometheus:com.arcadedb.metrics.prometheus.PrometheusMetricsPlugin` to JAVA_OPTS in docker-compose.yml.
+
+**Reference:** ArcadeDB Manual Section 5.5.23 (Monitoring)
+
+---
+
+### 32. Configure automatic backup scheduler
+
+**Status:** Not started.
+**Files:** `docker/arcadedb/backup.json` (new), `docker-compose.yml`
+
+**Current state:** No automated backups configured. ArcadeDB has a built-in automatic backup scheduler with tiered retention, cron scheduling, and time windows.
+
+**What needs to be done:** Create a `backup.json` configuration and mount it into the ArcadeDB container. Configure cron schedule, retention, and backup directory.
+
+**Reference:** ArcadeDB Manual Section 5.5.10
+
+---
+
+### 33. Use text.levenshteinDistance() for fuzzy entity matching
+
+**Status:** Not started.
+**Files:** `app/services/arcadedb_graph.py`, canonicalization service
+
+**Current state:** Entity canonicalization pulls entity names to Python for fuzzy comparison. ArcadeDB provides a built-in `text.levenshteinDistance()` SQL function for server-side fuzzy matching.
+
+**What needs to be done:** Use `text.levenshteinDistance()` in canonicalization queries to do fuzzy matching server-side instead of pulling data to Python.
+
+**Reference:** ArcadeDB Manual Section 6.3.1 (Extended Functions)
+
+---
+
+### 34. Add EXPLAIN/PROFILE tooling for query plan validation
+
+**Status:** Not started.
+**Files:** tests or CI tooling
+
+**Current state:** No tooling verifies that critical queries hit indexes rather than scanning. ArcadeDB provides `EXPLAIN` and `PROFILE` commands for query plan inspection.
+
+**What needs to be done:** Add a health-check or CI step that runs `EXPLAIN` on critical query paths (vector search, fulltext search, RID lookups) and asserts no full scans.
+
+**Reference:** ArcadeDB Manual Section 5.5.24 (Query Optimization)
+
+---
+
 ## Completed During Migration (For Reference)
 
 These items were identified during review but fixed before merging:
