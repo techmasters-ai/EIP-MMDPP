@@ -53,7 +53,7 @@ async def unified_query(
         elif body.strategy == QueryStrategy.hybrid:
             results = await _multi_modal_pipeline(db, body)
         elif body.strategy == QueryStrategy.global_:
-            raise HTTPException(501, "Global query not yet implemented")
+            return await _global_query(body)
         else:
             results = []
     except HTTPException:
@@ -952,6 +952,59 @@ async def _populate_image_urls(
     for r in results:
         if r.modality == "image_description" and r.artifact_id:
             r.image_url = f"/v1/images/artifact/{r.artifact_id}"
+
+
+# ---------------------------------------------------------------------------
+# Global query — community report search
+# ---------------------------------------------------------------------------
+
+async def _global_query(body: UnifiedQueryRequest) -> UnifiedQueryResponse:
+    """Query via community reports (global/cross-community strategy).
+
+    Embeds the query text and searches CommunityReport vertices by vector
+    similarity.  Full LLM synthesis over the returned reports is a future
+    enhancement; this implementation returns the raw report summaries ranked
+    by similarity score.
+    """
+    from app.db.session import get_graph_store
+    from app.services.arcadedb_community import search_community_reports
+    from app.services.embedding import embed_texts
+
+    if not body.query_text:
+        return UnifiedQueryResponse(
+            query_text=body.query_text or "",
+            strategy="global",
+            modality_filter=body.modality_filter.value,
+            results=[],
+            total=0,
+        )
+
+    graph_store = get_graph_store()
+    query_vector = embed_texts([body.query_text], query=True)[0]
+
+    reports = await search_community_reports(graph_store, query_vector, top_k=body.top_k)
+
+    results = [
+        QueryResultItem(
+            chunk_id=None,
+            document_id=None,
+            score=float(r.get("score", 0.0)),
+            modality="community_report",
+            content_text=r.get("summary", ""),
+            page_number=None,
+            classification="UNCLASSIFIED",
+            context={"community_id": r.get("community_id")},
+        )
+        for r in reports
+    ]
+
+    return UnifiedQueryResponse(
+        query_text=body.query_text,
+        strategy="global",
+        modality_filter=body.modality_filter.value,
+        results=results,
+        total=len(results),
+    )
 
 
 # ---------------------------------------------------------------------------

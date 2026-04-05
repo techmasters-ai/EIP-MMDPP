@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     agent,
+    community,
     governance,
     graph_store,
     health,
@@ -23,3 +24,4 @@ api_router.include_router(trusted_data.router)
 api_router.include_router(retrieval.router)
 api_router.include_router(governance.router)
 api_router.include_router(agent.router)
+api_router.include_router(community.router)

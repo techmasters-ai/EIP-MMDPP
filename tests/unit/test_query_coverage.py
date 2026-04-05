@@ -679,16 +679,28 @@ class TestUnifiedQueryRouting:
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
-    async def test_global_strategy_returns_501(self, mock_urls, _mock_doc_names, _mock_page_numbers):
+    async def test_global_strategy_returns_community_reports(self, mock_urls, _mock_doc_names, _mock_page_numbers):
         from app.api.v1.retrieval import unified_query
-        from fastapi import HTTPException
+        from unittest.mock import AsyncMock as AM, patch as p
 
         mock_urls.return_value = None
         body = _make_body(strategy="global", top_k=5, include_context=False)
         db = AsyncMock()
-        with pytest.raises(HTTPException) as exc_info:
-            await unified_query(body, db)
-        assert exc_info.value.status_code == 501
+
+        mock_reports = [
+            {"community_id": 1, "summary": "radar cluster", "score": 0.9},
+        ]
+
+        with (
+            p("app.services.arcadedb_community.search_community_reports", new_callable=AM, return_value=mock_reports),
+            p("app.services.embedding.embed_texts", return_value=[[0.1] * 1024]),
+            p("app.db.session.get_graph_store", return_value=MagicMock()),
+        ):
+            response = await unified_query(body, db)
+
+        assert response.strategy == "global"
+        assert response.total == 1
+        assert response.results[0].modality == "community_report"
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)

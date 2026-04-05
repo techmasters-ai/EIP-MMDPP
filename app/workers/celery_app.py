@@ -1,5 +1,7 @@
 """Celery application configuration."""
 
+from datetime import timedelta
+
 from celery import Celery
 
 from app.config import get_settings
@@ -14,6 +16,7 @@ celery_app = Celery(
         "app.workers.pipeline",
         "app.workers.watcher",
         "app.workers.trusted_data_tasks",
+        "app.workers.community_tasks",
     ],
 )
 
@@ -53,6 +56,12 @@ celery_app.conf.update(
         "scan-watch-directories": {
             "task": "app.workers.watcher.scan_watch_directories",
             "schedule": settings.watch_dir_poll_interval_seconds,
+        },
+        "community-detection": {
+            "task": "app.workers.community_tasks.run_community_detection_task",
+            "schedule": timedelta(minutes=settings.community_detection_interval_minutes),
+            "kwargs": {"mode": "incremental"},
+            "options": {"queue": "graph"},
         },
     },
 )
