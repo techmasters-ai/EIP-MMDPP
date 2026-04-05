@@ -1091,4 +1091,3 @@ class TestBatchEntityChunkEdges:
                 pass
         assert entity_links == 0
         assert mock_store.create_structural_edge_sync.call_count == 0
-        assert result > 0

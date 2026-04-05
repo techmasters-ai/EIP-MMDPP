@@ -18,8 +18,15 @@ class TestStartIngestPipeline:
         from app.workers.pipeline import start_ingest_pipeline
 
         doc_id = str(uuid.uuid4())
-        with patch("app.workers.pipeline.chain") as mock_chain:
-            mock_chain.return_value.apply_async.return_value = MagicMock(id="task-123")
+        mock_db = MagicMock()
+        mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        mock_db.execute.return_value.scalar.return_value = None
+
+        with patch("app.workers.pipeline._get_db", return_value=mock_db), \
+             patch("app.workers.pipeline._create_pipeline_run", return_value=str(uuid.uuid4())), \
+             patch("app.workers.pipeline.chain") as mock_chain:
+            mock_apply = MagicMock(id="task-123")
+            mock_chain.return_value.apply_async.return_value = mock_apply
             result = start_ingest_pipeline(doc_id)
             assert result == "task-123"
             mock_chain.assert_called_once()
@@ -76,7 +83,7 @@ class TestTaskRouting:
     def test_derive_ontology_graph_routed_to_graph_queue(self):
         from app.workers.celery_app import celery_app
         routes = celery_app.conf.task_routes
-        assert routes["app.workers.pipeline.derive_ontology_graph"]["queue"] == "graph"
+        assert routes["app.workers.pipeline.derive_ontology_graph"]["queue"] == "graph_extract"
 
     def test_derive_structure_links_routed_to_graph_queue(self):
         from app.workers.celery_app import celery_app

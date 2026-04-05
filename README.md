@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (CLIP) into Qdrant vector collections → builds a military equipment knowledge graph (Neo4j) via parallel ontology-driven entity/relationship extraction → runs GraphRAG community detection and reporting → maintains governed trusted data (dedicated Qdrant collection with human-review gate). Supports 8 retrieval modes: text basic, hybrid (text only / images only / multi-modal), GraphRAG local, GraphRAG global, GraphRAG drift, and GraphRAG basic. Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
+Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (CLIP) into ArcadeDB vector collections → builds a military equipment knowledge graph (ArcadeDB) via parallel ontology-driven entity/relationship extraction → runs Louvain community detection and LLM-generated community reports → maintains governed trusted data (dedicated vector collection with human-review gate). Supports 3 retrieval strategies: basic (text vector search), hybrid (text + image multi-modal), and global (community-aware LLM synthesis). Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
 
 ## Architecture
 
@@ -10,30 +10,26 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 
 ```
                     ┌──────────────────────────────────────────┐
-                    │           Neo4j Knowledge Graph           │
-                    │   Document ←→ ChunkRef nodes              │
+                    │         ArcadeDB Knowledge Graph          │
+                    │   Document ←→ TextChunk / ImageChunk      │
                     │   Entity nodes (LLM + regex extracted)    │
-                    │   Ontology relations (44 predicates)      │
+                    │   Ontology relations (50 predicates)      │
                     │   Alias nodes (entity canonicalization)   │
                     │   Fulltext index (fuzzy entity search)    │
+                    │   BGE 1024-dim text vectors (native)      │
+                    │   CLIP 512-dim image vectors (native)     │
                     └──────────┬───────────────┬────────────────┘
                                │               │
-                    ┌──────────▼──────┐ ┌──────▼──────────┐
-                    │ Qdrant:         │ │ Qdrant:          │
-                    │ eip_text_chunks │ │ eip_image_chunks │
-                    │ BGE 1024-dim    │ │ CLIP 512-dim     │
-                    │ Cosine distance │ │ Cosine distance  │
-                    └─────────────────┘ └─────────────────┘
+                    ┌──────────▼──────────────────────────────┐
+                    │       Community Detection Layer          │
+                    │   Louvain community detection            │
+                    │   LLM-generated community summaries      │
+                    │   Global strategy: community synthesis   │
+                    └─────────────────────────────────────────┘
 
                     ┌──────────────────────────────────────────┐
-                    │       GraphRAG Community Layer             │
-                    │   Leiden/Louvain community detection       │
-                    │   LLM-generated community reports          │
-                    │   Local + Global search modes              │
-                    └──────────────────────────────────────────┘
-
-                    ┌──────────────────────────────────────────┐
-                    │       Qdrant: eip_trusted_text             │
+                    │       Trusted Data Layer                   │
+                    │   ArcadeDB trusted_text collection         │
                     │   Trusted Data (human-reviewed, indexed)   │
                     │   BGE 1024-dim, cosine distance            │
                     │   PROPOSED → APPROVED_PENDING_INDEX →      │
@@ -48,8 +44,7 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 | API | FastAPI (Python 3.11) |
 | Processing | Celery + Redis |
 | Database | PostgreSQL 16 (metadata, chunk_links, governance) |
-| Graph Database | Neo4j Community Edition (knowledge graph, ontology, canonicalization) |
-| Vector Database | Qdrant OSS (text + image embeddings) |
+| Graph + Vector Database | ArcadeDB (knowledge graph, ontology, canonicalization, native vector search) |
 | Object Storage | MinIO |
 | Text Embeddings | `bge-m3:latest` via Ollama `/v1/embeddings` API (1024-dim) |
 | Image Embeddings | OpenCLIP EVA02-E-14-plus (1024-dim, cross-modal) |
@@ -57,26 +52,25 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 | Document Conversion | Docling PdfPipeline (dlparse_v4 + EasyOCR + TableFormer), SimplePipeline for Office/HTML/MD |
 | Document Analysis | LLM-based metadata extraction (summary, date, classification, source) + multimodal picture descriptions via Ollama |
 | Graph Extraction | Docling-Graph service (chunked entity extraction across 5 ontology groups in parallel + global relationship pass on full text, with few-shot examples and ontology-derived validation, port 8002) |
-| GraphRAG | Microsoft graphrag (community detection, reports, local/global search) |
-| Trusted Data | Dedicated Qdrant collection + Celery indexing (human-reviewed, vector-indexed) |
+| Community Detection | Louvain community detection over ArcadeDB graph + LLM-generated community summaries |
+| Trusted Data | ArcadeDB trusted_text collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
 
-### Docker Services (10 containers)
+### Docker Services (9 containers)
 
 | Service | Purpose |
 |---|---|
 | `api` | FastAPI application server |
 | `worker` | Celery worker (ingest pipeline) |
-| `beat` | Celery Beat (periodic tasks, GraphRAG indexing) |
+| `beat` | Celery Beat (periodic tasks, community detection) |
 | `postgres` | PostgreSQL 16 (metadata, chunk_links, governance) |
 | `redis` | Celery broker + result backend |
 | `minio` | S3-compatible object storage |
 | `docling` | Document conversion service (granite-docling-258M VLM) |
 | `docling-graph` | Ontology-driven entity/relationship extraction service (port 8002) |
-| `neo4j` | Neo4j Community Edition (knowledge graph) |
-| `qdrant` | Qdrant OSS (vector search) |
+| `arcadedb` | ArcadeDB (knowledge graph + native vector search, replaces Neo4j + Qdrant) |
 
 ## Quickstart
 
@@ -89,10 +83,9 @@ cp env.example .env
 ./manage.sh --start
 
 # 3. API + web UI
-#    Web UI:  http://localhost:8000/
-#    API docs: http://localhost:8000/docs
-#    Neo4j Browser: http://localhost:7474/
-#    Qdrant Dashboard: http://localhost:6333/dashboard
+#    Web UI:      http://localhost:8000/
+#    API docs:    http://localhost:8000/docs
+#    ArcadeDB UI: http://localhost:2480/
 ```
 
 ## manage.sh — Project Management CLI
@@ -105,7 +98,7 @@ All service lifecycle, database, worker, and test operations are available throu
 ./manage.sh --stop               # Stop all services (preserves data)
 ./manage.sh --restart            # Restart without rebuilding images
 ./manage.sh --status             # Show service status and health checks
-./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, docling, docling-graph, neo4j, qdrant)
+./manage.sh --logs [service]     # Stream logs (api, worker, beat, postgres, redis, minio, docling, docling-graph, arcadedb)
 ./manage.sh --blow-away          # Destroy everything: containers, volumes, data
 
 # Database
@@ -121,7 +114,7 @@ All service lifecycle, database, worker, and test operations are available throu
 
 ## LLM Provider Configuration
 
-A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, GraphRAG reports). Each feature specifies its own model via a dedicated env var.
+A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-dependent features (graph extraction, community report generation). Each feature specifies its own model via a dedicated env var.
 
 | Value | Description |
 |---|---|
@@ -136,15 +129,15 @@ OLLAMA_BASE_URL=http://ollama:11434
 OLLAMA_NUM_CTX=16384                  # Context window for Ollama (must fit prompt + response)
 
 # Per-feature model selection
-GRAPHRAG_LLM_MODEL=llama3.2      # Model for GraphRAG community report generation
-GRAPHRAG_LLM_PROVIDER=ollama     # ollama | openai (defaults to LLM_PROVIDER if not set)
+COMMUNITY_LLM_MODEL=llama3.2     # Model for community report generation
+COMMUNITY_LLM_PROVIDER=ollama    # ollama | openai (defaults to LLM_PROVIDER if not set)
 
 # Docling-Graph service (ontology-driven graph extraction)
 DOCLING_GRAPH_BASE_URL=http://docling-graph:8002  # Docling-Graph service URL
 DOCLING_GRAPH_TIMEOUT=300                         # HTTP timeout for extraction calls (seconds)
 DOCLING_GRAPH_CONCURRENCY=2                       # Max concurrent extraction requests
-GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for Neo4j import
-GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for Neo4j import
+GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for ArcadeDB import
+GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for ArcadeDB import
 
 DOCLING_FALLBACK_ENABLED=false            # Fall back to legacy extraction on Docling 5xx (default false)
 ```
@@ -239,7 +232,7 @@ while True:
 
 Per-directory `poll_interval_seconds` respected (directories only scanned when enough time has elapsed since last scan).
 
-### Graph Store (Neo4j)
+### Graph Store (ArcadeDB)
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -282,10 +275,10 @@ for node in resp.json():
 |---|---|---|
 | `POST` | `/v1/trusted-data/ingest` | Propose knowledge for trusted data layer (status: PROPOSED) |
 | `GET` | `/v1/trusted-data/proposals` | List submissions (filterable by `?status=`) |
-| `POST` | `/v1/trusted-data/proposals/{id}/approve` | Curator approves → enqueues Celery task to embed + index in Qdrant |
+| `POST` | `/v1/trusted-data/proposals/{id}/approve` | Curator approves → enqueues Celery task to embed + index in ArcadeDB |
 | `POST` | `/v1/trusted-data/proposals/{id}/reject` | Curator rejects submission |
 | `POST` | `/v1/trusted-data/proposals/{id}/reindex` | Re-enqueue failed/pending indexing |
-| `POST` | `/v1/trusted-data/query` | Search approved trusted data (Qdrant vector search) |
+| `POST` | `/v1/trusted-data/query` | Search approved trusted data (ArcadeDB vector search) |
 
 ```python
 # Submit trusted knowledge
@@ -316,7 +309,7 @@ results = requests.post(f"{BASE}/trusted-data/query", json={
 | `POST` | `/v1/patches/{id}/reject` | Curator rejects a patch |
 | `POST` | `/v1/patches/{id}/apply` | Apply an approved patch to the data platform |
 
-All Neo4j graph mutations (node/edge create, update, delete) require **dual-curator approval**. Text and classification corrections require a single curator.
+All ArcadeDB graph mutations (node/edge create, update, delete) require **dual-curator approval**. Text and classification corrections require a single curator.
 
 ### Unified Retrieval
 
@@ -328,7 +321,7 @@ All Neo4j graph mutations (node/edge create, update, delete) require **dual-cura
 |---|---|---|---|
 | `query_text` | `string` | — | Text query (max 4096 chars). Required unless `query_image` is provided. |
 | `query_image` | `string` | `null` | Base64-encoded PNG/JPG image or artifact UUID reference. Only used by `hybrid` strategy. |
-| `strategy` | `string` | `"basic"` | One of: `basic`, `hybrid`, `graphrag_local`, `graphrag_global`, `graphrag_drift`, `graphrag_basic` |
+| `strategy` | `string` | `"basic"` | One of: `basic`, `hybrid`, `global` |
 | `modality_filter` | `string` | `"all"` | `all`, `text`, or `image`. Only affects `hybrid` strategy. |
 | `top_k` | `int` | `10` | Number of results to return (1-100) |
 | `include_context` | `bool` | `true` | Include full chunk text in results |
@@ -351,33 +344,30 @@ All Neo4j graph mutations (node/edge create, update, delete) require **dual-cura
 
 | Field | Type | Description |
 |---|---|---|
-| `chunk_id` | `uuid` | Chunk identifier (null for GraphRAG responses) |
+| `chunk_id` | `uuid` | Chunk identifier (null for global community responses) |
 | `artifact_id` | `uuid` | Source artifact identifier |
 | `document_id` | `uuid` | Source document identifier |
 | `score` | `float` | Relevance score |
-| `modality` | `string` | `text`, `image`, `table`, `schematic`, `image_description`, or `graphrag_response` |
+| `modality` | `string` | `text`, `image`, `table`, `schematic`, `image_description`, or `community_response` |
 | `content_text` | `string` | Chunk text or LLM-generated response |
 | `page_number` | `int` | Source page number |
 | `classification` | `string` | Security classification (default: `UNCLASSIFIED`) |
-| `context` | `object` | Graph neighbors, GraphRAG context (`{source, graphrag_context: {entities, community_reports}}`) |
+| `context` | `object` | Graph neighbors, community context (`{source, community_context: {community_id, summary}}`) |
 | `image_url` | `string` | API proxy URL for image results (`/v1/images/{chunk_id}`) |
 
 **Query strategies:**
 
 | Strategy | Modality Filter | Input | Pipeline | Output | Speed |
 |---|---|---|---|---|---|
-| `basic` | `all` | Text only | BGE vector search (Qdrant) | Ranked text/table chunks | Fast (1-3s) |
+| `basic` | `all` | Text only | BGE vector search (ArcadeDB) | Ranked text/table chunks | Fast (1-3s) |
 | `hybrid` | `all`/`text`/`image` | Text and/or image | Full multi-modal pipeline | Mixed text, image, table, schematic chunks | Medium (5-15s) |
-| `graphrag_local` | `all` | Text only | Entity-centric + community reports | Single LLM-generated response with entity context | Slow (30-90s) |
-| `graphrag_global` | `all` | Text only | Cross-community summarization | Single LLM-generated multi-paragraph summary | Slow (30-90s) |
-| `graphrag_drift` | `all` | Text only | Community-informed expansion (DRIFT) | Single LLM-generated in-depth analysis | Slowest (30-120s) |
-| `graphrag_basic` | `all` | Text only | Vector search over text units | Single LLM-generated concise answer | Medium (5-15s) |
+| `global` | `all` | Text only | Louvain community detection + LLM synthesis | LLM-generated response grounded in community summaries | Medium-slow (15-60s) |
 
 > **Backward compatibility**: The legacy `mode` field (e.g. `"mode": "text_only"`) is still accepted and maps to the corresponding `strategy` + `modality_filter` combination.
 
 #### 1. Basic Text Query
 
-BGE vector search over text chunks in Qdrant. No LLM calls, no graph expansion.
+BGE vector search over text chunks in ArcadeDB. No LLM calls, no graph expansion.
 
 ```python
 import requests
@@ -395,7 +385,7 @@ for item in data["results"]:
 
 #### 2. Multi-Modal Query (Hybrid)
 
-Full pipeline: BGE text + CLIP image search → Neo4j graph expansion → ontology traversal → weighted fusion scoring → cross-encoder reranking. Accepts text, base64 image, or both.
+Full pipeline: BGE text + CLIP image search → ArcadeDB graph expansion → ontology traversal → weighted fusion scoring → cross-encoder reranking. Accepts text, base64 image, or both.
 
 ```python
 import base64, requests
@@ -433,77 +423,27 @@ resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
 })
 ```
 
-#### 3. GraphRAG Local Query
+#### 3. Global Query (Community-Aware)
 
-Entity-centric search with community context reports. Returns a detailed LLM-generated response. Requires at least one successful GraphRAG indexing cycle.
-
-```python
-import requests
-
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
-    "query_text": "What are the key components of the S-300 air defense system?",
-    "strategy": "graphrag_local",
-    "top_k": 10,
-}, timeout=120)
-
-data = resp.json()
-# GraphRAG returns a single result with modality="graphrag_response"
-result = data["results"][0]
-print(result["content_text"])  # LLM-generated detailed explanation
-ctx = result.get("context", {}).get("graphrag_context", {})
-print(f"Entities: {len(ctx.get('entities', []))}")
-print(f"Community reports: {len(ctx.get('community_reports', []))}")
-```
-
-#### 4. GraphRAG Global Query
-
-Cross-community summarization for broad, holistic questions. Synthesizes answers across all community boundaries.
+Louvain community detection groups related entities in the ArcadeDB knowledge graph. LLM-generated community summaries are used to synthesize a broad, holistic answer. Requires at least one successful community detection run.
 
 ```python
 import requests
 
 resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
     "query_text": "What are the major categories of air defense systems and how do they compare?",
-    "strategy": "graphrag_global",
+    "strategy": "global",
     "top_k": 10,
 }, timeout=120)
 
 data = resp.json()
-print(data["results"][0]["content_text"])  # Multi-paragraph summary
-```
-
-#### 5. GraphRAG Drift Query
-
-Community-informed expansion search (Microsoft DRIFT algorithm). Iteratively expands across communities for nuanced queries.
-
-```python
-import requests
-
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
-    "query_text": "How do radar warning receivers interact with electronic countermeasure systems?",
-    "strategy": "graphrag_drift",
-    "top_k": 10,
-}, timeout=180)
-
-data = resp.json()
-print(data["results"][0]["content_text"])  # In-depth analysis
-```
-
-#### 6. GraphRAG Basic Query
-
-Vector search over GraphRAG-extracted text units. Fastest GraphRAG method, works with partial indexing.
-
-```python
-import requests
-
-resp = requests.post("http://localhost:8000/v1/retrieval/query", json={
-    "query_text": "SA-2 Guideline missile specifications",
-    "strategy": "graphrag_basic",
-    "top_k": 10,
-}, timeout=60)
-
-data = resp.json()
-print(data["results"][0]["content_text"])  # Concise answer
+# Global returns a single result with community context
+result = data["results"][0]
+print(result["content_text"])  # LLM-generated synthesis
+ctx = result.get("context", {}).get("community_context", {})
+if ctx:
+    print(f"Community: {ctx.get('community_id')}")
+    print(f"Summary: {ctx.get('summary', '')[:200]}")
 ```
 
 #### Using Filters
@@ -541,9 +481,9 @@ Image-modality results include an `image_url` served via the API proxy, which st
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/v1/settings/retrieval` | Query defaults: `{top_k, reranker_top_n, min_confidence}` |
-| `GET` | `/v1/settings/graphrag` | GraphRAG config: `{indexing_enabled, indexing_interval_minutes, last_indexing_at}` |
+| `GET` | `/v1/settings/community` | Community detection config: `{detection_enabled, detection_interval_minutes, last_detection_at}` |
 
-The hybrid pipeline runs: parallel vector search (BGE + CLIP via Qdrant `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (Neo4j entity relationships) → independent re-scoring of expanded chunks → weighted fusion scoring → deduplicate → cross-encoder reranking (bge-reranker-v2-m3) → min score threshold filter → rank → filter by modality.
+The hybrid pipeline runs: parallel vector search (BGE + CLIP via ArcadeDB `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (ArcadeDB entity relationships) → independent re-scoring of expanded chunks → weighted fusion scoring → deduplicate → cross-encoder reranking (bge-reranker-v2-m3) → min score threshold filter → rank → filter by modality.
 
 Image-modality results include an `image_url` served via the API proxy (`GET /v1/images/{chunk_id}`), which streams from MinIO with 1-hour cache headers. This avoids exposing Docker-internal MinIO hostnames in presigned URLs and works in air-gapped environments without hostname configuration.
 
@@ -557,8 +497,8 @@ Image-modality results include an `image_url` served via the API proxy (`GET /v1
 
 Two searches run concurrently via `asyncio.gather`:
 
-- **BGE text search** — query embedded with `BAAI/bge-large-en-v1.5`, searched against `eip_text_chunks` (1024-dim cosine). Matches text chunks, table chunks, and **image description sections** (all stored as BGE vectors in the same collection). Over-fetches by 8× for diversity, filters below 0.25, content-deduplicates, reranks, returns top-k.
-- **CLIP image search** — query embedded with OpenCLIP ViT-B/32 text encoder, searched against `eip_image_chunks` (512-dim cosine). Matches images by pixel similarity to the text concept. Scores are typically lower (0.1–0.3) because CLIP cross-modal alignment is loose.
+- **BGE text search** — query embedded with `BAAI/bge-large-en-v1.5`, searched against `TextChunk` vertices in ArcadeDB (1024-dim cosine). Matches text chunks, table chunks, and **image description sections**. Over-fetches by 8× for diversity, filters below 0.25, content-deduplicates, reranks, returns top-k.
+- **CLIP image search** — query embedded with OpenCLIP ViT-B/32 text encoder, searched against `ImageChunk` vertices in ArcadeDB (512-dim cosine). Matches images by pixel similarity to the text concept. Scores are typically lower (0.1–0.3) because CLIP cross-modal alignment is loose.
 
 Seeds from both searches are merged (highest score per chunk_id kept).
 
@@ -567,8 +507,8 @@ Seeds from both searches are merged (highest score per chunk_id kept).
 For each seed, three strategies run (bounded to 16 concurrent):
 
 - **Document-structure expansion** (Postgres `chunk_links` table) — follows pre-computed structural links: `NEXT_CHUNK` (reading order), `SAME_SECTION` (under same heading), `SAME_ARTIFACT` (from same image/table), `SAME_PAGE` (text ↔ image on same page). If an image description section is a seed, `SAME_ARTIFACT` surfaces sibling sections and `SAME_PAGE` surfaces the original CLIP image chunk.
-- **Cross-modal bridging** (Neo4j, fallback only) — for legacy documents without chunk_links. Traverses structural edges up to 3 hops to bridge text ↔ image.
-- **Ontology traversal** (Neo4j knowledge graph) — follows entity relationships. If a chunk mentions "S-75 Dvina" and the graph has `S-75 Dvina –[VARIANT_OF]→ SA-2 Guideline`, chunks about "SA-2 Guideline" are surfaced with per-relation weights from `ontology.yaml`.
+- **Cross-modal bridging** (ArcadeDB, fallback only) — for legacy documents without chunk_links. Traverses structural edges up to 3 hops to bridge text ↔ image.
+- **Ontology traversal** (ArcadeDB knowledge graph) — follows entity relationships. If a chunk mentions "S-75 Dvina" and the graph has `S-75 Dvina –[VARIANT_OF]→ SA-2 Guideline`, chunks about "SA-2 Guideline" are surfaced with per-relation weights from `ontology.yaml`.
 
 **Step 3 — Re-score ontology-expanded chunks**
 
@@ -642,7 +582,7 @@ See `ontology/ontology.yaml` for the full schema.
 
 ## Creating Custom Queries
 
-Custom queries let you define deterministic graph traversal patterns that surface specific entity relationships from Neo4j. Once created, they appear as options in the Search Documents dropdown alongside the built-in retrieval modes.
+Custom queries let you define deterministic graph traversal patterns that surface specific entity relationships from ArcadeDB. Once created, they appear as options in the Search Documents dropdown alongside the built-in retrieval modes.
 
 ### Overview
 
@@ -719,7 +659,7 @@ A section profile defines one traversal pattern from a root entity through the g
 4. Click **Save**.
 
 **What this does**: When a user types "Patriot" in the Search page with this profile selected, the system:
-1. Resolves "Patriot" to a `PLATFORM` entity in Neo4j (via alias + fulltext matching).
+1. Resolves "Patriot" to a `PLATFORM` entity in ArcadeDB (via alias + fulltext matching).
 2. Traverses outward along `HAS_COMPONENT` edges (1-2 hops).
 3. Filters results to only `RADAR_SYSTEM` entity types.
 4. Returns matching radar systems with their properties, aliases, and supporting evidence.
@@ -923,110 +863,37 @@ curl http://localhost:8000/v1/query-profiles
 
 ### Limitations
 
-- Custom queries only search the Neo4j knowledge graph. They do not perform vector/semantic search.
-- Entities must exist in Neo4j (via document ingestion + graph extraction) before they can be found.
+- Custom queries only search the ArcadeDB knowledge graph. They do not perform vector/semantic search.
+- Entities must exist in ArcadeDB (via document ingestion + graph extraction) before they can be found.
 - Changing the active ontology does not retroactively re-extract already-ingested documents. Re-ingest documents to apply a new ontology.
 
-## GraphRAG
+## Community Detection
 
-Community detection and cross-community search powered by Microsoft's `graphrag` library. GraphRAG owns the full extraction pipeline — it reads documents from Postgres, chunks them, extracts entities/relationships via LLM, detects communities (Leiden clustering), generates community reports, and produces text embeddings for search.
+Louvain community detection over the ArcadeDB knowledge graph generates community groupings and LLM-synthesized summaries that power the `global` retrieval strategy.
 
 ### Architecture
 
 ```
-Postgres documents ──→ Bridge (export_all) ──→ input/documents.parquet
-                                                    │
-                                               GraphRAG Pipeline
-                                                    │
-                                        ┌───────────┴────────────┐
-                                        ▼                        ▼
-                                   First run:              Subsequent runs:
-                                 IndexingMethod.Standard  is_update_run=True
-                                   (full build)           (incremental delta)
-                                        │                        │
-                                        ▼                        ▼
-                              output/entities.parquet    update_output/{ts}/delta/
-                              output/relationships.parquet   → merged into output/
-                              output/communities.parquet
-                              output/community_reports.parquet
-                              output/text_units.parquet
+ArcadeDB entity graph ──→ Louvain detection ──→ Community assignments (Postgres)
+                                                        │
+                                            LLM community report generation
+                                                        │
+                                            community_reports (Postgres)
+                                                        │
+                                            Global query: select top-k
+                                            communities by relevance ──→
+                                            LLM synthesis → single response
 ```
 
-**Neo4j and GraphRAG serve different purposes**: Neo4j stores the document structure graph (chunk links, same-page edges) and ontology entities for real-time traversal during multi-modal search expansion. GraphRAG owns community-based search with its own LLM-extracted entity graph stored in Parquet files.
+### Detection & Scheduling
 
-### Indexing
-
-- **Scheduled**: Celery Beat runs indexing on configurable interval (`GRAPHRAG_INDEXING_INTERVAL_MINUTES`, default 1440)
-- **Manual**: `POST /v1/graphrag/index` dispatches immediately (Redis lock prevents overlapping runs)
-- **Incremental**: First run does full extraction; subsequent runs use `is_update_run=True` for delta-only processing. Previous output is backed up before updates; restored on failure
-- **Stale lock cleanup**: Redis locks are automatically cleared on worker startup (prevents stuck locks from killed containers)
-- **Dry-run**: Set `GRAPHRAG_DRY_RUN=true` to validate config without running indexing
-- **Extraction prompt**: Configurable via `GRAPHRAG_EXTRACTION_PROMPT` env var (includes military ontology by default)
-- **Method**: Standard (LLM-based, default) or Fast (NLP-based, `GRAPHRAG_USE_FAST_METHOD=true`)
-- **Cache**: LLM response caching enabled by default (`GRAPHRAG_CACHE_ENABLED`); unchanged text units skip LLM calls on re-runs
-
-### Search (4 modes)
-
-| Mode | API Strategy | Description | Key Settings |
-|---|---|---|---|
-| **Local** | `graphrag_local` | Entity-centric retrieval with community context | `GRAPHRAG_LOCAL_RESPONSE_TYPE`, `GRAPHRAG_DYNAMIC_COMMUNITY_SELECTION` |
-| **Global** | `graphrag_global` | Cross-community summarization for broad questions | `GRAPHRAG_GLOBAL_RESPONSE_TYPE`, `GRAPHRAG_DYNAMIC_COMMUNITY_SELECTION` |
-| **DRIFT** | `graphrag_drift` | Community-informed expansion search | `GRAPHRAG_DRIFT_RESPONSE_TYPE` |
-| **Basic** | `graphrag_basic` | Vector search over text units | `GRAPHRAG_BASIC_RESPONSE_TYPE` |
-
-All response types, community level, and dynamic community selection are configurable via env vars.
-
-### Async Query Execution
-
-GraphRAG queries involve LLM calls that can take 1-3+ minutes. To prevent browser timeout errors, all 4 search modes use an async job pattern:
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/retrieval/graphrag/submit` | Submit query as Celery task, returns `{job_id, status: "pending"}` (HTTP 202) |
-| `GET` | `/v1/retrieval/graphrag/status/{job_id}` | Poll status: `pending`, `running`, `completed`, or `failed` |
-| `GET` | `/v1/retrieval/graphrag/result/{job_id}` | Fetch full `UnifiedQueryResponse` when complete (409 if still running) |
-
-The frontend polls with exponential backoff (1s → 10s cap). Results are stored in Redis for 24h. The synchronous `POST /v1/retrieval/query` endpoint still works for all strategies (backward compatible).
-
-```python
-import time, requests
-
-BASE = "http://localhost:8000/v1"
-
-# Step 1: Submit
-job = requests.post(f"{BASE}/retrieval/graphrag/submit", json={
-    "query_text": "What are the key components of the S-300 system?",
-    "strategy": "graphrag_local",
-}).json()
-job_id = job["job_id"]
-
-# Step 2: Poll with exponential backoff
-delay = 1.0
-while True:
-    time.sleep(delay)
-    status = requests.get(f"{BASE}/retrieval/graphrag/status/{job_id}").json()
-    print(f"Status: {status['status']}")
-    if status["status"] == "completed":
-        break
-    if status["status"] == "failed":
-        print(f"Error: {status.get('error')}")
-        break
-    delay = min(delay * 1.5, 10.0)
-
-# Step 3: Fetch result
-result = requests.get(f"{BASE}/retrieval/graphrag/result/{job_id}").json()
-print(result["results"][0]["content_text"])
-```
-
-### GraphRAG Indexing & Tuning
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/graphrag/index` | Dispatch GraphRAG indexing as Celery task (idempotent via Redis lock) |
-| `POST` | `/v1/graphrag/tune` | Dispatch GraphRAG prompt auto-tuning as Celery task |
+- **Scheduled**: Celery Beat runs detection on configurable interval (`COMMUNITY_DETECTION_INTERVAL_MINUTES`, default 1440)
+- **Manual**: `POST /v1/community/detect` dispatches immediately (Redis lock prevents overlapping runs)
+- **Stale lock cleanup**: Redis locks are automatically cleared on worker startup
 
 ### Prerequisites
-- GraphRAG queries require at least one successful indexing cycle (`GRAPHRAG_INDEXING_ENABLED=true`)
+
+- `global` strategy queries require at least one successful community detection run
 - API returns 409 for missing community reports instead of silent empty results
 
 ## Web UI
@@ -1041,12 +908,9 @@ A dropdown selector groups query modes into two categories:
 
 | Mode | Strategy | Description |
 |---|---|---|
-| **Text Basic** | `basic` | BGE vector search over text chunks |
+| **Text Basic** | `basic` | BGE vector search over text chunks in ArcadeDB |
 | **Multi-Modal** | `hybrid` | Full multi-modal pipeline (text + image). Shows a modality sub-filter: All / Text Only / Images Only |
-| **GraphRAG Local** | `graphrag_local` | Entity-centric search with community report context |
-| **GraphRAG Global** | `graphrag_global` | Cross-community summarization for broad analytical questions |
-| **GraphRAG Drift** | `graphrag_drift` | Community-informed expansion search |
-| **GraphRAG Basic** | `graphrag_basic` | Vector search over text units |
+| **Global** | `global` | Louvain community-aware synthesis for broad analytical questions |
 
 **Query Profile modes** (appear when an active registry has exposed profiles):
 
@@ -1057,9 +921,7 @@ Custom ontology-driven graph traversal queries. These are defined via the Ontolo
 - Inline image thumbnails for image-modality results (click for lightbox)
 - Expandable "Show details" section with full text and all metadata (`chunk_id`, `artifact_id`, `document_id`, `score`, `modality`, `page_number`, `classification`, full `context` object)
 
-**GraphRAG-specific exploration:**
-- **Local results**: Entity properties table (name, type, confidence, artifact) + community reports list (title, summary) rendered inline
-- **Global results**: Community title + level badge, expandable full report text
+**Global query results**: Community title + level badge, expandable community summary text rendered inline.
 
 Images are served via the API proxy (`GET /v1/images/{chunk_id}`) which streams from MinIO — no Docker-internal hostnames exposed to the browser.
 
@@ -1071,7 +933,7 @@ Drag-and-drop or click-to-upload with real-time pipeline status polling. Support
 
 - **Ingest** — unified ingest page with upload + status overview
 - **Directory Monitor** — register/remove watch directories for auto-ingest
-- **Graph Explorer** — Neo4j entity/relationship search + manual creation (full ontology support)
+- **Graph Explorer** — ArcadeDB entity/relationship search + manual creation (full ontology support)
 - **Ontology & Query Profiles** — create/manage ontology registries and build custom graph traversal queries (see [Creating Custom Queries](#creating-custom-queries))
 - **Trusted Data** — submit, approve/reject, reindex, and search human-reviewed knowledge
 
@@ -1111,10 +973,9 @@ Key features:
 - **Sequential structure links** — runs after embeddings are committed (avoids race condition)
 - **Entity canonicalization** — post-extraction alias resolution (exact → alias → fuzzy match → new)
 - **Idempotent writes** — deterministic chunk keys with `ON CONFLICT DO UPDATE`
-- **Ingest dedup** — duplicate extracted elements (same modality+page+section+text+bbox) suppressed before persistence; text chunks deduplicated by content before embedding to prevent redundant Qdrant vectors
+- **Ingest dedup** — duplicate extracted elements (same modality+page+section+text+bbox) suppressed before persistence; text chunks deduplicated by content before embedding to prevent redundant ArcadeDB vectors
 - **Retrieval diversity** — content-level deduplication across all search modes: `_text_vector_search` over-fetches candidates (`RETRIEVAL_DIVERSITY_OVERSAMPLE_FACTOR`, default 8×) then deduplicates by `(document_id, page_number, normalized_text)` keeping highest score; hybrid pipeline applies same diversity pass after chunk-id dedup
-- **Dual vector store** — embeddings batch-upserted to Qdrant (single RPC per document) with `qdrant_point_id` cross-reference in Postgres
-- **Batch Neo4j writes** — entities and relationships grouped by label and upserted via UNWIND (one Cypher call per label group instead of per-node)
+- **Batch ArcadeDB writes** — entities and relationships grouped and upserted via ArcadeDB HTTP batch API (one request per batch instead of per-node)
 - **Run/stage tracking** — `pipeline_runs` and `stage_runs` tables for diagnostics
 - **Worker split** — optional queue isolation: `docker compose --profile split up`
 - **Docling concurrency gate** — Redis semaphore with `DOCLING_CONCURRENCY` permits (default 1) controls parallel Docling conversions; queued tasks wait and retry instead of timing out; health check is advisory (logs warning but proceeds with conversion) to avoid starvation when the Docling service runs CPU-bound VLM conversion; health probe timeout configurable via `DOCLING_HEALTH_TIMEOUT` (default 5s)
@@ -1123,11 +984,11 @@ Key features:
 - **Chord resilience** — derivation tasks (text/image embeddings, graph extraction) return error dicts instead of raising on terminal failure, ensuring the chord callback and `finalize_document` always execute; `SoftTimeLimitExceeded` caught explicitly to return gracefully; chord `on_error` errback marks document FAILED if a hard time limit kills a chord member
 - **Truncated JSON repair** — LLM graph extraction output truncated by token limits is automatically repaired via `json-repair` before falling back to `DeterministicExtractionError`
 - **Recursive chunk splitting** — when a graph extraction chunk fails with deterministic LLM error, the chunk is recursively halved (2500→1250→625, floor 600 chars) and each sub-chunk retried; partial graph from successful chunks/sub-chunks still allows COMPLETE status; only total failure of all chunks triggers PARTIAL_COMPLETE
-- **Batched text embedding + Qdrant upserts** — large documents (thousands of text elements) no longer send all vectors in a single Qdrant RPC; embedding and upserts are batched via `EMBED_TEXT_BATCH_SIZE` and `QDRANT_UPSERT_BATCH_SIZE` (default 128 each); Qdrant client timeout configurable via `QDRANT_TIMEOUT_SECONDS` (default 60s)
+- **Batched text embedding + ArcadeDB upserts** — large documents (thousands of text elements) are batched via `EMBED_TEXT_BATCH_SIZE` (default 128) before writing to ArcadeDB
 - **Stage run attempt tracking** — each retry creates a separate `stage_runs` row with incrementing `attempt` number, preserving full retry history per stage
 - **Task time limits** — `soft_time_limit` / `time_limit` on all tasks read from env-var settings at registration time (not hardcoded), ensuring `.env` tuning takes effect without code changes
 - **Foreign language translation** — per-element language detection (`langdetect`) triggers LLM translation of non-English content; translated text replaces `DocumentElement.content_text` for downstream processing; original preserved in MinIO; classification marking detection runs against original text; DoclingViewer offers a "Translate" toggle
-- **Image description text search** — LLM-generated image descriptions split into sections, embedded as BGE text vectors in `eip_text_chunks`, searchable via standard text queries; SAME_ARTIFACT chunk_links tie sections together for graph expansion; `image_url` resolved via artifact_id batch lookup so matching sections display with original image
+- **Image description text search** — LLM-generated image descriptions split into sections, embedded as BGE text vectors in ArcadeDB `TextChunk` vertices, searchable via standard text queries; SAME_ARTIFACT chunk_links tie sections together for graph expansion; `image_url` resolved via artifact_id batch lookup so matching sections display with original image
 - **Standalone image support** — uploading standalone image files (JPEG, PNG, TIFF, BMP, GIF, WEBP) synthesizes an image element when Docling returns 0 elements, enabling CLIP embedding, LLM description, and text search; DoclingViewer shows the image with AI Image Analysis description panel
 - **Image description hover tooltips** — the `GET /v1/documents/{id}/docling-raw` endpoint injects LLM-generated descriptions as `{kind: "description"}` annotations into Docling JSON picture items; the `<docling-tooltip>` web component renders "AI Image Analysis" tooltips on hover over embedded images in the DoclingViewer
 - **Image dedup by content** — element deduplication includes a hash of raw image bytes for image/schematic elements, preventing distinct images on the same page from being silently dropped (previously images with empty captions and null bounding boxes on the same page shared identical dedup keys)
@@ -1143,27 +1004,24 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-all` endpoint, which runs all 5 ontology groups in parallel (reference, equipment, rf_signal, weapon, operational) plus a relationship extraction pass — 6 LLM calls total instead of the previous ~45 sequential calls. Each group extracts ALL entity instances (multiple per type) via direct LLM calls with structured JSON output, bypassing the slow per-entity-type `run_pipeline` approach. The pipeline's `derive_ontology_graph` task makes a single HTTP call and imports the returned entities/relationships into Neo4j. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. Graph data is stored once per document (`document_graph_extractions`). Extraction runs on a dedicated `graph_extract` queue.
+Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-all` endpoint, which runs all 5 ontology groups in parallel (reference, equipment, rf_signal, weapon, operational) plus a relationship extraction pass — 6 LLM calls total instead of the previous ~45 sequential calls. Each group extracts ALL entity instances (multiple per type) via direct LLM calls with structured JSON output, bypassing the slow per-entity-type `run_pipeline` approach. The pipeline's `derive_ontology_graph` task makes a single HTTP call and imports the returned entities/relationships into ArcadeDB. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. Graph data is stored once per document (`document_graph_extractions`). Extraction runs on a dedicated `graph_extract` queue.
 
-## Data Migration (from AGE)
+## Data Migration (from Neo4j + Qdrant to ArcadeDB)
 
-For existing installations migrating from Apache AGE:
+For installations migrating from the previous Neo4j + Qdrant architecture:
 
 ```bash
-# 1. Deploy Neo4j + Qdrant (empty)
-docker compose up -d neo4j qdrant
+# 1. Start ArcadeDB
+docker compose up -d arcadedb
 
-# 2. Initialize Qdrant collections
-python scripts/init_qdrant_collections.py
-
-# 3. Migrate graph data: AGE → Neo4j
-python scripts/migrate_age_to_neo4j.py
-
-# 4. Run Alembic migration (adds qdrant_point_id columns)
+# 2. Run Alembic migration
 ./manage.sh --migrate
+
+# 3. Re-ingest documents to rebuild graph + vector data in ArcadeDB
+#    (existing Postgres metadata is preserved; only graph/vector data is rebuilt)
 ```
 
-All migration scripts are idempotent (MERGE/upsert).
+ArcadeDB replaces both Neo4j (knowledge graph) and Qdrant (vector search) in a single service. No separate collection initialization script is needed — ArcadeDB schemas are created automatically on first use.
 
 ## Performance Tuning
 
@@ -1193,8 +1051,8 @@ Start command: `docker compose --profile split up -d --build`
 |---|---|---|---|---|---|---|
 | **MN-1** | 3 worker + 1 API node | 1 GPU replica, `DOCLING_CONCURRENCY=2` | 2 workers (`concurrency=1` each) | 1 worker (`concurrency=2`) | 1 worker (`concurrency=1`) | Single Redis/Postgres acceptable |
 | **MN-2** | 6 worker + 2 API nodes | 2 GPU replicas, total permits=4 | 4 workers (`concurrency=1`) | 2 workers (`concurrency=2` each) | 1–2 workers (`concurrency=2`) | Redis HA (sentinel/managed), Postgres primary+replica |
-| **MN-3** | 10 worker + 3 API nodes | 3 GPU replicas, total permits=6 | 6 workers (`concurrency=1`) | 3 workers (`concurrency=3`) | 2 workers (`concurrency=2`) | Managed Redis, Postgres tuned pools, Qdrant/Neo4j on dedicated hosts |
-| **MN-4** | 16+ worker + 4 API nodes | 4 GPU replicas, total permits=8 | 8 workers (`concurrency=1`) | 4 workers (`concurrency=4`) | 3 workers (`concurrency=2`) | Separate stateful cluster tier (Redis/Postgres/Qdrant/Neo4j) |
+| **MN-3** | 10 worker + 3 API nodes | 3 GPU replicas, total permits=6 | 6 workers (`concurrency=1`) | 3 workers (`concurrency=3`) | 2 workers (`concurrency=2`) | Managed Redis, Postgres tuned pools, ArcadeDB on dedicated host |
+| **MN-4** | 16+ worker + 4 API nodes | 4 GPU replicas, total permits=8 | 8 workers (`concurrency=1`) | 4 workers (`concurrency=4`) | 3 workers (`concurrency=2`) | Separate stateful cluster tier (Redis/Postgres/ArcadeDB) |
 
 ### Multi-Node Rules
 
@@ -1224,6 +1082,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.9 | Architecture upgrade: Neo4j + Qdrant + GraphRAG + expanded ontology + entity canonicalization | Complete |
 | 2.10 | Docling-graph fixes (chunked extraction, property persistence, word-boundary mentions, queue isolation) + Trusted Data simplification (Cognee → Qdrant-backed, Celery indexing) | Complete |
 | 2.11 | Graph extraction hardening (fail-closed, retry/backoff, concurrency gate) + Docling health-check fix (threadpool, advisory probe) + Search UI overhaul (4-mode selector, modality sub-filter, GraphRAG entity/report exploration, image proxy, result card improvements) + Polling fix | Complete |
+| 3.0 | ArcadeDB migration: replace Neo4j + Qdrant with ArcadeDB (unified graph + vector store), replace GraphRAG with Louvain community detection + global query strategy, GraphStore Protocol abstraction | Complete |
 | 2.12 | LLM extraction reliability: Ollama structured outputs (full JSON schema via `format`), direct httpx (removed LiteLLM), deterministic error classification (skip retries for empty/non-JSON), Docling 5xx fallback gate | Complete |
 | 2.13 | Retrieval fixes: text preview hydration (chunk_text in Qdrant payload + Postgres backfill), image URL prefix fix, GraphRAG precondition checks (404/409 instead of silent empty) | Complete |
 | 2.14 | Docling 503 storm fix: increased timeouts (30 min for large PDFs), fixed concurrency=1 to match Docling capacity, SoftTimeLimitExceeded no longer consumes retry budget, 503 uses 5-min backoff | Complete |

@@ -3,21 +3,20 @@
 EIP-MMDPP — Example Queries
 ============================
 
-MVP examples for each of the 6 retrieval query strategies.
+Examples for each of the 3 retrieval query strategies.
 All examples use the synchronous POST /v1/retrieval/query endpoint.
-GraphRAG queries also include the async submit/poll/fetch pattern
-since they can take 1-3+ minutes due to LLM calls.
 
 Prerequisites:
     pip install requests
 
 Usage:
-    python example_queries.py
+    python example_queries.py [1] [2] [3]
+
+    Omit arguments to run all examples.
 """
 
 import base64
 import sys
-import time
 from pathlib import Path
 
 import requests
@@ -38,14 +37,16 @@ def print_header(title: str) -> None:
 
 def print_results(resp: dict) -> None:
     """Pretty-print a UnifiedQueryResponse."""
-    print(f"  Strategy:        {resp['strategy']}")
-    print(f"  Modality Filter: {resp['modality_filter']}")
-    print(f"  Total Results:   {resp['total']}\n")
+    print(f"  Strategy:        {resp.get('strategy', 'N/A')}")
+    print(f"  Modality Filter: {resp.get('modality_filter', 'N/A')}")
+    print(f"  Total Results:   {resp.get('total', 0)}\n")
 
-    for i, item in enumerate(resp["results"], 1):
+    for i, item in enumerate(resp.get("results", []), 1):
         print(f"  --- Result {i} ---")
-        print(f"  Score:          {item['score']:.4f}")
-        print(f"  Modality:       {item['modality']}")
+        score = item.get("score")
+        if score is not None:
+            print(f"  Score:          {score:.4f}")
+        print(f"  Modality:       {item.get('modality', 'N/A')}")
         print(f"  Classification: {item.get('classification', 'N/A')}")
         if item.get("chunk_id"):
             print(f"  Chunk ID:       {item['chunk_id']}")
@@ -61,64 +62,20 @@ def print_results(resp: dict) -> None:
             preview = text[:200] + ("..." if len(text) > 200 else "")
             print(f"  Content:        {preview}")
 
-        # GraphRAG results include context with source info
+        # Global query results include community context
         ctx = item.get("context")
         if ctx and isinstance(ctx, dict):
             source = ctx.get("source", "")
             if source:
                 print(f"  Context Source:  {source}")
-            gctx = ctx.get("graphrag_context")
-            if gctx and isinstance(gctx, dict):
-                if gctx.get("entities"):
-                    print(f"  Entities:       {len(gctx['entities'])} found")
-                if gctx.get("community_reports"):
-                    print(f"  Communities:    {len(gctx['community_reports'])} reports")
+            community_ctx = ctx.get("community_context")
+            if community_ctx and isinstance(community_ctx, dict):
+                if community_ctx.get("community_id"):
+                    print(f"  Community:      {community_ctx['community_id']}")
+                if community_ctx.get("summary"):
+                    summary_preview = community_ctx["summary"][:150]
+                    print(f"  Summary:        {summary_preview}...")
         print()
-
-
-def submit_and_poll(payload: dict, timeout: int = 300) -> dict:
-    """Submit a GraphRAG query asynchronously and poll until complete.
-
-    Use this pattern for GraphRAG queries in production to avoid HTTP
-    timeouts on long-running LLM calls.
-    """
-    # Step 1: Submit
-    resp = requests.post(f"{BASE_URL}/retrieval/graphrag/submit", json=payload)
-    resp.raise_for_status()
-    job = resp.json()
-    job_id = job["job_id"]
-    print(f"  Submitted async job: {job_id}")
-
-    # Step 2: Poll with exponential backoff (1s → 10s cap)
-    delay = 1.0
-    elapsed = 0.0
-    while elapsed < timeout:
-        time.sleep(delay)
-        elapsed += delay
-
-        status_resp = requests.get(
-            f"{BASE_URL}/retrieval/graphrag/status/{job_id}"
-        )
-        status_resp.raise_for_status()
-        status = status_resp.json()
-        print(f"  Status: {status['status']} ({elapsed:.0f}s elapsed)")
-
-        if status["status"] == "completed":
-            # Step 3: Fetch result
-            result_resp = requests.get(
-                f"{BASE_URL}/retrieval/graphrag/result/{job_id}"
-            )
-            result_resp.raise_for_status()
-            return result_resp.json()
-
-        if status["status"] == "failed":
-            print(f"  ERROR: {status.get('error', 'Unknown error')}")
-            return {}
-
-        delay = min(delay * 1.5, 10.0)
-
-    print(f"  TIMEOUT after {timeout}s")
-    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +83,7 @@ def submit_and_poll(payload: dict, timeout: int = 300) -> dict:
 # ---------------------------------------------------------------------------
 
 def example_basic_text():
-    """Basic BGE vector search over text chunks in Qdrant.
+    """Basic vector search over text chunks stored in ArcadeDB.
 
     - Input:  text query only (no image support)
     - Output: ranked text/table chunks with scores
@@ -159,9 +116,8 @@ def example_basic_text():
 # ---------------------------------------------------------------------------
 
 def example_multi_modal():
-    """Full multi-modal pipeline: BGE text + CLIP image search, graph
-    expansion, ontology traversal, weighted fusion scoring, cross-encoder
-    reranking.
+    """Full multi-modal pipeline: text + CLIP image search, graph expansion,
+    ontology traversal, weighted fusion scoring, cross-encoder reranking.
 
     - Input:  text and/or base64-encoded image
     - Output: mixed text, image, table, schematic, and image_description chunks
@@ -219,174 +175,40 @@ def example_multi_modal():
 
 
 # ---------------------------------------------------------------------------
-# 3. GraphRAG Local Query
+# 3. Global Query (Community Detection)
 # ---------------------------------------------------------------------------
 
-def example_graphrag_local():
-    """Entity-centric search with community context reports.
+def example_global_query():
+    """Community-aware global query using ArcadeDB community detection.
 
-    Finds entities matching the query and returns a detailed LLM-generated
-    response enriched with community report context.
+    Runs Louvain community detection over the ArcadeDB knowledge graph and
+    uses LLM-generated community summaries to answer broad, holistic questions
+    that span multiple entity groups and document sources.
 
     - Input:    text query only
-    - Output:   single LLM-generated response with entity/community context
-    - Speed:    slow (30-90s, involves LLM calls)
-    - Requires: at least one successful GraphRAG indexing cycle
+    - Output:   LLM-generated response grounded in community summaries
+    - Speed:    medium-slow (15-60s, depends on number of communities)
+    - Requires: at least one successful community detection run
     """
-    print_header("3. GraphRAG Local Query (strategy=graphrag_local)")
-
-    payload = {
-        "query_text": "What are the key components of the S-300 air defense system?",
-        "strategy": "graphrag_local",
-        "top_k": 10,
-    }
-
-    # Synchronous (may timeout for long queries):
-    print("  [Sync] Direct query:\n")
-    try:
-        resp = requests.post(QUERY_URL, json=payload, timeout=120)
-        resp.raise_for_status()
-        print_results(resp.json())
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 409:
-            print("  GraphRAG indexing has not completed yet.")
-            print("  Run: POST /v1/graphrag/index to trigger indexing.\n")
-        else:
-            raise
-
-    # Async (recommended for production):
-    print("  [Async] Submit/poll/fetch pattern:\n")
-    result = submit_and_poll(payload)
-    if result:
-        print_results(result)
-
-
-# ---------------------------------------------------------------------------
-# 4. GraphRAG Global Query
-# ---------------------------------------------------------------------------
-
-def example_graphrag_global():
-    """Cross-community summarization for broad, holistic questions.
-
-    Analyzes all communities to synthesize a comprehensive answer that
-    spans multiple topics/entity groups.
-
-    - Input:    text query only
-    - Output:   single LLM-generated multi-paragraph summary
-    - Speed:    slow (30-90s)
-    - Requires: at least one successful GraphRAG indexing cycle
-    """
-    print_header("4. GraphRAG Global Query (strategy=graphrag_global)")
+    print_header("3. Global Query (strategy=global)")
 
     payload = {
         "query_text": "What are the major categories of air defense systems and how do they compare?",
-        "strategy": "graphrag_global",
+        "strategy": "global",
         "top_k": 10,
+        "include_context": True,
     }
 
-    # Synchronous:
-    print("  [Sync] Direct query:\n")
     try:
         resp = requests.post(QUERY_URL, json=payload, timeout=120)
         resp.raise_for_status()
         print_results(resp.json())
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 409:
-            print("  GraphRAG indexing has not completed yet.\n")
+        if e.response is not None and e.response.status_code == 409:
+            print("  Community detection has not completed yet.")
+            print("  Run: POST /v1/community/detect to trigger community detection.\n")
         else:
             raise
-
-    # Async (recommended):
-    print("  [Async] Submit/poll/fetch pattern:\n")
-    result = submit_and_poll(payload)
-    if result:
-        print_results(result)
-
-
-# ---------------------------------------------------------------------------
-# 5. GraphRAG Drift Query
-# ---------------------------------------------------------------------------
-
-def example_graphrag_drift():
-    """Community-informed expansion search (Microsoft DRIFT algorithm).
-
-    Iteratively expands the search across communities, balancing precision
-    (entity-focused) with coverage (community-aware). Best for nuanced
-    queries that benefit from progressive context gathering.
-
-    - Input:    text query only
-    - Output:   single LLM-generated in-depth analysis
-    - Speed:    slowest (30-120s, iterative expansion)
-    - Requires: at least one successful GraphRAG indexing cycle
-    """
-    print_header("5. GraphRAG Drift Query (strategy=graphrag_drift)")
-
-    payload = {
-        "query_text": "How do radar warning receivers interact with electronic countermeasure systems?",
-        "strategy": "graphrag_drift",
-        "top_k": 10,
-    }
-
-    # Synchronous:
-    print("  [Sync] Direct query:\n")
-    try:
-        resp = requests.post(QUERY_URL, json=payload, timeout=180)
-        resp.raise_for_status()
-        print_results(resp.json())
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 409:
-            print("  GraphRAG indexing has not completed yet.\n")
-        else:
-            raise
-
-    # Async (recommended):
-    print("  [Async] Submit/poll/fetch pattern:\n")
-    result = submit_and_poll(payload)
-    if result:
-        print_results(result)
-
-
-# ---------------------------------------------------------------------------
-# 6. GraphRAG Basic Query
-# ---------------------------------------------------------------------------
-
-def example_graphrag_basic():
-    """Vector search over GraphRAG-extracted text units.
-
-    Simpler than Local/Global/Drift — performs semantic search over text
-    units extracted during GraphRAG indexing without community context.
-    Fastest GraphRAG method, works with partial indexing.
-
-    - Input:    text query only
-    - Output:   single concise LLM-generated answer from text units
-    - Speed:    medium (5-15s)
-    - Requires: minimal — works with partial GraphRAG indexing
-    """
-    print_header("6. GraphRAG Basic Query (strategy=graphrag_basic)")
-
-    payload = {
-        "query_text": "SA-2 Guideline missile specifications",
-        "strategy": "graphrag_basic",
-        "top_k": 10,
-    }
-
-    # Synchronous:
-    print("  [Sync] Direct query:\n")
-    try:
-        resp = requests.post(QUERY_URL, json=payload, timeout=60)
-        resp.raise_for_status()
-        print_results(resp.json())
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 409:
-            print("  GraphRAG indexing has not completed yet.\n")
-        else:
-            raise
-
-    # Async:
-    print("  [Async] Submit/poll/fetch pattern:\n")
-    result = submit_and_poll(payload)
-    if result:
-        print_results(result)
 
 
 # ---------------------------------------------------------------------------
@@ -394,12 +216,9 @@ def example_graphrag_basic():
 # ---------------------------------------------------------------------------
 
 EXAMPLES = {
-    "1": ("Basic Text",      example_basic_text),
-    "2": ("Multi-Modal",     example_multi_modal),
-    "3": ("GraphRAG Local",  example_graphrag_local),
-    "4": ("GraphRAG Global", example_graphrag_global),
-    "5": ("GraphRAG Drift",  example_graphrag_drift),
-    "6": ("GraphRAG Basic",  example_graphrag_basic),
+    "1": ("Basic Text",    example_basic_text),
+    "2": ("Multi-Modal",   example_multi_modal),
+    "3": ("Global Query",  example_global_query),
 }
 
 
