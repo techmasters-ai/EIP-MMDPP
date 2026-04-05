@@ -114,6 +114,23 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "eip_neo4j_secret"
 
+    # ArcadeDB
+    arcadedb_url: str = "http://arcadedb:2480"
+    arcadedb_user: str = "root"
+    arcadedb_password: str = "eip_arcadedb_secret"
+    arcadedb_database: str = "eip_knowledge_graph"
+
+    # Community detection
+    community_detection_enabled: bool = True
+    community_detection_interval_minutes: int = 60
+    community_detection_post_ingest_enabled: bool = True
+    community_detection_post_ingest_threshold: int = 5
+    community_detection_algorithm: str = "leiden"
+    community_detection_resolution: float = 1.0
+    community_detection_max_iterations: int = 20
+    community_report_llm_model: str = "llama3.2"
+    community_report_llm_prompt: str = ""
+
     # Qdrant (vector search — replaces pgvector)
     qdrant_url: str = "http://qdrant:6333"
     qdrant_text_collection: str = "eip_text_chunks"

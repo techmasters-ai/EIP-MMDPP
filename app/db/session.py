@@ -130,3 +130,24 @@ def get_qdrant_async_client():
         _qdrant_async_client = AsyncQdrantClient(url=settings.qdrant_url, timeout=settings.qdrant_timeout_seconds)
         logger.info("Qdrant async client created: %s (timeout=%ss)", settings.qdrant_url, settings.qdrant_timeout_seconds)
     return _qdrant_async_client
+
+
+# ---------------------------------------------------------------------------
+# ArcadeDB GraphStore singleton
+# ---------------------------------------------------------------------------
+_graph_store = None
+
+
+def get_graph_store():
+    """Returns the singleton GraphStore instance."""
+    global _graph_store
+    if _graph_store is None:
+        from app.services.arcadedb_client import ArcadeDBClient
+        from app.services.arcadedb_graph import ArcadeDBGraphStore
+        client = ArcadeDBClient(
+            base_url=settings.arcadedb_url,
+            username=settings.arcadedb_user,
+            password=settings.arcadedb_password,
+        )
+        _graph_store = ArcadeDBGraphStore(client, settings.arcadedb_database)
+    return _graph_store

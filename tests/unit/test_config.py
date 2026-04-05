@@ -98,6 +98,20 @@ class TestRerankerConfig:
         assert s.ollama_base_url == "http://localhost:11434"
 
 
+class TestArcadeDBConfig:
+    def test_arcadedb_defaults(self):
+        from app.config import Settings
+        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
+        assert s.arcadedb_url == "http://arcadedb:2480"
+        assert s.arcadedb_database == "eip_knowledge_graph"
+
+    def test_community_detection_defaults(self):
+        from app.config import Settings
+        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
+        assert s.community_detection_enabled is True
+        assert s.community_detection_algorithm == "leiden"
+
+
 class TestGetSettingsCaching:
     def test_returns_same_instance(self):
         from app.config import get_settings

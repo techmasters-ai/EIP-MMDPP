@@ -59,6 +59,22 @@ async def lifespan(app: FastAPI):
     ensure_indexes(driver)
     log.info("Neo4j indexes ensured")
 
+    # ArcadeDB schema sync
+    try:
+        from app.db.session import get_graph_store
+        from app.services.ontology_templates import load_ontology
+        graph_store = get_graph_store()
+        ontology = load_ontology()
+        if ontology:
+            from app.services.arcadedb_schema import sync_schema_from_ontology
+            report = await sync_schema_from_ontology(graph_store._client, graph_store._database, ontology)
+            log.info("ArcadeDB schema synced",
+                     types_created=report.types_created,
+                     properties_added=report.properties_added,
+                     indexes_created=report.indexes_created)
+    except Exception as exc:
+        log.warning("ArcadeDB schema sync failed (non-fatal during transition)", error=str(exc))
+
     # Preload embedding models so the first query is fast
     try:
         from app.services.embedding import embed_texts, embed_text_for_clip
