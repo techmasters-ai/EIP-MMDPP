@@ -21,9 +21,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ## P0 — Required for Production
 
-### 1. Implement real LLM community report generation
+### 1. Implement real LLM community report generation ✅ DONE (2026-04-05)
 
-**Status:** Stub implementation exists.
+**Status:** ~~Stub implementation exists.~~ Implemented: `_call_llm_for_report()` calls Ollama `/v1/chat/completions` with JSON-output prompt, parses via `parse_llm_json_loose`, line-fallback on non-JSON, handles `reasoning_content` for thinking models. `_generate_community_report()` fetches real relationships via the new `GraphStore.get_relationships_between_entities()` method and interpolates them into the prompt.
 **Files:** `app/services/arcadedb_community.py` (functions `_generate_community_report`, `_call_llm_for_report`)
 
 **Current state:**
@@ -47,9 +47,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 2. Implement community report embedding
+### 2. Implement community report embedding ✅ DONE (2026-04-05)
 
-**Status:** Stub implementation exists.
+**Status:** ~~Stub implementation exists.~~ Implemented: `_embed_report()` wraps `embed_texts` in `asyncio.to_thread`, embeds title+summary together, returns `None` on empty input or failure. `run_community_detection()` writes the embedding via `graph_store.set_vertex_embedding()` after upserting the CommunityReport.
 **Files:** `app/services/arcadedb_community.py` (function `_embed_report`)
 
 **Current state:**
@@ -69,9 +69,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 3. Wire LLM synthesis into global query response
+### 3. Wire LLM synthesis into global query response ✅ DONE (2026-04-05)
 
-**Status:** Global query returns raw community reports, not synthesized answer.
+**Status:** ~~Global query returns raw community reports, not synthesized answer.~~ Implemented: `_global_query()` calls `_synthesize_global_answer()` which issues a single Ollama chat call with a configurable prompt (`COMMUNITY_GLOBAL_SYNTHESIS_PROMPT`), returns the synthesized answer as the primary `content_text` in a single `QueryResultItem`, and preserves raw reports + scores in `context["reports"]`. Falls back to concatenated reports if the LLM call fails.
 **Files:** `app/api/v1/retrieval.py` (function `_global_query`)
 
 **Current state:**

@@ -125,6 +125,7 @@ class Settings(BaseSettings):
     community_detection_max_iterations: int = 20
     community_report_llm_model: str = "llama3.2"
     community_report_llm_prompt: str = ""
+    community_global_synthesis_prompt: str = ""
 
     # Reranker (cross-encoder for retrieval re-scoring)
     reranker_model: str = "BAAI/bge-reranker-v2-m3"

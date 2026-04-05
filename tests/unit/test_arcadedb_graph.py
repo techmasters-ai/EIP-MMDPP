@@ -504,3 +504,52 @@ class TestAdditionalOperations:
         client.command.assert_called_once()
         sql = client.command.call_args.args[2]
         assert "canonical_name" in sql.lower()
+
+    async def test_search_community_reports_by_vector(self):
+        """Should build vectorNeighbors SQL against CommunityReport."""
+        client = _make_client(query_result=[
+            {"community_id": 1, "title": "Radar cluster", "summary": "summary",
+             "member_count": 3, "report_rid": "#99:0"},
+        ])
+        store = _graph(client)
+
+        results = await store.search_community_reports_by_vector(
+            query_vector=[0.1, 0.2, 0.3], top_k=5,
+        )
+
+        client.query.assert_called_once()
+        sql = client.query.call_args.args[2]
+        assert "CommunityReport[report_embedding]" in sql
+        assert "vectorNeighbors" in sql
+        params = client.query.call_args.kwargs["params"]
+        assert params["query_vector"] == [0.1, 0.2, 0.3]
+        assert params["top_k"] == 5
+        assert len(results) == 1
+        assert results[0]["community_id"] == 1
+
+    async def test_get_relationships_between_entities_excludes_structural(self):
+        """Should filter out EXTRACTED_FROM and other structural edges."""
+        client = _make_client(query_result=[
+            {"rel_type": "USES", "from_name": "APG-77", "from_type": "RADAR_SYSTEM",
+             "to_name": "AIM-120", "to_type": "MISSILE"},
+            {"rel_type": "EXTRACTED_FROM", "from_name": "APG-77", "from_type": "RADAR_SYSTEM",
+             "to_name": "chunk-1", "to_type": "TextChunk"},
+        ])
+        store = _graph(client)
+
+        results = await store.get_relationships_between_entities(["APG-77", "AIM-120"])
+
+        assert len(results) == 1
+        assert results[0]["rel_type"] == "USES"
+        # Verify structural edge was filtered out
+        assert all(r["rel_type"] != "EXTRACTED_FROM" for r in results)
+
+    async def test_get_relationships_between_entities_empty_names(self):
+        """Empty input should short-circuit to an empty result with no DB call."""
+        client = _make_client()
+        store = _graph(client)
+
+        results = await store.get_relationships_between_entities([])
+
+        assert results == []
+        client.query.assert_not_called()

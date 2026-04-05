@@ -720,6 +720,50 @@ class ArcadeDBGraphStore:
         )
         return rows[0] if rows else None
 
+    async def search_community_reports_by_vector(
+        self,
+        query_vector: list[float],
+        top_k: int = 10,
+    ) -> list[dict]:
+        """ANN search over CommunityReport.report_embedding."""
+        sql = (
+            "SELECT community_id, title, summary, member_count, "
+            "generated_at, model_name, @rid AS report_rid "
+            "FROM (SELECT expand(vectorNeighbors('CommunityReport[report_embedding]', "
+            ":query_vector, :top_k)))"
+        )
+        return await self._client.query(
+            self._database, "sql", sql,
+            params={"query_vector": query_vector, "top_k": top_k},
+        )
+
+    async def get_relationships_between_entities(
+        self,
+        entity_names: list[str],
+    ) -> list[dict]:
+        """Return ontology edges where both endpoints are in *entity_names*.
+
+        Excludes structural edges (EXTRACTED_FROM, CONTAINS_TEXT, etc.) —
+        only returns domain relationships between community members.
+        """
+        if not entity_names:
+            return []
+        from app.services.arcadedb_schema import _STRUCTURAL_EDGE_TYPES
+        structural = set(_STRUCTURAL_EDGE_TYPES)
+
+        sql = (
+            "SELECT @class AS rel_type, "
+            "out.name AS from_name, out.@class AS from_type, "
+            "in.name AS to_name, in.@class AS to_type "
+            "FROM (SELECT expand(outE()) FROM V WHERE name IN :names) "
+            "WHERE in.name IN :names"
+        )
+        rows = await self._client.query(
+            self._database, "sql", sql,
+            params={"names": entity_names},
+        )
+        return [r for r in rows if r.get("rel_type") not in structural]
+
     # ==================================================================
     # Lifecycle operations
     # ==================================================================

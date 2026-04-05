@@ -357,6 +357,29 @@ class GraphStore(Protocol):
         """Return a single community report by community_id, or None."""
         ...
 
+    async def search_community_reports_by_vector(
+        self,
+        query_vector: list[float],
+        top_k: int = 10,
+    ) -> list[dict]:
+        """ANN search over CommunityReport.report_embedding.
+
+        Returns raw report rows including community_id, title, summary,
+        member_count, and a similarity score.
+        """
+        ...
+
+    async def get_relationships_between_entities(
+        self,
+        entity_names: list[str],
+    ) -> list[dict]:
+        """Return ontology edges where both endpoints are in *entity_names*.
+
+        Structural edges (EXTRACTED_FROM, CONTAINS_TEXT, etc.) are excluded —
+        only domain relationships between entities are returned.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # Lifecycle operations
     # ------------------------------------------------------------------

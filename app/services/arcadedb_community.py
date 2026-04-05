@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 from typing import Any
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +94,15 @@ async def run_community_detection(
             reports_reused += 1
             continue
 
-        # Generate LLM report
+        # Generate LLM report (fetches relationships internally)
         report = await _generate_community_report(graph_store, cid, members)
         if not report:
             continue
 
-        # Embed the report summary
-        report_embedding = await _embed_report(report["summary"])
+        # Embed the report (title + summary) for vector search
+        report_embedding = await _embed_report(
+            f"{report['title']}\n\n{report['summary']}"
+        )
 
         # Upsert CommunityReport vertex
         try:
@@ -150,10 +155,30 @@ async def _generate_community_report(
         f"- {m['name']} ({m['entity_type']})" for m in members
     )
 
+    # Fetch real relationships between community members
+    relationships_text = "(no relationships found among members)"
+    try:
+        names = [m["name"] for m in members if m.get("name")]
+        edges = await graph_store.get_relationships_between_entities(names)
+        if edges:
+            relationships_text = "\n".join(
+                f"- {e.get('from_name', '?')} "
+                f"({e.get('from_type', '?')}) "
+                f"--[{e.get('rel_type', '?')}]--> "
+                f"{e.get('to_name', '?')} "
+                f"({e.get('to_type', '?')})"
+                for e in edges
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to fetch relationships for community %d: %s",
+            community_id, exc,
+        )
+
     prompt = (
         prompt_template
         .replace("{entities}", entities_text)
-        .replace("{relationships}", "(relationships would be fetched from graph)")
+        .replace("{relationships}", relationships_text)
         .replace("{evidence}", "")
     )
 
@@ -168,37 +193,90 @@ async def _generate_community_report(
 
 
 async def _call_llm_for_report(prompt: str, model: str) -> dict[str, str]:
-    """Call LLM to generate community report.
+    """Call Ollama chat API to generate a community report.
 
-    TODO: Implement actual LLM call via Ollama once community report prompting
-    is finalised. For now returns a stub so the pipeline can run end-to-end.
+    Expects JSON output ``{"title": "...", "summary": "..."}``; falls back to
+    line-based parsing when the model doesn't return valid JSON.
     """
+    from app.config import get_settings
+    from app.services.llm_json import parse_llm_json_loose
+
+    settings = get_settings()
+    url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
+    timeout = settings.doc_analysis_timeout
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            url,
+            json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a knowledge-graph analyst. "
+                            "Respond with a single JSON object containing "
+                            '"title" (short, descriptive) and "summary" '
+                            "(2-4 paragraphs). Do not include any other text."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.1,
+                "max_tokens": settings.llm_max_tokens,
+            },
+        )
+        resp.raise_for_status()
+        message = resp.json()["choices"][0]["message"]
+        content = (message.get("content") or message.get("reasoning_content") or "").strip()
+
+    parsed = parse_llm_json_loose(content)
+    if isinstance(parsed, dict) and parsed.get("title") and parsed.get("summary"):
+        return {
+            "title": str(parsed["title"]).strip(),
+            "summary": str(parsed["summary"]).strip(),
+        }
+
+    # Fallback: first line is the title, remainder is the summary
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return {"title": "Community Report", "summary": content or ""}
     return {
-        "title": "Community Report",
-        "summary": prompt[:500],
+        "title": lines[0][:200],
+        "summary": "\n".join(lines[1:]) if len(lines) > 1 else lines[0],
     }
 
 
 async def _embed_report(text: str) -> list[float] | None:
     """Embed report text for vector search.
 
-    TODO: Wire up Ollama embedding once report embeddings are needed for
-    global-query vector search.
+    Uses the same BGE embedding pipeline as document text. Runs the sync
+    ``embed_texts`` call in a thread so it doesn't block the event loop.
     """
-    return None
+    if not text or not text.strip():
+        return None
+    try:
+        from app.services.embedding import embed_texts
+        vectors = await asyncio.to_thread(embed_texts, [text])
+        return vectors[0] if vectors else None
+    except Exception as exc:
+        logger.warning("Failed to embed community report: %s", exc)
+        return None
 
 
-_DEFAULT_PROMPT = """You are analyzing a cluster of related military equipment entities.
+_DEFAULT_PROMPT = """You are analyzing a cluster of related entities in a knowledge graph.
 
 Community members:
 {entities}
 
-Relationships:
+Relationships among members:
 {relationships}
 
-Generate:
-1. Title (short, descriptive)
-2. Summary (2-4 paragraphs covering systems, relationships, and operational significance)
+{evidence}
+
+Produce a JSON object with:
+- "title": short, descriptive (under 80 characters)
+- "summary": 2-4 paragraphs covering the key systems, their relationships, and operational significance.
 """
 
 
@@ -208,7 +286,6 @@ async def search_community_reports(
     top_k: int = 10,
 ) -> list[dict[str, Any]]:
     """Search community reports by vector similarity."""
-    return await graph_store.vector_search(
-        "CommunityReport", "report_embedding",
+    return await graph_store.search_community_reports_by_vector(
         query_vector, top_k,
     )

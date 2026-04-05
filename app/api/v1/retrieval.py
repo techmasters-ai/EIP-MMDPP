@@ -961,10 +961,10 @@ async def _populate_image_urls(
 async def _global_query(body: UnifiedQueryRequest) -> UnifiedQueryResponse:
     """Query via community reports (global/cross-community strategy).
 
-    Embeds the query text and searches CommunityReport vertices by vector
-    similarity.  Full LLM synthesis over the returned reports is a future
-    enhancement; this implementation returns the raw report summaries ranked
-    by similarity score.
+    Embeds the query text, retrieves the most similar CommunityReport
+    vertices, then calls an LLM to synthesize a single comprehensive answer
+    citing the source communities. The raw reports are preserved in the
+    first result's ``context`` field so the frontend can display them.
     """
     from app.db.session import get_graph_store
     from app.services.arcadedb_community import search_community_reports
@@ -984,26 +984,119 @@ async def _global_query(body: UnifiedQueryRequest) -> UnifiedQueryResponse:
 
     reports = await search_community_reports(graph_store, query_vector, top_k=body.top_k)
 
-    results = [
-        QueryResultItem(
-            chunk_id=None,
-            document_id=None,
-            score=float(r.get("score", 0.0)),
-            modality="community_report",
-            content_text=r.get("summary", ""),
-            page_number=None,
-            classification="UNCLASSIFIED",
-            context={"community_id": r.get("community_id")},
+    if not reports:
+        return UnifiedQueryResponse(
+            query_text=body.query_text,
+            strategy="global",
+            modality_filter=body.modality_filter.value,
+            results=[],
+            total=0,
         )
+
+    synthesis = await _synthesize_global_answer(body.query_text, reports)
+
+    raw_reports = [
+        {
+            "community_id": r.get("community_id"),
+            "title": r.get("title"),
+            "summary": r.get("summary"),
+            "member_count": r.get("member_count"),
+            "score": float(r.get("score", 0.0)),
+        }
         for r in reports
     ]
+    top_score = max((float(r.get("score", 0.0)) for r in reports), default=0.0)
 
     return UnifiedQueryResponse(
         query_text=body.query_text,
         strategy="global",
         modality_filter=body.modality_filter.value,
-        results=results,
-        total=len(results),
+        results=[
+            QueryResultItem(
+                chunk_id=None,
+                document_id=None,
+                score=top_score,
+                modality="community_report",
+                content_text=synthesis,
+                page_number=None,
+                classification="UNCLASSIFIED",
+                context={
+                    "synthesis": True,
+                    "reports": raw_reports,
+                },
+            )
+        ],
+        total=1,
+    )
+
+
+_DEFAULT_GLOBAL_SYNTHESIS_PROMPT = """You are answering a user question using summaries of communities of related entities from a knowledge graph.
+
+User question:
+{query}
+
+Community reports (ranked by relevance):
+{reports}
+
+Write a single comprehensive answer that:
+1. Directly addresses the user's question.
+2. Draws on the community reports above.
+3. Cites the community IDs it relied on, e.g. "[community 3]".
+4. Is concise but complete. Do not repeat the reports verbatim.
+"""
+
+
+async def _synthesize_global_answer(
+    query: str,
+    reports: list[dict],
+) -> str:
+    """Call LLM to synthesize a single answer from community reports."""
+    import httpx
+
+    from app.config import get_settings
+    settings = get_settings()
+
+    template = settings.community_global_synthesis_prompt or _DEFAULT_GLOBAL_SYNTHESIS_PROMPT
+
+    reports_text = "\n\n".join(
+        f"[community {r.get('community_id', '?')}] "
+        f"{r.get('title', '')}\n{r.get('summary', '')}"
+        for r in reports
+    )
+    prompt = template.replace("{query}", query).replace("{reports}", reports_text)
+
+    url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
+    model = settings.community_report_llm_model
+    timeout = settings.doc_analysis_timeout
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                url,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": settings.llm_max_tokens,
+                },
+            )
+            resp.raise_for_status()
+            message = resp.json()["choices"][0]["message"]
+            content = (message.get("content") or message.get("reasoning_content") or "").strip()
+        return content or _fallback_concatenated_reports(reports)
+    except Exception as exc:
+        logger.warning("Global synthesis LLM call failed: %s; returning concatenated reports", exc)
+        return _fallback_concatenated_reports(reports)
+
+
+def _fallback_concatenated_reports(reports: list[dict]) -> str:
+    """Fallback answer when the synthesis LLM call fails."""
+    return "\n\n".join(
+        f"[community {r.get('community_id', '?')}] "
+        f"{r.get('title', '')}\n{r.get('summary', '')}"
+        for r in reports
     )
 
 

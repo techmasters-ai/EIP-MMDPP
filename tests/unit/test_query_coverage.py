@@ -679,7 +679,7 @@ class TestUnifiedQueryRouting:
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
-    async def test_global_strategy_returns_community_reports(self, mock_urls, _mock_doc_names, _mock_page_numbers):
+    async def test_global_strategy_returns_synthesized_answer(self, mock_urls, _mock_doc_names, _mock_page_numbers):
         from app.api.v1.retrieval import unified_query
         from unittest.mock import AsyncMock as AM, patch as p
 
@@ -688,19 +688,50 @@ class TestUnifiedQueryRouting:
         db = AsyncMock()
 
         mock_reports = [
-            {"community_id": 1, "summary": "radar cluster", "score": 0.9},
+            {
+                "community_id": 1,
+                "title": "Radar Cluster",
+                "summary": "radar cluster details",
+                "score": 0.9,
+                "member_count": 3,
+            },
         ]
 
         with (
             p("app.services.arcadedb_community.search_community_reports", new_callable=AM, return_value=mock_reports),
             p("app.services.embedding.embed_texts", return_value=[[0.1] * 1024]),
             p("app.db.session.get_graph_store", return_value=MagicMock()),
+            p("app.api.v1.retrieval._synthesize_global_answer", new_callable=AM, return_value="Synthesized answer citing [community 1]."),
         ):
             response = await unified_query(body, db)
 
         assert response.strategy == "global"
         assert response.total == 1
         assert response.results[0].modality == "community_report"
+        assert response.results[0].content_text == "Synthesized answer citing [community 1]."
+        assert response.results[0].context["synthesis"] is True
+        assert response.results[0].context["reports"][0]["community_id"] == 1
+
+    @pytest.mark.asyncio
+    @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
+    async def test_global_strategy_returns_empty_when_no_reports(self, mock_urls, _mock_doc_names, _mock_page_numbers):
+        from app.api.v1.retrieval import unified_query
+        from unittest.mock import AsyncMock as AM, patch as p
+
+        mock_urls.return_value = None
+        body = _make_body(strategy="global", top_k=5, include_context=False)
+        db = AsyncMock()
+
+        with (
+            p("app.services.arcadedb_community.search_community_reports", new_callable=AM, return_value=[]),
+            p("app.services.embedding.embed_texts", return_value=[[0.1] * 1024]),
+            p("app.db.session.get_graph_store", return_value=MagicMock()),
+        ):
+            response = await unified_query(body, db)
+
+        assert response.strategy == "global"
+        assert response.total == 0
+        assert response.results == []
 
     @pytest.mark.asyncio
     @patch("app.api.v1.retrieval._populate_image_urls", new_callable=AsyncMock)
