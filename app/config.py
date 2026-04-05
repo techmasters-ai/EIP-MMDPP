@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     # Graph confidence quality gates
     graph_node_min_confidence: float = 0.60
     graph_rel_min_confidence: float = 0.55
+    # Validation matrix enforcement: when true, relationships whose
+    # (source_type, rel_type, target_type) triple is not in the active
+    # ontology's validation_matrix are rejected (raise ValueError).  When
+    # false (default), invalid triples are logged and skipped silently.
+    graph_reject_invalid_relationships: bool = False
 
     # ArcadeDB
     arcadedb_url: str = "http://arcadedb:2480"

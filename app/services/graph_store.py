@@ -72,6 +72,36 @@ class SchemaSyncReport:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class TextChunkRecord:
+    """A TextChunk vertex to be created with an optional embedding."""
+
+    chunk_id: str
+    text: str
+    document_id: str
+    properties: dict[str, Any] = field(default_factory=dict)
+    embedding: list[float] | None = None
+
+
+@dataclass
+class ImageChunkRecord:
+    """An ImageChunk vertex to be created with an optional embedding."""
+
+    chunk_id: str
+    document_id: str
+    properties: dict[str, Any] = field(default_factory=dict)
+    embedding: list[float] | None = None
+
+
+@dataclass
+class EntityChunkEdge:
+    """An EXTRACTED_FROM edge from an entity (by name+type) to a chunk RID."""
+
+    entity_name: str
+    entity_type: str
+    chunk_rid: str
+
+
 # ---------------------------------------------------------------------------
 # Protocol
 # ---------------------------------------------------------------------------
@@ -119,8 +149,9 @@ class GraphStore(Protocol):
         text: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
-        """Create a TextChunk vertex and return its backend ID."""
+        """Create a TextChunk vertex (optionally with embedding) and return its ID."""
         ...
 
     async def create_image_chunk_vertex(
@@ -128,8 +159,9 @@ class GraphStore(Protocol):
         chunk_id: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
-        """Create an ImageChunk vertex and return its backend ID."""
+        """Create an ImageChunk vertex (optionally with embedding) and return its ID."""
         ...
 
     # ------------------------------------------------------------------
@@ -463,6 +495,7 @@ class GraphStore(Protocol):
         text: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
         """Synchronous variant of :meth:`create_text_chunk_vertex`."""
         ...
@@ -472,8 +505,34 @@ class GraphStore(Protocol):
         chunk_id: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
         """Synchronous variant of :meth:`create_image_chunk_vertex`."""
+        ...
+
+    def create_text_chunks_batch_sync(
+        self,
+        records: list[TextChunkRecord],
+    ) -> list[str]:
+        """Create multiple TextChunk vertices (with embeddings) in one batched call."""
+        ...
+
+    def create_image_chunks_batch_sync(
+        self,
+        records: list[ImageChunkRecord],
+    ) -> list[str]:
+        """Create multiple ImageChunk vertices (with embeddings) in one batched call."""
+        ...
+
+    def batch_create_entity_chunk_edges_sync(
+        self,
+        edges: list[EntityChunkEdge],
+    ) -> int:
+        """Create EXTRACTED_FROM edges from entities (by name+type) to chunk RIDs in a single batched call.
+
+        Returns the number of edges attempted (not necessarily created — entities
+        that cannot be resolved silently result in no-op sub-statements).
+        """
         ...
 
     def get_chunk_rid_sync(

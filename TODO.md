@@ -91,9 +91,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 4. Add batch HTTP operations to replace N+1 patterns
+### 4. Add batch HTTP operations to replace N+1 patterns ✅ DONE (2026-04-05)
 
-**Status:** Functional but slow. ~100-500 sequential HTTP calls per document.
+**Status:** ~~Functional but slow.~~ Implemented: `upsert_nodes_batch` / `_sync` and `upsert_relationships_batch` / `_sync` now build a single `sqlscript` with row-suffixed params (`:name_0`, `:f_name_1`, `:t_name_1`, etc.) and issue one HTTP call per batch. Provenance edges also batched. `create_text_chunk_vertex` / `create_image_chunk_vertex` accept an `embedding` param that is folded into the CREATE SQL. New batch methods `create_text_chunks_batch_sync` / `create_image_chunks_batch_sync` create all chunks (with embeddings) in one sqlscript call. Pipeline stages updated to collect records and call the batch methods once instead of looping.
 **Files:** `app/services/arcadedb_graph.py`, `app/workers/pipeline.py`
 
 **Current state:**
@@ -121,9 +121,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ## P1 — Significant Functional Gaps
 
-### 5. Implement validation_matrix enforcement in upsert_relationship
+### 5. Implement validation_matrix enforcement in upsert_relationship ✅ DONE (2026-04-05)
 
-**Status:** Spec requires it; implementation does not check.
+**Status:** ~~Spec requires it; implementation does not check.~~ Implemented: `ArcadeDBGraphStore` caches a validation-matrix set loaded from `load_validation_matrix()`, refreshed on `sync_schema()`. `upsert_relationship`, `upsert_relationships_batch`, and the sync variant all check `(from_type, rel_type, to_type)` against the matrix. New `GRAPH_REJECT_INVALID_RELATIONSHIPS` env var controls hard reject vs warn-and-skip (default: warn). Empty matrix = permissive (no matrix defined = no enforcement).
 **Files:** `app/services/arcadedb_graph.py` (function `upsert_relationship`)
 
 **Current state:**
@@ -144,9 +144,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 6. Implement post-ingest hook counter + threshold trigger
+### 6. Implement post-ingest hook counter + threshold trigger ✅ DONE (2026-04-05)
 
-**Status:** Spec requires it; only scheduled and manual triggers exist.
+**Status:** ~~Spec requires it; only scheduled and manual triggers exist.~~ Implemented: `finalize_document` now calls `_maybe_trigger_post_ingest_community_detection()` after marking status COMPLETE. The helper INCRs `community:pending_ingest_count` in Redis, logs the count/threshold, and when the threshold is reached resets the counter to 0 and dispatches `run_community_detection_task.delay(mode="incremental")`. Errors are swallowed so ingestion never fails. Controlled by `COMMUNITY_DETECTION_POST_INGEST_ENABLED` / `COMMUNITY_DETECTION_POST_INGEST_THRESHOLD` env vars.
 **Files:** `app/workers/pipeline.py` (in `finalize_document` task), `app/workers/community_tasks.py`
 
 **Current state:**
@@ -166,9 +166,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 7. Add batch_create_entity_chunk_edges to GraphStore Protocol
+### 7. Add batch_create_entity_chunk_edges to GraphStore Protocol ✅ DONE (2026-04-05)
 
-**Status:** Pipeline loops through individual edges instead.
+**Status:** ~~Pipeline loops through individual edges instead.~~ Implemented: new `EntityChunkEdge` dataclass, new Protocol method `batch_create_entity_chunk_edges_sync(edges)` implemented in `ArcadeDBGraphStore` via a single sqlscript call with one `CREATE EDGE EXTRACTED_FROM FROM (SELECT FROM {type} WHERE name=...) TO :rid` per row. `derive_structure_links` now collects all `(ent_name, ent_type, chunk_rid)` tuples and issues one batch call instead of looping per-edge. The legacy singular `create_entity_chunk_edge_sync` remains for single-edge callers.
 **Files:** `app/services/graph_store.py`, `app/services/arcadedb_graph.py`, `app/workers/pipeline.py`
 
 **Current state:**
@@ -190,9 +190,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 8. Optimize schema sync to batch DDL statements
+### 8. Optimize schema sync to batch DDL statements ✅ DONE (2026-04-05)
 
-**Status:** Schema sync makes 150+ sequential HTTP calls at API startup.
+**Status:** ~~Schema sync makes 150+ sequential HTTP calls at API startup.~~ Implemented: `sync_schema_from_ontology` now groups DDL into 7 phase-scoped sqlscript batches (entity types + props, edge types + props, structural vertex types + props, structural edge types + props, vector indexes, fulltext indexes, unique indexes). Each phase is one HTTP call. New `_run_ddl_batch` helper falls back to per-statement execution on batch failure so one bad statement doesn't drop the whole phase. Expected reduction: ~200 calls → 7 calls per startup.
 **Files:** `app/services/arcadedb_schema.py`
 
 **Current state:**

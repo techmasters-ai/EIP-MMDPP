@@ -269,3 +269,94 @@ class TestDedupeExtractedElements:
         result, dropped = _dedupe_extracted_elements([txt_a, txt_b])
         assert len(result) == 1
         assert dropped == 1
+
+
+# ---------------------------------------------------------------------------
+# Post-ingest community-detection counter
+# ---------------------------------------------------------------------------
+
+
+class TestPostIngestCommunityTrigger:
+    """Verify the Redis counter and threshold-based trigger in finalize_document."""
+
+    def test_trigger_disabled_when_flag_off(self, monkeypatch):
+        """When COMMUNITY_DETECTION_POST_INGEST_ENABLED=false, the helper is a no-op."""
+        from unittest.mock import MagicMock, patch
+        from app.config import get_settings
+        from app.workers.pipeline import _maybe_trigger_post_ingest_community_detection
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_ENABLED", "false")
+
+        try:
+            with patch("redis.Redis.from_url") as mock_redis_cls:
+                _maybe_trigger_post_ingest_community_detection("doc-1")
+                mock_redis_cls.assert_not_called()
+        finally:
+            get_settings.cache_clear()
+
+    def test_increments_counter_below_threshold(self, monkeypatch):
+        """Below threshold, counter increments and no task is dispatched."""
+        from unittest.mock import MagicMock, patch
+        from app.config import get_settings
+        from app.workers.pipeline import _maybe_trigger_post_ingest_community_detection
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_ENABLED", "true")
+        monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_THRESHOLD", "5")
+
+        try:
+            mock_redis = MagicMock()
+            mock_redis.incr.return_value = 2
+            with (
+                patch("redis.Redis.from_url", return_value=mock_redis),
+                patch("app.workers.community_tasks.run_community_detection_task") as mock_task,
+            ):
+                _maybe_trigger_post_ingest_community_detection("doc-1")
+                mock_redis.incr.assert_called_once_with("community:pending_ingest_count")
+                mock_task.delay.assert_not_called()
+                mock_redis.set.assert_not_called()
+                mock_redis.close.assert_called_once()
+        finally:
+            get_settings.cache_clear()
+
+    def test_dispatches_task_at_threshold(self, monkeypatch):
+        """At threshold, counter resets and an incremental task is dispatched."""
+        from unittest.mock import MagicMock, patch
+        from app.config import get_settings
+        from app.workers.pipeline import _maybe_trigger_post_ingest_community_detection
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_ENABLED", "true")
+        monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_THRESHOLD", "3")
+
+        try:
+            mock_redis = MagicMock()
+            mock_redis.incr.return_value = 3  # reaches threshold
+            with (
+                patch("redis.Redis.from_url", return_value=mock_redis),
+                patch("app.workers.community_tasks.run_community_detection_task") as mock_task,
+            ):
+                _maybe_trigger_post_ingest_community_detection("doc-1")
+                mock_redis.incr.assert_called_once()
+                mock_redis.set.assert_called_once_with("community:pending_ingest_count", 0)
+                mock_task.delay.assert_called_once_with(mode="incremental")
+                mock_redis.close.assert_called_once()
+        finally:
+            get_settings.cache_clear()
+
+    def test_errors_are_swallowed(self, monkeypatch):
+        """If Redis is unavailable, ingestion must not fail."""
+        from unittest.mock import patch
+        from app.config import get_settings
+        from app.workers.pipeline import _maybe_trigger_post_ingest_community_detection
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("COMMUNITY_DETECTION_POST_INGEST_ENABLED", "true")
+
+        try:
+            with patch("redis.Redis.from_url", side_effect=RuntimeError("no redis")):
+                # Must not raise
+                _maybe_trigger_post_ingest_community_detection("doc-1")
+        finally:
+            get_settings.cache_clear()

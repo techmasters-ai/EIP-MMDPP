@@ -14,11 +14,14 @@ from typing import Any
 
 from app.services.arcadedb_client import ArcadeDBClient
 from app.services.graph_store import (
+    EntityChunkEdge,
     GraphEntityResult,
+    ImageChunkRecord,
     NodeRecord,
     ProvenanceMetadata,
     RelationshipRecord,
     SchemaSyncReport,
+    TextChunkRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +78,187 @@ def _build_set(fields: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _build_upsert_node_script(
+    records: list[NodeRecord],
+) -> tuple[str, dict[str, Any]]:
+    """Build a multi-statement sqlscript that upserts a batch of nodes.
+
+    Each row gets parameter keys suffixed with ``_{i}`` so they don't collide
+    across statements. Returns (script, params).
+    """
+    statements: list[str] = []
+    params: dict[str, Any] = {}
+
+    for i, record in enumerate(records):
+        set_fields: dict[str, Any] = {
+            "name": record.name,
+            "entity_type": record.entity_type,
+            "extraction_confidence": record.extraction_confidence,
+        }
+        set_fields.update(record.properties)
+
+        set_parts: list[str] = []
+        for k, v in set_fields.items():
+            pk = f"{k}_{i}"
+            params[pk] = v
+            set_parts.append(f"{k} = :{pk}")
+
+        where_parts: list[str] = []
+        for k, v in record.identity_fields.items():
+            pk = f"{k}_{i}"
+            # Identity fields may overlap with set fields — same key, same value,
+            # so reusing the param key is safe.
+            params[pk] = v
+            where_parts.append(f"{k} = :{pk}")
+
+        set_clause = ", ".join(set_parts)
+        where_clause = " AND ".join(where_parts)
+
+        sql = (
+            f"UPDATE {record.entity_type} SET {set_clause}, updated_at = sysdate() "
+            f"UPSERT WHERE {where_clause} AND entity_type = :entity_type_{i}"
+        )
+        statements.append(sql)
+
+    return ";\n".join(statements), params
+
+
+def _build_upsert_relationship_script(
+    records: list[RelationshipRecord],
+    provenance: ProvenanceMetadata | None,
+) -> tuple[str, dict[str, Any]]:
+    """Build a multi-statement sqlscript that creates a batch of relationships.
+
+    Uses prefixed param keys (``f_`` for from-identity, ``t_`` for to-identity,
+    ``p_`` for edge properties) and a row suffix to avoid collisions.
+    """
+    statements: list[str] = []
+    params: dict[str, Any] = {}
+
+    doc_id_param_key = None
+    if provenance:
+        doc_id_param_key = "doc_id"
+        params[doc_id_param_key] = provenance.document_id
+
+    for i, record in enumerate(records):
+        from_where_parts: list[str] = []
+        for k, v in record.from_identity.items():
+            pk = f"f_{k}_{i}"
+            params[pk] = v
+            from_where_parts.append(f"{k} = :{pk}")
+
+        to_where_parts: list[str] = []
+        for k, v in record.to_identity.items():
+            pk = f"t_{k}_{i}"
+            params[pk] = v
+            to_where_parts.append(f"{k} = :{pk}")
+
+        conf_key = f"extraction_confidence_{i}"
+        params[conf_key] = record.extraction_confidence
+
+        extra_parts: list[str] = []
+        for k, v in record.properties.items():
+            pk = f"p_{k}_{i}"
+            params[pk] = v
+            extra_parts.append(f"{k} = :{pk}")
+        extra = (", " + ", ".join(extra_parts)) if extra_parts else ""
+
+        doc_ids_expr = f"[:{doc_id_param_key}]" if doc_id_param_key else "[]"
+
+        sql = (
+            f"CREATE EDGE {record.rel_type} "
+            f"FROM (SELECT FROM {record.from_type} WHERE {' AND '.join(from_where_parts)}) "
+            f"TO (SELECT FROM {record.to_type} WHERE {' AND '.join(to_where_parts)}) "
+            f"SET extraction_confidence = :{conf_key}, "
+            f"document_ids = {doc_ids_expr}, "
+            f"created_at = sysdate(), updated_at = sysdate(){extra}"
+        )
+        statements.append(sql)
+
+    return ";\n".join(statements), params
+
+
+def _build_text_chunk_sql(
+    record: TextChunkRecord,
+    row_idx: int | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Build a single CREATE VERTEX TextChunk statement, optionally folding in embedding.
+
+    When ``row_idx`` is provided, param keys are suffixed with ``_{row_idx}``
+    so the statement can be combined with others in a sqlscript batch.
+    """
+    suffix = f"_{row_idx}" if row_idx is not None else ""
+    props = dict(record.properties or {})
+    if record.embedding is not None:
+        props["text_embedding"] = record.embedding
+
+    set_fields: dict[str, Any] = {
+        "chunk_id": record.chunk_id,
+        "text": record.text,
+        "document_id": record.document_id,
+        **props,
+    }
+
+    set_parts: list[str] = []
+    params: dict[str, Any] = {}
+    for k, v in set_fields.items():
+        pk = f"{k}{suffix}"
+        params[pk] = v
+        set_parts.append(f"{k} = :{pk}")
+
+    sql = (
+        f"CREATE VERTEX TextChunk SET {', '.join(set_parts)}, "
+        f"created_at = sysdate()"
+    )
+    return sql, params
+
+
+def _build_image_chunk_sql(
+    record: ImageChunkRecord,
+    row_idx: int | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Build a single CREATE VERTEX ImageChunk statement, optionally folding in embedding."""
+    suffix = f"_{row_idx}" if row_idx is not None else ""
+    props = dict(record.properties or {})
+    if record.embedding is not None:
+        props["image_embedding"] = record.embedding
+
+    set_fields: dict[str, Any] = {
+        "chunk_id": record.chunk_id,
+        "document_id": record.document_id,
+        **props,
+    }
+
+    set_parts: list[str] = []
+    params: dict[str, Any] = {}
+    for k, v in set_fields.items():
+        pk = f"{k}{suffix}"
+        params[pk] = v
+        set_parts.append(f"{k} = :{pk}")
+
+    sql = (
+        f"CREATE VERTEX ImageChunk SET {', '.join(set_parts)}, "
+        f"created_at = sysdate()"
+    )
+    return sql, params
+
+
+def _extract_rids(result: list, expected: int) -> list[str]:
+    """Extract a list of RIDs from a sqlscript result, padding to *expected* length.
+
+    ArcadeDB's sqlscript endpoint returns a flat list of result rows, one per
+    statement. This helper maps them back to the input order, filling missing
+    entries with empty strings so callers always get a same-length list.
+    """
+    rids: list[str] = [""] * expected
+    if not isinstance(result, list):
+        return rids
+    for i, row in enumerate(result[:expected]):
+        if isinstance(row, dict):
+            rids[i] = str(row.get("@rid", ""))
+    return rids
+
+
 # ---------------------------------------------------------------------------
 # ArcadeDBGraphStore
 # ---------------------------------------------------------------------------
@@ -94,6 +278,65 @@ class ArcadeDBGraphStore:
     def __init__(self, client: ArcadeDBClient, database: str) -> None:
         self._client = client
         self._database = database
+        # Cache of valid (source_type, rel_type, target_type) triples. Loaded
+        # lazily on first use and refreshed whenever sync_schema is called.
+        self._validation_matrix: set[tuple[str, str, str]] | None = None
+
+    # ------------------------------------------------------------------
+    # Validation matrix
+    # ------------------------------------------------------------------
+
+    def _get_validation_matrix(self) -> set[tuple[str, str, str]]:
+        """Return the cached validation matrix, loading it on first access."""
+        if self._validation_matrix is None:
+            try:
+                from app.services.ontology_templates import load_validation_matrix
+                self._validation_matrix = load_validation_matrix()
+            except Exception as exc:
+                logger.warning("Failed to load validation matrix: %s", exc)
+                self._validation_matrix = set()
+        return self._validation_matrix
+
+    def _check_relationship_triple(
+        self,
+        from_type: str,
+        rel_type: str,
+        to_type: str,
+    ) -> bool:
+        """Return True if the triple is allowed by the validation matrix.
+
+        An empty matrix (ontology doesn't define one) is treated as permissive
+        so that the check never blocks ingestion when no matrix is configured.
+        """
+        matrix = self._get_validation_matrix()
+        if not matrix:
+            return True
+        return (from_type, rel_type, to_type) in matrix
+
+    def _enforce_relationship_triple(
+        self,
+        from_type: str,
+        rel_type: str,
+        to_type: str,
+    ) -> bool:
+        """Validate a triple, raising or logging per settings.
+
+        Returns True when the caller should proceed with the write, False when
+        the caller should skip the record.
+        """
+        if self._check_relationship_triple(from_type, rel_type, to_type):
+            return True
+        from app.config import get_settings
+        if get_settings().graph_reject_invalid_relationships:
+            raise ValueError(
+                f"Invalid relationship triple: ({from_type})-[{rel_type}]->({to_type}) "
+                f"is not in the active ontology validation_matrix"
+            )
+        logger.warning(
+            "Skipping invalid relationship triple: (%s)-[%s]->(%s)",
+            from_type, rel_type, to_type,
+        )
+        return False
 
     # ==================================================================
     # Node operations
@@ -153,8 +396,42 @@ class ArcadeDBGraphStore:
         records: list[NodeRecord],
         provenance: ProvenanceMetadata | None = None,
     ) -> list[str]:
-        """Upsert multiple nodes and return their backend IDs."""
-        return [await self.upsert_node(r, provenance) for r in records]
+        """Upsert multiple nodes in one sqlscript call. Returns their RIDs."""
+        if not records:
+            return []
+        script, params = _build_upsert_node_script(records)
+        result = await self._client.command(
+            self._database, "sqlscript", script, params,
+        )
+        rids = _extract_rids(result, len(records))
+        if provenance:
+            await self._create_provenance_edges_batch(rids, provenance)
+        return rids
+
+    async def _create_provenance_edges_batch(
+        self,
+        node_rids: list[str],
+        provenance: ProvenanceMetadata,
+    ) -> None:
+        """Create EXTRACTED_FROM edges from multiple nodes to a Document in one call."""
+        targets = [rid for rid in node_rids if rid]
+        if not targets:
+            return
+        statements: list[str] = []
+        params: dict[str, Any] = {
+            "document_id": provenance.document_id,
+            "page_numbers": provenance.page_numbers,
+        }
+        for i, rid in enumerate(targets):
+            params[f"rid_{i}"] = rid
+            statements.append(
+                f"CREATE EDGE EXTRACTED_FROM FROM :rid_{i} "
+                f"TO (SELECT FROM Document WHERE document_id = :document_id) "
+                f"SET page_numbers = :page_numbers, created_at = sysdate()"
+            )
+        await self._client.command(
+            self._database, "sqlscript", ";\n".join(statements), params,
+        )
 
     async def upsert_document_node(
         self,
@@ -182,19 +459,18 @@ class ArcadeDBGraphStore:
         text: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
-        """Create a TextChunk vertex."""
-        props = dict(properties or {})
-        extra_set = ""
-        if props:
-            extra_set = ", " + _build_set(props)
-
-        sql = (
-            f"CREATE VERTEX TextChunk SET chunk_id = :chunk_id, "
-            f"text = :text, document_id = :document_id, "
-            f"created_at = sysdate(){extra_set}"
+        """Create a TextChunk vertex, optionally folding in the embedding."""
+        sql, params = _build_text_chunk_sql(
+            TextChunkRecord(
+                chunk_id=chunk_id,
+                text=text,
+                document_id=document_id,
+                properties=properties or {},
+                embedding=embedding,
+            )
         )
-        params = {"chunk_id": chunk_id, "text": text, "document_id": document_id, **props}
         result = await self._client.command(self._database, "sql", sql, params)
         return _rid(result)
 
@@ -203,19 +479,17 @@ class ArcadeDBGraphStore:
         chunk_id: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
-        """Create an ImageChunk vertex."""
-        props = dict(properties or {})
-        extra_set = ""
-        if props:
-            extra_set = ", " + _build_set(props)
-
-        sql = (
-            f"CREATE VERTEX ImageChunk SET chunk_id = :chunk_id, "
-            f"document_id = :document_id, "
-            f"created_at = sysdate(){extra_set}"
+        """Create an ImageChunk vertex, optionally folding in the embedding."""
+        sql, params = _build_image_chunk_sql(
+            ImageChunkRecord(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                properties=properties or {},
+                embedding=embedding,
+            )
         )
-        params = {"chunk_id": chunk_id, "document_id": document_id, **props}
         result = await self._client.command(self._database, "sql", sql, params)
         return _rid(result)
 
@@ -229,6 +503,11 @@ class ArcadeDBGraphStore:
         provenance: ProvenanceMetadata | None = None,
     ) -> str:
         """Upsert a relationship edge between two entity vertices."""
+        if not self._enforce_relationship_triple(
+            record.from_type, record.rel_type, record.to_type,
+        ):
+            return ""
+
         from_where = _build_where(record.from_identity)
         to_where = _build_where(record.to_identity)
 
@@ -265,8 +544,20 @@ class ArcadeDBGraphStore:
         records: list[RelationshipRecord],
         provenance: ProvenanceMetadata | None = None,
     ) -> list[str]:
-        """Upsert multiple relationships."""
-        return [await self.upsert_relationship(r, provenance) for r in records]
+        """Create multiple relationships in one sqlscript call. Returns their RIDs."""
+        if not records:
+            return []
+        valid_records = [
+            r for r in records
+            if self._enforce_relationship_triple(r.from_type, r.rel_type, r.to_type)
+        ]
+        if not valid_records:
+            return []
+        script, params = _build_upsert_relationship_script(valid_records, provenance)
+        result = await self._client.command(
+            self._database, "sqlscript", script, params,
+        )
+        return _extract_rids(result, len(valid_records))
 
     async def create_structural_edge(
         self,
@@ -817,8 +1108,10 @@ class ArcadeDBGraphStore:
 
         If *ontology* is provided, delegates to the full ontology-driven
         ``sync_schema_from_ontology``.  Otherwise falls back to creating
-        the core structural types only.
+        the core structural types only.  Invalidates the cached validation
+        matrix so the next relationship write picks up any ontology changes.
         """
+        self._validation_matrix = None
         if ontology is not None:
             from app.services.arcadedb_schema import sync_schema_from_ontology
             return await sync_schema_from_ontology(
@@ -946,48 +1239,62 @@ class ArcadeDBGraphStore:
         records: list[NodeRecord],
         provenance: ProvenanceMetadata | None = None,
     ) -> list[str]:
-        """Synchronous batch upsert."""
-        return [self.upsert_node_sync(r, provenance) for r in records]
+        """Upsert a batch of nodes in one sqlscript call. Returns their RIDs."""
+        if not records:
+            return []
+        script, params = _build_upsert_node_script(records)
+        result = self._client.command_sync(
+            self._database, "sqlscript", script, params,
+        )
+        rids = _extract_rids(result, len(records))
+        if provenance:
+            self._create_provenance_edges_batch_sync(rids, provenance)
+        return rids
+
+    def _create_provenance_edges_batch_sync(
+        self,
+        node_rids: list[str],
+        provenance: ProvenanceMetadata,
+    ) -> None:
+        """Create EXTRACTED_FROM edges for a batch of nodes in one sqlscript call."""
+        targets = [rid for rid in node_rids if rid]
+        if not targets:
+            return
+        statements: list[str] = []
+        params: dict[str, Any] = {
+            "document_id": provenance.document_id,
+            "page_numbers": provenance.page_numbers,
+        }
+        for i, rid in enumerate(targets):
+            params[f"rid_{i}"] = rid
+            statements.append(
+                f"CREATE EDGE EXTRACTED_FROM FROM :rid_{i} "
+                f"TO (SELECT FROM Document WHERE document_id = :document_id) "
+                f"SET page_numbers = :page_numbers, created_at = sysdate()"
+            )
+        self._client.command_sync(
+            self._database, "sqlscript", ";\n".join(statements), params,
+        )
 
     def upsert_relationships_batch_sync(
         self,
         records: list[RelationshipRecord],
         provenance: ProvenanceMetadata | None = None,
     ) -> list[str]:
-        """Synchronous batch relationship upsert."""
-        results = []
-        for r in records:
-            from_where = _build_where(r.from_identity)
-            to_where = _build_where(r.to_identity)
-
-            doc_ids_expr = "[]"
-            doc_id_param: dict[str, Any] = {}
-            if provenance:
-                doc_ids_expr = "[:doc_id]"
-                doc_id_param = {"doc_id": provenance.document_id}
-
-            extra_props = ""
-            if r.properties:
-                extra_props = ", " + _build_set(r.properties)
-
-            sql = (
-                f"CREATE EDGE {r.rel_type} "
-                f"FROM (SELECT FROM {r.from_type} WHERE {from_where}) "
-                f"TO (SELECT FROM {r.to_type} WHERE {to_where}) "
-                f"SET extraction_confidence = :extraction_confidence, "
-                f"document_ids = {doc_ids_expr}, "
-                f"created_at = sysdate(), updated_at = sysdate(){extra_props}"
-            )
-            params = {
-                **r.from_identity,
-                **r.to_identity,
-                "extraction_confidence": r.extraction_confidence,
-                **doc_id_param,
-                **r.properties,
-            }
-            result = self._client.command_sync(self._database, "sql", sql, params)
-            results.append(_rid(result))
-        return results
+        """Create a batch of relationships in one sqlscript call. Returns their RIDs."""
+        if not records:
+            return []
+        valid_records = [
+            r for r in records
+            if self._enforce_relationship_triple(r.from_type, r.rel_type, r.to_type)
+        ]
+        if not valid_records:
+            return []
+        script, params = _build_upsert_relationship_script(valid_records, provenance)
+        result = self._client.command_sync(
+            self._database, "sqlscript", script, params,
+        )
+        return _extract_rids(result, len(valid_records))
 
     def create_structural_edge_sync(
         self,
@@ -1031,19 +1338,18 @@ class ArcadeDBGraphStore:
         text: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
-        """Synchronous TextChunk creation."""
-        props = dict(properties or {})
-        extra_set = ""
-        if props:
-            extra_set = ", " + _build_set(props)
-
-        sql = (
-            f"CREATE VERTEX TextChunk SET chunk_id = :chunk_id, "
-            f"text = :text, document_id = :document_id, "
-            f"created_at = sysdate(){extra_set}"
+        """Create a TextChunk vertex, optionally folding in the embedding."""
+        sql, params = _build_text_chunk_sql(
+            TextChunkRecord(
+                chunk_id=chunk_id,
+                text=text,
+                document_id=document_id,
+                properties=properties or {},
+                embedding=embedding,
+            )
         )
-        params = {"chunk_id": chunk_id, "text": text, "document_id": document_id, **props}
         result = self._client.command_sync(self._database, "sql", sql, params)
         return _rid(result)
 
@@ -1052,21 +1358,83 @@ class ArcadeDBGraphStore:
         chunk_id: str,
         document_id: str,
         properties: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
     ) -> str:
-        """Synchronous ImageChunk creation."""
-        props = dict(properties or {})
-        extra_set = ""
-        if props:
-            extra_set = ", " + _build_set(props)
-
-        sql = (
-            f"CREATE VERTEX ImageChunk SET chunk_id = :chunk_id, "
-            f"document_id = :document_id, "
-            f"created_at = sysdate(){extra_set}"
+        """Create an ImageChunk vertex, optionally folding in the embedding."""
+        sql, params = _build_image_chunk_sql(
+            ImageChunkRecord(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                properties=properties or {},
+                embedding=embedding,
+            )
         )
-        params = {"chunk_id": chunk_id, "document_id": document_id, **props}
         result = self._client.command_sync(self._database, "sql", sql, params)
         return _rid(result)
+
+    def create_text_chunks_batch_sync(
+        self,
+        records: list[TextChunkRecord],
+    ) -> list[str]:
+        """Create a batch of TextChunk vertices (with embeddings) in one sqlscript call."""
+        if not records:
+            return []
+        statements: list[str] = []
+        all_params: dict[str, Any] = {}
+        for i, record in enumerate(records):
+            sql, params = _build_text_chunk_sql(record, row_idx=i)
+            statements.append(sql)
+            all_params.update(params)
+        result = self._client.command_sync(
+            self._database, "sqlscript", ";\n".join(statements), all_params,
+        )
+        return _extract_rids(result, len(records))
+
+    def create_image_chunks_batch_sync(
+        self,
+        records: list[ImageChunkRecord],
+    ) -> list[str]:
+        """Create a batch of ImageChunk vertices (with embeddings) in one sqlscript call."""
+        if not records:
+            return []
+        statements: list[str] = []
+        all_params: dict[str, Any] = {}
+        for i, record in enumerate(records):
+            sql, params = _build_image_chunk_sql(record, row_idx=i)
+            statements.append(sql)
+            all_params.update(params)
+        result = self._client.command_sync(
+            self._database, "sqlscript", ";\n".join(statements), all_params,
+        )
+        return _extract_rids(result, len(records))
+
+    def batch_create_entity_chunk_edges_sync(
+        self,
+        edges: list[EntityChunkEdge],
+    ) -> int:
+        """Create EXTRACTED_FROM edges from entities (by name+type) to chunk RIDs in one call.
+
+        Each statement uses an inline subquery to resolve the entity, so rows
+        where the entity is missing become no-ops without failing the batch.
+        """
+        if not edges:
+            return 0
+        statements: list[str] = []
+        params: dict[str, Any] = {}
+        for i, edge in enumerate(edges):
+            params[f"name_{i}"] = edge.entity_name
+            params[f"etype_{i}"] = edge.entity_type
+            params[f"rid_{i}"] = edge.chunk_rid
+            statements.append(
+                f"CREATE EDGE EXTRACTED_FROM "
+                f"FROM (SELECT FROM {edge.entity_type} "
+                f"WHERE name = :name_{i} AND entity_type = :etype_{i} LIMIT 1) "
+                f"TO :rid_{i} SET created_at = sysdate()"
+            )
+        self._client.command_sync(
+            self._database, "sqlscript", ";\n".join(statements), params,
+        )
+        return len(edges)
 
     def get_chunk_rid_sync(
         self,

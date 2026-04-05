@@ -227,13 +227,15 @@ class TestDeriveStructureLinks:
         assert "create_image_chunk_vertex_sync" not in source
         assert "get_chunk_rid_sync" in source
 
-    def test_extracted_from_edges_use_entity_chunk_method(self):
-        """EXTRACTED_FROM edges should use create_entity_chunk_edge_sync."""
+    def test_extracted_from_edges_use_batch_method(self):
+        """EXTRACTED_FROM edges should use batch_create_entity_chunk_edges_sync."""
         import inspect
         from app.workers.pipeline import derive_structure_links
 
         source = inspect.getsource(derive_structure_links)
-        assert "create_entity_chunk_edge_sync" in source
+        assert "batch_create_entity_chunk_edges_sync" in source
+        # Singular legacy per-edge method should no longer appear
+        assert "create_entity_chunk_edge_sync" not in source
 
     def test_same_page_edges_use_rid_maps(self):
         """SAME_PAGE edges must use RIDs from the tc_rid_map/ic_rid_map lookups."""

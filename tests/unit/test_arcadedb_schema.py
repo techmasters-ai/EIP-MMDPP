@@ -60,9 +60,10 @@ class TestSchemaSync:
         ontology = _load_ontology()
         report = await sync_schema_from_ontology(mock_client, "testdb", ontology)
 
-        calls = [str(c) for c in mock_client.command.call_args_list]
-        vector_calls = [c for c in calls if "LSM_VECTOR" in c]
-        assert len(vector_calls) >= 4  # text, image, community, trusted
+        # With DDL batching, vector index CREATEs are all issued in one sqlscript
+        # call, so count LSM_VECTOR occurrences across the joined script text.
+        joined = "\n".join(str(c) for c in mock_client.command.call_args_list)
+        assert joined.count("LSM_VECTOR") >= 4  # text, image, community, trusted
 
     async def test_reserved_word_table(self, mock_client):
         from app.services.arcadedb_schema import sync_schema_from_ontology
@@ -151,21 +152,20 @@ class TestSchemaSync:
         from app.services.arcadedb_schema import sync_schema_from_ontology
         ontology = _load_ontology()
 
-        call_count = 0
-
+        # Simulate the sqlscript batch failing (connection reset), then in the
+        # per-statement fallback, fail one specific statement with a real error
+        # so it gets recorded.
         async def failing_command(db, lang, sql):
-            nonlocal call_count
-            call_count += 1
-            # Fail on the first CREATE VERTEX TYPE call with a non-"already exists" error
-            if "CREATE VERTEX TYPE" in sql and call_count == 1:
+            if lang == "sqlscript":
+                raise RuntimeError("connection reset during batch")
+            if "CREATE VERTEX TYPE RADAR_SYSTEM" in sql:
                 raise RuntimeError("connection refused")
             return []
 
         mock_client.command = failing_command
         report = await sync_schema_from_ontology(mock_client, "testdb", ontology)
-        # One error should have been recorded (first vertex type failed)
-        assert len(report.errors) == 1
-        assert "connection refused" in report.errors[0]
+        # The specific failing statement should surface as an error
+        assert any("connection refused" in e for e in report.errors)
 
     async def test_already_exists_not_an_error(self, mock_client):
         from app.services.arcadedb_schema import sync_schema_from_ontology

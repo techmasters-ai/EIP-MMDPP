@@ -35,10 +35,17 @@ def _make_client(
 
 
 def _graph(client=None, database="testdb"):
-    """Build an ArcadeDBGraphStore with a mock client."""
+    """Build an ArcadeDBGraphStore with a mock client.
+
+    By default the validation matrix is pre-initialized to the empty set so
+    unit tests that focus on other behaviors don't get their relationships
+    rejected by lazy-loaded ontology validation.
+    """
     from app.services.arcadedb_graph import ArcadeDBGraphStore
 
-    return ArcadeDBGraphStore(client=client or _make_client(), database=database)
+    store = ArcadeDBGraphStore(client=client or _make_client(), database=database)
+    store._validation_matrix = set()
+    return store
 
 
 def _node_record(entity_type="RADAR_SYSTEM", identity_fields=None, name="APG-77", **kwargs):
@@ -376,15 +383,246 @@ class TestEnsureReadyRetries:
 
 class TestSyncVariants:
     def test_upsert_nodes_batch_sync(self):
-        """Batch sync should call command_sync for each node."""
-        client = _make_client()
+        """Batch sync should issue a single sqlscript call containing all rows."""
+        client = _make_client(
+            command_sync_result=[{"@rid": "#10:0"}, {"@rid": "#10:1"}],
+        )
         store = _graph(client)
         records = [_node_record(name="A"), _node_record(name="B")]
 
         result = store.upsert_nodes_batch_sync(records)
 
-        assert client.command_sync.call_count >= 2
-        assert len(result) == 2
+        # One sqlscript call, not one-per-record
+        assert client.command_sync.call_count == 1
+        language = client.command_sync.call_args.args[1]
+        script = client.command_sync.call_args.args[2]
+        assert language == "sqlscript"
+        # Both rows should appear as separate statements
+        assert script.count("UPSERT WHERE") == 2
+        assert "name_0" in script and "name_1" in script
+        assert result == ["#10:0", "#10:1"]
+
+    def test_upsert_relationships_batch_sync_single_call(self):
+        """Relationship batch should issue one sqlscript call with per-row params."""
+        from app.services.graph_store import RelationshipRecord
+        client = _make_client(
+            command_sync_result=[{"@rid": "#20:0"}, {"@rid": "#20:1"}],
+        )
+        store = _graph(client)
+        records = [
+            RelationshipRecord(
+                from_type="RADAR_SYSTEM",
+                from_identity={"name": "APG-77", "entity_type": "RADAR_SYSTEM"},
+                to_type="MISSILE",
+                to_identity={"name": "AIM-120", "entity_type": "MISSILE"},
+                rel_type="USES",
+            ),
+            RelationshipRecord(
+                from_type="RADAR_SYSTEM",
+                from_identity={"name": "APG-63", "entity_type": "RADAR_SYSTEM"},
+                to_type="MISSILE",
+                to_identity={"name": "AIM-9", "entity_type": "MISSILE"},
+                rel_type="USES",
+            ),
+        ]
+
+        result = store.upsert_relationships_batch_sync(records)
+
+        assert client.command_sync.call_count == 1
+        language = client.command_sync.call_args.args[1]
+        script = client.command_sync.call_args.args[2]
+        params = client.command_sync.call_args.args[3]
+        assert language == "sqlscript"
+        assert script.count("CREATE EDGE USES") == 2
+        # Prefixed, row-suffixed params to avoid collisions across statements
+        assert params["f_name_0"] == "APG-77"
+        assert params["f_name_1"] == "APG-63"
+        assert params["t_name_0"] == "AIM-120"
+        assert params["t_name_1"] == "AIM-9"
+        assert result == ["#20:0", "#20:1"]
+
+    def test_create_text_chunks_batch_sync_folds_embedding(self):
+        """Batch chunk create should fold the embedding into CREATE VERTEX."""
+        from app.services.graph_store import TextChunkRecord
+        client = _make_client(
+            command_sync_result=[{"@rid": "#30:0"}, {"@rid": "#30:1"}],
+        )
+        store = _graph(client)
+        records = [
+            TextChunkRecord(
+                chunk_id="c1", text="hello", document_id="d1",
+                embedding=[0.1, 0.2, 0.3],
+            ),
+            TextChunkRecord(
+                chunk_id="c2", text="world", document_id="d1",
+                embedding=[0.4, 0.5, 0.6],
+            ),
+        ]
+
+        result = store.create_text_chunks_batch_sync(records)
+
+        assert client.command_sync.call_count == 1
+        language = client.command_sync.call_args.args[1]
+        script = client.command_sync.call_args.args[2]
+        params = client.command_sync.call_args.args[3]
+        assert language == "sqlscript"
+        assert script.count("CREATE VERTEX TextChunk") == 2
+        assert params["text_embedding_0"] == [0.1, 0.2, 0.3]
+        assert params["text_embedding_1"] == [0.4, 0.5, 0.6]
+        assert result == ["#30:0", "#30:1"]
+
+    def test_batch_create_entity_chunk_edges_sync(self):
+        """Entity-chunk edges should be created in one sqlscript call."""
+        from app.services.graph_store import EntityChunkEdge
+        client = _make_client()
+        store = _graph(client)
+        edges = [
+            EntityChunkEdge(entity_name="APG-77", entity_type="RADAR_SYSTEM", chunk_rid="#40:0"),
+            EntityChunkEdge(entity_name="AIM-120", entity_type="MISSILE", chunk_rid="#40:1"),
+        ]
+
+        n = store.batch_create_entity_chunk_edges_sync(edges)
+
+        assert n == 2
+        assert client.command_sync.call_count == 1
+        language = client.command_sync.call_args.args[1]
+        script = client.command_sync.call_args.args[2]
+        params = client.command_sync.call_args.args[3]
+        assert language == "sqlscript"
+        assert script.count("CREATE EDGE EXTRACTED_FROM") == 2
+        # Each statement uses type-scoped resolution
+        assert "FROM RADAR_SYSTEM" in script
+        assert "FROM MISSILE" in script
+        assert params["name_0"] == "APG-77"
+        assert params["rid_1"] == "#40:1"
+
+    def test_batch_create_entity_chunk_edges_sync_empty(self):
+        """Empty input should short-circuit without issuing any call."""
+        client = _make_client()
+        store = _graph(client)
+
+        n = store.batch_create_entity_chunk_edges_sync([])
+
+        assert n == 0
+        client.command_sync.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Validation matrix enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestValidationMatrix:
+    def _store_with_matrix(self, client, matrix):
+        store = _graph(client)
+        store._validation_matrix = matrix  # bypass lazy load
+        return store
+
+    def test_valid_triple_passes(self):
+        """Triples in the matrix should be written normally."""
+        from app.services.graph_store import RelationshipRecord
+        client = _make_client(
+            command_sync_result=[{"@rid": "#50:0"}],
+        )
+        store = self._store_with_matrix(
+            client,
+            {("RADAR_SYSTEM", "INSTALLED_ON", "PLATFORM")},
+        )
+        rec = RelationshipRecord(
+            from_type="RADAR_SYSTEM",
+            from_identity={"name": "APG-77", "entity_type": "RADAR_SYSTEM"},
+            to_type="PLATFORM",
+            to_identity={"name": "F-22", "entity_type": "PLATFORM"},
+            rel_type="INSTALLED_ON",
+        )
+
+        result = store.upsert_relationships_batch_sync([rec])
+
+        assert client.command_sync.call_count == 1
+        assert result == ["#50:0"]
+
+    def test_invalid_triple_skipped_when_warn_mode(self):
+        """With reject_invalid=false, invalid triples are silently dropped."""
+        from app.services.graph_store import RelationshipRecord
+        client = _make_client()
+        store = self._store_with_matrix(
+            client,
+            {("RADAR_SYSTEM", "INSTALLED_ON", "PLATFORM")},
+        )
+        rec = RelationshipRecord(
+            from_type="FREQUENCY_BAND",
+            from_identity={"name": "X-band", "entity_type": "FREQUENCY_BAND"},
+            to_type="PLATFORM",
+            to_identity={"name": "F-22", "entity_type": "PLATFORM"},
+            rel_type="INSTALLED_ON",
+        )
+
+        result = store.upsert_relationships_batch_sync([rec])
+
+        # No HTTP call should have been issued
+        client.command_sync.assert_not_called()
+        assert result == []
+
+    def test_invalid_triple_raises_when_reject_mode(self, monkeypatch):
+        """With reject_invalid=true, invalid triples raise ValueError."""
+        from app.services.graph_store import RelationshipRecord
+        from app.config import get_settings
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("GRAPH_REJECT_INVALID_RELATIONSHIPS", "true")
+
+        try:
+            client = _make_client()
+            store = self._store_with_matrix(
+                client,
+                {("RADAR_SYSTEM", "INSTALLED_ON", "PLATFORM")},
+            )
+            rec = RelationshipRecord(
+                from_type="FREQUENCY_BAND",
+                from_identity={"name": "X-band", "entity_type": "FREQUENCY_BAND"},
+                to_type="PLATFORM",
+                to_identity={"name": "F-22", "entity_type": "PLATFORM"},
+                rel_type="INSTALLED_ON",
+            )
+
+            with pytest.raises(ValueError, match="validation_matrix"):
+                store.upsert_relationships_batch_sync([rec])
+        finally:
+            get_settings.cache_clear()
+
+    def test_empty_matrix_is_permissive(self):
+        """When the ontology defines no matrix, all triples are allowed."""
+        from app.services.graph_store import RelationshipRecord
+        client = _make_client(
+            command_sync_result=[{"@rid": "#50:0"}],
+        )
+        store = self._store_with_matrix(client, set())
+        rec = RelationshipRecord(
+            from_type="RADAR_SYSTEM",
+            from_identity={"name": "APG-77", "entity_type": "RADAR_SYSTEM"},
+            to_type="PLATFORM",
+            to_identity={"name": "F-22", "entity_type": "PLATFORM"},
+            rel_type="INSTALLED_ON",
+        )
+
+        result = store.upsert_relationships_batch_sync([rec])
+
+        assert client.command_sync.call_count == 1
+        assert result == ["#50:0"]
+
+    def test_sync_schema_invalidates_matrix_cache(self):
+        """After sync_schema runs, the cache is cleared for reload."""
+        client = _make_client()
+        store = _graph(client)
+        store._validation_matrix = {("A", "REL", "B")}
+
+        async def _run():
+            await store.sync_schema()
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_run())
+
+        assert store._validation_matrix is None
 
     def test_create_text_chunk_vertex_sync(self):
         """Sync variant should use command_sync."""

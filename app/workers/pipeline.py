@@ -1718,6 +1718,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             for _eb_start in range(0, len(all_texts), _embed_batch):
                 embeddings.extend(embed_texts(all_texts[_eb_start:_eb_start + _embed_batch]))
 
+            from app.services.graph_store import TextChunkRecord as _TCR
+            text_chunk_records: list[_TCR] = []
             for sc, text, embedding in zip(all_chunk_refs, all_texts, embeddings):
                 # Resolve artifact_id from the first element_uid in this chunk
                 first_uid = sc.element_uids[0] if sc.element_uids else ""
@@ -1753,8 +1755,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 )
                 db.execute(stmt)
 
-                # Upsert TextChunk vertex + embedding in ArcadeDB
-                rid = graph_store.create_text_chunk_vertex_sync(
+                text_chunk_records.append(_TCR(
                     chunk_id=str(chunk_id),
                     text=text,
                     document_id=document_id,
@@ -1764,14 +1765,13 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "page_number": sc.page_number,
                         "classification": doc_classification,
                     },
-                )
-                graph_store.set_vertex_embedding_sync(
-                    vertex_type="TextChunk",
-                    vertex_id=rid,
-                    embedding_property="text_embedding",
                     embedding=embedding,
-                )
+                ))
                 chunks_created += 1
+
+            # Batch-create all TextChunk vertices (with embeddings) in one HTTP call
+            if text_chunk_records:
+                graph_store.create_text_chunks_batch_sync(text_chunk_records)
 
         db.commit()
 
@@ -1829,6 +1829,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 )
 
             # Create TextChunk rows in Postgres + ArcadeDB vertices with embeddings
+            from app.services.graph_store import TextChunkRecord as _TCR2
+            img_desc_records: list[_TCR2] = []
             for meta, emb in zip(img_desc_chunk_metas, img_desc_embeddings):
                 chunk_values = {
                     "id": meta["chunk_id"],
@@ -1851,8 +1853,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 )
                 db.execute(stmt)
 
-                # Upsert TextChunk vertex + embedding in ArcadeDB
-                rid = graph_store.create_text_chunk_vertex_sync(
+                img_desc_records.append(_TCR2(
                     chunk_id=str(meta["chunk_id"]),
                     text=meta["section_text"],
                     document_id=document_id,
@@ -1862,14 +1863,13 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "page_number": meta["page_number"],
                         "classification": doc_classification,
                     },
-                )
-                graph_store.set_vertex_embedding_sync(
-                    vertex_type="TextChunk",
-                    vertex_id=rid,
-                    embedding_property="text_embedding",
                     embedding=emb,
-                )
+                ))
                 img_desc_chunks_created += 1
+
+            # Batch-create all image-description TextChunk vertices in one HTTP call
+            if img_desc_records:
+                graph_store.create_text_chunks_batch_sync(img_desc_records)
 
             # SAME_ARTIFACT chunk_links (neighbor-only) between consecutive sections
             from collections import defaultdict
@@ -2019,6 +2019,8 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                 graph_store = get_graph_store()
                 graph_store.ensure_ready_sync()
 
+                from app.services.graph_store import ImageChunkRecord as _ICR
+                image_chunk_records: list[_ICR] = []
                 for elem, img_embedding in zip(valid_elements, image_embeddings):
                     chunk_key = hashlib.sha256(
                         f"{document_id}:{elem.element_uid}:{model_version}".encode()
@@ -2045,8 +2047,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                     )
                     db.execute(stmt)
 
-                    # Upsert ImageChunk vertex + embedding in ArcadeDB
-                    rid = graph_store.create_image_chunk_vertex_sync(
+                    image_chunk_records.append(_ICR(
                         chunk_id=str(chunk_id),
                         document_id=document_id,
                         properties={
@@ -2056,14 +2057,13 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                             "classification": doc_classification,
                             "chunk_text": elem.content_text or "",
                         },
-                    )
-                    graph_store.set_vertex_embedding_sync(
-                        vertex_type="ImageChunk",
-                        vertex_id=rid,
-                        embedding_property="image_embedding",
                         embedding=img_embedding,
-                    )
+                    ))
                     chunks_created += 1
+
+                # Batch-create all ImageChunk vertices (with embeddings) in one HTTP call
+                if image_chunk_records:
+                    graph_store.create_image_chunks_batch_sync(image_chunk_records)
 
         db.commit()
 
@@ -2725,20 +2725,30 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     for chunk_id in chunk_ids:
                         edge_tuples.append((name, etype, chunk_id))
 
-        # Batch-create EXTRACTED_FROM edges via GraphStore
-        entity_links = 0
+        # Batch-create EXTRACTED_FROM edges in one sqlscript call
+        from app.services.graph_store import EntityChunkEdge as _ECE
+        entity_edge_records: list[_ECE] = []
         for (ent_name, ent_type, chunk_id) in edge_tuples:
             chunk_rid = tc_rid_map.get(chunk_id)
             if not chunk_rid:
                 continue
+            entity_edge_records.append(_ECE(
+                entity_name=ent_name,
+                entity_type=ent_type,
+                chunk_rid=chunk_rid,
+            ))
+
+        entity_links = 0
+        if entity_edge_records:
             try:
-                created = graph_store.create_entity_chunk_edge_sync(
-                    ent_name, ent_type, chunk_rid,
+                entity_links = graph_store.batch_create_entity_chunk_edges_sync(
+                    entity_edge_records,
                 )
-                if created:
-                    entity_links += 1
-            except Exception:
-                pass  # Best-effort: entity may not exist yet
+            except Exception as exc:
+                logger.warning(
+                    "derive_structure_links: batch entity-chunk edge creation failed: %s",
+                    exc,
+                )
 
         db.commit()
 
@@ -2954,6 +2964,11 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
         )
         db.commit()
 
+        # Post-ingest community-detection trigger — increment counter and
+        # fire an incremental run when the threshold is reached.
+        if final_status == STATUS_COMPLETE:
+            _maybe_trigger_post_ingest_community_detection(document_id)
+
         logger.info(
             "finalize_document: document_id=%s — pipeline %s",
             document_id, final_status,
@@ -2970,5 +2985,51 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
         _update_document_status(document_id, STATUS_PARTIAL_COMPLETE, stage="finalize_document", error=str(exc))
     finally:
         db.close()
+
+
+_POST_INGEST_COUNTER_KEY = "community:pending_ingest_count"
+
+
+def _maybe_trigger_post_ingest_community_detection(document_id: str) -> None:
+    """Increment the post-ingest counter and trigger detection at threshold.
+
+    Controlled by ``community_detection_post_ingest_enabled`` and
+    ``community_detection_post_ingest_threshold``. When the counter reaches
+    the threshold, it is reset to zero and an incremental community detection
+    task is dispatched. Errors are logged and swallowed — post-ingest detection
+    is best-effort and must not fail document ingestion.
+
+    Settings are fetched via ``get_settings()`` inline so tests can override
+    them by clearing the cache and setting env vars.
+    """
+    try:
+        _s = get_settings()
+        if not _s.community_detection_post_ingest_enabled:
+            return
+
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(_s.celery_broker_url)
+        try:
+            count = int(r.incr(_POST_INGEST_COUNTER_KEY))
+            threshold = _s.community_detection_post_ingest_threshold
+            logger.info(
+                "post-ingest community counter: document_id=%s count=%d threshold=%d",
+                document_id, count, threshold,
+            )
+            if count >= threshold:
+                r.set(_POST_INGEST_COUNTER_KEY, 0)
+                from app.workers.community_tasks import run_community_detection_task
+                run_community_detection_task.delay(mode="incremental")
+                logger.info(
+                    "post-ingest community detection dispatched (count reached %d)",
+                    count,
+                )
+        finally:
+            r.close()
+    except Exception as exc:
+        logger.warning(
+            "post-ingest community detection trigger failed for %s: %s",
+            document_id, exc,
+        )
 
 

@@ -110,6 +110,41 @@ def _safe_type_name(ontology_name: str) -> str:
     return RESERVED_WORD_MAP.get(ontology_name, ontology_name)
 
 
+async def _run_ddl_batch(
+    client: Any,
+    database: str,
+    statements: list[str],
+    *,
+    phase: str,
+    report: SchemaSyncReport,
+) -> None:
+    """Execute a batch of idempotent DDL statements as a single sqlscript.
+
+    Falls back to per-statement execution on batch failure so one bad row
+    doesn't silently drop the rest of the phase. All statements are expected
+    to use ``IF NOT EXISTS`` so re-runs are no-ops.
+    """
+    if not statements:
+        return
+    script = ";\n".join(statements)
+    try:
+        await client.command(database, "sqlscript", script)
+        return
+    except Exception as exc:
+        logger.warning(
+            "Schema %s batch failed (%s); falling back to per-statement execution",
+            phase, exc,
+        )
+
+    for sql in statements:
+        try:
+            await client.command(database, "sql", sql)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "already exists" not in msg:
+                report.errors.append(f"{phase}: {exc}")
+
+
 async def sync_schema_from_ontology(
     client: Any,  # ArcadeDBClient
     database: str,
@@ -119,139 +154,121 @@ async def sync_schema_from_ontology(
 
     Additive only — creates new types/properties, never drops.
     Idempotent — uses IF NOT EXISTS on all CREATE statements.
+    Batched — each phase is submitted as a single sqlscript call instead of
+    issuing ~200 sequential HTTP requests.
     """
     report = SchemaSyncReport()
 
+    # --- Phase 1: ontology entity vertex types + their properties ---
+    entity_ddl: list[str] = []
+    entity_types: list[str] = []
     for entity_def in ontology.get("entity_types", []):
         etype = _safe_type_name(entity_def["name"])
-        try:
-            await client.command(database, "sql", f"CREATE VERTEX TYPE {etype} IF NOT EXISTS")
-            report.types_created += 1
-        except Exception as e:
-            if "already exists" not in str(e).lower():
-                report.errors.append(f"Failed to create type {etype}: {e}")
-                continue
-
-        # Add common entity properties
+        entity_types.append(etype)
+        entity_ddl.append(f"CREATE VERTEX TYPE {etype} IF NOT EXISTS")
         for prop_name, prop_type in _COMMON_ENTITY_PROPS:
-            try:
-                await client.command(
-                    database, "sql",
-                    f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {prop_type}",
-                )
-                report.properties_added += 1
-            except Exception:
-                pass
-
-        # Add ontology-specific properties
+            entity_ddl.append(
+                f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {prop_type}"
+            )
         props_schema = entity_def.get("properties", {}).get("properties", {})
         for prop_name, prop_def in props_schema.items():
             yaml_type = prop_def.get("type", "string")
             arcade_type = _YAML_TO_ARCADE.get(yaml_type, "STRING")
-            try:
-                await client.command(
-                    database, "sql",
-                    f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {arcade_type}",
-                )
-                report.properties_added += 1
-            except Exception:
-                pass
+            entity_ddl.append(
+                f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {arcade_type}"
+            )
+    await _run_ddl_batch(client, database, entity_ddl, phase="entity_types", report=report)
+    report.types_created += len(entity_types)
+    # Property count is an upper bound — we don't parse sqlscript result per-statement
+    report.properties_added += (
+        len(entity_types) * len(_COMMON_ENTITY_PROPS)
+        + sum(
+            len(e.get("properties", {}).get("properties", {}))
+            for e in ontology.get("entity_types", [])
+        )
+    )
 
+    # --- Phase 2: ontology relationship edge types + their properties ---
+    rel_ddl: list[str] = []
+    rel_types: list[str] = []
     for rel_def in ontology.get("relationship_types", []):
         rtype = rel_def["name"]
-        try:
-            await client.command(database, "sql", f"CREATE EDGE TYPE {rtype} IF NOT EXISTS")
-            report.types_created += 1
-        except Exception as e:
-            if "already exists" not in str(e).lower():
-                report.errors.append(f"Failed to create edge type {rtype}: {e}")
-                continue
-
+        rel_types.append(rtype)
+        rel_ddl.append(f"CREATE EDGE TYPE {rtype} IF NOT EXISTS")
         for prop_name, prop_type in _COMMON_EDGE_PROPS:
-            try:
-                await client.command(
-                    database, "sql",
-                    f"CREATE PROPERTY {rtype}.{prop_name} IF NOT EXISTS {prop_type}",
-                )
-            except Exception:
-                pass
+            rel_ddl.append(
+                f"CREATE PROPERTY {rtype}.{prop_name} IF NOT EXISTS {prop_type}"
+            )
+    await _run_ddl_batch(client, database, rel_ddl, phase="relationship_types", report=report)
+    report.types_created += len(rel_types)
 
+    # --- Phase 3: structural vertex types + properties ---
+    struct_vertex_ddl: list[str] = []
     for stype, props in _STRUCTURAL_VERTEX_TYPES.items():
-        try:
-            await client.command(database, "sql", f"CREATE VERTEX TYPE {stype} IF NOT EXISTS")
-            report.types_created += 1
-        except Exception:
-            pass
+        struct_vertex_ddl.append(f"CREATE VERTEX TYPE {stype} IF NOT EXISTS")
         for prop_name, prop_type in props:
-            try:
-                await client.command(
-                    database, "sql",
-                    f"CREATE PROPERTY {stype}.{prop_name} IF NOT EXISTS {prop_type}",
-                )
-            except Exception:
-                pass
+            struct_vertex_ddl.append(
+                f"CREATE PROPERTY {stype}.{prop_name} IF NOT EXISTS {prop_type}"
+            )
+    await _run_ddl_batch(
+        client, database, struct_vertex_ddl,
+        phase="structural_vertex_types", report=report,
+    )
+    report.types_created += len(_STRUCTURAL_VERTEX_TYPES)
 
+    # --- Phase 4: structural edge types + properties ---
+    struct_edge_ddl: list[str] = []
     for etype in _STRUCTURAL_EDGE_TYPES:
-        try:
-            await client.command(database, "sql", f"CREATE EDGE TYPE {etype} IF NOT EXISTS")
-            report.types_created += 1
-        except Exception:
-            pass
+        struct_edge_ddl.append(f"CREATE EDGE TYPE {etype} IF NOT EXISTS")
         for prop_name, prop_type in _STRUCTURAL_EDGE_PROPS:
-            try:
-                await client.command(
-                    database, "sql",
-                    f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {prop_type}",
-                )
-            except Exception:
-                pass
+            struct_edge_ddl.append(
+                f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {prop_type}"
+            )
+    await _run_ddl_batch(
+        client, database, struct_edge_ddl,
+        phase="structural_edge_types", report=report,
+    )
+    report.types_created += len(_STRUCTURAL_EDGE_TYPES)
 
+    # --- Phase 5: vector indexes ---
     vector_indexes = [
         ("TextChunk", "text_embedding", 1024, "COSINE", "INT8", True),
         ("ImageChunk", "image_embedding", 512, "COSINE", "INT8", False),
         ("CommunityReport", "report_embedding", 1024, "COSINE", "INT8", True),
         ("TrustedTextChunk", "text_embedding", 1024, "COSINE", "INT8", True),
     ]
+    vector_ddl: list[str] = []
     for vtype, vprop, dims, sim, quant, hier in vector_indexes:
         meta = f"dimensions: {dims}, similarity: '{sim}', quantization: '{quant}'"
         if hier:
             meta += ", addHierarchy: true"
-        try:
-            await client.command(
-                database, "sql",
-                f"CREATE INDEX IF NOT EXISTS ON {vtype} ({vprop}) LSM_VECTOR METADATA {{{meta}}}",
-            )
-            report.indexes_created += 1
-        except Exception as e:
-            if "already exists" not in str(e).lower():
-                report.errors.append(f"Vector index on {vtype}.{vprop}: {e}")
+        vector_ddl.append(
+            f"CREATE INDEX IF NOT EXISTS ON {vtype} ({vprop}) LSM_VECTOR METADATA {{{meta}}}"
+        )
+    await _run_ddl_batch(client, database, vector_ddl, phase="vector_indexes", report=report)
+    report.indexes_created += len(vector_ddl)
 
-    for entity_def in ontology.get("entity_types", []):
-        etype = _safe_type_name(entity_def["name"])
-        try:
-            await client.command(
-                database, "sql",
-                f"CREATE INDEX IF NOT EXISTS ON {etype} (name) FULL_TEXT",
-            )
-            report.indexes_created += 1
-        except Exception:
-            pass
+    # --- Phase 6: fulltext indexes on ontology entity names ---
+    fulltext_ddl = [
+        f"CREATE INDEX IF NOT EXISTS ON {_safe_type_name(e['name'])} (name) FULL_TEXT"
+        for e in ontology.get("entity_types", [])
+    ]
+    await _run_ddl_batch(client, database, fulltext_ddl, phase="fulltext_indexes", report=report)
+    report.indexes_created += len(fulltext_ddl)
 
+    # --- Phase 7: unique indexes ---
     unique_indexes = [
         ("TextChunk", "chunk_id"),
         ("ImageChunk", "chunk_id"),
         ("Document", "document_id"),
         ("Alias", "alias_name"),
     ]
-    for utype, uprop in unique_indexes:
-        try:
-            await client.command(
-                database, "sql",
-                f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE",
-            )
-            report.indexes_created += 1
-        except Exception:
-            pass
+    unique_ddl = [
+        f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE"
+        for utype, uprop in unique_indexes
+    ]
+    await _run_ddl_batch(client, database, unique_ddl, phase="unique_indexes", report=report)
+    report.indexes_created += len(unique_ddl)
 
     logger.info(
         "Schema sync: %d types, %d properties, %d indexes, %d errors",
