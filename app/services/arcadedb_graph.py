@@ -428,8 +428,10 @@ class ArcadeDBGraphStore:
         """Return backend-level graph statistics."""
         v_sql = "SELECT count(*) AS cnt FROM V"
         e_sql = "SELECT count(*) AS cnt FROM E"
-        v_rows = await self._client.query(self._database, "sql", v_sql)
-        e_rows = await self._client.query(self._database, "sql", e_sql)
+        v_rows, e_rows = await asyncio.gather(
+            self._client.query(self._database, "sql", v_sql),
+            self._client.query(self._database, "sql", e_sql),
+        )
         return {
             "vertex_count": _count(v_rows),
             "edge_count": _count(e_rows),
@@ -621,22 +623,21 @@ class ArcadeDBGraphStore:
             ") AS chunk "
             "LET entity = chunk.in('EXTRACTED_FROM')"
         )
-        params: dict[str, Any] = {
-            "text_vector": text_embedding,
-            "top_k": limit,
-        }
-        text_rows = await self._client.query(self._database, "sql", sql, params)
-
         img_sql = (
             "SELECT *, @rid AS node_id "
             "FROM (SELECT expand(vectorNeighbors('ImageChunk[image_embedding]', "
             ":image_vector, :top_k)))"
         )
-        img_params: dict[str, Any] = {
-            "image_vector": image_embedding,
-            "top_k": limit,
-        }
-        img_rows = await self._client.query(self._database, "sql", img_sql, img_params)
+        text_rows, img_rows = await asyncio.gather(
+            self._client.query(self._database, "sql", sql, {
+                "text_vector": text_embedding,
+                "top_k": limit,
+            }),
+            self._client.query(self._database, "sql", img_sql, {
+                "image_vector": image_embedding,
+                "top_k": limit,
+            }),
+        )
 
         combined = text_rows + img_rows
         return [_to_entity(r) for r in combined[:limit]]
@@ -731,23 +732,18 @@ class ArcadeDBGraphStore:
         total = 0
         params = {"doc_id": document_id}
 
-        # 1. Delete text chunks
         sql = "DELETE VERTEX FROM TextChunk WHERE document_id = :doc_id"
         result = await self._client.command(self._database, "sql", sql, params)
         total += _count(result)
 
-        # 2. Delete image chunks
         sql = "DELETE VERTEX FROM ImageChunk WHERE document_id = :doc_id"
         result = await self._client.command(self._database, "sql", sql, params)
         total += _count(result)
 
-        # 3. Delete Document vertex
         sql = "DELETE VERTEX FROM Document WHERE document_id = :doc_id"
         result = await self._client.command(self._database, "sql", sql, params)
         total += _count(result)
 
-        # 4. Remove document_id from relationship edge document_ids lists
-        # Delete edges where document_ids becomes empty
         await self._client.command(self._database, "sql",
             "UPDATE E SET document_ids = document_ids.remove(:doc_id) "
             "WHERE document_ids CONTAINS :doc_id",
@@ -757,7 +753,7 @@ class ArcadeDBGraphStore:
             "DELETE EDGE WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
         )
 
-        # 5. Orphan cleanup: remove entities with no remaining EXTRACTED_FROM edges
+        # Orphan cleanup: remove entities with no remaining EXTRACTED_FROM edges
         orphan_sql = (
             "DELETE VERTEX FROM V WHERE @cat NOT IN "
             "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
@@ -926,19 +922,24 @@ class ArcadeDBGraphStore:
                 doc_ids_expr = "[:doc_id]"
                 doc_id_param = {"doc_id": provenance.document_id}
 
+            extra_props = ""
+            if r.properties:
+                extra_props = ", " + _build_set(r.properties)
+
             sql = (
                 f"CREATE EDGE {r.rel_type} "
                 f"FROM (SELECT FROM {r.from_type} WHERE {from_where}) "
                 f"TO (SELECT FROM {r.to_type} WHERE {to_where}) "
                 f"SET extraction_confidence = :extraction_confidence, "
                 f"document_ids = {doc_ids_expr}, "
-                f"created_at = sysdate(), updated_at = sysdate()"
+                f"created_at = sysdate(), updated_at = sysdate(){extra_props}"
             )
             params = {
                 **r.from_identity,
                 **r.to_identity,
                 "extraction_confidence": r.extraction_confidence,
                 **doc_id_param,
+                **r.properties,
             }
             result = self._client.command_sync(self._database, "sql", sql, params)
             results.append(_rid(result))

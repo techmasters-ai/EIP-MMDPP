@@ -122,7 +122,6 @@ async def sync_schema_from_ontology(
     """
     report = SchemaSyncReport()
 
-    # 1. Create ontology entity vertex types
     for entity_def in ontology.get("entity_types", []):
         etype = _safe_type_name(entity_def["name"])
         try:
@@ -158,7 +157,6 @@ async def sync_schema_from_ontology(
             except Exception:
                 pass
 
-    # 2. Create ontology relationship edge types
     for rel_def in ontology.get("relationship_types", []):
         rtype = rel_def["name"]
         try:
@@ -178,7 +176,6 @@ async def sync_schema_from_ontology(
             except Exception:
                 pass
 
-    # 3. Create structural vertex types
     for stype, props in _STRUCTURAL_VERTEX_TYPES.items():
         try:
             await client.command(database, "sql", f"CREATE VERTEX TYPE {stype} IF NOT EXISTS")
@@ -194,7 +191,6 @@ async def sync_schema_from_ontology(
             except Exception:
                 pass
 
-    # 4. Create structural edge types
     for etype in _STRUCTURAL_EDGE_TYPES:
         try:
             await client.command(database, "sql", f"CREATE EDGE TYPE {etype} IF NOT EXISTS")
@@ -210,7 +206,6 @@ async def sync_schema_from_ontology(
             except Exception:
                 pass
 
-    # 5. Create vector indexes
     vector_indexes = [
         ("TextChunk", "text_embedding", 1024, "COSINE", "INT8", True),
         ("ImageChunk", "image_embedding", 512, "COSINE", "INT8", False),
@@ -231,7 +226,6 @@ async def sync_schema_from_ontology(
             if "already exists" not in str(e).lower():
                 report.errors.append(f"Vector index on {vtype}.{vprop}: {e}")
 
-    # 6. Create fulltext indexes on entity names (for each ontology entity type)
     for entity_def in ontology.get("entity_types", []):
         etype = _safe_type_name(entity_def["name"])
         try:
@@ -243,7 +237,6 @@ async def sync_schema_from_ontology(
         except Exception:
             pass
 
-    # 7. Create unique indexes on structural types
     unique_indexes = [
         ("TextChunk", "chunk_id"),
         ("ImageChunk", "chunk_id"),

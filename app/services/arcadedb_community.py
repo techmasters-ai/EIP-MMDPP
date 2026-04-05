@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -108,10 +107,7 @@ async def run_community_detection(
                 summary=report["summary"],
                 member_count=len(members),
                 membership_hash=new_hash,
-                model_name=os.environ.get(
-                    "COMMUNITY_REPORT_LLM_MODEL",
-                    settings.community_report_llm_model,
-                ),
+                model_name=settings.community_report_llm_model,
             )
         except Exception as exc:
             logger.warning("Failed to upsert community report %d: %s", cid, exc)

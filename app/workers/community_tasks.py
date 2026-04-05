@@ -58,6 +58,7 @@ def run_community_detection_task(
         raise
     finally:
         r.delete(COMMUNITY_LOCK_KEY)
+        r.close()
 
 
 # ---------------------------------------------------------------------------
