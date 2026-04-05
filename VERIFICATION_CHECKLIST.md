@@ -6,6 +6,44 @@
 
 ---
 
+## Architecture Note (2026-04 ArcadeDB Migration)
+
+This checklist reflects the post-migration architecture:
+- **Graph + Vectors:** ArcadeDB (replaces Neo4j + Qdrant)
+- **Document conversion:** Docling (unchanged)
+- **Entity extraction:** Docling-Graph service with delta extraction via `run_pipeline()` (refactored from hand-rolled LLM calls)
+- **Global query:** Community detection (Louvain/Leiden) + LLM report synthesis (replaces Microsoft GraphRAG)
+- **Chunk storage:** PostgreSQL authoritative for content; ArcadeDB carries embeddings + filter metadata via TextChunk/ImageChunk vertices
+- **Provenance:** EXTRACTED_FROM edges with document_id and page_numbers (entity vertices are shared across documents)
+
+## ArcadeDB Authoritative Reference
+
+**For ANY verification, feature check, or debugging related to ArcadeDB, consult `ArcadeDB Manual.pdf` (in the repository root) as the authoritative source.**
+
+The manual is the ground truth for:
+- **SQL syntax** (DDL, DML, graph traversal with `out()`/`in()`/`both()` and `{min,max}` depth, `LUCENE` fulltext queries)
+- **Vector search** — Section 4.14. LSMVectorIndex with HNSW/Vamana, COSINE/DOT_PRODUCT/EUCLIDEAN similarity, INT8/BINARY/PRODUCT quantization, `vectorNeighbors()` function, `efSearch` parameter, multi-modal search
+- **Schema management** — Section 4.8. Vertex types, edge types, properties, `CREATE TYPE IF NOT EXISTS`, inheritance, schema-full vs schema-less modes
+- **Indexes** — Section 4.9. LSM_TREE, Hash, LSM_VECTOR, FULL_TEXT, case-insensitive collation
+- **Graph algorithms** — Appendix 8.1. `algo.louvain`, `algo.leiden`, PageRank, centrality measures, node embeddings (Node2Vec, FastRP, GraphSAGE, HashGNN), path finding, similarity, structural
+- **Vector functions** — Section 6.6. Full reference of `vectorNeighbors`, `vectorCosineSimilarity`, etc.
+- **HTTP/JSON API** — Section 6.4. Endpoint paths, `{database}` path parameter, authentication, transactions
+- **Cross-model queries** — Section 4.13.6. Combining graph traversal + vector similarity in one SQL
+- **Multi-model architecture** — Section 4.13. How Graph, Document, Vector, Time-series models share the same storage
+- **Transaction model** — Section 4.6. MVCC, isolation levels, optimistic locking
+- **Docker deployment** — Section 5.5.20. Volume mounts, environment variables, health checks
+- **Performance tuning** — Section 5.5 (Operations). Bucket selection, parallel writes, memory settings
+
+When adding new ArcadeDB-related checklist items or debugging a failing test, verify behavior against the manual before asserting that the code is wrong. The manual reflects ArcadeDB's actual capabilities and limitations.
+
+**Common debugging workflow:**
+1. Test fails or behavior is unexpected → check `ArcadeDB Manual.pdf` for the relevant section
+2. Confirm the SQL/API usage matches the manual
+3. If the manual contradicts the implementation → fix the implementation
+4. If the manual confirms the implementation → investigate test assumptions or environment issues
+
+---
+
 ## 1. INGEST PIPELINE
 
 ### 1.1 Document Preparation & Validation
@@ -13,8 +51,9 @@
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
 | Docling document conversion (VLM-based PDF parsing) | PDFs cannot be parsed; documents stuck in PROCESSING | Upload PDF, check status progresses through PREPARE stage | 1, 2.21 |
+| DoclingDocument JSON persisted to MinIO | `derive_ontology_graph` cannot retrieve structured document for delta extraction | `eip-derived/{doc}/docling_document.json` exists after prepare_document | 3.0 |
 | Standalone image file synthesis (JPEG, PNG, TIFF, BMP, GIF, WEBP) | Standalone images ingest with 0 elements; blank viewer | Upload `.jpg`, check `document_elements` has 1 image element with `storage_key` | 2.30 |
-| Unicode normalization (em-dashes, non-breaking spaces) | NaN embeddings from bge-m3; elements silently drop from vectors | Ingest doc with em-dashes; verify Qdrant vectors are valid floats | 2 |
+| Unicode normalization (em-dashes, non-breaking spaces) | NaN embeddings from bge-m3; elements silently drop from vectors | Ingest doc with em-dashes; verify ArcadeDB TextChunk vertices have valid float embeddings | 2 |
 | Stale run cleanup on worker startup | Crashed workers leave documents in PROCESSING permanently | Kill worker mid-ingest, restart; document reverts to PENDING | 2.18 |
 | Re-upload on failure | Re-uploading failed doc returns 409 indefinitely | Upload doc, let it fail, re-upload same file without error | 2 |
 
@@ -25,6 +64,7 @@
 | Parallel chord (text/image/graph run concurrently) | 3x ingest latency per document | Upload doc; verify text, image, graph tasks overlap in time | 1, 2.22 |
 | Chord tasks return error dicts instead of raising | Single task failure kills entire document pipeline | Ingest doc with corrupted image; pipeline still reaches PARTIAL_COMPLETE | 2.22 |
 | Chord `on_error` errback marks doc FAILED | Hard time limit kill leaves document in PROCESSING forever | Set very short time limit, ingest large doc; verify FAILED not PROCESSING | 2.22 |
+| `ensure_ready_sync()` called on every graph-writing task | Worker starts before ArcadeDB schema sync; writes fail | Each derive_* task calls `graph_store.ensure_ready_sync()` before first write; retries on missing types | 3.0 |
 
 ### 1.3 Element Deduplication
 
@@ -32,7 +72,7 @@
 |---|---|---|---|
 | Ingest-time element dedup (modality+page+section+text+bbox) | Duplicate elements bloat vector store; redundant search results | Parse doc with duplicate captions; check `document_elements` has only unique entries | 2.8, 2.20 |
 | Image dedup includes raw bytes hash | Distinct images on same page with empty captions silently dropped | Ingest doc with 2+ distinct images on same page; both appear in `document_elements` | 2.30 |
-| Text chunk dedup before embedding | Duplicate text vectors waste Qdrant space | Doc with repeated sections appears only once per unique text in Qdrant | 2.20 |
+| Text chunk dedup before embedding | Duplicate text vectors waste ArcadeDB space | Doc with repeated sections appears only once per unique text in TextChunk vertices | 2.20 |
 
 ### 1.4 Picture Description & Image Analysis
 
@@ -50,10 +90,11 @@
 
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| Batched text embedding + Qdrant upserts | Large documents timeout on single Qdrant RPC | Ingest large doc; verify completion within timeout | 2.16, 2.19 |
-| Dual vector store (Postgres + Qdrant cross-reference) | Qdrant failure causes complete data loss | Every Qdrant point has corresponding `text_chunks` row with `qdrant_point_id` | 1, 2.8 |
+| Text embedding creates TextChunk vertex + `text_embedding` property | PostgreSQL chunk row exists but no vector for search | Ingest doc; verify ArcadeDB `SELECT FROM TextChunk WHERE document_id = :id` returns vertices with embeddings | 3.0 |
+| Image embedding creates ImageChunk vertex + `image_embedding` property | Image search returns no results | Ingest doc with images; verify ArcadeDB ImageChunk vertices have 512-dim CLIP embeddings | 3.0 |
+| PostgreSQL authoritative for chunk content | Chunk text/content lost when vectors move to ArcadeDB | `retrieval.text_chunks` still has `chunk_text`, `page_number`, `classification`; only `embedding` and `qdrant_point_id` columns removed | 3.0 |
+| `chunk_id` bridge between stores | Cross-store lookups fail | PostgreSQL `text_chunks.id` matches ArcadeDB `TextChunk.chunk_id` | 3.0 |
 | CLIP image embedding (OpenCLIP ViT-B-32, 512-dim) | Cannot match image queries; visual content invisible to retrieval | Query with `query_image` + `strategy=hybrid`; receive image matches | 2 |
-| Text preview hydration (chunk_text in Qdrant payload) | Search results have no text preview; N+1 DB fetches | Query text search; `content_text` populated without additional DB calls | 2.13 |
 | BGE asymmetric query/passage prefixes | Query-document semantic matching degrades | Query "S-75 Dvina" matches document mentioning system in top-5 | 2.24 |
 
 ### 1.6 Translation & Language Handling
@@ -74,44 +115,46 @@
 
 ## 2. GRAPH EXTRACTION & ONTOLOGY
 
+> **ArcadeDB reference:** Consult `ArcadeDB Manual.pdf` sections 4.8 (Schema), 4.10 (Graph Database), 4.9 (Indexes), and 6.10 (SQL Syntax) when verifying ArcadeDB-backed features below.
+
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| Docling-Graph service (chunked extraction with ontology validation) | No knowledge graph; purely keyword-based retrieval | Ingest doc with entities; `/v1/graph/query` finds extracted entities | 2.7 |
-| Recursive chunk splitting on failure (2500 -> 1250 -> 625 chars) | Single failing chunk kills entire graph extraction | Induce LLM error on one chunk; partial graph still indexed | 2.19 |
-| Truncated JSON repair (json-repair library) | LLM token limits cause truncated JSON; chunk dropped | Simulate truncated extraction JSON; partial entities recovered | 2.17 |
-| Post-extraction validation (_validate_entity_types, _validate_properties) | Invalid types/properties pollute graph | Extraction result validated before persistence; invalid properties dropped | 2.24 |
-| Entity alias resolution (exact -> alias -> fuzzy match -> new) | "S-75" and "SA-2 Dvina" are separate entities; expansion incomplete | Ingest 2 docs with alternate names; query returns unified entity | 2.9 |
-| Batch Neo4j writes via UNWIND | Per-node writes cause 100s of round-trips; ingest hangs | Large doc with 1000+ entities ingested in <30s | 2.16 |
-| Relationship upsert matches by (name, entity_type) pair | Cross-type name collisions create wrong edges | Ingest doc with same-name entities of different types; verify distinct nodes with correct edges | 2.34 |
-| SPECIFIED_BY prompt instructions in relationship extraction | Specification entities orphaned from parent systems | Ingest doc with specs; Neo4j has SPECIFIED_BY edges from system → spec | 2.31 |
-| Idempotent Neo4j writes (MERGE) | Re-ingest creates duplicate entities | Reingest same doc; entity count unchanged | 2.8 |
+| Docling-Graph service uses `run_pipeline()` with delta extraction | Hand-rolled LLM calls bypass library features; lower extraction quality | `/extract-all` receives DoclingDocument JSON, returns NetworkX graph with stable node IDs | 3.0 |
+| Ontology-driven Pydantic templates with `edge()` fields | Delta extraction cannot discover relationships from schema | Template builder generates models with `graph_id_fields` and `edge()` from validation_matrix | 3.0 |
+| Per-entity-type `graph_id_fields` derivation | DOCUMENT/FIGURE/TABLE/SECTION entities merge incorrectly | RADAR_SYSTEM uses `system_name`, DOCUMENT uses `document_id`, SECTION uses `heading`, SPECIFICATION uses `[parameter, value]` | 3.0 |
+| Reserved word handling (TABLE → TABLE_REF) | ArcadeDB schema creation fails on reserved SQL keyword | TABLE ontology type maps to TABLE_REF vertex type; downstream code uses original name | 3.0 |
+| Delta extraction with direct fallback | Quality gate failures leave empty graph | Run on short doc; quality gate fails → falls back to direct extraction | 3.0 |
+| Delta resolvers (semantic entity dedup) | Duplicate entities with minor variations (e.g., "SA-20" vs "SA-20 Triumf") | Two documents mentioning same system with variants merge to one vertex | 3.0 |
+| Gleaning second-pass extraction | Entities mentioned only briefly are missed | Enabled by default; logs show gleaning pass ran | 3.0 |
+| Validation pass (post-extraction relationship check) | SPECIFIED_BY and similar heuristic edges missed | Ingest doc with specifications; graph has SPECIFIED_BY edges from system → spec | 3.0 |
+| Entity merge on `(entity_type, identity_fields)` NOT universal name | Cross-type name collisions merge unrelated entities | Doc with "Patriot" PLATFORM and "Patriot" MISSILE_SYSTEM creates two distinct vertices | 3.0 |
+| Provenance via EXTRACTED_FROM edges (not vertex property) | Shared entities lose track of source documents | Entity mentioned in 3 docs has 3 EXTRACTED_FROM edges; deleting 1 doc leaves 2 | 3.0 |
+| Relationship edges carry `document_ids` list | Relationships established by multiple docs lose provenance | Same relationship from 2 docs has `document_ids=[doc1, doc2]` | 3.0 |
+| Entity alias resolution (exact → alias → fuzzy match → new) | "S-75" and "SA-2 Dvina" are separate entities; expansion incomplete | Ingest 2 docs with alternate names; query returns unified entity | 2.9 |
 | Classification preserved on conflict | Reingest overwrites human-curated classification | Set classification to SECRET, reingest; verify still SECRET | 2.23 |
+| ArcadeDB schema sync from active ontology | Schema drifts from ontology definition | API startup, registry activation, active registry PUT — schema sync runs with correct ontology | 3.0 |
+| Schema sync is additive only | Schema sync removes types that still have data | Remove entity type from ontology, re-sync; type remains in ArcadeDB (data preserved) | 3.0 |
 
 ---
 
 ## 3. RETRIEVAL & SEARCH
 
+> **ArcadeDB reference:** Consult `ArcadeDB Manual.pdf` sections 4.14 (Vector Search), 6.6 (Vector Functions), and 4.13.6 (Cross-Model Queries) when verifying retrieval features below.
+
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| BGE text search (strategy=basic) | Cannot retrieve by semantic content | Query with `strategy=basic`; receive ranked text chunks | 1 |
-| CLIP image search (strategy=hybrid, modality_filter=image) | Cannot search images by text | Query image concept; receive image results | 2 |
+| BGE text search (strategy=basic) | Cannot retrieve by semantic content | Query with `strategy=basic`; receive ranked text chunks via ArcadeDB `vectorNeighbors` | 1 |
+| CLIP image search (strategy=hybrid, modality_filter=image) | Cannot search images by text | Query image concept; receive image results via ArcadeDB ImageChunk vector search | 2 |
 | Hybrid search (text + image merge, dedupe, rescore) | Cannot leverage both embeddings together | Query `strategy=hybrid`; receive both text and image results | 2 |
+| Global query (community reports + LLM synthesis) | Cannot answer broad "what systems are in this corpus" questions | Query `strategy=global`; receive synthesized answer from community reports with source citations | 3.0 |
+| Cross-model queries (vector + graph traversal in one SQL) | Multiple round-trips per retrieval; slower hybrid | ArcadeDB `vectorNeighbors() LET entity = chunk.in('EXTRACTED_FROM')` returns chunk + graph context | 3.0 |
 | Weighted fusion scoring (0.65 semantic + 0.20 structure + 0.15 ontology) | Naive averaging ignores structural context | Verify formula applied in results scoring | 2.8, 2.24 |
 | Document-structure expansion (chunk_links traversal) | Related chunks not retrieved together | Query matches chunk; neighbor chunks in same section also retrieved | 2.8 |
-| Ontology expansion (Neo4j traversal up to 2 hops) | Query "S-75" misses docs about "SA-2 Guideline" | Query "S-75"; receive results mentioning "SA-2" via relationships | 2 |
+| Ontology expansion via graph traversal | Query "S-75" misses docs about "SA-2 Guideline" | Query "S-75"; receive results mentioning "SA-2" via relationships | 2 |
 | Cross-encoder reranker (bge-reranker-v2-m3) | Top results less relevant without reranking | Enable reranker; top results re-ordered by cross-encoder | 2.24 |
 | Content-level deduplication (oversample 8x, filter) | Duplicate text appears multiple times | Top-k results have no duplicate content | 2.20 |
 | Min cosine similarity threshold (default 0.25) | Irrelevant noise in results | All returned results score >= threshold | 1, 2.24 |
 | Military ID bonus (0.03 for AN/, NSN, MIL-STD matches) | Exact military system mentions not prioritized | Query with military ID; receives score bonus | 2.20 |
-| GraphRAG local search (entity + community reports) | Cannot drill into specific entities | `strategy=graphrag_local`; receive entity + community context | 2.9 |
-| GraphRAG global search (cross-community summaries) | Cannot generate high-level summaries | `strategy=graphrag_global`; receive multi-community synthesis | 2.9 |
-| GraphRAG drift search (community-informed expansion) | Cannot detect novel concepts | `strategy=graphrag_drift`; receive in-depth analysis | 2.9 |
-| GraphRAG basic search (vector over text units) | No simple fallback when community detection fails | `strategy=graphrag_basic`; receive concise answer | 2.9 |
-| GraphRAG precondition checks (409 if indexing not complete) | Silent empty results confuse user | Query before indexing returns 409; after indexing returns results | 2.13 |
-| GraphRAG DRIFT error surfacing (422/error key on primer parse failure) | DRIFT silently returns empty results on malformed LLM JSON | Induce bad JSON from model; sync endpoint returns 422; async job shows "failed" status with error detail | 2.33 |
-| DRIFT primer tolerant JSON parsing (5-strategy recovery) | DRIFT fails on think-tag-wrapped or truncated JSON from Ollama | Run DRIFT with Ollama thinking model; primer parses JSON despite reasoning wrappers | 2.33 |
-| Async GraphRAG queries (submit/poll/fetch via Celery) | Long queries timeout in browser | Submit query; poll status; fetch results asynchronously | 2.29 |
-| GraphRAG context provenance (all 4 search types) | GraphRAG responses lack source traceability | Run GraphRAG Local query; provenance array contains community reports with entities + source documents | 2.32 |
 
 ---
 
@@ -120,22 +163,21 @@
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
 | Active registry ontology as shared backend loader | Backend ignores custom ontology; uses only repo YAML | Create registry with custom ontology, activate; `load_ontology()` returns registry ontology | 2.34 |
+| Schema sync triggered on active registry PUT | ArcadeDB schema drifts after in-place ontology edits | Edit active registry ontology via PUT; schema sync runs automatically; new types appear in ArcadeDB | 3.0 |
 | Ontology cache TTL (5s) + explicit invalidation | Stale ontology served after registry update | Update active registry ontology; within 1s new ontology is returned by `load_ontology()` | 2.34 |
 | Scoring weights cache invalidation on ontology change | Retrieval scoring uses stale weights after ontology switch | Activate registry with different `scoring_weights`; next retrieval uses new weights | 2.34 |
 | Docling-Graph receives ontology_definition per request | Extraction uses startup YAML instead of active registry | Activate registry; ingest doc; Docling-Graph logs show registry ontology version | 2.34 |
-| Docling-Graph RuntimeExtractionContext caching | Prompt rebuilding on every request (performance) | Same ontology sent repeatedly; second call uses cached context | 2.34 |
+| Docling-Graph RuntimeExtractionContext caching | Template rebuilding on every request (performance) | Same ontology sent repeatedly; second call uses cached templates (LRU by hash) | 2.34 |
 | Query profile registry CRUD (create, list, get, update, activate) | Cannot manage ontology registries | Create registry via UI; list shows it; activate toggles `is_active` | 2.34 |
 | Per-profile CRUD (append, update, delete) | Cannot manage individual query profiles | Add section profile; update its traversals; delete it | 2.34 |
 | Dossier profile references validated | Dossier references non-existent section; search fails | Create dossier with missing `section_profile_ids`; API returns 400 | 2.34 |
 | Section profile deletion blocked if dossier references it | Deleting section breaks referencing dossier silently | Delete section referenced by dossier; API returns 400 | 2.34 |
-| Section search (POST /v1/query-profiles/search/section) | Cannot execute single-profile graph traversal | Search with section profile_id + entity name; receive traversal results | 2.34 |
+| Section search (POST /v1/query-profiles/search/section) | Cannot execute single-profile graph traversal | Search with section profile_id + entity name; receive traversal results via GraphStore | 2.34 |
 | Dossier search (POST /v1/query-profiles/search/dossier) | Cannot execute multi-section compound query | Search with dossier profile_id; receive sections with items | 2.34 |
-| Root entity resolution (alias + fulltext) | Search for entity alias returns 404 | Search "SA-2" when canonical name is "S-75 Dvina"; entity resolves correctly | 2.34 |
+| Root entity resolution (alias + fulltext + tie-break) | Search for entity alias returns 404 | Search "SA-2" when canonical name is "S-75 Dvina"; entity resolves via `resolve_root_entity()` | 2.34 |
 | Query profile modes in Search page dropdown | Custom query profiles not accessible from search UI | Activate registry with exposed profiles; Search page dropdown shows them | 2.34 |
 | Profiles tab disabled until active registry exists | User creates profiles without ontology context | No active registry; Profiles tab greyed out or empty state shown | 2.34 |
 | Starter profiles seeded from repository ontology | User must build profiles from scratch | Click seed button; pre-built section/dossier profiles populate | 2.34 |
-| Neo4j composite index (entity_name_type_lookup) | Slow (name, entity_type) lookups on large graphs | `ensure_indexes` creates composite index; relationship queries use it | 2.34 |
-| Extraction groups from ontology (with custom catch-all) | Custom entity types not grouped for extraction | Ontology with custom types; Docling-Graph groups them (custom bucket for uncategorized) | 2.34 |
 
 ---
 
@@ -152,18 +194,24 @@
 
 ---
 
-## 5. GRAPHRAG SERVICE
+## 5. COMMUNITY DETECTION & GLOBAL QUERY
+
+> **ArcadeDB reference:** Consult `ArcadeDB Manual.pdf` Appendix 8.1 (Graph Algorithms — Louvain, Leiden) and section 6.5 (Graph Algorithms function reference) when verifying community detection features below.
 
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| Scheduled indexing (Celery Beat, configurable interval) | Community reports stale | Indexing runs on configured interval | 2.9 |
-| Manual index trigger (POST /v1/graphrag/index with confirm=true) | Cannot force re-indexing | Trigger index; full rebuild starts | 2.15 |
-| Manual update trigger (POST /v1/graphrag/update) | Cannot incrementally update | Trigger update; only new docs processed | 2.28 |
-| Update with no new docs halts immediately | Wastes LLM calls re-processing unchanged data | Update with no new files; halts at `load_update_documents` in <5s | 2.28 |
-| Redis lock prevents overlapping runs | Multiple indexing runs corrupt reports | Trigger during active run; skips with "locked" | 2.15 |
-| Incremental indexing (delta-only on subsequent runs) | Each run reprocesses entire graph | Second run only processes new entities | 2.28 |
-| Backup/restore on update failure | Failed update leaves corrupted state | Induce failure; previous state restored from backup | 2.28 |
-| Stale Redis lock cleanup on worker startup | Worker crash leaves lock held indefinitely | Kill worker mid-index; restart; lock auto-cleaned | 2.28 |
+| Scheduled community detection (Celery Beat, configurable interval) | Community reports stale; global query returns outdated synthesis | Beat schedule runs `run_community_detection_task` at `COMMUNITY_DETECTION_INTERVAL_MINUTES` | 3.0 |
+| Manual trigger (POST /v1/community/detect with mode=incremental|full) | Cannot force recomputation after ingest | Trigger detection; task starts; status endpoint returns run_id | 3.0 |
+| Post-ingest hook (counter threshold) | Community reports lag behind ingest | `COMMUNITY_DETECTION_POST_INGEST_ENABLED=true`; after N documents ingested, detection triggers | 3.0 |
+| Redis lock prevents overlapping runs | Concurrent community detection corrupts reports | Trigger during active run; second trigger returns "skipped" | 3.0 |
+| Domain-entity projection (excludes structural types) | Community clusters dominated by Document/TextChunk structural nodes | Louvain runs only on ontology entity types; Document, TextChunk, ImageChunk, Alias, CommunityReport excluded | 3.0 |
+| Incremental reports (membership hash diff) | Regenerates all reports on every run (expensive) | Second run with unchanged graph regenerates 0 reports; `reports_reused` counter populated | 3.0 |
+| Membership hash uses `(entity_type, name)` tuples | Hash collisions across types treat changed communities as unchanged | Hash sort key includes type; cross-type entities with same name don't collide | 3.0 |
+| LLM report generation with configurable model | Cannot swap between Ollama models | `COMMUNITY_REPORT_LLM_MODEL=llama3.2` (or any) controls which model generates reports | 3.0 |
+| Configurable prompt via `COMMUNITY_REPORT_LLM_PROMPT` | Cannot customize domain-specific report prompts | Env var override replaces default military domain prompt | 3.0 |
+| CommunityReport vertex with report_embedding | Global query vector search has nothing to match | ArcadeDB `SELECT FROM CommunityReport WHERE report_embedding IS NOT NULL` returns rows after detection | 3.0 |
+| Global query strategy returns synthesized answer | Cannot answer corpus-wide questions | Query `strategy=global`; receives text response with community sources cited | 3.0 |
+| community_runs table tracks run history | Cannot audit community detection history | PostgreSQL `retrieval.community_runs` has rows for each run with status, counts, timings | 3.0 |
 
 ---
 
@@ -172,16 +220,26 @@
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
 | Trusted data proposal workflow (PROPOSED -> APPROVED -> INDEXED) | Untrusted data indexed without oversight | Submit via `/v1/trusted-data/ingest`; status is PROPOSED until curator approves | 2.6 |
-| Trusted data search (separate Qdrant collection) | Cannot distinguish human-reviewed from extracted knowledge | `/v1/trusted-data/query` returns only approved data | 2.6 |
+| Trusted data search via ArcadeDB TrustedTextChunk vertices | Cannot distinguish human-reviewed from extracted knowledge | `/v1/trusted-data/query` returns only approved data via `vector_search("TrustedTextChunk", ...)` | 3.0 |
 | Feedback endpoint (auto-creates patch) | No mechanism to report extraction errors | `/v1/feedback` with correction creates patch | 2 |
-| Dual-approval for graph mutations | Single curator can corrupt graph | Graph patch with one approval rejected | Planned (3) |
+| Governance re-embed path uses GraphStore | Chunk embeddings updated via legacy Qdrant/pgvector writes | Patch apply flow calls `graph_store.set_vertex_embedding()` instead of `chunk.embedding = ...` | 3.0 |
+| Dual-approval for graph mutations | Single curator can corrupt graph | Graph patch with one approval rejected | Planned |
 
 ---
 
 ## 7. INFRASTRUCTURE & RESILIENCE
 
+> **ArcadeDB reference:** Consult `ArcadeDB Manual.pdf` sections 5.5.20 (Docker), 4.15 (High Availability), 6.9 (Settings), and 4.6 (Transactions) when verifying infrastructure features below.
+
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
+| ArcadeDB service (built from source via manage.sh) | Graph + vector database unavailable | `docker compose ps` shows arcadedb healthy; `GET http://localhost:2480/api/v1/ready` returns 204 | 3.0 |
+| manage.sh `ensure_all_repos()` pulls ArcadeDB/Docling/Docling-Graph | Stale third-party code in containers | `./manage.sh --start` logs "Pulling latest ArcadeDB/Docling/Docling-Graph..." before `dc build` | 3.0 |
+| ArcadeDB token-based auth with re-auth on 401 | Long-running workers lose auth mid-task | Client retries once on 401 with fresh login; no manual token refresh | 3.0 |
+| ArcadeDB schema sync at API startup | Ingest writes fail due to missing vertex/edge types | API startup logs "ArcadeDB schema synced: N types, M properties, K indexes" | 3.0 |
+| Worker `ensure_ready_sync()` before first graph write | Race condition when worker starts before API schema sync | Graph-writing tasks retry with backoff if vertex types don't exist | 3.0 |
+| LSM_VECTOR indexes with HNSW (hierarchical) | Slow vector search at scale (100K+ vectors) | TextChunk and CommunityReport indexes have `addHierarchy: true` | 3.0 |
+| INT8 quantization on vector indexes | 4x memory usage for vectors | LSM_VECTOR metadata includes `quantization: 'INT8'` | 3.0 |
 | Configurable retries per pipeline stage | Hard-coded retries impossible to tune | Set `PREPARE_MAX_RETRIES=3`; doc fails after 3 attempts | 2.18 |
 | Configurable task time limits (soft + hard) | Fixed limits fail for varying doc sizes | Set `PREPARE_SOFT_TIME_LIMIT=7200`; large PDFs complete | 2.18 |
 | Docling 503 retry loop (no budget consumed) | Busy errors consume retry budget | 503 triggers in-task retry with backoff; doesn't decrement max retries | 2.14 |
@@ -200,13 +258,14 @@
 
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| Query mode dropdown (6 retrieval modes + dynamic query profiles) | User stuck with default strategy | Query page dropdown shows all modes in grouped optgroups; each runs correct query | 2.11, 2.34 |
+| Query mode dropdown (basic, hybrid, global + dynamic query profiles) | User stuck with default strategy | Query page dropdown shows all modes in grouped optgroups; each runs correct query | 3.0 |
+| Global query detail view | Synthesized answer with source citations not visible | Select `global` mode, submit query; GlobalQueryDetail shows text + expandable community sources | 3.0 |
 | Modality sub-filter (text, image, all) for hybrid | Cannot isolate result types | Filter visible when hybrid selected; affects results | 2.11 |
 | Live status polling with terminal state detection | UI polls forever; wastes resources | Polling stops at COMPLETE/FAILED/PARTIAL_COMPLETE/ERROR | 2.11 |
 | Terminal status badges (green/red/amber) | Cannot distinguish success from failure | Color-coded badges for all terminal states | 2.11 |
 | Directory Monitor (register/remove watch dirs) | Cannot set up auto-ingest | Directory Monitor page lists active dirs; add/remove works | 2.5 |
 | Graph Explorer (entity/relationship search + creation) | Cannot explore or curate knowledge graph | Search and creation forms with full ontology | 2.5, 2.11 |
-| Graph Explorer subgraph view (neighborhood visualization) | Clicking graph circle shows only 1 node for orphan entities | Search entity; click graph circle; see multi-node subgraph (direct edges or CO_OCCURS_WITH) | 2.31 |
+| Graph Explorer subgraph view (neighborhood visualization) | Clicking graph circle shows only 1 node for orphan entities | Search entity; click graph circle; see multi-node subgraph | 2.31 |
 | Trusted Data panel (submit/approve/reject/search) | Cannot interact with trusted data layer | Submission form, approval queue, search interface | 2.6 |
 
 ---
@@ -217,6 +276,7 @@
 |---|---|---|---|
 | Liveness probe (GET /v1/health) | Crashed API not detected | Returns `{"status": "ok"}` | 1 |
 | Readiness probe with dependency checks | API starts before dependencies; early requests fail | `/v1/health/ready` returns `"degraded"` when deps down, `"ready"` when up | 1 |
+| Community detection API endpoints | Cannot trigger or monitor community runs | `/v1/community/detect`, `/v1/community/status`, `/v1/community/reports` all respond | 3.0 |
 
 ---
 
@@ -231,41 +291,45 @@ These features have broken before and should be tested carefully after any chang
 5. **Docling 503 handling** (2.14) — Must not consume retry budget. Test with mock 503s.
 6. **Chord resilience** (2.22) — Single task failure must not kill pipeline. Verify error dicts returned.
 7. **Concurrent dispatch** (2.23) — Multiple uploads of same doc must not create duplicate runs.
-8. **GraphRAG incremental update** (2.28, 2.29) — NaN bugs in update process. Verify reindex completes.
-9. **Stale run cleanup** (2.18, 2.23) — Crashed workers must reset PROCESSING docs. Test worker crash.
-10. **Image description text search** (2.26) — Descriptions must appear in text search results.
-11. **Chunk_links traversal** (2.8, 2.26) — Structure expansion must include all link types.
-12. **Translation tooltips** (2.27) — Must not break image description annotations.
-13. **Ontology subgraph orphans** (2.31) — Specification entities must connect to parent systems via SPECIFIED_BY. Test with "missile" search; click graph circle; verify multi-node subgraph.
-14. **GraphRAG context provenance** (2.32) — Depends on communities.parquet having entity_ids/relationship_ids. Test all 4 strategies; verify provenance array populated with source_documents.
-15. **DRIFT primer JSON tolerance** (2.33) — Ollama thinking models wrap JSON in reasoning tags. DRIFT must parse through wrappers; failures must surface as errors, not empty results.
-16. **Neo4j (name, entity_type) matching** (2.34) — Relationship upsert now matches on both name and entity_type. Existing graphs with inconsistent type casing may need re-extraction.
-17. **Ontology cache invalidation chain** (2.34) — `invalidate_ontology_cache()` must clear both the ontology TTL cache and the scoring weights LRU cache. Test by switching active registry and verifying new weights take effect.
-18. **Query profile dossier search** (2.34) — Dossier search compiles multi-section Cypher unions. Test with profiles that have multiple traversals with different hop ranges.
+8. **Stale run cleanup** (2.18, 2.23) — Crashed workers must reset PROCESSING docs. Test worker crash.
+9. **Image description text search** (2.26) — Descriptions must appear in text search results.
+10. **Chunk_links traversal** (2.8, 2.26) — Structure expansion must include all link types.
+11. **Translation tooltips** (2.27) — Must not break image description annotations.
+12. **Ontology subgraph orphans** (2.31) — Specification entities must connect to parent systems via SPECIFIED_BY. Test with "missile" search; click graph circle; verify multi-node subgraph.
+13. **Ontology cache invalidation chain** (2.34) — `invalidate_ontology_cache()` must clear both the ontology TTL cache and the scoring weights LRU cache. Test by switching active registry and verifying new weights take effect.
+14. **Query profile dossier search** (2.34) — Dossier search compiles multi-section traversals via GraphStore. Test with profiles that have multiple traversals with different hop ranges.
+15. **ArcadeDB schema sync on PUT** (3.0) — In-place ontology edits on active registry must trigger schema sync. Test by adding a new entity type via PUT and verifying it appears in ArcadeDB schema.
+16. **Entity merge key correctness** (3.0) — Dedup uses `(entity_type, identity_fields)`, NOT universal name. Test with cross-type name collisions (e.g., "Patriot" PLATFORM vs MISSILE_SYSTEM).
+17. **Provenance via EXTRACTED_FROM** (3.0) — Entity vertices shared across documents do NOT carry `source_document_id`. Provenance flows through EXTRACTED_FROM edges. Test document delete: shared entity survives with remaining edges; orphaned entities (zero edges) are cleaned up.
+18. **Worker ensure_ready_sync race** (3.0) — Worker can start before API schema sync. Graph-writing tasks must retry until types exist. Test by starting worker before API and verifying retry/backoff behavior.
+19. **Community detection projection** (3.0) — Louvain must run only on domain entity types, excluding structural types (Document, TextChunk, ImageChunk, Alias, CommunityReport). Verify communities are not dominated by chunk clusters.
+20. **Membership hash stability** (3.0) — Hash must use `(entity_type, name)` tuples to prevent cross-type collisions and remain stable through canonical_name changes.
 
 ---
 
 ## TESTING PROTOCOL
 
 ### After Every Code Change
-1. Run full unit test suite: `python -m pytest tests/unit/ --tb=short`
+1. Run full unit test suite: `uv run pytest tests/unit/ --tb=short`
 2. Review this checklist for sections relevant to changed files
 3. Add new features/fixes to this checklist before committing
 
 ### Quick Smoke Test (5 min)
-1. Upload PDF document -> verify COMPLETE status
-2. Query text search -> verify results with preview
-3. Check `/v1/health/ready` -> all systems ready
+1. Upload PDF document → verify COMPLETE status
+2. Query text search (strategy=basic) → verify results with preview
+3. Query hybrid search → verify cross-model results
+4. Check `/v1/health/ready` → all systems ready
 
 ### Integration Test (30 min)
 1. Upload multi-page PDF with images and tables
 2. Verify text search, image search, hybrid search
-3. Verify GraphRAG local/global search (after indexing)
+3. Trigger community detection; verify global query returns synthesized answer
 4. Verify DoclingViewer image hover tooltips
 5. Verify standalone image upload + viewer
+6. Verify document delete removes chunk vertices and cleans orphan entities
 
 ### Regression Test (60 min)
-Run against all 18 Known Fragile Features listed above.
+Run against all 20 Known Fragile Features listed above.
 
 ---
 
@@ -275,11 +339,20 @@ Run against all 18 Known Fragile Features listed above.
 |---|---|---|
 | `CHUNK_MAX_TOKENS` | 512 | Embedding quality degrades |
 | `EMBED_TEXT_BATCH_SIZE` | 128 | Large docs timeout |
-| `QDRANT_TIMEOUT_SECONDS` | 60 | Large upserts fail |
 | `DOCLING_CONCURRENCY` | 1 | GPU OOM from parallel conversions |
 | `DOCLING_TIMEOUT_SECONDS` | 3600 | Large PDFs timeout |
 | `CELERY_VISIBILITY_TIMEOUT` | 10800 | Long tasks redelivered |
 | `RETRIEVAL_SEMANTIC_WEIGHT` | 0.65 | Fusion scoring breaks |
 | `RERANKER_ENABLED` | true | Ranking quality drops |
-| `GRAPHRAG_INDEXING_ENABLED` | true | GraphRAG queries return 409 |
 | `GRAPH_NODE_MIN_CONFIDENCE` | 0.60 | Low-confidence entities pollute graph |
+| `ARCADEDB_URL` | `http://arcadedb:2480` | Cannot reach graph database |
+| `ARCADEDB_DATABASE` | `eip_knowledge_graph` | Wrong database targeted |
+| `COMMUNITY_DETECTION_ENABLED` | true | Global query returns empty |
+| `COMMUNITY_DETECTION_ALGORITHM` | `leiden` | Wrong algorithm may fail on small graphs |
+| `COMMUNITY_DETECTION_INTERVAL_MINUTES` | 60 | Too frequent = LLM cost; too rare = stale reports |
+| `COMMUNITY_DETECTION_POST_INGEST_THRESHOLD` | 5 | Hook triggers too often or too rarely |
+| `DOCLING_GRAPH_EXTRACTION_CONTRACT` | `delta` | `direct` loses delta resolvers and gleaning |
+| `DOCLING_GRAPH_PARALLEL_WORKERS` | 2 | Too low = slow extraction; too high = GPU contention |
+| `DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE` | 2048 | Too large = LLM context overflow; too small = too many batches |
+| `DOCLING_GRAPH_GLEANING_ENABLED` | true | Lower extraction recall |
+| `DOCLING_GRAPH_RESOLVERS_ENABLED` | true | Duplicate entities across batches |
