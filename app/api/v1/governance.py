@@ -15,7 +15,6 @@ from app.schemas.governance import (
     FeedbackResponse,
     FeedbackType,
     PatchApprovalCreate,
-    PatchApprovalResponse,
     PatchResponse,
     PatchState,
 )

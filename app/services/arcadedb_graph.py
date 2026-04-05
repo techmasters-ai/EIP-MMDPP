@@ -51,17 +51,31 @@ def _count(result: list[dict[str, Any]]) -> int:
 
 
 def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
-    """Map an ArcadeDB row dict to a GraphEntityResult."""
+    """Map an ArcadeDB row dict to a GraphEntityResult.
+
+    When the row originates from a ``vectorNeighbors`` query, ArcadeDB
+    includes a ``$distance`` (or ``distance``) field.  For COSINE distance
+    the value is in the range [0, 2]; we convert it to a similarity score
+    ``1 - distance`` and store it in ``extraction_confidence`` so callers
+    can filter on a threshold without knowing about the distance semantics.
+    """
+    # Determine extraction_confidence, preferring vector distance when present.
+    distance = row.get("$distance", row.get("distance"))
+    if distance is not None:
+        extraction_confidence = 1.0 - float(distance)
+    else:
+        extraction_confidence = row.get("extraction_confidence")
+
     props = {k: v for k, v in row.items() if k not in (
         "@rid", "name", "entity_type", "canonical_name", "extraction_confidence",
-        "@type", "@cat",
+        "@type", "@cat", "$distance", "distance",
     )}
     return GraphEntityResult(
         node_id=str(row.get("@rid", row.get("node_id", ""))),
         name=row.get("name", ""),
         entity_type=row.get("entity_type", ""),
         canonical_name=row.get("canonical_name"),
-        extraction_confidence=row.get("extraction_confidence"),
+        extraction_confidence=extraction_confidence,
         properties=props,
     )
 
@@ -382,12 +396,11 @@ class ArcadeDBGraphStore:
         self, node_rid: str, provenance: ProvenanceMetadata,
     ) -> None:
         sql = (
-            "CREATE EDGE EXTRACTED_FROM FROM :node_rid "
+            f"CREATE EDGE EXTRACTED_FROM FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET page_numbers = :page_numbers, created_at = sysdate()"
         )
         params = {
-            "node_rid": node_rid,
             "document_id": provenance.document_id,
             "page_numbers": provenance.page_numbers,
         }
@@ -424,10 +437,9 @@ class ArcadeDBGraphStore:
             "document_id": provenance.document_id,
             "page_numbers": provenance.page_numbers,
         }
-        for i, rid in enumerate(targets):
-            params[f"rid_{i}"] = rid
+        for rid in targets:
             statements.append(
-                f"CREATE EDGE EXTRACTED_FROM FROM :rid_{i} "
+                f"CREATE EDGE EXTRACTED_FROM FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET page_numbers = :page_numbers, created_at = sysdate()"
             )
@@ -715,10 +727,10 @@ class ArcadeDBGraphStore:
     ) -> list[dict[str, Any]]:
         """Return text/image chunks linked to *node_id* via EXTRACTED_FROM."""
         sql = (
-            "SELECT expand(in('EXTRACTED_FROM')) FROM :node_id"
+            f"SELECT expand(in('EXTRACTED_FROM')) FROM {node_id}"
         )
         rows = await self._client.query(
-            self._database, "sql", sql, {"node_id": node_id},
+            self._database, "sql", sql,
         )
         return rows
 
@@ -769,9 +781,10 @@ class ArcadeDBGraphStore:
         node_id: str,
         alias: str,
     ) -> None:
-        """Create an Alias vertex and HAS_ALIAS edge to the target node."""
+        """Create an Alias vertex (upsert) and HAS_ALIAS edge to the target node."""
         sql = (
-            "CREATE VERTEX Alias SET alias = :alias, created_at = sysdate()"
+            "UPDATE Alias SET alias_name = :alias, created_at = sysdate() "
+            "UPSERT WHERE alias_name = :alias"
         )
         alias_result = await self._client.command(
             self._database, "sql", sql, {"alias": alias},
@@ -842,7 +855,8 @@ class ArcadeDBGraphStore:
         """
         index_name = f"{vertex_type}[{embedding_property}]"
         sql = (
-            "SELECT *, @rid AS node_id "
+            "SELECT name, entity_type, canonical_name, extraction_confidence, "
+            "$distance, @rid AS node_id "
             f"FROM (SELECT expand(vectorNeighbors('{index_name}', "
             ":query_vector, :top_k)))"
         )
@@ -914,7 +928,8 @@ class ArcadeDBGraphStore:
             "LET entity = chunk.in('EXTRACTED_FROM')"
         )
         img_sql = (
-            "SELECT *, @rid AS node_id "
+            "SELECT name, entity_type, canonical_name, extraction_confidence, "
+            "$distance, @rid AS node_id "
             f"FROM (SELECT expand(vectorNeighbors('{image_index}', "
             ":image_vector, :top_k)))"
         )
@@ -1148,10 +1163,10 @@ class ArcadeDBGraphStore:
     async def ensure_indexes(self) -> None:
         """Create any missing indexes required for efficient queries."""
         indexes = [
-            "CREATE INDEX IF NOT EXISTS ON Document (document_id) UNIQUE",
-            "CREATE INDEX IF NOT EXISTS ON TextChunk (chunk_id) UNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON Document (document_id) UNIQUE_HASH_INDEX",
+            "CREATE INDEX IF NOT EXISTS ON TextChunk (chunk_id) UNIQUE_HASH_INDEX",
             "CREATE INDEX IF NOT EXISTS ON TextChunk (document_id) NOTUNIQUE",
-            "CREATE INDEX IF NOT EXISTS ON ImageChunk (chunk_id) UNIQUE",
+            "CREATE INDEX IF NOT EXISTS ON ImageChunk (chunk_id) UNIQUE_HASH_INDEX",
             "CREATE INDEX IF NOT EXISTS ON ImageChunk (document_id) NOTUNIQUE",
         ]
         for sql in indexes:
@@ -1234,12 +1249,11 @@ class ArcadeDBGraphStore:
         self, node_rid: str, provenance: ProvenanceMetadata,
     ) -> None:
         sql = (
-            "CREATE EDGE EXTRACTED_FROM FROM :node_rid "
+            f"CREATE EDGE EXTRACTED_FROM FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET page_numbers = :page_numbers, created_at = sysdate()"
         )
         params = {
-            "node_rid": node_rid,
             "document_id": provenance.document_id,
             "page_numbers": provenance.page_numbers,
         }
@@ -1276,10 +1290,9 @@ class ArcadeDBGraphStore:
             "document_id": provenance.document_id,
             "page_numbers": provenance.page_numbers,
         }
-        for i, rid in enumerate(targets):
-            params[f"rid_{i}"] = rid
+        for rid in targets:
             statements.append(
-                f"CREATE EDGE EXTRACTED_FROM FROM :rid_{i} "
+                f"CREATE EDGE EXTRACTED_FROM FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET page_numbers = :page_numbers, created_at = sysdate()"
             )
@@ -1597,9 +1610,10 @@ class ArcadeDBGraphStore:
         node_id: str,
         alias: str,
     ) -> None:
-        """Synchronous alias creation."""
+        """Synchronous alias creation (upsert)."""
         sql = (
-            "CREATE VERTEX Alias SET alias = :alias, created_at = sysdate()"
+            "UPDATE Alias SET alias_name = :alias, created_at = sysdate() "
+            "UPSERT WHERE alias_name = :alias"
         )
         alias_result = self._client.command_sync(
             self._database, "sql", sql, {"alias": alias},

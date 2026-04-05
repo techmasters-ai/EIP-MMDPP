@@ -5,8 +5,6 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import Field
-
 from app.schemas.common import APIModel
 
 

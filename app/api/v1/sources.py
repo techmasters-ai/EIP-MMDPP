@@ -1,9 +1,7 @@
 """Sources, document upload, artifacts, and watch directory endpoints."""
 
-import hashlib
 import logging
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy import select
@@ -11,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_async_session
 from app.models.ingest import Artifact, Document, DocumentElement, Source, WatchDir
-from app.schemas.common import CursorPage
 from app.schemas.sources import (
     ArtifactResponse,
     BatchStatusRequest,

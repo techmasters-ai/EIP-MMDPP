@@ -86,6 +86,9 @@ services:
       dockerfile: Dockerfile
     environment:
       JAVA_OPTS: >-
+        -XX:InitialRAMPercentage=50.0
+        -XX:MaxRAMPercentage=75.0
+        -Darcadedb.asyncOperationsQueueSize=2048
         -Darcadedb.server.rootPassword=${ARCADEDB_ROOT_PASSWORD:-eip_arcadedb_secret}
         -Darcadedb.server.defaultDatabases=${ARCADEDB_DATABASE:-eip_knowledge_graph}[root]
         -Darcadedb.server.httpTxExpireTimeout=30

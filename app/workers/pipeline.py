@@ -48,21 +48,23 @@ _UNICODE_NORMALIZE = str.maketrans({
 })
 
 
-def _normalize_text(text: str | None) -> str | None:
-    """Replace problematic Unicode chars with ASCII equivalents."""
-    if text is None:
-        return None
-    return text.translate(_UNICODE_NORMALIZE)
 from app.workers._db import get_worker_db as _get_db
 from app.config import get_settings
+from app.services.redis_utils import get_redis
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Shared Redis client (singleton connection pool) — also used for Docling
 # concurrency locks and the post-ingest community trigger counter.
-from app.services.redis_utils import get_redis
 _redis_client = get_redis()
+
+
+def _normalize_text(text: str | None) -> str | None:
+    """Replace problematic Unicode chars with ASCII equivalents."""
+    if text is None:
+        return None
+    return text.translate(_UNICODE_NORMALIZE)
 
 # Pipeline status constants
 STATUS_PROCESSING = "PROCESSING"
@@ -1417,7 +1419,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
         # two places (elements[].image_base64 and document_json.pictures[].image)
         # and they may not correspond 1:1.  Describing the stored artifacts
         # guarantees the description matches the image that will be served.
-        from app.models.ingest import DocumentElement, Document as DocModel
+        from app.models.ingest import DocumentElement
         from app.services.document_analysis import _describe_single_image
         from sqlalchemy import select as sa_select
         from concurrent.futures import ThreadPoolExecutor, as_completed

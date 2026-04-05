@@ -5,8 +5,6 @@ variants to avoid mixing async drivers into synchronous Celery tasks.
 """
 
 import hashlib
-import io
-from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 
 import aiobotocore.session

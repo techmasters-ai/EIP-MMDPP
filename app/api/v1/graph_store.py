@@ -9,7 +9,6 @@ from app.db.session import get_async_session, get_graph_store
 from app.schemas.graph_store import (
     GraphEntityIngest,
     GraphIngestResponse,
-    GraphEntityResult,
     GraphNeighborhoodRequest,
     GraphNeighborhoodResponse,
     GraphQueryRequest,

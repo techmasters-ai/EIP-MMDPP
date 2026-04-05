@@ -41,6 +41,42 @@ def _resolve_ontology(
     return ontology, version
 
 
+def _acquire_permit(document_id: str, timeout: float):
+    """Acquire a Docling-Graph concurrency permit. Returns the lock or raises."""
+    settings = get_settings()
+    r = _get_redis()
+    concurrency = settings.docling_graph_concurrency
+    lock_timeout = timeout + 60  # auto-release safety margin beyond HTTP timeout
+
+    for permit_i in range(concurrency):
+        candidate = r.lock(
+            f"docling-graph:permit:{permit_i}",
+            timeout=lock_timeout,
+            blocking=False,
+        )
+        if candidate.acquire(blocking=False):
+            return candidate
+
+    logger.warning(
+        "Docling-Graph at capacity (%d/%d) for document %s — raising for retry",
+        concurrency, concurrency, document_id,
+    )
+    raise DoclingGraphCapacityError(
+        f"All {concurrency} Docling-Graph permits in use"
+    )
+
+
+def _release_permit(permit_lock, document_id: str) -> None:
+    """Release a concurrency permit, tolerating expiry."""
+    try:
+        permit_lock.release()
+    except redis_lib.exceptions.LockNotOwnedError:
+        logger.warning(
+            "Docling-Graph permit lock expired before release for document %s",
+            document_id,
+        )
+
+
 def extract_graph(
     text: str,
     document_id: str,
@@ -77,32 +113,8 @@ def extract_graph(
     if entities_context is not None:
         payload["entities_context"] = entities_context
 
-    # --- Redis concurrency gate (mirrors Docling permit pattern in pipeline.py) ---
-    r = _get_redis()
-    concurrency = settings.docling_graph_concurrency
-    lock_timeout = timeout + 60  # auto-release safety margin beyond HTTP timeout
-    permit_lock = None
-
-    for permit_i in range(concurrency):
-        candidate = r.lock(
-            f"docling-graph:permit:{permit_i}",
-            timeout=lock_timeout,
-            blocking=False,
-        )
-        if candidate.acquire(blocking=False):
-            permit_lock = candidate
-            break
-
-    if permit_lock is None:
-        logger.warning(
-            "Docling-Graph at capacity (%d/%d) for document %s — raising for retry",
-            concurrency,
-            concurrency,
-            document_id,
-        )
-        raise DoclingGraphCapacityError(
-            f"All {concurrency} Docling-Graph permits in use"
-        )
+    # --- Redis concurrency gate ---
+    permit_lock = _acquire_permit(document_id, timeout)
 
     logger.info(
         "Calling Docling-Graph service for document %s (%d chars, group=%s, mode=%s, permit acquired)",
@@ -113,13 +125,7 @@ def extract_graph(
         response = httpx.post(url, json=payload, timeout=timeout)
         response.raise_for_status()
     finally:
-        try:
-            permit_lock.release()
-        except redis_lib.exceptions.LockNotOwnedError:
-            logger.warning(
-                "Docling-Graph permit lock expired before release for document %s",
-                document_id,
-            )
+        _release_permit(permit_lock, document_id)
 
     result = response.json()
 
@@ -155,25 +161,7 @@ def extract_graph_all(
     )
 
     # --- Redis concurrency gate ---
-    r = _get_redis()
-    concurrency = settings.docling_graph_concurrency
-    lock_timeout = timeout + 60
-    permit_lock = None
-
-    for permit_i in range(concurrency):
-        candidate = r.lock(
-            f"docling-graph:permit:{permit_i}",
-            timeout=lock_timeout,
-            blocking=False,
-        )
-        if candidate.acquire(blocking=False):
-            permit_lock = candidate
-            break
-
-    if permit_lock is None:
-        raise DoclingGraphCapacityError(
-            f"All {concurrency} Docling-Graph permits in use"
-        )
+    permit_lock = _acquire_permit(document_id, timeout)
 
     logger.info(
         "Calling Docling-Graph /extract-all for document %s (%d chars, permit acquired)",
@@ -193,13 +181,7 @@ def extract_graph_all(
         )
         response.raise_for_status()
     finally:
-        try:
-            permit_lock.release()
-        except redis_lib.exceptions.LockNotOwnedError:
-            logger.warning(
-                "Docling-Graph permit lock expired before release for document %s",
-                document_id,
-            )
+        _release_permit(permit_lock, document_id)
 
     result = response.json()
     logger.info(

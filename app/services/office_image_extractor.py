@@ -9,7 +9,6 @@ into the Docling JSON so derive_picture_descriptions can process them.
 import base64
 import io
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

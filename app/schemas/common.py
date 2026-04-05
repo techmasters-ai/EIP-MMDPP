@@ -1,7 +1,5 @@
 """Shared Pydantic schema utilities."""
 
-import uuid
-from datetime import datetime
 from typing import Generic, Optional, TypeVar
 
 from pydantic import BaseModel, ConfigDict

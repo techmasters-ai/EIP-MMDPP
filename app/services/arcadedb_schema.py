@@ -34,14 +34,14 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("page_number", "INTEGER"),
         ("modality", "STRING"),
         ("classification", "STRING"),
-        ("text_embedding", "LIST"),
+        ("text_embedding", "ARRAY_OF_FLOATS"),
     ],
     "ImageChunk": [
         ("chunk_id", "STRING"),
         ("document_id", "STRING"),
         ("artifact_id", "STRING"),
         ("page_number", "INTEGER"),
-        ("image_embedding", "LIST"),
+        ("image_embedding", "ARRAY_OF_FLOATS"),
     ],
     "TrustedTextChunk": [
         ("chunk_id", "STRING"),
@@ -49,7 +49,7 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("content_text", "STRING"),
         ("source", "STRING"),
         ("classification", "STRING"),
-        ("text_embedding", "LIST"),
+        ("text_embedding", "ARRAY_OF_FLOATS"),
     ],
     "Document": [
         ("document_id", "STRING"),
@@ -68,7 +68,7 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("member_count", "INTEGER"),
         ("key_entities", "LIST"),
         ("key_relationships", "LIST"),
-        ("report_embedding", "LIST"),
+        ("report_embedding", "ARRAY_OF_FLOATS"),
         ("model_name", "STRING"),
         ("generated_at", "DATETIME"),
     ],
@@ -277,9 +277,10 @@ async def sync_schema_from_ontology(
         ("ImageChunk", "chunk_id"),
         ("Document", "document_id"),
         ("Alias", "alias_name"),
+        ("TrustedTextChunk", "chunk_id"),
     ]
     unique_ddl = [
-        f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE"
+        f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE_HASH_INDEX"
         for utype, uprop in unique_indexes
     ]
     await _run_ddl_batch(client, database, unique_ddl, phase="unique_indexes", report=report)

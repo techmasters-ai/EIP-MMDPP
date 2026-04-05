@@ -10,8 +10,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1._retrieval_helpers import (
-    build_image_filters as _build_image_filters,
-    build_text_filters as _build_text_filters,
     compute_fusion_score,
     deduplicate_results as _deduplicate_results,
     diversify_results as _diversify_results,
@@ -31,6 +29,13 @@ logger = logging.getLogger(__name__)
 
 # Max concurrent seed expansions
 _EXPAND_CONCURRENCY = 16
+
+# Shared image extension -> MIME type mapping
+_IMAGE_CONTENT_TYPES = {
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "tiff": "image/tiff", "tif": "image/tiff", "gif": "image/gif",
+    "webp": "image/webp",
+}
 
 
 @router.post("/retrieval/query", response_model=UnifiedQueryResponse)
@@ -114,11 +119,7 @@ async def get_image_by_artifact(
         raise HTTPException(status_code=502, detail="Failed to fetch image from storage")
 
     ext = key.rsplit(".", 1)[-1].lower() if "." in key else "png"
-    content_type = {
-        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-        "tiff": "image/tiff", "tif": "image/tiff", "gif": "image/gif",
-        "webp": "image/webp",
-    }.get(ext, "image/png")
+    content_type = _IMAGE_CONTENT_TYPES.get(ext, "image/png")
 
     return StreamingResponse(
         iter([image_bytes]),
@@ -156,17 +157,8 @@ async def get_image(
         logger.warning("Image download failed for chunk %s: %s", chunk_id, e)
         raise HTTPException(status_code=502, detail="Failed to fetch image from storage")
 
-    # Guess content type from key extension
     ext = key.rsplit(".", 1)[-1].lower() if "." in key else "png"
-    content_type = {
-        "png": "image/png",
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "tiff": "image/tiff",
-        "tif": "image/tiff",
-        "gif": "image/gif",
-        "webp": "image/webp",
-    }.get(ext, "image/png")
+    content_type = _IMAGE_CONTENT_TYPES.get(ext, "image/png")
 
     return StreamingResponse(
         iter([image_bytes]),
@@ -1112,9 +1104,4 @@ async def get_retrieval_settings():
         "reranker_top_n": settings.reranker_top_n,
         "min_confidence": settings.query_default_min_confidence,
     }
-
-
-# ---------------------------------------------------------------------------
-# Memory query — Cognee search (unchanged)
-# ---------------------------------------------------------------------------
 

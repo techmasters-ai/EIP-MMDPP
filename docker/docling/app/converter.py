@@ -288,10 +288,7 @@ def _get_item_text(item) -> str:
 
 def _extract_elements(doc) -> list[ConvertedElement]:
     """Iterate Docling document items and map to ConvertedElement list."""
-    from docling_core.types.doc import (
-        DocItemLabel,
-        ImageRefMode,
-    )
+    from docling_core.types.doc import DocItemLabel
 
     elements: list[ConvertedElement] = []
     order_counter = 0
