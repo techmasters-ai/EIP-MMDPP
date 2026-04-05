@@ -78,6 +78,30 @@ services:
   # Qdrant removed — all vector operations now use ArcadeDB LSMVectorIndex
 
   # ---------------------------------------------------------------------------
+  # ArcadeDB — multi-model graph + vector database
+  # ---------------------------------------------------------------------------
+  arcadedb:
+    build:
+      context: docker/arcadedb
+      dockerfile: Dockerfile
+    environment:
+      JAVA_OPTS: >-
+        -Darcadedb.server.rootPassword=${ARCADEDB_ROOT_PASSWORD:-eip_arcadedb_secret}
+        -Darcadedb.server.defaultDatabases=${ARCADEDB_DATABASE:-eip_knowledge_graph}[root]
+        -Darcadedb.server.httpTxExpireTimeout=30
+    ports:
+      - "${ARCADEDB_HTTP_PORT:-2480}:2480"
+      - "${ARCADEDB_GRPC_PORT:-2424}:2424"
+    volumes:
+      - arcadedb_data:/home/arcadedb/databases
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2480/api/v1/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
   # Docling — document conversion service (granite-docling-258M VLM)
   # ---------------------------------------------------------------------------
   docling:
@@ -165,6 +189,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      arcadedb:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -211,6 +237,8 @@ services:
     depends_on:
       api:
         condition: service_started
+      arcadedb:
+        condition: service_healthy
       docling:
         condition: service_healthy
       docling-graph:
@@ -250,6 +278,8 @@ services:
     depends_on:
       api:
         condition: service_started
+      arcadedb:
+        condition: service_healthy
       docling:
         condition: service_healthy
       docling-graph:
@@ -317,6 +347,8 @@ services:
     depends_on:
       api:
         condition: service_started
+      arcadedb:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -371,6 +403,7 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  arcadedb_data:
   model_cache:
   watch_dirs:
   celerybeat_data:

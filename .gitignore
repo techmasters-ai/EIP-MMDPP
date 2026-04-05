@@ -213,3 +213,8 @@ __marimo__/
 
 # Git worktrees
 .worktrees/
+
+# Upstream source repos (cloned by manage.sh)
+docker/arcadedb/repo/
+docker/docling/repo/
+docker/docling-graph/repo/

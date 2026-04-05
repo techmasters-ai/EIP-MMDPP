@@ -24,6 +24,13 @@ ROOT_DIR="${SCRIPT_DIR}"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.yml"
 ENV_FILE="${ROOT_DIR}/.env"
 
+ARCADEDB_REPO_DIR="${ROOT_DIR}/docker/arcadedb/repo"
+ARCADEDB_REPO_URL="git@github.com:ArcadeData/arcadedb.git"
+DOCLING_REPO_DIR="${ROOT_DIR}/docker/docling/repo"
+DOCLING_REPO_URL="git@github.com:docling-project/docling.git"
+DOCLING_GRAPH_REPO_DIR="${ROOT_DIR}/docker/docling-graph/repo"
+DOCLING_GRAPH_REPO_URL="git@github.com:docling-project/docling-graph.git"
+
 HEALTH_TIMEOUT=120
 HEALTH_INTERVAL=3
 
@@ -96,6 +103,30 @@ dc() {
   ${COMPOSE} -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
 }
 
+# ---------------------------------------------------------------------------
+# Upstream repository management
+# ---------------------------------------------------------------------------
+ensure_repo() {
+  local repo_dir="$1"
+  local repo_url="$2"
+  local label="$3"
+  if [[ -d "${repo_dir}/.git" ]]; then
+    info "Pulling latest ${label}..."
+    git -C "${repo_dir}" pull --ff-only || warn "${label} pull failed"
+  else
+    info "Cloning ${label}..."
+    git clone "${repo_url}" "${repo_dir}"
+  fi
+  info "${label} at $(git -C "${repo_dir}" log -1 --format='%h %s' 2>/dev/null || echo 'unknown')"
+}
+
+ensure_all_repos() {
+  header "Updating upstream dependencies"
+  ensure_repo "${ARCADEDB_REPO_DIR}" "${ARCADEDB_REPO_URL}" "ArcadeDB"
+  ensure_repo "${DOCLING_REPO_DIR}" "${DOCLING_REPO_URL}" "Docling"
+  ensure_repo "${DOCLING_GRAPH_REPO_DIR}" "${DOCLING_GRAPH_REPO_URL}" "Docling-Graph"
+}
+
 wait_for_healthy() {
   local url="$1"
   local label="${2:-service}"
@@ -139,6 +170,8 @@ cmd_start() {
     dc --profile split rm -f worker-ingest worker-embed worker-graph 2>/dev/null || true
     info "Building and starting all services..."
   fi
+
+  ensure_all_repos
 
   local cache_bust
   cache_bust="$(date +%s)"
