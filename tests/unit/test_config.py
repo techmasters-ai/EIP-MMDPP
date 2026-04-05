@@ -15,10 +15,10 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.app_env in ("development", "test", "production")
 
-    def test_neo4j_uri_default(self):
+    def test_arcadedb_url_default(self):
         from app.config import Settings
         s = Settings()
-        assert s.neo4j_uri == "bolt://neo4j:7687"
+        assert s.arcadedb_url == "http://arcadedb:2480"
 
     def test_qdrant_url_default(self):
         from app.config import Settings
@@ -72,7 +72,7 @@ class TestRerankerConfig:
     def test_new_reranker_config_defaults(self):
         """Reranker config fields should exist with correct defaults."""
         from app.config import Settings
-        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
+        s = Settings(_env_file=None, postgres_password="test")
         assert s.reranker_model == "BAAI/bge-reranker-v2-m3"
         assert s.reranker_device in ("cpu", "cuda")
         assert s.reranker_enabled is True
@@ -82,7 +82,7 @@ class TestRerankerConfig:
     def test_docling_graph_client_defaults(self):
         """Docling-Graph client settings should have correct defaults."""
         from app.config import Settings
-        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
+        s = Settings(_env_file=None, postgres_password="test")
         assert s.docling_graph_base_url == "http://docling-graph:8002"
         assert s.docling_graph_concurrency == 2
         assert s.docling_graph_timeout == 300
@@ -98,13 +98,13 @@ class TestRerankerConfig:
 class TestArcadeDBConfig:
     def test_arcadedb_defaults(self):
         from app.config import Settings
-        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
+        s = Settings(_env_file=None, postgres_password="test")
         assert s.arcadedb_url == "http://arcadedb:2480"
         assert s.arcadedb_database == "eip_knowledge_graph"
 
     def test_community_detection_defaults(self):
         from app.config import Settings
-        s = Settings(_env_file=None, postgres_password="test", neo4j_password="test")
+        s = Settings(_env_file=None, postgres_password="test")
         assert s.community_detection_enabled is True
         assert s.community_detection_algorithm == "leiden"
 

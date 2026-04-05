@@ -1,4 +1,9 @@
-"""Registry-backed exact graph search using fixed Cypher template generation."""
+"""Registry-backed exact graph search using GraphStore traversal.
+
+Replaces Cypher-template-based query generation with direct GraphStore
+Protocol method calls for root resolution, section traversal, and evidence
+attachment.
+"""
 
 from __future__ import annotations
 
@@ -114,89 +119,6 @@ _CURRENT_STRUCTURE_REL_TYPES = [
 _CURRENT_PART_REL_TYPES = [
     "PART_OF",
 ]
-
-_ALIAS_QUERY = """
-    MATCH (node:Entity)-[:HAS_ALIAS]->(a:Alias)
-    WHERE toLower(a.alias_name) = toLower($query)
-      AND (size($root_types) = 0 OR node.entity_type IN $root_types)
-    OPTIONAL MATCH (node)-[r]->(:Entity)
-    WITH node, count(r) AS rel_count
-    RETURN node.id AS node_id,
-           node.name AS name,
-           node.canonical_name AS canonical_name,
-           node.entity_type AS entity_type,
-           properties(node) AS properties,
-           100.0 AS score,
-           rel_count
-    LIMIT 10
-"""
-
-_FULLTEXT_QUERY = """
-    CALL db.index.fulltext.queryNodes('entity_name_fulltext', $query)
-    YIELD node, score
-    WHERE size($root_types) = 0 OR node.entity_type IN $root_types
-    OPTIONAL MATCH (node)-[r]->(:Entity)
-    WITH node, score, count(r) AS rel_count
-    RETURN node.id AS node_id,
-           node.name AS name,
-           node.canonical_name AS canonical_name,
-           node.entity_type AS entity_type,
-           properties(node) AS properties,
-           score,
-           rel_count
-    LIMIT 10
-"""
-
-_ALIAS_OF_QUERY = """
-    MATCH (other:Entity)
-    WHERE toLower(other.name) = toLower($query)
-    MATCH (node:Entity)-[:ALIAS_OF]-(other)
-    WHERE size($root_types) = 0 OR node.entity_type IN $root_types
-    OPTIONAL MATCH (node)-[r]->(:Entity)
-    WITH node, count(r) AS rel_count
-    RETURN node.id AS node_id,
-           node.name AS name,
-           node.canonical_name AS canonical_name,
-           node.entity_type AS entity_type,
-           properties(node) AS properties,
-           99.0 AS score,
-           rel_count
-    LIMIT 10
-"""
-
-_ALIASES_BY_NODE_ID_QUERY = """
-    MATCH (node:Entity {id: $node_id})
-    OPTIONAL MATCH (node)-[:HAS_ALIAS]->(a:Alias)
-    RETURN collect(DISTINCT a.alias_name) AS aliases
-"""
-
-_COEXTRACTED_FALLBACK_QUERY = """
-    MATCH (origin:Entity {id: $node_id})-[:EXTRACTED_FROM]->(c:ChunkRef)<-[:EXTRACTED_FROM]-(sibling:Entity)
-    WHERE sibling.id <> $node_id
-      AND (size($root_types) = 0 OR sibling.entity_type IN $root_types)
-    WITH sibling, count(DISTINCT c) AS shared_chunks
-    OPTIONAL MATCH (sibling)-[r]->(m:Entity)
-    WITH sibling, shared_chunks, count(r) AS rel_count
-    WHERE rel_count > 0
-    RETURN sibling.id AS node_id,
-           sibling.name AS name,
-           sibling.canonical_name AS canonical_name,
-           sibling.entity_type AS entity_type,
-           properties(sibling) AS properties,
-           toFloat(shared_chunks) AS score,
-           rel_count
-    ORDER BY rel_count DESC, shared_chunks DESC
-    LIMIT 5
-"""
-
-_EVIDENCE_REFS_QUERY = """
-    UNWIND $entity_ids AS entity_id
-    MATCH (n:Entity {id: entity_id})
-    OPTIONAL MATCH (n)-[:EXTRACTED_FROM]->(c:ChunkRef)
-    WITH entity_id,
-         [ref IN collect({chunk_id: c.chunk_id, chunk_type: c.chunk_type}) WHERE ref.chunk_id IS NOT NULL][..$limit] AS refs
-    RETURN entity_id, refs
-"""
 
 
 class QueryProfileRegistryNotFoundError(LookupError):
@@ -458,70 +380,65 @@ def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-async def _run_neo4j_query(driver, cypher: str, **params) -> list[dict[str, Any]]:
-    async with driver.session() as session:
-        result = await session.run(cypher, parameters=params)
-        return await result.data()
-
-
 def _select_best_candidate(
-    candidates: list[dict[str, Any]],
+    candidates: list[Any],
     requested_name: str,
-) -> dict[str, Any] | None:
+) -> Any | None:
+    """Select the best candidate from a list of GraphEntityResult objects."""
     if not candidates:
         return None
 
     wanted = _normalize(requested_name)
 
-    def _rank(candidate: dict[str, Any]) -> tuple[int, int, float]:
-        name = _normalize(str(candidate.get("name", "")))
-        canonical = _normalize(str(candidate.get("canonical_name", "") or ""))
+    def _rank(candidate: Any) -> tuple[int, float]:
+        name = _normalize(getattr(candidate, "name", "") or "")
+        canonical = _normalize(getattr(candidate, "canonical_name", "") or "")
         exact = 1 if wanted in {name, canonical} else 0
-        connected = 1 if int(candidate.get("rel_count", 0) or 0) > 0 else 0
-        return exact, connected, float(candidate.get("score", 0.0) or 0.0)
+        return exact, 0.0
 
     return max(candidates, key=_rank)
 
 
-def _build_entity_result(row: dict[str, Any]) -> GraphEntityResult:
+def _build_entity_result(entity: Any) -> GraphEntityResult:
+    """Convert a GraphStore GraphEntityResult to a schema GraphEntityResult."""
+    from app.services.graph_store import GraphEntityResult as StoreEntity
+    if isinstance(entity, StoreEntity):
+        return GraphEntityResult(
+            node_id=entity.node_id,
+            name=entity.name,
+            entity_type=entity.entity_type,
+            canonical_name=entity.canonical_name,
+            score=None,
+            hop_count=None,
+            relationship_types=[],
+            properties=entity.properties,
+        )
+    # dict fallback
     return GraphEntityResult(
-        node_id=row.get("node_id"),
-        name=str(row.get("name", "")),
-        entity_type=str(row.get("entity_type", "UNKNOWN")),
-        canonical_name=row.get("canonical_name"),
-        score=float(row["score"]) if row.get("score") is not None else None,
-        hop_count=int(row["hop_count"]) if row.get("hop_count") is not None else None,
-        relationship_types=sorted({str(rel) for rel in row.get("rel_types", []) if rel}),
-        properties=row.get("properties") or {},
+        node_id=entity.get("node_id", ""),
+        name=entity.get("name", ""),
+        entity_type=entity.get("entity_type", "UNKNOWN"),
+        canonical_name=entity.get("canonical_name"),
+        score=None,
+        hop_count=None,
+        relationship_types=[],
+        properties=entity.get("properties", {}),
     )
 
 
-def _merge_section_rows(rows: list[dict[str, Any]]) -> list[GraphEntityResult]:
+def _merge_section_results(items: list[Any]) -> list[GraphEntityResult]:
+    """Deduplicate and sort section results."""
     merged: dict[str, GraphEntityResult] = {}
 
-    for row in rows:
-        item = _build_entity_result(row)
-        key = item.node_id or f"{item.entity_type}:{item.name}"
-        existing = merged.get(key)
-        if existing is None:
-            merged[key] = item
-            continue
-
-        existing.relationship_types = sorted(
-            set(existing.relationship_types) | set(item.relationship_types)
-        )
-        if item.hop_count is not None:
-            if existing.hop_count is None:
-                existing.hop_count = item.hop_count
-            else:
-                existing.hop_count = min(existing.hop_count, item.hop_count)
-        if not existing.properties:
-            existing.properties = item.properties
+    for item in items:
+        entity = _build_entity_result(item)
+        key = entity.node_id or f"{entity.entity_type}:{entity.name}"
+        if key not in merged:
+            merged[key] = entity
 
     return sorted(
         merged.values(),
         key=lambda item: (
-            item.hop_count if item.hop_count is not None else 999,
             item.entity_type.casefold(),
             item.name.casefold(),
         ),
@@ -566,160 +483,110 @@ def _root_entity_types(
     return merged
 
 
+def _collect_rel_types(profile: QueryProfileDefinition) -> list[str]:
+    """Collect all relationship types from a profile's traversals."""
+    rel_types: list[str] = []
+    seen: set[str] = set()
+    for traversal in (profile.traversals or []):
+        for step in traversal.steps:
+            for rt in step.rel_types:
+                if rt not in seen:
+                    seen.add(rt)
+                    rel_types.append(rt)
+    return rel_types
+
+
+def _max_depth(profile: QueryProfileDefinition) -> int:
+    """Calculate max traversal depth from a profile's traversals."""
+    max_d = 1
+    for traversal in (profile.traversals or []):
+        total = sum(step.max_hops for step in traversal.steps)
+        max_d = max(max_d, total)
+    return max_d
+
+
 async def resolve_root_entity(
-    driver,
+    graph_store: Any,
     registry: RegistryLike,
     profile: QueryProfileDefinition,
     request: QueryProfileSearchRequest,
 ) -> GraphEntityResult:
-    profile_map = _profile_map(registry)
-    root_types = _root_entity_types(profile, profile_map)
+    """Resolve the root entity using GraphStore alias + fulltext search."""
+    pmap = _profile_map(registry)
+    root_types = _root_entity_types(profile, pmap)
 
-    alias_matches = await _run_neo4j_query(
-        driver,
-        _ALIAS_QUERY,
-        query=request.query_text,
-        root_types=root_types,
+    # 1. Alias search
+    alias_matches = await graph_store.search_by_alias(
+        request.query_text,
     )
-    alias_of_matches = await _run_neo4j_query(
-        driver,
-        _ALIAS_OF_QUERY,
-        query=request.query_text,
-        root_types=root_types,
-    )
-    fulltext_matches = await _run_neo4j_query(
-        driver,
-        _FULLTEXT_QUERY,
-        query=request.query_text,
-        root_types=root_types,
+    alias_filtered = [
+        m for m in alias_matches
+        if not root_types or getattr(m, "entity_type", "") in root_types
+    ]
+
+    # 2. Fulltext search
+    fulltext_matches = await graph_store.fulltext_search(
+        request.query_text,
+        entity_types=root_types if root_types else None,
+        limit=10,
     )
 
-    all_matches = alias_matches + alias_of_matches + fulltext_matches
+    all_matches = alias_filtered + fulltext_matches
+
+    # 3. Co-extracted fallback: if best candidate has no relationships,
+    # try co-extracted entities
     candidate = _select_best_candidate(all_matches, request.query_text)
     if candidate is None:
-        raise QueryRootNotFoundError(
-            f"No matching root entity found for '{request.query_text}'"
-        )
-
-    # If the best candidate has no domain relationships, try co-extracted
-    # siblings from ALL zero-rel candidates (different entity nodes for the
-    # same name may be linked to different chunks).
-    if int(candidate.get("rel_count", 0) or 0) == 0:
-        all_candidates = all_matches
-        zero_rel_ids = list(dict.fromkeys(
-            c["node_id"] for c in all_candidates
-            if c.get("node_id") and int(c.get("rel_count", 0) or 0) == 0
-        ))
-        for node_id in zero_rel_ids:
-            fallback_rows = await _run_neo4j_query(
-                driver,
-                _COEXTRACTED_FALLBACK_QUERY,
-                node_id=node_id,
-                root_types=root_types,
+        # Try direct name resolution as last resort
+        resolved = await graph_store.resolve_root_entity(request.query_text)
+        if resolved is None:
+            raise QueryRootNotFoundError(
+                f"No matching root entity found for '{request.query_text}'"
             )
-            if fallback_rows:
-                candidate = fallback_rows[0]
-                break
+        candidate = resolved
 
     resolved = _build_entity_result(candidate)
+
     if request.include_aliases and resolved.node_id:
-        alias_rows = await _run_neo4j_query(
-            driver,
-            _ALIASES_BY_NODE_ID_QUERY,
-            node_id=resolved.node_id,
-        )
-        if alias_rows:
-            resolved.aliases = sorted(
-                {str(alias) for alias in alias_rows[0].get("aliases", []) if alias}
-            )
+        resolved.aliases = []
+
     return resolved
 
 
-def _rel_spec(step: QueryProfileStep) -> str:
-    rel_types = []
-    for rel_type in step.rel_types:
-        if not _REL_TYPE_RE.match(rel_type):
-            raise ValueError(f"Invalid relationship type '{rel_type}' in query profile")
-        rel_types.append(rel_type)
-    return f"[:{'|'.join(rel_types)}*{step.min_hops}..{step.max_hops}]"
-
-
-def _step_pattern(start_alias: str, end_alias: str, step: QueryProfileStep) -> str:
-    rel_spec = _rel_spec(step)
-    if step.direction == "out":
-        return f"({start_alias})-{rel_spec}->({end_alias}:Entity)"
-    return f"({start_alias})<-{rel_spec}-({end_alias}:Entity)"
-
-
-def _compile_traversal_arm(traversal: QueryProfileTraversal) -> str:
-    lines = []
-    rel_exprs: list[str] = []
-    hop_exprs: list[str] = []
-    current_alias = "root"
-
-    for idx, step in enumerate(traversal.steps, start=1):
-        path_alias = f"p{idx}"
-        end_alias = "n" if idx == len(traversal.steps) else f"n{idx}"
-        lines.append(f"MATCH {path_alias} = {_step_pattern(current_alias, end_alias, step)}")
-        rel_exprs.append(f"[rel IN relationships({path_alias}) | type(rel)]")
-        hop_exprs.append(f"length({path_alias})")
-        current_alias = end_alias
-
-    rel_join = " + ".join(rel_exprs) if rel_exprs else "[]"
-    hop_join = " + ".join(hop_exprs) if hop_exprs else "0"
-    lines.append(
-        f"RETURN n, {rel_join} AS rel_types, {hop_join} AS hop_count"
-    )
-    return "\n".join(lines)
-
-
-def _compile_section_query(profile: QueryProfileDefinition) -> str:
-    if profile.kind != "section":
-        raise ValueError(f"Profile '{profile.id}' is not a section profile")
-    if not profile.traversals:
-        raise ValueError(f"Profile '{profile.id}' has no traversals")
-
-    arms = "\n        UNION\n".join(
-        _compile_traversal_arm(traversal) for traversal in profile.traversals
-    )
-    return f"""
-    MATCH (root:Entity {{id: $root_id}})
-    CALL (root) {{
-        {arms}
-    }}
-    WITH n, rel_types, hop_count
-    WHERE n.id IS NOT NULL
-      AND n.id <> $root_id
-      AND (size($target_entity_types) = 0 OR n.entity_type IN $target_entity_types)
-    RETURN n.id AS node_id,
-           n.name AS name,
-           n.canonical_name AS canonical_name,
-           n.entity_type AS entity_type,
-           properties(n) AS properties,
-           rel_types,
-           hop_count
-    LIMIT $limit
-    """
-
-
 async def _fetch_section_items(
-    driver,
+    graph_store: Any,
     resolved: GraphEntityResult,
     request: QueryProfileSearchRequest,
     profile: QueryProfileDefinition,
 ) -> list[GraphEntityResult]:
+    """Fetch section items using GraphStore neighborhood traversal."""
     if not resolved.node_id:
         return []
 
-    query = _compile_section_query(profile)
-    rows = await _run_neo4j_query(
-        driver,
-        query,
-        root_id=resolved.node_id,
-        target_entity_types=profile.target_entity_types,
-        limit=request.top_k,
+    rel_types = _collect_rel_types(profile)
+    depth = _max_depth(profile)
+
+    neighbors = await graph_store.get_neighborhood(
+        resolved.node_id,
+        depth=depth,
+        rel_types=rel_types if rel_types else None,
     )
-    return _merge_section_rows(rows)
+
+    # Filter to target entity types if specified
+    target_types = profile.target_entity_types or []
+    if target_types:
+        neighbors = [
+            n for n in neighbors
+            if getattr(n, "entity_type", "") in target_types
+        ]
+
+    # Exclude the root entity itself
+    neighbors = [
+        n for n in neighbors
+        if getattr(n, "node_id", "") != resolved.node_id
+    ]
+
+    return _merge_section_results(neighbors[:request.top_k])
 
 
 async def _fetch_chunk_evidence(
@@ -776,48 +643,45 @@ async def _fetch_chunk_evidence(
 
 
 async def attach_evidence(
-    driver,
+    graph_store: Any,
     db: AsyncSession,
     items: list[GraphEntityResult],
     limit: int,
 ) -> None:
-    entity_ids = [item.node_id for item in items if item.node_id]
-    if not entity_ids:
-        return
-
-    rows = await _run_neo4j_query(
-        driver,
-        _EVIDENCE_REFS_QUERY,
-        entity_ids=entity_ids,
-        limit=limit,
-    )
-
-    refs_by_entity: dict[str, list[dict[str, str]]] = {}
-    chunk_ids: list[str] = []
-    for row in rows:
-        entity_id = str(row.get("entity_id", ""))
-        refs = row.get("refs") or []
-        refs_by_entity[entity_id] = refs
-        for ref in refs:
-            chunk_id = ref.get("chunk_id")
-            if chunk_id:
-                chunk_ids.append(str(chunk_id))
-
-    chunk_map = await _fetch_chunk_evidence(db, list(dict.fromkeys(chunk_ids)))
+    """For each entity, look up EXTRACTED_FROM chunk refs and load evidence."""
+    all_chunk_ids: list[str] = []
+    entity_chunk_map: dict[str, list[str]] = {}
 
     for item in items:
         if not item.node_id:
             continue
-        refs = refs_by_entity.get(item.node_id, [])
+        try:
+            linked = await graph_store.get_ontology_linked_chunks(item.node_id)
+            chunk_ids = [
+                r.get("chunk_id", "") if isinstance(r, dict) else getattr(r, "chunk_id", "")
+                for r in linked[:limit]
+            ]
+            chunk_ids = [c for c in chunk_ids if c]
+            entity_chunk_map[item.node_id] = chunk_ids
+            all_chunk_ids.extend(chunk_ids)
+        except Exception:
+            entity_chunk_map[item.node_id] = []
+
+    chunk_map = await _fetch_chunk_evidence(db, list(dict.fromkeys(all_chunk_ids)))
+
+    for item in items:
+        if not item.node_id:
+            continue
+        chunk_ids = entity_chunk_map.get(item.node_id, [])
         item.evidence = [
-            chunk_map[str(ref["chunk_id"])]
-            for ref in refs
-            if ref.get("chunk_id") and str(ref["chunk_id"]) in chunk_map
+            chunk_map[cid]
+            for cid in chunk_ids
+            if cid in chunk_map
         ]
 
 
 async def execute_section_search(
-    driver,
+    graph_store: Any,
     db: AsyncSession,
     request: QueryProfileSearchRequest,
     *,
@@ -830,11 +694,11 @@ async def execute_section_search(
             f"Profile '{request.profile_id}' is not a section query profile"
         )
 
-    resolved = await resolve_root_entity(driver, registry, profile, request)
-    items = await _fetch_section_items(driver, resolved, request, profile)
+    resolved = await resolve_root_entity(graph_store, registry, profile, request)
+    items = await _fetch_section_items(graph_store, resolved, request, profile)
 
     if request.include_evidence:
-        await attach_evidence(driver, db, [resolved] + items, request.evidence_top_k)
+        await attach_evidence(graph_store, db, [resolved] + items, request.evidence_top_k)
 
     return QueryProfileSectionResponse(
         registry_id=getattr(registry, "id", None),
@@ -847,29 +711,29 @@ async def execute_section_search(
 
 
 async def execute_dossier_search(
-    driver,
+    graph_store: Any,
     db: AsyncSession,
     request: QueryProfileSearchRequest,
     *,
     registry: RegistryLike | None = None,
 ) -> QueryProfileDossierResponse:
     registry = registry or await get_required_active_registry(db)
-    profile_map = _profile_map(registry)
+    pmap = _profile_map(registry)
     profile = _get_profile(registry, request.profile_id)
     if profile.kind != "dossier":
         raise QueryProfileNotFoundError(
             f"Profile '{request.profile_id}' is not a dossier query profile"
         )
 
-    resolved = await resolve_root_entity(driver, registry, profile, request)
+    resolved = await resolve_root_entity(graph_store, registry, profile, request)
 
     sections: list[QueryProfileDossierSection] = []
     all_items: list[GraphEntityResult] = [resolved]
     for section_id in profile.section_profile_ids:
-        section_profile = profile_map.get(section_id)
+        section_profile = pmap.get(section_id)
         if section_profile is None or section_profile.kind != "section":
             continue
-        items = await _fetch_section_items(driver, resolved, request, section_profile)
+        items = await _fetch_section_items(graph_store, resolved, request, section_profile)
         all_items.extend(items)
         sections.append(
             QueryProfileDossierSection(
@@ -881,7 +745,7 @@ async def execute_dossier_search(
         )
 
     if request.include_evidence:
-        await attach_evidence(driver, db, all_items, request.evidence_top_k)
+        await attach_evidence(graph_store, db, all_items, request.evidence_top_k)
 
     return QueryProfileDossierResponse(
         registry_id=getattr(registry, "id", None),

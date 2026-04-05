@@ -35,12 +35,6 @@ services:
         exit 0;
       "
 
-  neo4j:
-    environment:
-      NEO4J_AUTH: neo4j/test_neo4j_secret
-    volumes:
-      - neo4j_test_data:/data
-
   qdrant:
     volumes:
       - qdrant_test_data:/qdrant/storage
@@ -69,5 +63,4 @@ volumes:
   postgres_test_data:
   redis_test_data:
   minio_test_data:
-  neo4j_test_data:
   qdrant_test_data:

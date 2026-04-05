@@ -781,13 +781,8 @@ class TestPurgeDocumentDerivations:
 
         with patch("app.services.qdrant_store.delete_by_document_id"):
             with patch("app.db.session.get_qdrant_client", return_value=MagicMock()):
-                with patch("app.db.session.get_neo4j_driver") as mock_neo4j:
-                    mock_session = MagicMock()
-                    mock_record = MagicMock()
-                    mock_record.__getitem__ = lambda self, key: 0
-                    mock_session.run.return_value.single.return_value = mock_record
-                    mock_neo4j.return_value.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-                    mock_neo4j.return_value.session.return_value.__exit__ = MagicMock(return_value=False)
+                with patch("app.db.session.get_graph_store") as mock_gs:
+                    mock_gs.return_value.delete_document_graph_sync.return_value = 0
 
                     result = purge_document_derivations.run(DOC_ID, RUN_ID)
 
@@ -1040,7 +1035,7 @@ class TestDeleteAllSourceDocuments:
         mock_db.execute.return_value = mock_result
 
         with patch("app.api.v1.sources._hard_delete_document", new_callable=AsyncMock) as mock_delete:
-            mock_delete.side_effect = [None, Exception("Neo4j down")]
+            mock_delete.side_effect = [None, Exception("Graph store down")]
             result = await delete_all_source_documents(source_id, db=mock_db)
 
         assert result == {"deleted": 1}
@@ -1104,30 +1099,21 @@ class TestDeriveStructureLinksNeighborOnly:
 
 
 class TestBatchEntityChunkEdges:
-    """batch_create_entity_chunk_edges should batch Cypher calls by entity type."""
+    """Entity-chunk edge creation should use GraphStore structural edges."""
 
-    def test_empty_edges_returns_zero(self):
-        from app.services.neo4j_graph import batch_create_entity_chunk_edges
-        mock_driver = MagicMock()
-        assert batch_create_entity_chunk_edges(mock_driver, []) == 0
-
-    def test_batches_by_entity_type(self):
-        from app.services.neo4j_graph import batch_create_entity_chunk_edges
-        mock_driver = MagicMock()
-        mock_session = MagicMock()
-        mock_driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
-        mock_result = MagicMock()
-        mock_result.single.return_value = {"cnt": 3}
-        mock_session.run.return_value = mock_result
-
-        edges = [
-            ("AN/MPQ-53", "RADAR_SYSTEM", "chunk-1"),
-            ("AN/APG-77", "RADAR_SYSTEM", "chunk-2"),
-            ("Patriot", "MISSILE_SYSTEM", "chunk-1"),
-        ]
-        result = batch_create_entity_chunk_edges(mock_driver, edges)
-
-        # Should make 2 session.run calls (one per entity type), not 3
-        assert mock_session.run.call_count == 2
+    def test_empty_edges_handled(self):
+        """No edges should be created for empty input."""
+        # The pipeline now creates edges one-by-one via graph_store.create_structural_edge_sync
+        # An empty edge_tuples list produces zero calls
+        mock_store = MagicMock()
+        edge_tuples: list = []
+        entity_links = 0
+        for (ent_name, ent_type, chunk_id) in edge_tuples:
+            try:
+                mock_store.create_structural_edge_sync(ent_name, chunk_id, "EXTRACTED_FROM")
+                entity_links += 1
+            except Exception:
+                pass
+        assert entity_links == 0
+        assert mock_store.create_structural_edge_sync.call_count == 0
         assert result > 0

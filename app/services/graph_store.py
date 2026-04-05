@@ -1,7 +1,7 @@
 """Backend-agnostic GraphStore Protocol.
 
 All graph + vector operations in the application flow through this Protocol,
-allowing graph backends (Neo4j, ArcadeDB, etc.) to be swapped without
+allowing graph backends (ArcadeDB, etc.) to be swapped without
 touching the rest of the codebase.
 """
 

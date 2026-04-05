@@ -109,11 +109,6 @@ class Settings(BaseSettings):
     graph_node_min_confidence: float = 0.60
     graph_rel_min_confidence: float = 0.55
 
-    # Neo4j (knowledge graph — replaces Apache AGE)
-    neo4j_uri: str = "bolt://neo4j:7687"
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = "eip_neo4j_secret"
-
     # ArcadeDB
     arcadedb_url: str = "http://arcadedb:2480"
     arcadedb_user: str = "root"

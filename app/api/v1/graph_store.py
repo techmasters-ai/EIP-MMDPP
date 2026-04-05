@@ -1,11 +1,11 @@
-"""Graph (Neo4j) — direct entity/relationship ingest and deterministic query endpoints."""
+"""Graph store -- entity/relationship ingest and deterministic query endpoints."""
 
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_async_session, get_neo4j_async_driver
+from app.db.session import get_async_session, get_graph_store
 from app.schemas.graph_store import (
     GraphEntityIngest,
     GraphIngestResponse,
@@ -19,6 +19,7 @@ from app.schemas.graph_store import (
     SystemSectionResponse,
 )
 from app.schemas.retrieval import QueryResultItem
+from app.services.graph_store import NodeRecord, RelationshipRecord
 
 router = APIRouter(tags=["graph"])
 logger = logging.getLogger(__name__)
@@ -28,31 +29,16 @@ logger = logging.getLogger(__name__)
 async def ingest_entity(
     body: GraphEntityIngest,
 ) -> GraphIngestResponse:
-    """Create or update an entity node in the Neo4j knowledge graph.
-
-    Note: Graph entity mutations require dual-curator approval via governance.
-    This endpoint creates the node directly for authorized users.
-    """
-    from app.services.neo4j_graph import upsert_node
-
-    # Neo4j async driver uses its own sessions — run sync upsert in executor
-    import asyncio
-    from app.db.session import get_neo4j_driver
-
-    sync_driver = get_neo4j_driver()
-    loop = asyncio.get_running_loop()
-    node_id = await loop.run_in_executor(
-        None,
-        lambda: upsert_node(
-            sync_driver,
-            entity_type=body.entity_type,
-            name=body.name,
-            artifact_id="direct_ingest",
-            confidence=1.0,
-            properties=body.properties,
-        ),
+    """Create or update an entity node in the knowledge graph."""
+    graph_store = get_graph_store()
+    record = NodeRecord(
+        entity_type=body.entity_type,
+        identity_fields={"name": body.name, "entity_type": body.entity_type},
+        name=body.name,
+        properties=body.properties or {},
+        extraction_confidence=1.0,
     )
-
+    node_id = await graph_store.upsert_node(record)
     if node_id:
         return GraphIngestResponse(status="created", node_id=node_id)
     return GraphIngestResponse(status="failed", message="Could not create node")
@@ -62,29 +48,18 @@ async def ingest_entity(
 async def ingest_relationship(
     body: GraphRelationshipIngest,
 ) -> GraphIngestResponse:
-    """Create or update a relationship edge in the Neo4j knowledge graph."""
-    from app.services.neo4j_graph import upsert_relationship
-
-    import asyncio
-    from app.db.session import get_neo4j_driver
-
-    sync_driver = get_neo4j_driver()
-    loop = asyncio.get_running_loop()
-    ok = await loop.run_in_executor(
-        None,
-        lambda: upsert_relationship(
-            sync_driver,
-            from_name=body.from_entity,
-            from_type=body.from_type,
-            to_name=body.to_entity,
-            to_type=body.to_type,
-            rel_type=body.relationship_type,
-            artifact_id="direct_ingest",
-            confidence=1.0,
-        ),
+    """Create or update a relationship edge in the knowledge graph."""
+    graph_store = get_graph_store()
+    record = RelationshipRecord(
+        from_type=body.from_type,
+        from_identity={"name": body.from_entity, "entity_type": body.from_type},
+        to_type=body.to_type,
+        to_identity={"name": body.to_entity, "entity_type": body.to_type},
+        rel_type=body.relationship_type,
+        extraction_confidence=1.0,
     )
-
-    if ok:
+    edge_id = await graph_store.upsert_relationship(record)
+    if edge_id:
         return GraphIngestResponse(status="created")
     return GraphIngestResponse(status="failed", message="Could not create relationship")
 
@@ -93,40 +68,40 @@ async def ingest_relationship(
 async def query_graph(
     body: GraphQueryRequest,
 ) -> list[QueryResultItem]:
-    """Search the Neo4j knowledge graph by entity name and return neighborhood."""
-    from app.services.neo4j_graph import search_nodes_async, get_neighborhood_async
-
-    driver = get_neo4j_async_driver()
+    """Search the knowledge graph by entity name and return neighborhood."""
+    graph_store = get_graph_store()
 
     # Search for matching nodes
-    matches = await search_nodes_async(driver, body.query, limit=body.top_k)
+    matches = await graph_store.fulltext_search(
+        body.query, limit=body.top_k,
+    )
 
     results: list[QueryResultItem] = []
 
     for match in matches:
-        node = match.get("node", {})
-        if not isinstance(node, dict):
-            continue
-
-        entity_type = match.get("entity_type", "UNKNOWN")
-        name = node.get("name", "")
+        name = match.name
+        entity_type = match.entity_type
 
         # Get neighborhood for each matched entity
-        neighbors = await get_neighborhood_async(
-            driver, name, hop_count=body.hop_count, limit=10
+        neighbors = await graph_store.get_neighborhood(
+            match.node_id, depth=body.hop_count,
         )
+        neighbor_dicts = [
+            {"name": n.name, "entity_type": n.entity_type, "node_id": n.node_id}
+            for n in neighbors[:5]
+        ]
 
         results.append(
             QueryResultItem(
-                score=node.get("confidence", 0.5),
+                score=match.extraction_confidence or 0.5,
                 modality="graph_node",
                 content_text=name,
                 page_number=None,
                 classification="UNCLASSIFIED",
                 context={
                     "entity_type": entity_type,
-                    "entity": node,
-                    "neighbors": neighbors[:5],
+                    "entity": match.properties,
+                    "neighbors": neighbor_dicts,
                 },
             )
         )
@@ -139,21 +114,32 @@ async def get_neighborhood(
     body: GraphNeighborhoodRequest,
 ) -> GraphNeighborhoodResponse:
     """Get an entity's full neighborhood graph for visualization."""
-    from app.services.neo4j_graph import get_neighborhood_graph_async
+    graph_store = get_graph_store()
 
-    driver = get_neo4j_async_driver()
-    result = await get_neighborhood_graph_async(
-        driver, body.entity_name, hop_count=body.hop_count
+    # Resolve the entity by name first
+    entity = await graph_store.resolve_root_entity(body.entity_name)
+    if entity is None:
+        return GraphNeighborhoodResponse(center=None, nodes=[], edges=[])
+
+    result = await graph_store.get_neighborhood_graph(
+        entity.node_id, depth=body.hop_count,
     )
+
+    center = {
+        "name": entity.name,
+        "entity_type": entity.entity_type,
+        "id": entity.node_id,
+        **entity.properties,
+    }
 
     return GraphNeighborhoodResponse(
-        center=result["center"],
-        nodes=result["nodes"],
-        edges=result["edges"],
+        center=center,
+        nodes=result.get("nodes", []),
+        edges=result.get("edges", []),
     )
 
 
-# Legacy deterministic dossier endpoints — kept for backward compatibility.
+# Legacy deterministic dossier endpoints -- kept for backward compatibility.
 # New ontology-driven dossier queries should use the query profiles system
 # at /query-profiles/search/section and /query-profiles/search/dossier.
 @router.post("/graph/system-dossier", response_model=SystemDossierResponse)
@@ -162,23 +148,23 @@ async def get_system_dossier(
     db: AsyncSession = Depends(get_async_session),
 ) -> SystemDossierResponse:
     """Return a deterministic, provenance-backed dossier for one system."""
-    from app.services.neo4j_dossier_service import (
+    from app.services.dossier_service import (
         SystemNotFoundError,
         build_system_dossier,
     )
 
-    driver = get_neo4j_async_driver()
+    graph_store = get_graph_store()
     try:
-        return await build_system_dossier(driver, db, body)
+        return await build_system_dossier(graph_store, db, body)
     except SystemNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 async def _system_section(body: SystemQueryRequest, db: AsyncSession, section: str) -> SystemSectionResponse:
-    from app.services.neo4j_dossier_service import SystemNotFoundError, build_section_response
-    driver = get_neo4j_async_driver()
+    from app.services.dossier_service import SystemNotFoundError, build_section_response
+    graph_store = get_graph_store()
     try:
-        return await build_section_response(driver, db, body, section)
+        return await build_section_response(graph_store, db, body, section)
     except SystemNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

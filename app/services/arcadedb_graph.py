@@ -931,6 +931,95 @@ class ArcadeDBGraphStore:
             f"ArcadeDB not ready after {_READY_MAX_RETRIES} retries"
         ) from last_exc
 
+    def fulltext_search_sync(
+        self,
+        query: str,
+        entity_types: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[GraphEntityResult]:
+        """Synchronous full-text search using LUCENE index."""
+        type_filter = ""
+        params: dict[str, Any] = {"query": query, "limit": limit}
+        if entity_types:
+            type_list = ", ".join(f"'{t}'" for t in entity_types)
+            type_filter = f" AND entity_type IN [{type_list}]"
+
+        sql = (
+            f"SELECT *, @rid AS node_id FROM V "
+            f"WHERE name LUCENE :query{type_filter} "
+            f"ORDER BY $score DESC LIMIT :limit"
+        )
+        rows = self._client.query_sync(self._database, "sql", sql, params)
+        return [_to_entity(r) for r in rows]
+
+    def search_by_alias_sync(
+        self,
+        alias: str,
+        entity_type: str | None = None,
+    ) -> list[GraphEntityResult]:
+        """Synchronous alias search."""
+        type_filter = ""
+        params: dict[str, Any] = {"alias": alias}
+        if entity_type:
+            type_filter = " AND entity_type = :entity_type"
+            params["entity_type"] = entity_type
+
+        sql = (
+            "SELECT expand(in('HAS_ALIAS')) FROM Alias "
+            f"WHERE alias = :alias{type_filter}"
+        )
+        rows = self._client.query_sync(self._database, "sql", sql, params)
+        return [_to_entity(r) for r in rows]
+
+    def create_alias_sync(
+        self,
+        node_id: str,
+        alias: str,
+    ) -> None:
+        """Synchronous alias creation."""
+        sql = (
+            "CREATE VERTEX Alias SET alias = :alias, created_at = sysdate()"
+        )
+        alias_result = self._client.command_sync(
+            self._database, "sql", sql, {"alias": alias},
+        )
+        alias_rid = _rid(alias_result)
+
+        edge_sql = (
+            f"CREATE EDGE HAS_ALIAS FROM {node_id} TO {alias_rid}"
+        )
+        self._client.command_sync(self._database, "sql", edge_sql)
+
+    def set_canonical_name_sync(
+        self,
+        node_id: str,
+        canonical_name: str,
+    ) -> None:
+        """Synchronous canonical name setter."""
+        sql = f"UPDATE {node_id} SET canonical_name = :canonical_name"
+        self._client.command_sync(
+            self._database, "sql", sql, {"canonical_name": canonical_name},
+        )
+
+    def resolve_root_entity_sync(
+        self,
+        name: str,
+        entity_type: str | None = None,
+    ) -> GraphEntityResult | None:
+        """Synchronous root entity resolution."""
+        type_filter = ""
+        params: dict[str, Any] = {"name": name}
+        if entity_type:
+            type_filter = " AND entity_type = :entity_type"
+            params["entity_type"] = entity_type
+
+        sql = (
+            f"SELECT *, @rid AS node_id FROM V "
+            f"WHERE name = :name{type_filter} LIMIT 1"
+        )
+        rows = self._client.query_sync(self._database, "sql", sql, params)
+        return _to_entity(rows[0]) if rows else None
+
     def close_sync(self) -> None:
         """Release any held resources."""
         self._client.close_sync()

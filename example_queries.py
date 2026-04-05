@@ -159,7 +159,7 @@ def example_basic_text():
 # ---------------------------------------------------------------------------
 
 def example_multi_modal():
-    """Full multi-modal pipeline: BGE text + CLIP image search, Neo4j graph
+    """Full multi-modal pipeline: BGE text + CLIP image search, graph
     expansion, ontology traversal, weighted fusion scoring, cross-encoder
     reranking.
 

@@ -56,29 +56,29 @@ def _feedback_to_patch_payload(feedback: Feedback) -> tuple[str, dict]:
         }
     elif ft == FeedbackType.incorrect_entity.value:
         return "entity_update", {
-            "target_table": "neo4j.nodes",
+            "target_table": "graph_store.nodes",
             "operations": [
                 {"op": "replace", "path": "/properties", "value": proposed}
             ],
         }
     elif ft == FeedbackType.missing_relationship.value:
         return "relationship_add", {
-            "target_table": "neo4j.edges",
+            "target_table": "graph_store.edges",
             "operations": [{"op": "add", "path": "/", "value": proposed}],
         }
     elif ft == FeedbackType.missing_entity.value:
         return "entity_add", {
-            "target_table": "neo4j.nodes",
+            "target_table": "graph_store.nodes",
             "operations": [{"op": "add", "path": "/", "value": proposed}],
         }
     elif ft == FeedbackType.delete_entity.value:
         return "entity_delete", {
-            "target_table": "neo4j.nodes",
+            "target_table": "graph_store.nodes",
             "operations": [{"op": "remove", "path": "/"}],
         }
     elif ft == FeedbackType.merge_entity.value:
         return "entity_merge", {
-            "target_table": "neo4j.nodes",
+            "target_table": "graph_store.nodes",
             "operations": [{"op": "merge", "path": "/", "value": proposed}],
         }
     else:
@@ -347,6 +347,6 @@ async def _apply_patch_payload(db: AsyncSession, patch: Patch) -> None:
         if "classification" in patched:
             chunk.classification = patched["classification"]
 
-    elif "neo4j" in target_table:
+    elif "graph_store" in target_table:
         # Phase 2: implement AGE graph mutation via Cypher
         pass

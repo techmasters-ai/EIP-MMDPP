@@ -22,9 +22,6 @@ dependencies = [
     "alembic>=1.14.0",
     "pgvector>=0.3.6",
 
-    # Neo4j (knowledge graph)
-    "neo4j>=5.25.0",
-
     # Qdrant (vector search)
     "qdrant-client>=1.13.0",
 

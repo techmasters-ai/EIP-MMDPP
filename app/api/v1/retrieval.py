@@ -19,7 +19,7 @@ from app.api.v1._retrieval_helpers import (
     diversify_results as _diversify_results,
     get_cross_modal_decay,
 )
-from app.db.session import get_async_session, get_neo4j_async_driver, get_qdrant_async_client
+from app.db.session import get_async_session, get_graph_store, get_qdrant_async_client
 from app.schemas.retrieval import (
     ModalityFilter,
     QueryResultItem,
@@ -237,7 +237,7 @@ async def _multi_modal_pipeline(
     """Shared pipeline: parallel vector search + parallel graph expansion + fusion scoring.
 
     1. Parallel vector search (text BGE via Qdrant + image CLIP via Qdrant)
-    2. Parallel per-seed expansion (doc-structure + ontology via Neo4j)
+    2. Parallel per-seed expansion (doc-structure + ontology via GraphStore)
     3. Batch chunk lookups
     4. Score fusion + deduplicate + mode filter + sort + cap
     """
@@ -255,7 +255,7 @@ async def _multi_modal_pipeline(
     seed_results = _merge_seed_results(search_results)
     t_search = time.monotonic()
 
-    # Step 2: Parallel per-seed expansion (bounded concurrency, Neo4j)
+    # Step 2: Parallel per-seed expansion (bounded concurrency, GraphStore)
     expanded = await _expand_seeds(db, seed_results, body.include_context, body.query_text)
     t_expand = time.monotonic()
 
@@ -329,7 +329,7 @@ async def _expand_seeds(
             if doc_items:
                 items.extend(doc_items)
             else:
-                # Fallback to Neo4j cross-modal for legacy documents
+                # Fallback to GraphStore cross-modal for legacy documents
                 cross_items = await _expand_via_cross_modal(chunk_id_str, seed.score, include_context, query_text)
                 items.extend(cross_items)
 
@@ -652,7 +652,7 @@ async def _expand_via_doc_structure(
 
 
 # ---------------------------------------------------------------------------
-# Graph expansion — cross-modal bridging (Neo4j structural edges, fallback)
+# Graph expansion — cross-modal bridging (GraphStore structural edges, fallback)
 # ---------------------------------------------------------------------------
 
 async def _expand_via_cross_modal(
@@ -662,26 +662,28 @@ async def _expand_via_cross_modal(
     query_text: str | None = None,
 ) -> list[QueryResultItem]:
     """Follow structural graph edges (SAME_PAGE, CONTAINS_TEXT/IMAGE, EXTRACTED_FROM)
-    to find connected chunks via Neo4j. Score decays from source.
+    to find connected chunks via GraphStore. Score decays from source.
 
     This is the fallback for documents ingested before chunk_links existed.
     """
     from app.config import get_settings
     s = get_settings()
-    driver = get_neo4j_async_driver()
-
-    query = """
-        MATCH (src:ChunkRef {chunk_id: $chunk_id})-[*1..3]-(target:ChunkRef)
-        WHERE target.chunk_id <> $chunk_id
-        RETURN target.chunk_id AS target_chunk_id,
-               target.chunk_type AS target_chunk_type
-        LIMIT $limit
-    """
+    graph_store = get_graph_store()
 
     try:
-        async with driver.session() as session:
-            result = await session.run(query, chunk_id=chunk_id, limit=s.retrieval_doc_expand_k)
-            records = await result.data()
+        # Use get_neighborhood to traverse from chunk to connected chunks
+        neighbors = await graph_store.get_neighborhood(
+            chunk_id, depth=3,
+        )
+        # Filter to chunk-like entities (TextChunk, ImageChunk)
+        records = []
+        for n in neighbors:
+            if hasattr(n, 'properties') and n.properties.get('chunk_id'):
+                records.append({
+                    "target_chunk_id": n.properties.get("chunk_id", n.node_id),
+                    "target_chunk_type": "image_chunk" if n.entity_type == "ImageChunk" else "text_chunk",
+                })
+        records = records[:s.retrieval_doc_expand_k]
     except Exception as e:
         logger.debug("Cross-modal expansion failed for %s: %s", chunk_id, e)
         return []
@@ -714,7 +716,7 @@ async def _expand_via_cross_modal(
 
 
 # ---------------------------------------------------------------------------
-# Graph expansion — ontology traversal (entity relationships via Neo4j)
+# Graph expansion — ontology traversal (entity relationships via GraphStore)
 # ---------------------------------------------------------------------------
 
 async def _expand_via_ontology(
@@ -724,13 +726,17 @@ async def _expand_via_ontology(
     query_text: str | None = None,
 ) -> list[QueryResultItem]:
     """Follow ontology relationships (entity->related_entity->chunk) to find
-    semantically related chunks via the Neo4j knowledge graph."""
-    from app.services.neo4j_graph import get_ontology_linked_chunks_async
+    semantically related chunks via the knowledge graph."""
     from app.config import get_settings
 
-    driver = get_neo4j_async_driver()
+    graph_store = get_graph_store()
     s = get_settings()
-    linked = await get_ontology_linked_chunks_async(driver, chunk_id, limit=s.retrieval_ontology_expand_k)
+    try:
+        linked = await graph_store.get_ontology_linked_chunks(chunk_id)
+        linked = linked[:s.retrieval_ontology_expand_k]
+    except Exception as e:
+        logger.debug("Ontology expansion failed for %s: %s", chunk_id, e)
+        return []
 
     items: list[QueryResultItem] = []
 
@@ -738,8 +744,11 @@ async def _expand_via_ontology(
     from app.db.session import AsyncSessionFactory
     async with AsyncSessionFactory() as db_session:
         for link in linked:
-            target_id = link["target_chunk_id"]
-            target_type = link["target_chunk_type"]
+            target_id = link.get("target_chunk_id", link.get("chunk_id", ""))
+            target_type = link.get("target_chunk_type", "text_chunk")
+
+            if not target_id:
+                continue
 
             chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
             if chunk_data:
@@ -752,9 +761,9 @@ async def _expand_via_ontology(
                 )
                 chunk_data.context = {
                     "source": "ontology",
-                    "rel_type": link["rel_type"],
-                    "entity_name": link["entity_name"],
-                    "related_name": link["related_name"],
+                    "rel_type": link.get("rel_type", "RELATED_TO"),
+                    "entity_name": link.get("entity_name", ""),
+                    "related_name": link.get("related_name", ""),
                     "source_chunk_id": chunk_id,
                 }
                 items.append(chunk_data)

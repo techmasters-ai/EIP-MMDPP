@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_async_session, get_neo4j_async_driver
+from app.db.session import get_async_session, get_graph_store
 from app.models.query_profiles import QueryProfileRegistry
 from app.schemas.query_profiles import (
     ActiveQueryProfilesResponse,
@@ -353,9 +353,9 @@ async def search_query_profile_section(
     body: QueryProfileSearchRequest,
     db: AsyncSession = Depends(get_async_session),
 ) -> QueryProfileSectionResponse:
-    driver = get_neo4j_async_driver()
+    graph_store = get_graph_store()
     try:
-        return await execute_section_search(driver, db, body)
+        return await execute_section_search(graph_store, db, body)
     except (
         QueryProfileRegistryNotFoundError,
         QueryProfileNotFoundError,
@@ -372,9 +372,9 @@ async def search_query_profile_dossier(
     body: QueryProfileSearchRequest,
     db: AsyncSession = Depends(get_async_session),
 ) -> QueryProfileDossierResponse:
-    driver = get_neo4j_async_driver()
+    graph_store = get_graph_store()
     try:
-        return await execute_dossier_search(driver, db, body)
+        return await execute_dossier_search(graph_store, db, body)
     except (
         QueryProfileRegistryNotFoundError,
         QueryProfileNotFoundError,

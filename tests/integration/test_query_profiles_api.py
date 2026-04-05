@@ -1,6 +1,6 @@
 """Integration tests for the query profile CRUD and search endpoints.
 
-All database and Neo4j interactions are mocked so that tests run without
+All database and GraphStore interactions are mocked so that tests run without
 external infrastructure.
 
 Endpoints under test:
@@ -594,10 +594,10 @@ async def test_search_section_no_active_registry_404(api):
     mock_db.execute.return_value = _mock_scalar_one_or_none(None)
 
     with patch(
-        "app.api.v1.query_profiles.get_neo4j_async_driver"
-    ) as mock_neo4j:
-        mock_driver = MagicMock()
-        mock_neo4j.return_value = mock_driver
+        "app.api.v1.query_profiles.get_graph_store"
+    ) as mock_gs:
+        mock_store = MagicMock()
+        mock_gs.return_value = mock_store
 
         resp = await client.post(
             "/v1/query-profiles/search/section",
@@ -616,10 +616,10 @@ async def test_search_dossier_no_active_registry_404(api):
     mock_db.execute.return_value = _mock_scalar_one_or_none(None)
 
     with patch(
-        "app.api.v1.query_profiles.get_neo4j_async_driver"
-    ) as mock_neo4j:
-        mock_driver = MagicMock()
-        mock_neo4j.return_value = mock_driver
+        "app.api.v1.query_profiles.get_graph_store"
+    ) as mock_gs:
+        mock_store = MagicMock()
+        mock_gs.return_value = mock_store
 
         resp = await client.post(
             "/v1/query-profiles/search/dossier",

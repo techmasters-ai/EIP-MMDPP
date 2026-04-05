@@ -204,41 +204,39 @@ def mock_embeddings(monkeypatch):
 
 
 @pytest.fixture
-def mock_neo4j_driver():
-    """Mock Neo4j sync driver with session context manager.
+def mock_graph_store():
+    """Mock GraphStore for tests.
 
-    Usage:
-        driver, session = mock_neo4j_driver
-        session.run.return_value = ...
+    Returns an AsyncMock that implements all GraphStore Protocol methods.
     """
-    mock_session = MagicMock()
-    mock_session.run.return_value = MagicMock()
-
-    mock_driver = MagicMock()
-    mock_driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-    mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
-    return mock_driver, mock_session
-
-
-@pytest.fixture
-def mock_neo4j_async_driver():
-    """Mock Neo4j async driver with async session context manager.
-
-    Usage:
-        driver, session = mock_neo4j_async_driver
-        session.run.return_value = ...
-    """
-    mock_result = AsyncMock()
-    mock_result.data = AsyncMock(return_value=[])
-    mock_result.single = AsyncMock(return_value=None)
-
-    mock_session = AsyncMock()
-    mock_session.run = AsyncMock(return_value=mock_result)
-
-    mock_driver = MagicMock()
-    mock_driver.session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_driver.session.return_value.__aexit__ = AsyncMock(return_value=False)
-    return mock_driver, mock_session, mock_result
+    store = AsyncMock()
+    store.upsert_node = AsyncMock(return_value="test-rid")
+    store.upsert_nodes_batch = AsyncMock(return_value=[])
+    store.upsert_relationship = AsyncMock(return_value="test-rid")
+    store.upsert_relationships_batch = AsyncMock(return_value=[])
+    store.fulltext_search = AsyncMock(return_value=[])
+    store.search_by_alias = AsyncMock(return_value=[])
+    store.resolve_root_entity = AsyncMock(return_value=None)
+    store.get_neighborhood = AsyncMock(return_value=[])
+    store.get_neighborhood_graph = AsyncMock(return_value={"nodes": [], "edges": []})
+    store.get_ontology_linked_chunks = AsyncMock(return_value=[])
+    store.get_graph_stats = AsyncMock(return_value={"vertex_count": 0, "edge_count": 0})
+    store.delete_document_graph = AsyncMock(return_value=0)
+    store.create_alias = AsyncMock()
+    store.set_canonical_name = AsyncMock()
+    # Sync variants
+    store.upsert_node_sync = MagicMock(return_value="test-rid")
+    store.upsert_nodes_batch_sync = MagicMock(return_value=[])
+    store.upsert_relationships_batch_sync = MagicMock(return_value=[])
+    store.create_structural_edge_sync = MagicMock(return_value="test-rid")
+    store.delete_document_graph_sync = MagicMock(return_value=0)
+    store.fulltext_search_sync = MagicMock(return_value=[])
+    store.search_by_alias_sync = MagicMock(return_value=[])
+    store.create_alias_sync = MagicMock()
+    store.set_canonical_name_sync = MagicMock()
+    store.create_text_chunk_vertex_sync = MagicMock(return_value="test-rid")
+    store.create_image_chunk_vertex_sync = MagicMock(return_value="test-rid")
+    return store
 
 
 @pytest.fixture

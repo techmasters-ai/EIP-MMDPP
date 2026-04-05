@@ -405,8 +405,8 @@ async def delete_document(
     """Hard-delete a document and all its derived data.
 
     Removes: DB records (document, artifacts, document_elements, text_chunks,
-    image_chunks, chunk_links, graph_extractions), Qdrant vectors, Neo4j
-    graph nodes/edges, and MinIO objects (raw file + derived artifacts).
+    image_chunks, chunk_links, graph_extractions), Qdrant vectors, graph
+    nodes/edges, and MinIO objects (raw file + derived artifacts).
     """
     doc = await db.get(Document, document_id)
     if not doc:
@@ -491,26 +491,13 @@ async def _hard_delete_document(
     except Exception as exc:
         logger.warning("_hard_delete: Qdrant cleanup failed for %s: %s", doc_id_str, exc)
 
-    # 2. Delete Neo4j graph data
+    # 2. Delete graph data via GraphStore
     try:
-        from app.db.session import get_neo4j_driver
-        driver = get_neo4j_driver()
-        with driver.session() as neo_session:
-            neo_session.run(
-                "MATCH (d:Document {document_id: $doc_id})-[r]-() DELETE r, d",
-                doc_id=doc_id_str,
-            )
-            artifact_result = await db.execute(
-                select(Artifact.id).where(Artifact.document_id == document_id)
-            )
-            artifact_ids = [str(a) for a in artifact_result.scalars().all()]
-            if artifact_ids:
-                neo_session.run(
-                    "MATCH ()-[r]->() WHERE r.artifact_id IN $aids DELETE r",
-                    aids=artifact_ids,
-                )
+        from app.db.session import get_graph_store
+        graph_store = get_graph_store()
+        await graph_store.delete_document_graph(doc_id_str)
     except Exception as exc:
-        logger.warning("_hard_delete: Neo4j cleanup failed for %s: %s", doc_id_str, exc)
+        logger.warning("_hard_delete: graph cleanup failed for %s: %s", doc_id_str, exc)
 
     # 3. Delete MinIO objects (raw file + derived artifacts)
     try:

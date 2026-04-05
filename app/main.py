@@ -53,12 +53,6 @@ async def lifespan(app: FastAPI):
     ensure_collections(client)
     log.info("Qdrant collections ensured")
 
-    from app.services.neo4j_graph import ensure_indexes
-    from app.db.session import get_neo4j_driver
-    driver = get_neo4j_driver()
-    ensure_indexes(driver)
-    log.info("Neo4j indexes ensured")
-
     # ArcadeDB schema sync
     try:
         from app.db.session import get_graph_store

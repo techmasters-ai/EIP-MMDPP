@@ -69,41 +69,6 @@ def get_sync_session() -> Session:
 
 
 # ---------------------------------------------------------------------------
-# Neo4j driver singletons (sync for Celery, async for FastAPI)
-# ---------------------------------------------------------------------------
-_neo4j_driver = None
-_neo4j_async_driver = None
-
-
-def get_neo4j_driver():
-    """Return a sync Neo4j driver (for Celery workers)."""
-    global _neo4j_driver
-    if _neo4j_driver is None:
-        from neo4j import GraphDatabase
-
-        _neo4j_driver = GraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password),
-        )
-        logger.info("Neo4j sync driver created: %s", settings.neo4j_uri)
-    return _neo4j_driver
-
-
-def get_neo4j_async_driver():
-    """Return an async Neo4j driver (for FastAPI endpoints)."""
-    global _neo4j_async_driver
-    if _neo4j_async_driver is None:
-        from neo4j import AsyncGraphDatabase
-
-        _neo4j_async_driver = AsyncGraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password),
-        )
-        logger.info("Neo4j async driver created: %s", settings.neo4j_uri)
-    return _neo4j_async_driver
-
-
-# ---------------------------------------------------------------------------
 # Qdrant client singletons (sync for Celery, async for FastAPI)
 # ---------------------------------------------------------------------------
 _qdrant_client = None
