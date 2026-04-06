@@ -92,11 +92,14 @@ services:
         -Darcadedb.server.rootPassword=${ARCADEDB_ROOT_PASSWORD:-eip_arcadedb_secret}
         -Darcadedb.server.defaultDatabases=${ARCADEDB_DATABASE:-eip_knowledge_graph}[root]
         -Darcadedb.server.httpTxExpireTimeout=30
+        -Darcadedb.server.plugins=Prometheus:com.arcadedb.server.http.handler.prometheus.PrometheusHandler
     ports:
       - "${ARCADEDB_HTTP_PORT:-2480}:2480"
       - "${ARCADEDB_GRPC_PORT:-2424}:2424"
     volumes:
       - arcadedb_data:/home/arcadedb/databases
+      - arcadedb_backups:/home/arcadedb/backups
+      - ./docker/arcadedb/backup.json:/home/arcadedb/config/backup.json:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:2480/api/v1/ready"]
       interval: 5s
@@ -414,6 +417,7 @@ volumes:
   redis_data:
   minio_data:
   arcadedb_data:
+  arcadedb_backups:
   model_cache:
   watch_dirs:
   celerybeat_data:

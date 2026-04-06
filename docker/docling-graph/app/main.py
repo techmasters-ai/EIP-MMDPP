@@ -54,7 +54,12 @@ async def lifespan(app: FastAPI):
             ontology = yaml.safe_load(f)
         app.state.ontology_version = ontology.get("version")
         app.state.templates = build_templates_with_edges(ontology)
-        logger.info("Loaded ontology v%s (%d templates)", app.state.ontology_version, len(app.state.templates))
+        # Build a unified template for PipelineConfig.template (single model)
+        from app.template_builder import build_unified_template
+        app.state.unified_template = build_unified_template(ontology)
+        logger.info("Loaded ontology v%s (%d templates, unified=%s)",
+                     app.state.ontology_version, len(app.state.templates),
+                     app.state.unified_template.__name__ if app.state.unified_template else "None")
     else:
         logger.warning("Ontology not found at %s", ONTOLOGY_PATH)
 
@@ -80,8 +85,17 @@ def _resolve_templates(request: Request, ontology_definition: dict[str, Any] | N
     return templates
 
 
-def run_extraction_pipeline(docling_document_json: dict[str, Any], templates: dict[str, Any]) -> Any:
-    """Run docling-graph pipeline synchronously (called via asyncio.to_thread)."""
+def run_extraction_pipeline(
+    docling_document_json: dict[str, Any],
+    templates: dict[str, Any],
+    unified_template: type | None = None,
+) -> Any:
+    """Run docling-graph pipeline synchronously (called via asyncio.to_thread).
+
+    Uses the unified_template (single Pydantic model with all entity types)
+    as PipelineConfig.template so the library extracts all entity types in
+    one pass, conforming to its canonical API.
+    """
     import tempfile
     from docling_graph import run_pipeline
 
@@ -90,8 +104,10 @@ def run_extraction_pipeline(docling_document_json: dict[str, Any], templates: di
         tmp_path = tmp.name
 
     try:
-        root_template = next(iter(templates.values())) if templates else None
-        config = build_pipeline_config(source=tmp_path, template_class=root_template)
+        template_cls = unified_template or (
+            next(iter(templates.values())) if templates else None
+        )
+        config = build_pipeline_config(source=tmp_path, template_class=template_cls)
         return run_pipeline(config)
     finally:
         os.unlink(tmp_path)
@@ -138,7 +154,10 @@ async def extract_all(request: Request, body: ExtractionRequest):
 
     async with semaphore:
         try:
-            context = await asyncio.to_thread(run_extraction_pipeline, body.docling_document_json, templates)
+            unified = getattr(request.app.state, "unified_template", None)
+            context = await asyncio.to_thread(
+                run_extraction_pipeline, body.docling_document_json, templates, unified,
+            )
         except Exception as exc:
             logger.exception("Pipeline failed for %s", body.document_id)
             raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")

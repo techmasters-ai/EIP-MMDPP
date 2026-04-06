@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "mode": "FULL_BACKUP",
+  "delay": "24h",
+  "directory": "/home/arcadedb/backups",
+  "databases": {
+    "eip_knowledge_graph": {
+      "compressionLevel": 6,
+      "enabled": true
+    }
+  },
+  "retention": {
+    "maxBackups": 7
+  }
+}

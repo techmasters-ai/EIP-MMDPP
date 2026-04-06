@@ -275,6 +275,138 @@ def _extract_rids(result: list, expected: int) -> list[str]:
     return rids
 
 
+def _build_structural_edge_sql(
+    from_id: str,
+    to_id: str,
+    rel_type: str,
+    properties: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Build a CREATE EDGE statement for a structural edge between two RIDs."""
+    props = dict(properties or {})
+    extra_set = ""
+    if props:
+        extra_set = ", " + _build_set(props)
+
+    sql = (
+        f"CREATE EDGE {rel_type} FROM {from_id} TO {to_id} "
+        f"SET created_at = sysdate(){extra_set}"
+    )
+    return sql, props or None
+
+
+def _build_resolve_root_entity_sql(
+    name: str,
+    entity_type: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Build a SELECT query that resolves a name to its canonical root entity."""
+    params: dict[str, Any] = {"name": name}
+    source = entity_type if entity_type else "V"
+    type_filter = ""
+    if entity_type:
+        type_filter = " AND entity_type = :entity_type"
+        params["entity_type"] = entity_type
+
+    sql = (
+        f"SELECT *, @rid AS node_id FROM {source} "
+        f"WHERE name = :name{type_filter} LIMIT 1"
+    )
+    return sql, params
+
+
+def _build_fulltext_search_sql(
+    query: str,
+    entity_types: list[str] | None = None,
+    limit: int = 20,
+) -> tuple[str, dict[str, Any]]:
+    """Build a full-text LUCENE search query."""
+    type_filter = ""
+    params: dict[str, Any] = {"query": query, "limit": limit}
+    if entity_types:
+        type_list = ", ".join(f"'{t}'" for t in entity_types)
+        type_filter = f" AND entity_type IN [{type_list}]"
+
+    sql = (
+        f"SELECT *, @rid AS node_id FROM V "
+        f"WHERE name LUCENE :query{type_filter} "
+        f"ORDER BY $score DESC LIMIT :limit"
+    )
+    return sql, params
+
+
+def _build_search_by_alias_sql(
+    alias: str,
+) -> tuple[str, dict[str, Any]]:
+    """Build a query that finds nodes by alias traversal."""
+    sql = (
+        "SELECT expand(in('HAS_ALIAS')) FROM Alias "
+        "WHERE alias_name = :alias"
+    )
+    return sql, {"alias": alias}
+
+
+def _build_create_alias_sql(
+    alias: str,
+) -> tuple[str, dict[str, Any]]:
+    """Build the UPSERT statement for an Alias vertex."""
+    sql = (
+        "UPDATE Alias SET alias_name = :alias, created_at = sysdate() "
+        "UPSERT WHERE alias_name = :alias"
+    )
+    return sql, {"alias": alias}
+
+
+def _build_create_alias_edge_sql(
+    node_id: str,
+    alias_rid: str,
+) -> str:
+    """Build the CREATE EDGE HAS_ALIAS statement."""
+    return f"CREATE EDGE HAS_ALIAS FROM {node_id} TO {alias_rid}"
+
+
+def _build_set_canonical_name_sql(
+    node_id: str,
+    canonical_name: str,
+) -> tuple[str, dict[str, Any]]:
+    """Build the UPDATE statement for setting canonical_name on a node."""
+    sql = f"UPDATE {node_id} SET canonical_name = :canonical_name"
+    return sql, {"canonical_name": canonical_name}
+
+
+def _build_delete_document_graph_sql(
+    document_id: str,
+) -> tuple[list[str], str, str, str, dict[str, Any]]:
+    """Build the SQL statements for deleting a document's graph elements.
+
+    Returns (delete_vertex_sqls, edge_cleanup_sql, edge_prune_sql,
+    orphan_sql, params).
+    """
+    params = {"doc_id": document_id}
+
+    delete_vertex_sqls = [
+        "DELETE VERTEX FROM TextChunk WHERE document_id = :doc_id",
+        "DELETE VERTEX FROM ImageChunk WHERE document_id = :doc_id",
+        "DELETE VERTEX FROM Document WHERE document_id = :doc_id",
+    ]
+
+    edge_cleanup_sql = (
+        "UPDATE E SET document_ids = document_ids.remove(:doc_id) "
+        "WHERE document_ids CONTAINS :doc_id"
+    )
+
+    edge_prune_sql = (
+        "DELETE EDGE WHERE document_ids IS NOT NULL AND document_ids.size() = 0"
+    )
+
+    orphan_sql = (
+        "DELETE VERTEX FROM V WHERE @class NOT IN "
+        "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
+        "AND out('EXTRACTED_FROM').size() = 0 "
+        "AND in('EXTRACTED_FROM').size() = 0"
+    )
+
+    return delete_vertex_sqls, edge_cleanup_sql, edge_prune_sql, orphan_sql, params
+
+
 # ---------------------------------------------------------------------------
 # ArcadeDBGraphStore
 # ---------------------------------------------------------------------------
@@ -583,16 +715,8 @@ class ArcadeDBGraphStore:
         properties: dict[str, Any] | None = None,
     ) -> str:
         """Create a structural edge between two RIDs."""
-        props = dict(properties or {})
-        extra_set = ""
-        if props:
-            extra_set = ", " + _build_set(props)
-
-        sql = (
-            f"CREATE EDGE {rel_type} FROM {from_id} TO {to_id} "
-            f"SET created_at = sysdate(){extra_set}"
-        )
-        result = await self._client.command(self._database, "sql", sql, props or None)
+        sql, params = _build_structural_edge_sql(from_id, to_id, rel_type, properties)
+        result = await self._client.command(self._database, "sql", sql, params)
         return _rid(result)
 
     # ==================================================================
@@ -632,17 +756,7 @@ class ArcadeDBGraphStore:
         When *entity_type* is provided, queries that specific type to leverage
         type-specific indexes.  Falls back to ``V`` when type is unknown.
         """
-        params: dict[str, Any] = {"name": name}
-        source = entity_type if entity_type else "V"
-        type_filter = ""
-        if entity_type:
-            type_filter = " AND entity_type = :entity_type"
-            params["entity_type"] = entity_type
-
-        sql = (
-            f"SELECT *, @rid AS node_id FROM {source} "
-            f"WHERE name = :name{type_filter} LIMIT 1"
-        )
+        sql, params = _build_resolve_root_entity_sql(name, entity_type)
         rows = await self._client.query(self._database, "sql", sql, params)
         return _to_entity(rows[0]) if rows else None
 
@@ -653,17 +767,7 @@ class ArcadeDBGraphStore:
         limit: int = 20,
     ) -> list[GraphEntityResult]:
         """Full-text search using LUCENE index."""
-        type_filter = ""
-        params: dict[str, Any] = {"query": query, "limit": limit}
-        if entity_types:
-            type_list = ", ".join(f"'{t}'" for t in entity_types)
-            type_filter = f" AND entity_type IN [{type_list}]"
-
-        sql = (
-            f"SELECT *, @rid AS node_id FROM V "
-            f"WHERE name LUCENE :query{type_filter} "
-            f"ORDER BY $score DESC LIMIT :limit"
-        )
+        sql, params = _build_fulltext_search_sql(query, entity_types, limit)
         rows = await self._client.query(self._database, "sql", sql, params)
         return [_to_entity(r) for r in rows]
 
@@ -813,18 +917,13 @@ class ArcadeDBGraphStore:
         alias: str,
     ) -> None:
         """Create an Alias vertex (upsert) and HAS_ALIAS edge to the target node."""
-        sql = (
-            "UPDATE Alias SET alias_name = :alias, created_at = sysdate() "
-            "UPSERT WHERE alias_name = :alias"
-        )
+        sql, params = _build_create_alias_sql(alias)
         alias_result = await self._client.command(
-            self._database, "sql", sql, {"alias": alias},
+            self._database, "sql", sql, params,
         )
         alias_rid = _rid(alias_result)
 
-        edge_sql = (
-            f"CREATE EDGE HAS_ALIAS FROM {node_id} TO {alias_rid}"
-        )
+        edge_sql = _build_create_alias_edge_sql(node_id, alias_rid)
         await self._client.command(self._database, "sql", edge_sql)
 
     async def search_by_alias(
@@ -833,18 +932,7 @@ class ArcadeDBGraphStore:
         entity_type: str | None = None,
     ) -> list[GraphEntityResult]:
         """Find nodes by alias."""
-        type_filter = ""
-        params: dict[str, Any] = {"alias": alias}
-        if entity_type:
-            type_filter = " AND entity_type = :entity_type"
-            params["entity_type"] = entity_type
-
-        # Filter entity_type on the linked entity (via traversal), not the
-        # Alias vertex itself. Alias vertices don't have entity_type.
-        sql = (
-            "SELECT expand(in('HAS_ALIAS')) FROM Alias "
-            f"WHERE alias_name = :alias"
-        )
+        sql, params = _build_search_by_alias_sql(alias)
         rows = await self._client.query(self._database, "sql", sql, params)
         results = [_to_entity(r) for r in rows]
         if entity_type:
@@ -857,9 +945,9 @@ class ArcadeDBGraphStore:
         canonical_name: str,
     ) -> None:
         """Set the canonical_name on a node."""
-        sql = f"UPDATE {node_id} SET canonical_name = :canonical_name"
+        sql, params = _build_set_canonical_name_sql(node_id, canonical_name)
         await self._client.command(
-            self._database, "sql", sql, {"canonical_name": canonical_name},
+            self._database, "sql", sql, params,
         )
 
     # ==================================================================
@@ -1121,37 +1209,20 @@ class ArcadeDBGraphStore:
         document_id: str,
     ) -> int:
         """Delete all graph elements associated with *document_id*."""
+        delete_sqls, edge_cleanup_sql, edge_prune_sql, orphan_sql, params = (
+            _build_delete_document_graph_sql(document_id)
+        )
+
         total = 0
-        params = {"doc_id": document_id}
+        for sql in delete_sqls:
+            result = await self._client.command(self._database, "sql", sql, params)
+            total += _count(result)
 
-        sql = "DELETE VERTEX FROM TextChunk WHERE document_id = :doc_id"
-        result = await self._client.command(self._database, "sql", sql, params)
-        total += _count(result)
-
-        sql = "DELETE VERTEX FROM ImageChunk WHERE document_id = :doc_id"
-        result = await self._client.command(self._database, "sql", sql, params)
-        total += _count(result)
-
-        sql = "DELETE VERTEX FROM Document WHERE document_id = :doc_id"
-        result = await self._client.command(self._database, "sql", sql, params)
-        total += _count(result)
-
-        await self._client.command(self._database, "sql",
-            "UPDATE E SET document_ids = document_ids.remove(:doc_id) "
-            "WHERE document_ids CONTAINS :doc_id",
-            params=params,
+        await self._client.command(
+            self._database, "sql", edge_cleanup_sql, params,
         )
-        await self._client.command(self._database, "sql",
-            "DELETE EDGE WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
-        )
+        await self._client.command(self._database, "sql", edge_prune_sql)
 
-        # Orphan cleanup: remove entities with no remaining EXTRACTED_FROM edges
-        orphan_sql = (
-            "DELETE VERTEX FROM V WHERE @class NOT IN "
-            "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
-            "AND out('EXTRACTED_FROM').size() = 0 "
-            "AND in('EXTRACTED_FROM').size() = 0"
-        )
         result = await self._client.command(self._database, "sql", orphan_sql)
         total += _count(result)
 
@@ -1371,16 +1442,8 @@ class ArcadeDBGraphStore:
         properties: dict[str, Any] | None = None,
     ) -> str:
         """Synchronous structural edge creation."""
-        props = dict(properties or {})
-        extra_set = ""
-        if props:
-            extra_set = ", " + _build_set(props)
-
-        sql = (
-            f"CREATE EDGE {rel_type} FROM {from_id} TO {to_id} "
-            f"SET created_at = sysdate(){extra_set}"
-        )
-        result = self._client.command_sync(self._database, "sql", sql, props or None)
+        sql, params = _build_structural_edge_sql(from_id, to_id, rel_type, properties)
+        result = self._client.command_sync(self._database, "sql", sql, params)
         return _rid(result)
 
     def set_vertex_embedding_sync(
@@ -1544,34 +1607,20 @@ class ArcadeDBGraphStore:
         document_id: str,
     ) -> int:
         """Synchronous document graph deletion."""
-        total = 0
-        params = {"doc_id": document_id}
+        delete_sqls, edge_cleanup_sql, edge_prune_sql, orphan_sql, params = (
+            _build_delete_document_graph_sql(document_id)
+        )
 
-        for sql in [
-            "DELETE VERTEX FROM TextChunk WHERE document_id = :doc_id",
-            "DELETE VERTEX FROM ImageChunk WHERE document_id = :doc_id",
-            "DELETE VERTEX FROM Document WHERE document_id = :doc_id",
-        ]:
+        total = 0
+        for sql in delete_sqls:
             result = self._client.command_sync(self._database, "sql", sql, params)
             total += _count(result)
 
-        # Remove document_id from relationship edge document_ids lists
-        # Delete edges where document_ids becomes empty
-        self._client.command_sync(self._database, "sql",
-            "UPDATE E SET document_ids = document_ids.remove(:doc_id) "
-            "WHERE document_ids CONTAINS :doc_id",
-            params,
+        self._client.command_sync(
+            self._database, "sql", edge_cleanup_sql, params,
         )
-        self._client.command_sync(self._database, "sql",
-            "DELETE EDGE WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
-        )
+        self._client.command_sync(self._database, "sql", edge_prune_sql)
 
-        orphan_sql = (
-            "DELETE VERTEX FROM V WHERE @class NOT IN "
-            "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
-            "AND out('EXTRACTED_FROM').size() = 0 "
-            "AND in('EXTRACTED_FROM').size() = 0"
-        )
         result = self._client.command_sync(self._database, "sql", orphan_sql)
         total += _count(result)
 
@@ -1615,17 +1664,7 @@ class ArcadeDBGraphStore:
         limit: int = 20,
     ) -> list[GraphEntityResult]:
         """Synchronous full-text search using LUCENE index."""
-        type_filter = ""
-        params: dict[str, Any] = {"query": query, "limit": limit}
-        if entity_types:
-            type_list = ", ".join(f"'{t}'" for t in entity_types)
-            type_filter = f" AND entity_type IN [{type_list}]"
-
-        sql = (
-            f"SELECT *, @rid AS node_id FROM V "
-            f"WHERE name LUCENE :query{type_filter} "
-            f"ORDER BY $score DESC LIMIT :limit"
-        )
+        sql, params = _build_fulltext_search_sql(query, entity_types, limit)
         rows = self._client.query_sync(self._database, "sql", sql, params)
         return [_to_entity(r) for r in rows]
 
@@ -1635,12 +1674,7 @@ class ArcadeDBGraphStore:
         entity_type: str | None = None,
     ) -> list[GraphEntityResult]:
         """Synchronous alias search."""
-        params: dict[str, Any] = {"alias": alias}
-
-        sql = (
-            "SELECT expand(in('HAS_ALIAS')) FROM Alias "
-            "WHERE alias_name = :alias"
-        )
+        sql, params = _build_search_by_alias_sql(alias)
         rows = self._client.query_sync(self._database, "sql", sql, params)
         results = [_to_entity(r) for r in rows]
         if entity_type:
@@ -1653,18 +1687,13 @@ class ArcadeDBGraphStore:
         alias: str,
     ) -> None:
         """Synchronous alias creation (upsert)."""
-        sql = (
-            "UPDATE Alias SET alias_name = :alias, created_at = sysdate() "
-            "UPSERT WHERE alias_name = :alias"
-        )
+        sql, params = _build_create_alias_sql(alias)
         alias_result = self._client.command_sync(
-            self._database, "sql", sql, {"alias": alias},
+            self._database, "sql", sql, params,
         )
         alias_rid = _rid(alias_result)
 
-        edge_sql = (
-            f"CREATE EDGE HAS_ALIAS FROM {node_id} TO {alias_rid}"
-        )
+        edge_sql = _build_create_alias_edge_sql(node_id, alias_rid)
         self._client.command_sync(self._database, "sql", edge_sql)
 
     def set_canonical_name_sync(
@@ -1673,9 +1702,9 @@ class ArcadeDBGraphStore:
         canonical_name: str,
     ) -> None:
         """Synchronous canonical name setter."""
-        sql = f"UPDATE {node_id} SET canonical_name = :canonical_name"
+        sql, params = _build_set_canonical_name_sql(node_id, canonical_name)
         self._client.command_sync(
-            self._database, "sql", sql, {"canonical_name": canonical_name},
+            self._database, "sql", sql, params,
         )
 
     def resolve_root_entity_sync(
@@ -1688,19 +1717,34 @@ class ArcadeDBGraphStore:
         When *entity_type* is provided, queries that specific type to leverage
         type-specific indexes.  Falls back to ``V`` when type is unknown.
         """
-        params: dict[str, Any] = {"name": name}
-        source = entity_type if entity_type else "V"
-        type_filter = ""
-        if entity_type:
-            type_filter = " AND entity_type = :entity_type"
-            params["entity_type"] = entity_type
-
-        sql = (
-            f"SELECT *, @rid AS node_id FROM {source} "
-            f"WHERE name = :name{type_filter} LIMIT 1"
-        )
+        sql, params = _build_resolve_root_entity_sql(name, entity_type)
         rows = self._client.query_sync(self._database, "sql", sql, params)
         return _to_entity(rows[0]) if rows else None
+
+    def fuzzy_match_sync(
+        self,
+        name: str,
+        entity_type: str,
+        threshold: float = 0.8,
+    ) -> list[dict]:
+        """Find entities with similar names using ArcadeDB's levenshteinDistance.
+
+        Computes normalized similarity = 1 - (distance / max(len(name), len(candidate))).
+        Returns candidates above *threshold*, sorted by distance.
+        """
+        max_dist = int(len(name) * (1.0 - threshold)) + 1
+        sql = (
+            f"SELECT name, canonical_name, entity_type, @rid AS node_id, "
+            f"text.levenshteinDistance(name, :name) AS dist "
+            f"FROM {entity_type} "
+            f"WHERE text.levenshteinDistance(name, :name) <= :max_dist "
+            f"AND name <> :name "
+            f"ORDER BY dist LIMIT 5"
+        )
+        return self._client.query_sync(
+            self._database, "sql", sql,
+            {"name": name, "max_dist": max_dist},
+        )
 
     def get_document_entities_sync(
         self,

@@ -135,12 +135,20 @@ def _alias_match(graph_store: Any, name: str) -> Optional[str]:
 
 
 def _fuzzy_match(graph_store: Any, name: str, entity_type: str) -> Optional[str]:
-    """Use fulltext search for fuzzy matching.
+    """Use ArcadeDB's built-in text.levenshteinDistance() for server-side
+    fuzzy matching, avoiding pulling all candidates to Python.
 
-    BM25 scores are unbounded, so we normalize to 0-1 by dividing each
-    score by the maximum score in the result set before comparing against
-    FUZZY_THRESHOLD.
+    Falls back to fulltext search if the levenshtein query fails (e.g., if
+    the function is unavailable in the ArcadeDB version).
     """
+    try:
+        results = graph_store.fuzzy_match_sync(name, entity_type, threshold=FUZZY_THRESHOLD)
+        if results:
+            return results[0].get("canonical_name") or results[0].get("name")
+    except Exception:
+        pass
+
+    # Fallback: fulltext search with name-similarity heuristic
     try:
         results = graph_store.fulltext_search_sync(name, limit=3)
     except Exception:
@@ -149,8 +157,6 @@ def _fuzzy_match(graph_store: Any, name: str, entity_type: str) -> Optional[str]
     if not results:
         return None
 
-    # ArcadeDB fulltext results don't expose scores directly the same way,
-    # so we rely on name similarity for fuzzy matching
     for r in results:
         if r.entity_type == entity_type:
             candidate = r.canonical_name or r.name

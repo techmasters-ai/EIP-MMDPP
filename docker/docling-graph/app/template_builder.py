@@ -104,6 +104,35 @@ def _build_single_template(entity_type_def: dict[str, Any]) -> tuple[str, type[B
     return class_name, model_cls
 
 
+def build_unified_template(ontology: dict[str, Any]) -> type[BaseModel] | None:
+    """Build a single Pydantic template containing all entity types.
+
+    The docling-graph library expects ``PipelineConfig.template`` to be a
+    single ``BaseModel`` subclass. This function builds one model with a
+    list field per entity type so the LLM extracts all types in one pass.
+
+    Returns ``None`` if the ontology has no entity types with properties.
+    """
+    per_type = build_templates(ontology)
+    if not per_type:
+        return None
+
+    fields: dict[str, Any] = {}
+    for safe_name, model_cls in per_type.items():
+        fields[safe_name.lower()] = (
+            list[model_cls],  # type: ignore[valid-type]
+            Field(default_factory=list, description=f"Extracted {safe_name} entities"),
+        )
+
+    unified = create_model(
+        "UnifiedExtractionTemplate",
+        __config__=ConfigDict(graph_id_fields=[]),
+        **fields,
+    )
+    logger.info("Built unified template with %d entity types", len(fields))
+    return unified
+
+
 def build_templates(ontology: dict[str, Any]) -> dict[str, type[BaseModel]]:
     """Build Pydantic model classes for all entity types in the ontology.
 

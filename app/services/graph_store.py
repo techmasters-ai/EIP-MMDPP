@@ -558,6 +558,18 @@ class GraphStore(Protocol):
         """Synchronous variant of :meth:`ensure_ready`."""
         ...
 
+    def fuzzy_match_sync(
+        self,
+        name: str,
+        entity_type: str,
+        threshold: float = 0.8,
+    ) -> list[dict]:
+        """Find entities with names similar to *name* using server-side
+        Levenshtein distance. Returns candidates where normalized similarity
+        >= *threshold*, sorted by distance (best first).
+        """
+        ...
+
     def get_document_entities_sync(
         self,
         document_id: str,

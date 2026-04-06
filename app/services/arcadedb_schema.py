@@ -286,6 +286,18 @@ async def sync_schema_from_ontology(
     await _run_ddl_batch(client, database, unique_ddl, phase="unique_indexes", report=report)
     report.indexes_created += len(unique_ddl)
 
+    # --- Phase 8: BucketSelectionStrategy 'thread' for write-heavy types ---
+    # Eliminates contention and ConcurrentModificationException on parallel
+    # pipeline ingestion (ArcadeDB Manual §5.5.24).
+    write_heavy_types = ["TextChunk", "ImageChunk", "TrustedTextChunk"]
+    for e in ontology.get("entity_types", []):
+        write_heavy_types.append(_safe_type_name(e["name"]))
+    bucket_ddl = [
+        f"ALTER TYPE {t} BucketSelectionStrategy `thread`"
+        for t in write_heavy_types
+    ]
+    await _run_ddl_batch(client, database, bucket_ddl, phase="bucket_strategy", report=report)
+
     logger.info(
         "Schema sync: %d types, %d properties, %d indexes, %d errors",
         report.types_created,
