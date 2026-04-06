@@ -102,16 +102,26 @@ Stale tests assert `response["mode"]` but the live response uses `strategy` and 
 
 ### Missing UI Feature
 
-**#72. Add community report scheduling and execution UI** (High)
-**Files:** `frontend/src/components/` (new component), `frontend/src/api/client.ts`
-The backend exposes full community detection endpoints (`POST /v1/community/detect`, `GET /v1/community/status`, `GET /v1/community/reports`, `GET /v1/community/reports/{id}`), but there is no frontend UI to trigger detection, view run status, or browse reports. The other 5 verified UI features (image hover descriptions, translation toggle, graph explorer, trusted data workflow, DoclingDocument viewer) are all present.
-**Fix:** Add a community management component with:
-1. "Run Detection" button calling `POST /v1/community/detect` (with mode selector: incremental/full)
-2. Status display showing latest/historical run status from `GET /v1/community/status`
-3. Reports browser listing community reports with title, summary, member count from `GET /v1/community/reports`
-4. Schedule display showing `COMMUNITY_DETECTION_INTERVAL_MINUTES` and post-ingest threshold from config
-5. Add API client functions in `client.ts` for all community endpoints
-6. Mount on a "Communities" tab/page in the app navigation
+**#72. Restore community indexing UI on the Ontology page** (High)
+**Files:** `frontend/src/components/GraphExplorer.tsx`, `frontend/src/api/client.ts`
+The main branch had a `GraphIndexingPanel` component inside `GraphExplorer.tsx` with an "indexing" tab on the Ontology page. It displayed:
+- Schedule interval (minutes between runs), countdown timer showing minutes remaining until next scheduled run, and the exact time it will occur
+- "Update Index" button (incremental) and "Force Full Reindex" button (full)
+- Last indexed timestamp
+- Enabled/disabled status indicator
+
+This tab was removed during the GraphRAG migration because the old indexing was GraphRAG DRIFT. The backend now has equivalent community detection endpoints (`POST /v1/community/detect`, `GET /v1/community/status`, `GET /v1/community/reports`), but the UI was never reconnected.
+
+**Fix:** Restore the "indexing" tab in `GraphExplorer.tsx` as a `CommunityIndexingPanel` that:
+1. Re-adds `"indexing"` to the `Tab` type union (currently `"search" | "entity" | "relationship" | "profiles"`)
+2. Shows schedule: `COMMUNITY_DETECTION_INTERVAL_MINUTES` with countdown timer and next-run time (same UX as the old `GraphIndexingPanel`)
+3. Shows the post-ingest auto-trigger threshold (`COMMUNITY_DETECTION_POST_INGEST_THRESHOLD`)
+4. "Run Detection" button (incremental mode) and "Force Full Detection" button (full mode) calling `POST /v1/community/detect`
+5. Status display from `GET /v1/community/status` showing latest run: status, total communities, reports generated/reused, started/completed timestamps
+6. Community reports browser: list from `GET /v1/community/reports` with title, summary, member count
+7. Add API client functions: `triggerCommunityDetection(mode)`, `getCommunityStatus()`, `getCommunityReports()`, `getCommunityReport(id)` in `client.ts`
+
+**Reference:** Main branch `GraphExplorer.tsx` lines 580-694 for the original UX pattern.
 
 ---
 
