@@ -821,3 +821,54 @@ export async function getElementTranslations(documentId: string): Promise<Elemen
     return [];
   }
 }
+
+// ---------------------------------------------------------------------------
+// Community / Global Search Indexing
+// ---------------------------------------------------------------------------
+
+export interface IndexingSettings {
+  indexing_enabled: boolean;
+  indexing_interval_minutes: number;
+  post_ingest_enabled: boolean;
+  post_ingest_threshold: number;
+  algorithm: string;
+  last_run: {
+    status: string;
+    started_at: string | null;
+    completed_at: string | null;
+    total_communities: number;
+    reports_generated: number;
+    reports_reused: number;
+  } | null;
+  last_indexing_at: string | null;
+}
+
+export interface CommunityReport {
+  community_id: number;
+  title: string;
+  summary: string;
+  member_count: number;
+  generated_at?: string;
+}
+
+export async function getIndexingSettings(): Promise<IndexingSettings> {
+  return handleResponse<IndexingSettings>(await fetch("/v1/community/settings"));
+}
+
+export async function triggerIndexing(mode: "incremental" | "full"): Promise<{ run_id: string }> {
+  return handleResponse(
+    await fetch("/v1/community/detect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    })
+  );
+}
+
+export async function getIndexingStatus(): Promise<Record<string, unknown>> {
+  return handleResponse(await fetch("/v1/community/status"));
+}
+
+export async function getCommunityReports(): Promise<{ reports: CommunityReport[]; total: number }> {
+  return handleResponse(await fetch("/v1/community/reports"));
+}

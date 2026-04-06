@@ -5,6 +5,11 @@ import {
   ingestGraphRelationship,
   queryGraph,
   getGraphNeighborhood,
+  getIndexingSettings,
+  triggerIndexing,
+  getCommunityReports,
+  type IndexingSettings,
+  type CommunityReport,
   type QueryProfileDefinition,
   type QueryProfileRegistry,
   type QueryResultItem,
@@ -148,12 +153,13 @@ function buildOntologyOptions(
   };
 }
 
-type Tab = "search" | "entity" | "relationship" | "profiles";
+type Tab = "search" | "entity" | "relationship" | "indexing" | "profiles";
 
 const TAB_LABELS: Record<Tab, string> = {
   search: "Search",
   entity: "Add Entity",
   relationship: "Add Relationship",
+  indexing: "Indexing",
   profiles: "Ontology and Query Profiles",
 };
 
@@ -188,6 +194,7 @@ export function GraphExplorer() {
       </div>
 
       {tab === "search" && <GraphSearch />}
+      {tab === "indexing" && <GlobalSearchIndexingPanel />}
       {tab === "entity" && <EntityForm entityTypes={ontologyOptions.entityTypes} />}
       {tab === "relationship" && (
         <RelationshipForm
@@ -566,6 +573,187 @@ function RelationshipForm({
       </form>
       {error && <div className="alert alert-error mt-sm">{error}</div>}
       {success && <div className="alert alert-success mt-sm">{success}</div>}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Global Search Indexing Panel
+// ---------------------------------------------------------------------------
+
+function GlobalSearchIndexingPanel() {
+  const [settings, setSettings] = useState<IndexingSettings | null>(null);
+  const [triggering, setTriggering] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [minutesRemaining, setMinutesRemaining] = useState<number | null>(null);
+  const [reports, setReports] = useState<CommunityReport[]>([]);
+  const [showReports, setShowReports] = useState(false);
+
+  const computeRemaining = useCallback((s: IndexingSettings) => {
+    if (!s.indexing_enabled || !s.last_indexing_at) {
+      setMinutesRemaining(null);
+      return;
+    }
+    const elapsed = (Date.now() - new Date(s.last_indexing_at).getTime()) / 60000;
+    setMinutesRemaining(Math.max(0, Math.round(s.indexing_interval_minutes - elapsed)));
+  }, []);
+
+  useEffect(() => {
+    getIndexingSettings().then((s) => {
+      setSettings(s);
+      computeRemaining(s);
+    }).catch(() => {});
+  }, [computeRemaining]);
+
+  useEffect(() => {
+    if (!settings) return;
+    const id = setInterval(() => computeRemaining(settings), 60000);
+    return () => clearInterval(id);
+  }, [settings, computeRemaining]);
+
+  const handleUpdate = async () => {
+    setTriggering(true);
+    setStatus(null);
+    setError(null);
+    try {
+      const res = await triggerIndexing("incremental");
+      setStatus(`Incremental update started (run ${res.run_id.slice(0, 8)}...)`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to trigger update");
+    } finally {
+      setTriggering(false);
+    }
+  };
+
+  const handleFullReindex = async () => {
+    const confirmed = window.confirm(
+      "This will regenerate all community reports from scratch. " +
+      "Existing reports will be replaced. This can take several minutes " +
+      "for large document collections.\n\nProceed?"
+    );
+    if (!confirmed) return;
+    setTriggering(true);
+    setStatus(null);
+    setError(null);
+    try {
+      const res = await triggerIndexing("full");
+      setStatus(`Full reindex started (run ${res.run_id.slice(0, 8)}...)`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to trigger full reindex");
+    } finally {
+      setTriggering(false);
+    }
+  };
+
+  const handleShowReports = async () => {
+    if (showReports) { setShowReports(false); return; }
+    try {
+      const data = await getCommunityReports();
+      setReports(data.reports || []);
+    } catch { setReports([]); }
+    setShowReports(true);
+  };
+
+  if (!settings) {
+    return <div className="empty-state"><span className="spinner" /> Loading indexing settings...</div>;
+  }
+
+  return (
+    <div>
+      <h3 style={{ marginTop: 0 }}>Global Search Indexing</h3>
+      <p style={{ color: "var(--color-text-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+        Global Search requires indexed community reports. This panel lets you schedule and trigger
+        the indexing workflow: community detection, report generation, and embedding.
+      </p>
+
+      <div style={{
+        border: "1px solid var(--color-border)", borderRadius: "var(--radius)",
+        padding: "1rem", marginBottom: "1rem", background: "var(--color-surface-2)",
+        fontSize: "0.9rem", lineHeight: 1.8,
+      }}>
+        <div>
+          Automatic indexing is{" "}
+          <strong>{settings.indexing_enabled ? "enabled" : "disabled"}</strong>
+          {settings.indexing_enabled && (
+            <>, running every <strong>{settings.indexing_interval_minutes} minutes</strong></>
+          )}
+        </div>
+        {settings.post_ingest_enabled && (
+          <div style={{ color: "var(--color-text-muted)" }}>
+            Auto-triggers after every <strong>{settings.post_ingest_threshold}</strong> documents ingested
+          </div>
+        )}
+        {settings.indexing_enabled && (
+          <div style={{ color: "var(--color-text-muted)" }}>
+            {minutesRemaining !== null
+              ? <>Next auto indexing in <strong>{minutesRemaining} minute{minutesRemaining !== 1 ? "s" : ""}</strong>
+                  {settings.last_indexing_at && (
+                    <> (at {new Date(
+                      new Date(settings.last_indexing_at).getTime() + settings.indexing_interval_minutes * 60000
+                    ).toLocaleTimeString()})</>
+                  )}
+                </>
+              : "Pending first run"}
+          </div>
+        )}
+        {settings.last_run && (
+          <div style={{ color: "var(--color-text-muted)", fontSize: "0.8rem", marginTop: "0.25rem" }}>
+            Last run: <strong>{settings.last_run.status}</strong>
+            {settings.last_run.completed_at && (
+              <> at {new Date(settings.last_run.completed_at).toLocaleString()}</>
+            )}
+            {settings.last_run.total_communities > 0 && (
+              <> — {settings.last_run.total_communities} communities, {settings.last_run.reports_generated} generated, {settings.last_run.reports_reused} reused</>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1rem" }}>
+        <button className="btn btn-primary" onClick={handleUpdate} disabled={triggering}>
+          {triggering ? "Starting..." : "Update Index"}
+        </button>
+        <button className="btn btn-danger" onClick={handleFullReindex} disabled={triggering}>
+          {triggering ? "Starting..." : "Force Full Reindex"}
+        </button>
+        <button className="btn" onClick={handleShowReports}>
+          {showReports ? "Hide Reports" : "View Reports"}
+        </button>
+      </div>
+
+      {status && <div className="alert alert-success mt-sm">{status}</div>}
+      {error && <div className="alert alert-error mt-sm">{error}</div>}
+
+      {showReports && (
+        <div style={{ marginTop: "1rem" }}>
+          <h4>Community Reports ({reports.length})</h4>
+          {reports.length === 0 ? (
+            <div className="empty-state">No reports generated yet. Run indexing first.</div>
+          ) : (
+            <div style={{ maxHeight: "400px", overflowY: "auto" }}>
+              {reports.map((r) => (
+                <div key={r.community_id} style={{
+                  border: "1px solid var(--color-border)", borderRadius: "var(--radius)",
+                  padding: "0.75rem", marginBottom: "0.5rem", background: "var(--color-surface)",
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                    Community {r.community_id}: {r.title}
+                  </div>
+                  <div style={{ fontSize: "0.85rem", color: "var(--color-text-muted)" }}>
+                    {r.member_count} members
+                    {r.generated_at && <> — generated {new Date(r.generated_at).toLocaleString()}</>}
+                  </div>
+                  <div style={{ fontSize: "0.85rem", marginTop: "0.25rem", whiteSpace: "pre-line" }}>
+                    {r.summary.length > 300 ? r.summary.slice(0, 300) + "..." : r.summary}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

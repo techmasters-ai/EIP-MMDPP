@@ -65,6 +65,41 @@ async def get_run_status(run_id: str):
         return dict(row)
 
 
+@router.get("/settings")
+async def get_settings():
+    """Return community detection / Global Search indexing settings for the UI."""
+    from app.config import get_settings as _gs
+    from app.db.session import get_async_session
+    from sqlalchemy import text
+
+    s = _gs()
+
+    # Get last run info for timer calculation
+    last_run = None
+    async with get_async_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT status, started_at, completed_at, total_communities, "
+                "reports_generated, reports_reused "
+                "FROM retrieval.community_runs "
+                "ORDER BY created_at DESC LIMIT 1"
+            )
+        )
+        row = result.mappings().first()
+        if row:
+            last_run = dict(row)
+
+    return {
+        "indexing_enabled": s.community_detection_enabled,
+        "indexing_interval_minutes": s.community_detection_interval_minutes,
+        "post_ingest_enabled": s.community_detection_post_ingest_enabled,
+        "post_ingest_threshold": s.community_detection_post_ingest_threshold,
+        "algorithm": s.community_detection_algorithm,
+        "last_run": last_run,
+        "last_indexing_at": last_run.get("completed_at") if last_run else None,
+    }
+
+
 @router.get("/reports")
 async def list_reports():
     """List all community reports (up to 100)."""
