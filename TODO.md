@@ -100,6 +100,75 @@ Fulltext search is ordered by Lucene `$score`, but `_to_entity()` ignores it and
 Stale tests assert `response["mode"]` but the live response uses `strategy` and `modality_filter`. The shared conftest replaces GraphStore with mocks, so passing tests don't validate real ArcadeDB behavior.
 **Fix:** Update integration/e2e tests to assert `strategy`/`modality_filter`. Add integration test markers that use real GraphStore for critical path validation.
 
+### Native-First Review — Architecture-Level Findings (2026-04-06)
+
+The branch calls native `DocumentConverter`, Docling-Graph `run_pipeline()`, and ArcadeDB `MATCH`/`vectorNeighbors()`, but the dominant pattern is to immediately flatten or wrap those native objects into app-specific contracts and then reimplement upstream behavior in Python. These findings address that pattern.
+
+**Execution priorities:** #60 → #61 → #63 → #62 → #64 → #65 → #66 → #67 → #68 → #69 → #70 → #71
+
+**#60. Make DoclingDocument the authoritative mutable artifact through the pipeline** (Critical)
+**Files:** `docker/docling/app/converter.py` (line ~236), `app/services/docling_client.py` (line ~42), `app/workers/pipeline.py` (lines ~915, ~1276, ~2234)
+The Docling wrapper converts natively, then immediately flattens into custom `ConvertedElement`/`ExtractedChunk` DTOs. Later stages mutate `DocumentElement` rows plus hand-built markdown instead of mutating and reserializing the `DoclingDocument` itself. This is the root cause of the stale JSON vs current-text split.
+**Fix:** Keep `DoclingDocument` as the primary working object. Translation and picture-description stages should mutate the `DoclingDocument` (per Docling's documented enrichment flow at https://docling-project.github.io/docling/examples/enrich_doclingdocument/), then reserialize to MinIO. Derive `DocumentElement` rows and markdown FROM the `DoclingDocument`, not the other way around.
+
+**#61. Replace custom chunker with native Docling chunkers** (High)
+**Files:** `app/services/chunking.py` (line ~36), `app/workers/pipeline.py` (line ~1673)
+Docling documents two native approaches (`BaseChunker`/`HybridChunker`) and explicitly recommends chunking directly from `DoclingDocument`. The branch uses `structure_aware_chunk()` with approximate token counting and manual overlap logic over flattened rows.
+**Fix:** Replace `structure_aware_chunk()` with Docling's `HybridChunker` (or `BaseChunker` if hybrid is too aggressive) operating on the `DoclingDocument` object. If retrieval chunking must intentionally differ from Docling's default, document the specific reason.
+**Reference:** https://docling-project.github.io/docling/concepts/chunking/
+
+**#62. Use Docling's native enrichment path for translation and picture descriptions** (High)
+**Files:** `docker/docling/app/converter.py` (line ~167), `app/workers/pipeline.py` (lines ~1290, ~1401, ~1492, ~2280)
+The converter explicitly disables picture description, then later stages write `translated_text` to `DocumentElement` rows, append image descriptions to markdown, and inject `_enriched_text` into the extraction payload. Native Docling examples instead mutate the `DoclingDocument` and regenerate all output from that object.
+**Fix:** Enable Docling's native picture description. For translation, use Docling's documented enrichment pattern (mutate `DoclingDocument` in-place). Regenerate markdown/JSON from the enriched `DoclingDocument` rather than patching downstream.
+**Reference:** https://docling-project.github.io/docling/examples/translate/ and https://docling-project.github.io/docling/examples/enrich_doclingdocument/
+
+**#63. Align Docling-Graph templates with canonical schema definition** (High)
+**Files:** `docker/docling-graph/app/template_builder.py` (lines ~34, ~99, ~189)
+Upstream docs show explicit Pydantic models using `graph_id_fields`, `is_entity=False` for components, and `edge()` for relationships. This branch auto-derives identity fields, never emits component semantics, and encodes edges with `json_schema_extra={"edge_label": ...}`. The "unified template" wraps all entity types into a generated container model with list fields.
+**Fix:** Author canonical Pydantic template classes following the documented `is_entity=True`/`is_entity=False` pattern for entities vs components, and `edge()` for relationships. Decide whether templates should be explicit authored models or generated from the ontology YAML — but either way, conform to the library's canonical schema definition.
+**Reference:** https://ibm.github.io/docling-graph/fundamentals/schema-definition/entities-vs-components/ and https://ibm.github.io/docling-graph/usage/examples/docling-document-input/
+
+**#64. Preserve Docling-Graph provenance and metadata instead of rebuilding in Python** (High)
+**Files:** `docker/docling-graph/app/config_builder.py` (line ~90), `app/services/docling_graph_service.py` (line ~204), `app/workers/pipeline.py` (lines ~2116, ~2313, ~2354)
+The client flattens the node-link graph, the pipeline keeps only `properties`, ignores most response `metadata`, and rebuilds mention grounding with regex matching instead of consuming upstream provenance/resolver output. This negates much of the value from enabling delta resolvers and provenance attachment in the Docling-Graph config.
+**Fix:** Preserve `_provenance` from graph nodes (element-level source tracking). Use resolver output for entity merge decisions instead of reimplementing identity field derivation. Consume `graph_metadata` quality signals (gleaning passes, validation pass, resolver stats) for ingestion quality reporting.
+
+**#65. Move document-structure retrieval from Postgres chunk_links to native ArcadeDB graph** (High)
+**Files:** `app/workers/pipeline.py` (lines ~2564, ~2672), `app/api/v1/retrieval.py` (lines ~344, ~570)
+The pipeline writes structural edges (CONTAINS_TEXT, SAME_PAGE, SAME_SECTION) to ArcadeDB AND chunk_links to Postgres. But the main hybrid expansion path reads Postgres `chunk_links` first and only falls back to ArcadeDB for legacy cases. The native graph database is not driving the main retrieval logic.
+**Fix:** Make ArcadeDB the primary source for document-structure expansion. Query structural edges via MATCH traversal instead of the Postgres `chunk_links` table. Keep Postgres `chunk_links` as a denormalized cache for compatibility, or remove the duplication entirely.
+
+**#66. Compile query-profile traversals into native MATCH instead of generic undirected walk** (High)
+**Files:** `app/schemas/query_profiles.py` (line ~13), `app/services/query_profiles.py` (line ~556), `app/services/dossier_service.py` (line ~193), `app/services/arcadedb_graph.py` (line ~776)
+The profile schema supports directed multi-step paths with `direction`, `min_hops`, `max_hops`, but execution collapses to one generic undirected `.both(...)` neighborhood walk. This is a custom simplification on top of ArcadeDB rather than native use of its graph query model.
+**Fix:** Generate native MATCH patterns from each traversal step. Chain `.out('{RelType}'){min,max}` / `.in(...)` / `.both(...)` per step's direction field. This is the same as #51 but from the native-first perspective.
+
+**#67. Enrich GraphStore result model to carry native ArcadeDB semantics** (Medium)
+**Files:** `app/services/graph_store.py` (line ~1), `app/services/arcadedb_graph.py` (lines ~53, ~804), `app/api/v1/graph_store.py` (line ~66)
+The `GraphStore` abstraction maps Lucene/vector results into `GraphEntityResult.extraction_confidence`, strips node and edge payloads, and the API returns those generic fields instead of native Lucene score or fuller graph records.
+**Fix:** Add `score` and `score_type` fields to `GraphEntityResult` (or a richer result type). Carry Lucene `$score` for fulltext, `$distance`-derived similarity for vector, and `extraction_confidence` for ingestion — as separate fields rather than overloading one. Return fuller native properties from neighborhood/graph queries.
+
+**#68. Push retrieval filters into native queries** (Medium)
+**Files:** `app/api/v1/retrieval.py` (lines ~42, ~93), `app/api/v1/_retrieval_helpers.py` (line ~120)
+Filters are handled in Python after search/expansion even though SQL-side filter builders exist. Post-filtering wastes vector search budget on results that will be dropped.
+**Fix:** Apply `document_id` filters as WHERE clauses on the outer SELECT (after vectorNeighbors expand). Use the existing `build_filters()` helpers for Postgres-side chunk queries. This overlaps with #55 but from the native-first perspective.
+
+**#69. Return enriched graph context from ontology expansion traversal** (Medium)
+**Files:** `app/services/arcadedb_graph.py` (line ~856), `app/api/v1/retrieval.py` (line ~710), `app/services/query_profiles.py` (line ~645), `app/services/dossier_service.py` (line ~338)
+`get_ontology_linked_chunks()` returns raw rows from `expand(out('EXTRACTED_FROM'))` but higher layers expect `target_chunk_type`, `rel_type`, and entity context that ArcadeDB never provided. This mismatch is a direct consequence of wrapping native traversal in a custom contract.
+**Fix:** Enrich the ArcadeDB query to return intermediate entity name/type and chunk `@class` in the traversal result. Use ArcadeDB's MATCH to capture the traversal path metadata natively rather than adding it in Python.
+
+**#70. Add native integration test coverage** (Low)
+**Files:** `tests/conftest.py` (line ~206), `docker/docling-graph/tests/test_pipeline_integration.py` (line ~37)
+The shared fixture replaces GraphStore with mocks, and the docling-graph integration tests validate the wrapper contract rather than a live native library run. Many custom-vs-native drifts are not protected by tests.
+**Fix:** Add integration test markers that use the real ArcadeDBGraphStore (not mocks) for critical path validation: vector search → retrieval, entity resolution → dossier, traversal → ontology expansion. Test the docling-graph pipeline against a real Docling-Graph library call.
+
+**#71. Decide explicit vs generated Docling-Graph templates** (Low)
+**Files:** `docker/docling-graph/app/template_builder.py` (lines ~107, ~189), `docker/docling-graph/app/main.py` (line ~56)
+The branch auto-generates templates from the ontology YAML. This is convenient but creates a semantic gap with the canonical Docling-Graph template authoring pattern (explicit Pydantic models with `is_entity`, `edge()`, component semantics).
+**Fix:** Evaluate whether the ontology is stable enough to warrant explicit template classes (higher fidelity, easier to test) or whether generation is necessary for ontology evolution speed. Document the decision and its tradeoffs.
+
 ---
 
 ## Completed Items (Reference)
@@ -175,6 +244,53 @@ Stale tests assert `response["mode"]` but the live response uses `strategy` and 
 ---
 
 ## Verbatim Reviews (Reference)
+
+### Verbatim Native-First Review (2026-04-06)
+
+> No code changes made. The branch does call native `DocumentConverter`, Docling-Graph `run_pipeline()`, and ArcadeDB `MATCH`/`vectorNeighbors()`, but the dominant pattern is to immediately flatten or wrap those native objects into app-specific contracts and then reimplement upstream behavior in Python.
+>
+> **Findings**
+>
+> 1. Critical: `DoclingDocument` is not kept as the authoritative working object after conversion. The Docling wrapper converts natively, then immediately flattens the result into custom `ConvertedElement`/`ExtractedChunk` DTOs and later stages mutate `DocumentElement` rows plus hand-built markdown instead of mutating and reserializing the `DoclingDocument` itself. This diverges from Docling's documented post-conversion mutation/enrichment flow and is the root cause of the stale JSON vs current-text split.
+>
+> 2. High: native Docling chunkers are bypassed in favor of a custom heuristic chunker over flattened rows. Upstream Docling documents two native approaches and explicitly recommends direct chunking from `DoclingDocument` via `BaseChunker`/`HybridChunker`; this branch instead uses `structure_aware_chunk()` with approximate token counting and manual overlap logic.
+>
+> 3. High: Docling's own enrichment path is replaced with custom translation and picture-description stages that do not update the canonical Docling JSON. The converter explicitly disables picture description, then later stages write translated text to `DocumentElement.translated_text`, append image descriptions to markdown, and inject `_enriched_text` into the extraction payload. Native Docling examples instead mutate the `DoclingDocument` and regenerate output from that object.
+>
+> 4. High: Docling-Graph template authoring is replaced by a custom ontology-to-Pydantic generator. The upstream docs show explicit Pydantic models using `graph_id_fields`, `is_entity=False` for components, and `edge()` for relationships, while this branch auto-derives identity fields, never emits component semantics, and encodes edges with `json_schema_extra={"edge_label": ...}`.
+>
+> 5. High: the wrapper introduces a custom "unified template" container instead of using canonical authored template classes. This is a custom accommodation of Docling-Graph's singular `PipelineConfig.template` surface, but it moves semantics out of explicit domain models into a generated wrapper model with list fields for every entity type.
+>
+> 6. High: native Docling-Graph graph output, provenance, and metadata are normalized into an app-specific `{entities, relationships}` contract and then partially discarded. The client flattens the node-link graph, the pipeline keeps only `properties`, ignores most response `metadata`, and rebuilds mention grounding with regex matching instead of consuming upstream provenance/resolver output.
+>
+> 7. High: ArcadeDB is not the primary structure graph for retrieval even though the pipeline writes structural edges there. The main hybrid expansion path reads Postgres `retrieval.chunk_links` first and only falls back to ArcadeDB neighborhood traversal for legacy cases.
+>
+> 8. High: query profiles and dossiers do not compile their own traversal model into native ArcadeDB `MATCH` traversals. The profile schema supports directed multi-step paths with `direction`, `min_hops`, and `max_hops`, but execution collapses that into one generic undirected neighborhood walk using `.both(...)`.
+>
+> 9. Medium: the backend-agnostic `GraphStore` abstraction strips native ArcadeDB result semantics and encourages lowest-common-denominator query usage.
+>
+> 10. Medium: retrieval filters are handled in Python after search/expansion instead of being pushed into native Postgres/ArcadeDB queries, even though SQL-side filter builders already exist.
+>
+> 11. Medium: evidence and ontology expansion are routed through custom helper contracts instead of native ArcadeDB graph semantics.
+>
+> 12. Low: native integration coverage is weak, so many of these custom-vs-native drifts are not protected by tests.
+>
+> **Handoff Priorities**
+> 1. Make `DoclingDocument` the authoritative mutable artifact through translation and picture enrichment, then regenerate markdown/JSON from it.
+> 2. Replace the custom Docling chunker where feasible with native Docling chunkers, or document why retrieval chunking must intentionally differ.
+> 3. Decide whether Docling-Graph templates should be explicit canonical Pydantic models instead of generated wrappers.
+> 4. Preserve Docling-Graph provenance and metadata instead of rebuilding mention grounding in Python.
+> 5. Move retrieval, query-profile traversal, and dossier evidence onto native ArcadeDB graph traversal instead of Postgres-first/generic-wrapper execution.
+>
+> **Sources**
+> - ArcadeDB Manual.pdf
+> - https://docling-project.github.io/docling/concepts/chunking/
+> - https://docling-project.github.io/docling/examples/translate/
+> - https://docling-project.github.io/docling/examples/enrich_doclingdocument/
+> - https://ibm.github.io/docling-graph/usage/examples/docling-document-input/
+> - https://ibm.github.io/docling-graph/fundamentals/schema-definition/entities-vs-components/
+
+---
 
 ### Verbatim Retrieval Query Mechanisms Review (2026-04-06)
 
