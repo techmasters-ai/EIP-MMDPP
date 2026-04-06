@@ -1,52 +1,73 @@
-# Design: DoclingDocument as Authoritative Mutable Artifact (v3)
+# Design: DoclingDocument as Authoritative Mutable Artifact (v4)
 
 **Date:** 2026-04-06
-**Status:** Revised after second review
+**Status:** Revised after third review
 **TODO items:** #60, #61, #62
-**Scope:** Authoritative DoclingDocument, native chunking, enrichment. NOT Docling-Graph templates (#63), provenance (#64), or ArcadeDB-first retrieval (#65).
 
 ---
 
-## Problem
+## Key Changes from v3
 
-DoclingDocument JSON persists once, never updates. Translation and picture descriptions mutate DocumentElement rows but not the JSON. Downstream stages and the API serve stale data.
+1. **Picture descriptions** use native `PictureMeta.description` (a `DescriptionMetaField` with `text`, `confidence`, `created_by`). Legacy `annotations` mirrored for viewer hover contract.
+2. **Markdown semantics preserved:** `docling_document.md` stays original. `docling_document_translated.md` stays translated. No semantic change to existing endpoints.
+3. **Docling-Graph wrapper updated** to extract `_enrichments.context` and prepend to the document before calling `run_pipeline()`. No silent context loss.
+4. **Complete file list** of all markdown consumers/cleaners that need updates.
 
-## Key Design Decisions
+---
 
-### 1. Cross-store consistency model (Finding 1)
+## Design
 
-MinIO and Postgres are separate stores with no distributed transaction. The consistency model is **last-writer-wins with full-stage idempotence**:
+### Identity bridge
 
-- Each stage writes Postgres THEN MinIO. If MinIO fails after Postgres commits, the Celery retry re-executes the full stage — Postgres rows are re-upserted (idempotent), MinIO is re-uploaded (idempotent).
-- The DoclingDocument JSON carries a `_enrichments.version` counter incremented by each stage. On load, a stage can verify it's reading the expected version.
-- If a stage loads a JSON with an unexpected version (e.g., a prior stage was retried and re-wrote), it re-applies its enrichments from its own canonical source (DocumentElement rows).
+`self_ref` (native Docling, e.g., `#/texts/0`) ↔ `element_uid` (pipeline-synthetic). Bridged via `_enrichments.identity_map` in the JSON, built during `prepare_document`. `self_ref` also stored in `DocumentElement.element_metadata` JSONB.
 
-This is NOT atomic. It is eventually consistent via idempotent retry. The same model already applies to the current pipeline (Postgres + MinIO writes are not atomic today).
+### Cross-store consistency
 
-### 2. Translation: original vs translated text (Findings 2, 3)
+Last-writer-wins with full-stage idempotence. `_enrichments.version` counter tracks mutations. On retry, full stage re-executes (Postgres upserts + MinIO upload are both idempotent).
 
-**Two representations preserved:**
+### Translation enrichment
 
-- **Canonical `.text` on each item** — mutated to translated text so native tools (HybridChunker, Docling-Graph) see enriched content.
-- **`_enrichments.translations[self_ref]`** — stores `{original_text, translated_text, language}` for each translated item.
+**Canonical `.text` mutated** on each item so HybridChunker and Docling-Graph see translated content. Originals preserved in `_enrichments.translations[self_ref] = {original_text, translated_text, language}`.
 
-**Markdown regeneration:**
-- After translation, regenerate `docling_document.md` from the mutated DoclingDocument (translated content).
-- Also regenerate `docling_document_original.md` from `_enrichments.translations` original texts. This preserves the classification-detection path that needs original markings.
+**Markdown semantics unchanged:**
+- `docling_document.md` — always the ORIGINAL Docling markdown (written once in `prepare_document`, never overwritten)
+- `docling_document_translated.md` — translated markdown (current behavior, unchanged)
+- `docling_document.json` — the authoritative enriched JSON (mutations accumulate here)
 
-**Metadata extraction** (`derive_document_metadata`):
-- Uses translated markdown for summary/date/source (current behavior, unchanged).
-- Uses original markdown for classification detection (reads `docling_document_original.md` if it exists, falls back to `docling_document.md`).
+This preserves: the `/docling` markdown endpoint serves original, the `/translation` endpoint reads from translated markdown, and `derive_document_metadata` uses translated markdown for summary but original for classification.
 
-### 3. Document summary/classification context for graph extraction (Finding 2)
+### Picture descriptions
 
-When loading the enriched DoclingDocument for graph extraction, the stage still prepends document summary and classification as a `_enrichments.context` field in the JSON. The Docling-Graph service can read this as supplementary context. This replaces the `_enriched_text` hack with a structured field.
+**Native-first:** Write to `PictureMeta.description` (the canonical field):
+```python
+pic_item["meta"] = pic_item.get("meta") or {}
+pic_item["meta"]["description"] = {
+    "text": description_text,
+    "confidence": None,
+    "created_by": f"llm:{model_name}",
+}
+```
 
-### 4. Picture descriptions: annotation-only, no `.text` mutation (Finding 9)
+**Legacy mirror for viewer:** Also write to `annotations[]` with `DescriptionAnnotation` shape so the existing `<docling-tooltip>` hover UI works until it's updated to read from `meta.description`.
 
-Native `PictureItem` has no `.text` field. Descriptions persist ONLY as `annotations[{kind: "description"}]` (the `DescriptionAnnotation` type). This matches both the viewer's `<docling-tooltip>` contract and the native Docling schema. Native tools that process pictures will see the annotation; there is no `.text` to mutate.
+### Docling-Graph context (Finding 1)
 
-### 5. HybridChunker instantiation (Finding 4)
+Update the Docling-Graph wrapper (`docker/docling-graph/app/main.py`) to check for `_enrichments.context` in the incoming JSON and prepend summary/classification to the document text before `run_pipeline()`:
+
+```python
+def run_extraction_pipeline(docling_document_json, templates, unified_template):
+    # Extract context enrichment if present
+    enrichments = docling_document_json.get("_enrichments", {})
+    context = enrichments.get("context", {})
+    # The run_pipeline call processes the DoclingDocument natively;
+    # summary/classification context is injected as a document-level annotation
+    # or prepended text node if the library supports it.
+    ...
+```
+
+If the library doesn't natively support context injection, the wrapper prepends a synthetic text element to the document before calling `run_pipeline()`. This replaces the `_enriched_text` hack with a structured equivalent that works with the native API.
+
+### HybridChunker
 
 ```python
 from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
@@ -58,85 +79,70 @@ hf_tokenizer = HuggingFaceTokenizer(tokenizer=tok, max_tokens=settings.chunk_max
 chunker = HybridChunker(tokenizer=hf_tokenizer)
 ```
 
-Verified against installed `docling_core` API: `HybridChunker.tokenizer` expects `BaseTokenizer`, `HuggingFaceTokenizer` wraps `PreTrainedTokenizerBase` + `max_tokens`.
-
-### 6. Translation toggle API contract (Finding 5)
-
-`/element-translations` endpoint currently returns `{element_uid, original_text, translated_text}`. After refactor:
-- Reads from `_enrichments.translations` (keyed by `self_ref`)
-- Reverse-maps through `_enrichments.identity_map` to return `element_uid`
-- Response shape unchanged — UI contract preserved
-
-### 7. Graph extraction fallback (Finding 6)
-
-If the DoclingDocument JSON is missing or corrupt:
-- Fall back to reconstructing enriched text from DocumentElement rows (current behavior)
-- Wrap in `{"_enriched_text": full_text}` as before
-- Log a warning so the degradation is visible
-
-### 8. DocumentElement schema: `self_ref` in `element_metadata` (Finding 7)
-
-Store `self_ref` in the existing `element_metadata` JSONB column (no schema migration needed). Access via `element.element_metadata.get("self_ref")`. The identity_map in the JSON is the primary lookup; the JSONB field is a convenience for stages that already have a DocumentElement loaded.
-
-### 9. Markdown regeneration schedule (Finding 8)
-
-| Stage | Markdown artifacts updated |
-|-------|---------------------------|
-| `prepare_document` | `docling_document.md` (original), `docling_document.json` (original) |
-| `detect_and_translate` | `docling_document.md` (now translated), `docling_document_original.md` (originals preserved), `docling_document.json` (v2: + translations) |
-| `derive_picture_descriptions` | `docling_document.md` (regenerated with description appendix), `docling_document.json` (v3: + descriptions) |
-| `derive_document_metadata` | No markdown changes (reads only) |
-| `derive_text_chunks_and_embeddings` | No markdown changes (reads JSON) |
-| `derive_ontology_graph` | No markdown changes (reads JSON) |
-
-### 10. `/docling-raw` endpoint behavior change (Finding 6 from v1)
-
-**Before:** Loads JSON, injects annotations at read time from Postgres.
-**After:** Returns enriched JSON directly. Remove runtime injection. The annotation injection code in `sources.py` (lines ~817-836) is deleted since enrichments are now in the persisted JSON.
-
----
-
-## Chunk schema mapping (Finding 5)
-
-### Primary pass: HybridChunker → TextChunk rows
+### Chunk schema mapping
 
 | Field | Source |
 |-------|--------|
-| `chunk_id` | Deterministic: `UUID(md5(sha256(doc_id:self_refs_joined:chunk_idx:model_version)))` |
-| `document_id` | Pipeline context |
-| `artifact_id` | Resolve: chunk's first `doc_item.self_ref` → `identity_map` → `element_uid` → Artifact row |
-| `page_number` | `chunk.meta.doc_items[0].prov[0].page_no` if available, else None |
-| `modality` | From source item label: `section_header`/`paragraph`/`list_item` → "text", `table` → "table" |
-| `classification` | From document metadata |
+| `chunk_id` | `UUID(md5(sha256(doc_id:self_refs:chunk_idx:model_version)))` |
+| `artifact_id` | Via `self_ref → identity_map → element_uid → Artifact` |
+| `page_number` | `chunk.meta.doc_items[0].prov[0].page_no` |
+| `modality` | From source item label |
 | `chunk_text` | `chunk.text` (translated if translation ran) |
-| `text_embedding` | BGE embedding of chunk_text |
 
-### Secondary pass: Image description chunks
+Image description secondary pass: scan `pictures` for `meta.description`, split sections, create `image_description` TextChunks with `SAME_ARTIFACT` links.
 
-Scan `pictures` in DoclingDocument for items with `DescriptionAnnotation`. For each:
-1. Extract description text from annotation
-2. Split into sections via `split_description_sections()` (current logic)
-3. Create TextChunk rows with `modality=image_description`
-4. Create bidirectional `SAME_ARTIFACT` ChunkLinks between consecutive sections
-5. Embed each section
+Fallback: `structure_aware_chunk()` over DocumentElement rows if DoclingDocument reconstruction fails.
 
-### Fallback
+### `/docling-raw` endpoint
 
-If DoclingDocument reconstruction fails, fall back to `structure_aware_chunk()` over DocumentElement rows (current path). Log warning.
+Returns the enriched JSON from MinIO directly. **Remove runtime annotation injection** (currently in `sources.py` lines ~817-836) since descriptions are now in the persisted JSON.
+
+### `/element-translations` endpoint
+
+Reads from `_enrichments.translations` in MinIO JSON, reverse-maps `self_ref → element_uid` via `identity_map`. Response shape unchanged: `{element_uid, original_text, translated_text}`.
+
+### Graph extraction fallback
+
+If DoclingDocument JSON missing/corrupt: reconstruct enriched text from DocumentElement rows, wrap as `{"_enriched_text": text}`, log warning.
 
 ---
 
-## Files changed
+## Complete file change list
 
+### Pipeline stages
+| File:location | Change |
+|---------------|--------|
+| `docker/docling/app/converter.py` `_extract_elements` | Extract `self_ref` from each DocItem, include in ConvertedElement metadata |
+| `app/services/docling_client.py` | Pass `self_ref` through in ExtractedChunk metadata |
+| `app/workers/pipeline.py` `prepare_document` (~L815) | Build `_enrichments.identity_map`, store `self_ref` in `element_metadata` JSONB |
+| `app/workers/pipeline.py` `detect_and_translate` (~L1276) | Reload JSON, mutate `.text`, persist `_enrichments.translations`, re-upload JSON. Keep writing `docling_document_translated.md` (unchanged) |
+| `app/workers/pipeline.py` `derive_picture_descriptions` (~L1479) | Reload JSON, add `meta.description` + legacy `annotations`, re-upload JSON |
+| `app/workers/pipeline.py` `derive_text_chunks_and_embeddings` (~L1673) | Load JSON, reconstruct DoclingDocument, use HybridChunker. Fallback to `structure_aware_chunk()` |
+| `app/workers/pipeline.py` `derive_ontology_graph` (~L2234) | Load enriched JSON, add `_enrichments.context`, pass to service. Remove `_enriched_text` reconstruction |
+
+### Docling-Graph wrapper
+| File:location | Change |
+|---------------|--------|
+| `docker/docling-graph/app/main.py` `run_extraction_pipeline` (~L88) | Extract `_enrichments.context`, inject summary/classification before `run_pipeline()` |
+
+### API endpoints (markdown consumers)
+| File:location | Current behavior | Change |
+|---------------|-----------------|--------|
+| `app/api/v1/sources.py` `get_docling_document` (~L659) | Serves `docling_document.md` | No change — file stays original markdown |
+| `app/api/v1/sources.py` `get_docling_raw` (~L818) | Loads JSON + injects annotations at runtime | Remove runtime injection; serve MinIO JSON directly |
+| `app/api/v1/sources.py` `get_translation` (~L882) | Reads `docling_document_translated.md` | No change — file still exists with translated markdown |
+| `app/api/v1/sources.py` `get_element_translations` (~L916) | Reads from Postgres DocumentElement | Read from `_enrichments.translations` in MinIO JSON, reverse-map to element_uid |
+| `app/api/v1/sources.py` `_hard_delete_document` (~L504) | Deletes `docling_document.md`, `.json`, `_translated.md` | No change — same files still exist |
+
+### Pipeline markdown readers
+| File:location | Current behavior | Change |
+|---------------|-----------------|--------|
+| `app/workers/pipeline.py` `derive_document_metadata` (~L1104) | Reads `docling_document.md` as original | No change — file stays original |
+| `app/workers/pipeline.py` `derive_document_metadata` (~L1115) | Reads `docling_document_translated.md` | No change — file still exists |
+| `app/workers/pipeline.py` `derive_picture_descriptions` (~L1406) | Reads `docling_document.json` | Now reads enriched JSON (has translations) |
+| `app/workers/pipeline.py` `derive_picture_descriptions` (~L1496) | Reads/writes `docling_document.md` | Appends description appendix to original markdown (current behavior unchanged) |
+
+### Chunking
 | File | Change |
 |------|--------|
-| `docker/docling/app/converter.py` | Extract `self_ref` from DocItems in `_extract_elements`, include in ConvertedElement metadata |
-| `app/services/docling_client.py` | Pass `self_ref` through in ExtractedChunk metadata |
-| `app/workers/pipeline.py` (prepare) | Build `_enrichments.identity_map`, persist in JSON. Store `self_ref` in DocumentElement.element_metadata |
-| `app/workers/pipeline.py` (translate) | Reload JSON, mutate `.text` fields, persist `_enrichments.translations`, regenerate both markdown files, re-upload JSON |
-| `app/workers/pipeline.py` (pictures) | Reload JSON, add `DescriptionAnnotation` to pictures, regenerate markdown, re-upload JSON |
-| `app/workers/pipeline.py` (chunks) | Load JSON, reconstruct DoclingDocument, use HybridChunker with HuggingFaceTokenizer. Fallback to structure_aware_chunk |
-| `app/workers/pipeline.py` (graph) | Load enriched JSON directly, add `_enrichments.context` with summary/classification, remove _enriched_text |
-| `app/api/v1/sources.py` (docling-raw) | Remove runtime annotation injection |
-| `app/api/v1/sources.py` (translations) | Read from `_enrichments.translations`, reverse-map via identity_map to element_uid |
-| `app/services/chunking.py` | Keep as fallback; no changes |
+| `app/services/chunking.py` | Keep as fallback. No changes. |
