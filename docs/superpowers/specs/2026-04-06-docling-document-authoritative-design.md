@@ -31,9 +31,6 @@ This preserves:
       "#/texts/0": { "original_text": "Зенитный...", "translated_text": "Anti-aircraft...", "language": "ru" },
       "#/texts/1": { "original_text": "Комплекс...", "translated_text": "System...", "language": "ru" }
     },
-    "picture_descriptions": {
-      "#/pictures/0": { "text": "Image shows a phased array radar...", "model": "gemma3:27b" }
-    },
     "context": {
       "summary": "This document describes...",
       "classification": "UNCLASSIFIED"
@@ -42,57 +39,89 @@ This preserves:
 }
 ```
 
-Canonical `.text` fields on `texts[]` and `pictures[]` items are **never mutated**. They stay in the original language. Picture `meta.description` is populated natively. Translations and descriptions are overlays in `_enrichments`.
+Canonical `.text` fields on `texts[]` and `pictures[]` items are **never mutated** with translations. They stay in the original language. Picture `meta.description` IS populated natively (it is the canonical Docling field for this purpose — not a mutation of `.text`).
 
-### Building an enriched copy for native tools
+### Picture description precedence rule
 
-When HybridChunker or Docling-Graph needs the enriched document:
+`meta.description` is **canonical**. `annotations[kind=description]` is derived for viewer compatibility. `_enrichments.picture_descriptions` is removed — unnecessary third copy. The pipeline writes `meta.description` on the picture item and derives the legacy annotation from it. Reads always check `meta.description` first.
+
+### Two enrichment copy functions (chunking vs graph extraction)
+
+Chunking and graph extraction need different enriched copies. Chunking should NOT see the synthetic context node (which would create a spurious chunk and break artifact resolution). Graph extraction DOES need the context.
 
 ```python
-def _build_enriched_copy(doc_dict: dict) -> dict:
-    """Build a temporary copy with translations applied to .text fields
-    and picture descriptions applied, for native tool consumption."""
+def _build_enriched_copy_for_chunking(doc_dict: dict) -> dict:
+    """Enriched copy for HybridChunker: translations applied, no context node."""
     import copy
     enriched = copy.deepcopy(doc_dict)
     enrichments = enriched.pop("_enrichments", {})
 
-    # Apply translations to canonical .text
+    # Apply translations to .text fields
     for self_ref, trans in enrichments.get("translations", {}).items():
         collection, idx = _parse_self_ref(self_ref)
         if collection in enriched and idx < len(enriched[collection]):
             enriched[collection][idx]["text"] = trans["translated_text"]
 
-    # Apply picture descriptions to meta.description
-    for self_ref, desc in enrichments.get("picture_descriptions", {}).items():
-        collection, idx = _parse_self_ref(self_ref)
-        if collection in enriched and idx < len(enriched[collection]):
-            item = enriched[collection][idx]
-            item.setdefault("meta", {})["description"] = {
-                "text": desc["text"],
-                "created_by": f"llm:{desc.get('model', 'unknown')}",
-            }
+    # meta.description is already on picture items (written during
+    # derive_picture_descriptions), no overlay needed
 
-    # Inject context as a leading text node
-    context = enrichments.get("context", {})
+    return enriched
+
+
+def _build_enriched_copy_for_graph(doc_dict: dict) -> dict:
+    """Enriched copy for Docling-Graph: translations + context node.
+    Uses native DoclingDocument.add_text() for safe tree insertion."""
+    from docling.datamodel.document import DoclingDocument
+
+    enriched = _build_enriched_copy_for_chunking(doc_dict)
+
+    # Inject context via native API (not raw dict surgery)
+    context = doc_dict.get("_enrichments", {}).get("context", {})
     if context.get("summary") or context.get("classification"):
+        doc = DoclingDocument.model_validate(enriched)
         context_text = ""
         if context.get("summary"):
             context_text += f"[Document Summary]: {context['summary']}\n"
         if context.get("classification"):
             context_text += f"[Classification]: {context['classification']}\n"
-        if context_text and "texts" in enriched:
-            enriched["texts"].insert(0, {
-                "self_ref": "#/_context/0",
-                "text": context_text,
-                "label": "paragraph",
-                "parent": {"$ref": "#/body"},
-                "children": [],
-            })
+        if context_text:
+            doc.add_text(text=context_text, label="paragraph")
+        enriched = doc.export_to_dict()
 
     return enriched
 ```
 
-This function is called in `derive_text_chunks_and_embeddings` and `derive_ontology_graph` to build a temp copy. The persisted JSON in MinIO is never modified to contain translated text.
+The context node is added via `DoclingDocument.add_text()` which handles `orig`, `parent`, `self_ref`, and body tree insertion correctly. It appends to the end of the body, which is acceptable — graph extraction does not depend on context position.
+
+### Translated markdown with picture descriptions
+
+Native `export_to_markdown()` does NOT serialize `PictureMeta.description` as markdown text. To include picture descriptions in translated markdown:
+
+1. Call `export_to_markdown()` on the enriched copy (has translated `.text`)
+2. Append a picture-description appendix (same format as current `derive_picture_descriptions` appendix)
+3. The appendix is built from `meta.description` on picture items, not from `_enrichments`
+
+```python
+def _regenerate_translated_markdown(doc_dict: dict) -> str:
+    """Generate translated markdown with picture description appendix."""
+    enriched = _build_enriched_copy_for_chunking(doc_dict)
+    doc = DoclingDocument.model_validate(enriched)
+    md = doc.export_to_markdown()
+
+    # Append picture descriptions (not included by native export)
+    pic_descs = []
+    for pic in doc_dict.get("pictures", []):
+        meta = pic.get("meta") or {}
+        desc = meta.get("description", {})
+        if desc.get("text"):
+            pic_descs.append(f"**Image:** {desc['text']}")
+    if pic_descs:
+        md += "\n\n---\n## Image Descriptions\n\n" + "\n\n".join(pic_descs)
+
+    return md
+```
+
+This is called in both `detect_and_translate` (after storing translations) and `derive_picture_descriptions` (after storing descriptions) so translated markdown stays in sync.
 
 ---
 
@@ -110,38 +139,38 @@ This function is called in `derive_text_chunks_and_embeddings` and `derive_ontol
 - Increment `_enrichments.version`
 - Re-persist JSON to MinIO (canonical `.text` unchanged)
 - Still update `DocumentElement.translated_text` (backward compat)
-- Regenerate `docling_document_translated.md` from an enriched copy: build temp copy with translations applied, then `DoclingDocument.model_validate(enriched).export_to_markdown()`
+- Regenerate `docling_document_translated.md` via `_regenerate_translated_markdown()` (enriched copy + picture description appendix)
 
 ### `derive_picture_descriptions`
 - Load `docling_document.json` from MinIO
 - For each described picture:
-  - Store in `_enrichments.picture_descriptions[self_ref]`
-  - Write native `meta.description` on the picture item (this IS a canonical mutation — `PictureMeta.description` is the native field for this)
-  - Write legacy `annotations[kind=description]` for viewer hover contract
+  - Write native `meta.description` on the picture item (canonical — `PictureMeta.description`)
+  - Derive legacy `annotations[kind=description]` from `meta.description` for viewer hover
+  - (No `_enrichments.picture_descriptions` — `meta.description` is the single source)
 - Increment `_enrichments.version`
 - Re-persist JSON to MinIO
 - Still update `DocumentElement.content_text` (backward compat)
-- Regenerate `docling_document_translated.md` from enriched copy (so it includes picture descriptions in the translated view)
+- Regenerate `docling_document_translated.md` via `_regenerate_translated_markdown()` (includes picture descriptions in appendix)
 - Append description appendix to `docling_document.md` (current behavior)
 
 ### `derive_text_chunks_and_embeddings`
 - Load `docling_document.json` from MinIO
-- Build enriched copy via `_build_enriched_copy()`
+- Build enriched copy via `_build_enriched_copy_for_chunking()` (translations applied, NO context node)
 - Reconstruct `DoclingDocument.model_validate(enriched_copy)`
 - Chunk with `HybridChunker(tokenizer=HuggingFaceTokenizer(...))`
-- Chunk schema mapping per v4 rules
-- Image description secondary pass from `_enrichments.picture_descriptions`
+- Chunk schema mapping per earlier rules
+- Image description secondary pass from picture items' `meta.description`
 - Fallback: `structure_aware_chunk()` if reconstruction fails
 
 ### `derive_ontology_graph`
 - Load `docling_document.json` from MinIO
-- Build enriched copy via `_build_enriched_copy()` (has translations + descriptions + context)
+- Build enriched copy via `_build_enriched_copy_for_graph()` (translations + descriptions + context node via native `add_text()`)
 - Pass enriched copy to Docling-Graph service
 - Remove `_enriched_text` reconstruction
 
 ### Docling-Graph wrapper
 - `run_extraction_pipeline` receives the enriched copy directly
-- No special `_enrichments` handling needed — the copy already has translated `.text` and context node
+- No special `_enrichments` handling needed — the copy already has translated `.text` and context node added via native API
 
 ---
 
