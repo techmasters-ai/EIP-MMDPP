@@ -51,9 +51,54 @@
 
 **Status:** Done (2026-04-06). `get_neighborhood` and `get_neighborhood_graph` rewritten to use MATCH pattern syntax per §6.3.1. Includes edge type filtering and depth control via MATCH `while` clause.
 
-### Gaps/Bugs
+### Gaps/Bugs — Retrieval Query Review (2026-04-06)
 
-(None currently open -- all identified gaps/bugs have been fixed.)
+Findings from a review of the retrieval query mechanisms against the ArcadeDB manual. Native ArcadeDB primitives (`vectorNeighbors`, MATCH) are correctly used; the issues are in the custom application wrappers around them.
+
+**#51. Query profiles do not honor their own directed traversal model** (High)
+**Files:** `app/services/query_profiles.py` (lines ~556, ~569), `app/schemas/query_profiles.py` (line ~13), `app/services/arcadedb_graph.py` (line ~792)
+The schema supports per-step `direction`, `min_hops`, and `max_hops`, but execution collapses a profile to `rel_types + max_depth` and runs one undirected `MATCH ... .both(...)` traversal. Profiles are effectively "any of these rel types within N hops" instead of the configured directed path model.
+**Fix:** Generate native MATCH patterns from each traversal step's direction/hops instead of collapsing them. Use `.out(...)`, `.in(...)`, or `.both(...)` per step's direction field. Chain multiple MATCH steps for multi-hop directed paths.
+
+**#52. Dossier/query-profile evidence attachment passes entity RIDs into a chunk-centric helper** (High)
+**Files:** `app/services/dossier_service.py` (line ~338), `app/services/query_profiles.py` (line ~645), `app/services/arcadedb_graph.py` (line ~856)
+Both services call `get_ontology_linked_chunks(item.node_id)` for entities. But that method traverses `chunk ← EXTRACTED_FROM — entities → other chunks`, which is correct for a seed chunk, not for an entity RID. Result: dossier/query-profile evidence is likely empty or wrong.
+**Fix:** Add a separate `get_entity_evidence_chunks(entity_rid)` method that traverses `entity → EXTRACTED_FROM → chunks` (or via HAS_PROVENANCE for document-level). Update callers to use the correct method based on whether they're passing an entity or a chunk.
+
+**#53. Hybrid cross-modal fallback passes UUID into RID-expecting MATCH** (High)
+**Files:** `app/api/v1/retrieval.py` (lines ~339, ~646), `app/services/arcadedb_graph.py` (line ~792)
+`_expand_via_cross_modal()` passes `str(seed.chunk_id)` (a UUID) into `get_neighborhood()`, which interpolates it into `@rid = {node_id}`. UUIDs are not RIDs. This path does not resolve them first (unlike `get_ontology_linked_chunks` which was fixed to do UUID→RID resolution).
+**Fix:** Add UUID→RID resolution in `get_neighborhood()` (same pattern as `get_ontology_linked_chunks`), or resolve at the call site before passing.
+
+**#54. Ontology expansion strips graph context from returned chunks** (High)
+**Files:** `app/api/v1/retrieval.py` (line ~710), `app/services/arcadedb_graph.py` (line ~889)
+`_expand_via_ontology()` expects `target_chunk_type`, `rel_type`, and entity context, but `get_ontology_linked_chunks()` returns raw chunk rows from `expand(out('EXTRACTED_FROM'))` with none of this metadata. Relation types collapse to `RELATED_TO`, entity names are blank, and image chunks default to `text_chunk` lookup.
+**Fix:** Enrich `get_ontology_linked_chunks()` return to include the intermediate entity name/type and the original chunk type (`@class`). Alternatively, return richer dicts from the ArcadeDB query that include the traversal path metadata.
+
+**#55. Retrieval filters are post-only and incomplete** (Medium)
+**Files:** `app/api/v1/retrieval.py` (lines ~56, ~78), `app/api/v1/_retrieval_helpers.py` (line ~120), `app/schemas/retrieval.py` (line ~37)
+Filters apply only after strategy execution (post-filter), `source_ids` is explicitly skipped, and the SQL-side filter builders in `_retrieval_helpers.py` are unused. Post-filtering wastes vector search budget on results that will be dropped.
+**Fix:** For ArcadeDB vector queries, apply document_id filters as a WHERE clause on the outer SELECT (after vectorNeighbors expand). For classification/modality, post-filter is acceptable since those fields are on the vertex. Implement source_ids via a Postgres subquery (document_id IN SELECT from documents WHERE source_id IN ...).
+
+**#56. API defaults don't match advertised retrieval settings** (Medium)
+**Files:** `app/schemas/retrieval.py` (line ~58), `app/api/v1/retrieval.py` (line ~1124), `app/config.py` (line ~152)
+`UnifiedQueryRequest.top_k` defaults to 10 and `min_confidence` to None, but `/v1/settings/retrieval` exposes 20 and 0.1 from config. Raw API clients omitting these fields don't get the documented defaults.
+**Fix:** Change the Pydantic schema defaults to match the config: `top_k: int = Field(default=20)` and `min_confidence: Optional[float] = Field(default=0.1)`. Or use a `model_validator` that reads from `get_settings()` when the field is None.
+
+**#57. Graph fulltext search drops Lucene $score, substitutes wrong metric** (Medium)
+**Files:** `app/services/arcadedb_graph.py` (lines ~53, ~328), `app/api/v1/graph_store.py` (line ~66)
+Fulltext search is ordered by Lucene `$score`, but `_to_entity()` ignores it and maps only vector `$distance` or `extraction_confidence`. Graph query endpoint then returns `extraction_confidence` as the score, which is the entity's ingestion confidence — not the search relevance.
+**Fix:** In `_to_entity()`, check for `$score` and map it to `extraction_confidence` (or a new score field) when present. Prioritize: `$distance` (vector) > `$score` (fulltext) > `extraction_confidence` (ingestion).
+
+**#58. Co-extracted entity discovery is not wired into the query stack** (Low)
+**Files:** `app/services/arcadedb_graph.py` (line ~921), `app/services/query_profiles.py` (line ~536)
+`get_co_extracted_entities()` exists in the backend and query profiles comment about a "co-extracted fallback", but the implementation falls back to `resolve_root_entity()` exact lookup and never calls it.
+**Fix:** Wire `get_co_extracted_entities()` as a fallback in entity resolution (after alias search, before giving up). This would help resolve entities that appear alongside the query entity in the same source chunks.
+
+**#59. Stale integration tests assert old response shape** (Low)
+**Files:** `tests/integration/test_retrieval_api.py` (line ~15), `tests/e2e/test_full_pipeline.py` (line ~66), `tests/conftest.py` (line ~206)
+Stale tests assert `response["mode"]` but the live response uses `strategy` and `modality_filter`. The shared conftest replaces GraphStore with mocks, so passing tests don't validate real ArcadeDB behavior.
+**Fix:** Update integration/e2e tests to assert `strategy`/`modality_filter`. Add integration test markers that use real GraphStore for critical path validation.
 
 ---
 
@@ -130,6 +175,39 @@
 ---
 
 ## Verbatim Reviews (Reference)
+
+### Verbatim Retrieval Query Mechanisms Review (2026-04-06)
+
+> ArcadeDB usage itself is mostly canonical here; the main problems are in the custom wrappers around it. I checked this against ArcadeDB Manual.pdf. Docling and Docling-Graph are upstream to graph quality, but they are not directly in the active query path, so the retrieval review is mostly an ArcadeDB and application-layer review.
+>
+> **Findings**
+>
+> 1. High: query profiles do not honor their own traversal model. The schema supports per-step `direction`, `min_hops`, and `max_hops` at query_profiles.py (line 13), but execution collapses a profile to `rel_types + max_depth` and runs one undirected neighborhood traversal at query_profiles.py (lines 556, 569). The backend traversal is `MATCH ... .both(...)` at arcadedb_graph.py (line 792). So profiles are effectively "any of these rel types within N hops," not the configured directed path model.
+>
+> 2. High: dossier and query-profile evidence attachment is wired through a chunk-centric helper using entity IDs. Both services call `get_ontology_linked_chunks(item.node_id)` for entities at dossier_service.py (line 338) and query_profiles.py (line 645). But `get_ontology_linked_chunks()` is explicitly implemented as `chunk <- EXTRACTED_FROM - entities -> other chunks` at arcadedb_graph.py (line 856). That is correct for a seed chunk, not for an entity RID, so dossier/query-profile evidence is likely empty or wrong.
+>
+> 3. High: the hybrid cross-modal fallback for legacy documents is probably broken by UUID/RID mismatch. `_expand_via_cross_modal()` passes `str(seed.chunk_id)` into `get_neighborhood()` at retrieval.py (lines 339, 646). `get_neighborhood()` then interpolates that value directly into `@rid = {node_id}` at arcadedb_graph.py (line 792). Seed chunk IDs are UUIDs, not ArcadeDB RIDs, and this path does not resolve them first.
+>
+> 4. High: hybrid "ontology expansion" is not preserving enough native graph information. `_expand_via_ontology()` expects `target_chunk_type`, `rel_type`, and entity context at retrieval.py (line 710), but `get_ontology_linked_chunks()` returns raw chunk rows from `expand(out('EXTRACTED_FROM'))` at arcadedb_graph.py (line 889). That means relation typing collapses to the fallback `RELATED_TO`, entity names are blank, and image chunks default to `text_chunk` lookup and can be dropped.
+>
+> 5. Medium: retrieval filters are only partially implemented, and only after search/expansion. The request schema still exposes `classification`, `modalities`, `source_ids`, and `document_ids` at retrieval.py (line 37). But `unified_query()` applies filters only after strategy execution at retrieval.py (line 78), and `_apply_query_filters()` explicitly skips `source_ids` at retrieval.py (line 56). SQL-side filter builders exist at _retrieval_helpers.py (line 120), but they are not used by the live retrieval path.
+>
+> 6. Medium: the API defaults do not match the advertised retrieval settings. `UnifiedQueryRequest.top_k` defaults to `10` and `min_confidence` defaults to `None` at retrieval.py (line 58), while `/v1/settings/retrieval` exposes `20` and `0.1` from config at retrieval.py (line 1124) and config.py (line 152). Raw API clients that omit these fields do not get the documented defaults.
+>
+> 7. Medium: graph query responses surface the wrong score semantics and strip too much node data. Fulltext search is correctly ordered by Lucene `$score` at arcadedb_graph.py (line 328), but `_to_entity()` ignores `$score` and only maps vector distance or `extraction_confidence` at arcadedb_graph.py (line 53). `/graph/query` then returns `match.extraction_confidence` as the score at graph_store.py (line 66). `/graph/neighborhood` also returns minimal node/edge payloads rather than fuller native properties at arcadedb_graph.py (line 833).
+>
+> 8. Low: co-extracted discovery exists in the backend, but it is not actually wired into the query stack. The backend method exists at arcadedb_graph.py (line 921), and `resolve_root_entity()` in query profiles even comments about a "co-extracted fallback" at query_profiles.py (line 536). But the implementation falls back directly to `resolve_root_entity()` exact lookup and never calls `get_co_extracted_entities()`.
+>
+> 9. Low: verification is weaker than the branch suggests. The concrete ArcadeDB retrieval path is not what most passing tests validate, because the shared fixture replaces GraphStore with mocks at conftest.py (line 206). There are also stale tests that still assert `response["mode"]` at test_retrieval_api.py (line 15) and test_full_pipeline.py (line 66), while the live response shape uses `strategy` and `modality_filter` at retrieval.py (line 114).
+>
+> **Native-First Direction**
+> - Keep the current native ArcadeDB primitives. `vectorNeighbors(...)->expand(...)` and `MATCH` traversal are the right foundation.
+> - Generate native `MATCH` from query-profile traversal steps instead of collapsing them into a custom undirected neighborhood wrapper.
+> - Split chunk-centric expansion from entity-centric evidence lookup instead of forcing both through `get_ontology_linked_chunks()`.
+> - Push filters into native Postgres/ArcadeDB queries where possible instead of post-filtering in Python.
+> - Surface native relevance where it exists. For graph fulltext, that means carrying Lucene `$score` through instead of substituting extraction confidence.
+
+---
 
 ### Verbatim Graph Extraction Pipeline Review (2026-04-06)
 
