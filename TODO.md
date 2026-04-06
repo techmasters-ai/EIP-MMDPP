@@ -100,6 +100,21 @@ Fulltext search is ordered by Lucene `$score`, but `_to_entity()` ignores it and
 Stale tests assert `response["mode"]` but the live response uses `strategy` and `modality_filter`. The shared conftest replaces GraphStore with mocks, so passing tests don't validate real ArcadeDB behavior.
 **Fix:** Update integration/e2e tests to assert `strategy`/`modality_filter`. Add integration test markers that use real GraphStore for critical path validation.
 
+### Missing UI Feature
+
+**#72. Add community report scheduling and execution UI** (High)
+**Files:** `frontend/src/components/` (new component), `frontend/src/api/client.ts`
+The backend exposes full community detection endpoints (`POST /v1/community/detect`, `GET /v1/community/status`, `GET /v1/community/reports`, `GET /v1/community/reports/{id}`), but there is no frontend UI to trigger detection, view run status, or browse reports. The other 5 verified UI features (image hover descriptions, translation toggle, graph explorer, trusted data workflow, DoclingDocument viewer) are all present.
+**Fix:** Add a community management component with:
+1. "Run Detection" button calling `POST /v1/community/detect` (with mode selector: incremental/full)
+2. Status display showing latest/historical run status from `GET /v1/community/status`
+3. Reports browser listing community reports with title, summary, member count from `GET /v1/community/reports`
+4. Schedule display showing `COMMUNITY_DETECTION_INTERVAL_MINUTES` and post-ingest threshold from config
+5. Add API client functions in `client.ts` for all community endpoints
+6. Mount on a "Communities" tab/page in the app navigation
+
+---
+
 ### Native-First Review — Architecture-Level Findings (2026-04-06)
 
 The branch calls native `DocumentConverter`, Docling-Graph `run_pipeline()`, and ArcadeDB `MATCH`/`vectorNeighbors()`, but the dominant pattern is to immediately flatten or wrap those native objects into app-specific contracts and then reimplement upstream behavior in Python. These findings address that pattern.
