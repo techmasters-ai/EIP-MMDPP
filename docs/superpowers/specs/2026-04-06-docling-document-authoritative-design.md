@@ -63,16 +63,24 @@ def _build_enriched_copy_for_chunking(doc_dict: dict) -> dict:
         item = enriched[collection][idx]
 
         if collection == "tables":
-            # Tables are structured: translate each cell's .text field.
-            # The translation overlay stores the full translated table text
-            # as a single string. We apply it cell-by-cell by matching the
-            # original concatenated cell text against the translated text.
-            # Simplest correct approach: store per-cell translations in the
-            # overlay, OR replace the table's markdown export with translated
-            # content. For now: if the overlay has translated_text, store it
-            # as _translated_text on the table item so the markdown
-            # regeneration function can use it.
-            item["_translated_text"] = trans["translated_text"]
+            # Tables are structured: content lives in data.table_cells[].text,
+            # not a top-level .text field. The pipeline translates tables as
+            # monolithic text blocks, so we can't map translated text back to
+            # individual cells. Instead, replace the table's data with a
+            # single-cell table containing the full translated text. This
+            # passes model_validate(), is chunked by HybridChunker, and is
+            # seen by Docling-Graph.
+            item["data"] = {
+                "table_cells": [{
+                    "text": trans["translated_text"],
+                    "row_span": 1, "col_span": 1,
+                    "start_row_offset_idx": 0, "end_row_offset_idx": 1,
+                    "start_col_offset_idx": 0, "end_col_offset_idx": 1,
+                    "column_header": False, "row_header": False,
+                    "row_section": False, "fillable": False,
+                }],
+                "num_rows": 1, "num_cols": 1,
+            }
         else:
             # TextItem, FormulaItem, SectionHeaderItem — all have .text
             item["text"] = trans["translated_text"]
@@ -120,29 +128,13 @@ Native `export_to_markdown()` does NOT serialize `PictureMeta.description` as ma
 def _regenerate_translated_markdown(doc_dict: dict) -> str:
     """Generate translated markdown with picture description appendix.
 
-    For tables: native export_to_markdown() reads cell text, which is
-    NOT mutated by _build_enriched_copy_for_chunking (tables use
-    _translated_text overlay). So after native export, we replace
-    table sections with the translated text from the overlay.
+    Tables: the enriched copy replaces table data with a single-cell
+    table containing the translated text, so export_to_markdown() renders
+    the translated content natively (no post-processing needed).
     """
     enriched = _build_enriched_copy_for_chunking(doc_dict)
     doc = DoclingDocument.model_validate(enriched)
     md = doc.export_to_markdown()
-
-    # Replace table sections with translated text where available.
-    # Tables in native markdown export render from cell data, not .text.
-    # The overlay stores the full translated text for each table.
-    for table in enriched.get("tables", []):
-        translated = table.get("_translated_text")
-        if translated and table.get("data", {}).get("table_cells"):
-            # Find the table's markdown representation and replace it.
-            # This is best-effort — if the table markdown can't be located,
-            # the original-language table stays (graceful degradation).
-            original_cells = table["data"]["table_cells"]
-            first_cell_text = original_cells[0].get("text", "") if original_cells else ""
-            if first_cell_text and first_cell_text in md:
-                # Replace the paragraph containing this table with translated text
-                pass  # Implementation: find table block boundaries and replace
 
     # Append picture descriptions (not included by native export)
     pic_descs = []
@@ -157,7 +149,7 @@ def _regenerate_translated_markdown(doc_dict: dict) -> str:
     return md
 ```
 
-**Table translation note:** Tables are the one case where native `export_to_markdown()` does not benefit from the translation overlay because table markdown is derived from cell data, not a `.text` field. The implementation should either: (a) translate individual cell text values in the enriched copy's `data.table_cells[].text`, or (b) replace the table's markdown section with the translated text block. Option (a) is more correct but requires splitting the translated table text back into cells; option (b) is simpler. The implementation should choose based on complexity. The current pipeline already translates tables as monolithic text blocks via the LLM, so option (b) is the pragmatic choice.
+**Table translation strategy:** The pipeline translates tables as monolithic text blocks (the LLM receives the full table text and returns a translated version). Since we can't reliably split translated text back into individual cells, the enriched copy replaces the table's `TableData` with a single-cell table containing the full translated text. This approach: (a) passes `DoclingDocument.model_validate()`, (b) is chunked correctly by HybridChunker, (c) is consumed by Docling-Graph, and (d) renders as translated content via `export_to_markdown()`. The trade-off is that table structure (rows/columns) is lost in the translated enriched copy — the original structure is preserved in the persisted JSON for the viewer.
 
 This is called in both `detect_and_translate` (after storing translations) and `derive_picture_descriptions` (after storing descriptions) so translated markdown stays in sync.
 
