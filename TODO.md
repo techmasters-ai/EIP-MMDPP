@@ -102,24 +102,31 @@ Stale tests assert `response["mode"]` but the live response uses `strategy` and 
 
 ### Missing UI Feature
 
-**#72. Restore community indexing UI on the Ontology page** (High)
+**#72. Restore Global Search indexing UI on the Ontology page** (High)
 **Files:** `frontend/src/components/GraphExplorer.tsx`, `frontend/src/api/client.ts`
-The main branch had a `GraphIndexingPanel` component inside `GraphExplorer.tsx` with an "indexing" tab on the Ontology page. It displayed:
-- Schedule interval (minutes between runs), countdown timer showing minutes remaining until next scheduled run, and the exact time it will occur
-- "Update Index" button (incremental) and "Force Full Reindex" button (full)
-- Last indexed timestamp
-- Enabled/disabled status indicator
 
-This tab was removed during the GraphRAG migration because the old indexing was GraphRAG DRIFT. The backend now has equivalent community detection endpoints (`POST /v1/community/detect`, `GET /v1/community/status`, `GET /v1/community/reports`), but the UI was never reconnected.
+**Context:** The Global Search strategy (`strategy: "global"`) searches `CommunityReport[report_embedding]` vectors and synthesizes an LLM answer from matching community reports. For Global Search to return results, the following pipeline must have run:
 
-**Fix:** Restore the "indexing" tab in `GraphExplorer.tsx` as a `CommunityIndexingPanel` that:
+1. **Community detection** — Leiden/Louvain algorithm assigns domain entities to communities
+2. **LLM report generation** — For each community, fetches member relationships, generates `{title, summary}` via Ollama
+3. **Report embedding** — Embeds `title + summary` via BGE into `CommunityReport.report_embedding` (1024-dim)
+
+All three steps execute as a single unit inside `run_community_detection()` (`app/services/arcadedb_community.py`). The backend `POST /v1/community/detect` triggers the full pipeline. Without this running, Global Search returns zero results.
+
+**What was lost:** The main branch had a `GraphIndexingPanel` component on the Ontology page's "indexing" tab with schedule display, countdown timer, manual trigger buttons, and last-indexed timestamp. This was removed during the GraphRAG migration.
+
+**Fix:** Restore the "indexing" tab in `GraphExplorer.tsx` as a `GlobalSearchIndexingPanel` that:
 1. Re-adds `"indexing"` to the `Tab` type union (currently `"search" | "entity" | "relationship" | "profiles"`)
-2. Shows schedule: `COMMUNITY_DETECTION_INTERVAL_MINUTES` with countdown timer and next-run time (same UX as the old `GraphIndexingPanel`)
-3. Shows the post-ingest auto-trigger threshold (`COMMUNITY_DETECTION_POST_INGEST_THRESHOLD`)
-4. "Run Detection" button (incremental mode) and "Force Full Detection" button (full mode) calling `POST /v1/community/detect`
-5. Status display from `GET /v1/community/status` showing latest run: status, total communities, reports generated/reused, started/completed timestamps
-6. Community reports browser: list from `GET /v1/community/reports` with title, summary, member count
-7. Add API client functions: `triggerCommunityDetection(mode)`, `getCommunityStatus()`, `getCommunityReports()`, `getCommunityReport(id)` in `client.ts`
+2. **Schedule display:** `COMMUNITY_DETECTION_INTERVAL_MINUTES` with countdown timer showing minutes remaining and next-run time
+3. **Auto-trigger display:** Shows the post-ingest threshold (`COMMUNITY_DETECTION_POST_INGEST_THRESHOLD` — after N documents are ingested, indexing runs automatically)
+4. **Manual trigger buttons:**
+   - "Update Index" (incremental mode — only regenerates reports for communities whose membership changed) → `POST /v1/community/detect` with `mode=incremental`
+   - "Force Full Reindex" (full mode — regenerates all reports regardless of changes) → `POST /v1/community/detect` with `mode=full`
+5. **Status display** from `GET /v1/community/status`: status (RUNNING/COMPLETE/FAILED), total communities, reports generated vs reused, started/completed timestamps
+6. **Reports browser:** List from `GET /v1/community/reports` with title, summary, member count — lets users see what the Global Search will draw from
+7. **API client functions** in `client.ts`: `triggerCommunityDetection(mode)`, `getCommunityStatus()`, `getCommunityReports()`, `getCommunityReport(id)`
+
+**Label guidance:** The tab/buttons should use "Index" language (not "Community Detection") since users think of it as "indexing for Global Search," not the underlying algorithm.
 
 **Reference:** Main branch `GraphExplorer.tsx` lines 580-694 for the original UX pattern.
 
