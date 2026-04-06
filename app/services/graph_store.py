@@ -558,6 +558,17 @@ class GraphStore(Protocol):
         """Synchronous variant of :meth:`ensure_ready`."""
         ...
 
+    def get_document_entities_sync(
+        self,
+        document_id: str,
+    ) -> list[dict]:
+        """Return all domain entities linked to a document via graph traversal.
+
+        Traverses Document →(CONTAINS_TEXT)→ TextChunk ←(EXTRACTED_FROM)← Entity.
+        Returns raw dicts with at least ``name``, ``entity_type``, and ``@rid``.
+        """
+        ...
+
     def close_sync(self) -> None:
         """Release any held resources (connections, thread pools, etc.)."""
         ...

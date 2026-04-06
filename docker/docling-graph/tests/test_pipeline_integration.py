@@ -40,12 +40,11 @@ def integration_client():
     from pydantic import BaseModel
     dummy_template = type("DummyEntity", (BaseModel,), {"__annotations__": {"name": str}})
 
-    with patch("app.main.run_extraction_pipeline", return_value=mock_context), \
-         patch("app.main._templates", {"DummyEntity": dummy_template}):
+    with patch("app.main.run_extraction_pipeline", return_value=mock_context):
         from app.main import app
+        # Templates are now on app.state (not module-level globals)
+        app.state.templates = {"DummyEntity": dummy_template}
         with TestClient(app) as c:
-            import app.main as main_module
-            main_module._templates = {"DummyEntity": dummy_template}
             yield c
 
 

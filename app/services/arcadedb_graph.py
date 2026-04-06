@@ -1702,6 +1702,28 @@ class ArcadeDBGraphStore:
         rows = self._client.query_sync(self._database, "sql", sql, params)
         return _to_entity(rows[0]) if rows else None
 
+    def get_document_entities_sync(
+        self,
+        document_id: str,
+    ) -> list[dict]:
+        """Return domain entities linked to a document via graph traversal.
+
+        Traversal: Document →(CONTAINS_TEXT)→ TextChunk ←(EXTRACTED_FROM)← Entity
+        """
+        sql = (
+            "SELECT DISTINCT name, entity_type, @rid AS node_id "
+            "FROM ("
+            "  SELECT expand(in('EXTRACTED_FROM')) "
+            "  FROM ("
+            "    SELECT expand(out('CONTAINS_TEXT')) "
+            "    FROM Document WHERE document_id = :doc_id"
+            "  )"
+            ")"
+        )
+        return self._client.query_sync(
+            self._database, "sql", sql, {"doc_id": document_id},
+        )
+
     def close_sync(self) -> None:
         """Release any held resources."""
         self._client.close_sync()

@@ -234,7 +234,7 @@ When adding new ArcadeDB-related checklist items or debugging a failing test, ve
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
 | ArcadeDB service (built from source via manage.sh) | Graph + vector database unavailable | `docker compose ps` shows arcadedb healthy; `GET http://localhost:2480/api/v1/ready` returns 204 | 3.0 |
-| manage.sh `ensure_all_repos()` pulls ArcadeDB/Docling/Docling-Graph | Stale third-party code in containers | `./manage.sh --start` logs "Pulling latest ArcadeDB/Docling/Docling-Graph..." before `dc build` | 3.0 |
+| manage.sh `ensure_all_repos()` pulls ArcadeDB repo for source build | ArcadeDB container uses stale code | `./manage.sh --start` logs "Pulling latest ArcadeDB..." before `dc build`. **Note:** Docling and Docling-Graph install from PyPI packages (not from cloned repos) — their versions update via `pip install` in their Dockerfiles, not `git pull`. | 3.0 |
 | ArcadeDB token-based auth with re-auth on 401 | Long-running workers lose auth mid-task | Client retries once on 401 with fresh login; no manual token refresh | 3.0 |
 | ArcadeDB schema sync at API startup | Ingest writes fail due to missing vertex/edge types | API startup logs "ArcadeDB schema synced: N types, M properties, K indexes" | 3.0 |
 | Worker `ensure_ready_sync()` before first graph write | Race condition when worker starts before API schema sync | Graph-writing tasks retry with backoff if vertex types don't exist | 3.0 |

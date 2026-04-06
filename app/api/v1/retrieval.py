@@ -18,6 +18,7 @@ from app.api.v1._retrieval_helpers import (
 from app.db.session import get_async_session, get_graph_store
 from app.schemas.retrieval import (
     ModalityFilter,
+    QueryFilters,
     QueryResultItem,
     QueryStrategy,
     UnifiedQueryRequest,
@@ -36,6 +37,28 @@ _IMAGE_CONTENT_TYPES = {
     "tiff": "image/tiff", "tif": "image/tiff", "gif": "image/gif",
     "webp": "image/webp",
 }
+
+
+def _apply_query_filters(
+    results: list[QueryResultItem],
+    filters: QueryFilters,
+) -> list[QueryResultItem]:
+    """Post-filter results by classification, document_ids, and modalities."""
+    filtered = results
+    if filters.classification:
+        filtered = [r for r in filtered if r.classification == filters.classification]
+    if filters.document_ids:
+        doc_id_strs = {str(d) for d in filters.document_ids}
+        filtered = [r for r in filtered if str(r.document_id) in doc_id_strs]
+    if filters.modalities:
+        mod_set = set(filters.modalities)
+        filtered = [r for r in filtered if r.modality in mod_set]
+    if filters.source_ids:
+        # source_ids require a document→source lookup; for now filter by
+        # document_name prefix or context. This is a best-effort filter
+        # since source_id is not on the chunk directly.
+        logger.debug("source_ids filter requested but chunk-level source_id unavailable; skipping")
+    return filtered
 
 
 @router.post("/retrieval/query", response_model=UnifiedQueryResponse)
@@ -66,6 +89,10 @@ async def unified_query(
     except Exception as e:
         logger.warning("Query strategy %s failed: %s", body.strategy, e)
         results = []
+
+    # Apply user-requested filters (classification, document_ids, modalities)
+    if body.filters:
+        results = _apply_query_filters(results, body.filters)
 
     # Filter by minimum confidence
     if body.min_confidence is not None:

@@ -61,24 +61,24 @@ def canonicalize_document_entities(
     """
     stats = {"resolved": 0, "new_aliases": 0, "total": 0}
 
-    # Get all entities extracted from this document's chunks via GraphStore
-    # Use fulltext search for the document_id to find entities that reference it
+    # Discover entities linked to this document via graph traversal:
+    # Document →(CONTAINS_TEXT)→ TextChunk ←(EXTRACTED_FROM)← Entity
     try:
-        # Search for entities associated with this document via the graph
-        results = graph_store.fulltext_search_sync(
-            document_id, limit=500,
-        )
+        results = graph_store.get_document_entities_sync(document_id)
         # Deduplicate by (name, entity_type)
         seen: set[tuple[str, str]] = set()
         entities: list[dict[str, str]] = []
         for r in results:
-            key = (r.name, r.entity_type)
-            if key not in seen:
+            key = (r.get("name", ""), r.get("entity_type", ""))
+            if key[0] and key not in seen:
                 seen.add(key)
-                entities.append({"name": r.name, "entity_type": r.entity_type, "node_id": r.node_id})
+                entities.append({
+                    "name": r.get("name", ""),
+                    "entity_type": r.get("entity_type", ""),
+                    "node_id": str(r.get("@rid", r.get("node_id", ""))),
+                })
     except Exception as e:
         logger.warning("canonicalize_document_entities: could not fetch entities for %s: %s", document_id, e)
-        # Fallback: no entities to canonicalize (graph may not have document linkage yet)
         return stats
 
     stats["total"] = len(entities)

@@ -2695,7 +2695,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # Entity-chunk EXTRACTED_FROM edges
         entity_links = 0
 
-        # Build element_uid → chunk_ids map (via artifact_id)
+        # Build element_uid → chunk_ids map (via artifact_id).
+        # Include BOTH text_chunks AND image_chunks so entities grounded
+        # in images/schematics get linked to the corresponding ImageChunk.
         element_uid_chunk_map: dict[str, list[str]] = {}
         artifact_id_to_element_uid: dict[str, str] = {}
         for elem in elements:
@@ -2706,6 +2708,11 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                 euid = artifact_id_to_element_uid.get(str(tc.artifact_id))
                 if euid:
                     element_uid_chunk_map.setdefault(euid, []).append(str(tc.id))
+        for ic in image_chunks:
+            if ic.artifact_id:
+                euid = artifact_id_to_element_uid.get(str(ic.artifact_id))
+                if euid:
+                    element_uid_chunk_map.setdefault(euid, []).append(str(ic.id))
 
         # Try graph_json mentions path first (new pipeline)
         from app.models.ingest import DocumentGraphExtraction
@@ -2715,23 +2722,37 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             )
         ).scalars().first()
 
-        # Collect all entity-chunk edges, then batch-create in one Cypher call per type
+        # Collect all entity-chunk edges, then batch-create in one call
         edge_tuples: list[tuple[str, str, str]] = []  # (name, type, chunk_id)
 
-        used_mentions_path = False
+        # Track which entities got at least one mention via the primary path
+        mentioned_entities: set[str] = set()
+        all_extracted_entities: list[tuple[str, str]] = []
+
         if graph_extraction and graph_extraction.graph_json:
             mentions = graph_extraction.graph_json.get("mentions", [])
-            if mentions:
-                used_mentions_path = True
-                for mention in mentions:
-                    name = mention.get("entity_name", "")
-                    etype = mention.get("entity_type", "UNKNOWN")
-                    euid = mention.get("element_uid", "")
-                    for chunk_id in element_uid_chunk_map.get(euid, []):
-                        edge_tuples.append((name, etype, chunk_id))
+            for mention in mentions:
+                name = mention.get("entity_name", "")
+                etype = mention.get("entity_type", "UNKNOWN")
+                euid = mention.get("element_uid", "")
+                for chunk_id in element_uid_chunk_map.get(euid, []):
+                    edge_tuples.append((name, etype, chunk_id))
+                    mentioned_entities.add(name)
 
-        # Fallback: Artifact.content_metadata path (backward compat)
-        if not used_mentions_path:
+            # Collect all entity names from the extraction for fallback
+            for node in graph_extraction.graph_json.get("nodes", []):
+                n = node.get("name", node.get("id", ""))
+                t = node.get("entity_type", "UNKNOWN")
+                if n:
+                    all_extracted_entities.append((n, t))
+
+        # Fallback: for entities with ZERO mentions from the primary path
+        # (or all entities when no mentions at all), use the artifact-wide
+        # linking. This catches partial misses, not just complete failure.
+        entities_needing_fallback = [
+            (n, t) for n, t in all_extracted_entities if n not in mentioned_entities
+        ]
+        if entities_needing_fallback or not mentioned_entities:
             artifact_chunk_map: dict[str, list[str]] = {}
             for tc in text_chunks:
                 artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
@@ -2765,11 +2786,12 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     for chunk_id in chunk_ids:
                         edge_tuples.append((name, etype, chunk_id))
 
-        # Batch-create EXTRACTED_FROM edges in one sqlscript call
+        # Batch-create EXTRACTED_FROM edges in one sqlscript call.
+        # Look up chunk RIDs from both text and image maps.
         from app.services.graph_store import EntityChunkEdge as _ECE
         entity_edge_records: list[_ECE] = []
         for (ent_name, ent_type, chunk_id) in edge_tuples:
-            chunk_rid = tc_rid_map.get(chunk_id)
+            chunk_rid = tc_rid_map.get(chunk_id) or ic_rid_map.get(chunk_id)
             if not chunk_rid:
                 continue
             entity_edge_records.append(_ECE(
