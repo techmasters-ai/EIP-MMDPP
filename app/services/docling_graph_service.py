@@ -127,7 +127,8 @@ def extract_graph(
     finally:
         _release_permit(permit_lock, document_id)
 
-    result = response.json()
+    raw = response.json()
+    result = _normalize_extraction_result(raw)
 
     entity_count = len(result.get("entities", []))
     rel_count = len(result.get("relationships", []))
@@ -140,18 +141,22 @@ def extract_graph(
 
 
 def extract_graph_all(
-    text: str,
+    docling_document_json: dict[str, Any],
     document_id: str,
     *,
     ontology_definition: dict[str, Any] | None = None,
     ontology_version: str | None = None,
 ) -> dict[str, Any]:
-    """Extract all entities (5 groups in parallel) + relationships in one call.
+    """Extract all entities + relationships via the /extract-all endpoint.
 
-    Uses the /extract-all endpoint which runs 5 parallel entity extraction
-    LLM calls + 1 relationship extraction call internally.
+    Sends the structured DoclingDocument JSON (preserving layout, tables,
+    and element provenance) and returns a normalized dict with keys:
+    ``entities``, ``relationships``, ``ontology_version``, ``model``,
+    ``provider``.
 
-    Returns a dict with keys: entities, relationships, ontology_version, model, provider.
+    The Docling-Graph service returns a NetworkX node-link graph; this
+    function normalizes it into the ``{entities, relationships}`` shape
+    that the rest of the pipeline expects.
     """
     settings = get_settings()
     url = f"{settings.docling_graph_base_url}/extract-all"
@@ -164,8 +169,8 @@ def extract_graph_all(
     permit_lock = _acquire_permit(document_id, timeout)
 
     logger.info(
-        "Calling Docling-Graph /extract-all for document %s (%d chars, permit acquired)",
-        document_id, len(text),
+        "Calling Docling-Graph /extract-all for document %s (permit acquired)",
+        document_id,
     )
 
     try:
@@ -173,7 +178,7 @@ def extract_graph_all(
             url,
             json={
                 "document_id": document_id,
-                "text": text,
+                "docling_document_json": docling_document_json,
                 "ontology_definition": effective_ontology,
                 "ontology_version": effective_ontology_version,
             },
@@ -183,7 +188,8 @@ def extract_graph_all(
     finally:
         _release_permit(permit_lock, document_id)
 
-    result = response.json()
+    raw = response.json()
+    result = _normalize_extraction_result(raw)
     logger.info(
         "Docling-Graph /extract-all returned %d entities, %d relationships for document %s (model=%s)",
         len(result.get("entities", [])),
@@ -193,3 +199,87 @@ def extract_graph_all(
     )
 
     return result
+
+
+def _normalize_extraction_result(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Docling-Graph's NetworkX node-link response into the
+    ``{entities, relationships}`` shape the pipeline expects.
+
+    Docling-Graph returns::
+
+        {
+            "graph": {"nodes": [...], "links": [...]},  # NetworkX node-link
+            "metadata": {...},
+            "model": "...",
+            "provider": "docling-graph",
+        }
+
+    The pipeline expects::
+
+        {
+            "entities": [{name, entity_type, confidence, properties}, ...],
+            "relationships": [{from_name, to_name, from_type, to_type, rel_type, confidence}, ...],
+            "model": "...",
+            "provider": "...",
+        }
+    """
+    graph = raw.get("graph", {})
+    nodes = graph.get("nodes", [])
+    links = graph.get("links", [])
+
+    # -- If the response already has the old shape, pass through unchanged --
+    if "entities" in raw and "graph" not in raw:
+        return raw
+
+    entities: list[dict[str, Any]] = []
+    for node in nodes:
+        name = node.get("name", node.get("id", ""))
+        entity_type = node.get("type", node.get("entity_type", "UNKNOWN"))
+        confidence = node.get("confidence", 0.8)
+        # Collect all non-system keys as properties
+        skip_keys = {"id", "name", "type", "entity_type", "confidence", "_provenance"}
+        props = {k: v for k, v in node.items() if k not in skip_keys}
+        entities.append({
+            "name": name,
+            "entity_type": entity_type,
+            "confidence": confidence,
+            "properties": props,
+            "_provenance": node.get("_provenance"),
+        })
+
+    relationships: list[dict[str, Any]] = []
+    # Build a quick node-id → (name, type) lookup for edge resolution
+    node_lookup: dict[str, tuple[str, str]] = {}
+    for node in nodes:
+        nid = str(node.get("id", ""))
+        nname = node.get("name", nid)
+        ntype = node.get("type", node.get("entity_type", "UNKNOWN"))
+        node_lookup[nid] = (nname, ntype)
+
+    for link in links:
+        src = str(link.get("source", ""))
+        tgt = str(link.get("target", ""))
+        from_name, from_type = node_lookup.get(src, (src, "UNKNOWN"))
+        to_name, to_type = node_lookup.get(tgt, (tgt, "UNKNOWN"))
+        rel_type = link.get("label", link.get("type", link.get("rel_type", "RELATED_TO")))
+        confidence = link.get("confidence", 0.8)
+        skip_keys = {"source", "target", "label", "type", "rel_type", "confidence"}
+        props = {k: v for k, v in link.items() if k not in skip_keys}
+        relationships.append({
+            "from_name": from_name,
+            "from_type": from_type,
+            "to_name": to_name,
+            "to_type": to_type,
+            "rel_type": rel_type,
+            "confidence": confidence,
+            "properties": props,
+        })
+
+    return {
+        "entities": entities,
+        "relationships": relationships,
+        "model": raw.get("model", "unknown"),
+        "provider": raw.get("provider", "docling-graph"),
+        "ontology_version": raw.get("ontology_version"),
+        "metadata": raw.get("metadata"),
+    }

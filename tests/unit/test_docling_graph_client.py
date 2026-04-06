@@ -28,22 +28,24 @@ def mock_redis():
 
 @pytest.fixture
 def mock_extraction_response():
+    """Mimics the Docling-Graph service's NetworkX node-link response shape."""
     return {
-        "entities": [
-            {"name": "Tombstone", "entity_type": "RADAR_SYSTEM", "confidence": 0.9, "properties": {}},
-            {"name": "X-band", "entity_type": "FREQUENCY_BAND", "confidence": 0.85, "properties": {}},
-        ],
-        "relationships": [
-            {
-                "from_name": "Tombstone", "from_type": "RADAR_SYSTEM",
-                "rel_type": "OPERATES_IN_BAND",
-                "to_name": "X-band", "to_type": "FREQUENCY_BAND",
-                "confidence": 0.8,
-            },
-        ],
+        "graph": {
+            "nodes": [
+                {"id": "tombstone_1", "name": "Tombstone", "type": "RADAR_SYSTEM", "confidence": 0.9},
+                {"id": "xband_1", "name": "X-band", "type": "FREQUENCY_BAND", "confidence": 0.85},
+            ],
+            "links": [
+                {
+                    "source": "tombstone_1", "target": "xband_1",
+                    "label": "OPERATES_IN_BAND", "confidence": 0.8,
+                },
+            ],
+        },
+        "metadata": {"node_count": 2, "edge_count": 1},
         "ontology_version": "3.0.0",
         "model": "llama3.2",
-        "provider": "ollama",
+        "provider": "docling-graph",
     }
 
 
@@ -116,12 +118,21 @@ class TestExtractGraphAll:
         mock_response.json.return_value = mock_extraction_response
         mock_response.raise_for_status = MagicMock()
 
+        doc_json = {"schema_name": "DoclingDocument", "body": {}}
         with patch("httpx.post", return_value=mock_response):
-            result = extract_graph_all("Some radar text about Tombstone", "doc-all-1")
+            result = extract_graph_all(doc_json, "doc-all-1")
 
+        # Response adapter normalizes graph→entities/relationships
         assert len(result["entities"]) == 2
         assert len(result["relationships"]) == 1
         assert result["model"] == "llama3.2"
+        # Verify entity field mapping
+        assert result["entities"][0]["name"] == "Tombstone"
+        assert result["entities"][0]["entity_type"] == "RADAR_SYSTEM"
+        # Verify relationship field mapping
+        assert result["relationships"][0]["from_name"] == "Tombstone"
+        assert result["relationships"][0]["to_name"] == "X-band"
+        assert result["relationships"][0]["rel_type"] == "OPERATES_IN_BAND"
 
     def test_calls_extract_all_endpoint(self, mock_extraction_response):
         from app.services.docling_graph_service import extract_graph_all
@@ -131,13 +142,14 @@ class TestExtractGraphAll:
         mock_response.json.return_value = mock_extraction_response
         mock_response.raise_for_status = MagicMock()
 
+        doc_json = {"schema_name": "DoclingDocument"}
         with patch("httpx.post", return_value=mock_response) as mock_post:
-            extract_graph_all("text", "doc-123")
+            extract_graph_all(doc_json, "doc-123")
 
         call_url = mock_post.call_args[0][0]
         assert call_url.endswith("/extract-all")
 
-    def test_sends_document_id_and_text(self, mock_extraction_response):
+    def test_sends_docling_document_json(self, mock_extraction_response):
         from app.services.docling_graph_service import extract_graph_all
 
         mock_response = MagicMock()
@@ -145,13 +157,15 @@ class TestExtractGraphAll:
         mock_response.json.return_value = mock_extraction_response
         mock_response.raise_for_status = MagicMock()
 
+        doc_json = {"schema_name": "DoclingDocument", "body": {"text": "the document text"}}
         with patch("httpx.post", return_value=mock_response) as mock_post:
-            extract_graph_all("the document text", "doc-456")
+            extract_graph_all(doc_json, "doc-456")
 
         call_kwargs = mock_post.call_args
         payload = call_kwargs[1]["json"] if "json" in call_kwargs[1] else call_kwargs[0][1]
         assert payload["document_id"] == "doc-456"
-        assert payload["text"] == "the document text"
+        assert payload["docling_document_json"] == doc_json
+        assert "text" not in payload  # old field should NOT be sent
 
     def test_capacity_error(self):
         from app.services.docling_graph_service import extract_graph_all
@@ -164,7 +178,7 @@ class TestExtractGraphAll:
 
         with patch("app.services.docling_graph_service._get_redis", return_value=mock_redis_client):
             with pytest.raises(DoclingGraphCapacityError):
-                extract_graph_all("text", "doc-cap")
+                extract_graph_all({"schema_name": "DoclingDocument"}, "doc-cap")
 
     def test_http_error(self):
         from app.services.docling_graph_service import extract_graph_all
@@ -177,4 +191,4 @@ class TestExtractGraphAll:
 
         with patch("httpx.post", return_value=mock_response):
             with pytest.raises(httpx.HTTPStatusError):
-                extract_graph_all("text", "doc-err")
+                extract_graph_all({"schema_name": "DoclingDocument"}, "doc-err")

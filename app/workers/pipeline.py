@@ -2223,30 +2223,56 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
-        full_text = "\n\n".join((e.translated_text or e.content_text) for e in elements if (e.translated_text or e.content_text))
-
-        # Prepend document metadata (summary, classification) for richer graph context
-        from sqlalchemy import text as sa_text
-        meta_row = db.execute(
-            sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
-            {"doc_id": document_id},
-        ).first()
-        if meta_row and meta_row[0]:
-            import json as _json_mod
-            meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
-            doc_summary = meta.get("document_summary", "")
-            doc_class = meta.get("classification", "")
-            if doc_summary:
-                full_text = f"[Document Summary]: {doc_summary}\n[Classification]: {doc_class}\n\n{full_text}"
-
-        if not full_text.strip():
+        if not elements:
             logger.info("derive_ontology_graph: no text elements for %s", document_id)
             if run_id:
                 _update_stage_run(db, run_id, "derive_ontology_graph", "COMPLETE", attempt=self.request.retries + 1, metrics={"skipped": True})
                 db.commit()
             return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
 
-        # ---- Full extraction: all 5 groups in parallel + relationships ----
+        # Load the persisted DoclingDocument JSON from MinIO (structured
+        # artifact with layout, tables, element provenance intact).
+        import json as _json_mod
+        from app.services.storage import download_bytes_sync
+        docling_document_json: dict | None = None
+        _minio_key = f"artifacts/{document_id}/docling_document.json"
+        try:
+            _raw = download_bytes_sync(settings.minio_bucket_derived, _minio_key)
+            docling_document_json = _json_mod.loads(_raw)
+            logger.info("derive_ontology_graph: loaded DoclingDocument JSON for %s", document_id)
+        except Exception as _dl_err:
+            logger.warning(
+                "derive_ontology_graph: DoclingDocument JSON not available for %s (%s), "
+                "falling back to reconstructed text",
+                document_id, _dl_err,
+            )
+
+        # Fallback: reconstruct plain text if structured artifact is missing
+        if docling_document_json is None:
+            full_text = "\n\n".join(
+                (e.translated_text or e.content_text)
+                for e in elements
+                if (e.translated_text or e.content_text)
+            )
+            from sqlalchemy import text as sa_text
+            meta_row = db.execute(
+                sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+                {"doc_id": document_id},
+            ).first()
+            if meta_row and meta_row[0]:
+                meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
+                doc_summary = meta.get("document_summary", "")
+                doc_class = meta.get("classification", "")
+                if doc_summary:
+                    full_text = f"[Document Summary]: {doc_summary}\n[Classification]: {doc_class}\n\n{full_text}"
+            # Wrap as a minimal DoclingDocument-shaped dict so the client
+            # can send it in the same field and the service can handle it.
+            docling_document_json = {
+                "_fallback_text": True,
+                "text": full_text,
+            }
+
+        # ---- Full extraction via Docling-Graph service ----
         from app.services.docling_graph_service import extract_graph_all
 
         provider = "docling-graph"
@@ -2254,7 +2280,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         group_errors: list[str] = []
 
         try:
-            result = extract_graph_all(full_text, document_id)
+            result = extract_graph_all(docling_document_json, document_id)
             all_entities = result.get("entities", [])
             all_relationships = result.get("relationships", [])
             provider = result.get("provider", provider)

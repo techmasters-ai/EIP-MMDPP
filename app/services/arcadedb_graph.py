@@ -68,7 +68,9 @@ def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
 
     props = {k: v for k, v in row.items() if k not in (
         "@rid", "name", "entity_type", "canonical_name", "extraction_confidence",
-        "@type", "@cat", "$distance", "distance",
+        "@type", "@cat", "@class", "$distance", "distance",
+        # Exclude embedding vectors — they're large and not needed in query results
+        "text_embedding", "image_embedding", "report_embedding",
     )}
     return GraphEntityResult(
         node_id=str(row.get("@rid", row.get("node_id", ""))),
@@ -725,14 +727,43 @@ class ArcadeDBGraphStore:
         self,
         node_id: str,
     ) -> list[dict[str, Any]]:
-        """Return text/image chunks linked to *node_id* via EXTRACTED_FROM."""
+        """Return ontology-linked chunks for a given chunk.
+
+        The traversal is: chunk ←(EXTRACTED_FROM)— entities —(EXTRACTED_FROM)→ other chunks.
+        ``in('EXTRACTED_FROM')`` gives entities that point to this chunk, then
+        ``out('EXTRACTED_FROM')`` from those entities gives the other chunks they mention.
+
+        *node_id* may be an ArcadeDB RID (``#10:5``) or a chunk UUID string.
+        If it's a UUID, we resolve it to a RID first.
+        """
+        rid = node_id
+        # If node_id looks like a UUID rather than a RID, resolve it
+        if not node_id.startswith("#"):
+            lookup = await self._client.query(
+                self._database, "sql",
+                "SELECT @rid FROM TextChunk WHERE chunk_id = :cid LIMIT 1",
+                {"cid": node_id},
+            )
+            if not lookup:
+                # Try ImageChunk
+                lookup = await self._client.query(
+                    self._database, "sql",
+                    "SELECT @rid FROM ImageChunk WHERE chunk_id = :cid LIMIT 1",
+                    {"cid": node_id},
+                )
+            if lookup and isinstance(lookup[0], dict):
+                rid = str(lookup[0].get("@rid", node_id))
+            else:
+                return []
+
+        # Traverse: chunk ← entities → other chunks
         sql = (
-            f"SELECT expand(in('EXTRACTED_FROM')) FROM {node_id}"
+            f"SELECT expand(out('EXTRACTED_FROM')) "
+            f"FROM (SELECT expand(in('EXTRACTED_FROM')) FROM {rid})"
         )
-        rows = await self._client.query(
-            self._database, "sql", sql,
-        )
-        return rows
+        rows = await self._client.query(self._database, "sql", sql)
+        # Exclude the original chunk from results
+        return [r for r in rows if str(r.get("@rid", "")) != rid]
 
     async def get_graph_stats(self) -> dict[str, Any]:
         """Return backend-level graph statistics."""
@@ -808,12 +839,17 @@ class ArcadeDBGraphStore:
             type_filter = " AND entity_type = :entity_type"
             params["entity_type"] = entity_type
 
+        # Filter entity_type on the linked entity (via traversal), not the
+        # Alias vertex itself. Alias vertices don't have entity_type.
         sql = (
             "SELECT expand(in('HAS_ALIAS')) FROM Alias "
-            f"WHERE alias = :alias{type_filter}"
+            f"WHERE alias_name = :alias"
         )
         rows = await self._client.query(self._database, "sql", sql, params)
-        return [_to_entity(r) for r in rows]
+        results = [_to_entity(r) for r in rows]
+        if entity_type:
+            results = [r for r in results if r.entity_type == entity_type]
+        return results
 
     async def set_canonical_name(
         self,
@@ -854,9 +890,11 @@ class ArcadeDBGraphStore:
             Optional minimum similarity score filter.
         """
         index_name = f"{vertex_type}[{embedding_property}]"
+        # Use SELECT * so chunk metadata (chunk_id, document_id, artifact_id,
+        # modality, text) flows through to retrieval callers. The embedding
+        # vector itself is excluded by _to_entity()'s property filter.
         sql = (
-            "SELECT name, entity_type, canonical_name, extraction_confidence, "
-            "$distance, @rid AS node_id "
+            "SELECT *, $distance, @rid AS node_id "
             f"FROM (SELECT expand(vectorNeighbors('{index_name}', "
             ":query_vector, :top_k)))"
         )
@@ -1033,14 +1071,19 @@ class ArcadeDBGraphStore:
         """ANN search over CommunityReport.report_embedding."""
         sql = (
             "SELECT community_id, title, summary, member_count, "
-            "generated_at, model_name, @rid AS report_rid "
+            "generated_at, model_name, $distance, @rid AS report_rid "
             "FROM (SELECT expand(vectorNeighbors('CommunityReport[report_embedding]', "
             ":query_vector, :top_k)))"
         )
-        return await self._client.query(
+        rows = await self._client.query(
             self._database, "sql", sql,
             params={"query_vector": query_vector, "top_k": top_k},
         )
+        # Map $distance → score (similarity = 1 - cosine_distance)
+        for r in rows:
+            dist = r.pop("$distance", r.pop("distance", None))
+            r["score"] = (1.0 - float(dist)) if dist is not None else 0.0
+        return rows
 
     async def get_relationships_between_entities(
         self,
@@ -1104,7 +1147,7 @@ class ArcadeDBGraphStore:
 
         # Orphan cleanup: remove entities with no remaining EXTRACTED_FROM edges
         orphan_sql = (
-            "DELETE VERTEX FROM V WHERE @cat NOT IN "
+            "DELETE VERTEX FROM V WHERE @class NOT IN "
             "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
             "AND out('EXTRACTED_FROM').size() = 0 "
             "AND in('EXTRACTED_FROM').size() = 0"
@@ -1524,7 +1567,7 @@ class ArcadeDBGraphStore:
         )
 
         orphan_sql = (
-            "DELETE VERTEX FROM V WHERE @cat NOT IN "
+            "DELETE VERTEX FROM V WHERE @class NOT IN "
             "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
             "AND out('EXTRACTED_FROM').size() = 0 "
             "AND in('EXTRACTED_FROM').size() = 0"
@@ -1592,18 +1635,17 @@ class ArcadeDBGraphStore:
         entity_type: str | None = None,
     ) -> list[GraphEntityResult]:
         """Synchronous alias search."""
-        type_filter = ""
         params: dict[str, Any] = {"alias": alias}
-        if entity_type:
-            type_filter = " AND entity_type = :entity_type"
-            params["entity_type"] = entity_type
 
         sql = (
             "SELECT expand(in('HAS_ALIAS')) FROM Alias "
-            f"WHERE alias = :alias{type_filter}"
+            "WHERE alias_name = :alias"
         )
         rows = self._client.query_sync(self._database, "sql", sql, params)
-        return [_to_entity(r) for r in rows]
+        results = [_to_entity(r) for r in rows]
+        if entity_type:
+            results = [r for r in results if r.entity_type == entity_type]
+        return results
 
     def create_alias_sync(
         self,
