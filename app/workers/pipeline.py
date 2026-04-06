@@ -1198,7 +1198,7 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
 
     from app.models.ingest import Document, DocumentElement
     from app.services.translation import detect_element_languages, translate_elements
-    from app.services.storage import upload_bytes_sync
+    from app.services.storage import download_bytes_sync, upload_bytes_sync
     from sqlalchemy import select
 
     logger.info("detect_and_translate: document_id=%s run_id=%s", document_id, run_id)
@@ -1303,23 +1303,70 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
         if elements_translated:
             db.commit()
 
-        # Reassemble all element texts (translated + untouched) into markdown
-        # and upload as docling_document_translated.md
-        md_parts = []
-        for i, elem in enumerate(elements):
-            text = elem.translated_text or elem.content_text or ""
-            if elem.element_type == "heading":
-                md_parts.append(f"## {text}")
-            else:
-                md_parts.append(text)
-        translated_md = "\n\n".join(md_parts)
+        # ------------------------------------------------------------------
+        # Enrich DoclingDocument JSON with translations
+        # ------------------------------------------------------------------
+        _base_key = f"artifacts/{document_id}"
+        try:
+            _raw = download_bytes_sync(settings.minio_bucket_derived, f"{_base_key}/docling_document.json")
+            _doc_dict = json_mod.loads(_raw)
+        except Exception:
+            _doc_dict = None
 
-        upload_bytes_sync(
-            translated_md.encode("utf-8"),
-            settings.minio_bucket_derived,
-            f"artifacts/{document_id}/docling_document_translated.md",
-            content_type="text/markdown; charset=utf-8",
-        )
+        if _doc_dict is not None:
+            enrichments = _doc_dict.setdefault("_enrichments", {"version": 0, "identity_map": {}, "translations": {}, "context": {}})
+            # Build reverse map: element_uid → self_ref
+            identity_map = enrichments.get("identity_map", {})
+            reverse_map = {v: k for k, v in identity_map.items()}
+
+            for elem in elements:
+                euid = str(elem.element_uid) if hasattr(elem, "element_uid") else ""
+                self_ref = reverse_map.get(euid)
+                if self_ref and elem.translated_text:
+                    enrichments["translations"][self_ref] = {
+                        "original_text": elem.content_text or "",
+                        "translated_text": elem.translated_text,
+                        "language": detected_language or "unknown",
+                    }
+
+            enrichments["version"] = enrichments.get("version", 0) + 1
+
+            # Re-persist enriched JSON
+            upload_bytes_sync(
+                json_mod.dumps(_doc_dict, ensure_ascii=False, default=str).encode("utf-8"),
+                settings.minio_bucket_derived,
+                f"{_base_key}/docling_document.json",
+                content_type="application/json; charset=utf-8",
+            )
+
+            # Regenerate translated markdown from enriched DoclingDocument
+            from app.services.docling_enrichment import _regenerate_translated_markdown
+            try:
+                translated_md = _regenerate_translated_markdown(_doc_dict)
+                upload_bytes_sync(
+                    translated_md.encode("utf-8"),
+                    settings.minio_bucket_derived,
+                    f"{_base_key}/docling_document_translated.md",
+                    content_type="text/markdown; charset=utf-8",
+                )
+            except Exception as _md_err:
+                logger.warning("Failed to regenerate translated markdown: %s", _md_err)
+        else:
+            # Fallback: reassemble element texts into markdown (no DoclingDocument JSON available)
+            md_parts = []
+            for elem in elements:
+                text = elem.translated_text or elem.content_text or ""
+                if elem.element_type == "heading":
+                    md_parts.append(f"## {text}")
+                else:
+                    md_parts.append(text)
+            translated_md = "\n\n".join(md_parts)
+            upload_bytes_sync(
+                translated_md.encode("utf-8"),
+                settings.minio_bucket_derived,
+                f"{_base_key}/docling_document_translated.md",
+                content_type="text/markdown; charset=utf-8",
+            )
 
         # Persist translation flags to document_metadata (atomic merge, no clobber)
         _merge_doc_metadata({"detected_language": detected_language, "has_translation": True})
@@ -1521,6 +1568,50 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                 )
             except Exception as md_err:
                 logger.debug("derive_picture_descriptions: could not update markdown: %s", md_err)
+
+        # ------------------------------------------------------------------
+        # Enrich DoclingDocument JSON with picture descriptions
+        # ------------------------------------------------------------------
+        if descriptions and docling_json is not None:
+            for pic_idx, description in descriptions.items():
+                if pic_idx < len(docling_json.get("pictures", [])):
+                    pic_item = docling_json["pictures"][pic_idx]
+                    # Native canonical field
+                    pic_item.setdefault("meta", {})["description"] = {
+                        "text": description,
+                        "created_by": f"llm:{model}",
+                    }
+                    # Legacy annotation for viewer hover contract
+                    if "annotations" not in pic_item:
+                        pic_item["annotations"] = []
+                    pic_item["annotations"].append({
+                        "kind": "description",
+                        "text": description,
+                        "source": "llm",
+                        "model": model,
+                    })
+
+            enrichments = docling_json.setdefault("_enrichments", {})
+            enrichments["version"] = enrichments.get("version", 0) + 1
+            upload_bytes_sync(
+                json_mod.dumps(docling_json, ensure_ascii=False, default=str).encode("utf-8"),
+                bucket,
+                f"{base_key}/docling_document.json",
+                content_type="application/json; charset=utf-8",
+            )
+
+            # Regenerate translated markdown (includes picture descriptions in appendix)
+            from app.services.docling_enrichment import _regenerate_translated_markdown
+            try:
+                translated_md = _regenerate_translated_markdown(docling_json)
+                upload_bytes_sync(
+                    translated_md.encode("utf-8"),
+                    bucket,
+                    f"{base_key}/docling_document_translated.md",
+                    content_type="text/markdown; charset=utf-8",
+                )
+            except Exception:
+                pass
 
         if run_id:
             _update_stage_run(
