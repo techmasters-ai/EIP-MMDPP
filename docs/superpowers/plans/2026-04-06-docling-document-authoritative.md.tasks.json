@@ -1,0 +1,15 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-06-docling-document-authoritative.md",
+  "tasks": [
+    {"id": 87, "subject": "Task 0: Extract self_ref from Docling items in converter", "status": "pending"},
+    {"id": 88, "subject": "Task 1: Pass self_ref through client, build _enrichments in prepare_document", "status": "pending", "blockedBy": [87]},
+    {"id": 89, "subject": "Task 2: Create enrichment helper functions", "status": "pending", "blockedBy": [88]},
+    {"id": 90, "subject": "Task 3: Update detect_and_translate to enrich DoclingDocument JSON", "status": "pending", "blockedBy": [89]},
+    {"id": 91, "subject": "Task 4: Update derive_picture_descriptions to enrich DoclingDocument JSON", "status": "pending", "blockedBy": [90]},
+    {"id": 92, "subject": "Task 5: Replace custom chunking with native HybridChunker", "status": "pending", "blockedBy": [89]},
+    {"id": 93, "subject": "Task 6: Update derive_ontology_graph to use enriched copy", "status": "pending", "blockedBy": [89]},
+    {"id": 94, "subject": "Task 7: Update API endpoints for enriched JSON", "status": "pending", "blockedBy": [90, 91]},
+    {"id": 95, "subject": "Task 8: Final verification and TODO update", "status": "pending", "blockedBy": [92, 93, 94]}
+  ],
+  "lastUpdated": "2026-04-06T23:00:00Z"
+}
