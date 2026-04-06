@@ -833,28 +833,33 @@ async def get_docling_raw_json(
             detail="DoclingDocument has no content elements. Use standalone viewer.",
         )
 
-    # Inject image description annotations for <docling-tooltip>
-    from sqlalchemy import text
+    # If _enrichments.version is present, annotations are already persisted
+    # in the JSON — skip runtime injection. Otherwise fall back to the
+    # legacy Postgres-based injection.
+    enrichments = doc_json.get("_enrichments", {})
+    if enrichments.get("version") is None:
+        # Legacy path: inject image description annotations from Postgres
+        from sqlalchemy import text
 
-    rows = (await db.execute(
-        text("""
-            SELECT page_number, content_text
-            FROM ingest.document_elements
-            WHERE document_id = cast(:doc_id AS uuid)
-              AND element_type = 'image'
-              AND content_text IS NOT NULL
-              AND length(content_text) > 10
-            ORDER BY element_order
-        """),
-        {"doc_id": str(document_id)},
-    )).fetchall()
+        rows = (await db.execute(
+            text("""
+                SELECT page_number, content_text
+                FROM ingest.document_elements
+                WHERE document_id = cast(:doc_id AS uuid)
+                  AND element_type = 'image'
+                  AND content_text IS NOT NULL
+                  AND length(content_text) > 10
+                ORDER BY element_order
+            """),
+            {"doc_id": str(document_id)},
+        )).fetchall()
 
-    if rows:
-        descriptions = [
-            {"page_number": row[0], "content_text": row[1]}
-            for row in rows
-        ]
-        _inject_image_description_annotations(doc_json, descriptions)
+        if rows:
+            descriptions = [
+                {"page_number": row[0], "content_text": row[1]}
+                for row in rows
+            ]
+            _inject_image_description_annotations(doc_json, descriptions)
 
     enriched_bytes = _json.dumps(doc_json).encode("utf-8")
     return Response(content=enriched_bytes, media_type="application/json")
@@ -919,6 +924,40 @@ async def get_element_translations(
     db: AsyncSession = Depends(get_async_session),
 ):
     """Return per-element translations for DoclingViewer tooltip overlay."""
+    import json as _json
+    from app.services.storage import download_bytes_async
+
+    # Try the enriched DoclingDocument JSON first (native path)
+    try:
+        json_bytes = await download_bytes_async(
+            settings.minio_bucket_derived,
+            f"artifacts/{str(document_id)}/docling_document.json",
+        )
+        doc_json = _json.loads(json_bytes)
+        enrichments = doc_json.get("_enrichments", {})
+
+        if enrichments.get("version") is not None:
+            translations = enrichments.get("translations", {})
+            identity_map = enrichments.get("identity_map", {})
+
+            if translations:
+                # Reverse-map: self_ref -> element_uid via identity_map
+                result = []
+                for self_ref, trans in translations.items():
+                    element_uid = identity_map.get(self_ref)
+                    if element_uid and trans.get("translated_text"):
+                        result.append({
+                            "element_uid": element_uid,
+                            "original_text": trans.get("original_text", ""),
+                            "translated_text": trans["translated_text"],
+                        })
+
+                if result:
+                    return result
+    except Exception:
+        pass
+
+    # Legacy fallback: read from Postgres DocumentElement rows
     from app.models.ingest import DocumentElement
 
     elements = (await db.execute(

@@ -1769,53 +1769,46 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         if doc_obj and doc_obj.document_metadata:
             doc_classification = doc_obj.document_metadata.get("classification", "UNCLASSIFIED")
 
-        elements = db.execute(
-            select(DocumentElement).where(
-                DocumentElement.document_id == uuid.UUID(document_id),
-                DocumentElement.element_type.in_(["text", "table", "heading", "equation", "schematic"]),
-                DocumentElement.content_text.isnot(None),
-            ).order_by(DocumentElement.element_order)
-        ).scalars().all()
+        # ── Primary path: native HybridChunker on enriched DoclingDocument ──
+        import json as _json_mod
+        from app.services.storage import download_bytes_sync
+        use_native_chunking = False
+        native_chunks = []
 
-        # Convert ORM objects to dicts for structure-aware chunker
-        element_dicts = [
-            {
-                "element_type": elem.element_type,
-                "content_text": elem.translated_text or elem.content_text,
-                "page_number": elem.page_number,
-                "section_path": elem.section_path,
-                "element_uid": str(elem.element_uid) if elem.element_uid else "",
-                "element_order": elem.element_order,
-                "heading_level": elem.heading_level,
-            }
-            for elem in elements
-            if (elem.translated_text or elem.content_text)
-        ]
-        structured_chunks = structure_aware_chunk(
-            element_dicts,
-            max_chunk_tokens=settings.chunk_max_tokens,
-            overlap_tokens=settings.chunk_overlap_tokens,
-        )
+        try:
+            _raw = download_bytes_sync(
+                settings.minio_bucket_derived,
+                f"artifacts/{document_id}/docling_document.json",
+            )
+            doc_dict = _json_mod.loads(_raw)
+            enrichments = doc_dict.get("_enrichments", {})
 
-        # Build a lookup from element_uid to the ORM element for artifact_id / bounding_box
-        elem_by_uid: dict[str, DocumentElement] = {
-            str(e.element_uid): e for e in elements if e.element_uid
-        }
+            if enrichments.get("version") is not None:
+                try:
+                    from app.services.docling_enrichment import _build_enriched_copy_for_chunking
 
-        all_texts = []
-        all_chunk_refs = []
-        _seen_chunk_texts: set[str] = set()
+                    enriched = _build_enriched_copy_for_chunking(doc_dict)
+                    from docling.datamodel.document import DoclingDocument as _DLDoc
+                    from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+                    from transformers import AutoTokenizer
+                    from docling.chunking import HybridChunker
 
-        for sc in structured_chunks:
-            if sc.text in _seen_chunk_texts:
-                continue
-            _seen_chunk_texts.add(sc.text)
-            all_texts.append(sc.text)
-            all_chunk_refs.append(sc)
+                    tok = AutoTokenizer.from_pretrained(settings.text_embedding_model)
+                    hf_tok = HuggingFaceTokenizer(tokenizer=tok, max_tokens=settings.chunk_max_tokens)
+                    chunker = HybridChunker(tokenizer=hf_tok)
+                    doc_obj_dl = _DLDoc.model_validate(enriched)
+                    native_chunks = list(chunker.chunk(doc_obj_dl))
+                    use_native_chunking = True
+                except Exception as exc:
+                    logger.warning("Native HybridChunker failed for %s: %s, falling back", document_id, exc)
+                    use_native_chunking = False
+            else:
+                use_native_chunking = False
+        except Exception:
+            # docling_document.json not available — fall through to legacy path
+            use_native_chunking = False
 
         chunks_created = 0
-
-        # Shared variables for both text chunk and image description passes
         _embed_batch = settings.embed_text_batch_size
         model_version = settings.text_embedding_model
 
@@ -1823,68 +1816,203 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         graph_store = get_graph_store()
         graph_store.ensure_ready_sync()
 
-        if all_texts:
-            # Batch embedding to limit memory for very large documents
-            embeddings: list[list[float]] = []
-            for _eb_start in range(0, len(all_texts), _embed_batch):
-                embeddings.extend(embed_texts(all_texts[_eb_start:_eb_start + _embed_batch]))
+        if use_native_chunking:
+            # ── Native HybridChunker path ──
+            all_texts = []
+            all_chunk_metas: list[dict] = []
+            _seen_chunk_texts: set[str] = set()
 
-            from app.services.graph_store import TextChunkRecord as _TCR
-            text_chunk_records: list[_TCR] = []
-            for sc, text, embedding in zip(all_chunk_refs, all_texts, embeddings):
-                # Resolve artifact_id from the first element_uid in this chunk
-                first_uid = sc.element_uids[0] if sc.element_uids else ""
-                ref_elem = elem_by_uid.get(first_uid)
-                artifact_id = ref_elem.artifact_id if ref_elem else None
-                bounding_box = ref_elem.bounding_box if ref_elem else None
+            for chunk_idx, chunk in enumerate(native_chunks):
+                chunk_text = chunk.text
+                if not chunk_text or chunk_text in _seen_chunk_texts:
+                    continue
+                _seen_chunk_texts.add(chunk_text)
 
-                # Deterministic chunk key using element_uids for stability
-                uid_key = "|".join(sc.element_uids)
+                # Extract page number from chunk metadata if available
+                page_number = None
+                try:
+                    page_number = chunk.meta.doc_items[0].prov[0].page_no
+                except (AttributeError, IndexError, TypeError):
+                    pass
+
+                # Deterministic chunk_id using same hash pattern as legacy code
                 chunk_key = hashlib.sha256(
-                    f"{document_id}:{uid_key}:{sc.chunk_index}:{model_version}".encode()
+                    f"{document_id}:native:{chunk_idx}:{model_version}".encode()
                 ).hexdigest()
-
                 chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
 
-                chunk_values = {
-                    "id": chunk_id,
-                    "artifact_id": artifact_id,
-                    "document_id": uuid.UUID(document_id),
-                    "chunk_index": sc.chunk_index,
-                    "chunk_text": text,
-                    "modality": sc.modality,
-                    "page_number": sc.page_number,
-                    "bounding_box": bounding_box,
+                all_texts.append(chunk_text)
+                all_chunk_metas.append({
+                    "chunk_id": chunk_id,
+                    "chunk_index": chunk_idx,
+                    "page_number": page_number,
+                    "modality": "text",
+                })
+
+            if all_texts:
+                embeddings: list[list[float]] = []
+                for _eb_start in range(0, len(all_texts), _embed_batch):
+                    embeddings.extend(embed_texts(all_texts[_eb_start:_eb_start + _embed_batch]))
+
+                from app.services.graph_store import TextChunkRecord as _TCR
+                text_chunk_records: list[_TCR] = []
+                for meta, text, embedding in zip(all_chunk_metas, all_texts, embeddings):
+                    chunk_values = {
+                        "id": meta["chunk_id"],
+                        "artifact_id": None,
+                        "document_id": uuid.UUID(document_id),
+                        "chunk_index": meta["chunk_index"],
+                        "chunk_text": text,
+                        "modality": meta["modality"],
+                        "page_number": meta["page_number"],
+                        "bounding_box": None,
+                    }
+
+                    stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
+                        index_elements=["id"],
+                        set_={
+                            "chunk_text": chunk_values["chunk_text"],
+                            "modality": chunk_values["modality"],
+                        },
+                    )
+                    db.execute(stmt)
+
+                    text_chunk_records.append(_TCR(
+                        chunk_id=str(meta["chunk_id"]),
+                        text=text,
+                        document_id=document_id,
+                        properties={
+                            "artifact_id": None,
+                            "modality": meta["modality"],
+                            "page_number": meta["page_number"],
+                            "classification": doc_classification,
+                        },
+                        embedding=embedding,
+                    ))
+                    chunks_created += 1
+
+                if text_chunk_records:
+                    graph_store.create_text_chunks_batch_sync(text_chunk_records)
+
+            # Need elements query for Pass 2 (image descriptions)
+            elements = db.execute(
+                select(DocumentElement).where(
+                    DocumentElement.document_id == uuid.UUID(document_id),
+                    DocumentElement.element_type.in_(["text", "table", "heading", "equation", "schematic"]),
+                    DocumentElement.content_text.isnot(None),
+                ).order_by(DocumentElement.element_order)
+            ).scalars().all()
+
+            db.commit()
+
+        if not use_native_chunking:
+            # ── Legacy path: structure_aware_chunk from DocumentElement rows ──
+            elements = db.execute(
+                select(DocumentElement).where(
+                    DocumentElement.document_id == uuid.UUID(document_id),
+                    DocumentElement.element_type.in_(["text", "table", "heading", "equation", "schematic"]),
+                    DocumentElement.content_text.isnot(None),
+                ).order_by(DocumentElement.element_order)
+            ).scalars().all()
+
+            # Convert ORM objects to dicts for structure-aware chunker
+            element_dicts = [
+                {
+                    "element_type": elem.element_type,
+                    "content_text": elem.translated_text or elem.content_text,
+                    "page_number": elem.page_number,
+                    "section_path": elem.section_path,
+                    "element_uid": str(elem.element_uid) if elem.element_uid else "",
+                    "element_order": elem.element_order,
+                    "heading_level": elem.heading_level,
                 }
+                for elem in elements
+                if (elem.translated_text or elem.content_text)
+            ]
+            structured_chunks = structure_aware_chunk(
+                element_dicts,
+                max_chunk_tokens=settings.chunk_max_tokens,
+                overlap_tokens=settings.chunk_overlap_tokens,
+            )
 
-                stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={
-                        "chunk_text": chunk_values["chunk_text"],
-                        "modality": chunk_values["modality"],
-                    },
-                )
-                db.execute(stmt)
+            # Build a lookup from element_uid to the ORM element for artifact_id / bounding_box
+            elem_by_uid: dict[str, DocumentElement] = {
+                str(e.element_uid): e for e in elements if e.element_uid
+            }
 
-                text_chunk_records.append(_TCR(
-                    chunk_id=str(chunk_id),
-                    text=text,
-                    document_id=document_id,
-                    properties={
-                        "artifact_id": str(artifact_id) if artifact_id else None,
+            all_texts = []
+            all_chunk_refs = []
+            _seen_chunk_texts: set[str] = set()
+
+            for sc in structured_chunks:
+                if sc.text in _seen_chunk_texts:
+                    continue
+                _seen_chunk_texts.add(sc.text)
+                all_texts.append(sc.text)
+                all_chunk_refs.append(sc)
+
+            if all_texts:
+                # Batch embedding to limit memory for very large documents
+                embeddings: list[list[float]] = []
+                for _eb_start in range(0, len(all_texts), _embed_batch):
+                    embeddings.extend(embed_texts(all_texts[_eb_start:_eb_start + _embed_batch]))
+
+                from app.services.graph_store import TextChunkRecord as _TCR
+                text_chunk_records: list[_TCR] = []
+                for sc, text, embedding in zip(all_chunk_refs, all_texts, embeddings):
+                    # Resolve artifact_id from the first element_uid in this chunk
+                    first_uid = sc.element_uids[0] if sc.element_uids else ""
+                    ref_elem = elem_by_uid.get(first_uid)
+                    artifact_id = ref_elem.artifact_id if ref_elem else None
+                    bounding_box = ref_elem.bounding_box if ref_elem else None
+
+                    # Deterministic chunk key using element_uids for stability
+                    uid_key = "|".join(sc.element_uids)
+                    chunk_key = hashlib.sha256(
+                        f"{document_id}:{uid_key}:{sc.chunk_index}:{model_version}".encode()
+                    ).hexdigest()
+
+                    chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+
+                    chunk_values = {
+                        "id": chunk_id,
+                        "artifact_id": artifact_id,
+                        "document_id": uuid.UUID(document_id),
+                        "chunk_index": sc.chunk_index,
+                        "chunk_text": text,
                         "modality": sc.modality,
                         "page_number": sc.page_number,
-                        "classification": doc_classification,
-                    },
-                    embedding=embedding,
-                ))
-                chunks_created += 1
+                        "bounding_box": bounding_box,
+                    }
 
-            # Batch-create all TextChunk vertices (with embeddings) in one HTTP call
-            if text_chunk_records:
-                graph_store.create_text_chunks_batch_sync(text_chunk_records)
+                    stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
+                        index_elements=["id"],
+                        set_={
+                            "chunk_text": chunk_values["chunk_text"],
+                            "modality": chunk_values["modality"],
+                        },
+                    )
+                    db.execute(stmt)
 
-        db.commit()
+                    text_chunk_records.append(_TCR(
+                        chunk_id=str(chunk_id),
+                        text=text,
+                        document_id=document_id,
+                        properties={
+                            "artifact_id": str(artifact_id) if artifact_id else None,
+                            "modality": sc.modality,
+                            "page_number": sc.page_number,
+                            "classification": doc_classification,
+                        },
+                        embedding=embedding,
+                    ))
+                    chunks_created += 1
+
+                # Batch-create all TextChunk vertices (with embeddings) in one HTTP call
+                if text_chunk_records:
+                    graph_store.create_text_chunks_batch_sync(text_chunk_records)
+
+            db.commit()
 
         # ── Pass 2: Image description sections ──────────────────────────
         from app.services.chunking import split_description_sections
@@ -2338,57 +2466,72 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 db.commit()
             return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
 
-        # Build enriched text from the CURRENT state of DocumentElement rows.
-        # This includes: translated_text (from Stage 2), updated content_text
-        # with picture descriptions (from Stage 4). The original
-        # docling_document.json from Stage 1 is stale — it has neither
-        # translations nor picture descriptions.
+        # ── Build enriched DoclingDocument JSON for graph extraction ──
         import json as _json_mod
-        enriched_text = "\n\n".join(
-            (e.translated_text or e.content_text)
-            for e in elements
-            if (e.translated_text or e.content_text)
-        )
-
-        # Prepend document metadata (summary, classification) for context
-        from sqlalchemy import text as sa_text
-        meta_row = db.execute(
-            sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
-            {"doc_id": document_id},
-        ).first()
-        if meta_row and meta_row[0]:
-            meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
-            doc_summary = meta.get("document_summary", "")
-            doc_class = meta.get("classification", "")
-            if doc_summary:
-                enriched_text = f"[Document Summary]: {doc_summary}\n[Classification]: {doc_class}\n\n{enriched_text}"
-
-        if not enriched_text.strip():
-            logger.info("derive_ontology_graph: no enriched text for %s", document_id)
-            if run_id:
-                _update_stage_run(db, run_id, "derive_ontology_graph", "COMPLETE", attempt=self.request.retries + 1, metrics={"skipped": True})
-                db.commit()
-            return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
-
-        # Try loading the Docling JSON for structural context; if available
-        # the service can use it for layout-aware extraction. If not, it
-        # falls back to text-only extraction.
         from app.services.storage import download_bytes_sync
+
+        use_native_graph = False
         docling_document_json: dict | None = None
+
         try:
             _raw = download_bytes_sync(
                 settings.minio_bucket_derived,
                 f"artifacts/{document_id}/docling_document.json",
             )
-            docling_document_json = _json_mod.loads(_raw)
+            doc_dict = _json_mod.loads(_raw)
+            enrichments = doc_dict.get("_enrichments", {})
+
+            if enrichments.get("version") is not None:
+                # Native path: build enriched copy with translations + context
+                from app.services.docling_enrichment import _build_enriched_copy_for_graph
+
+                # Inject summary/classification into _enrichments.context
+                # so _build_enriched_copy_for_graph can use it.
+                from sqlalchemy import text as sa_text
+                meta_row = db.execute(
+                    sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+                    {"doc_id": document_id},
+                ).first()
+                if meta_row and meta_row[0]:
+                    meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
+                    doc_dict.setdefault("_enrichments", {})["context"] = {
+                        "summary": meta.get("document_summary", ""),
+                        "classification": meta.get("classification", ""),
+                    }
+
+                docling_document_json = _build_enriched_copy_for_graph(doc_dict)
+                use_native_graph = True
         except Exception:
             pass
 
-        # Always include the enriched text so the service has the most
-        # up-to-date content regardless of the JSON availability.
-        if docling_document_json is not None:
-            docling_document_json["_enriched_text"] = enriched_text
-        else:
+        if not use_native_graph:
+            # Legacy fallback: build enriched text from DocumentElement rows
+            enriched_text = "\n\n".join(
+                (e.translated_text or e.content_text)
+                for e in elements
+                if (e.translated_text or e.content_text)
+            )
+
+            # Prepend document metadata (summary, classification) for context
+            from sqlalchemy import text as sa_text
+            meta_row = db.execute(
+                sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+                {"doc_id": document_id},
+            ).first()
+            if meta_row and meta_row[0]:
+                meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
+                doc_summary = meta.get("document_summary", "")
+                doc_class = meta.get("classification", "")
+                if doc_summary:
+                    enriched_text = f"[Document Summary]: {doc_summary}\n[Classification]: {doc_class}\n\n{enriched_text}"
+
+            if not enriched_text.strip():
+                logger.info("derive_ontology_graph: no enriched text for %s", document_id)
+                if run_id:
+                    _update_stage_run(db, run_id, "derive_ontology_graph", "COMPLETE", attempt=self.request.retries + 1, metrics={"skipped": True})
+                    db.commit()
+                return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
+
             docling_document_json = {"_enriched_text": enriched_text}
 
         # ---- Full extraction via Docling-Graph service ----
