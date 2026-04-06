@@ -642,7 +642,8 @@ async def _fetch_chunk_evidence(
                tc.modality,
                tc.page_number,
                tc.classification,
-               tc.chunk_text
+               tc.chunk_text,
+               d.document_metadata
         FROM retrieval.text_chunks tc
         JOIN ingest.documents d ON d.id = tc.document_id
         WHERE tc.id::text = ANY(:ids)
@@ -655,7 +656,8 @@ async def _fetch_chunk_evidence(
                ic.modality,
                ic.page_number,
                ic.classification,
-               ic.chunk_text
+               ic.chunk_text,
+               d.document_metadata
         FROM retrieval.image_chunks ic
         JOIN ingest.documents d ON d.id = ic.document_id
         WHERE ic.id::text = ANY(:ids)
@@ -664,6 +666,7 @@ async def _fetch_chunk_evidence(
     rows = (await db.execute(sql, {"ids": chunk_ids})).fetchall()
     evidence_map: dict[str, GraphEvidenceItem] = {}
     for row in rows:
+        meta = row[9] if isinstance(row[9], dict) else {} if row[9] is None else __import__("json").loads(row[9])
         evidence_map[str(row[0])] = GraphEvidenceItem(
             chunk_id=row[0],
             chunk_type=row[1],
@@ -674,6 +677,8 @@ async def _fetch_chunk_evidence(
             page_number=row[6],
             classification=row[7],
             content_text=row[8],
+            source_characterization=meta.get("source_characterization"),
+            date_of_information=meta.get("date_of_information"),
         )
     return evidence_map
 

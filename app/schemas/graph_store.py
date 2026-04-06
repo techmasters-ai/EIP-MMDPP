@@ -66,6 +66,10 @@ class GraphEvidenceItem(APIModel):
     page_number: Optional[int] = None
     classification: str = "UNCLASSIFIED"
     content_text: Optional[str] = None
+    # Data lineage — trust, validity, and source characterization
+    source_characterization: Optional[str] = None
+    date_of_information: Optional[str] = None
+    extraction_confidence: Optional[float] = None
 
 
 class GraphEntityResult(APIModel):

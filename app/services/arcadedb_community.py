@@ -97,12 +97,16 @@ async def run_community_detection(
         if not report:
             continue
 
+        # Collect source documents for this community's member entities.
+        # Traverses entity → EXTRACTED_FROM → chunk to find source docs+pages.
+        source_docs = await _collect_community_sources(graph_store, members)
+
         # Embed the report (title + summary) for vector search
         report_embedding = await _embed_report(
             f"{report['title']}\n\n{report['summary']}"
         )
 
-        # Upsert CommunityReport vertex
+        # Upsert CommunityReport vertex (with source_documents for lineage)
         try:
             report_rid = await graph_store.upsert_community_report(
                 community_id=cid,
@@ -111,6 +115,7 @@ async def run_community_detection(
                 member_count=len(members),
                 membership_hash=new_hash,
                 model_name=settings.community_report_llm_model,
+                source_documents=source_docs,
             )
         except Exception as exc:
             logger.warning("Failed to upsert community report %d: %s", cid, exc)
@@ -260,6 +265,43 @@ async def _embed_report(text: str) -> list[float] | None:
     except Exception as exc:
         logger.warning("Failed to embed community report: %s", exc)
         return None
+
+
+async def _collect_community_sources(
+    graph_store: Any,
+    members: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Collect source document references for community member entities.
+
+    For each member entity, traverses EXTRACTED_FROM edges to find the
+    chunks it was extracted from, then resolves the document_id, page_number,
+    and document classification. Returns a deduplicated list of source
+    document references so community reports carry full data lineage.
+    """
+    seen: set[str] = set()
+    sources: list[dict[str, Any]] = []
+
+    for member in members[:20]:  # cap to avoid massive traversals
+        name = member.get("name", "")
+        if not name:
+            continue
+        try:
+            evidence = await graph_store.get_entity_evidence_chunks(name, limit=5)
+            for chunk in evidence:
+                doc_id = chunk.get("document_id", "")
+                if not doc_id or doc_id in seen:
+                    continue
+                seen.add(doc_id)
+                sources.append({
+                    "document_id": doc_id,
+                    "page_number": chunk.get("page_number"),
+                    "classification": chunk.get("classification", "UNCLASSIFIED"),
+                    "chunk_text_preview": (chunk.get("text") or chunk.get("chunk_text") or "")[:200],
+                })
+        except Exception:
+            continue
+
+    return sources
 
 
 _DEFAULT_PROMPT = """You are analyzing a cluster of related entities in a knowledge graph.

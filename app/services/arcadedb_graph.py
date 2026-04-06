@@ -1314,11 +1314,13 @@ class ArcadeDBGraphStore:
         member_count: int,
         membership_hash: str,
         model_name: str,
+        source_documents: list[dict] | None = None,
     ) -> str:
         """Upsert a CommunityReport vertex and return its RID."""
         sql = (
             "UPDATE CommunityReport SET title = :title, summary = :summary, "
             "member_count = :count, membership_hash = :hash, "
+            "source_documents = :sources, "
             "generated_at = sysdate(), model_name = :model "
             "UPSERT WHERE community_id = :cid"
         )
@@ -1331,6 +1333,7 @@ class ArcadeDBGraphStore:
                 "count": member_count,
                 "hash": membership_hash,
                 "model": model_name,
+                "sources": source_documents or [],
             },
         )
         return _rid(result)
@@ -1370,7 +1373,7 @@ class ArcadeDBGraphStore:
         ef_arg = f", {ef}" if ef > 0 else ""
         sql = (
             "SELECT community_id, title, summary, member_count, "
-            "generated_at, model_name, $distance, @rid AS report_rid "
+            "generated_at, model_name, source_documents, $distance, @rid AS report_rid "
             "FROM (SELECT expand(vectorNeighbors('CommunityReport[report_embedding]', "
             f":query_vector, :top_k{ef_arg})))"
         )

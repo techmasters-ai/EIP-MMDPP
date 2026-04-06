@@ -90,15 +90,48 @@ async def query_graph(
             for n in neighbors[:5]
         ]
 
+        # Attach source document evidence for data lineage — traverse
+        # entity → EXTRACTED_FROM → chunk to find source documents + pages.
+        evidence_chunks = await graph_store.get_entity_evidence_chunks(
+            match.node_id, limit=3,
+        )
+        source_docs: list[dict] = []
+        first_doc_id = None
+        first_doc_name = None
+        first_page = None
+        first_text = None
+        highest_class = "UNCLASSIFIED"
+        class_rank = {"UNCLASSIFIED": 0, "CUI": 1, "FOUO": 2, "SECRET": 3, "TOP SECRET": 4}
+        for chunk in evidence_chunks:
+            doc_id = chunk.get("document_id", "")
+            page = chunk.get("page_number")
+            chunk_class = chunk.get("classification", "UNCLASSIFIED")
+            chunk_text = chunk.get("text") or chunk.get("chunk_text") or ""
+            if first_doc_id is None and doc_id:
+                first_doc_id = doc_id
+                first_page = page
+                first_text = chunk_text[:500] if chunk_text else None
+            if class_rank.get(chunk_class, 0) > class_rank.get(highest_class, 0):
+                highest_class = chunk_class
+            source_docs.append({
+                "document_id": doc_id,
+                "page_number": page,
+                "classification": chunk_class,
+                "chunk_text_preview": chunk_text[:200] if chunk_text else "",
+            })
+
         results.append(
             QueryResultItem(
+                document_id=first_doc_id,
                 score=match.extraction_confidence or 0.5,
                 modality="graph_node",
-                content_text=name,
-                page_number=None,
-                classification="UNCLASSIFIED",
+                content_text=first_text or name,
+                page_number=first_page,
+                classification=highest_class,
+                sources=source_docs if source_docs else None,
                 context={
                     "entity_type": entity_type,
+                    "entity_name": name,
                     "entity": match.properties,
                     "neighbors": neighbor_dicts,
                 },

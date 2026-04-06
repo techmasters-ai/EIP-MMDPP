@@ -108,6 +108,9 @@ async def unified_query(
     # Populate document names from ingest.documents
     await _backfill_document_names(db, results)
 
+    # Populate data lineage: source characterization, date, classification
+    await _backfill_document_lineage(db, results)
+
     # Populate presigned image URLs for image-modality results
     await _populate_image_urls(db, results, strategy=body.strategy)
 
@@ -947,6 +950,51 @@ async def _backfill_document_names(
             r.document_name = name_map[did]
 
 
+async def _backfill_document_lineage(
+    db: AsyncSession, results: list[QueryResultItem]
+) -> None:
+    """Batch-fill source_characterization, date_of_information, and classification
+    from ingest.documents.document_metadata for results that have a document_id.
+
+    This ensures every retrieval result carries full data lineage for
+    trust, validity, and source characterization.
+    """
+    needs_lineage = [r for r in results if r.document_id is not None]
+    if not needs_lineage:
+        return
+
+    doc_ids = list({str(r.document_id) for r in needs_lineage})
+
+    sql = text("""
+        SELECT id::text, document_metadata FROM ingest.documents
+        WHERE id = ANY(:ids) AND document_metadata IS NOT NULL
+    """)
+    meta_map: dict[str, dict] = {}
+    try:
+        result = await db.execute(sql, {"ids": doc_ids})
+        rows = result.fetchall()
+        for row in rows:
+            if row[1]:
+                meta = row[1] if isinstance(row[1], dict) else __import__("json").loads(row[1])
+                meta_map[row[0]] = meta
+    except Exception:
+        return  # Graceful degradation — lineage is best-effort
+
+    for r in needs_lineage:
+        meta = meta_map.get(str(r.document_id))
+        if not meta:
+            continue
+        if r.source_characterization is None:
+            r.source_characterization = meta.get("source_characterization")
+        if r.date_of_information is None:
+            r.date_of_information = meta.get("date_of_information")
+        # Upgrade classification from document metadata if currently default
+        if r.classification == "UNCLASSIFIED":
+            doc_class = meta.get("classification")
+            if doc_class and doc_class != "UNCLASSIFIED":
+                r.classification = doc_class
+
+
 async def _populate_image_urls(
     db: AsyncSession, results: list[QueryResultItem],
     strategy: QueryStrategy = QueryStrategy.hybrid,
@@ -1021,10 +1069,27 @@ async def _global_query(body: UnifiedQueryRequest) -> UnifiedQueryResponse:
             "summary": r.get("summary"),
             "member_count": r.get("member_count"),
             "score": float(r.get("score", 0.0)),
+            "source_documents": r.get("source_documents", []),
         }
         for r in reports
     ]
     top_score = max((float(r.get("score", 0.0)) for r in reports), default=0.0)
+
+    # Build deduplicated sources list from all community reports' source_documents.
+    # This makes every global answer fully traceable to specific documents + pages.
+    all_sources: list[dict] = []
+    seen_doc_ids: set[str] = set()
+    highest_classification = "UNCLASSIFIED"
+    classification_rank = {"UNCLASSIFIED": 0, "CUI": 1, "FOUO": 2, "SECRET": 3, "TOP SECRET": 4}
+    for r in reports:
+        for src in r.get("source_documents", []):
+            doc_id = src.get("document_id", "")
+            if doc_id and doc_id not in seen_doc_ids:
+                seen_doc_ids.add(doc_id)
+                all_sources.append(src)
+                src_class = src.get("classification", "UNCLASSIFIED")
+                if classification_rank.get(src_class, 0) > classification_rank.get(highest_classification, 0):
+                    highest_classification = src_class
 
     return UnifiedQueryResponse(
         query_text=body.query_text,
@@ -1038,7 +1103,9 @@ async def _global_query(body: UnifiedQueryRequest) -> UnifiedQueryResponse:
                 modality="community_report",
                 content_text=synthesis,
                 page_number=None,
-                classification="UNCLASSIFIED",
+                # Derive classification from the highest-classified source document
+                classification=highest_classification,
+                sources=all_sources if all_sources else None,
                 context={
                     "synthesis": True,
                     "reports": raw_reports,
@@ -1060,8 +1127,10 @@ Community reports (ranked by relevance):
 Write a single comprehensive answer that:
 1. Directly addresses the user's question.
 2. Draws on the community reports above.
-3. Cites the community IDs it relied on, e.g. "[community 3]".
+3. Where possible, note which community report(s) a claim comes from, e.g. "[community 3]".
 4. Is concise but complete. Do not repeat the reports verbatim.
+
+Note: A complete list of source documents with page numbers is provided separately in the response metadata. Your answer does not need to duplicate that list, but referencing community IDs helps the reader trace claims.
 """
 
 

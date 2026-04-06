@@ -47,10 +47,18 @@ class QueryResultItem(APIModel):
     document_id: Optional[uuid.UUID] = None
     document_name: Optional[str] = None
     score: float
-    modality: str  # text | image | table | schematic | graph_node
+    modality: str  # text | image | table | schematic | graph_node | community_report
     content_text: Optional[str] = None
     page_number: Optional[int] = None
     classification: str = "UNCLASSIFIED"
+    # Data lineage — trust, validity, and source characterization
+    source_characterization: Optional[str] = None  # organization, type, reliability
+    date_of_information: Optional[str] = None  # publication/report date
+    extraction_confidence: Optional[float] = None  # ingestion-time extraction confidence
+    # Sources list for synthesized results (global strategy). Each entry has
+    # document_id, document_name, page_numbers, classification so the answer
+    # is fully traceable to source material.
+    sources: Optional[list[dict[str, Any]]] = None
     context: Optional[dict[str, Any]] = None  # graph neighbors, source info, etc.
     image_url: Optional[str] = None  # presigned MinIO URL for image-modality results
 
