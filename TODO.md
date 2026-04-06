@@ -753,6 +753,163 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
+## P0 — Code Review Findings (2026-04-05)
+
+The following items were identified by a standalone code analysis and review.
+They are ordered by severity (Critical, High, Medium). Each must be addressed
+before the feature/arcadedb branch can be considered production-ready.
+
+### 35. Fix upstream repo clone/update contract for Docling and Docling-Graph
+
+**Status:** Not started. **Severity:** Critical.
+**Files:** `manage.sh`, `docker-compose.yml`, `docker/docling/Dockerfile`, `docker/docling-graph/Dockerfile`, `docker/docling/requirements.txt`, `docker/docling-graph/requirements.txt`, `VERIFICATION_CHECKLIST.md`
+
+Only ArcadeDB consumes a cloned `repo/`; Docling and Docling-Graph install released PyPI packages. A plain `docker compose build` clones nothing, and `manage.sh` continues on `git pull` failure with only a warning. This conflicts with the stated verification/design contract.
+
+**What needs to be done:** Either (a) make the Docling/Docling-Graph Dockerfiles actually consume the cloned repos via `pip install -e /repo` or `COPY repo/ ...`, or (b) update the verification checklist and design spec to reflect the real contract (PyPI packages, not git-main tracking).
+
+---
+
+### 36. Fix vector_search() dropping chunk metadata that retrieval depends on
+
+**Status:** Not started. **Severity:** Critical.
+**Files:** `app/services/arcadedb_graph.py` (line ~858), `app/api/v1/retrieval.py` (lines ~449, ~523)
+
+The API expects `chunk_id`, `document_id`, `artifact_id`, `modality`, and chunk text in `hit.properties`, but the ArcadeDB query only projects entity fields plus distance/RID. The ArcadeDB manual says `expand(vectorNeighbors(...))` returns all document properties; the current SELECT projection throws those away.
+
+**What needs to be done:** Add `chunk_id`, `document_id`, `artifact_id`, `modality`, `text`, `chunk_text` to the vector_search SELECT projection, or revert to `SELECT *` for TextChunk/ImageChunk vector searches specifically.
+
+---
+
+### 37. Fix ontology/evidence traversal edge direction and identifier mismatch
+
+**Status:** Not started. **Severity:** Critical.
+**Files:** `app/services/arcadedb_graph.py` (line ~730, ~1453), `app/workers/pipeline.py` (line ~2742), `app/api/v1/retrieval.py` (lines ~314, ~326), `app/services/query_profiles.py` (line ~659), `app/services/dossier_service.py` (line ~352)
+
+EXTRACTED_FROM edges are written entity->chunk, but `get_ontology_linked_chunks` traverses `in('EXTRACTED_FROM')` which goes the wrong direction. Retrieval also passes `str(seed.chunk_id)` into `get_ontology_linked_chunks`, but the helper uses `FROM {node_id}` which expects an ArcadeDB RID, not a UUID string.
+
+**What needs to be done:** (a) Fix traversal direction to `out('EXTRACTED_FROM')` or reverse the edge convention. (b) Fix the caller to pass ArcadeDB RIDs (look up chunk RID from chunk_id first) instead of UUID strings.
+
+---
+
+### 38. Fix alias resolution property name inconsistency
+
+**Status:** Not started. **Severity:** High.
+**Files:** `app/services/arcadedb_schema.py` (line ~60), `app/services/arcadedb_graph.py` (lines ~786, ~813, ~1603), `app/services/query_profiles.py` (line ~519), `app/services/dossier_service.py` (line ~166), `app/services/canonicalization.py` (line ~129)
+
+Alias schema/creation uses `alias_name`, but lookup queries use `WHERE alias = :alias`. The optional `entity_type` filter is also applied on the Alias vertex query itself (not the linked entity). This breaks root resolution and canonicalization.
+
+**What needs to be done:** Standardize on one property name (`alias_name` per schema) in all queries. Move `entity_type` filter to the linked entity (via the HAS_ALIAS edge traversal), not the Alias vertex.
+
+---
+
+### 39. Align docling-graph wrapper with canonical template/pipeline API
+
+**Status:** Not started. **Severity:** High.
+**Files:** `docker/docling-graph/app/main.py` (lines ~56, ~93), `docker/docling-graph/app/template_builder.py` (lines ~101, ~218)
+
+The library expects a singular `PipelineConfig.template`; this service builds many templates and passes only the first one. The generated models also use `graph_id_fields` but not the documented `is_entity=True`/`edge()` pattern. This is a real misalignment with docling-graph's canonical API surface.
+
+**What needs to be done:** Study the canonical docling-graph template API, restructure template_builder to produce a single template conforming to the `is_entity=True`/`edge()` pattern, and pass it correctly to `PipelineConfig.template`.
+
+---
+
+### 40. Wire retrieval `filters` (classification, document_id, modality constraints)
+
+**Status:** Not started. **Severity:** High.
+**Files:** `app/schemas/retrieval.py` (lines ~37, ~64), `app/api/v1/retrieval.py`
+
+`body.filters` is part of the public API schema but is silently ignored — callers can request classification/document/modality constraints and get unfiltered results with no warning.
+
+**What needs to be done:** Read `body.filters` in the retrieval handlers and apply classification, document_ids, and modalities constraints to the ArcadeDB queries (WHERE clause additions or post-filter).
+
+---
+
+### 41. Fix document canonicalization scope
+
+**Status:** Not started. **Severity:** Medium.
+**Files:** `app/services/canonicalization.py` (line ~68), `app/services/arcadedb_graph.py` (line ~1582)
+
+The code claims to find entities linked to a document, but does `WHERE name LUCENE :query` using the document ID string instead of traversing Document->chunk->entity edges. This makes the canonicalization pass logically disconnected from actual document/entity linkage.
+
+**What needs to be done:** Replace the LUCENE search with a graph traversal: `SELECT FROM (TRAVERSE out('CONTAINS_TEXT').in('EXTRACTED_FROM') FROM (SELECT FROM Document WHERE document_id = :doc_id))`.
+
+---
+
+### 42. Fix orphan cleanup system field (@cat vs @class)
+
+**Status:** Not started. **Severity:** Medium.
+**Files:** `app/services/arcadedb_graph.py` (lines ~1107, ~1527)
+
+The ArcadeDB manual defines `@class` as the type name and `@cat` as the type category. The orphan cleanup query filters `@cat NOT IN ['Document', 'TextChunk', ...]` which targets the wrong field.
+
+**What needs to be done:** Change `@cat` to `@class` in the orphan cleanup WHERE clause.
+
+---
+
+### 43. Add $distance projection to community-report vector search
+
+**Status:** Not started. **Severity:** Medium.
+**Files:** `app/services/arcadedb_graph.py` (line ~1035), `app/api/v1/retrieval.py` (line ~993)
+
+The community-report vector search query does not project `$distance`, but global retrieval assumes `score` exists. Synthesis metadata collapses to `0.0`.
+
+**What needs to be done:** Add `$distance` to the SELECT projection in `search_community_reports_by_vector`, and map it to a `score` key in the returned dict.
+
+---
+
+### 44. Fix stale test harness for docling-graph integration tests
+
+**Status:** Not started. **Severity:** Medium.
+**Files:** `docker/docling-graph/tests/test_pipeline_integration.py` (line ~43), `tests/conftest.py` (line ~212)
+
+The test patches `_templates` which no longer exists (moved to `app.state`). The shared conftest globally stubs GraphStore, so passing backend/query-profile tests do not validate concrete ArcadeDB behavior.
+
+**What needs to be done:** (a) Update `test_pipeline_integration.py` to patch `app.state.templates` instead of the deleted module-level global. (b) Consider adding a separate integration test marker that uses the real ArcadeDBGraphStore (not the mock) for critical path validation.
+
+---
+
+## Verbatim Code Analysis and Review (2026-04-05)
+
+The following is the complete standalone review for reference when addressing the above items.
+
+> Standalone review of the current implementation only; no base-branch comparison.
+>
+> **Findings**
+>
+> 1. Critical: the "clone/update upstream repos on every build" contract is not actually satisfied for Docling or Docling-Graph, and it is not part of `docker compose build` itself. [manage.sh](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/manage.sh#L123), [manage.sh](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/manage.sh#L174), [docker-compose.yml](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker-compose.yml#L111), [docker-compose.yml](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker-compose.yml#L143), [docker/arcadedb/Dockerfile](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/arcadedb/Dockerfile#L6), [docker/docling/Dockerfile](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling/Dockerfile#L102), [docker/docling-graph/Dockerfile](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling-graph/Dockerfile#L83), [docker/docling/requirements.txt](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling/requirements.txt#L1), [docker/docling-graph/requirements.txt](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling-graph/requirements.txt#L5). Only ArcadeDB consumes a cloned `repo/`; Docling and Docling-Graph install released packages. A plain `docker compose build` clones nothing, and even `manage.sh` continues on `git pull` failure with only a warning at [manage.sh](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/manage.sh#L115). This also conflicts with the repo's stated verification/design contract in [VERIFICATION_CHECKLIST.md](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/VERIFICATION_CHECKLIST.md#L236) and [2026-04-04-arcadedb-migration-design.md](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docs/superpowers/specs/2026-04-04-arcadedb-migration-design.md#L395).
+>
+> 2. Critical: `vector_search()` drops the chunk metadata that retrieval depends on. [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L858), [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L69), [app/api/v1/retrieval.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/api/v1/retrieval.py#L449), [app/api/v1/retrieval.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/api/v1/retrieval.py#L523). The API expects `chunk_id`, `document_id`, `artifact_id`, `modality`, and chunk text in `hit.properties`, but the ArcadeDB query only projects entity fields plus distance/RID. The ArcadeDB manual says `expand(vectorNeighbors(...))` returns all document properties; the current query throws those away.
+>
+> 3. Critical: ontology/evidence traversal is broken by both edge direction and identifier mismatch. EXTRACTED_FROM edges are written entity -> chunk in [app/workers/pipeline.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/workers/pipeline.py#L2742) and [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L1453), but lookup traverses `in('EXTRACTED_FROM')` in [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L730). Retrieval also passes `str(seed.chunk_id)` into that helper in [app/api/v1/retrieval.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/api/v1/retrieval.py#L314) and [app/api/v1/retrieval.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/api/v1/retrieval.py#L326), but the helper interpolates directly into `FROM {node_id}`, which is RID-oriented SQL. Impact: ontology expansion and evidence attachment are likely empty or reversed in [app/services/query_profiles.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/query_profiles.py#L659) and [app/services/dossier_service.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/dossier_service.py#L352).
+>
+> 4. High: alias resolution is internally inconsistent and likely nonfunctional against ArcadeDB. Alias schema/creation use `alias_name` in [app/services/arcadedb_schema.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_schema.py#L60) and [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L786), but lookup queries `WHERE alias = :alias` in [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L813) and [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L1603). The optional `entity_type` filter is also applied on the `Alias` vertex query itself. That directly affects root resolution in [app/services/query_profiles.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/query_profiles.py#L519), [app/services/dossier_service.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/dossier_service.py#L166), and canonicalization in [app/services/canonicalization.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/canonicalization.py#L129).
+>
+> 5. High: the docling-graph wrapper is not following canonical docling-graph template usage. [docker/docling-graph/app/main.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling-graph/app/main.py#L56), [docker/docling-graph/app/main.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling-graph/app/main.py#L93), [docker/docling-graph/app/template_builder.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling-graph/app/template_builder.py#L101), [docker/docling-graph/app/template_builder.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling-graph/app/template_builder.py#L218), [config.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/.venv/lib/python3.12/site-packages/docling_graph/config.py#L113). The library expects a singular `PipelineConfig.template`; this service builds many templates and passes only the first one. The generated models also use `graph_id_fields` but not the documented `is_entity=True`/`edge()` pattern. That is a real misalignment with docling-graph's canonical API surface, not just a style difference.
+>
+> 6. High: retrieval `filters` are still public API but are silently ignored. [app/schemas/retrieval.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/schemas/retrieval.py#L64), [app/schemas/retrieval.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/schemas/retrieval.py#L37). `app/api/v1/retrieval.py` does not read `body.filters` anywhere, so callers can request classification/document/modality constraints and get unfiltered results with no warning.
+>
+> 7. Medium: document canonicalization is not actually document-scoped. [app/services/canonicalization.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/canonicalization.py#L68), [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L1582). The code claims it finds entities linked to a document, but it really does `WHERE name LUCENE :query` using the document ID string. That makes the canonicalization pass logically disconnected from document/chunk/entity linkage.
+>
+> 8. Medium: orphan cleanup likely uses the wrong ArcadeDB system field. [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L1107), [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L1527). The manual defines `@class` as the type name and `@cat` as the type category, so filtering `@cat NOT IN ['Document', 'TextChunk', 'ImageChunk', 'Alias']` is almost certainly targeting the wrong field.
+>
+> 9. Medium: community-report vector search loses similarity scores. [app/services/arcadedb_graph.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/services/arcadedb_graph.py#L1035), [app/api/v1/retrieval.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/app/api/v1/retrieval.py#L993). The search query does not project distance/score, but global retrieval assumes `score` exists, so synthesis metadata collapses to `0.0`.
+>
+> 10. Medium: the highest-risk integration points are not currently verified. GraphStore is globally stubbed in [tests/conftest.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/tests/conftest.py#L212), so passing backend/query-profile tests do not validate the concrete ArcadeDB alias/chunk/vector behavior. The docling-graph integration suite currently fails because it still patches `_templates` at [docker/docling-graph/tests/test_pipeline_integration.py](/home/josh/development/EIP-MMDPP/.worktrees/arcadedb/docker/docling-graph/tests/test_pipeline_integration.py#L43), which no longer exists.
+>
+> **Verification**
+> - Backend suites passed: `test_arcadedb_graph`, `test_query_coverage`, `test_community_tasks`, `test_startup_bootstrap`, plus `test_query_profiles` and `test_query_profiles_api`.
+> - Those passing suites are not strong evidence for the concrete backend behavior because the shared fixture replaces GraphStore methods with mocks.
+> - `docker/docling-graph` tests partly pass, but `tests/test_pipeline_integration.py` currently errors at setup because the test harness is stale relative to `app.main`.
+>
+> **Sources**
+> - [ArcadeDB Manual.pdf](/home/josh/development/EIP-MMDPP/ArcadeDB%20Manual.pdf)
+> - [IBM/docling-graph README](https://raw.githubusercontent.com/IBM/docling-graph/main/README.md)
+> - [docling-project/docling README](https://raw.githubusercontent.com/docling-project/docling/main/README.md)
+> - [ArcadeData/arcadedb repo](https://github.com/ArcadeData/arcadedb)
+
+---
+
 ## Completed During Migration (For Reference)
 
 These items were identified during review but fixed before merging:
