@@ -115,6 +115,8 @@ def _map_elements_to_chunks(
             meta["heading_level"] = elem["heading_level"]
         if elem.get("section_path"):
             meta["section_path"] = elem["section_path"]
+        if elem.get("self_ref"):
+            meta["self_ref"] = elem["self_ref"]
 
         chunk = ExtractedChunk(
             chunk_text=elem.get("content_text", ""),

@@ -327,6 +327,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                         element_order=order_counter,
                         heading_level=heading_level,
                         section_path=section_path,
+                        self_ref=getattr(item, 'self_ref', None),
                     )
                 )
                 order_counter += 1
@@ -344,6 +345,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                     element_uid=uid,
                     element_order=order_counter,
                     section_path=section_path,
+                    self_ref=getattr(item, 'self_ref', None),
                 )
             )
             order_counter += 1
@@ -377,6 +379,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                     element_uid=uid,
                     element_order=order_counter,
                     section_path=section_path,
+                    self_ref=getattr(item, 'self_ref', None),
                 )
             )
             order_counter += 1
@@ -395,6 +398,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                         element_uid=uid,
                         element_order=order_counter,
                         section_path=section_path,
+                        self_ref=getattr(item, 'self_ref', None),
                     )
                 )
                 order_counter += 1
@@ -412,6 +416,7 @@ def _extract_elements(doc) -> list[ConvertedElement]:
                         element_uid=uid,
                         element_order=order_counter,
                         section_path=section_path,
+                        self_ref=getattr(item, 'self_ref', None),
                     )
                 )
                 order_counter += 1

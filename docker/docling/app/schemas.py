@@ -20,6 +20,7 @@ class ConvertedElement(BaseModel):
     element_order: int | None = None  # sequential position in document
     heading_level: int | None = None  # 1-6 for headings
     section_path: str | None = None  # accumulated heading path
+    self_ref: str | None = None  # docling item self_ref (e.g. #/texts/0)
 
 
 class ConvertResponse(BaseModel):

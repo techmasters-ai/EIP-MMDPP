@@ -925,7 +925,23 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 )
             if getattr(result, "document_json", None):
                 import json as _json
-                _raw_json = _json.dumps(result.document_json, ensure_ascii=False, default=str)
+                doc_dict = result.document_json
+
+                # Build identity map: self_ref -> element_uid
+                identity_map: dict[str, str] = {}
+                for idx, chunk in enumerate(result.elements):
+                    self_ref = (chunk.metadata or {}).get("self_ref")
+                    if self_ref:
+                        identity_map[self_ref] = element_uids[idx]
+
+                doc_dict["_enrichments"] = {
+                    "version": 0,
+                    "identity_map": identity_map,
+                    "translations": {},
+                    "context": {},
+                }
+
+                _raw_json = _json.dumps(doc_dict, ensure_ascii=False, default=str)
                 upload_bytes_sync(
                     _normalize_text(_raw_json).encode("utf-8"),
                     settings.minio_bucket_derived,
