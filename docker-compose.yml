@@ -331,6 +331,8 @@ services:
     depends_on:
       api:
         condition: service_started
+      arcadedb:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -364,6 +366,8 @@ services:
         condition: service_started
       arcadedb:
         condition: service_healthy
+      docling-graph:
+        condition: service_started
     env_file:
       - .env
     environment:

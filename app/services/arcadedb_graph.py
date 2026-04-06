@@ -529,8 +529,10 @@ class ArcadeDBGraphStore:
     async def _create_provenance_edge(
         self, node_rid: str, provenance: ProvenanceMetadata,
     ) -> None:
+        # HAS_PROVENANCE links entities to their source Document.
+        # Distinct from EXTRACTED_FROM which links entities to specific chunks.
         sql = (
-            f"CREATE EDGE EXTRACTED_FROM FROM {node_rid} "
+            f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET page_numbers = :page_numbers, created_at = sysdate()"
         )
@@ -562,7 +564,7 @@ class ArcadeDBGraphStore:
         node_rids: list[str],
         provenance: ProvenanceMetadata,
     ) -> None:
-        """Create EXTRACTED_FROM edges from multiple nodes to a Document in one call."""
+        """Create HAS_PROVENANCE edges from multiple nodes to a Document in one call."""
         targets = [rid for rid in node_rids if rid]
         if not targets:
             return
@@ -573,7 +575,7 @@ class ArcadeDBGraphStore:
         }
         for rid in targets:
             statements.append(
-                f"CREATE EDGE EXTRACTED_FROM FROM {rid} "
+                f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET page_numbers = :page_numbers, created_at = sysdate()"
             )
@@ -1388,7 +1390,7 @@ class ArcadeDBGraphStore:
         self, node_rid: str, provenance: ProvenanceMetadata,
     ) -> None:
         sql = (
-            f"CREATE EDGE EXTRACTED_FROM FROM {node_rid} "
+            f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
             "SET page_numbers = :page_numbers, created_at = sysdate()"
         )
@@ -1420,7 +1422,7 @@ class ArcadeDBGraphStore:
         node_rids: list[str],
         provenance: ProvenanceMetadata,
     ) -> None:
-        """Create EXTRACTED_FROM edges for a batch of nodes in one sqlscript call."""
+        """Create HAS_PROVENANCE edges for a batch of nodes in one sqlscript call."""
         targets = [rid for rid in node_rids if rid]
         if not targets:
             return
@@ -1431,7 +1433,7 @@ class ArcadeDBGraphStore:
         }
         for rid in targets:
             statements.append(
-                f"CREATE EDGE EXTRACTED_FROM FROM {rid} "
+                f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
                 f"SET page_numbers = :page_numbers, created_at = sysdate()"
             )

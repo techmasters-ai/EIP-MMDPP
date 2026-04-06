@@ -440,7 +440,7 @@ def start_ingest_pipeline(document_id: str) -> str:
             ),
             # Pictures needs the summary from metadata, so it runs after both complete.
             derive_picture_descriptions.si(document_id, run_id),
-        ),
+        ).on_error(errback),
         chord(
             group(
                 derive_text_chunks_and_embeddings.si(document_id, run_id),
@@ -2152,7 +2152,8 @@ def _build_entity_mentions(
     seen: set[tuple[str, str, str]] = set()
 
     for elem in elements:
-        content = getattr(elem, "content_text", None) or ""
+        # Prefer translated_text (from Stage 2) over original content_text
+        content = getattr(elem, "translated_text", None) or getattr(elem, "content_text", None) or ""
         if not content:
             continue
         content_lower: str | None = None  # lazily computed
@@ -2230,47 +2231,58 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 db.commit()
             return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
 
-        # Load the persisted DoclingDocument JSON from MinIO (structured
-        # artifact with layout, tables, element provenance intact).
+        # Build enriched text from the CURRENT state of DocumentElement rows.
+        # This includes: translated_text (from Stage 2), updated content_text
+        # with picture descriptions (from Stage 4). The original
+        # docling_document.json from Stage 1 is stale — it has neither
+        # translations nor picture descriptions.
         import json as _json_mod
+        enriched_text = "\n\n".join(
+            (e.translated_text or e.content_text)
+            for e in elements
+            if (e.translated_text or e.content_text)
+        )
+
+        # Prepend document metadata (summary, classification) for context
+        from sqlalchemy import text as sa_text
+        meta_row = db.execute(
+            sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
+            {"doc_id": document_id},
+        ).first()
+        if meta_row and meta_row[0]:
+            meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
+            doc_summary = meta.get("document_summary", "")
+            doc_class = meta.get("classification", "")
+            if doc_summary:
+                enriched_text = f"[Document Summary]: {doc_summary}\n[Classification]: {doc_class}\n\n{enriched_text}"
+
+        if not enriched_text.strip():
+            logger.info("derive_ontology_graph: no enriched text for %s", document_id)
+            if run_id:
+                _update_stage_run(db, run_id, "derive_ontology_graph", "COMPLETE", attempt=self.request.retries + 1, metrics={"skipped": True})
+                db.commit()
+            return {"stage": "derive_ontology_graph", "status": "ok", "nodes": 0, "edges": 0}
+
+        # Try loading the Docling JSON for structural context; if available
+        # the service can use it for layout-aware extraction. If not, it
+        # falls back to text-only extraction.
         from app.services.storage import download_bytes_sync
         docling_document_json: dict | None = None
-        _minio_key = f"artifacts/{document_id}/docling_document.json"
         try:
-            _raw = download_bytes_sync(settings.minio_bucket_derived, _minio_key)
+            _raw = download_bytes_sync(
+                settings.minio_bucket_derived,
+                f"artifacts/{document_id}/docling_document.json",
+            )
             docling_document_json = _json_mod.loads(_raw)
-            logger.info("derive_ontology_graph: loaded DoclingDocument JSON for %s", document_id)
-        except Exception as _dl_err:
-            logger.warning(
-                "derive_ontology_graph: DoclingDocument JSON not available for %s (%s), "
-                "falling back to reconstructed text",
-                document_id, _dl_err,
-            )
+        except Exception:
+            pass
 
-        # Fallback: reconstruct plain text if structured artifact is missing
-        if docling_document_json is None:
-            full_text = "\n\n".join(
-                (e.translated_text or e.content_text)
-                for e in elements
-                if (e.translated_text or e.content_text)
-            )
-            from sqlalchemy import text as sa_text
-            meta_row = db.execute(
-                sa_text("SELECT document_metadata FROM ingest.documents WHERE id = cast(:doc_id AS uuid)"),
-                {"doc_id": document_id},
-            ).first()
-            if meta_row and meta_row[0]:
-                meta = meta_row[0] if isinstance(meta_row[0], dict) else _json_mod.loads(meta_row[0])
-                doc_summary = meta.get("document_summary", "")
-                doc_class = meta.get("classification", "")
-                if doc_summary:
-                    full_text = f"[Document Summary]: {doc_summary}\n[Classification]: {doc_class}\n\n{full_text}"
-            # Wrap as a minimal DoclingDocument-shaped dict so the client
-            # can send it in the same field and the service can handle it.
-            docling_document_json = {
-                "_fallback_text": True,
-                "text": full_text,
-            }
+        # Always include the enriched text so the service has the most
+        # up-to-date content regardless of the JSON availability.
+        if docling_document_json is not None:
+            docling_document_json["_enriched_text"] = enriched_text
+        else:
+            docling_document_json = {"_enriched_text": enriched_text}
 
         # ---- Full extraction via Docling-Graph service ----
         from app.services.docling_graph_service import extract_graph_all
@@ -2312,6 +2324,16 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         from app.services.graph_store import NodeRecord, RelationshipRecord, ProvenanceMetadata
         graph_store = get_graph_store()
         graph_store.ensure_ready_sync()
+
+        # Ensure Document vertex exists BEFORE creating provenance edges.
+        # Stage 7 (derive_structure_links) also upserts it with richer
+        # metadata, but we need the vertex to exist now so HAS_PROVENANCE
+        # edges can target it.
+        graph_store.upsert_node_sync(NodeRecord(
+            entity_type="Document",
+            identity_fields={"document_id": document_id},
+            name=document_id,
+        ))
         nodes_rejected = 0
         edges_rejected = 0
 
@@ -2753,9 +2775,12 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             (n, t) for n, t in all_extracted_entities if n not in mentioned_entities
         ]
         if entities_needing_fallback or not mentioned_entities:
+            # Include BOTH text and image chunks in the fallback artifact map
             artifact_chunk_map: dict[str, list[str]] = {}
             for tc in text_chunks:
                 artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
+            for ic in image_chunks:
+                artifact_chunk_map.setdefault(str(ic.artifact_id), []).append(str(ic.id))
 
             artifacts_with_entities = db.execute(
                 select(Artifact).where(
