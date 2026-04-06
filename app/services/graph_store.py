@@ -330,6 +330,23 @@ class GraphStore(Protocol):
         """Update embedding on a vertex looked up by chunk_id."""
         ...
 
+    async def graph_vector_search(
+        self,
+        root_id: str,
+        query_vector: list[float],
+        embedding_property: str = "text_embedding",
+        traversal: str = "out('EXTRACTED_FROM')",
+        similarity_threshold: float = 0.7,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Graph traversal filtered by vector similarity (ArcadeDB §4.13.6).
+
+        Traverses from *root_id* via *traversal*, then filters results by
+        ``vectorCosineSimilarity`` on the target's embedding property.
+        Returns only records above *similarity_threshold*, ranked by similarity.
+        """
+        ...
+
     async def cross_model_search(
         self,
         text_embedding: list[float],

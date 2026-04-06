@@ -40,27 +40,16 @@
 - LLM mode produces more complete EXTRACTED_FROM edges
 - Latency is bounded via batching
 
-**#28. Use native vectorRRFScore / vectorHybridScore for multi-vector fusion**
+**#28. Native ArcadeDB vector functions for cross-model queries** ✅ DONE
 
-**Status:** Not started.
-**Files:** `app/api/v1/retrieval.py` (`_multi_modal_pipeline`, `compute_fusion_score`), `app/services/arcadedb_graph.py` (`cross_model_search`)
+**Status:** Done (2026-04-06). After reviewing the ArcadeDB manual, `vectorRRFScore`/`vectorHybridScore` are not applicable to cross-type fusion (TextChunk + ImageChunk are different vertex types). Instead implemented:
+- `efSearch` parameter on all `vectorNeighbors` calls (§4.14.7) — configurable recall vs latency via `ARCADEDB_VECTOR_EF_SEARCH` env var (0 = adaptive default)
+- New `graph_vector_search()` method using `vectorCosineSimilarity()` in MATCH queries (§4.13.6) — graph traversal + vector similarity filter in a single ArcadeDB query
+- Python-side `compute_fusion_score()` retained for multi-signal scoring (doc-structure + ontology + military ID bonus) which is application-level logic, not vector-level fusion
 
-**Current state:** Multi-vector fusion (text + image) is done Python-side via custom `compute_fusion_score()`. ArcadeDB provides built-in `vectorRRFScore()`, `vectorHybridScore()`, `vectorMultiScore()`, and `vectorNormalizeScores()` SQL functions that do this server-side.
+**#29. MATCH syntax for graph traversal queries** ✅ DONE
 
-**What needs to be done:** Replace Python-side fusion with a single ArcadeDB SQL query using `vectorRRFScore()` or `vectorHybridScore()`. Eliminates transferring two separate result sets and moves computation to the DB engine.
-
-**Reference:** ArcadeDB Manual Section 6.3.1 (Overview Functions table)
-
-**#29. Use MATCH syntax for graph traversal queries**
-
-**Status:** Not started.
-**Files:** `app/services/arcadedb_graph.py` (`get_neighborhood`, `get_neighborhood_graph`)
-
-**Current state:** Neighborhood queries use `SELECT expand(both(){1,N}) FROM #rid`. ArcadeDB manual recommends MATCH for graph traversals: "If you are looking for the most efficient way to traverse a graph, we suggest using MATCH instead."
-
-**What needs to be done:** Rewrite to `MATCH {class: V, as: root, where: (@rid = :rid)}.both(){1,:depth} RETURN ...` for cleaner pattern matching and better query plan optimization.
-
-**Reference:** ArcadeDB Manual Section 6.3.1
+**Status:** Done (2026-04-06). `get_neighborhood` and `get_neighborhood_graph` rewritten to use MATCH pattern syntax per §6.3.1. Includes edge type filtering and depth control via MATCH `while` clause.
 
 ### Gaps/Bugs
 

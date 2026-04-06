@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     arcadedb_database: str = "eip_knowledge_graph"
     arcadedb_ready_cache_seconds: float = 60.0
     arcadedb_slow_query_threshold_seconds: float = 1.0
+    # efSearch controls vector search recall vs latency (ArcadeDB Manual §4.14.7).
+    # Higher = more accurate, slower. 0 = use ArcadeDB's adaptive default.
+    # Set explicitly only for consistently high recall or strict latency.
+    arcadedb_vector_ef_search: int = 0
 
     # Community detection
     community_detection_enabled: bool = True

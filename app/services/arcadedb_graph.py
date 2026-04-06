@@ -1007,10 +1007,15 @@ class ArcadeDBGraphStore:
         # Use SELECT * so chunk metadata (chunk_id, document_id, artifact_id,
         # modality, text) flows through to retrieval callers. The embedding
         # vector itself is excluded by _to_entity()'s property filter.
+        # efSearch (4th param) controls recall vs latency tradeoff per §4.14.7.
+        # When 0 (default), ArcadeDB uses its adaptive 2-pass strategy.
+        from app.config import get_settings as _gs
+        ef = _gs().arcadedb_vector_ef_search
+        ef_arg = f", {ef}" if ef > 0 else ""
         sql = (
             "SELECT *, $distance, @rid AS node_id "
             f"FROM (SELECT expand(vectorNeighbors('{index_name}', "
-            ":query_vector, :top_k)))"
+            f":query_vector, :top_k{ef_arg})))"
         )
         params: dict[str, Any] = {
             "query_vector": query_vector,
@@ -1100,6 +1105,43 @@ class ArcadeDBGraphStore:
                 break
         return result
 
+    async def graph_vector_search(
+        self,
+        root_id: str,
+        query_vector: list[float],
+        embedding_property: str = "text_embedding",
+        traversal: str = "out('EXTRACTED_FROM')",
+        similarity_threshold: float = 0.7,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Cross-model query: graph traversal filtered by vector similarity.
+
+        Implements the pattern from ArcadeDB Manual §4.13.6: use MATCH to
+        traverse graph edges, then filter results by ``vectorCosineSimilarity``
+        on their embeddings. This finds graph-connected records that are also
+        semantically similar to a query vector — in a single ArcadeDB query.
+
+        Example: from an entity, traverse EXTRACTED_FROM to chunks, return
+        only chunks whose embedding is similar to the query.
+        """
+        sql = (
+            f"SELECT FROM ("
+            f"  MATCH {{class: V, as: root, where: (@rid = {root_id})}}"
+            f"  .{traversal} {{as: target}}"
+            f"  RETURN target"
+            f") WHERE vectorCosineSimilarity({embedding_property}, :query_vector) > :threshold "
+            f"ORDER BY vectorCosineSimilarity({embedding_property}, :query_vector) DESC "
+            f"LIMIT :limit"
+        )
+        return await self._client.query(
+            self._database, "sql", sql,
+            {
+                "query_vector": query_vector,
+                "threshold": similarity_threshold,
+                "limit": limit,
+            },
+        )
+
     # ==================================================================
     # Community operations
     # ==================================================================
@@ -1184,11 +1226,14 @@ class ArcadeDBGraphStore:
         top_k: int = 10,
     ) -> list[dict]:
         """ANN search over CommunityReport.report_embedding."""
+        from app.config import get_settings as _gs
+        ef = _gs().arcadedb_vector_ef_search
+        ef_arg = f", {ef}" if ef > 0 else ""
         sql = (
             "SELECT community_id, title, summary, member_count, "
             "generated_at, model_name, $distance, @rid AS report_rid "
             "FROM (SELECT expand(vectorNeighbors('CommunityReport[report_embedding]', "
-            ":query_vector, :top_k)))"
+            f":query_vector, :top_k{ef_arg})))"
         )
         rows = await self._client.query(
             self._database, "sql", sql,
