@@ -75,7 +75,8 @@ async def test_full_ingest_and_retrieval_pipeline(async_client):
     assert query_resp.status_code == 200
     query_data = query_resp.json()
     assert "results" in query_data
-    assert query_data["mode"] == "text_basic"
+    assert query_data["strategy"] == "basic"
+    assert query_data["modality_filter"] == "all"
     assert isinstance(query_data["results"], list)
 
     # 5. Submit feedback (always valid even if no results)

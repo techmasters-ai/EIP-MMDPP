@@ -61,17 +61,22 @@ def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
     distance = row.get("$distance", row.get("distance"))
     lucene_score = row.get("$score")
 
+    # Map native ArcadeDB scores with type tracking
+    score: float | None = None
+    score_type: str | None = None
     if distance is not None:
-        extraction_confidence = 1.0 - float(distance)
+        score = 1.0 - float(distance)
+        score_type = "vector"
     elif lucene_score is not None:
-        extraction_confidence = float(lucene_score)
-    else:
-        extraction_confidence = row.get("extraction_confidence")
+        score = float(lucene_score)
+        score_type = "fulltext"
+
+    # extraction_confidence: prefer native score, fall back to ingestion confidence
+    extraction_confidence = score if score is not None else row.get("extraction_confidence")
 
     props = {k: v for k, v in row.items() if k not in (
         "@rid", "name", "entity_type", "canonical_name", "extraction_confidence",
         "@type", "@cat", "@class", "$distance", "distance", "$score",
-        # Exclude embedding vectors — they're large and not needed in query results
         "text_embedding", "image_embedding", "report_embedding",
     )}
     return GraphEntityResult(
@@ -80,6 +85,8 @@ def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
         entity_type=row.get("entity_type", ""),
         canonical_name=row.get("canonical_name"),
         extraction_confidence=extraction_confidence,
+        score=score,
+        score_type=score_type,
         properties=props,
     )
 
@@ -884,6 +891,73 @@ class ArcadeDBGraphStore:
 
         return {"nodes": nodes, "edges": edges}
 
+    async def get_directed_traversal(
+        self,
+        node_id: str,
+        steps: list[dict],
+        target_entity_types: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[GraphEntityResult]:
+        """Execute a multi-step directed MATCH traversal.
+
+        Generates native ArcadeDB MATCH from query-profile traversal steps
+        instead of collapsing them into an undirected .both() walk.
+        """
+        rid = await self._resolve_rid(node_id)
+        if not rid:
+            return []
+
+        # Build MATCH pattern: root → step1 → step2 → ... → target
+        match_parts = [f"{{class: V, as: root, where: (@rid = {rid})}}"]
+        for i, step in enumerate(steps):
+            direction = step.get("direction", "out")
+            rel_types = step.get("rel_types", [])
+            min_hops = step.get("min_hops", 1)
+            max_hops = step.get("max_hops", 1)
+
+            # Direction: .out() / .in() / .both()
+            dir_fn = "out" if direction == "out" else "in" if direction == "in" else "both"
+            # Rel type filter inside the traversal
+            rel_filter = ""
+            if rel_types:
+                rel_filter = "class: " + ",".join(rel_types) + ", "
+
+            match_parts.append(
+                f".{dir_fn}({{{rel_filter}while: ($depth >= {min_hops} AND $depth <= {max_hops})}}) "
+                f"{{as: step{i}}}"
+            )
+
+        # The last step alias is the target
+        last_alias = f"step{len(steps) - 1}"
+
+        # Type filter on the final target
+        type_filter = ""
+        if target_entity_types:
+            type_list = ", ".join(f"'{t}'" for t in target_entity_types)
+            type_filter = f", where: (entity_type IN [{type_list}])"
+
+        # Replace the last step to include type filter
+        if type_filter and match_parts:
+            last_part = match_parts[-1]
+            # Insert where clause into the last alias block
+            last_part = last_part.replace(
+                f"{{as: {last_alias}}}",
+                f"{{as: {last_alias}{type_filter}}}",
+            )
+            match_parts[-1] = last_part
+
+        sql = (
+            f"MATCH {''.join(match_parts)} "
+            f"RETURN {last_alias}.name AS name, "
+            f"{last_alias}.entity_type AS entity_type, "
+            f"{last_alias}.canonical_name AS canonical_name, "
+            f"{last_alias}.extraction_confidence AS extraction_confidence, "
+            f"{last_alias}.@rid AS node_id "
+            f"LIMIT {limit}"
+        )
+        rows = await self._client.query(self._database, "sql", sql)
+        return [_to_entity(r) for r in rows]
+
     async def get_ontology_linked_chunks(
         self,
         node_id: str,
@@ -1044,6 +1118,7 @@ class ArcadeDBGraphStore:
         query_vector: list[float],
         top_k: int = 10,
         score_threshold: float | None = None,
+        document_ids: list[str] | None = None,
     ) -> list[GraphEntityResult]:
         """ANN search over node embeddings via vectorNeighbors.
 
@@ -1059,20 +1134,27 @@ class ArcadeDBGraphStore:
             Maximum number of results.
         score_threshold:
             Optional minimum similarity score filter.
+        document_ids:
+            Optional list of document UUIDs to restrict results to. Pushed into
+            the ArcadeDB WHERE clause so the vector index budget isn't wasted on
+            documents that will be filtered out.
         """
         index_name = f"{vertex_type}[{embedding_property}]"
-        # Use SELECT * so chunk metadata (chunk_id, document_id, artifact_id,
-        # modality, text) flows through to retrieval callers. The embedding
-        # vector itself is excluded by _to_entity()'s property filter.
-        # efSearch (4th param) controls recall vs latency tradeoff per §4.14.7.
-        # When 0 (default), ArcadeDB uses its adaptive 2-pass strategy.
         from app.config import get_settings as _gs
         ef = _gs().arcadedb_vector_ef_search
         ef_arg = f", {ef}" if ef > 0 else ""
+
+        # Push document_ids filter into the outer WHERE clause (native filtering)
+        where_clause = ""
+        if document_ids:
+            doc_list = ", ".join(f"'{d}'" for d in document_ids)
+            where_clause = f" WHERE document_id IN [{doc_list}]"
+
         sql = (
-            "SELECT *, $distance, @rid AS node_id "
+            f"SELECT *, $distance, @rid AS node_id "
             f"FROM (SELECT expand(vectorNeighbors('{index_name}', "
             f":query_vector, :top_k{ef_arg})))"
+            f"{where_clause}"
         )
         params: dict[str, Any] = {
             "query_vector": query_vector,

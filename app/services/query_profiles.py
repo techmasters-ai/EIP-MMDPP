@@ -537,13 +537,29 @@ async def resolve_root_entity(
     # try co-extracted entities
     candidate = _select_best_candidate(all_matches, request.query_text)
     if candidate is None:
-        # Try direct name resolution as last resort
+        # 3. Try direct name resolution
         resolved = await graph_store.resolve_root_entity(request.query_text)
-        if resolved is None:
-            raise QueryRootNotFoundError(
-                f"No matching root entity found for '{request.query_text}'"
-            )
-        candidate = resolved
+        if resolved is not None:
+            candidate = resolved
+        else:
+            # 4. Co-extracted fallback: find entities that co-occur with
+            # a partial-match entity in the same source chunks
+            try:
+                co_extracted = await graph_store.get_co_extracted_entities(
+                    request.query_text, limit=5,
+                )
+                co_filtered = [
+                    e for e in co_extracted
+                    if not root_types or getattr(e, "entity_type", "") in root_types
+                ]
+                candidate = _select_best_candidate(co_filtered, request.query_text)
+            except Exception:
+                candidate = None
+
+            if candidate is None:
+                raise QueryRootNotFoundError(
+                    f"No matching root entity found for '{request.query_text}'"
+                )
 
     resolved = _build_entity_result(candidate)
 
@@ -559,26 +575,46 @@ async def _fetch_section_items(
     request: QueryProfileSearchRequest,
     profile: QueryProfileDefinition,
 ) -> list[GraphEntityResult]:
-    """Fetch section items using GraphStore neighborhood traversal."""
+    """Fetch section items using directed MATCH traversal from query-profile steps.
+
+    Each profile's traversal steps define direction, rel_types, and hop bounds.
+    These are compiled into a native ArcadeDB MATCH pattern instead of
+    collapsing to a single undirected neighborhood walk.
+    """
     if not resolved.node_id:
         return []
 
-    rel_types = _collect_rel_types(profile)
-    depth = _max_depth(profile)
+    # Convert profile traversal steps to the format get_directed_traversal expects
+    steps = []
+    if profile.traversal and profile.traversal.steps:
+        for step in profile.traversal.steps:
+            steps.append({
+                "direction": step.direction,
+                "rel_types": step.rel_types,
+                "min_hops": step.min_hops,
+                "max_hops": step.max_hops,
+            })
+    else:
+        # Fallback: generic undirected traversal if profile has no steps
+        rel_types = _collect_rel_types(profile)
+        depth = _max_depth(profile)
+        neighbors = await graph_store.get_neighborhood(
+            resolved.node_id,
+            depth=depth,
+            rel_types=rel_types if rel_types else None,
+        )
+        target_types = profile.target_entity_types or []
+        if target_types:
+            neighbors = [n for n in neighbors if getattr(n, "entity_type", "") in target_types]
+        neighbors = [n for n in neighbors if getattr(n, "node_id", "") != resolved.node_id]
+        return _merge_section_results(neighbors[:request.top_k])
 
-    neighbors = await graph_store.get_neighborhood(
+    neighbors = await graph_store.get_directed_traversal(
         resolved.node_id,
-        depth=depth,
-        rel_types=rel_types if rel_types else None,
+        steps=steps,
+        target_entity_types=profile.target_entity_types or None,
+        limit=request.top_k,
     )
-
-    # Filter to target entity types if specified
-    target_types = profile.target_entity_types or []
-    if target_types:
-        neighbors = [
-            n for n in neighbors
-            if getattr(n, "entity_type", "") in target_types
-        ]
 
     # Exclude the root entity itself
     neighbors = [

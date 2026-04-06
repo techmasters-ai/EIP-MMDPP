@@ -449,8 +449,11 @@ async def _text_vector_search(
     )
 
     graph_store = get_graph_store()
+    # Push document_id filter into native ArcadeDB query when present
+    doc_ids = [str(d) for d in body.filters.document_ids] if body.filters and body.filters.document_ids else None
     hits = await graph_store.vector_search(
         "TextChunk", "text_embedding", query_embedding, oversample,
+        document_ids=doc_ids,
     )
 
     # Filter by minimum score threshold

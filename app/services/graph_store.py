@@ -59,6 +59,10 @@ class GraphEntityResult:
     entity_type: str
     canonical_name: str | None = None
     extraction_confidence: float | None = None
+    # Native ArcadeDB score semantics — distinguishes vector similarity,
+    # fulltext relevance, and ingestion confidence instead of overloading one field.
+    score: float | None = None
+    score_type: str | None = None  # "vector", "fulltext", or "ingestion"
     properties: dict[str, Any] = field(default_factory=dict)
 
 
@@ -328,6 +332,21 @@ class GraphStore(Protocol):
         model_name: str | None = None,
     ) -> None:
         """Update embedding on a vertex looked up by chunk_id."""
+        ...
+
+    async def get_directed_traversal(
+        self,
+        node_id: str,
+        steps: list[dict],
+        target_entity_types: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[GraphEntityResult]:
+        """Execute a multi-step directed MATCH traversal per query-profile steps.
+
+        Each step dict has: ``direction`` ("out"/"in"), ``rel_types`` (list[str]),
+        ``min_hops`` (int), ``max_hops`` (int). Steps are chained into a single
+        MATCH pattern using the appropriate direction per step.
+        """
         ...
 
     async def get_entity_evidence_chunks(

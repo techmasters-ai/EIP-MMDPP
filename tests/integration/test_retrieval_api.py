@@ -23,7 +23,9 @@ async def test_retrieval_query_returns_200(async_client, mock_embeddings):
     assert resp.status_code == 200
     data = resp.json()
     assert "results" in data
-    assert data["mode"] == "text_basic"
+    # Response uses strategy/modality_filter (not legacy "mode")
+    assert data["strategy"] == "basic"
+    assert data["modality_filter"] == "all"
 
 
 @pytest.mark.asyncio
