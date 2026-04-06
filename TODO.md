@@ -631,7 +631,7 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ### 27. LLM-based entity mention resolution
 
-**Status:** Not started.
+**Status:** Not started. **Blocked by #45-#49** — not actionable until the worker/service contract is repaired and traversal is fixed.
 **Files:** `app/workers/pipeline.py` (`_build_entity_mentions`), new module TBD
 
 **Current state:**
@@ -783,12 +783,12 @@ The API expects `chunk_id`, `document_id`, `artifact_id`, `modality`, and chunk 
 
 ### 37. Fix ontology/evidence traversal edge direction and identifier mismatch
 
-**Status:** Not started. **Severity:** Critical.
+**Status:** Not started. **Severity:** Critical. **Superseded by #49 which has full scope.**
 **Files:** `app/services/arcadedb_graph.py` (line ~730, ~1453), `app/workers/pipeline.py` (line ~2742), `app/api/v1/retrieval.py` (lines ~314, ~326), `app/services/query_profiles.py` (line ~659), `app/services/dossier_service.py` (line ~352)
 
 EXTRACTED_FROM edges are written entity->chunk, but `get_ontology_linked_chunks` traverses `in('EXTRACTED_FROM')` which goes the wrong direction. Retrieval also passes `str(seed.chunk_id)` into `get_ontology_linked_chunks`, but the helper uses `FROM {node_id}` which expects an ArcadeDB RID, not a UUID string.
 
-**What needs to be done:** (a) Fix traversal direction to `out('EXTRACTED_FROM')` or reverse the edge convention. (b) Fix the caller to pass ArcadeDB RIDs (look up chunk RID from chunk_id first) instead of UUID strings.
+**What needs to be done:** See #49 for full scope and execution context. Fix traversal direction and identifier type across all callers.
 
 ---
 
@@ -827,12 +827,12 @@ The library expects a singular `PipelineConfig.template`; this service builds ma
 
 ### 41. Fix document canonicalization scope
 
-**Status:** Not started. **Severity:** Medium.
+**Status:** Not started. **Severity:** Medium. **Superseded by #50 which has full scope.**
 **Files:** `app/services/canonicalization.py` (line ~68), `app/services/arcadedb_graph.py` (line ~1582)
 
 The code claims to find entities linked to a document, but does `WHERE name LUCENE :query` using the document ID string instead of traversing Document->chunk->entity edges. This makes the canonicalization pass logically disconnected from actual document/entity linkage.
 
-**What needs to be done:** Replace the LUCENE search with a graph traversal: `SELECT FROM (TRAVERSE out('CONTAINS_TEXT').in('EXTRACTED_FROM') FROM (SELECT FROM Document WHERE document_id = :doc_id))`.
+**What needs to be done:** See #50 for full scope and execution context. Replace LUCENE search with graph traversal after #49 fixes traversal direction.
 
 ---
 
@@ -866,6 +866,180 @@ The community-report vector search query does not project `$distance`, but globa
 The test patches `_templates` which no longer exists (moved to `app.state`). The shared conftest globally stubs GraphStore, so passing backend/query-profile tests do not validate concrete ArcadeDB behavior.
 
 **What needs to be done:** (a) Update `test_pipeline_integration.py` to patch `app.state.templates` instead of the deleted module-level global. (b) Consider adding a separate integration test marker that uses the real ArcadeDBGraphStore (not the mock) for critical path validation.
+
+---
+
+## P0 — Graph Extraction Pipeline Repair (2026-04-06)
+
+The following items were identified by a deep review of the graph extraction
+pipeline against the current Docling-Graph service contract. They must be
+addressed in order — later items depend on earlier ones being fixed first.
+The architecture (parallel extract+chunk → wire → canonicalize) is sound;
+the issue is contract drift between the worker, the service, and downstream
+consumers.
+
+**Execution order: #45 → #46 → #47 → #48 → #49 → #50 → then #27 becomes meaningful.**
+
+### 45. Reconcile Stage 1 worker/service request+response contract
+
+**Status:** Not started. **Severity:** Critical. **Do first.**
+**Files:** `app/workers/pipeline.py` (lines ~2226, ~2257-2258), `app/services/docling_graph_service.py` (line ~172), `docker/docling-graph/app/main.py` (line ~141), `docker/docling-graph/app/schemas.py` (line ~10)
+
+**Problem:** The worker sends `text` via `extract_graph_all(full_text, document_id)`, but the Docling-Graph service now expects `docling_document_json` and returns `{graph, metadata}`, not `{entities, relationships}`. The worker reads `result.get("entities")` and `result.get("relationships")` which will be empty/missing from the new response shape. If this code path is live, successful extraction is being interpreted as zero nodes and zero edges.
+
+**What needs to be done:**
+1. Read the current Docling-Graph service `/extract-all` endpoint schema to determine what it actually accepts and returns.
+2. Update `docling_graph_service.py` client to send the correct request shape.
+3. Update `derive_ontology_graph()` to parse the actual response shape.
+4. Add an adapter/normalizer if the response structure differs from the `{nodes: [...], edges: [...]}` format the rest of the pipeline expects.
+5. Update `tests/unit/test_docling_graph_client.py` which still asserts the old text-based interface.
+
+**Why this is first:** Nothing downstream works if the extraction contract is broken. All discussion about mention precision, traversal direction, and canonicalization quality is second-order until this is fixed.
+
+---
+
+### 46. Make derive_ontology_graph() consume persisted DoclingDocument JSON
+
+**Status:** Not started. **Severity:** Critical. **Do second.**
+**Files:** `app/workers/pipeline.py` (lines ~2218-2226, ~915, ~1401)
+
+**Problem:** `prepare_document` already persists `docling_document.json` to MinIO at line ~915. Another stage downloads it at line ~1401. But `derive_ontology_graph()` ignores the persisted artifact and reconstructs plain text from normalized elements. This throws away layout, structure, table boundaries, image context, and native provenance information before the extraction service even runs.
+
+**What needs to be done:**
+1. Download the persisted `docling_document.json` from MinIO (same pattern as the stage at line ~1401).
+2. Pass it to the Docling-Graph service as `docling_document_json` instead of reconstructed `full_text`.
+3. Keep the `full_text` fallback for documents that don't have a persisted DoclingDocument (backward compat).
+4. The document summary/classification prefix can still be passed as metadata context.
+
+**Why this matters:** The structured DoclingDocument preserves element boundaries, page numbers, table structure, and image positions that the LLM can use for more accurate extraction. Plain text concatenation loses all of this.
+
+---
+
+### 47. Normalize extraction output shape before graph import
+
+**Status:** Not started. **Severity:** High. **Do third.**
+**Files:** `app/workers/pipeline.py` (lines ~2275-2343)
+
+**Problem:** The worker assumes the extraction result has `{entities: [...], relationships: [...]}` shape with specific field names (`name`, `entity_type`, `confidence`, `from_name`, `to_name`, etc.). If the Docling-Graph service returns a different shape (e.g., `{graph: {nodes: [...], edges: [...]}, metadata: {...}}`), the import loop produces zero records silently.
+
+**What needs to be done:**
+1. After fixing #45, define the actual response shape from Docling-Graph.
+2. Write a thin adapter function that normalizes the response into the `{nodes: [...], edges: [...]}` format the rest of the pipeline expects.
+3. Map any field-name differences (e.g., `confidence` vs `extraction_confidence`, `id` vs `name`).
+4. Preserve any provenance metadata (element_uid, page_number) that the service includes in its output.
+5. Unit test the adapter with sample Docling-Graph output.
+
+---
+
+### 48. Fix entity→chunk mention wiring to be element-complete
+
+**Status:** Not started. **Severity:** High. **Do fourth.**
+**Files:** `app/workers/pipeline.py` (lines ~2672-2705, ~2116-2179)
+
+**Problems (three related issues):**
+
+**(a) Image chunks excluded from mention map.** The `element_uid → chunk_id` map (line ~2672) is built only from `text_chunks` via `artifact_id`. Image chunks are wired to the document and same-page neighbors, but are not in the mention map used for EXTRACTED_FROM. So entities grounded in image/schematic elements are never linked to their image chunks.
+
+**(b) Partial mention miss is never repaired.** The fallback path (line ~2708) only fires when `mentions` is completely empty, not when it's incomplete. If lexical matching finds 2 mentions and misses 3 implicit ones, the stage keeps the 2 and drops the 3. The fallback doesn't help recall unless the primary path fails entirely.
+
+**(c) Lexical matching is the only mention grounding.** `_build_entity_mentions()` uses regex/substring only. No semantic resolution of paraphrases, abbreviations, coreferences, or metonymic references. (#27 addresses this but is not actionable until #45-#47 are stable.)
+
+**What needs to be done:**
+1. Include `image_chunks` in the `element_uid → chunk_id` map alongside text_chunks.
+2. After the primary mentions path, run the fallback for any entities that have zero mentions (not just when the whole mentions list is empty).
+3. If the Docling-Graph extraction output includes its own provenance/element mapping (determined after fixing #45), consume that directly instead of running lexical matching.
+4. Defer #27 (LLM mention resolution) until the contract is stable.
+
+---
+
+### 49. Fix EXTRACTED_FROM traversal direction and identifier type
+
+**Status:** Not started. **Severity:** Critical. **Do fifth (or alongside #37).**
+**Files:** `app/services/arcadedb_graph.py` (lines ~724-730, ~1453), `app/api/v1/retrieval.py` (lines ~314, ~326, ~696), `app/services/query_profiles.py` (line ~659), `app/services/dossier_service.py` (line ~352)
+
+**Note:** This overlaps with existing #37. Consolidating the full scope here.
+
+**Problem (two related bugs):**
+1. **Edge direction:** EXTRACTED_FROM edges are created as entity→chunk, but `get_ontology_linked_chunks` traverses `in('EXTRACTED_FROM')` from a node. If the node is a chunk, `in()` gives you entities that point TO this chunk — that's correct for "find entities extracted from this chunk." But if the node is an entity, `in()` gives you nothing (entities are the source, not the target). The callers in retrieval.py pass chunk-level seeds, so the direction may be situationally correct, but needs verification against each call site.
+2. **Identifier type:** Retrieval passes `str(seed.chunk_id)` (a UUID string like `"a1b2c3d4-..."`) into `get_ontology_linked_chunks`, but the helper does `FROM {node_id}` which expects an ArcadeDB RID like `#10:5`. A UUID string in the FROM clause will cause a SQL error or return nothing.
+
+**What needs to be done:**
+1. Audit every caller of `get_ontology_linked_chunks` to determine whether they pass RIDs or UUIDs.
+2. If callers pass UUIDs: add a RID lookup step (`get_chunk_rid_sync`) before calling the traversal helper.
+3. Verify the traversal direction is correct for each call site's intent (chunk→entities vs entity→chunks).
+4. Add a test that exercises the real traversal path (not just mocked calls).
+
+---
+
+### 50. Fix canonicalization to use graph traversal for document-entity discovery
+
+**Status:** Not started. **Severity:** Medium. **Do after traversal is fixed.**
+**Files:** `app/services/canonicalization.py` (line ~64-68), `app/services/arcadedb_graph.py` (line ~1568-1582)
+
+**Note:** This overlaps with existing #41. Consolidating the full scope here.
+
+**Problem:** `canonicalize_document_entities()` discovers "document entities" by calling `fulltext_search_sync(document_id)`, which does `WHERE name LUCENE :query` using the document ID string. This searches for entities whose *name* matches the document ID — which is nonsensical. The intended behavior is to find all entities linked to a specific document via the graph.
+
+**What needs to be done:**
+1. Replace the LUCENE search with a graph traversal: `SELECT DISTINCT in('EXTRACTED_FROM').@class, in('EXTRACTED_FROM').name FROM (SELECT expand(out('CONTAINS_TEXT')) FROM Document WHERE document_id = :doc_id)` (or equivalent).
+2. This depends on #49 being fixed first (traversal direction must be correct).
+3. Also fix the alias property name mismatch (existing #38) since canonicalization calls `search_by_alias`.
+
+---
+
+## Verbatim Graph Extraction Pipeline Review (2026-04-06)
+
+The following is the complete graph extraction review for reference when addressing items #45-#50.
+
+> **Graph Extraction Review**
+>
+> The stage ordering is sound: extract entities/relationships and chunks in parallel, wire only after both exist, then canonicalize. The implementation problem is not the DAG shape. It is that the graph extraction contract has drifted across the worker, the Docling-Graph service, and the downstream consumers.
+>
+> **Stage 1 is built against a stale Docling-Graph API.**
+> derive_ontology_graph() reconstructs full_text from DocumentElement rows and calls extract_graph_all(full_text, document_id) at pipeline.py (line 2226) and pipeline.py (line 2257). The client sends text in docling_graph_service.py (line 172), but the service now requires docling_document_json in schemas.py (line 10) and consumes that in main.py (line 141). The service also returns graph and metadata, not entities and relationships, but the worker still reads result.get("entities") and result.get("relationships") at pipeline.py (line 2258). If this code path is live, successful extraction is likely being interpreted as zero nodes and zero edges.
+>
+> **The pipeline already has the canonical structured artifact, but the graph stage ignores it.**
+> prepare_document persists docling_document.json to object storage at pipeline.py (line 915). Another stage later downloads that same JSON at pipeline.py (line 1401). derive_ontology_graph() does neither. It rebuilds plain text from normalized elements instead. That throws away layout, structure, and native provenance before the extraction service even runs.
+>
+> **The current "primary" mention path is not LLM grounding; it is lexical matching.**
+> _build_entity_mentions() uses word-boundary regex for short names and substring matching for longer names at pipeline.py (line 2116). It does not resolve paraphrase, coreference, metonymy, abbreviation expansion, or implicit references. So your #27 concern is valid, but more precisely: the implementation never attempts semantic mention grounding in the first place.
+>
+> **Partial mention miss cases are never repaired.**
+> derive_structure_links() only falls back to artifact-wide entity→chunk linking when mentions is empty, not when mentions are incomplete, at pipeline.py (line 2696) and pipeline.py (line 2708). That means if lexical matching finds 2 real mentions and misses 3 implicit ones, the stage keeps the 2 and silently drops the 3. The fallback does not help recall unless the primary path fails completely.
+>
+> **The entity→chunk wiring is text-centric, not fully element-centric.**
+> The element_uid -> chunk_id map is built only from text_chunks via artifact_id at pipeline.py (line 2672). image_chunks are wired to the document and same-page neighbors, but they are not included in the mention map used for EXTRACTED_FROM. So even if extraction identifies entities grounded in image/schematic elements, the primary wiring path does not appear to attach them to image chunks.
+>
+> **Even perfect EXTRACTED_FROM edges would not currently pay off fully, because traversal is broken downstream.**
+> The graph writer creates EXTRACTED_FROM as entity -> chunk at arcadedb_graph.py (line 1453), but lookup traverses in('EXTRACTED_FROM') in arcadedb_graph.py (line 724). Retrieval also passes chunk UUIDs into that helper at retrieval.py (line 314) and retrieval.py (line 696), while the helper interpolates directly into ArcadeDB SQL as if it were a RID. So the downstream consumers you listed are currently degraded both by missing edges and by broken traversal semantics.
+>
+> **Canonicalization is in the right place in the DAG, but the implementation is not giving the graph a reliable dedup pass.**
+> derive_canonicalization runs after wiring, which is the correct point architecturally. But canonicalize_document_entities() discovers "document entities" by calling fulltext_search_sync(document_id) at canonicalization.py (line 64), and that search is just WHERE name LUCENE :query at arcadedb_graph.py (line 1568). Alias lookup is also broken on alias vs alias_name. So the dedup stage is not operating on solid document-local provenance.
+>
+> **What I'd Tell Another Agent**
+>
+> Reconcile the Stage 1 contract first.
+> The worker, HTTP client, and service do not agree on request or response shape. Until that is fixed, all discussion about mention precision is second-order.
+>
+> Make derive_ontology_graph() consume persisted docling_document.json.
+> The canonical structured document already exists. Using reconstructed full_text is both lossy and out of sync with the actual service API.
+>
+> Normalize the extraction output shape before import.
+> The worker needs a stable adapter from Docling-Graph output to nodes/edges/provenance records. Right now it assumes an old shape.
+>
+> Reassess mention grounding only after the contract is stable.
+> At that point the real question becomes whether to keep lexical mention building, enrich it with LLM/entity-resolution logic, or consume provenance directly from Docling-Graph output if available.
+>
+> Fix traversal before measuring graph-extraction quality.
+> Otherwise better entity→chunk edges will still not show up properly in retrieval, dossier evidence, or ontology expansion.
+>
+> **Test Gaps**
+>
+> The client tests still assert the old text-based interface in test_docling_graph_client.py (line 119).
+> The docling-graph integration tests are stale and patch a removed _templates global at test_pipeline_integration.py (line 43).
+> There is no strong end-to-end test that proves: DoclingDocument JSON -> Docling-Graph extraction -> graph_json mentions -> EXTRACTED_FROM edges -> retrieval traversal all agree on the same identifiers and schema.
+>
+> My bottom-line assessment is: the architecture is defensible, but the current graph extraction process is not trustworthy until the worker/service contract is repaired. After that, #27 becomes a meaningful optimization target; before that, it is not the primary blocker.
 
 ---
 
