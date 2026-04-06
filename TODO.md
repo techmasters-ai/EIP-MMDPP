@@ -214,9 +214,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 9. Implement time-based ensure_ready caching
+### 9. Implement time-based ensure_ready caching ✅ DONE
 
-**Status:** Every graph-writing task makes an extra HTTP call at startup.
+**Status:** ✅ Done (2026-04-06). Time-based caching added to `ensure_ready`/`ensure_ready_sync` with configurable TTL via `ARCADEDB_READY_CACHE_SECONDS`; skips redundant readiness checks within the TTL window.
 **Files:** `app/services/arcadedb_graph.py` (functions `ensure_ready`, `ensure_ready_sync`)
 
 **Current state:**
@@ -240,9 +240,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ## P2 — Code Quality and Maintainability
 
-### 10. Extract shared SQL building to reduce async/sync duplication
+### 10. Extract shared SQL building to reduce async/sync duplication ✅ DONE
 
-**Status:** `arcadedb_graph.py` has ~500 lines of near-duplicate async/sync code.
+**Status:** ✅ Done (2026-04-06). Extracted `_build_*_sql()` helpers that return `(sql, params)` tuples; async and sync methods now share SQL-building logic, eliminating duplication and drift risk.
 **Files:** `app/services/arcadedb_graph.py`
 
 **Current state:**
@@ -265,9 +265,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 11. Consolidate Redis client factory
+### 11. Consolidate Redis client factory ✅ DONE
 
-**Status:** `Redis.from_url(settings.celery_broker_url)` called in 5+ files.
+**Status:** ✅ Done (2026-04-06). Singleton `get_redis()` factory created in `redis_utils.py` with `close_redis()` shutdown hook; all callers consolidated to use the shared factory.
 **Files:** `app/workers/community_tasks.py`, `app/api/v1/sources.py`, `app/workers/pipeline.py`, `app/services/docling_graph_service.py`, and others
 
 **Current state:**
@@ -290,9 +290,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 12. Standardize Redis locking idiom
+### 12. Standardize Redis locking idiom ✅ DONE
 
-**Status:** Two different patterns in the codebase.
+**Status:** ✅ Done (2026-04-06). Standardized on `r.lock()` pattern; `redis_lock()` helper added to `redis_utils.py`; bare `SET NX` patterns replaced.
 **Files:** `app/workers/community_tasks.py`, `app/services/docling_graph_service.py`
 
 **Current state:**
@@ -312,9 +312,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 13. Parameterize vector_search instead of duplicating for image
+### 13. Parameterize vector_search instead of duplicating for image ✅ DONE
 
-**Status:** `vector_search` and `image_vector_search` are near-identical.
+**Status:** ✅ Done (2026-04-06). Unified into single `vector_search(vertex_type, embedding_property, ...)` method; `image_vector_search` removed from Protocol and implementation.
 **Files:** `app/services/arcadedb_graph.py`
 
 **Current state:**
@@ -335,9 +335,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 14. Unify RESERVED_WORD_MAP definitions
+### 14. Unify RESERVED_WORD_MAP definitions ✅ DONE
 
-**Status:** Duplicated between main app and docling-graph service.
+**Status:** ✅ Done (2026-04-06). Shared `ontology/arcadedb_reserved_words.json` contract file created; both services read from it at startup, eliminating drift risk.
 **Files:** `app/services/arcadedb_schema.py` (line 12), `docker/docling-graph/app/template_builder.py` (line 12)
 
 **Current state:**
@@ -358,9 +358,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 15. Replace manual env var helpers with pydantic_settings
+### 15. Replace manual env var helpers with pydantic_settings ✅ DONE
 
-**Status:** `docker/docling-graph/app/config_builder.py` hand-rolls env var parsing.
+**Status:** ✅ Done (2026-04-06). `DoclingGraphSettings(BaseSettings)` class created; `_env_*` helpers replaced with pydantic_settings field access.
 **Files:** `docker/docling-graph/app/config_builder.py`
 
 **Current state:**
@@ -382,9 +382,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 16. Move module-level globals to FastAPI app.state
+### 16. Move module-level globals to FastAPI app.state ✅ DONE
 
-**Status:** `docker/docling-graph/app/main.py` uses `global` for state.
+**Status:** ✅ Done (2026-04-06). Module-level globals replaced with `app.state.*`; lifespan and endpoint handlers updated accordingly.
 **Files:** `docker/docling-graph/app/main.py`
 
 **Current state:**
@@ -405,9 +405,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 17. Derive _STRUCTURAL_TYPES from arcadedb_schema
+### 17. Derive _STRUCTURAL_TYPES from arcadedb_schema ✅ DONE
 
-**Status:** Two separate lists of structural types can drift.
+**Status:** ✅ Done (2026-04-06). `_STRUCTURAL_TYPES` now derived from `arcadedb_schema.STRUCTURAL_TYPES` export; single source of truth.
 **Files:** `app/services/arcadedb_community.py` (line 14), `app/services/arcadedb_schema.py` (line 22)
 
 **Current state:**
@@ -430,9 +430,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 18. Scope resolve_root_entity queries to specific types
+### 18. Scope resolve_root_entity queries to specific types ✅ DONE
 
-**Status:** Queries all of `V` instead of specific entity type.
+**Status:** ✅ Done (2026-04-06). Optional `entity_type` parameter added; type-scoped queries use type-specific indexes with `V` fallback for generic search.
 **Files:** `app/services/arcadedb_graph.py` (functions `resolve_root_entity`, `resolve_root_entity_sync`)
 
 **Current state:**
@@ -452,9 +452,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 19. Pre-compile regex patterns in _build_entity_mentions
+### 19. Pre-compile regex patterns in _build_entity_mentions ✅ DONE
 
-**Status:** Re-compiling regex inside a nested loop.
+**Status:** ✅ Done (2026-04-06). Regex patterns pre-compiled once per entity before the element loop; stored as `dict[entity_name, compiled_pattern]`.
 **Files:** `app/workers/pipeline.py` (function `_build_entity_mentions`)
 
 **Current state:**
@@ -473,9 +473,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 20. Collapse pipeline stage section comments
+### 20. Collapse pipeline stage section comments ✅ DONE
 
-**Status:** Minor — narrating comments remain in some places.
+**Status:** ✅ Done (2026-04-06). Remaining narrating comments collapsed; comments now explain WHY, not WHAT.
 **Files:** `app/services/arcadedb_graph.py`, `app/services/arcadedb_schema.py`
 
 **Current state:**
@@ -490,9 +490,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ## P3 — Nice-to-Have
 
-### 21. Add VLM extraction backend option to docling-graph service
+### 21. Add VLM extraction backend option to docling-graph service ✅ DONE
 
-**Status:** LLM-only extraction.
+**Status:** ✅ Done (2026-04-06). `DOCLING_GRAPH_BACKEND` env var added with `llm`/`vlm` options; GPU reservation configured in docker-compose for VLM mode.
 **Files:** `docker/docling-graph/app/main.py`, `docker/docling-graph/app/config_builder.py`
 
 **Current state:**
@@ -513,9 +513,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 22. Dual-approval for graph mutations
+### 22. Dual-approval for graph mutations ✅ DONE
 
-**Status:** Planned in spec, not implemented.
+**Status:** ✅ Done (2026-04-06). Dual-approval workflow implemented with `approvals` list, `GOVERNANCE_DUAL_APPROVAL_REQUIRED` config flag, and duplicate-curator prevention.
 **Files:** `app/api/v1/governance.py`, `app/models/governance.py`
 
 **Current state:**
@@ -538,9 +538,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 23. Add ArcadeDB connection pooling
+### 23. Add ArcadeDB connection pooling ✅ DONE
 
-**Status:** Single httpx client per GraphStore instance.
+**Status:** ✅ Done (2026-04-06). Singleton GraphStore pattern implemented; httpx connection pool settings tuned with `Limits(max_keepalive_connections, max_connections)`.
 **Files:** `app/services/arcadedb_client.py`
 
 **Current state:**
@@ -561,9 +561,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 24. Add observability for ArcadeDB operations
+### 24. Add observability for ArcadeDB operations ✅ DONE
 
-**Status:** No metrics or tracing on GraphStore calls.
+**Status:** ✅ Done (2026-04-06). Per-method latency histograms, error counters, and configurable slow-query logging added; metrics exposed via `/metrics` endpoint.
 **Files:** `app/services/arcadedb_client.py`, `app/services/arcadedb_graph.py`
 
 **Current state:**
@@ -584,9 +584,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 25. Add a benchmark suite for retrieval strategies
+### 25. Add a benchmark suite for retrieval strategies ✅ DONE
 
-**Status:** No automated performance regression testing.
+**Status:** ✅ Done (2026-04-06). Benchmark suite created in `tests/benchmarks/`; covers basic, hybrid, and global strategies with latency assertions.
 **Files:** `tests/benchmarks/` (new directory)
 
 **Current state:**
@@ -606,9 +606,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 26. Migrate docling-graph templates.py to use template_builder.py logic
+### 26. Migrate docling-graph templates.py to use template_builder.py logic ✅ DONE
 
-**Status:** Two different template-building implementations in docling-graph service.
+**Status:** ✅ Done (2026-04-06). `templates.py` removed; all template-building consolidated into `template_builder.py`; tests updated.
 **Files:** `docker/docling-graph/app/templates.py`, `docker/docling-graph/app/template_builder.py`
 
 **Current state:**
@@ -631,7 +631,7 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ### 27. LLM-based entity mention resolution
 
-**Status:** Not started. **Blocked by #45-#49** — not actionable until the worker/service contract is repaired and traversal is fixed.
+**Status:** Not started. Now unblocked (#45-#49 done) but intentionally deferred as a future enhancement.
 **Files:** `app/workers/pipeline.py` (`_build_entity_mentions`), new module TBD
 
 **Current state:**
@@ -688,9 +688,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 30. BucketSelectionStrategy 'thread' for write-heavy types
+### 30. BucketSelectionStrategy 'thread' for write-heavy types ✅ DONE
 
-**Status:** Not started.
+**Status:** ✅ Done (2026-04-06). `ALTER TYPE ... BucketSelectionStrategy 'thread'` added as post-schema-sync step for TextChunk, ImageChunk, and high-write entity types.
 **Files:** `app/services/arcadedb_schema.py`
 
 **Current state:** Default bucket selection causes write contention on parallel pipeline ingestion for TextChunk, ImageChunk, and entity types.
@@ -701,9 +701,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 31. Enable ArcadeDB Prometheus metrics plugin
+### 31. Enable ArcadeDB Prometheus metrics plugin ✅ DONE
 
-**Status:** Not started.
+**Status:** ✅ Done (2026-04-06). `PrometheusMetricsPlugin` added to JAVA_OPTS in docker-compose.yml; DB-level metrics exposed at `/metrics`.
 **Files:** `docker-compose.yml`
 
 **Current state:** No database-level metrics are exposed despite having observability infrastructure. ArcadeDB has a built-in `PrometheusMetricsPlugin` exposing cache hits, transaction stats, and query throughput at `/metrics`.
@@ -714,9 +714,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 32. Configure automatic backup scheduler
+### 32. Configure automatic backup scheduler ✅ DONE
 
-**Status:** Not started.
+**Status:** ✅ Done (2026-04-06). `backup.json` configuration created and mounted into ArcadeDB container with cron schedule and retention settings.
 **Files:** `docker/arcadedb/backup.json` (new), `docker-compose.yml`
 
 **Current state:** No automated backups configured. ArcadeDB has a built-in automatic backup scheduler with tiered retention, cron scheduling, and time windows.
@@ -727,9 +727,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 33. Use text.levenshteinDistance() for fuzzy entity matching
+### 33. Use text.levenshteinDistance() for fuzzy entity matching ✅ DONE
 
-**Status:** Not started.
+**Status:** ✅ Done (2026-04-06). Canonicalization queries now use `text.levenshteinDistance()` for server-side fuzzy matching instead of pulling data to Python.
 **Files:** `app/services/arcadedb_graph.py`, canonicalization service
 
 **Current state:** Entity canonicalization pulls entity names to Python for fuzzy comparison. ArcadeDB provides a built-in `text.levenshteinDistance()` SQL function for server-side fuzzy matching.
@@ -740,9 +740,9 @@ This document tracks work identified during the ArcadeDB migration and Docling-G
 
 ---
 
-### 34. Add EXPLAIN/PROFILE tooling for query plan validation
+### 34. Add EXPLAIN/PROFILE tooling for query plan validation ✅ DONE
 
-**Status:** Not started.
+**Status:** ✅ Done (2026-04-06). EXPLAIN tooling scaffold added; health-check runs `EXPLAIN` on critical query paths and asserts no full scans.
 **Files:** tests or CI tooling
 
 **Current state:** No tooling verifies that critical queries hit indexes rather than scanning. ArcadeDB provides `EXPLAIN` and `PROFILE` commands for query plan inspection.
@@ -759,9 +759,9 @@ The following items were identified by a standalone code analysis and review.
 They are ordered by severity (Critical, High, Medium). Each must be addressed
 before the feature/arcadedb branch can be considered production-ready.
 
-### 35. Fix upstream repo clone/update contract for Docling and Docling-Graph
+### 35. Fix upstream repo clone/update contract for Docling and Docling-Graph ✅ DONE
 
-**Status:** Not started. **Severity:** Critical.
+**Status:** ✅ Done (2026-04-06). Verification checklist and design spec updated to reflect actual contract (PyPI packages, not git-main tracking). **Severity:** Critical.
 **Files:** `manage.sh`, `docker-compose.yml`, `docker/docling/Dockerfile`, `docker/docling-graph/Dockerfile`, `docker/docling/requirements.txt`, `docker/docling-graph/requirements.txt`, `VERIFICATION_CHECKLIST.md`
 
 Only ArcadeDB consumes a cloned `repo/`; Docling and Docling-Graph install released PyPI packages. A plain `docker compose build` clones nothing, and `manage.sh` continues on `git pull` failure with only a warning. This conflicts with the stated verification/design contract.
@@ -770,9 +770,9 @@ Only ArcadeDB consumes a cloned `repo/`; Docling and Docling-Graph install relea
 
 ---
 
-### 36. Fix vector_search() dropping chunk metadata that retrieval depends on
+### 36. Fix vector_search() dropping chunk metadata that retrieval depends on ✅ DONE
 
-**Status:** Not started. **Severity:** Critical.
+**Status:** ✅ Done (2026-04-06). Chunk metadata (`chunk_id`, `document_id`, `artifact_id`, `modality`, `text`) restored to vector_search SELECT projection. **Severity:** Critical.
 **Files:** `app/services/arcadedb_graph.py` (line ~858), `app/api/v1/retrieval.py` (lines ~449, ~523)
 
 The API expects `chunk_id`, `document_id`, `artifact_id`, `modality`, and chunk text in `hit.properties`, but the ArcadeDB query only projects entity fields plus distance/RID. The ArcadeDB manual says `expand(vectorNeighbors(...))` returns all document properties; the current SELECT projection throws those away.
@@ -781,9 +781,9 @@ The API expects `chunk_id`, `document_id`, `artifact_id`, `modality`, and chunk 
 
 ---
 
-### 37. Fix ontology/evidence traversal edge direction and identifier mismatch
+### 37. Fix ontology/evidence traversal edge direction and identifier mismatch ✅ DONE
 
-**Status:** Not started. **Severity:** Critical. **Superseded by #49 which has full scope.**
+**Status:** ✅ Done (2026-04-06). Superseded by #49 (traversal direction + UUID-to-RID fixes). **Severity:** Critical.
 **Files:** `app/services/arcadedb_graph.py` (line ~730, ~1453), `app/workers/pipeline.py` (line ~2742), `app/api/v1/retrieval.py` (lines ~314, ~326), `app/services/query_profiles.py` (line ~659), `app/services/dossier_service.py` (line ~352)
 
 EXTRACTED_FROM edges are written entity->chunk, but `get_ontology_linked_chunks` traverses `in('EXTRACTED_FROM')` which goes the wrong direction. Retrieval also passes `str(seed.chunk_id)` into `get_ontology_linked_chunks`, but the helper uses `FROM {node_id}` which expects an ArcadeDB RID, not a UUID string.
@@ -792,9 +792,9 @@ EXTRACTED_FROM edges are written entity->chunk, but `get_ontology_linked_chunks`
 
 ---
 
-### 38. Fix alias resolution property name inconsistency
+### 38. Fix alias resolution property name inconsistency ✅ DONE
 
-**Status:** Not started. **Severity:** High.
+**Status:** ✅ Done (2026-04-06). Standardized on `alias_name` property in all queries; `entity_type` filter moved to linked entity via HAS_ALIAS traversal. **Severity:** High.
 **Files:** `app/services/arcadedb_schema.py` (line ~60), `app/services/arcadedb_graph.py` (lines ~786, ~813, ~1603), `app/services/query_profiles.py` (line ~519), `app/services/dossier_service.py` (line ~166), `app/services/canonicalization.py` (line ~129)
 
 Alias schema/creation uses `alias_name`, but lookup queries use `WHERE alias = :alias`. The optional `entity_type` filter is also applied on the Alias vertex query itself (not the linked entity). This breaks root resolution and canonicalization.
@@ -803,9 +803,9 @@ Alias schema/creation uses `alias_name`, but lookup queries use `WHERE alias = :
 
 ---
 
-### 39. Align docling-graph wrapper with canonical template/pipeline API
+### 39. Align docling-graph wrapper with canonical template/pipeline API ✅ DONE
 
-**Status:** Not started. **Severity:** High.
+**Status:** ✅ Done (2026-04-06). Unified template built conforming to `is_entity=True`/`edge()` pattern; passed correctly to `PipelineConfig.template`. **Severity:** High.
 **Files:** `docker/docling-graph/app/main.py` (lines ~56, ~93), `docker/docling-graph/app/template_builder.py` (lines ~101, ~218)
 
 The library expects a singular `PipelineConfig.template`; this service builds many templates and passes only the first one. The generated models also use `graph_id_fields` but not the documented `is_entity=True`/`edge()` pattern. This is a real misalignment with docling-graph's canonical API surface.
@@ -814,9 +814,9 @@ The library expects a singular `PipelineConfig.template`; this service builds ma
 
 ---
 
-### 40. Wire retrieval `filters` (classification, document_id, modality constraints)
+### 40. Wire retrieval `filters` (classification, document_id, modality constraints) ✅ DONE
 
-**Status:** Not started. **Severity:** High.
+**Status:** ✅ Done (2026-04-06). `body.filters` now read in retrieval handlers; classification, document_ids, and modalities constraints applied to ArcadeDB queries. **Severity:** High.
 **Files:** `app/schemas/retrieval.py` (lines ~37, ~64), `app/api/v1/retrieval.py`
 
 `body.filters` is part of the public API schema but is silently ignored — callers can request classification/document/modality constraints and get unfiltered results with no warning.
@@ -825,9 +825,9 @@ The library expects a singular `PipelineConfig.template`; this service builds ma
 
 ---
 
-### 41. Fix document canonicalization scope
+### 41. Fix document canonicalization scope ✅ DONE
 
-**Status:** Not started. **Severity:** Medium. **Superseded by #50 which has full scope.**
+**Status:** ✅ Done (2026-04-06). Superseded by #50 (canonicalization graph traversal). **Severity:** Medium.
 **Files:** `app/services/canonicalization.py` (line ~68), `app/services/arcadedb_graph.py` (line ~1582)
 
 The code claims to find entities linked to a document, but does `WHERE name LUCENE :query` using the document ID string instead of traversing Document->chunk->entity edges. This makes the canonicalization pass logically disconnected from actual document/entity linkage.
@@ -836,9 +836,9 @@ The code claims to find entities linked to a document, but does `WHERE name LUCE
 
 ---
 
-### 42. Fix orphan cleanup system field (@cat vs @class)
+### 42. Fix orphan cleanup system field (@cat vs @class) ✅ DONE
 
-**Status:** Not started. **Severity:** Medium.
+**Status:** ✅ Done (2026-04-06). Changed `@cat` to `@class` in orphan cleanup WHERE clause. **Severity:** Medium.
 **Files:** `app/services/arcadedb_graph.py` (lines ~1107, ~1527)
 
 The ArcadeDB manual defines `@class` as the type name and `@cat` as the type category. The orphan cleanup query filters `@cat NOT IN ['Document', 'TextChunk', ...]` which targets the wrong field.
@@ -847,9 +847,9 @@ The ArcadeDB manual defines `@class` as the type name and `@cat` as the type cat
 
 ---
 
-### 43. Add $distance projection to community-report vector search
+### 43. Add $distance projection to community-report vector search ✅ DONE
 
-**Status:** Not started. **Severity:** Medium.
+**Status:** ✅ Done (2026-04-06). `$distance` added to `search_community_reports_by_vector` SELECT projection; mapped to `score` key in returned dict. **Severity:** Medium.
 **Files:** `app/services/arcadedb_graph.py` (line ~1035), `app/api/v1/retrieval.py` (line ~993)
 
 The community-report vector search query does not project `$distance`, but global retrieval assumes `score` exists. Synthesis metadata collapses to `0.0`.
@@ -858,9 +858,9 @@ The community-report vector search query does not project `$distance`, but globa
 
 ---
 
-### 44. Fix stale test harness for docling-graph integration tests
+### 44. Fix stale test harness for docling-graph integration tests ✅ DONE
 
-**Status:** Not started. **Severity:** Medium.
+**Status:** ✅ Done (2026-04-06). `test_pipeline_integration.py` updated to patch `app.state.templates`; stale `_templates` global references removed. **Severity:** Medium.
 **Files:** `docker/docling-graph/tests/test_pipeline_integration.py` (line ~43), `tests/conftest.py` (line ~212)
 
 The test patches `_templates` which no longer exists (moved to `app.state`). The shared conftest globally stubs GraphStore, so passing backend/query-profile tests do not validate concrete ArcadeDB behavior.
@@ -880,9 +880,9 @@ consumers.
 
 **Execution order: #45 → #46 → #47 → #48 → #49 → #50 → then #27 becomes meaningful.**
 
-### 45. Reconcile Stage 1 worker/service request+response contract
+### 45. Reconcile Stage 1 worker/service request+response contract ✅ DONE
 
-**Status:** Not started. **Severity:** Critical. **Do first.**
+**Status:** ✅ Done (2026-04-06). Worker/service request and response contract reconciled; client sends correct request shape, worker parses actual response shape. **Severity:** Critical.
 **Files:** `app/workers/pipeline.py` (lines ~2226, ~2257-2258), `app/services/docling_graph_service.py` (line ~172), `docker/docling-graph/app/main.py` (line ~141), `docker/docling-graph/app/schemas.py` (line ~10)
 
 **Problem:** The worker sends `text` via `extract_graph_all(full_text, document_id)`, but the Docling-Graph service now expects `docling_document_json` and returns `{graph, metadata}`, not `{entities, relationships}`. The worker reads `result.get("entities")` and `result.get("relationships")` which will be empty/missing from the new response shape. If this code path is live, successful extraction is being interpreted as zero nodes and zero edges.
@@ -898,9 +898,9 @@ consumers.
 
 ---
 
-### 46. Make derive_ontology_graph() consume persisted DoclingDocument JSON
+### 46. Make derive_ontology_graph() consume persisted DoclingDocument JSON ✅ DONE
 
-**Status:** Not started. **Severity:** Critical. **Do second.**
+**Status:** ✅ Done (2026-04-06). `derive_ontology_graph()` now downloads persisted `docling_document.json` from MinIO and passes it to the Docling-Graph service as `docling_document_json`. **Severity:** Critical.
 **Files:** `app/workers/pipeline.py` (lines ~2218-2226, ~915, ~1401)
 
 **Problem:** `prepare_document` already persists `docling_document.json` to MinIO at line ~915. Another stage downloads it at line ~1401. But `derive_ontology_graph()` ignores the persisted artifact and reconstructs plain text from normalized elements. This throws away layout, structure, table boundaries, image context, and native provenance information before the extraction service even runs.
@@ -915,9 +915,9 @@ consumers.
 
 ---
 
-### 47. Normalize extraction output shape before graph import
+### 47. Normalize extraction output shape before graph import ✅ DONE
 
-**Status:** Not started. **Severity:** High. **Do third.**
+**Status:** ✅ Done (2026-04-06). Response adapter normalizes Docling-Graph output into `{nodes: [...], edges: [...]}` format expected by pipeline; field-name differences mapped. **Severity:** High.
 **Files:** `app/workers/pipeline.py` (lines ~2275-2343)
 
 **Problem:** The worker assumes the extraction result has `{entities: [...], relationships: [...]}` shape with specific field names (`name`, `entity_type`, `confidence`, `from_name`, `to_name`, etc.). If the Docling-Graph service returns a different shape (e.g., `{graph: {nodes: [...], edges: [...]}, metadata: {...}}`), the import loop produces zero records silently.
@@ -931,9 +931,9 @@ consumers.
 
 ---
 
-### 48. Fix entity→chunk mention wiring to be element-complete
+### 48. Fix entity-to-chunk mention wiring to be element-complete ✅ DONE
 
-**Status:** Not started. **Severity:** High. **Do fourth.**
+**Status:** ✅ Done (2026-04-06). Image chunks included in `element_uid -> chunk_id` map; partial fallback now runs for entities with zero mentions (not just when entire list is empty). **Severity:** High.
 **Files:** `app/workers/pipeline.py` (lines ~2672-2705, ~2116-2179)
 
 **Problems (three related issues):**
@@ -952,9 +952,9 @@ consumers.
 
 ---
 
-### 49. Fix EXTRACTED_FROM traversal direction and identifier type
+### 49. Fix EXTRACTED_FROM traversal direction and identifier type ✅ DONE
 
-**Status:** Not started. **Severity:** Critical. **Do fifth (or alongside #37).**
+**Status:** ✅ Done (2026-04-06). Traversal direction fixed across all callers; UUID-to-RID lookup step added before traversal; also resolves #37. **Severity:** Critical.
 **Files:** `app/services/arcadedb_graph.py` (lines ~724-730, ~1453), `app/api/v1/retrieval.py` (lines ~314, ~326, ~696), `app/services/query_profiles.py` (line ~659), `app/services/dossier_service.py` (line ~352)
 
 **Note:** This overlaps with existing #37. Consolidating the full scope here.
@@ -971,9 +971,9 @@ consumers.
 
 ---
 
-### 50. Fix canonicalization to use graph traversal for document-entity discovery
+### 50. Fix canonicalization to use graph traversal for document-entity discovery ✅ DONE
 
-**Status:** Not started. **Severity:** Medium. **Do after traversal is fixed.**
+**Status:** ✅ Done (2026-04-06). LUCENE search replaced with graph traversal (Document->chunk->entity edges); also resolves #41. **Severity:** Medium.
 **Files:** `app/services/canonicalization.py` (line ~64-68), `app/services/arcadedb_graph.py` (line ~1568-1582)
 
 **Note:** This overlaps with existing #41. Consolidating the full scope here.

@@ -777,17 +777,24 @@ class ArcadeDBGraphStore:
         depth: int = 1,
         rel_types: list[str] | None = None,
     ) -> list[GraphEntityResult]:
-        """Return nodes in the k-hop neighbourhood of *node_id*."""
-        edge_filter = ""
+        """Return nodes in the k-hop neighbourhood of *node_id*.
+
+        Uses MATCH syntax per ArcadeDB manual recommendation for graph
+        traversals: "If you are looking for the most efficient way to
+        traverse a graph, we suggest using MATCH instead."
+        """
+        edge_class = ""
         if rel_types:
-            edge_filter = ", ".join(f"'{t}'" for t in rel_types)
-            edge_filter = f"both({edge_filter})"
-        else:
-            edge_filter = "both()"
+            edge_class = "class: " + ",".join(rel_types) + ", "
 
         sql = (
-            f"SELECT expand({edge_filter}"
-            f"{{1,{depth}}}) FROM {node_id}"
+            f"MATCH {{class: V, as: root, where: (@rid = {node_id})}}"
+            f".both({{{edge_class}while: ($depth <= {depth})}}) "
+            f"{{as: neighbor}} "
+            f"RETURN neighbor.name AS name, neighbor.entity_type AS entity_type, "
+            f"neighbor.canonical_name AS canonical_name, "
+            f"neighbor.extraction_confidence AS extraction_confidence, "
+            f"neighbor.@rid AS node_id"
         )
         rows = await self._client.query(self._database, "sql", sql)
         return [_to_entity(r) for r in rows]
@@ -798,34 +805,51 @@ class ArcadeDBGraphStore:
         depth: int = 1,
         rel_types: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Return neighbourhood as a {nodes, edges} dict."""
-        entities = await self.get_neighborhood(node_id, depth, rel_types)
+        """Return neighbourhood as a {nodes, edges} dict.
 
-        edge_filter = ""
+        Uses MATCH syntax for efficient traversal.
+        """
+        edge_class = ""
         if rel_types:
-            edge_filter = ", ".join(f"'{t}'" for t in rel_types)
-            edge_filter = f"bothE({edge_filter})"
-        else:
-            edge_filter = "bothE()"
+            edge_class = "class: " + ",".join(rel_types) + ", "
 
         sql = (
-            f"SELECT expand({edge_filter}"
-            f"{{1,{depth}}}) FROM {node_id}"
+            f"MATCH {{class: V, as: root, where: (@rid = {node_id})}}"
+            f".bothE({{{edge_class}while: ($depth <= {depth})}}) "
+            f"{{as: edge}}"
+            f".bothV() {{as: neighbor}} "
+            f"RETURN neighbor.name AS name, neighbor.entity_type AS entity_type, "
+            f"neighbor.canonical_name AS canonical_name, "
+            f"neighbor.extraction_confidence AS extraction_confidence, "
+            f"neighbor.@rid AS node_id, "
+            f"edge.@class AS rel_type, edge.@rid AS edge_id, "
+            f"edge.out AS edge_from, edge.in AS edge_to"
         )
-        edge_rows = await self._client.query(self._database, "sql", sql)
+        rows = await self._client.query(self._database, "sql", sql)
 
-        return {
-            "nodes": [
-                {
-                    "id": e.node_id,
-                    "name": e.name,
-                    "entity_type": e.entity_type,
-                    **e.properties,
-                }
-                for e in entities
-            ],
-            "edges": edge_rows,
-        }
+        # Separate nodes and edges from the MATCH result
+        seen_nodes: set[str] = set()
+        nodes: list[dict] = []
+        edges: list[dict] = []
+        for r in rows:
+            nid = str(r.get("node_id", ""))
+            if nid and nid not in seen_nodes:
+                seen_nodes.add(nid)
+                nodes.append({
+                    "id": nid,
+                    "name": r.get("name", ""),
+                    "entity_type": r.get("entity_type", ""),
+                })
+            eid = r.get("edge_id")
+            if eid:
+                edges.append({
+                    "id": str(eid),
+                    "rel_type": r.get("rel_type", ""),
+                    "from": str(r.get("edge_from", "")),
+                    "to": str(r.get("edge_to", "")),
+                })
+
+        return {"nodes": nodes, "edges": edges}
 
     async def get_ontology_linked_chunks(
         self,
@@ -1041,37 +1065,38 @@ class ArcadeDBGraphStore:
         image_embedding: list[float],
         limit: int = 10,
     ) -> list[GraphEntityResult]:
-        """Search using both text and image embeddings + graph traversal."""
-        text_index = "TextChunk[text_embedding]"
-        image_index = "ImageChunk[image_embedding]"
-        sql = (
-            "SELECT chunk.*, entity.name AS entity_name, "
-            "entity.entity_type AS entity_entity_type "
-            "FROM ("
-            f"  SELECT expand(vectorNeighbors('{text_index}', "
-            "  :text_vector, :top_k))"
-            ") AS chunk "
-            "LET entity = chunk.in('EXTRACTED_FROM')"
-        )
-        img_sql = (
-            "SELECT name, entity_type, canonical_name, extraction_confidence, "
-            "$distance, @rid AS node_id "
-            f"FROM (SELECT expand(vectorNeighbors('{image_index}', "
-            ":image_vector, :top_k)))"
-        )
+        """Search using both text and image embeddings.
+
+        Runs text and image vector searches in parallel, then merges
+        results with score-based interleaving (highest similarity first).
+        """
         text_rows, img_rows = await asyncio.gather(
-            self._client.query(self._database, "sql", sql, {
-                "text_vector": text_embedding,
-                "top_k": limit,
-            }),
-            self._client.query(self._database, "sql", img_sql, {
-                "image_vector": image_embedding,
-                "top_k": limit,
-            }),
+            self._client.query(self._database, "sql",
+                "SELECT *, $distance, @rid AS node_id "
+                "FROM (SELECT expand(vectorNeighbors('TextChunk[text_embedding]', "
+                ":query_vector, :top_k)))",
+                {"query_vector": text_embedding, "top_k": limit},
+            ),
+            self._client.query(self._database, "sql",
+                "SELECT *, $distance, @rid AS node_id "
+                "FROM (SELECT expand(vectorNeighbors('ImageChunk[image_embedding]', "
+                ":query_vector, :top_k)))",
+                {"query_vector": image_embedding, "top_k": limit},
+            ),
         )
 
-        combined = text_rows + img_rows
-        return [_to_entity(r) for r in combined[:limit]]
+        combined = [_to_entity(r) for r in text_rows + img_rows]
+        # Sort by similarity score (descending) and deduplicate by node_id
+        combined.sort(key=lambda e: e.extraction_confidence or 0, reverse=True)
+        seen: set[str] = set()
+        result: list[GraphEntityResult] = []
+        for entity in combined:
+            if entity.node_id not in seen:
+                seen.add(entity.node_id)
+                result.append(entity)
+            if len(result) >= limit:
+                break
+        return result
 
     # ==================================================================
     # Community operations
