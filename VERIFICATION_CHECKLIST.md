@@ -42,6 +42,38 @@ When adding new ArcadeDB-related checklist items or debugging a failing test, ve
 3. If the manual contradicts the implementation → fix the implementation
 4. If the manual confirms the implementation → investigate test assumptions or environment issues
 
+## Native-First Principle
+
+**Always prefer native Docling, Docling-Graph, and ArcadeDB functionality over custom code.** This applies to every gap analysis, bug fix, feature addition, and refactor.
+
+Before writing custom logic, check whether the library already provides the capability:
+
+| Domain | Check first | Authoritative reference |
+|--------|------------|------------------------|
+| **Vector search** (ANN, scoring, fusion) | `vectorNeighbors()`, `vectorCosineSimilarity()`, `efSearch` parameter, distance metrics | ArcadeDB Manual §4.14, §6.6 |
+| **Graph traversal** (neighborhood, path, pattern) | `MATCH` syntax, `out()`/`in()`/`both()` with depth, Cypher | ArcadeDB Manual §4.13.6, §6.3.1 |
+| **Schema & indexes** | `CREATE TYPE IF NOT EXISTS`, LSM_VECTOR, FULL_TEXT, UNIQUE_HASH, BucketSelectionStrategy | ArcadeDB Manual §4.8, §4.9, §5.5.24 |
+| **Graph algorithms** (community, centrality, similarity) | `algo.louvain`, `algo.leiden`, PageRank, Node2Vec | ArcadeDB Manual Appendix 8.1 |
+| **Text search** (fulltext, fuzzy) | Lucene FULL_TEXT index, `text.levenshteinDistance()` | ArcadeDB Manual §4.9, §6.3.1 |
+| **Entity/relationship extraction** | `run_pipeline()`, `PipelineConfig`, delta/staged extraction, entity merge | Docling-Graph library API |
+| **Document conversion** (PDF, images, tables) | Docling service `/convert` endpoint, `DoclingDocument` JSON | Docling library API |
+
+**Red flags for custom code that should use a library feature:**
+- Custom Python-side score fusion when ArcadeDB has `vectorCosineSimilarity()` or `$distance`
+- Custom graph traversal loops when a single MATCH query with depth control would suffice
+- Custom entity dedup logic when Docling-Graph's delta normalizer handles entity merge
+- Custom fulltext scoring when ArcadeDB's Lucene `$score` is available in the query result
+- Custom batch insert loops when ArcadeDB's `sqlscript` or batch endpoint handles multiple statements
+- Custom concurrency gating when ArcadeDB's MVCC and BucketSelectionStrategy handle parallel writes
+
+**During code review, verify:**
+- [ ] No custom SQL builder that reimplements what MATCH or a native ArcadeDB function provides
+- [ ] No custom vector scoring that ignores `$distance` or `vectorCosineSimilarity()`
+- [ ] No custom traversal that could be a single MATCH with directed edges and depth bounds
+- [ ] No custom extraction pipeline that bypasses `run_pipeline()` / `PipelineConfig`
+- [ ] Graph fulltext results carry native `$score`, not a substituted metric
+- [ ] Filters are pushed into ArcadeDB/Postgres WHERE clauses, not post-filtered in Python
+
 ---
 
 ## 1. INGEST PIPELINE
