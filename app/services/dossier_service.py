@@ -349,7 +349,9 @@ async def attach_evidence(
         if not item.node_id:
             continue
         try:
-            linked = await graph_store.get_ontology_linked_chunks(item.node_id)
+            # Use entity-centric evidence lookup (entity→EXTRACTED_FROM→chunks)
+            # not chunk-centric ontology expansion (chunk←entity→other_chunks)
+            linked = await graph_store.get_entity_evidence_chunks(item.node_id, limit)
             chunk_ids = [
                 r.get("chunk_id", "") if isinstance(r, dict) else getattr(r, "chunk_id", "")
                 for r in linked[:limit]

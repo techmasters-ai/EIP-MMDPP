@@ -62,9 +62,9 @@ class UnifiedQueryRequest(APIModel):
     modality_filter: ModalityFilter = Field(default=ModalityFilter.all)
     mode: Optional[str] = Field(None, description="Deprecated: use strategy + modality_filter")
     filters: Optional[QueryFilters] = None
-    top_k: int = Field(default=10, ge=1, le=100)
+    top_k: int = Field(default=20, ge=1, le=100, description="Number of results (matches /v1/settings/retrieval default)")
     reranker_top_n: Optional[int] = Field(default=None, ge=1, le=200, description="Number of candidates to rerank (defaults to server config)")
-    min_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Minimum confidence score (0-1) to include in results (defaults to server config)")
+    min_confidence: Optional[float] = Field(default=0.1, ge=0.0, le=1.0, description="Minimum confidence score (matches /v1/settings/retrieval default)")
     include_context: bool = True
 
     @model_validator(mode="after")

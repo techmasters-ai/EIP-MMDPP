@@ -73,9 +73,9 @@ class TestUnifiedQueryRequest:
         req = self._make(query_text="test")
         assert req.modality_filter == ModalityFilter.all
 
-    def test_default_top_k_is_10(self):
+    def test_default_top_k_matches_settings(self):
         req = self._make(query_text="test")
-        assert req.top_k == 10
+        assert req.top_k == 20  # matches /v1/settings/retrieval default
 
     def test_default_include_context_is_true(self):
         req = self._make(query_text="test")

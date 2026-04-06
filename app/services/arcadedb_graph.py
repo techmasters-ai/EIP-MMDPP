@@ -53,22 +53,24 @@ def _count(result: list[dict[str, Any]]) -> int:
 def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
     """Map an ArcadeDB row dict to a GraphEntityResult.
 
-    When the row originates from a ``vectorNeighbors`` query, ArcadeDB
-    includes a ``$distance`` (or ``distance``) field.  For COSINE distance
-    the value is in the range [0, 2]; we convert it to a similarity score
-    ``1 - distance`` and store it in ``extraction_confidence`` so callers
-    can filter on a threshold without knowing about the distance semantics.
+    Score priority (native ArcadeDB semantics preserved):
+    1. ``$distance`` from vectorNeighbors → converted to similarity (1 - distance)
+    2. ``$score`` from Lucene FULL_TEXT search → native BM25 relevance score
+    3. ``extraction_confidence`` → ingestion-time confidence from the extraction pipeline
     """
-    # Determine extraction_confidence, preferring vector distance when present.
     distance = row.get("$distance", row.get("distance"))
+    lucene_score = row.get("$score")
+
     if distance is not None:
         extraction_confidence = 1.0 - float(distance)
+    elif lucene_score is not None:
+        extraction_confidence = float(lucene_score)
     else:
         extraction_confidence = row.get("extraction_confidence")
 
     props = {k: v for k, v in row.items() if k not in (
         "@rid", "name", "entity_type", "canonical_name", "extraction_confidence",
-        "@type", "@cat", "@class", "$distance", "distance",
+        "@type", "@cat", "@class", "$distance", "distance", "$score",
         # Exclude embedding vectors — they're large and not needed in query results
         "text_embedding", "image_embedding", "report_embedding",
     )}
@@ -436,6 +438,28 @@ class ArcadeDBGraphStore:
     # Validation matrix
     # ------------------------------------------------------------------
 
+    async def _resolve_rid(self, node_id: str) -> str | None:
+        """Resolve a node identifier to an ArcadeDB RID.
+
+        If *node_id* already looks like a RID (starts with '#'), return it
+        unchanged. Otherwise treat it as a UUID and look it up across
+        TextChunk, ImageChunk, and entity vertex types.
+        """
+        if node_id.startswith("#"):
+            return node_id
+        for vtype in ("TextChunk", "ImageChunk", "V"):
+            key = "chunk_id" if vtype != "V" else "name"
+            rows = await self._client.query(
+                self._database, "sql",
+                f"SELECT @rid FROM {vtype} WHERE {key} = :id LIMIT 1",
+                {"id": node_id},
+            )
+            if rows and isinstance(rows[0], dict):
+                rid = rows[0].get("@rid")
+                if rid:
+                    return str(rid)
+        return None
+
     def _get_validation_matrix(self) -> set[tuple[str, str, str]]:
         """Return the cached validation matrix, loading it on first access."""
         if self._validation_matrix is None:
@@ -781,16 +805,19 @@ class ArcadeDBGraphStore:
     ) -> list[GraphEntityResult]:
         """Return nodes in the k-hop neighbourhood of *node_id*.
 
-        Uses MATCH syntax per ArcadeDB manual recommendation for graph
-        traversals: "If you are looking for the most efficient way to
-        traverse a graph, we suggest using MATCH instead."
+        *node_id* may be an ArcadeDB RID (#10:5) or a UUID string; UUIDs
+        are resolved to RIDs first. Uses MATCH syntax per ArcadeDB manual.
         """
+        rid = await self._resolve_rid(node_id)
+        if not rid:
+            return []
+
         edge_class = ""
         if rel_types:
             edge_class = "class: " + ",".join(rel_types) + ", "
 
         sql = (
-            f"MATCH {{class: V, as: root, where: (@rid = {node_id})}}"
+            f"MATCH {{class: V, as: root, where: (@rid = {rid})}}"
             f".both({{{edge_class}while: ($depth <= {depth})}}) "
             f"{{as: neighbor}} "
             f"RETURN neighbor.name AS name, neighbor.entity_type AS entity_type, "
@@ -809,14 +836,18 @@ class ArcadeDBGraphStore:
     ) -> dict[str, Any]:
         """Return neighbourhood as a {nodes, edges} dict.
 
-        Uses MATCH syntax for efficient traversal.
+        *node_id* may be an ArcadeDB RID or UUID string. Uses MATCH syntax.
         """
+        rid = await self._resolve_rid(node_id)
+        if not rid:
+            return {"nodes": [], "edges": []}
+
         edge_class = ""
         if rel_types:
             edge_class = "class: " + ",".join(rel_types) + ", "
 
         sql = (
-            f"MATCH {{class: V, as: root, where: (@rid = {node_id})}}"
+            f"MATCH {{class: V, as: root, where: (@rid = {rid})}}"
             f".bothE({{{edge_class}while: ($depth <= {depth})}}) "
             f"{{as: edge}}"
             f".bothV() {{as: neighbor}} "
@@ -866,34 +897,60 @@ class ArcadeDBGraphStore:
         *node_id* may be an ArcadeDB RID (``#10:5``) or a chunk UUID string.
         If it's a UUID, we resolve it to a RID first.
         """
-        rid = node_id
-        # If node_id looks like a UUID rather than a RID, resolve it
-        if not node_id.startswith("#"):
-            lookup = await self._client.query(
-                self._database, "sql",
-                "SELECT @rid FROM TextChunk WHERE chunk_id = :cid LIMIT 1",
-                {"cid": node_id},
-            )
-            if not lookup:
-                # Try ImageChunk
-                lookup = await self._client.query(
-                    self._database, "sql",
-                    "SELECT @rid FROM ImageChunk WHERE chunk_id = :cid LIMIT 1",
-                    {"cid": node_id},
-                )
-            if lookup and isinstance(lookup[0], dict):
-                rid = str(lookup[0].get("@rid", node_id))
-            else:
-                return []
+        rid = await self._resolve_rid(node_id)
+        if not rid:
+            return []
 
-        # Traverse: chunk ← entities → other chunks
+        # MATCH traversal captures the intermediate entity so callers get
+        # rel_type context and can distinguish text vs image chunks.
         sql = (
-            f"SELECT expand(out('EXTRACTED_FROM')) "
-            f"FROM (SELECT expand(in('EXTRACTED_FROM')) FROM {rid})"
+            f"MATCH "
+            f"{{class: V, as: seed, where: (@rid = {rid})}}"
+            f".in('EXTRACTED_FROM') {{as: entity}}"
+            f".out('EXTRACTED_FROM') {{as: chunk, where: (@rid <> {rid})}} "
+            f"RETURN chunk.@rid AS chunk_rid, chunk.@class AS chunk_type, "
+            f"chunk.chunk_id AS chunk_id, chunk.document_id AS document_id, "
+            f"chunk.text AS text, chunk.chunk_text AS chunk_text, "
+            f"chunk.modality AS modality, chunk.page_number AS page_number, "
+            f"entity.name AS entity_name, entity.entity_type AS entity_type"
         )
         rows = await self._client.query(self._database, "sql", sql)
-        # Exclude the original chunk from results
-        return [r for r in rows if str(r.get("@rid", "")) != rid]
+        # Deduplicate by chunk_rid (same chunk may be reached via multiple entities)
+        seen: set[str] = set()
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            crid = str(r.get("chunk_rid", ""))
+            if crid and crid not in seen:
+                seen.add(crid)
+                result.append(r)
+        return result
+
+    async def get_entity_evidence_chunks(
+        self,
+        entity_rid: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return chunks that an entity was extracted from.
+
+        Traverses entity →(EXTRACTED_FROM)→ chunks. Returns chunk rows with
+        @class (TextChunk/ImageChunk), chunk_id, document_id, and text.
+        """
+        rid = await self._resolve_rid(entity_rid)
+        if not rid:
+            return []
+        sql = (
+            f"SELECT *, @class AS chunk_type, @rid AS chunk_rid "
+            f"FROM (SELECT expand(out('EXTRACTED_FROM')) FROM {rid}) "
+            f"LIMIT :limit"
+        )
+        rows = await self._client.query(
+            self._database, "sql", sql, {"limit": limit},
+        )
+        # Strip embedding vectors from results
+        for r in rows:
+            r.pop("text_embedding", None)
+            r.pop("image_embedding", None)
+        return rows
 
     async def get_graph_stats(self) -> dict[str, Any]:
         """Return backend-level graph statistics."""

@@ -330,6 +330,19 @@ class GraphStore(Protocol):
         """Update embedding on a vertex looked up by chunk_id."""
         ...
 
+    async def get_entity_evidence_chunks(
+        self,
+        entity_rid: str,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Return chunks that an entity was extracted from.
+
+        Traverses entity →(EXTRACTED_FROM)→ chunks. This is the correct
+        traversal for entity-centric evidence (dossiers, query profiles),
+        as opposed to ``get_ontology_linked_chunks`` which is chunk-centric.
+        """
+        ...
+
     async def graph_vector_search(
         self,
         root_id: str,
