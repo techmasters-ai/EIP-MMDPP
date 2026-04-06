@@ -178,10 +178,10 @@ This is called in both `detect_and_translate` (after storing translations) and `
 
 | Endpoint | Behavior |
 |----------|----------|
-| `GET /docling-raw` | Returns persisted JSON from MinIO (original language, with `_enrichments` overlay). For v4 docs: remove runtime annotation injection (descriptions are in `meta.description` + `annotations`). For pre-v4: keep injection. |
+| `GET /docling-raw` | Returns persisted JSON from MinIO (original language, with `_enrichments` overlay). **Enriched docs** (have `_enrichments.version`): remove runtime annotation injection (descriptions are in `meta.description` + `annotations`). **Legacy docs** (no `_enrichments.version`): keep runtime injection. |
 | `GET /docling` | Serves `docling_document.md` (original + picture appendix). No change. |
 | `GET /translation` | Serves `docling_document_translated.md` (now regenerated from enriched DoclingDocument). No change to endpoint. |
-| `GET /element-translations` | Reads from `_enrichments.translations`, reverse-maps via `identity_map`. Fallback to Postgres for pre-v4. |
+| `GET /element-translations` | Reads from `_enrichments.translations`, reverse-maps via `identity_map`. Fallback to Postgres for legacy docs. |
 
 ### Viewer contract preserved
 - Default view: `/docling-raw` returns original-language JSON → viewer displays original
@@ -190,17 +190,25 @@ This is called in both `detect_and_translate` (after storing translations) and `
 
 ---
 
-## Pre-v4 backward compat
+## Backward compatibility for legacy documents
 
-| Feature | v6 path | Pre-v4 fallback |
-|---------|---------|-----------------|
-| `/element-translations` | `_enrichments.translations` | Postgres `DocumentElement.translated_text` |
-| `/docling-raw` | Serve MinIO JSON directly | Runtime annotation injection |
-| HybridChunker | Enriched copy → DoclingDocument | `structure_aware_chunk()` over DocumentElement rows |
-| Graph extraction | Enriched copy to Docling-Graph | `_enriched_text` from DocumentElement rows |
-| Chunk artifact resolution | `identity_map` | DocumentElement-based mapping |
+Documents ingested before this refactor lack `_enrichments`. The runtime gate is: `doc_dict.get("_enrichments", {}).get("version")`. If the key is absent, all code paths fall back to the current behavior.
 
-Check: `doc_dict.get("_enrichments", {}).get("version")` — if absent, pre-v4.
+| Feature | Enriched path (has `_enrichments.version`) | Legacy fallback (no `_enrichments.version`) |
+|---------|---------------------------------------------|---------------------------------------------|
+| `/element-translations` | `_enrichments.translations` + `identity_map` | Postgres `DocumentElement.translated_text` |
+| `/docling-raw` | Serve MinIO JSON directly (no injection) | Runtime annotation injection from Postgres |
+| HybridChunker | Enriched copy → `DoclingDocument` | `structure_aware_chunk()` over DocumentElement rows |
+| Graph extraction | Enriched copy → Docling-Graph service | `_enriched_text` from DocumentElement rows |
+| Chunk artifact resolution | `identity_map` → `element_uid` → Artifact | DocumentElement-based mapping |
+
+---
+
+## Assumptions to verify
+
+1. **Docling-Graph picture description consumption:** The wrapper passes the enriched DoclingDocument (with `meta.description` on pictures) to `run_pipeline()`. Whether Docling-Graph extracts entities from picture descriptions depends on the upstream library, not our wrapper. **This is an assumption — add an integration test** proving that enriched pictures influence extraction before removing the current fallback.
+
+2. **Context node append vs prepend:** Native `DoclingDocument.add_text()` appends to the body. Current behavior prepends summary/classification to the text stream. Appending places context at the end of the document, not the beginning. **This is an acceptable tradeoff** because: (a) LLM extraction is not order-dependent for document-level context, (b) the alternative (raw dict manipulation to prepend) bypasses native API safety, (c) if order matters, a future improvement can use `insert_text()` or `insert_item_before_sibling()` which the library also provides.
 
 ---
 
@@ -211,12 +219,12 @@ Check: `doc_dict.get("_enrichments", {}).get("version")` — if absent, pre-v4.
 | `docker/docling/app/converter.py` | Extract `self_ref` in `_extract_elements` |
 | `app/services/docling_client.py` | Pass `self_ref` in metadata |
 | `app/workers/pipeline.py` (prepare) | Build `_enrichments.identity_map`, store `self_ref` |
-| `app/workers/pipeline.py` (translate) | Store translations in `_enrichments.translations`, regenerate translated markdown from enriched copy |
-| `app/workers/pipeline.py` (pictures) | Store descriptions in `_enrichments.picture_descriptions` + native `meta.description` + legacy `annotations`, regenerate translated markdown |
-| `app/workers/pipeline.py` (chunks) | Build enriched copy, HybridChunker, fallback |
-| `app/workers/pipeline.py` (graph) | Build enriched copy, pass to service, remove `_enriched_text` |
-| `app/workers/pipeline.py` | New `_build_enriched_copy()` helper |
-| `app/api/v1/sources.py` (docling-raw) | Version-check: v4 → direct serve, pre-v4 → runtime injection |
-| `app/api/v1/sources.py` (element-translations) | Read from `_enrichments`, fallback to Postgres |
+| `app/workers/pipeline.py` (translate) | Store translations in `_enrichments.translations`, regenerate translated markdown via `_regenerate_translated_markdown()` |
+| `app/workers/pipeline.py` (pictures) | Write native `meta.description` + derive legacy `annotations` (NO `_enrichments.picture_descriptions`), regenerate translated markdown |
+| `app/workers/pipeline.py` (chunks) | `_build_enriched_copy_for_chunking()`, HybridChunker, fallback |
+| `app/workers/pipeline.py` (graph) | `_build_enriched_copy_for_graph()`, pass to service, remove `_enriched_text` |
+| `app/workers/pipeline.py` | New `_build_enriched_copy_for_chunking()`, `_build_enriched_copy_for_graph()`, `_regenerate_translated_markdown()`, `_parse_self_ref()` helpers |
+| `app/api/v1/sources.py` (docling-raw) | Version-check: enriched → direct serve, legacy → runtime injection |
+| `app/api/v1/sources.py` (element-translations) | Read from `_enrichments`, fallback to Postgres for legacy |
 | `docker/docling-graph/app/main.py` | Receive enriched copy directly (no `_enrichments` handling needed) |
 | `app/services/chunking.py` | Keep as fallback |
