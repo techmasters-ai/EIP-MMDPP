@@ -47,33 +47,52 @@ def index_trusted_submission(self, submission_id: str):
         vectors = embed_texts([submission.content])
         vector = vectors[0]
 
-        # Upsert TrustedTextChunk vertex in ArcadeDB with embedding
+        # Upsert trusted chunk in ArcadeDB — idempotent so retry/reindex
+        # can safely re-run after a partial write without failing on uniqueness.
         from app.db.session import get_graph_store
 
         graph_store = get_graph_store()
-        rid = graph_store.create_text_chunk_vertex_sync(
-            chunk_id=f"trusted:{submission_id}",
-            text=submission.content,
-            document_id=f"trusted:{submission_id}",
-            properties={
+        chunk_id = f"trusted:{submission_id}"
+        reviewed_at_str = (
+            submission.reviewed_at.isoformat() if submission.reviewed_at else None
+        )
+
+        # UPSERT: update if chunk_id exists, create if not
+        upsert_sql = (
+            "UPDATE TextChunk SET text = :text, document_id = :doc_id, "
+            "confidence = :confidence, classification = :classification, "
+            "modality = :modality, submission_id = :submission_id, "
+            "reviewed_at = :reviewed_at, status = :status, "
+            "updated_at = sysdate() "
+            "UPSERT WHERE chunk_id = :chunk_id"
+        )
+        result = graph_store._client.command_sync(
+            graph_store._database, "sql", upsert_sql,
+            {
+                "chunk_id": chunk_id,
+                "text": submission.content,
+                "doc_id": chunk_id,
                 "confidence": submission.confidence,
                 "classification": "UNCLASSIFIED",
                 "modality": "trusted_text",
                 "submission_id": submission_id,
-                "reviewed_at": (
-                    submission.reviewed_at.isoformat()
-                    if submission.reviewed_at
-                    else None
-                ),
-                "status": submission.status,
+                "reviewed_at": reviewed_at_str,
+                "status": "APPROVED_INDEXED",
             },
         )
-        graph_store.set_vertex_embedding_sync(
-            vertex_type="TrustedTextChunk",
-            vertex_id=rid,
-            embedding_property="text_embedding",
-            embedding=vector,
-        )
+        # Get the RID of the upserted vertex
+        rid = ""
+        if result and isinstance(result[0], dict):
+            rid = str(result[0].get("@rid", ""))
+
+        # Attach embedding (uses RID directly, safe for both create and update)
+        if rid:
+            graph_store.set_vertex_embedding_sync(
+                vertex_type="TextChunk",
+                vertex_id=rid,
+                embedding_property="text_embedding",
+                embedding=vector,
+            )
 
         # Update submission
         submission.status = "APPROVED_INDEXED"

@@ -109,6 +109,7 @@ async def approve_proposal(
         logger.warning(
             "Failed to enqueue indexing task for %s: %s", proposal_id, exc
         )
+        submission.status = "INDEX_FAILED"
         submission.index_status = "INDEX_FAILED"
         submission.index_error = f"Failed to enqueue: {exc}"
         await db.commit()
@@ -181,6 +182,7 @@ async def reindex_proposal(
         logger.info("Submission %s reindex enqueued", proposal_id)
     except Exception as exc:
         logger.warning("Failed to enqueue reindex for %s: %s", proposal_id, exc)
+        submission.status = "INDEX_FAILED"
         submission.index_status = "INDEX_FAILED"
         submission.index_error = f"Failed to enqueue: {exc}"
         await db.commit()
@@ -203,16 +205,16 @@ async def query_trusted_data(
 
     # Search TextChunk vertices that have modality=trusted_text
     hits = await graph_store.vector_search(
-        embedding=vectors[0],
-        entity_types=["TextChunk"],
-        limit=body.top_k,
+        "TextChunk", "text_embedding", vectors[0], body.top_k,
     )
 
     results = []
     for hit in hits:
         props = hit.properties or {}
-        # Only include trusted text results
+        # Only include approved trusted text results — governance boundary
         if props.get("modality") != "trusted_text":
+            continue
+        if props.get("status") != "APPROVED_INDEXED":
             continue
         results.append(
             TrustedDataQueryResult(

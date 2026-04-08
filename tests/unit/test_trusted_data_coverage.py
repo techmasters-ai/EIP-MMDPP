@@ -220,13 +220,16 @@ class TestIndexTrustedSubmission:
         from app.workers.trusted_data_tasks import index_trusted_submission
 
         mock_graph_store = MagicMock()
-        mock_graph_store.create_text_chunk_vertex_sync.return_value = "test-rid"
+        # UPSERT returns a list with the RID
+        mock_graph_store._client.command_sync.return_value = [{"@rid": "#99:0"}]
+        mock_graph_store._database = "testdb"
         with patch("app.db.session.get_graph_store", return_value=mock_graph_store):
             index_trusted_submission.run(str(mock_sub.id))
 
         assert mock_sub.status == "APPROVED_INDEXED"
         assert mock_sub.index_status == "COMPLETE"
-        mock_graph_store.create_text_chunk_vertex_sync.assert_called_once()
+        # UPSERT via command_sync instead of create_text_chunk_vertex_sync
+        mock_graph_store._client.command_sync.assert_called()
         mock_graph_store.set_vertex_embedding_sync.assert_called_once()
 
     @patch("app.services.embedding.embed_texts")

@@ -150,6 +150,7 @@ function ProposalsList() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
 
   const fetchSubmissions = async () => {
     setLoading(true);
@@ -173,7 +174,8 @@ function ProposalsList() {
   const handleApprove = async (id: string) => {
     setActionLoading(id);
     try {
-      await approveTrustedData(id);
+      await approveTrustedData(id, reviewNotes[id]);
+      setReviewNotes((prev) => { const n = { ...prev }; delete n[id]; return n; });
       await fetchSubmissions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to approve");
@@ -185,7 +187,8 @@ function ProposalsList() {
   const handleReject = async (id: string) => {
     setActionLoading(id);
     try {
-      await rejectTrustedData(id);
+      await rejectTrustedData(id, reviewNotes[id]);
+      setReviewNotes((prev) => { const n = { ...prev }; delete n[id]; return n; });
       await fetchSubmissions();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to reject");
@@ -290,7 +293,19 @@ function ProposalsList() {
                 Index error: {s.index_error}
               </div>
             )}
-            <div className="flex-center gap-sm" style={{ marginTop: "0.5rem" }}>
+            {s.status === "PROPOSED" && (
+              <div style={{ marginTop: "0.5rem" }}>
+                <input
+                  type="text"
+                  className="input input-sm"
+                  placeholder="Review notes (optional)"
+                  value={reviewNotes[s.id] || ""}
+                  onChange={(e) => setReviewNotes((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                  style={{ width: "100%", marginBottom: "0.25rem", fontSize: "0.85rem" }}
+                />
+              </div>
+            )}
+            <div className="flex-center gap-sm" style={{ marginTop: "0.25rem" }}>
               {s.status === "PROPOSED" && (
                 <>
                   <button
