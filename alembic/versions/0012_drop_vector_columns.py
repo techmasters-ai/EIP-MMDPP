@@ -16,12 +16,9 @@ depends_on = None
 
 
 def upgrade():
-    op.drop_column("text_chunks", "embedding", schema="retrieval")
-    op.drop_column("text_chunks", "qdrant_point_id", schema="retrieval")
-    op.drop_column("image_chunks", "embedding", schema="retrieval")
-    op.drop_column("image_chunks", "qdrant_point_id", schema="retrieval")
-    op.drop_column("trusted_data_submissions", "qdrant_point_id", schema="governance")
-    op.execute("DROP EXTENSION IF EXISTS vector")
+    # No-op: pgvector columns are no longer created in 0001/0002.
+    # Vectors are stored in ArcadeDB from the start.
+    pass
 
 
 def downgrade():

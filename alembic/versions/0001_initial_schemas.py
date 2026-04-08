@@ -5,16 +5,9 @@ Revises:
 Create Date: 2024-01-01 00:00:00.000000
 """
 
-import os
-
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
-
-# Read embedding dimensions from environment so the test stack (which uses a
-# smaller model) creates correctly-sized vector columns.
-_TEXT_DIM = int(os.environ.get("TEXT_EMBEDDING_DIM", "1024"))
-_IMAGE_DIM = int(os.environ.get("IMAGE_EMBEDDING_DIM", "512"))
 
 revision = "0001"
 down_revision = None
@@ -275,9 +268,8 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # retrieval.chunks  (with pgvector columns)
+    # retrieval.chunks  (vectors stored in ArcadeDB, not pgvector)
     # ------------------------------------------------------------------
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.create_table(
         "chunks",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -310,30 +302,7 @@ def upgrade() -> None:
         schema="retrieval",
     )
 
-    # Add vector columns via raw SQL (pgvector types).
-    # Dimensions are read from env vars so test and prod stacks can differ.
-    op.execute(
-        f"ALTER TABLE retrieval.chunks ADD COLUMN embedding vector({_TEXT_DIM})"
-    )
-    op.execute(
-        f"ALTER TABLE retrieval.chunks ADD COLUMN image_embedding vector({_IMAGE_DIM})"
-    )
-
-    # HNSW indices for fast approximate nearest neighbour search
-    op.execute("""
-        CREATE INDEX ix_chunks_embedding_hnsw
-        ON retrieval.chunks
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-        WHERE embedding IS NOT NULL
-    """)
-    op.execute("""
-        CREATE INDEX ix_chunks_image_embedding_hnsw
-        ON retrieval.chunks
-        USING hnsw (image_embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-        WHERE image_embedding IS NOT NULL
-    """)
+    # Vectors now stored in ArcadeDB (TextChunk/ImageChunk vertices)
     op.create_index(
         "ix_chunks_artifact_id", "chunks", ["artifact_id"], schema="retrieval"
     )

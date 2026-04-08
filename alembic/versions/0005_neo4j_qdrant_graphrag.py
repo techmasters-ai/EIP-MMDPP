@@ -16,31 +16,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # --- Add qdrant_point_id to text_chunks ---
-    op.add_column(
-        "text_chunks",
-        sa.Column("qdrant_point_id", postgresql.UUID(as_uuid=True), nullable=True),
-        schema="retrieval",
-    )
-    op.create_index(
-        "ix_text_chunks_qdrant_point_id",
-        "text_chunks",
-        ["qdrant_point_id"],
-        schema="retrieval",
-    )
-
-    # --- Add qdrant_point_id to image_chunks ---
-    op.add_column(
-        "image_chunks",
-        sa.Column("qdrant_point_id", postgresql.UUID(as_uuid=True), nullable=True),
-        schema="retrieval",
-    )
-    op.create_index(
-        "ix_image_chunks_qdrant_point_id",
-        "image_chunks",
-        ["qdrant_point_id"],
-        schema="retrieval",
-    )
+    # qdrant_point_id columns removed — vectors stored in ArcadeDB
 
     # --- GraphRAG communities ---
     op.create_table(
@@ -93,17 +69,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("graphrag_community_reports", schema="retrieval")
     op.drop_table("graphrag_communities", schema="retrieval")
-
-    op.drop_index(
-        "ix_image_chunks_qdrant_point_id",
-        table_name="image_chunks",
-        schema="retrieval",
-    )
-    op.drop_column("image_chunks", "qdrant_point_id", schema="retrieval")
-
-    op.drop_index(
-        "ix_text_chunks_qdrant_point_id",
-        table_name="text_chunks",
-        schema="retrieval",
-    )
-    op.drop_column("text_chunks", "qdrant_point_id", schema="retrieval")

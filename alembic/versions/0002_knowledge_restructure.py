@@ -5,14 +5,9 @@ Revises: 0001
 Create Date: 2026-03-05 00:00:00.000000
 """
 
-import os
-
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
-
-_TEXT_DIM = int(os.environ.get("TEXT_EMBEDDING_DIM", "1024"))
-_IMAGE_DIM = int(os.environ.get("IMAGE_EMBEDDING_DIM", "512"))
 
 revision = "0002"
 down_revision = "0001"
@@ -62,19 +57,7 @@ def upgrade() -> None:
         schema="retrieval",
     )
 
-    # Add text embedding vector column
-    op.execute(
-        f"ALTER TABLE retrieval.text_chunks ADD COLUMN embedding vector({_TEXT_DIM})"
-    )
-
-    # HNSW index for text embeddings
-    op.execute("""
-        CREATE INDEX ix_text_chunks_embedding_hnsw
-        ON retrieval.text_chunks
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-        WHERE embedding IS NOT NULL
-    """)
+    # Vectors stored in ArcadeDB (TextChunk vertices), not pgvector
     op.create_index(
         "ix_text_chunks_artifact_id", "text_chunks", ["artifact_id"], schema="retrieval"
     )
@@ -123,19 +106,7 @@ def upgrade() -> None:
         schema="retrieval",
     )
 
-    # Add image embedding vector column
-    op.execute(
-        f"ALTER TABLE retrieval.image_chunks ADD COLUMN embedding vector({_IMAGE_DIM})"
-    )
-
-    # HNSW index for image embeddings
-    op.execute("""
-        CREATE INDEX ix_image_chunks_embedding_hnsw
-        ON retrieval.image_chunks
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-        WHERE embedding IS NOT NULL
-    """)
+    # Vectors stored in ArcadeDB (ImageChunk vertices), not pgvector
     op.create_index(
         "ix_image_chunks_artifact_id", "image_chunks", ["artifact_id"], schema="retrieval"
     )
@@ -146,28 +117,30 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # Migrate data from chunks → text_chunks / image_chunks
     # ------------------------------------------------------------------
+    # Migrate rows from chunks → text_chunks (text modality)
     op.execute("""
         INSERT INTO retrieval.text_chunks
-            (id, artifact_id, document_id, chunk_index, chunk_text, embedding,
+            (id, artifact_id, document_id, chunk_index, chunk_text,
              modality, page_number, bounding_box, classification, created_at, updated_at)
         SELECT
-            c.id, c.artifact_id, a.document_id, c.chunk_index, c.chunk_text, c.embedding,
+            c.id, c.artifact_id, a.document_id, c.chunk_index, c.chunk_text,
             c.modality, c.page_number, c.bounding_box, c.classification, c.created_at, c.updated_at
         FROM retrieval.chunks c
         JOIN ingest.artifacts a ON a.id = c.artifact_id
-        WHERE c.embedding IS NOT NULL
+        WHERE c.modality = 'text'
     """)
 
+    # Migrate rows from chunks → image_chunks (image modality)
     op.execute("""
         INSERT INTO retrieval.image_chunks
-            (id, artifact_id, document_id, chunk_index, chunk_text, embedding,
+            (id, artifact_id, document_id, chunk_index, chunk_text,
              modality, page_number, bounding_box, classification, created_at, updated_at)
         SELECT
-            c.id, c.artifact_id, a.document_id, c.chunk_index, c.chunk_text, c.image_embedding,
+            c.id, c.artifact_id, a.document_id, c.chunk_index, c.chunk_text,
             c.modality, c.page_number, c.bounding_box, c.classification, c.created_at, c.updated_at
         FROM retrieval.chunks c
         JOIN ingest.artifacts a ON a.id = c.artifact_id
-        WHERE c.image_embedding IS NOT NULL
+        WHERE c.modality != 'text'
     """)
 
     # ------------------------------------------------------------------

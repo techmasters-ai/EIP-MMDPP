@@ -32,15 +32,7 @@ def upgrade() -> None:
         sa.Column("index_error", sa.Text, nullable=True),
         schema="governance",
     )
-    op.add_column(
-        "trusted_data_submissions",
-        sa.Column(
-            "qdrant_point_id",
-            postgresql.UUID(as_uuid=True),
-            nullable=True,
-        ),
-        schema="governance",
-    )
+    # qdrant_point_id removed — vectors stored in ArcadeDB
     op.add_column(
         "trusted_data_submissions",
         sa.Column("embedding_model", sa.String(100), nullable=True),
@@ -102,7 +94,6 @@ def downgrade() -> None:
     # Drop new columns
     op.drop_column("trusted_data_submissions", "embedded_at", schema="governance")
     op.drop_column("trusted_data_submissions", "embedding_model", schema="governance")
-    op.drop_column("trusted_data_submissions", "qdrant_point_id", schema="governance")
     op.drop_column("trusted_data_submissions", "index_error", schema="governance")
     op.drop_column("trusted_data_submissions", "index_status", schema="governance")
 
