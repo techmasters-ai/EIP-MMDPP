@@ -583,10 +583,11 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
   let provenanceLabel = "";
   if (ctx?.source === "ontology") {
     const entity = ctx.entity_name as string | undefined;
-    const rel = ctx.rel_type as string | undefined;
-    const related = ctx.related_name as string | undefined;
-    if (entity && rel && related) {
-      provenanceLabel = `Via ontology: ${entity} --[${rel}]--> ${related}`;
+    const entityType = ctx.entity_type as string | undefined;
+    if (entity) {
+      provenanceLabel = entityType
+        ? `Via shared entity: ${entity} (${entityType})`
+        : `Via shared entity: ${entity}`;
     }
   } else if (ctx?.source === "doc_structure") {
     const linkType = ctx.link_type as string | undefined;

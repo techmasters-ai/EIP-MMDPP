@@ -204,7 +204,12 @@ async def get_image(
 def _apply_reranker(
     results: list[QueryResultItem], body: UnifiedQueryRequest
 ) -> list[QueryResultItem]:
-    """Re-rank results using cross-encoder if enabled and query_text is present."""
+    """Re-rank results using cross-encoder if enabled and query_text is present.
+
+    Preserves ALL fields on the original QueryResultItem (context, sources,
+    lineage metadata). Only the score is updated with the reranker's score.
+    Content text is truncated for the reranker input only, not on the result.
+    """
     from app.config import get_settings
     from app.services.reranker import rerank as cross_encoder_rerank
 
@@ -212,39 +217,40 @@ def _apply_reranker(
     if not _s.reranker_enabled or not body.query_text:
         return results
 
-    # Truncate content_text for reranker — long image descriptions (2000+ chars)
-    # make the cross-encoder extremely slow on CPU.  512 chars is enough for
-    # the reranker's max token window.
     _RERANK_MAX_CHARS = 512
-    rerank_input = [
-        {
-            "chunk_id": str(r.chunk_id or ""),
+    top_n = body.reranker_top_n or _s.reranker_top_n
+    candidates = results[:top_n]
+    remainder = results[top_n:]
+
+    # Build a lookup from chunk_id to original result for score update
+    by_key: dict[str, QueryResultItem] = {}
+    rerank_input = []
+    for r in candidates:
+        key = str(r.chunk_id or id(r))
+        by_key[key] = r
+        rerank_input.append({
+            "chunk_id": key,
             "content_text": (r.content_text or "")[:_RERANK_MAX_CHARS],
             "score": r.score,
-            "artifact_id": r.artifact_id,
-            "document_id": r.document_id,
-            "modality": r.modality,
-            "page_number": r.page_number,
-            "classification": r.classification,
-        }
-        for r in results[:body.reranker_top_n or _s.reranker_top_n]
-    ]
+        })
+
     reranked = cross_encoder_rerank(body.query_text, rerank_input, top_k=body.top_k)
 
-    # Rebuild result items from reranked dicts
-    return [
-        QueryResultItem(
-            chunk_id=r["chunk_id"],
-            artifact_id=r.get("artifact_id"),
-            document_id=r.get("document_id"),
-            score=r.get("reranker_score", r.get("score", 0.0)),
-            modality=r.get("modality", "text"),
-            content_text=r.get("content_text"),
-            page_number=r.get("page_number"),
-            classification=r.get("classification", "UNCLASSIFIED"),
-        )
-        for r in reranked
-    ]
+    # Update scores on the ORIGINAL items, preserving context/sources/lineage
+    output: list[QueryResultItem] = []
+    for r in reranked:
+        key = r["chunk_id"]
+        original = by_key.get(key)
+        if original:
+            original.score = r.get("reranker_score", r.get("score", original.score))
+            output.append(original)
+
+    # Append unscorable items (no content_text) from remainder
+    for r in remainder:
+        if r not in output:
+            output.append(r)
+
+    return output[:body.top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -665,19 +671,20 @@ async def _expand_via_cross_modal(
     graph_store = get_graph_store()
 
     try:
-        # Use get_neighborhood to traverse from chunk to connected chunks
-        neighbors = await graph_store.get_neighborhood(
-            chunk_id, depth=3,
-        )
-        # Filter to chunk-like entities (TextChunk, ImageChunk)
+        # Use ontology-linked-chunks traversal which returns actual chunk data
+        # (chunk_id, chunk_type, document_id, etc.) via MATCH query.
+        linked = await graph_store.get_ontology_linked_chunks(chunk_id)
         records = []
-        for n in neighbors:
-            if hasattr(n, 'properties') and n.properties.get('chunk_id'):
+        for row in linked[:s.retrieval_doc_expand_k]:
+            cid = row.get("chunk_id", "")
+            ctype = row.get("chunk_type", "TextChunk")
+            if cid:
                 records.append({
-                    "target_chunk_id": n.properties.get("chunk_id", n.node_id),
-                    "target_chunk_type": "image_chunk" if n.entity_type == "ImageChunk" else "text_chunk",
+                    "target_chunk_id": cid,
+                    "target_chunk_type": "image_chunk" if ctype == "ImageChunk" else "text_chunk",
+                    "entity_name": row.get("entity_name"),
+                    "rel_type": "EXTRACTED_FROM",
                 })
-        records = records[:s.retrieval_doc_expand_k]
     except Exception as e:
         logger.debug("Cross-modal expansion failed for %s: %s", chunk_id, e)
         return []
@@ -746,18 +753,22 @@ async def _expand_via_ontology(
 
             chunk_data = await _lookup_chunk_by_type(db_session, target_id, target_type, include_context)
             if chunk_data:
+                # The link's entity_name/entity_type is the intermediate entity
+                # that connects the source chunk to this target chunk via
+                # EXTRACTED_FROM edges. Use it for provenance display.
+                entity_name = link.get("entity_name", "")
+                entity_type = link.get("entity_type", "")
                 chunk_data.score = compute_fusion_score(
                     semantic_score=source_score,
-                    ontology_rel_type=link.get("rel_type", "RELATED_TO"),
+                    ontology_rel_type="EXTRACTED_FROM",
                     ontology_hops=1,
                     content_text=chunk_data.content_text,
                     query_text=query_text,
                 )
                 chunk_data.context = {
                     "source": "ontology",
-                    "rel_type": link.get("rel_type", "RELATED_TO"),
-                    "entity_name": link.get("entity_name", ""),
-                    "related_name": link.get("related_name", ""),
+                    "entity_name": entity_name,
+                    "entity_type": entity_type,
                     "source_chunk_id": chunk_id,
                 }
                 items.append(chunk_data)
@@ -1107,6 +1118,7 @@ async def _global_query(body: UnifiedQueryRequest) -> UnifiedQueryResponse:
                 classification=highest_classification,
                 sources=all_sources if all_sources else None,
                 context={
+                    "source": "global",
                     "synthesis": True,
                     "reports": raw_reports,
                 },
