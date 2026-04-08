@@ -169,7 +169,7 @@ export function GraphExplorer() {
     buildOntologyOptions(null, []),
   );
 
-  useEffect(() => {
+  const refreshOntologyOptions = useCallback(() => {
     getActiveQueryProfiles()
       .then((payload) => {
         setOntologyOptions(buildOntologyOptions(payload.registry, payload.exposed_profiles));
@@ -178,6 +178,10 @@ export function GraphExplorer() {
         setOntologyOptions(buildOntologyOptions(null, []));
       });
   }, []);
+
+  useEffect(() => {
+    refreshOntologyOptions();
+  }, [refreshOntologyOptions]);
 
   return (
     <div>
@@ -203,7 +207,7 @@ export function GraphExplorer() {
           validationMatrix={ontologyOptions.validationMatrix}
         />
       )}
-      {tab === "profiles" && <QueryProfileRegistryPage />}
+      {tab === "profiles" && <QueryProfileRegistryPage onOntologyChanged={refreshOntologyOptions} />}
     </div>
   );
 }
@@ -306,15 +310,23 @@ function GraphSearch() {
           {results.length === 0 ? (
             <p className="text-muted">No entities found.</p>
           ) : (
-            results.map((item, i) => (
+            results.map((item, i) => {
+              // Use entity_name from context (not content_text which may be chunk evidence)
+              const ctx = item.context as Record<string, unknown> | undefined;
+              const entityName = String(ctx?.entity_name || item.content_text || "");
+              const entityType = String(ctx?.entity_type || "");
+              const neighbors = ctx?.neighbors as Array<Record<string, unknown>> | undefined;
+              const sources = item.sources as Array<Record<string, unknown>> | undefined;
+
+              return (
               <div key={i} className="result-card">
                 <div className="result-card-header">
                   <span className="text-xs text-muted">#{i + 1}</span>
-                  <span className="badge badge-info">{item.modality}</span>
-                  {item.content_text && (
+                  <span className="badge badge-info">{entityType || item.modality}</span>
+                  {entityName && (
                     <button
                       className={`btn btn-ghost btn-sm graph-toggle-btn${graphViewIndex === i ? " active" : ""}`}
-                      onClick={() => void handleToggleGraph(i, item.content_text!)}
+                      onClick={() => void handleToggleGraph(i, entityName)}
                       title="Toggle graph view"
                     >
                       ◉
@@ -339,16 +351,55 @@ function GraphSearch() {
                   )
                 ) : (
                   <>
-                    {item.content_text && <p>{item.content_text}</p>}
-                    {item.context && (
-                      <pre className="text-xs" style={{ whiteSpace: "pre-wrap", margin: "0.5rem 0" }}>
-                        {JSON.stringify(item.context, null, 2)}
-                      </pre>
+                    {/* Entity name and type */}
+                    <div style={{ fontWeight: 600, fontSize: "1.05rem" }}>{entityName}</div>
+                    {item.classification && item.classification !== "UNCLASSIFIED" && (
+                      <span className="badge" style={{ marginLeft: "0.5rem" }}>{item.classification}</span>
+                    )}
+
+                    {/* Neighbors */}
+                    {neighbors && neighbors.length > 0 && (
+                      <div style={{ marginTop: "0.5rem", fontSize: "0.85rem", color: "var(--color-text-muted)" }}>
+                        <strong>Connections:</strong>{" "}
+                        {neighbors.map((n, j) => (
+                          <span key={j}>
+                            <a href="#" onClick={(e) => { e.preventDefault(); void handleNodeClick(String(n.name)); }}
+                               style={{ color: "var(--color-primary)" }}>
+                              {String(n.name)}
+                            </a>
+                            {` (${String(n.entity_type)})`}
+                            {j < neighbors.length - 1 ? ", " : ""}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Source documents */}
+                    {sources && sources.length > 0 && (
+                      <details style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+                        <summary style={{ color: "var(--color-text-muted)", cursor: "pointer" }}>
+                          Sources ({sources.length} document{sources.length !== 1 ? "s" : ""})
+                        </summary>
+                        <div style={{ marginTop: "0.25rem" }}>
+                          {sources.map((src, j) => (
+                            <div key={j} style={{ color: "var(--color-text-muted)", marginBottom: "0.15rem" }}>
+                              {String(src.document_id).slice(0, 8)}...
+                              {src.page_number != null && <> p.{String(src.page_number)}</>}
+                              {src.chunk_text_preview && (
+                                <span style={{ opacity: 0.7, marginLeft: "0.5rem" }}>
+                                  {String(src.chunk_text_preview).slice(0, 100)}...
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
                     )}
                   </>
                 )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       )}

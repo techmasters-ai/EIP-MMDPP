@@ -209,7 +209,7 @@ function MultiSelectField(props: {
   );
 }
 
-export function QueryProfileRegistryPage() {
+export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChanged?: () => void } = {}) {
   const [registries, setRegistries] = useState<QueryProfileRegistry[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [defaultTemplate, setDefaultTemplate] = useState<QueryProfileRegistryTemplate | null>(null);
@@ -354,6 +354,7 @@ export function QueryProfileRegistryPage() {
         : await createQueryProfileRegistry({ ...payload, profiles: [] });
 
       await loadData(saved.id);
+      onOntologyChanged?.();
       setSuccess(
         selectedId
           ? `Updated registry "${saved.name}".`
@@ -373,6 +374,7 @@ export function QueryProfileRegistryPage() {
     try {
       const activated = await activateQueryProfileRegistry(registryId);
       await loadData(activated.id);
+      onOntologyChanged?.();
       setSuccess(`Activated registry "${activated.name}".`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to activate registry");

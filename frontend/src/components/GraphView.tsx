@@ -39,18 +39,23 @@ export function toGraphElements(
 
   const edgeIds = new Set<string>();
   for (const edge of response.edges) {
-    const edgeId = `${edge.source}->${edge.target}::${edge.rel_type}`;
+    // Backend may send {from, to} or {source, target} — normalize to source/target
+    const source = edge.source || edge.from;
+    const target = edge.target || edge.to;
+    if (!source || !target) continue;
+    const relType = edge.rel_type || edge.label || "";
+    const edgeId = `${source}->${target}::${relType}`;
     if (edgeIds.has(edgeId)) continue;
     edgeIds.add(edgeId);
-    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
-    const { source, target, rel_type, ...rest } = edge;
+    if (!nodeIds.has(source) || !nodeIds.has(target)) continue;
+    const { source: _s, target: _t, from: _f, to: _to, rel_type: _r, label: _l, ...rest } = edge;
     elements.push({
       data: {
         id: edgeId,
         source,
         target,
-        label: rel_type,
-        rel_type,
+        label: relType,
+        rel_type: relType,
         ...rest,
       },
     });
