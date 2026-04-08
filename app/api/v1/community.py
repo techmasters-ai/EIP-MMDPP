@@ -32,10 +32,10 @@ async def trigger_detection(request: DetectRequest):
 @router.get("/status")
 async def get_status():
     """Return the most recent community detection run record."""
-    from app.db.session import get_async_session
+    from app.db.session import AsyncSessionFactory
     from sqlalchemy import text
 
-    async with get_async_session() as session:
+    async with AsyncSessionFactory() as session:
         result = await session.execute(
             text(
                 "SELECT * FROM retrieval.community_runs "
@@ -51,10 +51,10 @@ async def get_status():
 @router.get("/status/{run_id}")
 async def get_run_status(run_id: str):
     """Return the run record for a specific detection run."""
-    from app.db.session import get_async_session
+    from app.db.session import AsyncSessionFactory
     from sqlalchemy import text
 
-    async with get_async_session() as session:
+    async with AsyncSessionFactory() as session:
         result = await session.execute(
             text("SELECT * FROM retrieval.community_runs WHERE id = :id"),
             {"id": run_id},
@@ -69,14 +69,14 @@ async def get_run_status(run_id: str):
 async def get_settings():
     """Return community detection / Global Search indexing settings for the UI."""
     from app.config import get_settings as _gs
-    from app.db.session import get_async_session
+    from app.db.session import AsyncSessionFactory
     from sqlalchemy import text
 
     s = _gs()
 
     # Get last run info for timer calculation
     last_run = None
-    async with get_async_session() as session:
+    async with AsyncSessionFactory() as session:
         result = await session.execute(
             text(
                 "SELECT status, started_at, completed_at, total_communities, "
