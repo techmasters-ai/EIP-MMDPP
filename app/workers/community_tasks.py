@@ -50,7 +50,11 @@ def run_community_detection_task(
         graph_store = get_graph_store()
         result = asyncio.run(run_community_detection(graph_store, mode=mode))
 
-        _record_run_complete(run_id, result)
+        # Check if detection reported a failure (returns {"status": "FAILED"})
+        if result.get("status") == "FAILED":
+            _record_run_failed(run_id, result.get("error", "detection algorithm failed"))
+        else:
+            _record_run_complete(run_id, result)
         return result
     except Exception as exc:
         _record_run_failed(run_id, str(exc))

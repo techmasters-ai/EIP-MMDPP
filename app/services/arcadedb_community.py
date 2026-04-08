@@ -51,14 +51,18 @@ async def run_community_detection(
     if algorithm == "leiden":
         algo_params["resolution"] = resolution
 
-    # Step 1: Run community detection algorithm on domain entities
+    # Step 1: Run community detection algorithm on domain entities only.
+    # Exclude structural types so they don't influence community assignment.
     try:
-        results = await graph_store.run_community_algorithm(algorithm, algo_params)
+        results = await graph_store.run_community_algorithm(
+            algorithm, algo_params, exclude_types=_STRUCTURAL_TYPES,
+        )
     except Exception as exc:
         logger.error("Community detection algorithm failed: %s", exc)
         return {"status": "FAILED", "error": str(exc)}
 
-    # Step 2: Group by community, filtering out structural types
+    # Step 2: Group by community, filtering out structural types.
+    # Each member carries node_rid for unambiguous identity.
     communities: dict[int, list[dict[str, str]]] = {}
     for row in results:
         cid = row.get("community_id")
@@ -70,6 +74,7 @@ async def run_community_detection(
         communities.setdefault(cid, []).append({
             "name": row.get("name", ""),
             "entity_type": etype,
+            "node_rid": str(row.get("node_rid", "")),
         })
 
     # Step 3: Load existing hashes for incremental diffing
@@ -135,11 +140,36 @@ async def run_community_detection(
 
         reports_generated += 1
 
+    # Clean up stale reports: delete CommunityReport vertices whose
+    # community_id was not seen in the current detection run.
+    current_cids = set(communities.keys())
+    reports_deleted = 0
+    if current_cids:
+        try:
+            existing_cids = {
+                r["community_id"]
+                for r in await graph_store.get_community_reports()
+            }
+            stale_cids = existing_cids - current_cids
+            for stale_cid in stale_cids:
+                try:
+                    await graph_store._client.command(
+                        graph_store._database, "sql",
+                        "DELETE VERTEX FROM CommunityReport WHERE community_id = :cid",
+                        {"cid": stale_cid},
+                    )
+                    reports_deleted += 1
+                except Exception as exc:
+                    logger.warning("Failed to delete stale report %d: %s", stale_cid, exc)
+        except Exception as exc:
+            logger.warning("Failed to clean stale reports: %s", exc)
+
     return {
         "status": "COMPLETE",
         "total_communities": len(communities),
         "reports_generated": reports_generated,
         "reports_reused": reports_reused,
+        "reports_deleted": reports_deleted,
     }
 
 
@@ -282,11 +312,12 @@ async def _collect_community_sources(
     sources: list[dict[str, Any]] = []
 
     for member in members[:20]:  # cap to avoid massive traversals
-        name = member.get("name", "")
-        if not name:
+        # Prefer node_rid for unambiguous lookup; fall back to name
+        entity_id = member.get("node_rid") or member.get("name", "")
+        if not entity_id:
             continue
         try:
-            evidence = await graph_store.get_entity_evidence_chunks(name, limit=5)
+            evidence = await graph_store.get_entity_evidence_chunks(entity_id, limit=5)
             for chunk in evidence:
                 doc_id = chunk.get("document_id", "")
                 if not doc_id or doc_id in seen:

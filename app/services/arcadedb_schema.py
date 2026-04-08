@@ -69,6 +69,7 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("key_entities", "LIST"),
         ("key_relationships", "LIST"),
         ("report_embedding", "ARRAY_OF_FLOATS"),
+        ("source_documents", "LIST"),
         ("model_name", "STRING"),
         ("generated_at", "DATETIME"),
     ],

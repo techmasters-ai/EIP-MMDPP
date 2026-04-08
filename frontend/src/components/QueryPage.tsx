@@ -144,19 +144,63 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
 /* ---------- Global query: synthesized answer from community reports ---------- */
 function GlobalQueryDetail({ result }: { result: QueryResultItem }) {
   const ctx = result.context as Record<string, unknown> | undefined;
-  const communities = ctx?.communities as Array<Record<string, unknown>> | undefined;
+  const reports = ctx?.reports as Array<Record<string, unknown>> | undefined;
+  const sources = (result as Record<string, unknown>).sources as Array<Record<string, unknown>> | undefined;
 
   return (
     <div className="space-y-4">
-      <div className="prose max-w-none">
+      <div className="prose max-w-none" style={{ whiteSpace: "pre-line" }}>
         {result.content_text || "No results"}
       </div>
-      {communities && communities.length > 0 && (
-        <details className="mt-4">
-          <summary className="cursor-pointer text-sm text-gray-500">
-            Sources ({communities.length} communities)
+
+      {/* Source documents with page numbers */}
+      {sources && sources.length > 0 && (
+        <details className="mt-4" open>
+          <summary className="cursor-pointer text-sm font-medium" style={{ color: "var(--color-text-muted)" }}>
+            Sources ({sources.length} document{sources.length !== 1 ? "s" : ""})
           </summary>
-          {/* Community source details */}
+          <div style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+            {sources.map((src, i) => (
+              <div key={i} style={{ marginBottom: "0.25rem", color: "var(--color-text-muted)" }}>
+                <strong>{String(src.document_id).slice(0, 8)}...</strong>
+                {src.page_number != null && <> p.{String(src.page_number)}</>}
+                {src.classification && src.classification !== "UNCLASSIFIED" && (
+                  <span style={{ marginLeft: "0.5rem", color: "var(--color-warning)" }}>[{String(src.classification)}]</span>
+                )}
+                {src.chunk_text_preview && (
+                  <span style={{ marginLeft: "0.5rem", opacity: 0.7 }}>
+                    {String(src.chunk_text_preview).slice(0, 100)}...
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* Community reports used for synthesis */}
+      {reports && reports.length > 0 && (
+        <details className="mt-4">
+          <summary className="cursor-pointer text-sm" style={{ color: "var(--color-text-muted)" }}>
+            Community Reports ({reports.length})
+          </summary>
+          <div style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+            {reports.map((r, i) => (
+              <div key={i} style={{
+                marginBottom: "0.5rem", padding: "0.5rem",
+                border: "1px solid var(--color-border)", borderRadius: "var(--radius)",
+              }}>
+                <strong>Community {String(r.community_id)}: {String(r.title)}</strong>
+                <span style={{ marginLeft: "0.5rem", color: "var(--color-text-muted)", fontSize: "0.8rem" }}>
+                  score: {Number(r.score || 0).toFixed(2)}
+                </span>
+                <div style={{ marginTop: "0.25rem", color: "var(--color-text-muted)" }}>
+                  {String(r.summary || "").slice(0, 200)}
+                  {String(r.summary || "").length > 200 ? "..." : ""}
+                </div>
+              </div>
+            ))}
+          </div>
         </details>
       )}
     </div>

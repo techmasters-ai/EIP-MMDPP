@@ -1289,13 +1289,28 @@ class ArcadeDBGraphStore:
         self,
         algorithm: str,
         params: dict,
+        exclude_types: set[str] | None = None,
     ) -> list[dict]:
-        """Run a community detection algorithm and return per-node results."""
+        """Run a community detection algorithm and return per-node results.
+
+        If *exclude_types* is provided, nodes whose @class is in that set
+        are filtered out server-side via a WHERE clause on the YIELD, so
+        structural vertices (Document, TextChunk, etc.) do not influence
+        community assignment.
+        """
         algo_params = ", ".join(f"{k}: {v}" for k, v in params.items())
+
+        if exclude_types:
+            type_list = ", ".join(f"'{t}'" for t in exclude_types)
+            where_clause = f"WHERE node.@class NOT IN [{type_list}] "
+        else:
+            where_clause = ""
+
         cypher = (
             f"CALL algo.{algorithm}({{{algo_params}}}) YIELD node, communityId "
+            f"{where_clause}"
             f"RETURN node.name AS name, node.entity_type AS entity_type, "
-            f"communityId AS community_id"
+            f"node.@rid AS node_rid, communityId AS community_id"
         )
         return await self._client.query(self._database, "cypher", cypher)
 

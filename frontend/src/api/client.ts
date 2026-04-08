@@ -47,6 +47,16 @@ export interface QueryResultItem {
   content_text?: string;
   page_number?: number;
   classification: string;
+  // Data lineage
+  source_characterization?: string;
+  date_of_information?: string;
+  extraction_confidence?: number;
+  sources?: Array<{
+    document_id: string;
+    page_number?: number;
+    classification?: string;
+    chunk_text_preview?: string;
+  }>;
   context?: Record<string, unknown>;
   image_url?: string;
 }
