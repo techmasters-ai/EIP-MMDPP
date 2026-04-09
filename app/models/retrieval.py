@@ -17,10 +17,10 @@ class TextChunk(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    artifact_id: Mapped[uuid.UUID] = mapped_column(
+    artifact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("ingest.artifacts.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     document_id: Mapped[uuid.UUID] = mapped_column(
