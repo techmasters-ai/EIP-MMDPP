@@ -2980,6 +2980,66 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     except Exception:
                         pass  # Best-effort for cross-chunk edges
 
+        # Create doc-structure edges in ArcadeDB (NEXT_CHUNK, SAME_SECTION,
+        # SAME_ARTIFACT) with weight properties, mirroring the Postgres
+        # chunk_links. These enable ArcadeDB-native retrieval expansion.
+        structural_edge_sql = []
+        structural_params: dict[str, Any] = {}
+        edge_idx = 0
+
+        def _add_structural_edge(from_rid: str, to_rid: str, link_type: str, weight: float) -> None:
+            nonlocal edge_idx
+            structural_edge_sql.append(
+                f"CREATE EDGE {link_type} FROM {from_rid} TO {to_rid} "
+                f"SET weight = :w_{edge_idx}, created_at = sysdate()"
+            )
+            structural_params[f"w_{edge_idx}"] = weight
+            edge_idx += 1
+
+        # NEXT_CHUNK (consecutive text chunks)
+        for i in range(len(text_chunks) - 1):
+            src_rid = tc_rid_map.get(str(text_chunks[i].id))
+            tgt_rid = tc_rid_map.get(str(text_chunks[i + 1].id))
+            if src_rid and tgt_rid:
+                _add_structural_edge(src_rid, tgt_rid, "NEXT_CHUNK", settings.retrieval_weight_next_chunk)
+                _add_structural_edge(tgt_rid, src_rid, "NEXT_CHUNK", settings.retrieval_weight_next_chunk)
+
+        # SAME_SECTION (neighbor-only within section)
+        for section, chunks in section_chunks.items():
+            sec_rids = [(str(c.id), tc_rid_map.get(str(c.id))) for c in chunks]
+            for i in range(len(sec_rids) - 1):
+                _, r1 = sec_rids[i]
+                _, r2 = sec_rids[i + 1]
+                if r1 and r2:
+                    _add_structural_edge(r1, r2, "SAME_SECTION", settings.retrieval_weight_same_section)
+                    _add_structural_edge(r2, r1, "SAME_SECTION", settings.retrieval_weight_same_section)
+
+        # SAME_ARTIFACT (neighbor-only within artifact)
+        for art_id, chunks in artifact_chunks.items():
+            art_rids = [(str(c.id), tc_rid_map.get(str(c.id))) for c in chunks]
+            for i in range(len(art_rids) - 1):
+                _, r1 = art_rids[i]
+                _, r2 = art_rids[i + 1]
+                if r1 and r2:
+                    _add_structural_edge(r1, r2, "SAME_ARTIFACT", settings.retrieval_weight_same_artifact)
+                    _add_structural_edge(r2, r1, "SAME_ARTIFACT", settings.retrieval_weight_same_artifact)
+
+        if structural_edge_sql:
+            try:
+                graph_store._client.command_sync(
+                    graph_store._database, "sqlscript",
+                    ";\n".join(structural_edge_sql), structural_params,
+                )
+                logger.info(
+                    "derive_structure_links: created %d ArcadeDB structural edges for %s",
+                    len(structural_edge_sql), document_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "derive_structure_links: ArcadeDB structural edges failed for %s: %s",
+                    document_id, exc,
+                )
+
         # Entity-chunk EXTRACTED_FROM edges
         entity_links = 0
 

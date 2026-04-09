@@ -349,6 +349,21 @@ class GraphStore(Protocol):
         """
         ...
 
+    async def get_structural_neighbors(
+        self,
+        chunk_id: str,
+        max_hops: int = 2,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Return structurally linked chunks via NEXT_CHUNK, SAME_PAGE,
+        SAME_SECTION, SAME_ARTIFACT edges in ArcadeDB.
+
+        Returns dicts with chunk_id, chunk_type, link_type, weight, and
+        hop count for scoring. This is the ArcadeDB-native replacement for
+        the Postgres chunk_links table query.
+        """
+        ...
+
     async def get_entity_evidence_chunks(
         self,
         entity_rid: str,

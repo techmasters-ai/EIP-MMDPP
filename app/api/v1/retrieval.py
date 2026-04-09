@@ -586,31 +586,53 @@ async def _expand_via_doc_structure(
     include_context: bool,
     query_text: str | None = None,
 ) -> list[QueryResultItem]:
-    """Expand via document-structure links (chunk_links table).
+    """Expand via document-structure links.
 
-    Returns empty list if no chunk_links exist (legacy documents).
+    Primary path: ArcadeDB native graph traversal (NEXT_CHUNK, SAME_PAGE,
+    SAME_SECTION, SAME_ARTIFACT edges with weight properties).
+    Fallback: Postgres chunk_links table for pre-migration documents.
     """
     from app.config import get_settings
     s = get_settings()
 
-    sql = text("""
-        SELECT cl.target_chunk_id, cl.link_type, cl.weight, cl.hop
-        FROM retrieval.chunk_links cl
-        WHERE cl.source_chunk_id = :chunk_id
-          AND cl.hop <= :max_hops
-        ORDER BY cl.weight DESC
-        LIMIT :limit
-    """)
+    # Primary: ArcadeDB structural neighbor query
+    graph_store = get_graph_store()
+    rows = []
     try:
-        result = await db.execute(sql, {
-            "chunk_id": chunk_id,
-            "max_hops": s.retrieval_doc_max_hops,
-            "limit": s.retrieval_doc_expand_k,
-        })
-        rows = result.fetchall()
+        arcadedb_results = await graph_store.get_structural_neighbors(
+            chunk_id,
+            max_hops=s.retrieval_doc_max_hops,
+            limit=s.retrieval_doc_expand_k,
+        )
+        if arcadedb_results:
+            rows = [
+                (r.get("chunk_id", ""), r.get("link_type", ""), float(r.get("weight", 0.8)), 1)
+                for r in arcadedb_results
+                if r.get("chunk_id")
+            ]
     except Exception as e:
-        logger.debug("Doc-structure expansion failed for %s: %s", chunk_id, e)
-        return []
+        logger.debug("ArcadeDB doc-structure expansion failed for %s: %s", chunk_id, e)
+
+    # Fallback: Postgres chunk_links for pre-migration documents
+    if not rows:
+        sql = text("""
+            SELECT cl.target_chunk_id, cl.link_type, cl.weight, cl.hop
+            FROM retrieval.chunk_links cl
+            WHERE cl.source_chunk_id = :chunk_id
+              AND cl.hop <= :max_hops
+            ORDER BY cl.weight DESC
+            LIMIT :limit
+        """)
+        try:
+            result = await db.execute(sql, {
+                "chunk_id": chunk_id,
+                "max_hops": s.retrieval_doc_max_hops,
+                "limit": s.retrieval_doc_expand_k,
+            })
+            rows = [(str(r[0]), r[1], float(r[2]), int(r[3])) for r in result.fetchall()]
+        except Exception as e:
+            logger.debug("Postgres doc-structure expansion failed for %s: %s", chunk_id, e)
+            return []
 
     if not rows:
         return []
@@ -618,16 +640,16 @@ async def _expand_via_doc_structure(
     # Batch lookup all target chunks
     chunk_map = await _batch_lookup_chunks(
         db,
-        [(str(row[0]),) for row in rows],
+        [(row[0],) for row in rows],
         include_context,
     )
 
     items: list[QueryResultItem] = []
     for row in rows:
-        target_id = str(row[0])
+        target_id = row[0]
         link_type = row[1]
-        weight = float(row[2])
-        hops = int(row[3])
+        weight = row[2]
+        hops = row[3]
 
         chunk = chunk_map.get(target_id)
         if not chunk:

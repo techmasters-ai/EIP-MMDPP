@@ -999,6 +999,43 @@ class ArcadeDBGraphStore:
                 result.append(r)
         return result
 
+    async def get_structural_neighbors(
+        self,
+        chunk_id: str,
+        max_hops: int = 2,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Return structurally linked chunks via ArcadeDB graph edges.
+
+        Traverses NEXT_CHUNK, SAME_PAGE, SAME_SECTION, SAME_ARTIFACT edges
+        from the given chunk, returning neighbor chunks with link metadata
+        for scoring.
+        """
+        rid = await self._resolve_rid(chunk_id)
+        if not rid:
+            return []
+
+        sql = (
+            f"SELECT target.chunk_id AS chunk_id, "
+            f"target.@class AS chunk_type, "
+            f"target.document_id AS document_id, "
+            f"target.modality AS modality, "
+            f"edge.@class AS link_type, "
+            f"edge.weight AS weight "
+            f"FROM ("
+            f"  SELECT expand(bothE('NEXT_CHUNK','SAME_PAGE','SAME_SECTION','SAME_ARTIFACT')) "
+            f"  FROM {rid}"
+            f") AS edge "
+            f"LET target = edge.bothV()[0] "
+            f"WHERE target.@rid <> {rid} "
+            f"ORDER BY edge.weight DESC "
+            f"LIMIT :limit"
+        )
+        rows = await self._client.query(
+            self._database, "sql", sql, {"limit": limit},
+        )
+        return rows
+
     async def get_entity_evidence_chunks(
         self,
         entity_rid: str,
