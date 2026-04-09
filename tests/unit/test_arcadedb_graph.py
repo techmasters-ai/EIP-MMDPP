@@ -196,7 +196,7 @@ class TestSearchNodesUsesLucene:
 
         client.query.assert_called_once()
         sql = client.query.call_args.args[2]
-        assert "LUCENE" in sql.upper()
+        assert "CONTAINSTEXT" in sql.upper()
 
     async def test_fulltext_search_filters_entity_types(self):
         """When entity_types given, SQL should filter by them."""
@@ -205,8 +205,12 @@ class TestSearchNodesUsesLucene:
 
         await store.fulltext_search("radar", entity_types=["RADAR_SYSTEM", "PLATFORM"])
 
-        sql = client.query.call_args.args[2]
-        assert "entity_type" in sql.lower()
+        # With multiple types, queries each type separately
+        assert client.query.call_count >= 2
+        # Each call should target a specific type (RADAR_SYSTEM or PLATFORM)
+        all_sqls = [call.args[2] for call in client.query.call_args_list]
+        assert any("RADAR_SYSTEM" in sql for sql in all_sqls)
+        assert any("PLATFORM" in sql for sql in all_sqls)
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +414,7 @@ class TestSyncVariants:
         script = client.command_sync.call_args.args[2]
         assert language == "sqlscript"
         # Both rows should appear as separate statements
-        assert script.count("UPSERT WHERE") == 2
+        assert script.count("UPSERT RETURN AFTER @rid WHERE") == 2
         assert "name_0" in script and "name_1" in script
         assert result == ["#10:0", "#10:1"]
 

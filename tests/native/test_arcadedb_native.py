@@ -100,13 +100,16 @@ class TestEntityCRUD:
         assert name in names
 
     @pytest.mark.asyncio
-    async def test_fulltext_search_carries_score(self):
+    async def test_fulltext_search_returns_entity_data(self):
+        """Fulltext results should have name, entity_type, and extraction_confidence."""
         store = _make_store()
         name = f"TestRadar-{_TEST_ID}"
         results = await store.fulltext_search(name, limit=5)
         assert results
-        assert results[0].score_type == "fulltext"
-        assert results[0].score is not None
+        assert results[0].name == name
+        assert results[0].entity_type == "RADAR_SYSTEM"
+        # CONTAINSTEXT doesn't produce $score; extraction_confidence comes from the vertex
+        assert results[0].extraction_confidence is not None
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +120,17 @@ class TestEntityCRUD:
 class TestAliasResolution:
     @pytest.mark.asyncio
     async def test_create_and_search_alias(self):
+        from app.services.graph_store import NodeRecord
         store = _make_store()
-        name = f"TestRadar-{_TEST_ID}"
+        name = f"AliasRadar-{_TEST_ID}"
         alias = f"TestAlias-{_TEST_ID}"
 
+        # Ensure entity exists first
+        await store.upsert_node(NodeRecord(
+            entity_type="RADAR_SYSTEM",
+            identity_fields={"name": name, "entity_type": "RADAR_SYSTEM"},
+            name=name,
+        ))
         entity = await store.resolve_root_entity(name, "RADAR_SYSTEM")
         assert entity is not None
 

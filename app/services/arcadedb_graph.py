@@ -141,7 +141,7 @@ def _build_upsert_node_script(
 
         sql = (
             f"UPDATE {record.entity_type} SET {set_clause}, updated_at = sysdate() "
-            f"UPSERT WHERE {where_clause} AND entity_type = :entity_type_{i}"
+            f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type_{i}"
         )
         statements.append(sql)
 
@@ -326,20 +326,37 @@ def _build_fulltext_search_sql(
     query: str,
     entity_types: list[str] | None = None,
     limit: int = 20,
-) -> tuple[str, dict[str, Any]]:
-    """Build a full-text LUCENE search query."""
-    type_filter = ""
-    params: dict[str, Any] = {"query": query, "limit": limit}
-    if entity_types:
-        type_list = ", ".join(f"'{t}'" for t in entity_types)
-        type_filter = f" AND entity_type IN [{type_list}]"
+) -> tuple[str, dict[str, Any]] | tuple[list[str], dict[str, Any]]:
+    """Build full-text search query/queries.
 
-    sql = (
-        f"SELECT *, @rid AS node_id FROM V "
-        f"WHERE name LUCENE :query{type_filter} "
-        f"ORDER BY $score DESC LIMIT :limit"
-    )
-    return sql, params
+    ArcadeDB doesn't have an abstract 'V' base type — queries must target
+    concrete vertex types. For a single type, returns one SQL string.
+    For multiple types, returns a list of SQL strings (one per type) to
+    be executed and merged by the caller.
+    """
+    params: dict[str, Any] = {"query": query, "limit": limit}
+
+    types = entity_types or []
+    if len(types) == 1:
+        sql = (
+            f"SELECT *, @rid AS node_id FROM {types[0]} "
+            f"WHERE name CONTAINSTEXT :query "
+            f"LIMIT :limit"
+        )
+        return sql, params
+    elif len(types) > 1:
+        # Multiple specified types — query each and merge
+        sqls = [
+            f"SELECT *, @rid AS node_id FROM {t} "
+            f"WHERE name CONTAINSTEXT :query "
+            f"LIMIT :limit"
+            for t in types
+        ]
+        return sqls, params
+    else:
+        # No type filter — must query all known entity types.
+        # Return a sentinel that the caller handles by loading ontology types.
+        return [], params
 
 
 def _build_search_by_alias_sql(
@@ -359,7 +376,7 @@ def _build_create_alias_sql(
     """Build the UPSERT statement for an Alias vertex."""
     sql = (
         "UPDATE Alias SET alias_name = :alias, created_at = sysdate() "
-        "UPSERT WHERE alias_name = :alias"
+        "UPSERT RETURN AFTER @rid WHERE alias_name = :alias"
     )
     return sql, {"alias": alias}
 
@@ -548,7 +565,7 @@ class ArcadeDBGraphStore:
         sql = (
             f"UPDATE {record.entity_type} SET {set_clause}, "
             f"updated_at = sysdate() "
-            f"UPSERT WHERE {where_clause} AND entity_type = :entity_type"
+            f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type"
         )
         params = {**set_fields, **record.identity_fields}
 
@@ -628,7 +645,7 @@ class ArcadeDBGraphStore:
         sql = (
             f"UPDATE Document SET document_id = :document_id{extra_set}, "
             f"updated_at = sysdate() "
-            f"UPSERT WHERE document_id = :document_id"
+            f"UPSERT RETURN AFTER @rid WHERE document_id = :document_id"
         )
         params = {"document_id": document_id, **props}
         result = await self._client.command(self._database, "sql", sql, params)
@@ -799,10 +816,47 @@ class ArcadeDBGraphStore:
         entity_types: list[str] | None = None,
         limit: int = 20,
     ) -> list[GraphEntityResult]:
-        """Full-text search using LUCENE index."""
-        sql, params = _build_fulltext_search_sql(query, entity_types, limit)
-        rows = await self._client.query(self._database, "sql", sql, params)
-        return [_to_entity(r) for r in rows]
+        """Full-text search across entity types using CONTAINSTEXT.
+
+        ArcadeDB doesn't have an abstract V base type, so cross-type
+        searches query each concrete entity type and merge results.
+        """
+        result = _build_fulltext_search_sql(query, entity_types, limit)
+
+        if isinstance(result[0], str):
+            # Single SQL string
+            sql, params = result
+            rows = await self._client.query(self._database, "sql", sql, params)
+            return [_to_entity(r) for r in rows]
+
+        sqls, params = result
+        if not sqls:
+            # No type filter — load all ontology entity types
+            try:
+                from app.services.ontology_templates import load_ontology
+                from app.services.arcadedb_schema import _safe_type_name
+                ont = load_ontology()
+                sqls = [
+                    f"SELECT *, @rid AS node_id FROM {_safe_type_name(e['name'])} "
+                    f"WHERE name CONTAINSTEXT :query LIMIT :limit"
+                    for e in ont.get("entity_types", [])
+                ]
+            except Exception:
+                return []
+
+        # Query each type and merge (use asyncio.gather for parallelism)
+        all_rows: list[dict] = []
+        for sql in sqls:
+            try:
+                rows = await self._client.query(self._database, "sql", sql, params)
+                all_rows.extend(rows)
+            except Exception:
+                continue  # Skip types that error (empty types, etc.)
+
+        # Sort by extraction_confidence descending, cap at limit
+        entities = [_to_entity(r) for r in all_rows]
+        entities.sort(key=lambda e: e.extraction_confidence or 0, reverse=True)
+        return entities[:limit]
 
     async def get_neighborhood(
         self,
@@ -819,19 +873,19 @@ class ArcadeDBGraphStore:
         if not rid:
             return []
 
-        edge_class = ""
+        # ArcadeDB doesn't support MATCH without a concrete type or
+        # both(){depth} syntax. Build nested expand for multi-hop.
         if rel_types:
-            edge_class = "class: " + ",".join(rel_types) + ", "
+            edge_list = ", ".join(f"'{t}'" for t in rel_types)
+            traversal = f"both({edge_list})"
+        else:
+            traversal = "both()"
 
-        sql = (
-            f"MATCH {{class: V, as: root, where: (@rid = {rid})}}"
-            f".both({{{edge_class}while: ($depth <= {depth})}}) "
-            f"{{as: neighbor}} "
-            f"RETURN neighbor.name AS name, neighbor.entity_type AS entity_type, "
-            f"neighbor.canonical_name AS canonical_name, "
-            f"neighbor.extraction_confidence AS extraction_confidence, "
-            f"neighbor.@rid AS node_id"
-        )
+        # Build nested query for depth: depth=1 → one expand, depth=2 → nested expand
+        inner = f"SELECT expand({traversal}) FROM {rid}"
+        for _ in range(1, depth):
+            inner = f"SELECT expand({traversal}) FROM ({inner})"
+        sql = f"SELECT *, @rid AS node_id FROM ({inner})"
         rows = await self._client.query(self._database, "sql", sql)
         return [_to_entity(r) for r in rows]
 
@@ -843,51 +897,37 @@ class ArcadeDBGraphStore:
     ) -> dict[str, Any]:
         """Return neighbourhood as a {nodes, edges} dict.
 
-        *node_id* may be an ArcadeDB RID or UUID string. Uses MATCH syntax.
+        *node_id* may be an ArcadeDB RID or UUID string.
         """
         rid = await self._resolve_rid(node_id)
         if not rid:
             return {"nodes": [], "edges": []}
 
-        edge_class = ""
+        # Get neighbor nodes
+        entities = await self.get_neighborhood(node_id, depth, rel_types)
+
+        # Get edges — query outgoing + incoming edges from the root vertex
         if rel_types:
-            edge_class = "class: " + ",".join(rel_types) + ", "
+            edge_list = ", ".join(f"'{t}'" for t in rel_types)
+            edge_traversal = f"bothE({edge_list})"
+        else:
+            edge_traversal = "bothE()"
 
-        sql = (
-            f"MATCH {{class: V, as: root, where: (@rid = {rid})}}"
-            f".bothE({{{edge_class}while: ($depth <= {depth})}}) "
-            f"{{as: edge}}"
-            f".bothV() {{as: neighbor}} "
-            f"RETURN neighbor.name AS name, neighbor.entity_type AS entity_type, "
-            f"neighbor.canonical_name AS canonical_name, "
-            f"neighbor.extraction_confidence AS extraction_confidence, "
-            f"neighbor.@rid AS node_id, "
-            f"edge.@class AS rel_type, edge.@rid AS edge_id, "
-            f"edge.out AS edge_from, edge.in AS edge_to"
-        )
-        rows = await self._client.query(self._database, "sql", sql)
+        edge_sql = f"SELECT *, @rid AS edge_rid FROM (SELECT expand({edge_traversal}) FROM {rid})"
+        edge_rows = await self._client.query(self._database, "sql", edge_sql)
 
-        # Separate nodes and edges from the MATCH result
-        seen_nodes: set[str] = set()
-        nodes: list[dict] = []
+        nodes: list[dict] = [
+            {"id": e.node_id, "name": e.name, "entity_type": e.entity_type, **e.properties}
+            for e in entities
+        ]
         edges: list[dict] = []
-        for r in rows:
-            nid = str(r.get("node_id", ""))
-            if nid and nid not in seen_nodes:
-                seen_nodes.add(nid)
-                nodes.append({
-                    "id": nid,
-                    "name": r.get("name", ""),
-                    "entity_type": r.get("entity_type", ""),
-                })
-            eid = r.get("edge_id")
-            if eid:
-                edges.append({
-                    "id": str(eid),
-                    "rel_type": r.get("rel_type", ""),
-                    "from": str(r.get("edge_from", "")),
-                    "to": str(r.get("edge_to", "")),
-                })
+        for r in edge_rows:
+            edges.append({
+                "id": str(r.get("edge_rid", "")),
+                "rel_type": str(r.get("@type", r.get("@class", ""))),
+                "from": str(r.get("@out", r.get("out", ""))),
+                "to": str(r.get("@in", r.get("in", ""))),
+            })
 
         return {"nodes": nodes, "edges": edges}
 
@@ -908,7 +948,7 @@ class ArcadeDBGraphStore:
             return []
 
         # Build MATCH pattern: root → step1 → step2 → ... → target
-        match_parts = [f"{{class: V, as: root, where: (@rid = {rid})}}"]
+        match_parts = [f"{{as: root, where: (@rid ={rid})}}"]
         for i, step in enumerate(steps):
             direction = step.get("direction", "out")
             rel_types = step.get("rel_types", [])
@@ -1301,12 +1341,10 @@ class ArcadeDBGraphStore:
         only chunks whose embedding is similar to the query.
         """
         sql = (
-            f"SELECT FROM ("
-            f"  MATCH {{class: V, as: root, where: (@rid = {root_id})}}"
-            f"  .{traversal} {{as: target}}"
-            f"  RETURN target"
-            f") WHERE vectorCosineSimilarity({embedding_property}, :query_vector) > :threshold "
-            f"ORDER BY vectorCosineSimilarity({embedding_property}, :query_vector) DESC "
+            f"SELECT *, vectorCosineSimilarity({embedding_property}, :query_vector) AS vscore "
+            f"FROM (SELECT expand({traversal}) FROM {root_id}) "
+            f"WHERE vectorCosineSimilarity({embedding_property}, :query_vector) > :threshold "
+            f"ORDER BY vscore DESC "
             f"LIMIT :limit"
         )
         return await self._client.query(
@@ -1374,7 +1412,7 @@ class ArcadeDBGraphStore:
             "member_count = :count, membership_hash = :hash, "
             "source_documents = :sources, "
             "generated_at = sysdate(), model_name = :model "
-            "UPSERT WHERE community_id = :cid"
+            "UPSERT RETURN AFTER @rid WHERE community_id = :cid"
         )
         result = await self._client.command(
             self._database, "sql", sql,
@@ -1619,7 +1657,7 @@ class ArcadeDBGraphStore:
         sql = (
             f"UPDATE {record.entity_type} SET {set_clause}, "
             f"updated_at = sysdate() "
-            f"UPSERT WHERE {where_clause} AND entity_type = :entity_type"
+            f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type"
         )
         params = {**set_fields, **record.identity_fields}
         result = self._client.command_sync(self._database, "sql", sql, params)
@@ -1929,10 +1967,39 @@ class ArcadeDBGraphStore:
         entity_types: list[str] | None = None,
         limit: int = 20,
     ) -> list[GraphEntityResult]:
-        """Synchronous full-text search using LUCENE index."""
-        sql, params = _build_fulltext_search_sql(query, entity_types, limit)
-        rows = self._client.query_sync(self._database, "sql", sql, params)
-        return [_to_entity(r) for r in rows]
+        """Synchronous full-text search across entity types."""
+        result = _build_fulltext_search_sql(query, entity_types, limit)
+
+        if isinstance(result[0], str):
+            sql, params = result
+            rows = self._client.query_sync(self._database, "sql", sql, params)
+            return [_to_entity(r) for r in rows]
+
+        sqls, params = result
+        if not sqls:
+            try:
+                from app.services.ontology_templates import load_ontology
+                from app.services.arcadedb_schema import _safe_type_name
+                ont = load_ontology()
+                sqls = [
+                    f"SELECT *, @rid AS node_id FROM {_safe_type_name(e['name'])} "
+                    f"WHERE name CONTAINSTEXT :query LIMIT :limit"
+                    for e in ont.get("entity_types", [])
+                ]
+            except Exception:
+                return []
+
+        all_rows: list[dict] = []
+        for sql in sqls:
+            try:
+                rows = self._client.query_sync(self._database, "sql", sql, params)
+                all_rows.extend(rows)
+            except Exception:
+                continue
+
+        entities = [_to_entity(r) for r in all_rows]
+        entities.sort(key=lambda e: e.extraction_confidence or 0, reverse=True)
+        return entities[:limit]
 
     def search_by_alias_sync(
         self,
