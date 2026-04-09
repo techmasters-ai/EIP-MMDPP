@@ -89,7 +89,7 @@ def embed_query(query: str) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
-# Image embedding (OpenCLIP ViT-B/32 — shared text/image space)
+# Image embedding (OpenCLIP — shared text/image space, model configurable via env)
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
@@ -117,7 +117,7 @@ def embed_images(pil_images: list) -> list[list[float]]:
         pil_images: List of PIL.Image.Image objects.
 
     Returns:
-        List of 512-dim float vectors.
+        List of float vectors (dim depends on IMAGE_EMBEDDING_DIM).
     """
     if not pil_images:
         return []

@@ -251,9 +251,11 @@ async def sync_schema_from_ontology(
     report.types_created += len(_STRUCTURAL_EDGE_TYPES)
 
     # --- Phase 5: vector indexes ---
+    from app.config import get_settings as _get_settings
+    _image_dim = _get_settings().image_embedding_dim
     vector_indexes = [
         ("TextChunk", "text_embedding", 1024, "COSINE", "INT8", True),
-        ("ImageChunk", "image_embedding", 512, "COSINE", "INT8", False),
+        ("ImageChunk", "image_embedding", _image_dim, "COSINE", "INT8", False),
         ("CommunityReport", "report_embedding", 1024, "COSINE", "INT8", True),
         ("TrustedTextChunk", "text_embedding", 1024, "COSINE", "INT8", True),
     ]
