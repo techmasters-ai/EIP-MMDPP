@@ -6,34 +6,10 @@
 
 ## Open Items
 
-### Architecture
-
-**#63. Align Docling-Graph templates with canonical schema definition** (High)
-**Files:** `docker/docling-graph/app/template_builder.py` (lines ~34, ~99, ~189)
-Decision from #71: keep auto-generation from ontology YAML, but fix the generator to emit canonical patterns: `is_entity=True` for entities, `is_entity=False` for components, `edge()` for relationships. The current generator auto-derives identity fields, never emits component semantics, and encodes edges with `json_schema_extra={"edge_label": ...}`.
-**Reference:** https://ibm.github.io/docling-graph/fundamentals/schema-definition/entities-vs-components/ and https://ibm.github.io/docling-graph/usage/examples/docling-document-input/
-
-**#64. Preserve Docling-Graph provenance and metadata instead of rebuilding in Python** (High)
-**Files:** `docker/docling-graph/app/config_builder.py` (line ~90), `app/services/docling_graph_service.py` (line ~204), `app/workers/pipeline.py` (lines ~2116, ~2313, ~2354)
-The client flattens the node-link graph, the pipeline keeps only `properties`, ignores most response `metadata`, and rebuilds mention grounding with regex matching instead of consuming upstream provenance/resolver output. This negates much of the value from enabling delta resolvers and provenance attachment in the Docling-Graph config.
-**Fix:** Preserve `_provenance` from graph nodes (element-level source tracking). Use resolver output for entity merge decisions instead of reimplementing identity field derivation. Consume `graph_metadata` quality signals (gleaning passes, validation pass, resolver stats) for ingestion quality reporting.
-
-**#65. Move document-structure retrieval from Postgres chunk_links to native ArcadeDB graph** (High)
-**Files:** `app/workers/pipeline.py` (lines ~2564, ~2672), `app/api/v1/retrieval.py` (lines ~344, ~570)
-The pipeline writes structural edges (CONTAINS_TEXT, SAME_PAGE, SAME_SECTION) to ArcadeDB AND chunk_links to Postgres. But the main hybrid expansion path reads Postgres `chunk_links` first and only falls back to ArcadeDB for legacy cases. The native graph database is not driving the main retrieval logic.
-**Fix:** Make ArcadeDB the primary source for document-structure expansion. Query structural edges via MATCH traversal instead of the Postgres `chunk_links` table. Keep Postgres `chunk_links` as a denormalized cache for compatibility, or remove the duplication entirely.
-
-### Testing
-
-**#70. Add native integration test coverage** (Low)
-**Files:** `tests/conftest.py` (line ~206), `docker/docling-graph/tests/test_pipeline_integration.py` (line ~37)
-The shared fixture replaces GraphStore with mocks, and the docling-graph integration tests validate the wrapper contract rather than a live native library run. Many custom-vs-native drifts are not protected by tests.
-**Fix:** Add integration test markers that use the real ArcadeDBGraphStore (not mocks) for critical path validation: vector search -> retrieval, entity resolution -> dossier, traversal -> ontology expansion. Test the docling-graph pipeline against a real Docling-Graph library call.
-
 ### Feature Additions (Deferred)
 
 **#27. LLM-based entity mention resolution**
-**Status:** Not started. Now unblocked (#45-#49 done) but intentionally deferred as a future enhancement.
+**Status:** Deferred. Now unblocked but intentionally deferred due to high cost/latency tradeoff.
 **Files:** `app/workers/pipeline.py` (`_build_entity_mentions`), new module TBD
 
 **Current state:**
