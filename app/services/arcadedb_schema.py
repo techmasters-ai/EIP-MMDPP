@@ -297,7 +297,7 @@ async def sync_schema_from_ontology(
         ("CommunityReport", "community_id"),
     ]
     unique_ddl = [
-        f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE_HASH_INDEX"
+        f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE"
         for utype, uprop in unique_indexes
     ]
     await _run_ddl_batch(client, database, unique_ddl, phase="unique_indexes", report=report)

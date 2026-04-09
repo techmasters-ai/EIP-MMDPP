@@ -706,8 +706,12 @@ class ArcadeDBGraphStore:
         ):
             return ""
 
-        from_where = _build_where(record.from_identity)
-        to_where = _build_where(record.to_identity)
+        # Use prefixed param keys to avoid collision when from_identity and
+        # to_identity have the same field names (e.g., both have "name").
+        from_parts = [f"{k} = :f_{k}" for k in record.from_identity]
+        to_parts = [f"{k} = :t_{k}" for k in record.to_identity]
+        from_where = " AND ".join(from_parts)
+        to_where = " AND ".join(to_parts)
 
         doc_ids_expr = "[]"
         doc_id_param: dict[str, Any] = {}
@@ -716,8 +720,11 @@ class ArcadeDBGraphStore:
             doc_id_param = {"doc_id": provenance.document_id}
 
         extra_props = ""
+        extra_params: dict[str, Any] = {}
         if record.properties:
-            extra_props = ", " + _build_set(record.properties)
+            prop_parts = [f"{k} = :p_{k}" for k in record.properties]
+            extra_props = ", " + ", ".join(prop_parts)
+            extra_params = {f"p_{k}": v for k, v in record.properties.items()}
 
         sql = (
             f"CREATE EDGE {record.rel_type} "
@@ -728,11 +735,11 @@ class ArcadeDBGraphStore:
             f"created_at = sysdate(), updated_at = sysdate(){extra_props}"
         )
         params = {
-            **record.from_identity,
-            **record.to_identity,
+            **{f"f_{k}": v for k, v in record.from_identity.items()},
+            **{f"t_{k}": v for k, v in record.to_identity.items()},
             "extraction_confidence": record.extraction_confidence,
             **doc_id_param,
-            **record.properties,
+            **extra_params,
         }
         result = await self._client.command(self._database, "sql", sql, params)
         return _rid(result)
