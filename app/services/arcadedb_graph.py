@@ -424,7 +424,7 @@ def _build_delete_document_graph_sql(
     # --- structural edge deletions (carry document_id as STRING) ---
     for etype in _STRUCTURAL_EDGE_TYPES:
         delete_vertex_sqls.append(
-            f"DELETE EDGE FROM {etype} WHERE document_id = :doc_id"
+            f"DELETE FROM {etype} WHERE document_id = :doc_id"
         )
 
     # --- ontology relationship edges (carry document_ids as LIST) ---
@@ -447,7 +447,7 @@ def _build_delete_document_graph_sql(
     ]
 
     edge_prune_sqls = [
-        f"DELETE EDGE FROM {rtype} WHERE document_ids IS NOT NULL "
+        f"DELETE FROM {rtype} WHERE document_ids IS NOT NULL "
         f"AND document_ids.size() = 0"
         for rtype in rel_types
     ]
