@@ -90,9 +90,11 @@ def _patched_build_request(
             top_level=response_top_level,
             name=response_schema_name,
         )
+        # OpenAI-style response_format uses the normalized envelope
         request["response_format"] = {"type": "json_schema", "json_schema": normalized}
         if is_ollama:
-            request["format"] = normalized
+            # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope
+            request["format"] = schema_dict
     else:
         request["response_format"] = {"type": "json_object"}
         if is_ollama:
@@ -180,6 +182,8 @@ def _patched_call_api(self, messages, **params):
             details={
                 "model": self.model,
                 "finish_reason": choices[0].get("finish_reason"),
+                "message_keys": sorted(message.keys()),
+                "message_preview": str(message)[:1000],
                 "has_reasoning_content": bool(reasoning_content or top_reasoning),
                 "has_thinking": bool(thinking or top_thinking),
                 "reasoning_preview": str(
