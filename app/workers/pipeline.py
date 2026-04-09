@@ -12,11 +12,13 @@ Task graph (manifest-first, parallel derivations, idempotent):
         ↓
     derive_picture_descriptions  (LLM: image descriptions with summary context)
         ↓
-    ┌── derive_text_chunks_and_embeddings ──┐
-    │── derive_image_embeddings             │  (parallel chord)
-    └── derive_ontology_graph ──────────────┘
+    derive_text_chunks_and_embeddings  (text chunking + BGE embedding)
         ↓
-    collect_derivations  (chord callback)
+    derive_image_embeddings  (SigLIP2 image embedding)
+        ↓
+    derive_ontology_graph  (docling-graph entity/relationship extraction)
+        ↓
+    collect_derivations  (post-derivation checkpoint)
         ↓
     derive_structure_links  (needs embedding output committed)
         ↓
@@ -32,7 +34,7 @@ from typing import Optional
 
 import httpx
 import redis as redis_lib
-from celery import chain, chord, group
+from celery import chain
 from celery.exceptions import Retry as CeleryRetry, SoftTimeLimitExceeded
 from celery.signals import worker_ready
 
@@ -430,34 +432,24 @@ def start_ingest_pipeline(document_id: str) -> str:
     finally:
         db.close()
 
-    errback = _chord_error_handler.s(document_id, run_id)
-
-    # Build pipeline avoiding chords-inside-chains (unreliable in Celery 5.x
-    # with Redis backend — chord callbacks silently fail after worker restarts).
-    #
-    # Phase 1: sequential ingest stages (purge is ~0.2s, no need to parallelize)
-    # Phase 2: parallel derivation via chord whose callback chains to remaining steps
-    post_derivation = chain(
-        derive_structure_links.si(document_id, run_id),
-        derive_canonicalization.si(document_id, run_id),
-        finalize_document.si(document_id, run_id),
-    )
-
+    # Fully sequential pipeline — no chords.  Celery 5.x chords with Redis
+    # silently drop callbacks regardless of positioning, so we run every stage
+    # in a simple chain.  The derivation stages (chunks, embed, graph) lose
+    # parallelism but each takes only 10-60s vs 20+ min for picture descriptions,
+    # so the throughput impact is negligible.
     pipeline = chain(
         prepare_document.si(document_id, run_id),
         detect_and_translate.si(document_id, run_id),
         derive_document_metadata.si(document_id, run_id),
         purge_document_derivations.si(document_id, run_id),
         derive_picture_descriptions.si(document_id, run_id),
-        chord(
-            group(
-                derive_text_chunks_and_embeddings.si(document_id, run_id),
-                derive_image_embeddings.si(document_id, run_id),
-                derive_ontology_graph.si(document_id, run_id),
-            ),
-            # Chord callback chains to collect → structure → canonical → finalize
-            chain(collect_derivations.s(document_id, run_id), post_derivation),
-        ).on_error(errback),
+        derive_text_chunks_and_embeddings.si(document_id, run_id),
+        derive_image_embeddings.si(document_id, run_id),
+        derive_ontology_graph.si(document_id, run_id),
+        collect_derivations.si(document_id, run_id),
+        derive_structure_links.si(document_id, run_id),
+        derive_canonicalization.si(document_id, run_id),
+        finalize_document.si(document_id, run_id),
     )
     result = pipeline.apply_async()
     return result.id
@@ -3212,30 +3204,11 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 
 
 @celery_app.task(bind=True)
-def collect_derivations(self, derivation_results: list[dict], document_id: str, run_id: str | None = None) -> None:
-    """Chord callback: aggregate derivation stage statuses."""
+def collect_derivations(self, document_id: str, run_id: str | None = None) -> None:
+    """Post-derivation checkpoint: mark document as past derivation stages."""
     try:
-        logger.info(
-            "collect_derivations: document_id=%s results=%s",
-            document_id, derivation_results,
-        )
-        failed = []
-        for r in (derivation_results or []):
-            if not isinstance(r, dict):
-                failed.append(str(r))
-            elif r.get("status") not in ("ok", "skipped"):
-                failed.append(r.get("stage", "unknown"))
-        if failed:
-            logger.warning(
-                "collect_derivations: document_id=%s failed_stages=%s", document_id, failed
-            )
-            _update_document_status(
-                document_id, STATUS_PARTIAL_COMPLETE,
-                stage="collect_derivations",
-                failed_stages=failed,
-            )
-        else:
-            _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
+        logger.info("collect_derivations: document_id=%s", document_id)
+        _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
     except Exception as exc:
         logger.error("collect_derivations failed for %s: %s", document_id, exc)
         _update_document_status(
