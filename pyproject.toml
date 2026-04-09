@@ -117,6 +117,8 @@ addopts = "--tb=short -q"
 markers = [
     "unit: pure unit tests, no external dependencies",
     "integration: tests requiring real Postgres/Redis/MinIO",
+    "native: tests using real ArcadeDB GraphStore (not mocked)",
+    "benchmark: performance benchmarks requiring seeded data",
     "e2e: end-to-end tests requiring full stack",
     "gpu: tests requiring a GPU",
     "slow: slow tests",

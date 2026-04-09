@@ -276,6 +276,17 @@ async def sync_schema_from_ontology(
     await _run_ddl_batch(client, database, fulltext_ddl, phase="fulltext_indexes", report=report)
     report.indexes_created += len(fulltext_ddl)
 
+    # --- Phase 6b: composite UNIQUE indexes for UPSERT on entity types ---
+    # ArcadeDB UPSERT requires a UNIQUE index on the WHERE fields.
+    # Without this, UPDATE...UPSERT WHERE name=:name AND entity_type=:entity_type
+    # fails with "Upsert must involve an index to retrieve the records."
+    upsert_ddl = [
+        f"CREATE INDEX IF NOT EXISTS ON {_safe_type_name(e['name'])} (name, entity_type) UNIQUE"
+        for e in ontology.get("entity_types", [])
+    ]
+    await _run_ddl_batch(client, database, upsert_ddl, phase="upsert_indexes", report=report)
+    report.indexes_created += len(upsert_ddl)
+
     # --- Phase 7: unique indexes ---
     unique_indexes = [
         ("TextChunk", "chunk_id"),
@@ -283,6 +294,7 @@ async def sync_schema_from_ontology(
         ("Document", "document_id"),
         ("Alias", "alias_name"),
         ("TrustedTextChunk", "chunk_id"),
+        ("CommunityReport", "community_id"),
     ]
     unique_ddl = [
         f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE_HASH_INDEX"
