@@ -96,9 +96,17 @@ def _build_single_template(entity_type_def: dict[str, Any]) -> tuple[str, type[B
         else:
             field_definitions[prop_name] = (Optional[py_type], Field(default=None, **field_kwargs))
 
+    # Canonical docling-graph pattern: is_entity=True for entity types
+    # (things with identity/graph_id_fields), is_entity=False for components
+    # (subordinate parts without their own identity). The library's catalog
+    # reads these from model_config to determine entity vs component kind.
+    is_entity = len(id_fields) > 0
     model_cls = create_model(
         class_name,
-        __config__=ConfigDict(graph_id_fields=id_fields),
+        __config__=ConfigDict(
+            graph_id_fields=id_fields,
+            is_entity=is_entity,
+        ),
         **field_definitions,
     )
     return class_name, model_cls
@@ -126,7 +134,7 @@ def build_unified_template(ontology: dict[str, Any]) -> type[BaseModel] | None:
 
     unified = create_model(
         "UnifiedExtractionTemplate",
-        __config__=ConfigDict(graph_id_fields=[]),
+        __config__=ConfigDict(graph_id_fields=[], is_entity=True),
         **fields,
     )
     logger.info("Built unified template with %d entity types", len(fields))
