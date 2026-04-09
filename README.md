@@ -46,8 +46,8 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 | Database | PostgreSQL 16 (metadata, chunk_links, governance) |
 | Graph + Vector Database | ArcadeDB (knowledge graph, ontology, canonicalization, native vector search) |
 | Object Storage | MinIO |
-| Text Embeddings | `bge-m3:latest` via Ollama `/v1/embeddings` API (1024-dim) |
-| Image Embeddings | OpenCLIP EVA02-E-14-plus (1024-dim, cross-modal) |
+| Text Embeddings | `BAAI/bge-large-en-v1.5` (1024-dim via Ollama `/v1/embeddings` API) |
+| Image Embeddings | OpenCLIP ViT-B-32 (512-dim, local CPU/GPU) |
 | Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (GPU-accelerated) |
 | Document Conversion | Docling PdfPipeline (dlparse_v4 + EasyOCR + TableFormer), SimplePipeline for Office/HTML/MD |
 | Document Analysis | LLM-based metadata extraction (summary, date, classification, source) + multimodal picture descriptions via Ollama |
@@ -58,7 +58,7 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 
 All ML inference runs **fully locally** — no cloud API calls required (air-gapped deployment).
 
-### Docker Services (9 containers)
+### Docker Services (9 containers, 10 with split worker profile)
 
 | Service | Purpose |
 |---|---|
@@ -126,11 +126,20 @@ A single `LLM_PROVIDER` env var controls the LLM backend for **all** LLM-depende
 # Air-gapped (Ollama) setup
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_NUM_CTX=16384                  # Context window for Ollama (must fit prompt + response)
+OLLAMA_LLM_BASE_URL=                              # Chat/reasoning: doc analysis, translation, community reports, global query
+OLLAMA_VLM_BASE_URL=                              # Vision/multimodal: picture description
+OLLAMA_EMBEDDING_BASE_URL=                        # Embedding: BGE text embeddings
+OLLAMA_NUM_CTX=16384                              # Context window for Ollama (must fit prompt + response)
+OLLAMA_THINK=                                     # low/medium/high for gpt-oss thinking
+LLM_MAX_TOKENS=64000
 
 # Per-feature model selection
-COMMUNITY_LLM_MODEL=llama3.2     # Model for community report generation
-COMMUNITY_LLM_PROVIDER=ollama    # ollama | openai (defaults to LLM_PROVIDER if not set)
+DOC_ANALYSIS_LLM_MODEL=gpt-oss:120b              # Model for document metadata extraction
+PICTURE_DESCRIPTION_MODEL=gemma3:27b              # Model for multimodal image descriptions
+TRANSLATION_MODEL=gpt-oss:120b                    # Model for foreign language translation
+COMMUNITY_REPORT_LLM_MODEL=gpt-oss:120b          # Model for community report generation
+DOCLING_GRAPH_LLM_MODEL=gpt-oss:120b             # Model for ontology-driven graph extraction
+DOCLING_GRAPH_LLM_PROVIDER=ollama                 # ollama | openai (defaults to LLM_PROVIDER if not set)
 
 # Docling-Graph service (ontology-driven graph extraction)
 DOCLING_GRAPH_BASE_URL=http://docling-graph:8002  # Docling-Graph service URL
@@ -139,8 +148,20 @@ DOCLING_GRAPH_CONCURRENCY=2                       # Max concurrent extraction re
 GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for ArcadeDB import
 GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for ArcadeDB import
 
-DOCLING_FALLBACK_ENABLED=false            # Fall back to legacy extraction on Docling 5xx (default false)
+DOCLING_FALLBACK_ENABLED=false                    # Fall back to legacy extraction on Docling 5xx (default false)
 ```
+
+#### Per-role Ollama URLs
+
+The three `OLLAMA_*_BASE_URL` variables allow pointing different model types at different Ollama instances (e.g., LLM on GPU-A100, embeddings on CPU, VLM on GPU-3090). Each falls back to `OLLAMA_BASE_URL` when left empty.
+
+| URL Variable | Falls back to | Used by |
+|---|---|---|
+| `OLLAMA_LLM_BASE_URL` | `OLLAMA_BASE_URL` | Doc analysis, translation, community reports, global query synthesis |
+| `OLLAMA_VLM_BASE_URL` | `OLLAMA_BASE_URL` | Picture description (gemma3, llava, etc.) |
+| `OLLAMA_EMBEDDING_BASE_URL` | `OLLAMA_BASE_URL` | BGE text embeddings |
+
+The docling-graph service inherits `OLLAMA_LLM_BASE_URL` via the docker-compose cascade.
 
 ## Running Tests
 
@@ -354,6 +375,10 @@ All ArcadeDB graph mutations (node/edge create, update, delete) require **dual-c
 | `classification` | `string` | Security classification (default: `UNCLASSIFIED`) |
 | `context` | `object` | Graph neighbors, community context (`{source, community_context: {community_id, summary}}`) |
 | `image_url` | `string` | API proxy URL for image results (`/v1/images/{chunk_id}`) |
+| `source_characterization` | `string` (nullable) | Source characterization from document metadata |
+| `date_of_information` | `string` (nullable) | Date of information from document metadata |
+| `extraction_confidence` | `float` (nullable) | Confidence score from graph extraction |
+| `sources` | `array` (nullable) | Array of `{document_id, page_number, classification, chunk_text_preview}` source references |
 
 **Query strategies:**
 
@@ -483,7 +508,7 @@ Image-modality results include an `image_url` served via the API proxy, which st
 | `GET` | `/v1/settings/retrieval` | Query defaults: `{top_k, reranker_top_n, min_confidence}` |
 | `GET` | `/v1/settings/community` | Community detection config: `{detection_enabled, detection_interval_minutes, last_detection_at}` |
 
-The hybrid pipeline runs: parallel vector search (BGE + CLIP via ArcadeDB `asyncio.gather`) → document-structure expansion (chunk_links table) → ontology traversal (ArcadeDB entity relationships) → independent re-scoring of expanded chunks → weighted fusion scoring → deduplicate → cross-encoder reranking (bge-reranker-v2-m3) → min score threshold filter → rank → filter by modality.
+The hybrid pipeline runs: parallel vector search (BGE + CLIP via ArcadeDB `asyncio.gather`) → document-structure expansion (ArcadeDB structural edges with Postgres fallback) → ontology traversal (ArcadeDB entity relationships) → independent re-scoring of expanded chunks → weighted fusion scoring → deduplicate → cross-encoder reranking (bge-reranker-v2-m3) → min score threshold filter → rank → filter by modality.
 
 Image-modality results include an `image_url` served via the API proxy (`GET /v1/images/{chunk_id}`), which streams from MinIO with 1-hour cache headers. This avoids exposing Docker-internal MinIO hostnames in presigned URLs and works in air-gapped environments without hostname configuration.
 
@@ -506,7 +531,7 @@ Seeds from both searches are merged (highest score per chunk_id kept).
 
 For each seed, three strategies run (bounded to 16 concurrent):
 
-- **Document-structure expansion** (Postgres `chunk_links` table) — follows pre-computed structural links: `NEXT_CHUNK` (reading order), `SAME_SECTION` (under same heading), `SAME_ARTIFACT` (from same image/table), `SAME_PAGE` (text ↔ image on same page). If an image description section is a seed, `SAME_ARTIFACT` surfaces sibling sections and `SAME_PAGE` surfaces the original CLIP image chunk.
+- **Document-structure expansion** (ArcadeDB structural edges — NEXT_CHUNK, SAME_SECTION, SAME_ARTIFACT, SAME_PAGE, with Postgres fallback) — follows pre-computed structural links: `NEXT_CHUNK` (reading order), `SAME_SECTION` (under same heading), `SAME_ARTIFACT` (from same image/table), `SAME_PAGE` (text ↔ image on same page). If an image description section is a seed, `SAME_ARTIFACT` surfaces sibling sections and `SAME_PAGE` surfaces the original CLIP image chunk.
 - **Cross-modal bridging** (ArcadeDB, fallback only) — for legacy documents without chunk_links. Traverses structural edges up to 3 hops to bridge text ↔ image.
 - **Ontology traversal** (ArcadeDB knowledge graph) — follows entity relationships. If a chunk mentions "S-75 Dvina" and the graph has `S-75 Dvina –[VARIANT_OF]→ SA-2 Guideline`, chunks about "SA-2 Guideline" are surfaced with per-relation weights from `ontology.yaml`.
 
@@ -576,7 +601,7 @@ The knowledge graph uses a 5-layer ontology grounded in DoDAF DM2 concepts:
 4. **Weapon / Missile / AAA** — Missiles, seekers, guidance, propulsion, artillery
 5. **Operational / Capability** — Capabilities, engagement timelines, performance measures
 
-46 entity types, 50 relationship predicates, enforced via validation matrix at graph write time.
+46 entity types, 50 relationship predicates, enforced via validation matrix at graph write time. Entity resolution uses exact → alias → fuzzy match canonicalization.
 
 See `ontology/ontology.yaml` for the full schema.
 
@@ -1083,6 +1108,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.10 | Docling-graph fixes (chunked extraction, property persistence, word-boundary mentions, queue isolation) + Trusted Data simplification (Cognee → Qdrant-backed, Celery indexing) | Complete |
 | 2.11 | Graph extraction hardening (fail-closed, retry/backoff, concurrency gate) + Docling health-check fix (threadpool, advisory probe) + Search UI overhaul (4-mode selector, modality sub-filter, GraphRAG entity/report exploration, image proxy, result card improvements) + Polling fix | Complete |
 | 3.0 | ArcadeDB migration: replace Neo4j + Qdrant with ArcadeDB (unified graph + vector store), replace GraphRAG with Louvain community detection + global query strategy, GraphStore Protocol abstraction | Complete |
+| 3.1 | ArcadeDB SQL compatibility: UPSERT RETURN AFTER @rid, CONTAINSTEXT replacing LUCENE, SELECT expand() replacing MATCH on V, nested expand for depth, UNIQUE indexes for UPSERT, param collision fix, per-role Ollama URLs (LLM/VLM/embedding), TypeScript build fixes | Complete |
 | 2.12 | LLM extraction reliability: Ollama structured outputs (full JSON schema via `format`), direct httpx (removed LiteLLM), deterministic error classification (skip retries for empty/non-JSON), Docling 5xx fallback gate | Complete |
 | 2.13 | Retrieval fixes: text preview hydration (chunk_text in Qdrant payload + Postgres backfill), image URL prefix fix, GraphRAG precondition checks (404/409 instead of silent empty) | Complete |
 | 2.14 | Docling 503 storm fix: increased timeouts (30 min for large PDFs), fixed concurrency=1 to match Docling capacity, SoftTimeLimitExceeded no longer consumes retry budget, 503 uses 5-min backoff | Complete |
@@ -1115,7 +1141,8 @@ app/
 │   ├── _retrieval_helpers.py #   Retrieval pipeline helpers
 │   ├── agent.py          #   LangGraph agent context endpoint
 │   ├── _agent_helpers.py #   Agent response formatting
-│   ├── graph_store.py    #   Graph entity/relationship ingest + query (Neo4j)
+│   ├── graph_store.py    #   ArcadeDB graph entity/relationship ingest + query
+│   ├── community.py      #   Community detection endpoints
 │   ├── trusted_data.py   #   Trusted data proposals + approval + indexing + search
 │   ├── governance.py     #   Feedback + patch state machine
 │   ├── sources.py        #   Sources CRUD, document upload, watch dirs
@@ -1123,34 +1150,32 @@ app/
 ├── services/
 │   ├── docling_client.py       # HTTP client for Docling conversion service
 │   ├── docling_graph_service.py # HTTP client for Docling-Graph extraction service
-│   ├── graphrag_service.py     # GraphRAG indexing (extraction, communities, reports) + search
-│   ├── graphrag_bridge.py      # Postgres → GraphRAG input bridge (document export)
-│   ├── graphrag_config.py      # GraphRAG configuration builder
-│   ├── graphrag_prompts.py     # Military ontology prompts for extraction + search
-│   ├── neo4j_graph.py          # Neo4j Cypher operations (sync + async)
-│   ├── qdrant_store.py         # Qdrant vector upsert/search
+│   ├── arcadedb_client.py      # ArcadeDB HTTP client (REST/JSON API, token auth)
+│   ├── arcadedb_graph.py       # ArcadeDB GraphStore implementation (graph + vector + fulltext)
+│   ├── arcadedb_schema.py      # Ontology-driven ArcadeDB schema sync (DDL batching)
+│   ├── arcadedb_community.py   # Community detection pipeline (Louvain + LLM reports)
+│   ├── graph_store.py          # GraphStore Protocol (async/sync interface)
+│   ├── docling_enrichment.py   # DoclingDocument enrichment helpers (translations, context)
 │   ├── canonicalization.py     # Entity alias resolution + fuzzy match
-│   ├── chunking.py             # Structure-aware document chunking
+│   ├── chunking.py             # Native HybridChunker integration (Docling)
 │   ├── reranker.py             # Cross-encoder reranker (bge-reranker-v2-m3)
 │   ├── translation.py          # Foreign language detection + LLM translation
 │   ├── ontology_templates.py   # YAML → Pydantic extraction templates + validation
 │   └── storage.py              # MinIO storage operations
 ├── workers/
 │   ├── pipeline.py             # Celery ingest pipeline (parallel text/image embed)
-│   ├── trusted_data_tasks.py   # Celery task for trusted data embedding + Qdrant indexing
+│   ├── trusted_data_tasks.py   # Celery task for trusted data embedding + ArcadeDB indexing
 │   └── watcher.py              # Celery Beat directory watcher
 ├── models/               # SQLAlchemy ORM (ingest, retrieval, governance, auth, trusted_data)
 └── schemas/              # Pydantic request/response schemas
 docker/
 ├── docling/              # Docling VLM conversion service (granite-docling-258M)
 ├── docling-graph/        # Docling-Graph extraction service (ontology-driven, port 8002)
-├── neo4j/                # Neo4j init scripts (constraints, indexes)
-└── postgres/             # Custom Postgres (pgvector)
+├── arcadedb/             # ArcadeDB built from source (Dockerfile + JDK 21)
+└── postgres/             # Custom Postgres (metadata, governance)
 ontology/
 └── ontology.yaml         # Military equipment ontology (5 layers, 35+ types, 44 predicates)
 scripts/
-├── init_qdrant_collections.py    # Create Qdrant collections with indexes
-├── migrate_age_to_neo4j.py       # One-time AGE → Neo4j migration
 └── seed_ontology.py              # Seed ontology types from YAML
 frontend/
 ├── src/components/       # React components
@@ -1164,7 +1189,8 @@ frontend/
 └── src/api/client.ts     # Typed API client (all endpoints)
 tests/
 ├── unit/                 # Pure-logic tests (no DB required)
-├── integration/          # API tests against real Postgres/Redis/MinIO/Neo4j/Qdrant stack
+├── integration/          # API tests against real Postgres/Redis/MinIO/ArcadeDB stack
+├── native/               # Native ArcadeDB integration tests (real DB)
 ├── pipeline/             # Pipeline task tests
 ├── e2e/                  # End-to-end workflow tests
 └── fixtures/             # Sample documents for test pipelines

@@ -52,9 +52,9 @@ Before writing custom logic, check whether the library already provides the capa
 |--------|------------|------------------------|
 | **Vector search** (ANN, scoring, fusion) | `vectorNeighbors()`, `vectorCosineSimilarity()`, `efSearch` parameter, distance metrics | ArcadeDB Manual §4.14, §6.6 |
 | **Graph traversal** (neighborhood, path, pattern) | `MATCH` syntax, `out()`/`in()`/`both()` with depth, Cypher | ArcadeDB Manual §4.13.6, §6.3.1 |
-| **Schema & indexes** | `CREATE TYPE IF NOT EXISTS`, LSM_VECTOR, FULL_TEXT, UNIQUE_HASH, BucketSelectionStrategy | ArcadeDB Manual §4.8, §4.9, §5.5.24 |
+| **Schema & indexes** | `CREATE TYPE IF NOT EXISTS`, LSM_VECTOR, FULL_TEXT, UNIQUE, BucketSelectionStrategy | ArcadeDB Manual §4.8, §4.9, §5.5.24 |
 | **Graph algorithms** (community, centrality, similarity) | `algo.louvain`, `algo.leiden`, PageRank, Node2Vec | ArcadeDB Manual Appendix 8.1 |
-| **Text search** (fulltext, fuzzy) | Lucene FULL_TEXT index, `text.levenshteinDistance()` | ArcadeDB Manual §4.9, §6.3.1 |
+| **Text search** (fulltext, fuzzy) | FULL_TEXT index with CONTAINSTEXT keyword, `text.levenshteinDistance()` | ArcadeDB Manual §4.9, §6.3.1 |
 | **Entity/relationship extraction** | `run_pipeline()`, `PipelineConfig`, delta/staged extraction, entity merge | Docling-Graph library API |
 | **Document conversion** (PDF, images, tables) | Docling service `/convert` endpoint, `DoclingDocument` JSON | Docling library API |
 
@@ -62,7 +62,7 @@ Before writing custom logic, check whether the library already provides the capa
 - Custom Python-side score fusion when ArcadeDB has `vectorCosineSimilarity()` or `$distance`
 - Custom graph traversal loops when a single MATCH query with depth control would suffice
 - Custom entity dedup logic when Docling-Graph's delta normalizer handles entity merge
-- Custom fulltext scoring when ArcadeDB's Lucene `$score` is available in the query result
+- Custom fulltext scoring when ArcadeDB's CONTAINSTEXT and `extraction_confidence` field are available
 - Custom batch insert loops when ArcadeDB's `sqlscript` or batch endpoint handles multiple statements
 - Custom concurrency gating when ArcadeDB's MVCC and BucketSelectionStrategy handle parallel writes
 
@@ -71,7 +71,7 @@ Before writing custom logic, check whether the library already provides the capa
 - [ ] No custom vector scoring that ignores `$distance` or `vectorCosineSimilarity()`
 - [ ] No custom traversal that could be a single MATCH with directed edges and depth bounds
 - [ ] No custom extraction pipeline that bypasses `run_pipeline()` / `PipelineConfig`
-- [ ] Graph fulltext results carry native `$score`, not a substituted metric
+- [ ] Graph fulltext results carry `extraction_confidence` from vertex properties
 - [ ] Filters are pushed into ArcadeDB/Postgres WHERE clauses, not post-filtered in Python
 
 ---
@@ -312,6 +312,17 @@ Before writing custom logic, check whether the library already provides the capa
 
 ---
 
+## 10. OLLAMA CONFIGURATION
+
+| Feature | What breaks without it | Verify | Phase |
+|---|---|---|---|
+| Per-role Ollama URLs (LLM/VLM/Embedding) | Cannot point different model types at different Ollama instances | Set `OLLAMA_LLM_BASE_URL` to different host; doc analysis uses that host; embedding uses `OLLAMA_EMBEDDING_BASE_URL` | 3.1 |
+| URL fallback to OLLAMA_BASE_URL | Specialized URL left blank breaks all LLM calls | Leave `OLLAMA_LLM_BASE_URL` blank; `get_ollama_llm_url()` returns `OLLAMA_BASE_URL` | 3.1 |
+| Docling-Graph inherits LLM URL via docker-compose cascade | Docling-Graph uses wrong Ollama instance | `OLLAMA_LLM_BASE_URL` set; docker-compose passes it to docling-graph container as `OLLAMA_BASE_URL` | 3.1 |
+| All LLM consumers use correct getter | Some consumers hardcode `ollama_base_url` instead of role-specific getter | `embedding.py` uses `get_ollama_embedding_url()`, `document_analysis.py:58` uses `get_ollama_llm_url()`, `document_analysis.py:202` uses `get_ollama_vlm_url()` | 3.1 |
+
+---
+
 ## KNOWN FRAGILE FEATURES (Historically Broken)
 
 These features have broken before and should be tested carefully after any change:
@@ -336,6 +347,10 @@ These features have broken before and should be tested carefully after any chang
 18. **Worker ensure_ready_sync race** (3.0) — Worker can start before API schema sync. Graph-writing tasks must retry until types exist. Test by starting worker before API and verifying retry/backoff behavior.
 19. **Community detection projection** (3.0) — Louvain must run only on domain entity types, excluding structural types (Document, TextChunk, ImageChunk, Alias, CommunityReport). Verify communities are not dominated by chunk clusters.
 20. **Membership hash stability** (3.0) — Hash must use `(entity_type, name)` tuples to prevent cross-type collisions and remain stable through canonical_name changes.
+21. **Per-role Ollama URL fallback** (3.1) — Blank specialized URL must fall back to `OLLAMA_BASE_URL`. Test by setting only `OLLAMA_BASE_URL` and verifying all LLM/VLM/embedding calls work.
+22. **ArcadeDB UPSERT RETURN AFTER** (3.1) — All UPSERT statements must use `RETURN AFTER @rid` to get the RID back. Without this, upserts return `{count: 1}` instead of the RID, breaking downstream operations.
+23. **ArcadeDB CONTAINSTEXT** (3.1) — Fulltext search must use `CONTAINSTEXT` keyword, NOT `LUCENE`. Per-type iteration required since ArcadeDB has no abstract `V` base type.
+24. **upsert_relationship param collision** (3.1) — from_identity and to_identity params must use `f_`/`t_` prefixes to avoid key collision when both contain `name`.
 
 ---
 
@@ -361,7 +376,7 @@ These features have broken before and should be tested carefully after any chang
 6. Verify document delete removes chunk vertices and cleans orphan entities
 
 ### Regression Test (60 min)
-Run against all 20 Known Fragile Features listed above.
+Run against all 24 Known Fragile Features listed above.
 
 ---
 
