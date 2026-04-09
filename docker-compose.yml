@@ -152,23 +152,25 @@ services:
       - ./ontology:/app/ontology:ro
     environment:
       ONTOLOGY_PATH: /app/ontology/ontology.yaml
-      LLM_PROVIDER: ${DOCLING_GRAPH_LLM_PROVIDER:-ollama}
-      LLM_MODEL: ${DOCLING_GRAPH_LLM_MODEL:-llama3.2}
+      # config_builder.py reads DOCLING_GRAPH_* prefixed env vars via pydantic-settings
+      DOCLING_GRAPH_LLM_PROVIDER: ${DOCLING_GRAPH_LLM_PROVIDER:-ollama}
+      DOCLING_GRAPH_LLM_MODEL: ${DOCLING_GRAPH_LLM_MODEL:-gpt-oss:120b}
+      DOCLING_GRAPH_LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-64000}
+      DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-10800}
+      # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
+      DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
+      # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,
+      # LiteLLM reads OLLAMA_API_BASE / OLLAMA_BASE_URL
+      OLLAMA_LLM_BASE_URL: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OLLAMA_BASE_URL: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
+      OLLAMA_API_BASE: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
       OLLAMA_THINK: ${OLLAMA_THINK:-}              # "low", "medium", "high" for gpt-oss thinking level
-      # LiteLLM reads OLLAMA_API_BASE; must be set as container env var
-      # (not in Python) because docling-graph creates its own LLM client.
-      OLLAMA_API_BASE: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       GRAPH_EXTRACTION_CHUNK_SIZE: ${GRAPH_EXTRACTION_CHUNK_SIZE:-100000}
       GRAPH_EXTRACTION_CHUNK_OVERLAP: ${GRAPH_EXTRACTION_CHUNK_OVERLAP:-2000}
-      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-64000}
-      DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-10800}
-      # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
-      DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
     ports:
       - "${DOCLING_GRAPH_PORT:-8002}:8002"
     # GPU reservation needed for VLM mode (DOCLING_GRAPH_BACKEND=vlm).
