@@ -1,22 +1,44 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-06
-**Branch:** `feature/arcadedb`
+**Last updated:** 2026-04-08
 
 ---
 
 ## Open Items
 
-### Feature Additions
+### Architecture
+
+**#63. Align Docling-Graph templates with canonical schema definition** (High)
+**Files:** `docker/docling-graph/app/template_builder.py` (lines ~34, ~99, ~189)
+Decision from #71: keep auto-generation from ontology YAML, but fix the generator to emit canonical patterns: `is_entity=True` for entities, `is_entity=False` for components, `edge()` for relationships. The current generator auto-derives identity fields, never emits component semantics, and encodes edges with `json_schema_extra={"edge_label": ...}`.
+**Reference:** https://ibm.github.io/docling-graph/fundamentals/schema-definition/entities-vs-components/ and https://ibm.github.io/docling-graph/usage/examples/docling-document-input/
+
+**#64. Preserve Docling-Graph provenance and metadata instead of rebuilding in Python** (High)
+**Files:** `docker/docling-graph/app/config_builder.py` (line ~90), `app/services/docling_graph_service.py` (line ~204), `app/workers/pipeline.py` (lines ~2116, ~2313, ~2354)
+The client flattens the node-link graph, the pipeline keeps only `properties`, ignores most response `metadata`, and rebuilds mention grounding with regex matching instead of consuming upstream provenance/resolver output. This negates much of the value from enabling delta resolvers and provenance attachment in the Docling-Graph config.
+**Fix:** Preserve `_provenance` from graph nodes (element-level source tracking). Use resolver output for entity merge decisions instead of reimplementing identity field derivation. Consume `graph_metadata` quality signals (gleaning passes, validation pass, resolver stats) for ingestion quality reporting.
+
+**#65. Move document-structure retrieval from Postgres chunk_links to native ArcadeDB graph** (High)
+**Files:** `app/workers/pipeline.py` (lines ~2564, ~2672), `app/api/v1/retrieval.py` (lines ~344, ~570)
+The pipeline writes structural edges (CONTAINS_TEXT, SAME_PAGE, SAME_SECTION) to ArcadeDB AND chunk_links to Postgres. But the main hybrid expansion path reads Postgres `chunk_links` first and only falls back to ArcadeDB for legacy cases. The native graph database is not driving the main retrieval logic.
+**Fix:** Make ArcadeDB the primary source for document-structure expansion. Query structural edges via MATCH traversal instead of the Postgres `chunk_links` table. Keep Postgres `chunk_links` as a denormalized cache for compatibility, or remove the duplication entirely.
+
+### Testing
+
+**#70. Add native integration test coverage** (Low)
+**Files:** `tests/conftest.py` (line ~206), `docker/docling-graph/tests/test_pipeline_integration.py` (line ~37)
+The shared fixture replaces GraphStore with mocks, and the docling-graph integration tests validate the wrapper contract rather than a live native library run. Many custom-vs-native drifts are not protected by tests.
+**Fix:** Add integration test markers that use the real ArcadeDBGraphStore (not mocks) for critical path validation: vector search -> retrieval, entity resolution -> dossier, traversal -> ontology expansion. Test the docling-graph pipeline against a real Docling-Graph library call.
+
+### Feature Additions (Deferred)
 
 **#27. LLM-based entity mention resolution**
-
 **Status:** Not started. Now unblocked (#45-#49 done) but intentionally deferred as a future enhancement.
 **Files:** `app/workers/pipeline.py` (`_build_entity_mentions`), new module TBD
 
 **Current state:**
 - `_build_entity_mentions` uses regex/substring matching to link extracted entities to document chunks.
-- This catches exact text matches but misses: paraphrases ("the fire control radar" → APG-77), abbreviations ("FCR" → APG-77), misspellings, coreferences ("the system" → S-400).
+- This catches exact text matches but misses: paraphrases ("the fire control radar" -> APG-77), abbreviations ("FCR" -> APG-77), misspellings, coreferences ("the system" -> S-400).
 
 **What needs to be done:**
 1. Add an LLM-based mention resolution mode, configurable via `ENTITY_MENTION_RESOLUTION_MODE` env var (values: `regex`, `llm`, default `regex`).
@@ -39,167 +61,6 @@
 - Configurable via env var (regex remains the default)
 - LLM mode produces more complete EXTRACTED_FROM edges
 - Latency is bounded via batching
-
-**#28. Native ArcadeDB vector functions for cross-model queries** ✅ DONE
-
-**Status:** Done (2026-04-06). After reviewing the ArcadeDB manual, `vectorRRFScore`/`vectorHybridScore` are not applicable to cross-type fusion (TextChunk + ImageChunk are different vertex types). Instead implemented:
-- `efSearch` parameter on all `vectorNeighbors` calls (§4.14.7) — configurable recall vs latency via `ARCADEDB_VECTOR_EF_SEARCH` env var (0 = adaptive default)
-- New `graph_vector_search()` method using `vectorCosineSimilarity()` in MATCH queries (§4.13.6) — graph traversal + vector similarity filter in a single ArcadeDB query
-- Python-side `compute_fusion_score()` retained for multi-signal scoring (doc-structure + ontology + military ID bonus) which is application-level logic, not vector-level fusion
-
-**#29. MATCH syntax for graph traversal queries** ✅ DONE
-
-**Status:** Done (2026-04-06). `get_neighborhood` and `get_neighborhood_graph` rewritten to use MATCH pattern syntax per §6.3.1. Includes edge type filtering and depth control via MATCH `while` clause.
-
-### Gaps/Bugs — Retrieval Query Review (2026-04-06)
-
-Findings from a review of the retrieval query mechanisms against the ArcadeDB manual. Native ArcadeDB primitives (`vectorNeighbors`, MATCH) are correctly used; the issues are in the custom application wrappers around them.
-
-**#51. Query profiles do not honor their own directed traversal model** (High)
-**Files:** `app/services/query_profiles.py` (lines ~556, ~569), `app/schemas/query_profiles.py` (line ~13), `app/services/arcadedb_graph.py` (line ~792)
-The schema supports per-step `direction`, `min_hops`, and `max_hops`, but execution collapses a profile to `rel_types + max_depth` and runs one undirected `MATCH ... .both(...)` traversal. Profiles are effectively "any of these rel types within N hops" instead of the configured directed path model.
-**Fix:** Generate native MATCH patterns from each traversal step's direction/hops instead of collapsing them. Use `.out(...)`, `.in(...)`, or `.both(...)` per step's direction field. Chain multiple MATCH steps for multi-hop directed paths.
-
-**#52. Dossier/query-profile evidence attachment passes entity RIDs into a chunk-centric helper** (High)
-**Files:** `app/services/dossier_service.py` (line ~338), `app/services/query_profiles.py` (line ~645), `app/services/arcadedb_graph.py` (line ~856)
-Both services call `get_ontology_linked_chunks(item.node_id)` for entities. But that method traverses `chunk ← EXTRACTED_FROM — entities → other chunks`, which is correct for a seed chunk, not for an entity RID. Result: dossier/query-profile evidence is likely empty or wrong.
-**Fix:** Add a separate `get_entity_evidence_chunks(entity_rid)` method that traverses `entity → EXTRACTED_FROM → chunks` (or via HAS_PROVENANCE for document-level). Update callers to use the correct method based on whether they're passing an entity or a chunk.
-
-**#53. Hybrid cross-modal fallback passes UUID into RID-expecting MATCH** (High)
-**Files:** `app/api/v1/retrieval.py` (lines ~339, ~646), `app/services/arcadedb_graph.py` (line ~792)
-`_expand_via_cross_modal()` passes `str(seed.chunk_id)` (a UUID) into `get_neighborhood()`, which interpolates it into `@rid = {node_id}`. UUIDs are not RIDs. This path does not resolve them first (unlike `get_ontology_linked_chunks` which was fixed to do UUID→RID resolution).
-**Fix:** Add UUID→RID resolution in `get_neighborhood()` (same pattern as `get_ontology_linked_chunks`), or resolve at the call site before passing.
-
-**#54. Ontology expansion strips graph context from returned chunks** (High)
-**Files:** `app/api/v1/retrieval.py` (line ~710), `app/services/arcadedb_graph.py` (line ~889)
-`_expand_via_ontology()` expects `target_chunk_type`, `rel_type`, and entity context, but `get_ontology_linked_chunks()` returns raw chunk rows from `expand(out('EXTRACTED_FROM'))` with none of this metadata. Relation types collapse to `RELATED_TO`, entity names are blank, and image chunks default to `text_chunk` lookup.
-**Fix:** Enrich `get_ontology_linked_chunks()` return to include the intermediate entity name/type and the original chunk type (`@class`). Alternatively, return richer dicts from the ArcadeDB query that include the traversal path metadata.
-
-**#55. Retrieval filters are post-only and incomplete** (Medium)
-**Files:** `app/api/v1/retrieval.py` (lines ~56, ~78), `app/api/v1/_retrieval_helpers.py` (line ~120), `app/schemas/retrieval.py` (line ~37)
-Filters apply only after strategy execution (post-filter), `source_ids` is explicitly skipped, and the SQL-side filter builders in `_retrieval_helpers.py` are unused. Post-filtering wastes vector search budget on results that will be dropped.
-**Fix:** For ArcadeDB vector queries, apply document_id filters as a WHERE clause on the outer SELECT (after vectorNeighbors expand). For classification/modality, post-filter is acceptable since those fields are on the vertex. Implement source_ids via a Postgres subquery (document_id IN SELECT from documents WHERE source_id IN ...).
-
-**#56. API defaults don't match advertised retrieval settings** (Medium)
-**Files:** `app/schemas/retrieval.py` (line ~58), `app/api/v1/retrieval.py` (line ~1124), `app/config.py` (line ~152)
-`UnifiedQueryRequest.top_k` defaults to 10 and `min_confidence` to None, but `/v1/settings/retrieval` exposes 20 and 0.1 from config. Raw API clients omitting these fields don't get the documented defaults.
-**Fix:** Change the Pydantic schema defaults to match the config: `top_k: int = Field(default=20)` and `min_confidence: Optional[float] = Field(default=0.1)`. Or use a `model_validator` that reads from `get_settings()` when the field is None.
-
-**#57. Graph fulltext search drops Lucene $score, substitutes wrong metric** (Medium)
-**Files:** `app/services/arcadedb_graph.py` (lines ~53, ~328), `app/api/v1/graph_store.py` (line ~66)
-Fulltext search is ordered by Lucene `$score`, but `_to_entity()` ignores it and maps only vector `$distance` or `extraction_confidence`. Graph query endpoint then returns `extraction_confidence` as the score, which is the entity's ingestion confidence — not the search relevance.
-**Fix:** In `_to_entity()`, check for `$score` and map it to `extraction_confidence` (or a new score field) when present. Prioritize: `$distance` (vector) > `$score` (fulltext) > `extraction_confidence` (ingestion).
-
-**#58. Co-extracted entity discovery is not wired into the query stack** (Low)
-**Files:** `app/services/arcadedb_graph.py` (line ~921), `app/services/query_profiles.py` (line ~536)
-`get_co_extracted_entities()` exists in the backend and query profiles comment about a "co-extracted fallback", but the implementation falls back to `resolve_root_entity()` exact lookup and never calls it.
-**Fix:** Wire `get_co_extracted_entities()` as a fallback in entity resolution (after alias search, before giving up). This would help resolve entities that appear alongside the query entity in the same source chunks.
-
-**#59. Stale integration tests assert old response shape** (Low)
-**Files:** `tests/integration/test_retrieval_api.py` (line ~15), `tests/e2e/test_full_pipeline.py` (line ~66), `tests/conftest.py` (line ~206)
-Stale tests assert `response["mode"]` but the live response uses `strategy` and `modality_filter`. The shared conftest replaces GraphStore with mocks, so passing tests don't validate real ArcadeDB behavior.
-**Fix:** Update integration/e2e tests to assert `strategy`/`modality_filter`. Add integration test markers that use real GraphStore for critical path validation.
-
-### Missing UI Feature
-
-**#72. Restore Global Search indexing UI on the Ontology page** (High)
-**Files:** `frontend/src/components/GraphExplorer.tsx`, `frontend/src/api/client.ts`
-
-**Context:** The Global Search strategy (`strategy: "global"`) searches `CommunityReport[report_embedding]` vectors and synthesizes an LLM answer from matching community reports. For Global Search to return results, the following pipeline must have run:
-
-1. **Community detection** — Leiden/Louvain algorithm assigns domain entities to communities
-2. **LLM report generation** — For each community, fetches member relationships, generates `{title, summary}` via Ollama
-3. **Report embedding** — Embeds `title + summary` via BGE into `CommunityReport.report_embedding` (1024-dim)
-
-All three steps execute as a single unit inside `run_community_detection()` (`app/services/arcadedb_community.py`). The backend `POST /v1/community/detect` triggers the full pipeline. Without this running, Global Search returns zero results.
-
-**What was lost:** The main branch had a `GraphIndexingPanel` component on the Ontology page's "indexing" tab with schedule display, countdown timer, manual trigger buttons, and last-indexed timestamp. This was removed during the GraphRAG migration.
-
-**Fix:** Restore the "indexing" tab in `GraphExplorer.tsx` as a `GlobalSearchIndexingPanel` that:
-1. Re-adds `"indexing"` to the `Tab` type union (currently `"search" | "entity" | "relationship" | "profiles"`)
-2. **Schedule display:** `COMMUNITY_DETECTION_INTERVAL_MINUTES` with countdown timer showing minutes remaining and next-run time
-3. **Auto-trigger display:** Shows the post-ingest threshold (`COMMUNITY_DETECTION_POST_INGEST_THRESHOLD` — after N documents are ingested, indexing runs automatically)
-4. **Manual trigger buttons:**
-   - "Update Index" (incremental mode — only regenerates reports for communities whose membership changed) → `POST /v1/community/detect` with `mode=incremental`
-   - "Force Full Reindex" (full mode — regenerates all reports regardless of changes) → `POST /v1/community/detect` with `mode=full`
-5. **Status display** from `GET /v1/community/status`: status (RUNNING/COMPLETE/FAILED), total communities, reports generated vs reused, started/completed timestamps
-6. **Reports browser:** List from `GET /v1/community/reports` with title, summary, member count — lets users see what the Global Search will draw from
-7. **API client functions** in `client.ts`: `triggerCommunityDetection(mode)`, `getCommunityStatus()`, `getCommunityReports()`, `getCommunityReport(id)`
-
-**Label guidance:** The tab/buttons should use "Index" language (not "Community Detection") since users think of it as "indexing for Global Search," not the underlying algorithm.
-
-**Reference:** Main branch `GraphExplorer.tsx` lines 580-694 for the original UX pattern.
-
----
-
-### Native-First Review — Architecture-Level Findings (2026-04-06)
-
-The branch calls native `DocumentConverter`, Docling-Graph `run_pipeline()`, and ArcadeDB `MATCH`/`vectorNeighbors()`, but the dominant pattern is to immediately flatten or wrap those native objects into app-specific contracts and then reimplement upstream behavior in Python. These findings address that pattern.
-
-**Execution priorities:** #60 → #61 → #63 → #62 → #64 → #65 → #66 → #67 → #68 → #69 → #70 → #71
-
-**#60. Make DoclingDocument the authoritative mutable artifact through the pipeline** (Critical)
-**Files:** `docker/docling/app/converter.py` (line ~236), `app/services/docling_client.py` (line ~42), `app/workers/pipeline.py` (lines ~915, ~1276, ~2234)
-The Docling wrapper converts natively, then immediately flattens into custom `ConvertedElement`/`ExtractedChunk` DTOs. Later stages mutate `DocumentElement` rows plus hand-built markdown instead of mutating and reserializing the `DoclingDocument` itself. This is the root cause of the stale JSON vs current-text split.
-**Fix:** Keep `DoclingDocument` as the primary working object. Translation and picture-description stages should mutate the `DoclingDocument` (per Docling's documented enrichment flow at https://docling-project.github.io/docling/examples/enrich_doclingdocument/), then reserialize to MinIO. Derive `DocumentElement` rows and markdown FROM the `DoclingDocument`, not the other way around.
-
-**#61. Replace custom chunker with native Docling chunkers** (High)
-**Files:** `app/services/chunking.py` (line ~36), `app/workers/pipeline.py` (line ~1673)
-Docling documents two native approaches (`BaseChunker`/`HybridChunker`) and explicitly recommends chunking directly from `DoclingDocument`. The branch uses `structure_aware_chunk()` with approximate token counting and manual overlap logic over flattened rows.
-**Fix:** Replace `structure_aware_chunk()` with Docling's `HybridChunker` (or `BaseChunker` if hybrid is too aggressive) operating on the `DoclingDocument` object. If retrieval chunking must intentionally differ from Docling's default, document the specific reason.
-**Reference:** https://docling-project.github.io/docling/concepts/chunking/
-
-**#62. Use Docling's native enrichment path for translation and picture descriptions** (High)
-**Files:** `docker/docling/app/converter.py` (line ~167), `app/workers/pipeline.py` (lines ~1290, ~1401, ~1492, ~2280)
-The converter explicitly disables picture description, then later stages write `translated_text` to `DocumentElement` rows, append image descriptions to markdown, and inject `_enriched_text` into the extraction payload. Native Docling examples instead mutate the `DoclingDocument` and regenerate all output from that object.
-**Fix:** Enable Docling's native picture description. For translation, use Docling's documented enrichment pattern (mutate `DoclingDocument` in-place). Regenerate markdown/JSON from the enriched `DoclingDocument` rather than patching downstream.
-**Reference:** https://docling-project.github.io/docling/examples/translate/ and https://docling-project.github.io/docling/examples/enrich_doclingdocument/
-
-**#63. Align Docling-Graph templates with canonical schema definition** (High)
-**Files:** `docker/docling-graph/app/template_builder.py` (lines ~34, ~99, ~189)
-Upstream docs show explicit Pydantic models using `graph_id_fields`, `is_entity=False` for components, and `edge()` for relationships. This branch auto-derives identity fields, never emits component semantics, and encodes edges with `json_schema_extra={"edge_label": ...}`. The "unified template" wraps all entity types into a generated container model with list fields.
-**Fix:** Author canonical Pydantic template classes following the documented `is_entity=True`/`is_entity=False` pattern for entities vs components, and `edge()` for relationships. Decide whether templates should be explicit authored models or generated from the ontology YAML — but either way, conform to the library's canonical schema definition.
-**Reference:** https://ibm.github.io/docling-graph/fundamentals/schema-definition/entities-vs-components/ and https://ibm.github.io/docling-graph/usage/examples/docling-document-input/
-
-**#64. Preserve Docling-Graph provenance and metadata instead of rebuilding in Python** (High)
-**Files:** `docker/docling-graph/app/config_builder.py` (line ~90), `app/services/docling_graph_service.py` (line ~204), `app/workers/pipeline.py` (lines ~2116, ~2313, ~2354)
-The client flattens the node-link graph, the pipeline keeps only `properties`, ignores most response `metadata`, and rebuilds mention grounding with regex matching instead of consuming upstream provenance/resolver output. This negates much of the value from enabling delta resolvers and provenance attachment in the Docling-Graph config.
-**Fix:** Preserve `_provenance` from graph nodes (element-level source tracking). Use resolver output for entity merge decisions instead of reimplementing identity field derivation. Consume `graph_metadata` quality signals (gleaning passes, validation pass, resolver stats) for ingestion quality reporting.
-
-**#65. Move document-structure retrieval from Postgres chunk_links to native ArcadeDB graph** (High)
-**Files:** `app/workers/pipeline.py` (lines ~2564, ~2672), `app/api/v1/retrieval.py` (lines ~344, ~570)
-The pipeline writes structural edges (CONTAINS_TEXT, SAME_PAGE, SAME_SECTION) to ArcadeDB AND chunk_links to Postgres. But the main hybrid expansion path reads Postgres `chunk_links` first and only falls back to ArcadeDB for legacy cases. The native graph database is not driving the main retrieval logic.
-**Fix:** Make ArcadeDB the primary source for document-structure expansion. Query structural edges via MATCH traversal instead of the Postgres `chunk_links` table. Keep Postgres `chunk_links` as a denormalized cache for compatibility, or remove the duplication entirely.
-
-**#66. Compile query-profile traversals into native MATCH instead of generic undirected walk** (High)
-**Files:** `app/schemas/query_profiles.py` (line ~13), `app/services/query_profiles.py` (line ~556), `app/services/dossier_service.py` (line ~193), `app/services/arcadedb_graph.py` (line ~776)
-The profile schema supports directed multi-step paths with `direction`, `min_hops`, `max_hops`, but execution collapses to one generic undirected `.both(...)` neighborhood walk. This is a custom simplification on top of ArcadeDB rather than native use of its graph query model.
-**Fix:** Generate native MATCH patterns from each traversal step. Chain `.out('{RelType}'){min,max}` / `.in(...)` / `.both(...)` per step's direction field. This is the same as #51 but from the native-first perspective.
-
-**#67. Enrich GraphStore result model to carry native ArcadeDB semantics** (Medium)
-**Files:** `app/services/graph_store.py` (line ~1), `app/services/arcadedb_graph.py` (lines ~53, ~804), `app/api/v1/graph_store.py` (line ~66)
-The `GraphStore` abstraction maps Lucene/vector results into `GraphEntityResult.extraction_confidence`, strips node and edge payloads, and the API returns those generic fields instead of native Lucene score or fuller graph records.
-**Fix:** Add `score` and `score_type` fields to `GraphEntityResult` (or a richer result type). Carry Lucene `$score` for fulltext, `$distance`-derived similarity for vector, and `extraction_confidence` for ingestion — as separate fields rather than overloading one. Return fuller native properties from neighborhood/graph queries.
-
-**#68. Push retrieval filters into native queries** (Medium)
-**Files:** `app/api/v1/retrieval.py` (lines ~42, ~93), `app/api/v1/_retrieval_helpers.py` (line ~120)
-Filters are handled in Python after search/expansion even though SQL-side filter builders exist. Post-filtering wastes vector search budget on results that will be dropped.
-**Fix:** Apply `document_id` filters as WHERE clauses on the outer SELECT (after vectorNeighbors expand). Use the existing `build_filters()` helpers for Postgres-side chunk queries. This overlaps with #55 but from the native-first perspective.
-
-**#69. Return enriched graph context from ontology expansion traversal** (Medium)
-**Files:** `app/services/arcadedb_graph.py` (line ~856), `app/api/v1/retrieval.py` (line ~710), `app/services/query_profiles.py` (line ~645), `app/services/dossier_service.py` (line ~338)
-`get_ontology_linked_chunks()` returns raw rows from `expand(out('EXTRACTED_FROM'))` but higher layers expect `target_chunk_type`, `rel_type`, and entity context that ArcadeDB never provided. This mismatch is a direct consequence of wrapping native traversal in a custom contract.
-**Fix:** Enrich the ArcadeDB query to return intermediate entity name/type and chunk `@class` in the traversal result. Use ArcadeDB's MATCH to capture the traversal path metadata natively rather than adding it in Python.
-
-**#70. Add native integration test coverage** (Low)
-**Files:** `tests/conftest.py` (line ~206), `docker/docling-graph/tests/test_pipeline_integration.py` (line ~37)
-The shared fixture replaces GraphStore with mocks, and the docling-graph integration tests validate the wrapper contract rather than a live native library run. Many custom-vs-native drifts are not protected by tests.
-**Fix:** Add integration test markers that use the real ArcadeDBGraphStore (not mocks) for critical path validation: vector search → retrieval, entity resolution → dossier, traversal → ontology expansion. Test the docling-graph pipeline against a real Docling-Graph library call.
-
-**#71. Decide explicit vs generated Docling-Graph templates** (Low)
-**Files:** `docker/docling-graph/app/template_builder.py` (lines ~107, ~189), `docker/docling-graph/app/main.py` (line ~56)
-The branch auto-generates templates from the ontology YAML. This is convenient but creates a semantic gap with the canonical Docling-Graph template authoring pattern (explicit Pydantic models with `is_entity`, `edge()`, component semantics).
-**Fix:** Evaluate whether the ontology is stable enough to warrant explicit template classes (higher fidelity, easier to test) or whether generation is necessary for ontology evolution speed. Document the decision and its tradeoffs.
 
 ---
 
@@ -224,6 +85,15 @@ The branch auto-generates templates from the ontology YAML. This is convenient b
 - **#49.** Fixed EXTRACTED_FROM traversal direction and identifier type across all callers (UUID-to-RID lookup added)
 - **#50.** Fixed canonicalization to use graph traversal for document-entity discovery (replaced LUCENE search with Document->chunk->entity edges)
 - **#5.** Implemented validation_matrix enforcement in upsert_relationship (reject/warn on invalid triples)
+- **#51.** Fixed query profiles to honor their own directed traversal model (native MATCH patterns from each step's direction/hops)
+- **#52.** Fixed dossier/query-profile evidence attachment (separate entity-centric vs chunk-centric helpers)
+- **#53.** Fixed hybrid cross-modal fallback UUID/RID mismatch (UUID-to-RID resolution added)
+- **#54.** Fixed ontology expansion to preserve graph context from returned chunks (enriched traversal results)
+- **#55.** Implemented retrieval filter push-down into native queries (document_id as WHERE clause on outer SELECT)
+- **#56.** Aligned API defaults with advertised retrieval settings (top_k=20, min_confidence=0.1)
+- **#57.** Fixed graph fulltext search to carry Lucene $score through result model (score priority: $distance > $score > extraction_confidence)
+- **#58.** Wired co-extracted entity discovery into the query stack (fallback in entity resolution)
+- **#59.** Updated stale integration tests to assert current response shape (strategy/modality_filter)
 
 ### Features Implemented
 
@@ -236,6 +106,9 @@ The branch auto-generates templates from the ontology YAML. This is convenient b
 - **#21.** Added VLM extraction backend option to docling-graph service (`DOCLING_GRAPH_BACKEND` env var with `llm`/`vlm` options)
 - **#22.** Implemented dual-approval workflow for graph mutations (`approvals` list, duplicate-curator prevention, config flag)
 - **#25.** Added benchmark suite for retrieval strategies (`tests/benchmarks/` with latency assertions)
+- **#28.** Native ArcadeDB vector functions for cross-model queries (efSearch parameter, graph_vector_search with vectorCosineSimilarity, Python-side fusion scoring)
+- **#29.** MATCH syntax for graph traversal queries (get_neighborhood and get_neighborhood_graph rewritten to MATCH pattern syntax)
+- **#72.** Restored Global Search indexing UI on the Ontology page (GlobalSearchIndexingPanel with schedule display, manual trigger, status, reports browser)
 
 ### Code Quality / Refactoring
 
@@ -261,6 +134,17 @@ The branch auto-generates templates from the ontology YAML. This is convenient b
 - **#33.** Used `text.levenshteinDistance()` for fuzzy entity matching (server-side fuzzy matching in canonicalization)
 - **#34.** Added EXPLAIN/PROFILE tooling for query plan validation (health-check asserts no full scans on critical paths)
 
+### Architecture (Native-First) Implemented
+
+- **#60.** Made DoclingDocument the authoritative mutable artifact through the pipeline
+- **#61.** Replaced custom chunker with native Docling chunkers
+- **#62.** Used Docling's native enrichment path for translation and picture descriptions
+- **#66.** Compiled query-profile traversals into native MATCH instead of generic undirected walk
+- **#67.** Enriched GraphStore result model to carry native ArcadeDB semantics
+- **#68.** Pushed retrieval filters into native queries
+- **#69.** Returned enriched graph context from ontology expansion traversal
+- **#71.** Decided: hybrid approach for Docling-Graph templates (auto-generate from YAML, conform to canonical patterns). Decision feeds into #63.
+
 ### Completed During Migration (Pre-merge Fixes)
 
 - Fixed `set_vertex_embedding` signature mismatch between Protocol and implementation
@@ -285,7 +169,7 @@ The branch auto-generates templates from the ontology YAML. This is convenient b
 >
 > 1. Critical: `DoclingDocument` is not kept as the authoritative working object after conversion. The Docling wrapper converts natively, then immediately flattens the result into custom `ConvertedElement`/`ExtractedChunk` DTOs and later stages mutate `DocumentElement` rows plus hand-built markdown instead of mutating and reserializing the `DoclingDocument` itself. This diverges from Docling's documented post-conversion mutation/enrichment flow and is the root cause of the stale JSON vs current-text split.
 >
-> 2. High: native Docling chunkers are bypassed in favor of a custom heuristic chunker over flattened rows. Upstream Docling documents two native approaches and explicitly recommends direct chunking from `DoclingDocument` via `BaseChunker`/`HybridChunker`; this branch instead uses `structure_aware_chunk()` with approximate token counting and manual overlap logic.
+> 2. High: native Docling chunkers are bypassed in favor of a custom heuristic chunker over flattened rows. Upstream Docling documents two native approaches and explicitly recommends chunking directly from `DoclingDocument` via `BaseChunker`/`HybridChunker`; this branch instead uses `structure_aware_chunk()` with approximate token counting and manual overlap logic.
 >
 > 3. High: Docling's own enrichment path is replaced with custom translation and picture-description stages that do not update the canonical Docling JSON. The converter explicitly disables picture description, then later stages write translated text to `DocumentElement.translated_text`, append image descriptions to markdown, and inject `_enriched_text` into the extraction payload. Native Docling examples instead mutate the `DoclingDocument` and regenerate output from that object.
 >
@@ -375,9 +259,9 @@ The following is the complete graph extraction review for reference when address
 > _build_entity_mentions() uses word-boundary regex for short names and substring matching for longer names at pipeline.py (line 2116). It does not resolve paraphrase, coreference, metonymy, abbreviation expansion, or implicit references. So your #27 concern is valid, but more precisely: the implementation never attempts semantic mention grounding in the first place.
 >
 > **Partial mention miss cases are never repaired.**
-> derive_structure_links() only falls back to artifact-wide entity→chunk linking when mentions is empty, not when mentions are incomplete, at pipeline.py (line 2696) and pipeline.py (line 2708). That means if lexical matching finds 2 real mentions and misses 3 implicit ones, the stage keeps the 2 and silently drops the 3. The fallback does not help recall unless the primary path fails completely.
+> derive_structure_links() only falls back to artifact-wide entity->chunk linking when mentions is empty, not when mentions are incomplete, at pipeline.py (line 2696) and pipeline.py (line 2708). That means if lexical matching finds 2 real mentions and misses 3 implicit ones, the stage keeps the 2 and silently drops the 3. The fallback does not help recall unless the primary path fails completely.
 >
-> **The entity→chunk wiring is text-centric, not fully element-centric.**
+> **The entity->chunk wiring is text-centric, not fully element-centric.**
 > The element_uid -> chunk_id map is built only from text_chunks via artifact_id at pipeline.py (line 2672). image_chunks are wired to the document and same-page neighbors, but they are not included in the mention map used for EXTRACTED_FROM. So even if extraction identifies entities grounded in image/schematic elements, the primary wiring path does not appear to attach them to image chunks.
 >
 > **Even perfect EXTRACTED_FROM edges would not currently pay off fully, because traversal is broken downstream.**
@@ -401,7 +285,7 @@ The following is the complete graph extraction review for reference when address
 > At that point the real question becomes whether to keep lexical mention building, enrich it with LLM/entity-resolution logic, or consume provenance directly from Docling-Graph output if available.
 >
 > Fix traversal before measuring graph-extraction quality.
-> Otherwise better entity→chunk edges will still not show up properly in retrieval, dossier evidence, or ontology expansion.
+> Otherwise better entity->chunk edges will still not show up properly in retrieval, dossier evidence, or ontology expansion.
 >
 > **Test Gaps**
 >
