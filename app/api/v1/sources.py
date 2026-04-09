@@ -117,9 +117,15 @@ async def upload_document(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Duplicate Document Upload",
             )
-        # Previous upload failed — remove old record so re-upload can proceed
-        await db.delete(existing_doc)
-        await db.flush()
+        # Previous upload failed — full cleanup (ArcadeDB graph, MinIO artifacts,
+        # Postgres derived data) before allowing re-upload
+        try:
+            await _hard_delete_document(existing_doc.id, existing_doc, db)
+        except Exception as exc:
+            logger.warning("Cleanup of failed doc %s before re-upload: %s", existing_doc.id, exc)
+            # Fallback: at least delete the record
+            await db.delete(existing_doc)
+            await db.flush()
 
     document = Document(
         id=doc_id,

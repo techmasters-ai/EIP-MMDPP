@@ -452,7 +452,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                 </button>
               )}
 
-              {entry.documentId && (entry.status === "polling" || entry.status === "PROCESSING") && (
+              {entry.documentId && entry.status === "PROCESSING" && (
                 <button
                   className="btn btn-warning btn-sm"
                   onClick={async () => {
@@ -529,23 +529,54 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                   )}
 
                   {(doc.pipeline_status === "FAILED" || doc.pipeline_status === "ERROR" || doc.pipeline_status === "PENDING") && (
-                    <button
-                      className="btn btn-ghost btn-xs"
-                      onClick={async () => {
-                        try {
-                          await reingestDocument(doc.id);
-                          setExistingDocs((prev) =>
-                            prev.map((d) =>
-                              d.id === doc.id ? { ...d, pipeline_status: "PENDING" } : d,
-                            ),
-                          );
-                        } catch (err) {
-                          setError(err instanceof Error ? err.message : "Retry failed");
-                        }
-                      }}
-                    >
-                      Retry
-                    </button>
+                    <span className="btn-group">
+                      <button
+                        className="btn btn-ghost btn-xs"
+                        onClick={async () => {
+                          try {
+                            await reingestDocument(doc.id, "full");
+                            setExistingDocs((prev) =>
+                              prev.map((d) =>
+                                d.id === doc.id ? { ...d, pipeline_status: "PENDING" } : d,
+                              ),
+                            );
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : "Retry failed");
+                          }
+                        }}
+                      >
+                        Retry
+                      </button>
+                      <select
+                        className="btn btn-ghost btn-xs"
+                        style={{ width: "auto", padding: "0 0.25rem", fontSize: "0.7rem" }}
+                        defaultValue=""
+                        onChange={async (e) => {
+                          const mode = e.target.value as "embeddings_only" | "graph_only";
+                          if (!mode) return;
+                          e.target.value = "";
+                          try {
+                            await reingestDocument(doc.id, mode);
+                            setExistingDocs((prev) =>
+                              prev.map((d) =>
+                                d.id === doc.id ? { ...d, pipeline_status: "PENDING" } : d,
+                              ),
+                            );
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : "Retry failed");
+                          }
+                        }}
+                      >
+                        <option value="">▾</option>
+                        <option value="embeddings_only">Embeddings Only</option>
+                        <option value="graph_only">Graph Only</option>
+                      </select>
+                    </span>
+                  )}
+                  {doc.failed_stages && doc.failed_stages.length > 0 && (
+                    <span className="text-xs" style={{ color: "var(--error)" }} title={`Failed: ${doc.failed_stages.join(", ")}`}>
+                      ⚠ {doc.failed_stages.length} failed stage{doc.failed_stages.length > 1 ? "s" : ""}
+                    </span>
                   )}
 
                   {doc.pipeline_status === "PROCESSING" && (
@@ -608,11 +639,22 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
                 "This removes all files, extractions, embeddings, and graph data. This cannot be undone."
               )) return;
               try {
-                await deleteAllSourceDocuments(selectedSourceId);
-                setEntries([]);
-                setExistingDocs([]);
+                const result = await deleteAllSourceDocuments(selectedSourceId);
+                // Re-fetch to show any documents that failed to delete
+                const remaining = await listDocumentsBySource(selectedSourceId);
+                setExistingDocs(remaining);
+                // Only clear entries that belong to THIS source
+                setEntries((prev) => prev.filter((e) => !e.documentId));
+                if (remaining.length > 0) {
+                  setError(`Deleted ${result.deleted || 0} documents; ${remaining.length} could not be removed.`);
+                }
               } catch (err) {
                 setError(err instanceof Error ? err.message : "Delete all failed");
+                // Re-fetch to show actual state
+                try {
+                  const remaining = await listDocumentsBySource(selectedSourceId);
+                  setExistingDocs(remaining);
+                } catch { /* ignore */ }
               }
             }}
           >

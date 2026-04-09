@@ -34,20 +34,21 @@ def scan_watch_directories(self) -> None:
         watch_dirs = result.scalars().all()
 
         for watch_dir in watch_dirs:
-            # Respect per-directory poll interval
+            # Respect per-directory poll interval. Use updated_at on the WatchDir
+            # itself as the last-scan timestamp (not WatchLog.created_at, which is
+            # only written when a new file is found — unchanged directories would
+            # be re-scanned every Beat tick otherwise).
             interval = getattr(watch_dir, "poll_interval_seconds", None) or 30
-            last_log_ts = db.execute(
-                select(WatchLog.created_at)
-                .where(WatchLog.watch_dir_id == watch_dir.id)
-                .order_by(WatchLog.created_at.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-            if last_log_ts is not None:
-                if last_log_ts.tzinfo is None:
-                    last_log_ts = last_log_ts.replace(tzinfo=datetime.timezone.utc)
-                if (now - last_log_ts).total_seconds() < interval:
+            last_scan = getattr(watch_dir, "updated_at", None)
+            if last_scan is not None:
+                if last_scan.tzinfo is None:
+                    last_scan = last_scan.replace(tzinfo=datetime.timezone.utc)
+                if (now - last_scan).total_seconds() < interval:
                     continue
             _scan_directory(db, watch_dir)
+            # Update the WatchDir's updated_at to record this scan time
+            watch_dir.updated_at = now
+            db.commit()
 
     except Exception as exc:
         logger.error("scan_watch_directories failed: %s", exc)

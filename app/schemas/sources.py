@@ -45,7 +45,7 @@ class DocumentResponse(APIModel):
 
 
 class BatchStatusRequest(APIModel):
-    document_ids: list[uuid.UUID] = Field(..., max_length=50)
+    document_ids: list[uuid.UUID] = Field(..., max_length=500)
 
 
 class DocumentStatusResponse(APIModel):
