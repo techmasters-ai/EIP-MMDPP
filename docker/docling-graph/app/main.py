@@ -15,28 +15,215 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 
 # ---------------------------------------------------------------------------
-# Monkey-patch litellm.completion to inject Ollama-native `format="json"`
-# for gpt-oss / thinking models.  The docling-graph library uses
-# response_format={"type":"json_schema",...} (OpenAI style), but Ollama
-# needs its native `format` parameter to constrain output to valid JSON.
-# Without this, gpt-oss:120b returns reasoning text instead of JSON.
+# Monkey-patch docling-graph's LiteLLMClient to fix two defects:
+#
+# 1. _build_request() runs a support-filter that strips Ollama-native params
+#    (format, think) before the request reaches litellm.completion().
+#    Fix: preserve these params through the filter for Ollama providers.
+#
+# 2. _call_api() only reads message.content — empty for thinking models like
+#    gpt-oss:120b where reasoning goes to message.thinking and content can
+#    be empty.  Fix: richer error with diagnostic fields, no silent failure.
+#
+# 3. For Ollama: send format=<schema> (structured) or format="json" (fallback),
+#    think="low" for gpt-oss, stream=False for reliable structured output.
 # ---------------------------------------------------------------------------
 import litellm as _litellm
 
-_original_completion = _litellm.completion
+_logger = logging.getLogger("docling_graph.llm_clients.litellm.patch")
 
 
-def _patched_completion(*args: Any, **kwargs: Any) -> Any:
-    model = kwargs.get("model", "")
-    if "ollama" in model.lower() or "ollama" in kwargs.get("api_base", ""):
-        if "format" not in kwargs:
-            kwargs["format"] = "json"
-        # Ensure non-streaming for reliable structured output
-        kwargs.setdefault("stream", False)
-    return _original_completion(*args, **kwargs)
+def _patched_build_request(
+    self,
+    messages,
+    schema_json=None,
+    structured_output=True,
+    response_top_level="object",
+    response_schema_name="extraction_result",
+):
+    from docling_graph.llm_clients.schema_utils import normalize_schema_for_response_format
+    from docling_graph.exceptions import ClientError
+
+    gen = self.generation
+    max_tokens = gen.max_tokens or self._max_output_tokens
+    model_name = self.model_config.litellm_model
+
+    request = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": gen.temperature,
+        "max_tokens": max_tokens,
+        "timeout": self.timeout,
+        "drop_params": True,
+        "stream": False,
+    }
+
+    connection = self.connection
+    api_key = connection.api_key.get_secret_value() if connection.api_key else None
+    if api_key:
+        request["api_key"] = api_key
+    if connection.base_url:
+        request["api_base"] = connection.base_url
+    if connection.organization:
+        request["organization"] = connection.organization
+    if connection.headers:
+        request["headers"] = dict(connection.headers)
+
+    provider_id = str(getattr(self._config, "provider_id", "") or "").lower()
+    is_ollama = (
+        provider_id == "ollama"
+        or str(model_name).startswith("ollama/")
+        or ("11434" in str(request.get("api_base", "")))
+    )
+
+    if structured_output:
+        try:
+            schema_dict = json.loads(schema_json or "{}")
+        except json.JSONDecodeError as e:
+            raise ClientError(
+                "Invalid schema_json passed for structured output.",
+                details={"error": str(e), "schema_json_preview": (schema_json or "")[:200]},
+                cause=e,
+            ) from e
+        normalized = normalize_schema_for_response_format(
+            schema_dict,
+            top_level=response_top_level,
+            name=response_schema_name,
+        )
+        request["response_format"] = {"type": "json_schema", "json_schema": normalized}
+        if is_ollama:
+            request["format"] = normalized
+    else:
+        request["response_format"] = {"type": "json_object"}
+        if is_ollama:
+            request["format"] = "json"
+
+    if gen.top_p is not None:
+        request["top_p"] = gen.top_p
+    if gen.top_k is not None:
+        request["top_k"] = gen.top_k
+    if gen.frequency_penalty is not None:
+        request["frequency_penalty"] = gen.frequency_penalty
+    if gen.presence_penalty is not None:
+        request["presence_penalty"] = gen.presence_penalty
+    if gen.seed is not None:
+        request["seed"] = gen.seed
+    if gen.stop is not None:
+        request["stop"] = gen.stop
+
+    if is_ollama and "gpt-oss" in str(model_name).lower():
+        request["think"] = "low"
+
+    supported_fn = getattr(_litellm, "get_supported_openai_params", None)
+    if callable(supported_fn):
+        try:
+            supported = supported_fn(model=model_name)
+            if supported:
+                required = {
+                    "model", "messages", "api_base", "api_key", "headers",
+                    "organization", "timeout", "drop_params", "response_format",
+                    "stream",
+                }
+                provider_required = set()
+                if is_ollama:
+                    provider_required.update({"format", "think"})
+                allowed = required | provider_required | set(supported)
+                request = {k: v for k, v in request.items() if k in allowed}
+        except Exception:
+            _logger.debug("LiteLLM supported params lookup failed for %s", model_name)
+
+    return request
 
 
-_litellm.completion = _patched_completion
+def _patched_call_api(self, messages, **params):
+    from docling_graph.exceptions import ClientError
+
+    try:
+        request = self._build_request(messages, **params)
+        response = _litellm.completion(**request)
+
+        if hasattr(response, "model_dump"):
+            response_dict = response.model_dump()
+        elif isinstance(response, dict):
+            response_dict = response
+        else:
+            try:
+                response_dict = dict(response)
+            except Exception:
+                response_dict = {"raw": str(response)}
+
+        choices = response_dict.get("choices", []) or []
+        if not choices:
+            raise ClientError("LiteLLM returned no choices", details={"model": self.model})
+
+        message = choices[0].get("message", {}) or {}
+        content = message.get("content")
+        reasoning_content = message.get("reasoning_content")
+        thinking = message.get("thinking")
+        top_reasoning = response_dict.get("reasoning_content")
+        top_thinking = response_dict.get("thinking")
+
+        metadata = {
+            "finish_reason": choices[0].get("finish_reason"),
+            "model": response_dict.get("model", self.model),
+            "usage": response_dict.get("usage"),
+            "has_content": bool(content),
+            "has_reasoning_content": bool(reasoning_content or top_reasoning),
+            "has_thinking": bool(thinking or top_thinking),
+        }
+
+        if content:
+            return str(content), metadata
+
+        raise ClientError(
+            "LiteLLM returned empty content",
+            details={
+                "model": self.model,
+                "finish_reason": choices[0].get("finish_reason"),
+                "has_reasoning_content": bool(reasoning_content or top_reasoning),
+                "has_thinking": bool(thinking or top_thinking),
+                "reasoning_preview": str(
+                    reasoning_content or top_reasoning or thinking or top_thinking or ""
+                )[:500],
+                "request_keys": sorted(list(request.keys())),
+            },
+        )
+    except Exception as e:
+        if isinstance(e, ClientError):
+            raise
+        if params.get("structured_output", True):
+            self.last_call_diagnostics.update({
+                "structured_failed": True,
+                "fallback_error_class": type(e).__name__,
+            })
+            raise ClientError(
+                "Structured output request failed.",
+                details={
+                    "model": self.model,
+                    "provider": self._config.provider_id,
+                    "error": str(e),
+                },
+                cause=e,
+            ) from e
+        raise ClientError(
+            f"LiteLLM API call failed: {type(e).__name__}",
+            details={"model": self.model, "error": str(e)},
+            cause=e,
+        ) from e
+
+
+def _apply_litellm_client_patches():
+    """Apply patches to LiteLLMClient after docling_graph is imported."""
+    try:
+        from docling_graph.llm_clients.litellm import LiteLLMClient
+        LiteLLMClient._build_request = _patched_build_request
+        LiteLLMClient._call_api = _patched_call_api
+        _logger.info("LiteLLMClient patched for Ollama structured output support")
+    except ImportError:
+        _logger.warning("Could not patch LiteLLMClient — docling_graph.llm_clients.litellm not available")
+
+
+_apply_litellm_client_patches()
 
 from app.config_builder import build_pipeline_config
 from app.schemas import (
