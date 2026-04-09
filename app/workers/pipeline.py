@@ -1186,8 +1186,8 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
     name="app.workers.pipeline.detect_and_translate",
     max_retries=2,
     default_retry_delay=30,
-    soft_time_limit=settings.translation_timeout + 60,
-    time_limit=settings.translation_timeout + 120,
+    soft_time_limit=settings.translation_soft_time_limit,
+    time_limit=settings.translation_time_limit,
     queue="ingest",
 )
 def detect_and_translate(self, document_id: str, run_id: str | None = None) -> dict:
