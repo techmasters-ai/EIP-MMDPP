@@ -400,37 +400,73 @@ def _build_set_canonical_name_sql(
 
 def _build_delete_document_graph_sql(
     document_id: str,
-) -> tuple[list[str], str, str, str, dict[str, Any]]:
+) -> dict[str, Any]:
     """Build the SQL statements for deleting a document's graph elements.
 
-    Returns (delete_vertex_sqls, edge_cleanup_sql, edge_prune_sql,
-    orphan_sql, params).
+    ArcadeDB has no abstract V/E base types, so all queries must target
+    concrete types.  We load the ontology to discover relationship and
+    entity type names at runtime.
+
+    Returns a dict with keys: delete_vertex_sqls, edge_cleanup_sqls,
+    edge_prune_sqls, orphan_sqls, params.
     """
+    from app.services.arcadedb_schema import _safe_type_name, _STRUCTURAL_EDGE_TYPES
+
     params = {"doc_id": document_id}
 
+    # --- structural vertex deletions (always the same) ---
     delete_vertex_sqls = [
         "DELETE VERTEX FROM TextChunk WHERE document_id = :doc_id",
         "DELETE VERTEX FROM ImageChunk WHERE document_id = :doc_id",
         "DELETE VERTEX FROM Document WHERE document_id = :doc_id",
     ]
 
-    edge_cleanup_sql = (
-        "UPDATE E SET document_ids = document_ids.remove(:doc_id) "
-        "WHERE document_ids CONTAINS :doc_id"
-    )
+    # --- structural edge deletions (carry document_id as STRING) ---
+    for etype in _STRUCTURAL_EDGE_TYPES:
+        delete_vertex_sqls.append(
+            f"DELETE EDGE FROM {etype} WHERE document_id = :doc_id"
+        )
 
-    edge_prune_sql = (
-        "DELETE EDGE WHERE document_ids IS NOT NULL AND document_ids.size() = 0"
-    )
+    # --- ontology relationship edges (carry document_ids as LIST) ---
+    # Remove doc_id from the list, then prune edges with empty lists.
+    try:
+        from app.services.ontology_templates import load_ontology
+        ontology = load_ontology()
+    except Exception:
+        ontology = {}
 
-    orphan_sql = (
-        "DELETE VERTEX FROM V WHERE @class NOT IN "
-        "['Document', 'TextChunk', 'ImageChunk', 'Alias'] "
-        "AND out('EXTRACTED_FROM').size() = 0 "
-        "AND in('EXTRACTED_FROM').size() = 0"
-    )
+    rel_types = [r["name"] for r in ontology.get("relationship_types", [])]
+    entity_types = [
+        _safe_type_name(e["name"]) for e in ontology.get("entity_types", [])
+    ]
 
-    return delete_vertex_sqls, edge_cleanup_sql, edge_prune_sql, orphan_sql, params
+    edge_cleanup_sqls = [
+        f"UPDATE {rtype} SET document_ids = document_ids.remove(:doc_id) "
+        f"WHERE document_ids CONTAINS :doc_id"
+        for rtype in rel_types
+    ]
+
+    edge_prune_sqls = [
+        f"DELETE EDGE FROM {rtype} WHERE document_ids IS NOT NULL "
+        f"AND document_ids.size() = 0"
+        for rtype in rel_types
+    ]
+
+    # --- orphan entity cleanup (no EXTRACTED_FROM edges remaining) ---
+    orphan_sqls = [
+        f"DELETE VERTEX FROM {etype} "
+        f"WHERE out('EXTRACTED_FROM').size() = 0 "
+        f"AND in('EXTRACTED_FROM').size() = 0"
+        for etype in entity_types
+    ]
+
+    return {
+        "delete_vertex_sqls": delete_vertex_sqls,
+        "edge_cleanup_sqls": edge_cleanup_sqls,
+        "edge_prune_sqls": edge_prune_sqls,
+        "orphan_sqls": orphan_sqls,
+        "params": params,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1520,22 +1556,35 @@ class ArcadeDBGraphStore:
         document_id: str,
     ) -> int:
         """Delete all graph elements associated with *document_id*."""
-        delete_sqls, edge_cleanup_sql, edge_prune_sql, orphan_sql, params = (
-            _build_delete_document_graph_sql(document_id)
-        )
+        parts = _build_delete_document_graph_sql(document_id)
+        params = parts["params"]
 
         total = 0
-        for sql in delete_sqls:
-            result = await self._client.command(self._database, "sql", sql, params)
-            total += _count(result)
+        for sql in parts["delete_vertex_sqls"]:
+            try:
+                result = await self._client.command(self._database, "sql", sql, params)
+                total += _count(result)
+            except Exception:
+                pass  # type may not exist yet on fresh DB
 
-        await self._client.command(
-            self._database, "sql", edge_cleanup_sql, params,
-        )
-        await self._client.command(self._database, "sql", edge_prune_sql)
+        for sql in parts["edge_cleanup_sqls"]:
+            try:
+                await self._client.command(self._database, "sql", sql, params)
+            except Exception:
+                pass
 
-        result = await self._client.command(self._database, "sql", orphan_sql)
-        total += _count(result)
+        for sql in parts["edge_prune_sqls"]:
+            try:
+                await self._client.command(self._database, "sql", sql)
+            except Exception:
+                pass
+
+        for sql in parts["orphan_sqls"]:
+            try:
+                result = await self._client.command(self._database, "sql", sql)
+                total += _count(result)
+            except Exception:
+                pass
 
         return total
 
@@ -1918,22 +1967,35 @@ class ArcadeDBGraphStore:
         document_id: str,
     ) -> int:
         """Synchronous document graph deletion."""
-        delete_sqls, edge_cleanup_sql, edge_prune_sql, orphan_sql, params = (
-            _build_delete_document_graph_sql(document_id)
-        )
+        parts = _build_delete_document_graph_sql(document_id)
+        params = parts["params"]
 
         total = 0
-        for sql in delete_sqls:
-            result = self._client.command_sync(self._database, "sql", sql, params)
-            total += _count(result)
+        for sql in parts["delete_vertex_sqls"]:
+            try:
+                result = self._client.command_sync(self._database, "sql", sql, params)
+                total += _count(result)
+            except Exception:
+                pass
 
-        self._client.command_sync(
-            self._database, "sql", edge_cleanup_sql, params,
-        )
-        self._client.command_sync(self._database, "sql", edge_prune_sql)
+        for sql in parts["edge_cleanup_sqls"]:
+            try:
+                self._client.command_sync(self._database, "sql", sql, params)
+            except Exception:
+                pass
 
-        result = self._client.command_sync(self._database, "sql", orphan_sql)
-        total += _count(result)
+        for sql in parts["edge_prune_sqls"]:
+            try:
+                self._client.command_sync(self._database, "sql", sql)
+            except Exception:
+                pass
+
+        for sql in parts["orphan_sqls"]:
+            try:
+                result = self._client.command_sync(self._database, "sql", sql)
+                total += _count(result)
+            except Exception:
+                pass
 
         return total
 
