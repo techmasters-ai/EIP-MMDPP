@@ -4,7 +4,11 @@ Task graph (manifest-first, parallel derivations, idempotent):
 
     prepare_document  (validate + detect + Docling convert + persist document_elements)
         ↓
+    detect_and_translate  (language detection + LLM translation)
+        ↓
     derive_document_metadata  (LLM: summary, date, classification, source)
+        ↓
+    purge_document_derivations  (idempotent cleanup of prior derived data)
         ↓
     derive_picture_descriptions  (LLM: image descriptions with summary context)
         ↓
@@ -428,30 +432,32 @@ def start_ingest_pipeline(document_id: str) -> str:
 
     errback = _chord_error_handler.s(document_id, run_id)
 
+    # Build pipeline avoiding chords-inside-chains (unreliable in Celery 5.x
+    # with Redis backend — chord callbacks silently fail after worker restarts).
+    #
+    # Phase 1: sequential ingest stages (purge is ~0.2s, no need to parallelize)
+    # Phase 2: parallel derivation via chord whose callback chains to remaining steps
+    post_derivation = chain(
+        derive_structure_links.si(document_id, run_id),
+        derive_canonicalization.si(document_id, run_id),
+        finalize_document.si(document_id, run_id),
+    )
+
     pipeline = chain(
         prepare_document.si(document_id, run_id),
         detect_and_translate.si(document_id, run_id),
-        # Metadata extraction and purge run in parallel — purge only touches
-        # derived data (chunks, vectors, graph), not document metadata.
-        chord(
-            group(
-                derive_document_metadata.si(document_id, run_id),
-                purge_document_derivations.si(document_id, run_id),
-            ),
-            # Pictures needs the summary from metadata, so it runs after both complete.
-            derive_picture_descriptions.si(document_id, run_id),
-        ).on_error(errback),
+        derive_document_metadata.si(document_id, run_id),
+        purge_document_derivations.si(document_id, run_id),
+        derive_picture_descriptions.si(document_id, run_id),
         chord(
             group(
                 derive_text_chunks_and_embeddings.si(document_id, run_id),
                 derive_image_embeddings.si(document_id, run_id),
                 derive_ontology_graph.si(document_id, run_id),
             ),
-            collect_derivations.s(document_id, run_id),
+            # Chord callback chains to collect → structure → canonical → finalize
+            chain(collect_derivations.s(document_id, run_id), post_derivation),
         ).on_error(errback),
-        derive_structure_links.si(document_id, run_id),
-        derive_canonicalization.si(document_id, run_id),
-        finalize_document.si(document_id, run_id),
     )
     result = pipeline.apply_async()
     return result.id
