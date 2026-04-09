@@ -638,6 +638,21 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         mime_type = magic.from_buffer(file_bytes, mime=True)
 
+        # libmagic detects markdown/asciidoc/csv as text/plain — override by extension
+        if mime_type == "text/plain" and doc.storage_key:
+            ext = doc.storage_key.rsplit(".", 1)[-1].lower() if "." in doc.storage_key else ""
+            _EXT_MIME_OVERRIDES = {
+                "md": "text/markdown",
+                "markdown": "text/markdown",
+                "csv": "text/csv",
+                "adoc": "text/asciidoc",
+                "asciidoc": "text/asciidoc",
+                "html": "text/html",
+                "htm": "text/html",
+            }
+            if ext in _EXT_MIME_OVERRIDES:
+                mime_type = _EXT_MIME_OVERRIDES[ext]
+
         from sqlalchemy import update as sql_update
         db.execute(
             sql_update(Document)
