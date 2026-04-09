@@ -237,14 +237,19 @@ def _normalize_extraction_result(raw: dict[str, Any]) -> dict[str, Any]:
         entity_type = node.get("type", node.get("entity_type", "UNKNOWN"))
         confidence = node.get("confidence", 0.8)
         # Collect all non-system keys as properties
-        skip_keys = {"id", "name", "type", "entity_type", "confidence", "_provenance"}
+        skip_keys = {"id", "name", "type", "entity_type", "confidence",
+                      "provenance", "_provenance", "__property_provenance"}
         props = {k: v for k, v in node.items() if k not in skip_keys}
+        # Preserve provenance from the library's delta normalizer
+        # (batch_index, chunk_indexes, page_numbers) — enables element-level
+        # source tracking without rebuilding it from regex mention matching.
+        prov = node.get("provenance") or node.get("_provenance")
         entities.append({
             "name": name,
             "entity_type": entity_type,
             "confidence": confidence,
             "properties": props,
-            "_provenance": node.get("_provenance"),
+            "provenance": prov,
         })
 
     relationships: list[dict[str, Any]] = []
@@ -263,8 +268,10 @@ def _normalize_extraction_result(raw: dict[str, Any]) -> dict[str, Any]:
         to_name, to_type = node_lookup.get(tgt, (tgt, "UNKNOWN"))
         rel_type = link.get("label", link.get("type", link.get("rel_type", "RELATED_TO")))
         confidence = link.get("confidence", 0.8)
-        skip_keys = {"source", "target", "label", "type", "rel_type", "confidence"}
+        skip_keys = {"source", "target", "label", "type", "rel_type", "confidence",
+                      "provenance", "_provenance", "edge_label"}
         props = {k: v for k, v in link.items() if k not in skip_keys}
+        prov = link.get("provenance") or link.get("_provenance")
         relationships.append({
             "from_name": from_name,
             "from_type": from_type,
@@ -273,6 +280,7 @@ def _normalize_extraction_result(raw: dict[str, Any]) -> dict[str, Any]:
             "rel_type": rel_type,
             "confidence": confidence,
             "properties": props,
+            "provenance": prov,
         })
 
     return {

@@ -2564,6 +2564,16 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             "nodes": all_entities,
             "edges": all_relationships,
         }
+        # Preserve Docling-Graph extraction metadata (gleaning passes,
+        # resolver stats, quality gate status) for audit and quality reporting
+        try:
+            dg_metadata = result.get("metadata")
+            if dg_metadata:
+                graph_data["_extraction_metadata"] = (
+                    dg_metadata.model_dump() if hasattr(dg_metadata, "model_dump") else dg_metadata
+                )
+        except NameError:
+            pass  # result not defined if extraction failed
         graph_data["mentions"] = _build_entity_mentions(
             graph_data["nodes"], elements, provider,
         )
@@ -2602,6 +2612,12 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             accepted_nodes.add(node_name)
             entity_type = node.get("entity_type", "UNKNOWN")
             node_props = dict(node.get("properties", {}))
+            # Preserve Docling-Graph provenance data (batch_index, chunk_indexes,
+            # page_numbers) from the library's delta normalizer — enables
+            # element-level source tracking on the ArcadeDB entity vertex.
+            prov_data = node.get("provenance")
+            if prov_data and isinstance(prov_data, dict):
+                node_props["_dg_provenance"] = prov_data
             batch_node_records.append(NodeRecord(
                 entity_type=entity_type,
                 identity_fields={"name": node_name, "entity_type": entity_type},
