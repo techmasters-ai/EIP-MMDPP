@@ -1587,6 +1587,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                     pic_item["annotations"].append({
                         "kind": "description",
                         "text": description,
+                        "provenance": f"llm:{model}",
                         "source": "llm",
                         "model": model,
                     })
@@ -1793,7 +1794,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     from transformers import AutoTokenizer
                     from docling.chunking import HybridChunker
 
-                    tok = AutoTokenizer.from_pretrained(settings.text_embedding_model)
+                    tok = AutoTokenizer.from_pretrained(settings.chunk_tokenizer_model)
                     hf_tok = HuggingFaceTokenizer(tokenizer=tok, max_tokens=settings.chunk_max_tokens)
                     chunker = HybridChunker(tokenizer=hf_tok)
                     doc_obj_dl = _DLDoc.model_validate(enriched)

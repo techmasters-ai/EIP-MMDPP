@@ -159,6 +159,7 @@ class Settings(BaseSettings):
     # Chunking
     chunk_max_tokens: int = 512
     chunk_overlap_tokens: int = 64
+    chunk_tokenizer_model: str = "BAAI/bge-m3"  # HuggingFace repo for HybridChunker tokenizer
 
     # Embedding batching
     embed_text_batch_size: int = 128
