@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # --- Docling-Graph service (entity/relationship extraction) ---
     docling_graph_base_url: str = "http://docling-graph:8002"
     docling_graph_concurrency: int = 2
-    docling_graph_timeout: int = 300
+    docling_graph_timeout: int = 10800
 
     # Docling human-review confidence threshold
     docling_review_confidence_threshold: float = 0.60
