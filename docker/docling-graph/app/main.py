@@ -14,6 +14,30 @@ import networkx as nx
 import yaml
 from fastapi import FastAPI, HTTPException, Request
 
+# ---------------------------------------------------------------------------
+# Monkey-patch litellm.completion to inject Ollama-native `format="json"`
+# for gpt-oss / thinking models.  The docling-graph library uses
+# response_format={"type":"json_schema",...} (OpenAI style), but Ollama
+# needs its native `format` parameter to constrain output to valid JSON.
+# Without this, gpt-oss:120b returns reasoning text instead of JSON.
+# ---------------------------------------------------------------------------
+import litellm as _litellm
+
+_original_completion = _litellm.completion
+
+
+def _patched_completion(*args: Any, **kwargs: Any) -> Any:
+    model = kwargs.get("model", "")
+    if "ollama" in model.lower() or "ollama" in kwargs.get("api_base", ""):
+        if "format" not in kwargs:
+            kwargs["format"] = "json"
+        # Ensure non-streaming for reliable structured output
+        kwargs.setdefault("stream", False)
+    return _original_completion(*args, **kwargs)
+
+
+_litellm.completion = _patched_completion
+
 from app.config_builder import build_pipeline_config
 from app.schemas import (
     ExtractionMetadata,
