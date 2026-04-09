@@ -385,7 +385,7 @@ function GraphSearch() {
                             <div key={j} style={{ color: "var(--color-text-muted)", marginBottom: "0.15rem" }}>
                               {String(src.document_id).slice(0, 8)}...
                               {src.page_number != null && <> p.{String(src.page_number)}</>}
-                              {src.chunk_text_preview && (
+                              {!!src.chunk_text_preview && (
                                 <span style={{ opacity: 0.7, marginLeft: "0.5rem" }}>
                                   {String(src.chunk_text_preview).slice(0, 100)}...
                                 </span>

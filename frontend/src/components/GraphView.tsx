@@ -40,8 +40,8 @@ export function toGraphElements(
   const edgeIds = new Set<string>();
   for (const edge of response.edges) {
     // Backend may send {from, to} or {source, target} — normalize to source/target
-    const source = edge.source || edge.from;
-    const target = edge.target || edge.to;
+    const source = String(edge.source || edge.from);
+    const target = String(edge.target || edge.to);
     if (!source || !target) continue;
     const relType = edge.rel_type || edge.label || "";
     const edgeId = `${source}->${target}::${relType}`;

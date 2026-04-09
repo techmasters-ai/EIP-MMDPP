@@ -145,7 +145,7 @@ function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
 function GlobalQueryDetail({ result }: { result: QueryResultItem }) {
   const ctx = result.context as Record<string, unknown> | undefined;
   const reports = ctx?.reports as Array<Record<string, unknown>> | undefined;
-  const sources = (result as Record<string, unknown>).sources as Array<Record<string, unknown>> | undefined;
+  const sources = result.sources;
 
   return (
     <div className="space-y-4">
