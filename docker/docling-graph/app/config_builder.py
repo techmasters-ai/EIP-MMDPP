@@ -44,7 +44,7 @@ class DoclingGraphSettings(BaseSettings):
 
     # Delta quality
     docling_graph_quality_require_root: bool = True
-    docling_graph_quality_min_instances: int = 20
+    docling_graph_quality_min_instances: int = 1
     docling_graph_quality_max_parent_miss: int = 4
     docling_graph_quality_adaptive_parent: bool = True
 
