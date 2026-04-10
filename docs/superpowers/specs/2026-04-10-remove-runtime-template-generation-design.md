@@ -1090,6 +1090,19 @@ class StageRun(Base):
     salvaged:                   Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     schema_size_chars:          Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     structured_output_mode:     Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    # Populated only on the stage-summary row for derive_ontology_graph
+    # (pass_name IS NULL). Indicates whether the failure path called
+    # _attempt_rollback(). Used by the status API to compute
+    # graph_snapshot.graph_queryable honestly — string-prefix heuristics
+    # on error_message are not sufficient (see §7.10).
+    #   - NULL   — summary row not yet finalized, or non-extraction stage
+    #   - False  — stage completed without calling rollback (success,
+    #              gate failure, merge/import failure before first mutation,
+    #              or pre-import failure)
+    #   - True   — rollback was invoked (graph mutations had started;
+    #              extraction-layer graph for this document was deleted)
+    rollback_executed:          Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 ```
 
 **Row-kind split:**
@@ -1261,6 +1274,7 @@ def upgrade() -> None:
     op.add_column('stage_runs', sa.Column('salvaged', sa.Boolean, nullable=True), schema='ingest')
     op.add_column('stage_runs', sa.Column('schema_size_chars', sa.Integer, nullable=True), schema='ingest')
     op.add_column('stage_runs', sa.Column('structured_output_mode', sa.String(32), nullable=True), schema='ingest')
+    op.add_column('stage_runs', sa.Column('rollback_executed', sa.Boolean, nullable=True), schema='ingest')
 
     # Indexes
     op.create_index('uq_stage_runs_run_pass_attempt', 'stage_runs',
@@ -1446,12 +1460,15 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
     session.add(stage_summary)
     session.commit()
 
-    # Tracks whether any ArcadeDB writes have started in this run.
-    # Flipped True just before phase 2 begins. Used by all failure branches
-    # below to decide whether rollback is needed. Pre-import failures
-    # (bundle load, metrics write, merge errors) set this to False and skip
-    # rollback entirely — there is nothing to roll back.
-    graph_writes_started = False
+    # Tracks whether any ArcadeDB mutation has been ATTEMPTED in this run.
+    # The phase-2/3/4 helpers receive this tracker and call .mark() IMMEDIATELY
+    # BEFORE issuing their first graph_store mutation. Failure branches below
+    # read `tracker.any_mutation_attempted` to decide whether rollback is
+    # needed. This handles both pre-import failures AND pre-mutation failures
+    # inside the phase helpers — if a helper throws while building records
+    # or computing derivations BEFORE attempting any write, the tracker stays
+    # False and rollback is skipped.
+    tracker = GraphWriteTracker()
 
     try:
         manifest = load_bundle_manifest(run.ontology_bundle_key)
@@ -1496,20 +1513,24 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         # survive any later import failure. See §6.6.
         _write_pipeline_run_metrics(run.id, merged, manifest)
 
-        # ---- Graph writes start here ----
-        # Any failure from this point onward may have written partial state
-        # to ArcadeDB and must trigger rollback. The flag gates the
-        # _attempt_rollback call in every except branch below.
-        graph_writes_started = True
-
-        # Three-phase graph import
-        identity_to_rid = _import_graph_phase_nodes(merged, ontology, run.document_id)
-        _import_graph_phase_domain_edges(merged, ontology)
+        # Three-phase graph import.
+        # Each helper receives the tracker and calls tracker.mark() RIGHT
+        # BEFORE its first graph_store mutation. If a helper raises while
+        # building records or computing derivations (before the first
+        # mutation attempt), tracker.any_mutation_attempted stays False
+        # and the except branches below skip rollback.
+        identity_to_rid = _import_graph_phase_nodes(
+            merged, ontology, run.document_id, tracker,
+        )
+        _import_graph_phase_domain_edges(merged, ontology, tracker)
         _import_graph_phase_structural_edges(
-            merged, identity_to_rid, run.document_id, str(run.id),
+            merged, identity_to_rid, run.document_id, str(run.id), tracker,
         )
 
-        # DocumentGraphExtraction upsert (latest snapshot only)
+        # DocumentGraphExtraction upsert (PostgreSQL only — not ArcadeDB;
+        # does not flip the tracker). If this fails but earlier phases
+        # already mutated ArcadeDB, the catch-all still runs rollback
+        # because tracker.any_mutation_attempted is True from phase 2.
         _upsert_document_graph_extraction(
             document_id=run.document_id,
             pipeline_run_id=run.id,
@@ -1520,6 +1541,7 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         # Stage-summary terminalizes COMPLETE on success (always).
         stage_summary.status = "COMPLETE"
         stage_summary.execution_status = "COMPLETE"
+        stage_summary.rollback_executed = False  # success path — no rollback
         stage_summary.finished_at = now()
 
         # PipelineRun + Document terminalization is MODE-SPECIFIC:
@@ -1548,6 +1570,7 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         # continue once a required pass has failed.
         stage_summary.status = "FAILED"
         stage_summary.execution_status = "FAILED"
+        stage_summary.rollback_executed = False  # never reached phase 2
         stage_summary.error_message = f"gate_failed: {exc}"
         stage_summary.finished_at = now()
         run.status = "FAILED"
@@ -1557,17 +1580,19 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         raise
 
     except (MergeError, GraphImportError) as exc:
-        # Merge/import failure — partial writes may exist iff graph_writes_started.
-        # MergeError fires BEFORE phase 2 (flag=False, no rollback needed).
-        # GraphImportError fires DURING phases 2-4 (flag=True, rollback required).
-        # Terminalizes the run in BOTH modes.
+        # Merge/import failure — partial ArcadeDB writes may exist iff
+        # tracker.any_mutation_attempted is True. MergeError fires BEFORE
+        # phase 2 (tracker=False). GraphImportError fires during a phase
+        # helper; if it fires before the phase's first tracker.mark() call
+        # (e.g., while building records), tracker stays False; if after,
+        # tracker is True and rollback is required.
         logger.exception("derive_ontology_graph merge/import failure")
-        rollback_note = (
-            _attempt_rollback(run.document_id) if graph_writes_started else ""
-        )
+        should_rollback = tracker.any_mutation_attempted
+        rollback_note = _attempt_rollback(run.document_id) if should_rollback else ""
 
         stage_summary.status = "FAILED"
         stage_summary.execution_status = "FAILED"
+        stage_summary.rollback_executed = should_rollback
         stage_summary.error_message = f"merge_or_import_failed: {exc}{rollback_note}"
         stage_summary.finished_at = now()
         run.status = "FAILED"
@@ -1580,17 +1605,17 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
     except Exception as exc:
         # Catch-all for everything else: bundle loading, post-merge yield
         # updates, metrics write, snapshot write, or any unexpected exception.
-        # Rollback is CONDITIONAL on graph_writes_started — pre-import
-        # failures (bundle load, metrics write, etc.) do not trigger
-        # document-level graph deletion.
+        # Rollback is conditional on tracker.any_mutation_attempted — any
+        # failure before the first graph_store mutation attempt skips
+        # rollback entirely.
         logger.exception("derive_ontology_graph unexpected failure")
-        rollback_note = (
-            _attempt_rollback(run.document_id) if graph_writes_started else ""
-        )
+        should_rollback = tracker.any_mutation_attempted
+        rollback_note = _attempt_rollback(run.document_id) if should_rollback else ""
 
         try:
             stage_summary.status = "FAILED"
             stage_summary.execution_status = "FAILED"
+            stage_summary.rollback_executed = should_rollback
             stage_summary.error_message = f"unexpected_failure: {exc}{rollback_note}"
             stage_summary.finished_at = now()
             run.status = "FAILED"
@@ -1612,6 +1637,17 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
 **Helpers used above:**
 
 ```python
+@dataclass
+class GraphWriteTracker:
+    """Mutable tracker passed into every phase helper. Flipped to True at
+    the moment of the first graph_store mutation attempt in each phase.
+    Failures before .mark() leave the flag False so rollback is skipped."""
+    any_mutation_attempted: bool = False
+
+    def mark(self) -> None:
+        self.any_mutation_attempted = True
+
+
 def _attempt_rollback(document_id: str) -> str:
     """Best-effort rollback via the abstract extraction-layer graph delete.
     Callers must gate this on `graph_writes_started` so pre-import failures
@@ -1843,6 +1879,7 @@ def _import_graph_phase_nodes(
     merged: MergedExtraction,
     ontology: dict,
     document_id: str,
+    tracker: GraphWriteTracker,
 ) -> dict[LogicalIdentity, str]:
     # Note: ProvenanceMetadata gains a new optional field `pipeline_run_id`
     # in PR 1 as part of this refactor — see §5.6 note below. It is
@@ -1851,6 +1888,9 @@ def _import_graph_phase_nodes(
         document_id=document_id,
         pipeline_run_id=merged.pipeline_run_id,
     )
+    # Build NodeRecord list BEFORE touching the graph store. If any of
+    # these calls raises (e.g., identity-serialization bug, display-label
+    # bug), the tracker stays False and rollback is skipped.
     node_records = [
         NodeRecord(
             entity_type=e.identity.entity_type,
@@ -1865,6 +1905,10 @@ def _import_graph_phase_nodes(
         )
         for e in merged.entities
     ]
+    # Flip the tracker RIGHT BEFORE the first graph_store mutation.
+    # Any failure after this point triggers rollback in the caller's
+    # except branch.
+    tracker.mark()
     # upsert_nodes_batch_sync:
     # (1) upserts each NodeRecord and returns list[str] of RIDs in input order
     # (2) auto-creates HAS_PROVENANCE edges from each upserted node to the
@@ -1881,7 +1925,7 @@ def _import_graph_phase_nodes(
     return identity_to_rid
 ```
 
-`upsert_nodes_batch_sync` signature unchanged (still returns `list[str]`). `strict=True` on `zip` guards against length mismatch.
+`upsert_nodes_batch_sync` signature unchanged (still returns `list[str]`). `strict=True` on `zip` guards against length mismatch. The `tracker.mark()` call is intentionally positioned after all pure Python work and immediately before the first network call.
 
 **ProvenanceMetadata extension (PR 1, additive):** the existing `ProvenanceMetadata` dataclass in `app/services/graph_store.py` (lines 19–26) gains one new optional field without touching the existing ones:
 
@@ -1900,7 +1944,11 @@ This lets downstream code (including `_create_provenance_edges_batch_sync` and f
 **Phase 3 — domain relationship upsert (identity-based):**
 
 ```python
-def _import_graph_phase_domain_edges(merged, ontology):
+def _import_graph_phase_domain_edges(
+    merged: MergedExtraction,
+    ontology: dict,
+    tracker: GraphWriteTracker,
+) -> None:
     provenance = ProvenanceMetadata(
         document_id=merged.document_id,
         pipeline_run_id=merged.pipeline_run_id,
@@ -1916,6 +1964,9 @@ def _import_graph_phase_domain_edges(merged, ontology):
         )
         for e in merged.edges
     ]
+    # Phase 2 already marked the tracker; this call is a safety net for
+    # any future reordering. Idempotent.
+    tracker.mark()
     graph_store.upsert_relationships_batch_sync(rel_records, provenance)
 ```
 
@@ -1927,7 +1978,11 @@ def _import_graph_phase_structural_edges(
     identity_to_rid: dict[LogicalIdentity, str],
     document_id: str,
     pipeline_run_id: str,
+    tracker: GraphWriteTracker,
 ) -> None:
+    # Build phase — pure Python, no writes. If this raises, tracker state
+    # is unchanged (already True from phase 2, or False if phase 2 was
+    # somehow skipped in a future refactor).
     chunks = _load_chunks_for_derivation(document_id)  # returns list[ChunkForDerivation]
     document_rid = _get_structural_document_rid(document_id)
 
@@ -1937,7 +1992,12 @@ def _import_graph_phase_structural_edges(
         chunks=chunks,
         document_rid=document_rid,
     )
+    # No edges to write → no mutation attempted here, but phase 2 already
+    # wrote nodes, so tracker is already True. If derived is empty, we
+    # still skip the loop without touching the tracker.
     for edge in derived:
+        # First-mutation mark is idempotent; phase 2 already called it.
+        tracker.mark()
         # create_structural_edge_sync uses from_id/to_id (not from_rid/to_rid) —
         # matches the existing signature at app/services/graph_store.py:528.
         graph_store.create_structural_edge_sync(
@@ -2389,7 +2449,7 @@ Three PRs on `feature/extraction-refactor`.
 - **Flipping the flag requires worker and beat restart.** No uncached per-task reader.
 
 **New orchestrator code:**
-- `app/services/extraction_merge.py` (new file): `LogicalIdentity`, `PassResult`, `MergedEntityRecord`, `MergedEdgeRecord`, `MergedExtraction`, `ChunkForDerivation`, `DerivedEdge`, `merge_and_resolve`, `build_display_label`, `classify_yield`, `classify_yield_from_counts`, `RelationshipRejectionReason`
+- `app/services/extraction_merge.py` (new file): `LogicalIdentity`, `PassResult`, `MergedEntityRecord`, `MergedEdgeRecord`, `MergedExtraction`, `ChunkForDerivation`, `DerivedEdge`, `GraphWriteTracker`, `merge_and_resolve`, `build_display_label`, `classify_yield`, `classify_yield_from_counts`, `RelationshipRejectionReason`
 - `app/workers/pipeline.py`: rewrite `derive_ontology_graph` for the new branch (legacy branch unchanged); new private functions for pass loop, gate, import phases, rollback, document status updates
 - `IngestDispatchResult` dataclass and caller updates
 
@@ -2572,15 +2632,83 @@ Every stage transition involves a worker + beat restart.
 - `latest_run` — most recent `PipelineRun` with pass rollup and `stage_summary.attempt` for Celery-level retry visibility
 - `graph_snapshot` — latest successful `DocumentGraphExtraction`, may be older than `latest_run` if the latest run failed. `is_stale` is true when `latest_run.status != COMPLETE` OR `latest_run.pipeline_run_id != graph_snapshot.pipeline_run_id`. `null` if no successful extraction has ever completed for this document.
 
-**Important caveat on `graph_snapshot` queryability.** When `is_stale == true`, the snapshot row is a **historical audit record** — it describes a graph that WAS produced at some point, not necessarily one that can be queried in ArcadeDB right now. Specifically:
+**`is_stale` vs `graph_queryable` — two independent signals.**
 
-- If `latest_run.status == FAILED` because of a merge/import failure or an unexpected exception that triggered rollback, the rollback has **deleted this document's extraction-layer graph state**. The snapshot row remains because `DocumentGraphExtraction` is PostgreSQL metadata, but the vertices and edges it describes have been removed from ArcadeDB. See §6.8 for the locked v1 rollback scope.
-- If `latest_run.status == FAILED` because the required-pass gate rejected the run, no rollback occurred and the prior graph is still intact in ArcadeDB.
-- If `latest_run.status == COMPLETE` (non-stale), the snapshot and the graph match.
+`is_stale` and `graph_queryable` answer different questions, and the status API exposes both:
 
-Clients reading `graph_snapshot` must treat `is_stale == true` as "this is metadata about what *was* extracted, not a promise that the graph is queryable right now." Queries that return zero vertices for a document with a non-null `graph_snapshot` and `is_stale == true` are the expected signal that a rollback has occurred. A follow-up spec may introduce proper shadow-write rollback that preserves prior graphs; v1 does not.
+- **`is_stale: bool`** — `latest_run` is not the run that most recently produced the successful `DocumentGraphExtraction` snapshot. Equivalent to: `latest_run.status != COMPLETE` OR `latest_run.pipeline_run_id != graph_snapshot.pipeline_run_id`. Answers "has the latest run confirmed this snapshot?"
 
-The status API response gains one more field to make the queryability story explicit:
+- **`graph_queryable: bool`** — there exists a graph in ArcadeDB that corresponds to the `DocumentGraphExtraction` snapshot. Answers "can I run queries against the vertices and edges described by this row?" `False` iff the failure path for the latest attempt of `derive_ontology_graph` executed the rollback primitive (`_delete_extraction_layer_graph`), which is tracked explicitly on the stage-summary StageRun row.
+
+**Crucially, these are not derived from each other and not derived from `error_message` prefixes.** They are computed independently:
+
+```python
+# Pseudocode for the status API response builder
+def compute_stale_and_queryable(
+    document_id: str, session,
+) -> tuple[bool, bool, DocumentGraphExtraction | None]:
+    snapshot = session.query(DocumentGraphExtraction).filter_by(
+        document_id=document_id,
+    ).first()
+    if snapshot is None:
+        return (True, False, None)  # no snapshot → stale and not queryable
+
+    latest_run = session.query(PipelineRun).filter_by(
+        document_id=document_id,
+    ).order_by(PipelineRun.started_at.desc()).first()
+
+    # is_stale: snapshot's run is not the latest, OR latest isn't COMPLETE
+    is_stale = (
+        latest_run is None
+        or latest_run.id != snapshot.pipeline_run_id
+        or latest_run.status != "COMPLETE"
+    )
+
+    # graph_queryable: has the latest attempt of derive_ontology_graph
+    # executed rollback? Read the explicit flag, not the error_message.
+    latest_summary = session.query(StageRun).filter(
+        StageRun.pipeline_run_id == latest_run.id,
+        StageRun.stage_name == "derive_ontology_graph",
+        StageRun.pass_name.is_(None),
+    ).order_by(StageRun.attempt.desc()).first() if latest_run else None
+
+    if latest_summary is None:
+        # derive_ontology_graph hasn't run yet in latest_run (full mode,
+        # still in an earlier stage). The graph is whatever the previous
+        # successful run produced, and the previous run's rollback_executed
+        # must have been False (or it would have been rolled back at that
+        # earlier run's failure time). Queryable.
+        graph_queryable = True
+    elif latest_summary.rollback_executed is True:
+        graph_queryable = False
+    else:
+        # rollback_executed in {False, None}:
+        #   - False means derive_ontology_graph finished (success or
+        #     failure) without calling rollback; graph is intact
+        #   - None should not happen on a finalized summary row, but if
+        #     it does (partial migration, bug), treat as queryable and
+        #     let downstream queries surface any emptiness
+        graph_queryable = True
+
+    return (is_stale, graph_queryable, snapshot)
+```
+
+**Status cases and their signals:**
+
+| latest_run state | stage_summary.rollback_executed | is_stale | graph_queryable |
+|---|---|---|---|
+| COMPLETE (success) | False | False | True |
+| PROCESSING (mode=full, derive_ontology_graph already succeeded, downstream running) | False | **True** | **True** |
+| PROCESSING (mode=full, derive_ontology_graph hasn't started yet) | NULL (no summary row) | **True** | True (prior snapshot intact) |
+| FAILED (gate failure) | False | True | True (no rollback ran) |
+| FAILED (pre-mutation failure inside phase 2 — e.g., NodeRecord build crash) | False | True | True (tracker stayed False, no rollback) |
+| FAILED (mutation-time failure inside phases 2–4) | True | True | **False** (rollback ran) |
+| FAILED (post-import failure, e.g., snapshot write) | True | True | **False** (rollback ran because earlier phases mutated) |
+| FAILED (bundle load, metrics write, pre-import) | False | True | True (no mutations started) |
+
+The `rollback_executed` flag captures exactly what the user needs to know, without any string-prefix inference. `mode=full` mid-run is correctly handled: while downstream stages are running after a successful `derive_ontology_graph`, `is_stale=True` (run not finished) but `graph_queryable=True` (graph is intact from this run's phase 2–4 writes).
+
+The response shape adds the explicit field:
 
 ```json
 "graph_snapshot": {
@@ -2588,13 +2716,11 @@ The status API response gains one more field to make the queryability story expl
   "ontology_bundle_key": "air_defense_v3",
   ...
   "is_stale": true,
-  "graph_queryable": false          // NEW: true iff is_stale == false OR the
-                                     //      stale reason is gate failure (not
-                                     //      merge/import/unexpected failure)
+  "graph_queryable": true       // from stage_summary.rollback_executed
 }
 ```
 
-The worker populates `graph_queryable` when writing the response by joining `latest_run.stage_summary.error_message` against a known set of prefixes: `gate_failed:` → queryable (no rollback ran), `merge_or_import_failed:` → not queryable (rollback ran), `unexpected_failure:` → not queryable (rollback may have run). Callers that just need the boolean read this directly; callers that need the reason read `latest_run.stage_summary.error_message`.
+A follow-up spec may introduce proper shadow-write rollback that preserves prior graphs even after a failed mutation-time failure. v1 does not; the `rollback_executed=True` case is permanent data loss for that document's extraction-layer graph until a fresh successful ingest runs.
 
 ---
 
@@ -2632,8 +2758,11 @@ The worker populates `graph_queryable` when writing the response by joining `lat
 - [ ] Standard reingest and `graph_only` reingest both resolve bundle and snapshot on `PipelineRun`.
 - [ ] `Document.pipeline_status` updates use the existing `app/models/ingest.py:60` vocabulary — `COMPLETE` on `graph_only` success, `PARTIAL_COMPLETE` on any failure, unchanged on `full` success (downstream `finalize_document` terminalizes). No new vocabulary value is introduced.
 - [ ] `PipelineRun.status` + `finished_at` terminalization is mode-conditional on the success path per §5.4 and §6.9. Failures terminalize in both modes.
-- [ ] `derive_ontology_graph` includes an `except Exception:` catch-all that records stage-summary failure, terminalizes the run, and attempts best-effort rollback.
+- [ ] `derive_ontology_graph` includes an `except Exception:` catch-all that records stage-summary failure, terminalizes the run, and attempts best-effort rollback **gated on `tracker.any_mutation_attempted`**.
+- [ ] `GraphWriteTracker` is instantiated once per `derive_ontology_graph` invocation and passed to all three phase helpers. Each helper calls `tracker.mark()` immediately before its first `graph_store` mutation.
+- [ ] `StageRun.rollback_executed` column is set on the stage-summary row in every terminal branch (success=False, gate failure=False, pre-mutation failure=False, post-mutation failure=True).
 - [ ] `PipelineRun.metrics` is written by `_write_pipeline_run_metrics()` between post-merge yield updates and graph import, so merge diagnostics survive import failures.
+- [ ] Status API `graph_queryable` field is computed from `stage_summary.rollback_executed`, NOT from `error_message` prefix heuristics.
 
 **Per-pass StageRun outcomes:**
 - [ ] Each pass writes a row per attempt with execution/yield/skip status and counts.
@@ -2822,16 +2951,35 @@ The refactor is successful only if the post-switchover run, measured against the
 - Assert prior `DocumentGraphExtraction` untouched
 - Assert rollback NOT called (gate failed before merge)
 
-**`tests/integration/test_merge_import_failure_rollback.py`**
-- Setup: pre-populate graph with one prior successful extraction
-- Force `merge_and_resolve` to raise
-- Assert `delete_document_graph_sync` called once with correct `document_id`
-- Assert `Document.pipeline_status = PARTIAL_COMPLETE`
-- Assert prior `DocumentGraphExtraction` untouched
-- Assert stage-summary FAILED with `merge_or_import_failed:` prefix
-- Assert document-scoped entity vertices from this run no longer exist after rollback
-- Assert global-scoped entity vertices still exist (not deleted by rollback)
-- **Explicitly NOT asserted:** whether global entity properties match pre-run state. Property restoration is intentionally undefined (§6.8, §8.9). In-code comment pointing to those sections.
+**`tests/integration/test_merge_import_failure_rollback.py`** — three test cases covering the three rollback regimes
+
+**Test case A: mutation-time failure triggers rollback.**
+- Setup: pre-populate graph with one prior successful extraction for this document
+- Patch the graph store so `upsert_nodes_batch_sync` raises on the first call. This ensures `_import_graph_phase_nodes` calls `tracker.mark()` and then fails inside the mutation call.
+- Assert the abstract rollback primitive `_delete_extraction_layer_graph(document_id)` was invoked exactly once. **Do NOT hardcode the concrete method name** (`delete_document_graph_sync` vs `delete_extraction_layer_graph_sync`) — PR 1 may wire the abstract helper to either per residual check #1, and the test must be resilient to either choice. Patch `_delete_extraction_layer_graph` itself and assert its call args.
+- Assert `Document.pipeline_status == "PARTIAL_COMPLETE"`
+- Assert stage-summary: `execution_status == "FAILED"`, `rollback_executed == True`, `error_message` starts with `merge_or_import_failed:`
+- Assert the status API returns `graph_queryable == False` for this document
+- Assert `DocumentGraphExtraction` row still present (historical audit record) but `is_stale == True`
+- Assert global-scoped entity vertices still exist as vertices; their properties are NOT asserted against pre-run state (per §8.9 non-goal on property restoration)
+
+**Test case B: pre-mutation failure inside phase 2 does NOT trigger rollback.**
+- Setup: same as A
+- Patch `build_display_label` to raise on the first call. This fires inside `_import_graph_phase_nodes` BEFORE `tracker.mark()` is reached.
+- Assert `_delete_extraction_layer_graph` was NOT invoked
+- Assert stage-summary: `execution_status == "FAILED"`, `rollback_executed == False`, `error_message` starts with `merge_or_import_failed:` (or `unexpected_failure:` depending on which exception type the build crash raises)
+- Assert the status API returns `graph_queryable == True`
+- Assert `DocumentGraphExtraction` row present AND its prior-run data is still queryable
+
+**Test case C: pre-import failure (metrics write crash) does NOT trigger rollback.**
+- Setup: same as A
+- Patch `_write_pipeline_run_metrics` to raise
+- Assert `_delete_extraction_layer_graph` was NOT invoked
+- Assert stage-summary: `rollback_executed == False`, `error_message` starts with `unexpected_failure:`
+- Assert status API returns `graph_queryable == True`
+- Assert prior graph fully intact
+
+**Common invariant across A/B/C:** the test never hardcodes the concrete method name used by `_delete_extraction_layer_graph`. The abstraction layer is the stable contract; the concrete wiring is an implementation choice for PR 1.
 
 **`tests/integration/test_system_links_skip.py`**
 - Ingest document where radar_domain, missile_domain, other_systems all return EMPTY
