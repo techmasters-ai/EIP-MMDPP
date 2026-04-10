@@ -966,7 +966,7 @@ def build_display_label(
 
 Checker rule 10 asserts this returns a non-empty string for every extract-bucket entity type given minimal inputs.
 
-**Edge case — document-scoped entities with `document_id` in identity_values:** `build_display_label` includes `document_id` in its `NAME_LIKE_KEYS` list as a fallback. For document-scoped entities whose `as_upsert_identity_dict` adds a raw UUID `document_id` to the dict, the display label could end up as a bare UUID string. This is acceptable: the fallback below it (content-hash `<entity_type>_<hash>`) will not fire because `document_id` is never empty on document-scoped entities, and a UUID is a valid if unfriendly human label. Operators viewing the graph see the UUID and can pivot to the Document vertex for a friendly title. If this becomes annoying, a later spec can introduce a "title lookup" step that swaps the UUID for the document's real title at display time.
+**Call-path note:** `build_display_label` is called from §5.6 Phase 2 with `identity_values_dict()` as the second argument — NOT `as_upsert_identity_dict()`. `identity_values_dict()` returns only the ontology-declared identity fields (e.g., `system_name` for RADAR_SYSTEM, `parameter + value` for SPECIFICATION). It does NOT include `document_id`, even for document-scoped entities. The `document_id` key only appears when `as_upsert_identity_dict()` is called at upsert time to build the composite storage identity — that dict is not passed to `build_display_label`. So `document_id` never appears in the `identity_values` argument and never contributes a bare-UUID display label. `NAME_LIKE_KEYS` including `document_id` is a legacy safety fallback for future callers that might pass an alternative identity dict; it has no effect in the current flow.
 
 ### §3.10 — Ownership map
 
@@ -1446,6 +1446,13 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
     session.add(stage_summary)
     session.commit()
 
+    # Tracks whether any ArcadeDB writes have started in this run.
+    # Flipped True just before phase 2 begins. Used by all failure branches
+    # below to decide whether rollback is needed. Pre-import failures
+    # (bundle load, metrics write, merge errors) set this to False and skip
+    # rollback entirely — there is nothing to roll back.
+    graph_writes_started = False
+
     try:
         manifest = load_bundle_manifest(run.ontology_bundle_key)
         ontology = load_ontology(bundle_key=run.ontology_bundle_key)
@@ -1488,6 +1495,12 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         # Run-level metrics: written BEFORE import so merge diagnostics
         # survive any later import failure. See §6.6.
         _write_pipeline_run_metrics(run.id, merged, manifest)
+
+        # ---- Graph writes start here ----
+        # Any failure from this point onward may have written partial state
+        # to ArcadeDB and must trigger rollback. The flag gates the
+        # _attempt_rollback call in every except branch below.
+        graph_writes_started = True
 
         # Three-phase graph import
         identity_to_rid = _import_graph_phase_nodes(merged, ontology, run.document_id)
@@ -1544,11 +1557,14 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         raise
 
     except (MergeError, GraphImportError) as exc:
-        # Merge/import failure — partial writes may exist.
-        # Terminalizes the run in BOTH modes: downstream stages cannot
-        # proceed with an inconsistent graph.
+        # Merge/import failure — partial writes may exist iff graph_writes_started.
+        # MergeError fires BEFORE phase 2 (flag=False, no rollback needed).
+        # GraphImportError fires DURING phases 2-4 (flag=True, rollback required).
+        # Terminalizes the run in BOTH modes.
         logger.exception("derive_ontology_graph merge/import failure")
-        rollback_note = _attempt_rollback(run.document_id)
+        rollback_note = (
+            _attempt_rollback(run.document_id) if graph_writes_started else ""
+        )
 
         stage_summary.status = "FAILED"
         stage_summary.execution_status = "FAILED"
@@ -1562,12 +1578,15 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         raise
 
     except Exception as exc:
-        # Catch-all for everything else: bundle loading failure,
-        # post-merge update failure, snapshot write failure, rollback
-        # itself failing, or any unexpected exception from a helper.
-        # Drives the same terminalization as merge/import failure.
+        # Catch-all for everything else: bundle loading, post-merge yield
+        # updates, metrics write, snapshot write, or any unexpected exception.
+        # Rollback is CONDITIONAL on graph_writes_started — pre-import
+        # failures (bundle load, metrics write, etc.) do not trigger
+        # document-level graph deletion.
         logger.exception("derive_ontology_graph unexpected failure")
-        rollback_note = _attempt_rollback(run.document_id)
+        rollback_note = (
+            _attempt_rollback(run.document_id) if graph_writes_started else ""
+        )
 
         try:
             stage_summary.status = "FAILED"
@@ -1594,17 +1613,46 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
 
 ```python
 def _attempt_rollback(document_id: str) -> str:
-    """Best-effort rollback via the document-scoped graph-delete primitive.
+    """Best-effort rollback via the abstract extraction-layer graph delete.
+    Callers must gate this on `graph_writes_started` so pre-import failures
+    don't trigger document-level graph deletion.
+
     Returns a diagnostic suffix for the stage error_message — empty on
     success, '; ROLLBACK_ALSO_FAILED: <detail>' on failure."""
     try:
-        graph_store.delete_document_graph_sync(document_id)
+        _delete_extraction_layer_graph(document_id)
         return ""
     except Exception as rollback_exc:
         logger.error(
             "rollback during failure handling also failed: %s", rollback_exc,
         )
         return f"; ROLLBACK_ALSO_FAILED: {rollback_exc}"
+
+
+def _delete_extraction_layer_graph(document_id: str) -> None:
+    """Abstract helper wired in PR 1 to the concrete graph-store method
+    that satisfies the contract in §6.8:
+
+    MUST delete:
+      - document-scoped extracted entity vertices
+      - domain edges tagged with this document_id (provenance metadata)
+      - structural edges written by derive_rules in phase 4
+        (identifiable via document_id / source=derive_rules properties)
+
+    MUST NOT delete:
+      - chunks (TextChunk, ImageChunk) — owned by upstream stages
+      - the structural Document vertex — owned by earlier stages
+      - global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.)
+
+    PR 1 verifies whether the existing graph_store.delete_document_graph_sync
+    satisfies this contract. If yes, this helper is a one-line wrapper. If
+    no, PR 1 adds a narrower sibling (e.g., delete_extraction_layer_graph_sync)
+    and wires this helper to it. The runtime code above is unaffected by
+    the choice — it only sees the abstract name. See residual check #1."""
+    # PR 1 picks ONE of the following based on residual check #1 verification:
+    graph_store.delete_document_graph_sync(document_id)
+    # OR:
+    # graph_store.delete_extraction_layer_graph_sync(document_id)
 
 
 def _write_pipeline_run_metrics(
@@ -2147,13 +2195,30 @@ Every rejection is logged with context. Sample persisted in `PipelineRun.metrics
 
 ### §6.8 — Rollback scope (v1)
 
-On merge or import failure, rollback calls `graph_store.delete_document_graph_sync(document_id)` (or its narrower sibling if PR 1 discovers the existing method over-deletes chunks/embeddings — see residual check).
+On merge or import failure (and only then — see the `graph_writes_started` gate in §5.4), rollback calls the abstract helper `_delete_extraction_layer_graph(document_id)`. PR 1 wires this helper to either the existing `graph_store.delete_document_graph_sync(document_id)` or a narrower sibling method — whichever satisfies the contract below (see residual check #1).
 
-**Scope:**
-- **Deleted:** document-scoped entity vertices (their identity includes `document_id`), structural vertices with this document_id, edges incident to any deleted vertex, domain edges tagged with this document_id in provenance metadata.
-- **NOT deleted:** global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.). Their properties may have been merged during the failed run; those merges are not reverted in v1.
+**Contract — what `_delete_extraction_layer_graph(document_id)` MUST delete:**
+- Document-scoped extracted entity vertices (their identity includes `document_id`, so every such vertex represents extraction-layer work for this document)
+- Domain edges written by the extraction stage, identifiable via their `document_id` provenance property
+- Structural edges written by `derive_rules` in phase 4, identifiable via their `document_id` / `source=derive_rules` properties
 
-**Accepted limitation:** global entity properties enriched during a failed run persist until the next successful ingest that references them overwrites them. Atomic property restoration is explicitly a non-goal (§8.9).
+**Contract — what it MUST NOT delete:**
+- Global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.). Their properties may have been merged during the failed run; those merges are not reverted in v1.
+- Chunks (`TextChunk`, `ImageChunk`) — these are owned by upstream pipeline stages (chunking/embedding), not the extraction stage.
+- The structural `Document` vertex — owned by earlier stages, referenced by extraction but not created by it.
+- The document's persisted `docling_document.json` in MinIO, or any derivation state outside the graph.
+
+**Accepted limitations (v1 — explicit non-goals in §8.9):**
+
+1. **Global entity property restoration:** global entity properties enriched during a failed run persist until the next successful ingest that references them overwrites them. The spec does not provide atomic property restoration.
+
+2. **Prior successful graph is NOT preserved across a failed reingest.** If a prior `derive_ontology_graph` successfully produced graph G-prior for this document, and a later `graph_only` (or `full`) reingest fails and triggers rollback, the rollback deletes **all** document-scoped extraction state — including G-prior's document-scoped entities. The `DocumentGraphExtraction` row for G-prior **remains** in PostgreSQL as a historical audit record, but its `graph_json` audit blob describes a graph that is no longer fully queryable in ArcadeDB. Document-scoped entities from G-prior are gone; global entities touched by G-prior may remain (property-merge semantics).
+
+   This is a deliberate v1 tradeoff: preserving G-prior across a failed reingest would require a shadow-write strategy (write new state to a transient namespace, atomic swap on success). That is a larger graph_store refactor and is explicitly out of scope.
+
+   The operational consequence: **after a failed reingest, the affected document is in a "no current graph, historical audit row only" state**. Users who need a queryable graph for that document must run a fresh successful ingest. The status API in §7.11 exposes this state: `document_status="PARTIAL_COMPLETE"` + `graph_snapshot.is_stale=true` + callers that try to query the snapshot must handle "document has no vertices in ArcadeDB" gracefully.
+
+3. **Write-log / compensating RID-level rollback** is not implemented. v1 uses the abstract helper only.
 
 ### §6.9 — State transitions
 
@@ -2507,6 +2572,30 @@ Every stage transition involves a worker + beat restart.
 - `latest_run` — most recent `PipelineRun` with pass rollup and `stage_summary.attempt` for Celery-level retry visibility
 - `graph_snapshot` — latest successful `DocumentGraphExtraction`, may be older than `latest_run` if the latest run failed. `is_stale` is true when `latest_run.status != COMPLETE` OR `latest_run.pipeline_run_id != graph_snapshot.pipeline_run_id`. `null` if no successful extraction has ever completed for this document.
 
+**Important caveat on `graph_snapshot` queryability.** When `is_stale == true`, the snapshot row is a **historical audit record** — it describes a graph that WAS produced at some point, not necessarily one that can be queried in ArcadeDB right now. Specifically:
+
+- If `latest_run.status == FAILED` because of a merge/import failure or an unexpected exception that triggered rollback, the rollback has **deleted this document's extraction-layer graph state**. The snapshot row remains because `DocumentGraphExtraction` is PostgreSQL metadata, but the vertices and edges it describes have been removed from ArcadeDB. See §6.8 for the locked v1 rollback scope.
+- If `latest_run.status == FAILED` because the required-pass gate rejected the run, no rollback occurred and the prior graph is still intact in ArcadeDB.
+- If `latest_run.status == COMPLETE` (non-stale), the snapshot and the graph match.
+
+Clients reading `graph_snapshot` must treat `is_stale == true` as "this is metadata about what *was* extracted, not a promise that the graph is queryable right now." Queries that return zero vertices for a document with a non-null `graph_snapshot` and `is_stale == true` are the expected signal that a rollback has occurred. A follow-up spec may introduce proper shadow-write rollback that preserves prior graphs; v1 does not.
+
+The status API response gains one more field to make the queryability story explicit:
+
+```json
+"graph_snapshot": {
+  "pipeline_run_id": "9h8i7j...",
+  "ontology_bundle_key": "air_defense_v3",
+  ...
+  "is_stale": true,
+  "graph_queryable": false          // NEW: true iff is_stale == false OR the
+                                     //      stale reason is gate failure (not
+                                     //      merge/import/unexpected failure)
+}
+```
+
+The worker populates `graph_queryable` when writing the response by joining `latest_run.stage_summary.error_message` against a known set of prefixes: `gate_failed:` → queryable (no rollback ran), `merge_or_import_failed:` → not queryable (rollback ran), `unexpected_failure:` → not queryable (rollback may have run). Callers that just need the boolean read this directly; callers that need the reason read `latest_run.stage_summary.error_message`.
+
 ---
 
 ## §8 — Testing, measurement, and non-goals
@@ -2692,12 +2781,36 @@ The refactor is successful only if the post-switchover run, measured against the
 
 ### §8.5 — Integration tests
 
-**`tests/integration/test_end_to_end_bundle_extraction.py`** — the smoke test
-- Ingest fixture document through bundle/pass path
-- Assert bundle resolution, 5 per-pass StageRun rows, stage-summary row, `DocumentGraphExtraction` with audit fields, merged graph in ArcadeDB, `HAS_PROVENANCE` + `MENTIONED_IN` edges present
-- For `mode=graph_only`: assert `Document.pipeline_status == "COMPLETE"`, `PipelineRun.status == "COMPLETE"`, `PipelineRun.finished_at IS NOT NULL`
-- For `mode=full`: assert `Document.pipeline_status` unchanged by `derive_ontology_graph` (downstream `finalize_document` terminalizes), `PipelineRun.status == "PROCESSING"`, `PipelineRun.finished_at IS NULL` after `derive_ontology_graph` returns
+**`tests/integration/test_derive_ontology_graph_task.py`** — task-level (inspects state immediately after `derive_ontology_graph` returns, but does NOT run downstream stages)
+- Invoke `derive_ontology_graph` directly against a prepared fixture `PipelineRun` + Document with prerequisite chunks/embeddings already in place
+- Assert 5 per-pass StageRun rows exist with correct `execution_status` and `yield_status`
+- Assert 1 stage-summary StageRun row exists with `pass_name IS NULL`
+- Assert `DocumentGraphExtraction` row written with audit fields + FK to run
+- Assert merged graph vertices and edges exist in ArcadeDB
+- Assert `HAS_PROVENANCE` (auto-created by `upsert_nodes_batch_sync`) and `MENTIONED_IN` (from `derive_rules`) edges present
 - Assert `PipelineRun.metrics` populated with `pass_outcomes`, `document_extraction_anomaly`, `overall_relationship_rejection_ratio`, `bundle_key_display`
+- Run with `mode="graph_only"`: assert `PipelineRun.status == "COMPLETE"`, `PipelineRun.finished_at IS NOT NULL`, `Document.pipeline_status == "COMPLETE"`
+- Run with `mode="full"`: assert `PipelineRun.status == "PROCESSING"`, `PipelineRun.finished_at IS NULL`, `Document.pipeline_status` **unchanged** by `derive_ontology_graph` — because the downstream stages haven't run in this test
+
+**`tests/integration/test_end_to_end_full_ingest.py`** — true full-pipeline E2E
+- Upload a fresh fixture document and run the entire Celery chain to completion (`prepare_document` → Docling convert → chunking/embedding → `derive_ontology_graph` → `finalize_document` → community detection if enabled)
+- Waits for Celery chain completion (with sensible timeout)
+- Assert `Document.pipeline_status == "COMPLETE"` (set by `finalize_document`, NOT by `derive_ontology_graph`)
+- Assert `PipelineRun.status == "COMPLETE"` and `finished_at IS NOT NULL` (set by `finalize_document`)
+- Assert `DocumentGraphExtraction` row written and matches the extracted graph
+- Assert `PipelineRun.metrics` populated
+- Assert 5 per-pass StageRun rows + 1 stage-summary row present for the `derive_ontology_graph` stage
+- Assert extracted entities and edges exist in ArcadeDB
+
+**`tests/integration/test_end_to_end_graph_only_reingest.py`** — graph-only E2E
+- Prepare a document with a prior successful full ingest
+- Trigger `graph_only` reingest via the reingest route
+- Assert a new `PipelineRun` row is created with `mode="graph_only"` and bundle snapshot populated via the `explicit → inherited → source → system` precedence
+- Assert the `derive_ontology_graph` task runs to completion
+- Assert `PipelineRun.status == "COMPLETE"`, `finished_at IS NOT NULL` (because `graph_only` mode terminalizes in `derive_ontology_graph` itself per §5.4)
+- Assert `Document.pipeline_status == "COMPLETE"`
+- Assert the new `DocumentGraphExtraction` row replaces the prior snapshot (same `document_id`, new `pipeline_run_id`)
+- Assert the prior `PipelineRun` row is unchanged (audit preservation)
 
 **`tests/integration/test_bundle_resolution_precedence.py`**
 - Source default, system default, explicit override, inherited from latest run, legacy-NULL fallthrough — all precedence orderings
@@ -2807,7 +2920,12 @@ Each lint is a separate CI job failing the build independently.
 
 Carried forward from brainstorm decisions and spec review. These are NOT design open questions — they are verified during implementation and do not reopen the design.
 
-1. **Confirm `delete_document_graph_sync(document_id)` scope.** In PR 1, verify whether the existing method over-deletes chunks/embeddings/structural-root state that should be preserved during extraction-stage rollback. If it does, add a narrower sibling (`delete_document_extraction_graph_sync`) that targets only extraction-layer contributions. The rollback call in §5.4 and §6.8 uses whichever of the two is correct — the contract is unchanged ("delete only this run's extraction-layer contributions for this document, without touching chunks/embeddings or global entities").
+1. **Wire `_delete_extraction_layer_graph` to a concrete method.** The runtime code in §5.4 calls the abstract helper `_delete_extraction_layer_graph(document_id)` for rollback. PR 1 verifies whether the existing `graph_store.delete_document_graph_sync(document_id)` satisfies the contract in §6.8:
+
+   - **Must delete** document-scoped extracted entity vertices, domain edges tagged with this `document_id`, and structural edges produced by `derive_rules.py` in phase 4.
+   - **Must not delete** chunks, embeddings, the structural `Document` root, or global-scoped entity vertices.
+
+   If `delete_document_graph_sync` already satisfies this (its current scope matches), PR 1 wires `_delete_extraction_layer_graph` as a one-line call to it. If it over-deletes (removes chunks or the structural Document root), PR 1 adds a narrower sibling method — e.g., `graph_store.delete_extraction_layer_graph_sync` — that satisfies the contract exactly, and wires the abstract helper to the new method. Either way, the runtime code in §5.4 is unchanged.
 
 2. **Resolve the exact existing `uq_stage_run` constraint name.** The Alembic migration in §4.8 issues `op.drop_constraint(...)` before creating the new indexes. Spec review confirmed the current name is `uq_stage_run` (literal) at `app/models/ingest.py:237`, but PR 1 re-verifies via:
 
