@@ -1052,16 +1052,17 @@ class DocumentGraphExtraction(Base):
 
 **Latest-snapshot semantics.** `DocumentGraphExtraction` is keyed on `document_id` — one row per document, reflecting the latest successful `derive_ontology_graph` run. Historical extraction ledger lives on `PipelineRun` + `StageRun`, not here.
 
-**Interaction with `purge_document_derivations` (full mode — important caveat).** The `full` ingest pipeline runs `purge_document_derivations` as a stage BEFORE `derive_ontology_graph` (see `app/workers/pipeline.py:444, 448`). That stage deletes the existing `DocumentGraphExtraction` row (`pipeline.py:1707`) AND the corresponding document-level graph state in ArcadeDB, including `TextChunk`, `ImageChunk`, and the structural `Document` vertex (`arcadedb_graph.py:401`, `pipeline.py:1717`). So during a full reingest:
+**Interaction with `purge_document_derivations` (full mode — important caveat).** The `full` ingest pipeline runs these stages in order: `prepare_document`, `detect_and_translate`, `derive_document_metadata`, **`purge_document_derivations`**, `derive_picture_descriptions`, `derive_text_chunks_and_embeddings`, `derive_image_embeddings`, `derive_ontology_graph`, `finalize_document` (see `app/workers/pipeline.py:440, 443, 444, 448`). When `purge_document_derivations` executes, it deletes the existing `DocumentGraphExtraction` row (`pipeline.py:1707`) AND the document-level graph state in ArcadeDB, including `TextChunk`, `ImageChunk`, and the structural `Document` vertex (`arcadedb_graph.py:401`, `pipeline.py:1717`).
 
-- By the time `derive_ontology_graph` starts, the prior `DocumentGraphExtraction` row is **already gone**, not "preserved until the new run succeeds."
-- The "prior snapshot" that several sections of this spec refer to only exists in **two scenarios**:
-  1. **Within a single ingest**, before `derive_ontology_graph`'s phase 2 writes anything new — but for `full` mode the old graph was purged earlier, so there is no prior-snapshot-as-preserved-row at phase 2 start anyway.
-  2. **Across `graph_only` reingests** — the `graph_only` route dispatches `derive_ontology_graph` directly and does NOT run `purge_document_derivations`. Prior state is genuinely preserved until this spec's rollback semantics kick in.
+**`full` reingests go through three distinct phases with respect to snapshot preservation:**
 
-- For `full` reingests, the prior snapshot is sacrificed by `purge_document_derivations` regardless of whether the new run succeeds. If `derive_ontology_graph` subsequently fails, the document is left with **no `DocumentGraphExtraction` row AND no queryable graph** until a fresh successful ingest runs.
+1. **Pre-purge phase** — current stage is one of `prepare_document`, `detect_and_translate`, `derive_document_metadata`, and `purge_document_derivations` has not yet executed. The prior `DocumentGraphExtraction` row and ArcadeDB graph state are still intact. A failure in any of these stages leaves the prior snapshot queryable. The authoritative status API pseudocode (§7.10) correctly reports `graph_snapshot != null` and `graph_queryable == true` in this phase because it queries current PostgreSQL state, not historical intent.
 
-**This spec does NOT change the purge semantics.** Redesigning `purge_document_derivations` to preserve the prior snapshot until the replacement succeeds is a separate architectural change (shadow-write / staging-namespace / atomic-swap on success) and is explicitly out of scope. This spec treats the existing purge behavior as a **first-class graph invalidation event** and propagates that honesty through §5.4 (terminalization), §6.8 (rollback scope), §7.10 (status API semantics), and §8.5 (test assertions).
+2. **Post-purge, pre-`derive_ontology_graph`-success phase** — purge has executed, deleting the prior snapshot row and graph. `derive_ontology_graph` may not have started, may be in progress, or may have failed. During this window the document has no `DocumentGraphExtraction` row at all. `graph_snapshot == null` and `graph_queryable == false`. Any failure in this phase (including `derive_ontology_graph` gate/pre-mutation/mutation-time/pre-import failures and any failure in the intermediate chunking/embedding stages between purge and `derive_ontology_graph`) leaves the document with no snapshot and no queryable graph until a fresh successful ingest runs.
+
+3. **Post-`derive_ontology_graph`-success phase** — the new extraction has written a replacement `DocumentGraphExtraction` row and populated ArcadeDB. Downstream stages (`finalize_document`, etc.) may still fail, but such failures do not affect the extraction snapshot or its graph — the extraction stage's rollback semantics are scoped to the extraction stage itself.
+
+**This spec does NOT change the purge semantics.** Redesigning `purge_document_derivations` to preserve the prior snapshot until the replacement succeeds is a separate architectural change (shadow-write / staging-namespace / atomic-swap on success) and is explicitly out of scope. The spec treats the existing purge behavior as a **first-class graph invalidation event** and propagates that honesty through §5.4 (terminalization), §6.8 (rollback scope), §7.10 (status API semantics), and §8.5 (test assertions).
 
 **Scope of rollback/retention guarantees in this spec:**
 
@@ -1070,10 +1071,11 @@ class DocumentGraphExtraction(Base):
 | `graph_only` reingest, gate failure | **Yes** | No writes occurred; rollback not triggered. |
 | `graph_only` reingest, mutation-time failure | **No** (rollback deletes the document's extraction-layer graph) | See §6.8 accepted limitation. |
 | `graph_only` reingest, pre-mutation failure inside phase helper | **Yes** | `tracker.any_mutation_attempted == False`; rollback not triggered. |
-| `full` reingest, any failure | **No** | `purge_document_derivations` already removed the prior snapshot and graph BEFORE `derive_ontology_graph` started. No rollback can restore it because no snapshot exists to preserve. |
+| `full` reingest, **pre-purge** stage failure | **Yes** | Purge hasn't run yet. Prior snapshot is still the current `DocumentGraphExtraction` row. |
+| `full` reingest, **post-purge** failure (any stage, including `derive_ontology_graph`) | **No** | `purge_document_derivations` already removed the prior snapshot and graph. No rollback can restore it. |
 | `full` reingest, success | **N/A** | New snapshot replaces nothing (purge removed the prior one); the new row is just a fresh insert. |
 
-The rollback semantics in §6.8, the status API in §7.10, and the failure-flow tests in §8.5 are all scoped to `graph_only` reingest for the "prior snapshot preserved" guarantees. Full reingest has no such guarantee.
+The rollback semantics in §6.8, the status API in §7.10, and the failure-flow tests in §8.5 are all scoped according to this table. For `full` mode the distinction between "pre-purge" and "post-purge" failure is load-bearing.
 
 **`graph_json` carry-forward naming.** The column name is retained from the pre-refactor schema. Its contents in the new path are an **audit blob** (counts, rejection summary, pass outcomes) — NOT a serialized graph payload. The actual graph lives in ArcadeDB. Docstring updated in PR 3 to reflect the new semantics; no column rename.
 
@@ -2239,11 +2241,12 @@ A failed gate causes (in both `full` and `graph_only` modes):
 4. `DocumentGraphExtraction` NOT updated by `derive_ontology_graph` — but see the caveat below
 5. No rollback needed within `derive_ontology_graph` (no graph writes occurred yet in this stage)
 
-**Caveat — prior snapshot preservation is mode-dependent (§4.3):**
-- **`graph_only`:** no earlier stage touched the existing `DocumentGraphExtraction` row or ArcadeDB graph. The prior snapshot survives the gate failure and remains queryable. Status API returns `graph_queryable=True`.
-- **`full`:** `purge_document_derivations` already deleted the `DocumentGraphExtraction` row and the ArcadeDB graph state at an earlier pipeline stage, BEFORE `derive_ontology_graph` even started. The gate failure leaves the document with NO snapshot and NO queryable graph. Status API returns `graph_snapshot=null`, `graph_queryable=false`. This is not a behavior of `derive_ontology_graph` — it's a consequence of the existing purge semantics documented in §4.3.
+**Caveat — prior snapshot preservation is phase-dependent for `full` mode (§4.3):**
+- **`graph_only`:** no earlier stage ran `purge_document_derivations`. The prior snapshot survives the gate failure and remains queryable. Status API returns `graph_snapshot != null`, `graph_queryable=true`.
+- **`full`, gate failure:** by the time `derive_ontology_graph` runs and its gate fires, `purge_document_derivations` has already executed as an earlier pipeline stage and deleted the `DocumentGraphExtraction` row + ArcadeDB graph. The gate failure leaves the document with NO snapshot and NO queryable graph. Status API returns `graph_snapshot=null`, `graph_queryable=false`. This is not a behavior of `derive_ontology_graph` — it's a consequence of the existing purge semantics documented in §4.3.
+- **`full`, failure in pre-purge stages (handled by those stages, not by `derive_ontology_graph`):** if a `full` ingest fails in `prepare_document`, `detect_and_translate`, or `derive_document_metadata`, purge hasn't run yet and the prior snapshot is still intact. `derive_ontology_graph` doesn't see those failures — they're handled by the earlier stages themselves — but the status API will report `graph_snapshot != null`, `graph_queryable=true` because the prior row is still present.
 
-Gate failure terminalizes the run in both modes because downstream stages cannot proceed with a broken extraction. The mode-conditional terminalization on the SUCCESS path (§5.4) is a separate concern.
+Gate failure in `derive_ontology_graph` terminalizes the run in both modes because downstream stages cannot proceed with a broken extraction. The mode-conditional terminalization on the SUCCESS path (§5.4) is a separate concern.
 
 ### §6.5 — Retry policy
 
@@ -2309,17 +2312,18 @@ On merge or import failure (and only when `tracker.any_mutation_attempted` is Tr
 
    This is a deliberate v1 tradeoff: preserving G-prior across a failed reingest would require a shadow-write strategy (write new state to a transient namespace, atomic swap on success). That is a larger graph_store refactor and is explicitly out of scope.
 
-3. **Prior successful graph is ALWAYS gone during a `full` reingest — before `derive_ontology_graph` even runs.** The `full` pipeline runs `purge_document_derivations` as an earlier stage, which deletes the `DocumentGraphExtraction` row and the ArcadeDB document-level graph state for this document (see §4.3 for the detailed caveat). `derive_ontology_graph`'s rollback semantics don't apply here — there's nothing to roll back to. If the new extraction fails, the document is left with no `DocumentGraphExtraction` row and no queryable graph until a successful ingest completes.
+3. **Prior successful graph is invalidated by `purge_document_derivations` during a `full` reingest — but only after the purge stage actually executes.** The `full` pipeline runs several stages before purge (`prepare_document`, `detect_and_translate`, `derive_document_metadata`); failures in those stages leave the prior `DocumentGraphExtraction` row and its graph intact. Once purge runs, the prior state is gone and cannot be restored by `derive_ontology_graph`'s rollback. See §4.3 for the three-phase breakdown of a full reingest with respect to snapshot preservation.
 
-   Operationally: a failed `full` reingest is strictly worse than a failed `graph_only` reingest, because the full reingest lost the prior graph at the purge stage regardless of downstream outcome. Users who need to preserve a working graph across a reingest should prefer `graph_only` when possible.
+   Operationally: a `full` reingest that fails in the **pre-purge** stages is equivalent to a `graph_only` reingest gate failure in terms of preservation — the prior graph is still queryable. A `full` reingest that fails **post-purge** (including at `derive_ontology_graph`'s gate, inside its phase helpers, or in any intermediate stage between purge and `derive_ontology_graph`) loses the prior graph. Users who need to preserve a working graph across a reingest should prefer `graph_only` when possible.
 
-4. **Status API consequences (mode-dependent).** After a failed reingest, the status API exposes the document's current state. The specific signals depend on mode:
+4. **Status API consequences (phase-dependent, not strictly mode-dependent).** The status API reflects current PostgreSQL state via the authoritative rule in §7.10. Specific signals depend on which phase of the run has been reached:
 
    - **Failed `graph_only` reingest with preserved prior snapshot** (gate failure or pre-mutation failure — `rollback_executed=False`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot != null` (prior run's row), `graph_queryable=true`. Clients can still query the prior extraction.
    - **Failed `graph_only` reingest with rollback fired** (`rollback_executed=True`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot != null` (prior run's row, historical audit), `graph_queryable=false`. Clients must handle "row exists but vertices are gone" gracefully.
-   - **Failed `full` reingest (any failure mode):** `document_status="PARTIAL_COMPLETE"`, `graph_snapshot=null` (purged by `purge_document_derivations` before `derive_ontology_graph` ran), `graph_queryable=false`. Clients see no snapshot at all.
+   - **Failed `full` reingest, pre-purge phase** (failure in `prepare_document` / `detect_and_translate` / `derive_document_metadata`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot != null` (prior run's row — purge never executed), `graph_queryable=true`. Equivalent to a graph_only gate failure from a client's perspective.
+   - **Failed `full` reingest, post-purge phase** (failure in any stage from `derive_picture_descriptions` through `derive_ontology_graph`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot=null` (purged and not yet replaced), `graph_queryable=false`. Clients see no snapshot at all.
 
-   `graph_queryable` is the single authoritative signal for "can I run queries against this document's extraction graph right now?" — computed via §7.10's rule, not by inspecting `rollback_executed` alone.
+   `graph_queryable` is the single authoritative signal for "can I run queries against this document's extraction graph right now?" — computed via §7.10's rule, not by inspecting `rollback_executed` alone or by inferring phase from mode.
 
 5. **Write-log / compensating RID-level rollback** is not implemented. v1 uses the abstract helper only.
 
@@ -2669,14 +2673,15 @@ Every stage transition involves a worker + beat restart.
     "edge_count": 32,
     "updated_at": "2026-04-09T09:15:00Z",
     "is_stale": true
-  }
+  },
+  "graph_queryable": false
 }
 ```
 
 **Three concepts exposed separately:**
 - `document_status` — latest processing health (`Document.pipeline_status`)
 - `latest_run` — most recent `PipelineRun` with pass rollup and `stage_summary.attempt` for Celery-level retry visibility
-- `graph_snapshot` — latest successful `DocumentGraphExtraction`, may be older than `latest_run` if the latest run failed. `is_stale` is true when `latest_run.status != COMPLETE` OR `latest_run.pipeline_run_id != graph_snapshot.pipeline_run_id`. `null` if no successful extraction has ever completed for this document.
+- `graph_snapshot` — the `DocumentGraphExtraction` row **currently** in PostgreSQL for this document, or `null` if there is no such row. A row may be absent because (a) no successful extraction has ever completed for the document, OR (b) a prior row existed but was deleted by a later operation (most commonly `purge_document_derivations` during an in-flight `full` reingest, before the new `derive_ontology_graph` writes its replacement row). The field reflects current PostgreSQL state, not historical "has this document ever been extracted successfully?" semantics. When non-null, `is_stale` is true iff `latest_run.status != COMPLETE` OR `latest_run.pipeline_run_id != graph_snapshot.pipeline_run_id`. When null, `is_stale` is not exposed.
 
 **`is_stale` vs `graph_queryable` — two independent signals.**
 
@@ -2707,7 +2712,7 @@ In words:
 
 **Computed independently of `error_message` prefixes.** The authoritative pseudocode is in the "Pseudocode" block further down (§7.10). The case tables below illustrate the rule in action.
 
-**Status cases and their signals — `graph_only` reingests** (prior snapshot potentially preserved):
+**Status cases and their signals — `graph_only` reingests** (purge does not run; prior snapshot potentially preserved):
 
 | latest_run state | stage_summary.rollback_executed | graph_snapshot | is_stale | graph_queryable |
 |---|---|---|---|---|
@@ -2718,24 +2723,44 @@ In words:
 | FAILED (post-import failure, e.g., snapshot write) | **True** | prior-run row (still in table, but graph deleted) | True | **False** (rollback ran because earlier phases mutated) |
 | FAILED (bundle load, metrics write, pre-import) | False | prior-run row (intact) | True | True (no mutations started) |
 
-**Status cases — `full` reingests** (prior snapshot already purged by `purge_document_derivations` before `derive_ontology_graph` starts):
+**Status cases — `full` reingests** (must be split by whether `purge_document_derivations` has run yet in the current run):
+
+The `full` pipeline runs its stages in this order: `prepare_document` → `detect_and_translate` → `derive_document_metadata` → **`purge_document_derivations`** → `derive_picture_descriptions` → `derive_text_chunks_and_embeddings` → `derive_image_embeddings` → `derive_ontology_graph` → `finalize_document`. A `full` run is "pre-purge" until `purge_document_derivations` completes; any state observed before that point leaves the prior `DocumentGraphExtraction` row and graph intact. After purge completes and before a new `derive_ontology_graph` successfully writes its replacement, the document has no snapshot row at all.
+
+**`full` reingest — pre-purge phase** (current run's stage is one of `prepare_document`, `detect_and_translate`, `derive_document_metadata`, and `purge_document_derivations` has not yet executed):
 
 | latest_run state | stage_summary.rollback_executed | graph_snapshot | is_stale | graph_queryable |
 |---|---|---|---|---|
-| PROCESSING (mid-chain, before `derive_ontology_graph` stage) | NULL (no summary row yet) | **NULL** (purged) | True | **False** (no graph) |
-| PROCESSING (`derive_ontology_graph` succeeded, downstream running) | False | new-run row (this run) | **True** (run not COMPLETE) | **True** (graph just written) |
+| PROCESSING (pre-purge stage in progress) | NULL (no `derive_ontology_graph` row yet) | prior-run row (intact — purge hasn't run) | True | True |
+| FAILED (pre-purge stage failed, e.g., OCR error) | NULL (no `derive_ontology_graph` row yet) | prior-run row (intact — purge never ran) | True | True |
+
+**`full` reingest — post-purge, pre-`derive_ontology_graph`-success phase** (purge has completed, deleting the prior row and graph; the new `derive_ontology_graph` has not yet written a replacement):
+
+| latest_run state | stage_summary.rollback_executed | graph_snapshot | is_stale | graph_queryable |
+|---|---|---|---|---|
+| PROCESSING (mid-chain, after purge, before `derive_ontology_graph` runs or while it runs) | NULL (no summary row, or summary row RUNNING) | **NULL** (purged, not yet replaced) | n/a (snapshot is null) | **False** (no graph) |
+| FAILED (post-purge stage failed before `derive_ontology_graph`, e.g., embedding error) | NULL (no `derive_ontology_graph` summary row) | **NULL** (purged) | n/a | **False** |
+| FAILED (`derive_ontology_graph` gate failure) | False | **NULL** (purged) | n/a | **False** |
+| FAILED (`derive_ontology_graph` pre-mutation failure) | False | **NULL** (purged) | n/a | **False** |
+| FAILED (`derive_ontology_graph` mutation-time failure, rollback fired) | True | **NULL** (purged — nothing to preserve) | n/a | **False** |
+| FAILED (`derive_ontology_graph` pre-import failure) | False | **NULL** (purged) | n/a | **False** |
+
+**`full` reingest — `derive_ontology_graph` successful and later:**
+
+| latest_run state | stage_summary.rollback_executed | graph_snapshot | is_stale | graph_queryable |
+|---|---|---|---|---|
+| PROCESSING (`derive_ontology_graph` succeeded, downstream running) | False | new-run row (this run) | True (run not COMPLETE) | True (graph just written) |
 | COMPLETE (all stages done) | False | new-run row | False | True |
-| FAILED (gate failure) | False | **NULL** (purged) | True | **False** (no graph) |
-| FAILED (pre-mutation failure) | False | **NULL** (purged) | True | **False** (no graph) |
-| FAILED (mutation-time failure) | True | **NULL** (purged) | True | **False** (rollback ran but there was nothing prior to preserve) |
-| FAILED (pre-import) | False | **NULL** (purged) | True | **False** |
+| FAILED (downstream stage after `derive_ontology_graph` succeeded) | False | new-run row | True | True (graph exists from this run; downstream failure doesn't trigger extraction-stage rollback) |
 
-**Key differences between the two tables:**
+**`is_stale` is "n/a" where `graph_snapshot` is null.** The status API omits `is_stale` entirely from responses when `graph_snapshot == null` (it lives inside the `graph_snapshot` object — see §7.10 response shape). The "n/a" entries in the tables are for clarity only; they do not appear in API output.
 
-- `graph_only` can have `graph_snapshot != NULL` with `graph_queryable == True` on a gate/pre-mutation failure because the prior successful snapshot row (and its ArcadeDB graph state) was never touched.
-- `full` always has `graph_snapshot == NULL` until `derive_ontology_graph` successfully writes a new row. A `full` reingest that fails for any reason — including gate failure, before any new writes — leaves `graph_snapshot == NULL` because `purge_document_derivations` already deleted the prior row at an earlier stage.
-- For `full`, `graph_queryable == True` only when `graph_snapshot != NULL`. There's no "rollback-independent preservation" case.
-- The `rollback_executed` flag still matters for `graph_only` to distinguish "failed with prior graph intact" from "failed with rollback-induced data loss." For `full`, the flag is diagnostic but cannot change the queryability outcome — the purge already happened.
+**Key differences between the three tables:**
+
+- **`graph_only`** runs never touch the prior `DocumentGraphExtraction` row via purge. Failures that don't reach mutation time leave the prior snapshot and its graph intact. Queryability depends on whether `rollback_executed == True`.
+- **`full` pre-purge** is indistinguishable from "not in the current run yet" — the prior snapshot is still present and queryable because purge hasn't fired.
+- **`full` post-purge, pre-success** always has `graph_snapshot == null` because purge deleted the prior row and no new one has been written yet. `rollback_executed` is a diagnostic signal in this phase but cannot change the queryability outcome — there is nothing to roll back to.
+- **`full` post-success** has a new-run snapshot row; subsequent downstream failures don't affect it because `derive_ontology_graph`'s rollback is scoped to itself.
 
 **Pseudocode — the authoritative implementation for status-API computation:**
 
@@ -3074,16 +3099,27 @@ The refactor is successful only if the post-switchover run, measured against the
 - Assert status API returns `graph_queryable=True`
 - Assert `_delete_extraction_layer_graph` NOT called (tracker never marked)
 
-**`tests/integration/test_required_pass_failure_flow_full.py`** — documents the accepted limitation from §4.3 and §6.8 item 3
+**`tests/integration/test_required_pass_failure_flow_full_post_purge.py`** — documents the accepted limitation from §4.3 and §6.8 item 3 for the post-purge phase of a full reingest
 - Setup: document with a prior successful full ingest
 - Trigger a new `full` reingest with forced `radar_domain` HTTP 500 × 3
-- Assert `purge_document_derivations` ran and deleted the prior `DocumentGraphExtraction` row and ArcadeDB document graph BEFORE `derive_ontology_graph` started (this is existing pipeline behavior; test just establishes the precondition)
+- Wait for `purge_document_derivations` to execute (the test explicitly synchronizes on this stage completing), verifying that the prior `DocumentGraphExtraction` row and ArcadeDB document graph have been deleted. This establishes the post-purge precondition.
+- Allow the chain to continue through to `derive_ontology_graph`, which fails at its gate due to the forced `radar_domain` errors.
 - Assert `IngestFailed`, stage-summary `execution_status=FAILED`, `rollback_executed=False` (tracker never marked because gate failed before phase 2)
 - Assert `PipelineRun.status=FAILED`, `Document.pipeline_status=PARTIAL_COMPLETE`
 - Assert **no `DocumentGraphExtraction` row exists** for this document (purge removed it; failed `derive_ontology_graph` did not write a new one)
 - Assert status API returns `graph_snapshot=null` and `graph_queryable=false`
 - Assert `_delete_extraction_layer_graph` NOT called (nothing to roll back to)
 - This test asserts the status quo behavior documented in §4.3, not a desired behavior. If `purge_document_derivations` is ever redesigned to be non-destructive, this test is updated in that follow-up spec.
+
+**`tests/integration/test_required_pass_failure_flow_full_pre_purge.py`** — companion test demonstrating that pre-purge failures leave the prior snapshot intact
+- Setup: document with a prior successful full ingest
+- Trigger a new `full` reingest with forced failure in `detect_and_translate` (or another pre-purge stage — e.g., an invalid language code)
+- Assert `purge_document_derivations` did NOT run (stage was never reached)
+- Assert `PipelineRun.status=FAILED`, `Document.pipeline_status=PARTIAL_COMPLETE`
+- Assert the prior `DocumentGraphExtraction` row is **still present and unchanged** (same `pipeline_run_id`, `graph_json`, `updated_at` as before the reingest attempt)
+- Assert prior ArcadeDB graph state is still queryable — snapshot's vertices exist
+- Assert status API returns `graph_snapshot != null` AND `graph_queryable=true`
+- This test demonstrates that `full`-mode "snapshot preservation" is phase-dependent, not always-absent.
 
 **`tests/integration/test_merge_import_failure_rollback.py`** — three test cases covering the three rollback regimes
 
