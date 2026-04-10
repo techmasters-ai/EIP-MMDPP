@@ -2287,7 +2287,7 @@ Every rejection is logged with context. Sample persisted in `PipelineRun.metrics
 
 ### §6.8 — Rollback scope (v1)
 
-On merge or import failure (and only when `tracker.any_mutation_attempted` is True — see the `GraphWriteTracker` gate in §5.4), rollback calls the abstract helper `_delete_extraction_layer_graph(document_id)`. PR 1 wires this helper to either the existing `graph_store.delete_document_graph_sync(document_id)` or a narrower sibling method — whichever satisfies the contract below (see residual check #1).
+On merge or import failure (and only when `tracker.any_mutation_attempted` is True — see the `GraphWriteTracker` gate in §5.4), rollback calls the abstract helper `_delete_extraction_layer_graph(document_id)`, which is wired in PR 1 to the new narrower primitive `delete_extraction_layer_graph_sync` (see residual check #1). The existing `delete_document_graph_sync` is NOT used for rollback in this refactor — it is reserved for purge and full-document deletion flows, which over-delete chunks and the structural `Document` vertex by design.
 
 **Contract — what `_delete_extraction_layer_graph(document_id)` MUST delete:**
 - Document-scoped extracted entity vertices (their identity includes `document_id`, so every such vertex represents extraction-layer work for this document)
@@ -3004,7 +3004,7 @@ A follow-up spec may introduce proper shadow-write rollback that preserves prior
 - [ ] `merge_and_resolve` produces `LogicalIdentity`-keyed IR, no RIDs.
 - [ ] Three-phase import: nodes → domain edges → structural edges. `identity_to_rid` from zipped `upsert_nodes_batch_sync` return with `strict=True`.
 - [ ] Structural edges via `graph_store.create_structural_edge_sync` (RID-based), not `upsert_relationships_batch_sync`.
-- [ ] On merge/import failure, rollback calls `delete_document_graph_sync(document_id)` (or narrower sibling per residual check). Global properties explicitly NOT reverted.
+- [ ] On merge/import failure (and only when `tracker.any_mutation_attempted` is True), rollback calls `_delete_extraction_layer_graph(document_id)`, which is backed by the new `delete_extraction_layer_graph_sync` primitive added in PR 1. `delete_document_graph_sync` is NOT used in the rollback path — it remains reserved for purge / full-document deletion flows. Global entity property enrichment is explicitly NOT reverted.
 
 **Monkey-patch contract tests:**
 - [ ] Tests exist and pass for `_patched_build_request`, `_patched_call_api`, `NodeIDRegistry.get_node_id`.
@@ -3202,7 +3202,7 @@ The refactor is successful only if the post-switchover run, measured against the
 **Test case A: mutation-time failure triggers rollback.**
 - Setup: pre-populate graph with one prior successful extraction for this document
 - Patch the graph store so `upsert_nodes_batch_sync` raises on the first call. This ensures `_import_graph_phase_nodes` calls `tracker.mark()` and then fails inside the mutation call.
-- Assert the abstract rollback primitive `_delete_extraction_layer_graph(document_id)` was invoked exactly once. **Do NOT hardcode the concrete method name** (`delete_document_graph_sync` vs `delete_extraction_layer_graph_sync`) — PR 1 may wire the abstract helper to either per residual check #1, and the test must be resilient to either choice. Patch `_delete_extraction_layer_graph` itself and assert its call args.
+- Assert the abstract rollback primitive `_delete_extraction_layer_graph(document_id)` was invoked exactly once. The test patches `_delete_extraction_layer_graph` itself (the worker-local abstract helper) and asserts its call args — not the concrete `delete_extraction_layer_graph_sync` graph-store method. This keeps the test scoped to the rollback contract rather than the backing implementation.
 - Assert `Document.pipeline_status == "PARTIAL_COMPLETE"`
 - Assert stage-summary: `execution_status == "FAILED"`, `rollback_executed == True`, `error_message` starts with `merge_or_import_failed:`
 - Assert the status API returns `graph_queryable == False` for this document
@@ -3302,7 +3302,7 @@ Each lint is a separate CI job failing the build independently.
 - Moving `structured_output_threshold_chars` into bundle metadata. Stays in service config.
 - Changing `upsert_nodes_batch_sync` or `upsert_relationships_batch_sync` return shapes.
 - Renaming `DocumentGraphExtraction.graph_json`. Carries forward pre-refactor name.
-- Write log / compensating RID-level rollback. v1 uses `delete_document_graph_sync` only.
+- Write log / compensating RID-level rollback. v1 uses the abstract `_delete_extraction_layer_graph` helper, backed by the new `delete_extraction_layer_graph_sync` primitive. `delete_document_graph_sync` is reserved for purge / full-document deletion and is NOT used in the rollback path.
 - Build-time codegen for extraction schemas (Approach B). Future optimization.
 - Multi-bundle A/B at runtime.
 - Schema-size per-bundle override. Threshold is global.
@@ -3314,23 +3314,32 @@ Each lint is a separate CI job failing the build independently.
 
 Carried forward from brainstorm decisions and spec review. These are NOT design open questions — they are verified during implementation and do not reopen the design.
 
-1. **Add `graph_store.delete_extraction_layer_graph_sync` and wire `_delete_extraction_layer_graph` to it.** User review has confirmed that the existing `graph_store.delete_document_graph_sync` at `app/services/arcadedb_graph.py:401` over-deletes for this use case — it removes `TextChunk`, `ImageChunk`, and the structural `Document` vertex, all of which must be preserved during extraction-stage rollback. PR 1 therefore adds a **new narrower method**:
+1. **Add `delete_extraction_layer_graph_sync` to the `GraphStore` protocol and implement it in `ArcadeDBGraphStore`.** User review has confirmed that the existing `delete_document_graph_sync` (backend-agnostic protocol declared in `app/services/graph_store.py`; ArcadeDB implementation at `app/services/arcadedb_graph.py:401`) over-deletes for this use case — its implementation removes `TextChunk`, `ImageChunk`, and the structural `Document` vertex, all of which must be preserved during extraction-stage rollback. PR 1 therefore adds a **new narrower primitive** at both layers:
+
+   **Protocol layer — `app/services/graph_store.py` (backend-agnostic):**
 
    ```python
-   # app/services/graph_store.py — new method in PR 1
+   # New method on the GraphStore Protocol
    def delete_extraction_layer_graph_sync(self, document_id: str) -> None:
        """Delete only this document's extraction-layer graph state:
          - document-scoped extracted entity vertices (identity includes document_id)
          - domain edges tagged with document_id in provenance metadata
          - structural edges produced by derive_rules in phase 4 (source=derive_rules)
        Does NOT delete: chunks, embeddings, structural Document vertex,
-       global-scoped entity vertices."""
+       global-scoped entity vertices. Any alternative backend implementing
+       GraphStore must honor this contract."""
    ```
 
-   The runtime code in §5.4 calls the abstract helper `_delete_extraction_layer_graph(document_id)`, which in PR 1 is wired to this new method — not to `delete_document_graph_sync`. The existing `delete_document_graph_sync` remains unchanged for its existing callers (purge, etc.). PR 1's job is:
-   - Implement `delete_extraction_layer_graph_sync` on the graph store with the scoping above.
-   - Wire `_delete_extraction_layer_graph` in `app/workers/pipeline.py` to call the new method.
-   - Add a unit test that sets up a document with chunks, embeddings, extracted entities, and a structural Document vertex, calls the new method, and asserts that only the extracted entities and their edges are removed.
+   **Implementation layer — `app/services/arcadedb_graph.py` (concrete ArcadeDB behavior):**
+
+   The `ArcadeDBGraphStore` class implements the method with the specific SQL/Gremlin queries needed to scope deletion correctly under ArcadeDB's vertex/edge model. The implementation must NOT reuse the existing `delete_document_graph_sync` SQL at `arcadedb_graph.py:401` — that query is broader by design and is kept unchanged for purge and full-document-deletion callers.
+
+   PR 1's tasks:
+   - Add the new method to the `GraphStore` protocol in `app/services/graph_store.py`.
+   - Implement the method in `ArcadeDBGraphStore` in `app/services/arcadedb_graph.py` with scoping that satisfies the MUST-delete / MUST-NOT-delete contract above.
+   - Wire the worker-local `_delete_extraction_layer_graph` helper in `app/workers/pipeline.py` to call the new protocol method.
+   - Add a unit test that sets up a document with chunks, embeddings, extracted entities, a structural `Document` vertex, and global-scoped entity vertices; calls the new method; and asserts that only the extracted entities and their domain/derived edges are removed — chunks, embeddings, the structural `Document`, and global entities remain.
+   - Leave `delete_document_graph_sync` and its SQL at `arcadedb_graph.py:401` unchanged; its existing callers (purge and full-document-delete flows) are out of scope for this spec.
 
 2. **Resolve the exact existing `uq_stage_run` constraint name.** The Alembic migration in §4.8 issues `op.drop_constraint(...)` before creating the new indexes. Spec review confirmed the current name is `uq_stage_run` (literal) at `app/models/ingest.py:237`, but PR 1 re-verifies via:
 
