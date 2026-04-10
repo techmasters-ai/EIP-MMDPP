@@ -43,7 +43,7 @@ See §8.9 for the full list. Most important:
 
 ## Approach
 
-**Approach A — hand-authored fixed schemas, disk-based bundles, worker-side orchestration.** Considered and rejected: (B) build-time codegen, (C) fixing runtime generation in place. A is the only option that removes the brittle feature; C preserves it; B adds tooling complexity without enough payoff at 25 entities.
+**Approach A — hand-authored fixed schemas, disk-based bundles, worker-side orchestration.** Considered and rejected: (B) build-time codegen, (C) fixing runtime generation in place. A is the only option that removes the brittle feature; C preserves it; B adds tooling complexity without enough payoff at the current scale (24 extract-bucket entities out of 46 total).
 
 Key refinements locked during brainstorming:
 
@@ -412,6 +412,8 @@ Both the runtime monkey-patch in `main.py` and `tools/check_extraction_coverage.
 
 ```python
 # docker/docling-graph/app/schemas.py
+from typing import Any, Literal
+from pydantic import BaseModel
 
 class EntityRef(BaseModel):
     ref_id: str                      # opaque, e.g. "E01" — assigned by worker
@@ -597,7 +599,7 @@ class ReferencePass(BaseModel):
     # NO documents field — DOCUMENT is not extracted; see §3.5.
 ```
 
-**Extraction field set rule:** the Pydantic field set for each entity is a **curated subset** of the ontology's properties — all `identity_fields` plus a hand-picked selection of high-signal properties. NOT an exhaustive mirror. The checker rule 8k prints a warning listing omitted properties for human review.
+**Extraction field set rule:** the Pydantic field set for each entity is a **curated subset** of the ontology's properties — all `identity_fields` plus a hand-picked selection of high-signal properties. NOT an exhaustive mirror. The coverage checker's **curation advisory** (§2 checker, described below the numbered rule list) prints a warning listing omitted properties for human review. It is advisory, not a build failure.
 
 ### §3.4 — Pattern B: entities + relationships pass (`radar_domain.py`)
 
@@ -667,7 +669,9 @@ class SystemLinkRelationship(BaseModel):
 
 class SystemLinksPass(BaseModel):
     """Relationships-only pass. Consumes upstream_entities from the request body.
-    Has NO entity fields — checker rule 8's reflection check enforces this."""
+    Has NO entity fields — enforced by the 'input_mode == document_plus_entity_refs
+    implies no entity-collection fields' sub-check in the manifest self-consistency
+    section of §2 checker rules."""
     model_config = ConfigDict(extra="ignore")
 
     relationships: list[SystemLinkRelationship] = Field(default_factory=list)
@@ -738,18 +742,28 @@ entity_types:
 @dataclass(frozen=True)
 class LogicalIdentity:
     entity_type: str
-    identity_tuple: tuple[Any, ...]
+    identity_field_names: tuple[str, ...]   # ordered field names from ontology.yaml
+    identity_tuple: tuple[Any, ...]          # parallel values
     scope: Literal["document", "global"]
-    document_id: str | None          # populated iff scope == "document"
+    document_id: str | None                  # populated iff scope == "document"
+
+    def identity_values_dict(self) -> dict[str, Any]:
+        """Identity field names zipped with values. Does NOT include document_id.
+        Used for display-label construction and for identity comparison in merge."""
+        return dict(zip(self.identity_field_names, self.identity_tuple, strict=True))
 
     def as_upsert_identity_dict(self) -> dict[str, Any]:
-        """Shape expected by GraphStore.NodeRecord.identity_fields."""
-        d = dict(zip(self._field_names, self.identity_tuple))
+        """Shape expected by GraphStore.NodeRecord.identity_fields. Adds
+        document_id for document-scoped entities so the composite identity
+        distinguishes same-named entities across documents."""
+        d = self.identity_values_dict()
         if self.scope == "document":
-            assert self.document_id is not None
+            assert self.document_id is not None, "document_id required for scope=document"
             d["document_id"] = self.document_id
         return d
 ```
+
+Both `identity_values_dict()` and `as_upsert_identity_dict()` are used — the former for display labels and merge comparison, the latter for `NodeRecord.identity_fields`. Do not conflate them.
 
 **Schema sync change:** every document-scoped entity vertex class in ArcadeDB gains a `document_id: STRING` property. The composite unique index on that class becomes `(identity_fields..., document_id)`.
 
@@ -759,12 +773,33 @@ class LogicalIdentity:
 
 ```python
 @dataclass
+class PassResult:
+    """The normalized output of one /extract-pass call, as seen by the
+    worker after parsing the ExtractPassResponse. Handoff type between
+    _run_single_pass (producer) and merge_and_resolve (consumer)."""
+    pass_name: str
+    template_instance: BaseModel           # instantiated Pydantic template class
+    metadata: ExtractionMetadata           # from service response (schema size, etc.)
+    pre_merge_rejections: list[tuple[Any, RelationshipRejectionReason]]
+
+    def iter_entities_of_type(self, entity_type: str) -> Iterable[BaseModel]:
+        """Return the nested entity models matching the given type."""
+        ...
+
+    @property
+    def relationships(self) -> list[BaseModel]:
+        """Return the relationships field (empty list for entities-only passes)."""
+        ...
+
+
+@dataclass
 class MergedEntityRecord:
     identity: LogicalIdentity
     properties: dict[str, Any]        # merged from all source passes
     confidence: float                 # highest confidence across merges
     pass_origins: set[str]            # which passes contributed
     display_label: str                # derived from identity_tuple
+
 
 @dataclass
 class MergedEdgeRecord:
@@ -773,6 +808,7 @@ class MergedEdgeRecord:
     rel_type: str
     confidence: float
     source_pass: str
+
 
 @dataclass
 class MergedExtraction:
@@ -822,52 +858,68 @@ class RelationshipRejectionReason(str, Enum):
 `ontology_bundles/air_defense_v3/derive_rules.py`:
 
 ```python
+@dataclass
+class ChunkForDerivation:
+    """DTO used by derive_structural_edges. Distinct from the SQLAlchemy
+    TextChunk ORM model — carries only the fields derivation needs.
+    Constructed by the worker from TextChunk rows before calling derive_rules."""
+    rid: str                    # ArcadeDB vertex RID of this chunk
+    text_normalized: str        # lowercased, whitespace-collapsed text
+
+@dataclass
+class DerivedEdge:
+    """Output of derive_structural_edges. Uses RID-based endpoints because
+    both source (extracted entity) and target (Document/TextChunk) RIDs are
+    already known at derivation time."""
+    from_id: str                # extracted entity RID (from identity_to_rid)
+    to_id: str                  # Document or TextChunk RID
+    rel_type: str
+    confidence: float | None
+
 def derive_structural_edges(
     merged: MergedExtraction,
     identity_to_rid: dict[LogicalIdentity, str],
-    chunks: list[TextChunk],
+    chunks: list[ChunkForDerivation],
     document_rid: str,
 ) -> list[DerivedEdge]:
     """Deterministic edges that are NOT extracted by the LLM.
-    Only rules whose outputs are 100% deterministic given the inputs."""
+    Only rules whose outputs are 100% deterministic given the inputs.
+
+    IMPORTANT: HAS_PROVENANCE edges are NOT produced here. They are
+    created automatically by graph_store.upsert_nodes_batch_sync via
+    its internal _create_provenance_edges_batch_sync helper whenever a
+    non-None ProvenanceMetadata is passed. Duplicating them here would
+    produce two HAS_PROVENANCE edges per entity. See §5.6 Phase 2 for
+    the provenance-metadata handoff."""
     edges: list[DerivedEdge] = []
 
-    # Rule 1: HAS_PROVENANCE from every extracted entity to the Document
+    # Rule: MENTIONED_IN from each entity to chunks containing its display label
     for entity in merged.entities:
         from_rid = identity_to_rid.get(entity.identity)
         if from_rid is None:
             continue  # shouldn't happen — every merged entity was just upserted
-        edges.append(DerivedEdge(
-            from_rid=from_rid,
-            to_rid=document_rid,
-            rel_type="HAS_PROVENANCE",
-            confidence=entity.confidence,
-        ))
-
-    # Rule 2: MENTIONED_IN from each entity to chunks containing its display label
-    for entity in merged.entities:
-        from_rid = identity_to_rid.get(entity.identity)
-        if from_rid is None:
-            continue
         canonical = normalize_name(entity.display_label)
         if not canonical:
             continue
         for chunk in chunks:
             if canonical in chunk.text_normalized:
                 edges.append(DerivedEdge(
-                    from_rid=from_rid,
-                    to_rid=chunk.rid,
+                    from_id=from_rid,
+                    to_id=chunk.rid,
                     rel_type="MENTIONED_IN",
                     confidence=entity.confidence,
                 ))
 
     # CONTAINS_TEXT / CONTAINS_IMAGE / NEXT_CHUNK are handled by the existing
     # derive_structure_links stage — not duplicated here.
+    # HAS_PROVENANCE is handled by upsert_nodes_batch_sync — see above.
 
     return edges
 ```
 
-The worker imports `derive_rules.py` directly (not through the service). The identity→RID map is built in phase 2 of the import and passed through.
+The worker imports `derive_rules.py` directly (not through the service). The identity→RID map is built in phase 2 of the import and passed through. `ChunkForDerivation` is a lightweight DTO constructed by the worker from SQLAlchemy `TextChunk` rows — it is deliberately NOT the ORM model, to avoid coupling derivation logic to persistence concerns.
+
+**HAS_PROVENANCE ownership:** `graph_store.upsert_nodes_batch_sync` auto-creates `HAS_PROVENANCE` edges from each upserted node to the structural `Document` vertex via its internal `_create_provenance_edges_batch_sync` helper whenever a non-None `ProvenanceMetadata` is passed. The worker passes a `ProvenanceMetadata` with `document_id` populated in phase 2; the auto-created edges are the canonical source of HAS_PROVENANCE. `derive_rules.py` is explicitly out of this business.
 
 ### §3.9 — Display label helper
 
@@ -909,6 +961,8 @@ def build_display_label(
 ```
 
 Checker rule 10 asserts this returns a non-empty string for every extract-bucket entity type given minimal inputs.
+
+**Edge case — document-scoped entities with `document_id` in identity_values:** `build_display_label` includes `document_id` in its `NAME_LIKE_KEYS` list as a fallback. For document-scoped entities whose `as_upsert_identity_dict` adds a raw UUID `document_id` to the dict, the display label could end up as a bare UUID string. This is acceptable: the fallback below it (content-hash `<entity_type>_<hash>`) will not fire because `document_id` is never empty on document-scoped entities, and a UUID is a valid if unfriendly human label. Operators viewing the graph see the UUID and can pivot to the Document vertex for a friendly title. If this becomes annoying, a later spec can introduce a "title lookup" step that swaps the UUID for the document's real title at display time.
 
 ### §3.10 — Ownership map
 
@@ -962,9 +1016,17 @@ class PipelineRun(Base):
     ontology_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     use_case_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     extraction_profile_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    metrics: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True,
+        doc="Run-level metrics blob. Populated after derive_ontology_graph "
+            "merge completes. Stores document_extraction_anomaly flag, "
+            "pass_degraded_count, overall_relationship_rejection_ratio, "
+            "rejected_relationships_sample, bundle_legacy, and related "
+            "quality signals. See §6.6."
+    )
 ```
 
-Snapshot fields are populated once at pipeline start and never updated. If the bundle manifest is edited later, historical runs still show the exact version they used.
+Snapshot fields (bundle_key, ontology_name, etc.) are populated once at pipeline start and never updated. The `metrics` field is populated once at stage exit and holds the run-level quality rollup.
 
 ### §4.3 — `DocumentGraphExtraction` (FK + snapshot)
 
@@ -1132,7 +1194,7 @@ Response shape:
 
 `ontology_bundle_key` is never transformed in output — what was stored is what is returned, including `null`. Only `ontology_bundle_label` carries display text.
 
-**Metrics exclude legacy rows.** `required_pass_failure_rate`, `domain_entity_extraction_rate`, etc. are computed only over rows with `ontology_bundle_key IS NOT NULL`. Legacy rows are counted separately as `legacy_rows_excluded`.
+**Aggregate metrics exclude legacy rows.** Cross-run aggregates like `required_pass_failure_rate`, `domain_entity_extraction_rate`, and `edge_retention_rate` are computed only over runs with `ontology_bundle_key IS NOT NULL`. Legacy rows (pre-refactor, `NULL` key) are counted separately in a `legacy_rows_excluded` counter so the exclusion is visible. Per-run metrics written to `PipelineRun.metrics` (§6.6) include a `bundle_legacy: bool` flag on every row for traceability — that flag is a tag on the individual row, not a contradiction of the exclusion rule. A reader can always answer both "what's the domain extraction rate over non-legacy runs?" and "how many runs were tagged legacy?" from the same data.
 
 ### §4.7 — `QueryProfileRegistry` — unchanged
 
@@ -1155,6 +1217,7 @@ def upgrade() -> None:
     op.add_column('pipeline_runs', sa.Column('ontology_version', sa.String(100), nullable=True), schema='ingest')
     op.add_column('pipeline_runs', sa.Column('use_case_key', sa.String(100), nullable=True), schema='ingest')
     op.add_column('pipeline_runs', sa.Column('extraction_profile_version', sa.String(100), nullable=True), schema='ingest')
+    op.add_column('pipeline_runs', sa.Column('metrics', postgresql.JSONB, nullable=True), schema='ingest')
     op.create_check_constraint(
         'chk_pipeline_run_mode', 'pipeline_runs',
         "mode IN ('full', 'graph_only')", schema='ingest',
@@ -1260,7 +1323,7 @@ def start_ingest_pipeline(
         id=uuid.uuid4(),
         document_id=document_id,
         mode="full",
-        status="RUNNING",
+        status="PROCESSING",
         ontology_bundle_key=resolved_key,
         ontology_name=manifest.ontology_name,
         ontology_version=manifest.ontology_version,
@@ -1325,7 +1388,7 @@ def reingest_graph_only(doc_id: UUID, request: ReingestRequest) -> dict:
         id=uuid.uuid4(),
         document_id=doc_id,
         mode="graph_only",
-        status="RUNNING",
+        status="PROCESSING",
         ontology_bundle_key=resolved_key,
         ontology_name=manifest.ontology_name,
         ontology_version=manifest.ontology_version,
@@ -1351,7 +1414,10 @@ def reingest_graph_only(doc_id: UUID, request: ReingestRequest) -> dict:
 def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
     run = session.get(PipelineRun, pipeline_run_id)
 
-    # Stage-summary row: one per stage invocation, represents overall outcome
+    # Stage-summary row: one per stage invocation, represents overall outcome.
+    # StageRun.status uses "RUNNING" / "COMPLETE" / "FAILED" (Celery-level),
+    # which is distinct from PipelineRun.status's "PROCESSING" / "COMPLETE" /
+    # "FAILED" vocabulary. The spec does not change either set.
     stage_summary = StageRun(
         pipeline_run_id=run.id,
         stage_name="derive_ontology_graph",
@@ -1532,7 +1598,7 @@ def _run_single_pass(
                 raise IngestFailed(f"Required pass {pass_def.name} terminal failure") from exc
             return
 
-        yield_status = _classify_yield(pass_result, pass_def, ontology)
+        yield_status = classify_yield(pass_result, pass_def, ontology)
         counts = _count_pass_output(pass_result, pass_def, ontology)
         _write_stage_run(
             pipeline_run_id=pipeline_run_id,
@@ -1603,6 +1669,9 @@ def _import_graph_phase_nodes(
     ontology: dict,
     document_id: str,
 ) -> dict[LogicalIdentity, str]:
+    # Note: ProvenanceMetadata gains a new optional field `pipeline_run_id`
+    # in PR 1 as part of this refactor — see §5.6 note below. It is
+    # backward-compatible (Optional with default None).
     provenance = ProvenanceMetadata(
         document_id=document_id,
         pipeline_run_id=merged.pipeline_run_id,
@@ -1621,6 +1690,13 @@ def _import_graph_phase_nodes(
         )
         for e in merged.entities
     ]
+    # upsert_nodes_batch_sync:
+    # (1) upserts each NodeRecord and returns list[str] of RIDs in input order
+    # (2) auto-creates HAS_PROVENANCE edges from each upserted node to the
+    #     structural Document vertex via _create_provenance_edges_batch_sync,
+    #     because we passed a non-None ProvenanceMetadata with document_id.
+    #     This is the canonical source of HAS_PROVENANCE edges; derive_rules
+    #     does NOT also create them.
     node_rids: list[str] = graph_store.upsert_nodes_batch_sync(node_records, provenance)
     identity_to_rid: dict[LogicalIdentity, str] = dict(zip(
         (e.identity for e in merged.entities),
@@ -1631,6 +1707,20 @@ def _import_graph_phase_nodes(
 ```
 
 `upsert_nodes_batch_sync` signature unchanged (still returns `list[str]`). `strict=True` on `zip` guards against length mismatch.
+
+**ProvenanceMetadata extension (PR 1, additive):** the existing `ProvenanceMetadata` dataclass in `app/services/graph_store.py` gains one new optional field:
+
+```python
+@dataclass
+class ProvenanceMetadata:
+    document_id: str
+    page_numbers: list[int] | None = None
+    upload_datetime: datetime | None = None
+    document_datetime: datetime | None = None
+    pipeline_run_id: str | None = None     # NEW in PR 1 — optional, additive
+```
+
+This lets downstream code (including `_create_provenance_edges_batch_sync` and future audit queries) correlate provenance writes back to the run that produced them without changing any existing callers. Populated by the worker in phase 2; used as metadata on the auto-created HAS_PROVENANCE edges.
 
 **Phase 3 — domain relationship upsert (identity-based):**
 
@@ -1663,8 +1753,8 @@ def _import_graph_phase_structural_edges(
     document_id: str,
     pipeline_run_id: str,
 ) -> None:
-    chunks = load_chunks_for_document(document_id)
-    document_rid = get_structural_document_rid(document_id)
+    chunks = _load_chunks_for_derivation(document_id)  # returns list[ChunkForDerivation]
+    document_rid = _get_structural_document_rid(document_id)
 
     derived = derive_rules.derive_structural_edges(
         merged=merged,
@@ -1673,9 +1763,11 @@ def _import_graph_phase_structural_edges(
         document_rid=document_rid,
     )
     for edge in derived:
+        # create_structural_edge_sync uses from_id/to_id (not from_rid/to_rid) —
+        # matches the existing signature at app/services/graph_store.py:528.
         graph_store.create_structural_edge_sync(
-            from_rid=edge.from_rid,
-            to_rid=edge.to_rid,
+            from_id=edge.from_id,
+            to_id=edge.to_id,
             rel_type=edge.rel_type,
             properties={
                 "document_id": document_id,
@@ -1687,6 +1779,27 @@ def _import_graph_phase_structural_edges(
 ```
 
 Structural edges go through `graph_store.create_structural_edge_sync` (RID-based), NOT `upsert_relationships_batch_sync` (identity-based). The distinction matches the existing graph store's split between domain-edge and structural-edge paths.
+
+**HAS_PROVENANCE note:** `HAS_PROVENANCE` edges are NOT created in phase 4. They are auto-created during phase 2's `upsert_nodes_batch_sync` call because we pass a `ProvenanceMetadata` object. Phase 4 only produces `MENTIONED_IN` (and any future deterministic rules that are not already handled elsewhere).
+
+**Helper signatures** (defined in `app/workers/pipeline.py` as private helpers; not part of the public API):
+
+```python
+def _load_chunks_for_derivation(document_id: str) -> list[ChunkForDerivation]:
+    """Load TextChunk rows for this document and convert them into the
+    lightweight ChunkForDerivation DTO used by derive_rules."""
+
+def _get_structural_document_rid(document_id: str) -> str:
+    """Look up the ArcadeDB @rid of the structural Document vertex for
+    this document_id. The vertex is guaranteed to exist at this point
+    because earlier pipeline stages created it."""
+
+def _build_docling_document_json(document_id: str) -> dict:
+    """Construct the enriched DoclingDocument JSON payload passed to
+    /extract-pass. Source: the persisted docling_document.json in MinIO
+    plus enrichment overlays. This helper already exists in the codebase
+    in some form; this spec does not change it."""
+```
 
 ### §5.7 — DocumentGraphExtraction snapshot write
 
@@ -1713,6 +1826,32 @@ def _upsert_document_graph_extraction(document_id, pipeline_run_id, run, merged)
     else:
         session.add(DocumentGraphExtraction(document_id=document_id, **values))
     session.commit()
+
+
+def serialize_for_audit(merged: MergedExtraction) -> dict:
+    """Produce the audit blob stored in DocumentGraphExtraction.graph_json.
+
+    Shape (all counts; no full entity/edge lists):
+    {
+        "entity_count_by_type": {"RADAR_SYSTEM": 3, "PLATFORM": 2, ...},
+        "edge_count_by_type":   {"HAS_ANTENNA": 5, "INSTALLED_ON": 4, ...},
+        "primary_entities_total": 12,
+        "bridge_entities_total":  3,
+        "edges_accepted": 18,
+        "edges_rejected": 4,
+        "rejection_reasons": {"to_endpoint_not_found": 3, "invalid_triple": 1},
+        "pass_summaries": [
+            {"pass_name": "reference",    "yield_status": "HIT", ...},
+            {"pass_name": "radar_domain", "yield_status": "HIT", ...},
+            ...
+        ],
+    }
+
+    The previous column contents (serialized NetworkX node-link graph) are
+    NOT compatible with the new shape. PR 3 updates the column docstring to
+    reflect this. No backward-compatibility shim is provided — the column
+    is not read by any live retrieval code; only admin/audit queries touch
+    it, and those are updated in PR 2 alongside the writer."""
 ```
 
 One row per document. Subsequent ingests overwrite in place. Previous runs remain in `PipelineRun` + `StageRun` for audit.
@@ -1733,26 +1872,49 @@ Exactly one status is written per StageRun row. Retries create new rows; previou
 
 ### §6.2 — Yield status
 
-Meaningful only when `execution_status == COMPLETE`. Computed via this precedence (top wins):
+Meaningful only when `execution_status == COMPLETE`. Two related functions live in `app/services/extraction_merge.py`:
 
 ```python
-def classify_yield(result, pass_def, ontology) -> YieldStatus:
-    primary = count_primary_entities(result, pass_def)
-    bridge  = count_bridge_entities(result, pass_def)
-    extracted_rels = len(result.relationships)
-    rejected_pre_merge = count_pre_merge_rejections(result, pass_def, ontology)
-    total = extracted_rels + rejected_pre_merge
-
-    if total >= 4 and rejected_pre_merge / total >= 0.75:
+def classify_yield_from_counts(
+    *,
+    primary: int,
+    bridge: int,
+    extracted_rels: int,
+    rejected_rels: int,
+) -> YieldStatus:
+    """Precedence (top wins). Pure function of counts — has no knowledge
+    of the pass definition or ontology. Used by both pre-merge classification
+    and post-merge reclassification."""
+    total_rels = extracted_rels + rejected_rels
+    if total_rels >= 4 and rejected_rels / total_rels >= 0.75:
         return YieldStatus.DEGRADED
     if primary == 0 and bridge == 0 and extracted_rels == 0:
         return YieldStatus.EMPTY
     if primary == 0 and bridge > 0:
         return YieldStatus.BRIDGES_ONLY
     return YieldStatus.HIT
+
+
+def classify_yield(
+    result: PassResult, pass_def: PassManifest, ontology: dict,
+) -> YieldStatus:
+    """Convenience wrapper used inside _run_single_pass. Extracts counts
+    from the PassResult and delegates to classify_yield_from_counts."""
+    primary = count_primary_entities(result, pass_def)
+    bridge  = count_bridge_entities(result, pass_def)
+    extracted_rels = len(result.relationships)
+    rejected_pre_merge = len(result.pre_merge_rejections)
+    return classify_yield_from_counts(
+        primary=primary,
+        bridge=bridge,
+        extracted_rels=extracted_rels,
+        rejected_rels=rejected_pre_merge,
+    )
 ```
 
-Post-merge rejection reasons are added in `_apply_post_merge_yield_updates`, which may move a `HIT` pass to `DEGRADED`.
+`classify_yield` is called by `_run_single_pass` (§5.5) with fresh pass output. `classify_yield_from_counts` is called by `_apply_post_merge_yield_updates` (§5.4) after merge updates `relationships_rejected` on the StageRun row, to recompute yield from the updated totals. Both live in `extraction_merge.py`. `_run_single_pass`'s internal reference is the same function — the `_classify_yield` private alias is dropped in favor of the public `classify_yield` name.
+
+Post-merge yield reclassification may move a `HIT` pass to `DEGRADED` when post-merge rejections push the ratio over threshold. It cannot move the pass in the other direction.
 
 ### §6.3 — Skip reasons
 
@@ -1982,6 +2144,7 @@ Three PRs on `feature/extraction-refactor`.
 - Service startup pre-loads all bundle manifests and extraction schema modules
 - Input-mode validation; unknown bundle/pass → HTTP 404
 - Monkey-patches unchanged
+- **New file `docker/docling-graph/app/config.py`** with `ServiceSettings` (pydantic `BaseSettings`) exposing `structured_output_threshold_chars` (default 8000) as an env var. The monkey-patch in `main.py` reads from `settings.structured_output_threshold_chars` instead of the current hardcoded `8000`. The coverage checker reads the same config value so CI and runtime agree by construction.
 
 **Coverage checker:** `tools/check_extraction_coverage.py` implementing all 14 rules. Runs in CI.
 
@@ -2010,7 +2173,7 @@ Three PRs on `feature/extraction-refactor`.
 - **Flipping the flag requires worker and beat restart.** No uncached per-task reader.
 
 **New orchestrator code:**
-- `app/services/extraction_merge.py` (new file): `LogicalIdentity`, `MergedEntityRecord`, `MergedEdgeRecord`, `merge_and_resolve`, `build_display_label`, `classify_yield_from_counts`, `RelationshipRejectionReason`
+- `app/services/extraction_merge.py` (new file): `LogicalIdentity`, `PassResult`, `MergedEntityRecord`, `MergedEdgeRecord`, `MergedExtraction`, `ChunkForDerivation`, `DerivedEdge`, `merge_and_resolve`, `build_display_label`, `classify_yield`, `classify_yield_from_counts`, `RelationshipRejectionReason`
 - `app/workers/pipeline.py`: rewrite `derive_ontology_graph` for the new branch (legacy branch unchanged); new private functions for pass loop, gate, import phases, rollback, document status updates
 - `IngestDispatchResult` dataclass and caller updates
 
@@ -2217,10 +2380,12 @@ Every stage transition involves a worker + beat restart.
 - [ ] `BundleResolutionError` raised when all tiers yield None.
 
 **Persistence (migration applied):**
-- [ ] All columns per §4.1–§4.4.
-- [ ] Old `uq_stage_run` constraint explicitly dropped (exact name discovered via `pg_constraint`).
+- [ ] All columns per §4.1–§4.4, including `PipelineRun.metrics` (JSONB, nullable).
+- [ ] `ProvenanceMetadata` dataclass extended with `pipeline_run_id: str | None = None` (additive).
+- [ ] Old `uq_stage_run` constraint explicitly dropped (name verified via `pg_constraint`).
 - [ ] New partial unique indexes and query indexes created.
 - [ ] `v_latest_pass_attempts` view created.
+- [ ] Partial-index existing-data pre-flight passed (no duplicate summary rows in prod snapshot).
 
 **Pipeline threading:**
 - [ ] `start_ingest_pipeline()` returns `IngestDispatchResult(pipeline_run_id, celery_task_id)`. Callers updated.
@@ -2421,12 +2586,14 @@ The refactor is successful only if the post-switchover run, measured against the
 - Sets `stream=False` and preserves `think="low"` for Ollama thinking models
 - Falls back to `format="json"` when schema size exceeds `settings.structured_output_threshold_chars`
 
-`_patched_call_api` (preserves current behavior — tests lock it in place):
+`_patched_call_api` (preserves current behavior — tests lock it in place; metadata flag names match the existing implementation in `docker/docling-graph/app/main.py`):
 - Valid response with non-empty `message.content` → returns content unchanged
-- Empty `message.content`, `reasoning_content` present → raises `ClientError`. Error message includes finish_reason, usage fields, `has_reasoning=True`, `has_thinking=False`. **`reasoning_content` is surfaced as diagnostic metadata but NOT substituted for content.**
+- Empty `message.content`, `reasoning_content` present → raises `ClientError`. Error message includes `finish_reason`, usage fields, and `has_reasoning_content=True`, `has_thinking=False` metadata flags. **`reasoning_content` is surfaced as diagnostic metadata but NOT substituted for content.**
 - Empty `message.content`, `thinking` field present → raises `ClientError` with `has_thinking=True` flag. Non-substitution rule applies.
-- Empty content with both reasoning_content and thinking → raises `ClientError` with `has_reasoning=True` and `has_thinking=True`.
+- Empty content with both reasoning_content and thinking → raises `ClientError` with `has_reasoning_content=True` and `has_thinking=True`.
 - Completely empty response → raises `ClientError` with both flags False.
+
+Test assertion names must use the actual metadata keys `has_reasoning_content` and `has_thinking` as they appear in the live patch — not shortened variants.
 
 `NodeIDRegistry.get_node_id`:
 - Correctly handles `TABLE_REF_<fingerprint>` via `rsplit("_", 1)[0]` (regression for collision bug fixed in stabilization commit B)
@@ -2481,11 +2648,11 @@ Each lint is a separate CI job failing the build independently.
 
 ## Residual execution-time checks
 
-Carried forward from brainstorm decisions. These are NOT design open questions — they are verified during implementation and do not reopen the design.
+Carried forward from brainstorm decisions and spec review. These are NOT design open questions — they are verified during implementation and do not reopen the design.
 
 1. **Confirm `delete_document_graph_sync(document_id)` scope.** In PR 1, verify whether the existing method over-deletes chunks/embeddings/structural-root state that should be preserved during extraction-stage rollback. If it does, add a narrower sibling (`delete_document_extraction_graph_sync`) that targets only extraction-layer contributions. The rollback call in §5.4 and §6.8 uses whichever of the two is correct — the contract is unchanged ("delete only this run's extraction-layer contributions for this document, without touching chunks/embeddings or global entities").
 
-2. **Resolve the exact existing `uq_stage_run` constraint name.** The Alembic migration in §4.8 issues `op.drop_constraint(...)` before creating the new indexes. PR 1 discovers the exact constraint name via:
+2. **Resolve the exact existing `uq_stage_run` constraint name.** The Alembic migration in §4.8 issues `op.drop_constraint(...)` before creating the new indexes. Spec review confirmed the current name is `uq_stage_run` (literal) at `app/models/ingest.py:237`, but PR 1 re-verifies via:
 
    ```sql
    SELECT conname FROM pg_constraint
@@ -2493,6 +2660,20 @@ Carried forward from brainstorm decisions. These are NOT design open questions �
    ```
 
    and hardcodes the result into the revision file before the migration is coded.
+
+3. **Existing-data pre-flight for `uq_stage_runs_summary_row`.** The new partial unique index `uq_stage_runs_summary_row` covers `(pipeline_run_id, stage_name, attempt) WHERE pass_name IS NULL`. That `WHERE` clause matches **every existing non-extraction StageRun row** in production. PR 1's migration must verify no existing non-extraction stages have duplicate `(pipeline_run_id, stage_name, attempt)` rows, or the migration will fail with a unique-violation on existing data. Pre-flight query:
+
+   ```sql
+   SELECT pipeline_run_id, stage_name, attempt, count(*)
+   FROM ingest.stage_runs
+   WHERE pass_name IS NULL
+   GROUP BY 1, 2, 3
+   HAVING count(*) > 1;
+   ```
+
+   PR 1 runs this against the production snapshot before coding the index creation. If any duplicates exist, the migration either (a) deduplicates them in a prior step, or (b) narrows the partial-index `WHERE` clause to target only derive_ontology_graph summary rows: `WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph'`.
+
+4. **Verify `_create_provenance_edges_batch_sync` semantics.** PR 1 confirms that `upsert_nodes_batch_sync` auto-creates `HAS_PROVENANCE` edges exactly once per upsert call when a non-None `ProvenanceMetadata` is passed. If the behavior is conditional on other fields (e.g., only when `page_numbers` is present), the spec's assumption in §3.8 that `HAS_PROVENANCE` is auto-created on every node needs adjustment. The contract is: "phase 2 produces HAS_PROVENANCE edges exactly once per extracted entity, via exactly one of the two possible paths — never both, never neither." PR 1 picks whichever path satisfies that contract.
 
 ---
 
