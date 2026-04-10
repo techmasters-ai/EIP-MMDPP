@@ -1408,10 +1408,12 @@ return {
 ```python
 def reingest_graph_only(doc_id: UUID, request: ReingestRequest) -> dict:
     document = session.get(Document, doc_id)
+    # Composite ordering — see §7.10 for the non-uniqueness rationale.
+    # Consistent with the status API's latest_run query.
     latest_run = (
         session.query(PipelineRun)
         .filter_by(document_id=doc_id)
-        .order_by(PipelineRun.started_at.desc())
+        .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
         .first()
     )
     inherited_bundle = (
@@ -2678,6 +2680,24 @@ Every stage transition involves a worker + beat restart.
 }
 ```
 
+**Shape of `latest_run` before `derive_ontology_graph` has started.** When the most recent `PipelineRun` is still in an earlier stage (including any pre-purge stage, or any intermediate post-purge stage before `derive_ontology_graph`), there are no per-pass StageRun rows and no stage-summary StageRun row for this run yet. The status API MUST return:
+
+```json
+"latest_run": {
+  "pipeline_run_id": "...",
+  "status": "PROCESSING",
+  "mode": "full",
+  "started_at": "...",
+  "finished_at": null,
+  "ontology_bundle_key": "air_defense_v3",
+  ...
+  "passes": [],
+  "stage_summary": null
+}
+```
+
+Concretely: `latest_run.passes == []` (empty array, not absent) and `latest_run.stage_summary == null` (explicit null, not absent) whenever there is no `derive_ontology_graph` StageRun activity for this run. This is a first-class API contract, not implicit; clients can rely on both fields being present with those specific empty/null values in that phase. Once `derive_ontology_graph` starts — at which point the worker inserts the stage-summary row with `status="RUNNING"` and the first per-pass row — the API begins populating `passes` and `stage_summary` from the real rows.
+
 **Three concepts exposed separately:**
 - `document_status` — latest processing health (`Document.pipeline_status`)
 - `latest_run` — most recent `PipelineRun` with pass rollup and `stage_summary.attempt` for Celery-level retry visibility
@@ -2789,9 +2809,17 @@ def compute_status_signals(document_id: str, session) -> StatusSignals:
         document_id=document_id,
     ).first()
 
-    latest_run = session.query(PipelineRun).filter_by(
-        document_id=document_id,
-    ).order_by(PipelineRun.started_at.desc()).first()
+    # latest_run uses the same composite (started_at, id) ordering that
+    # the cross-run invalidation query uses below, so "most recent run"
+    # is consistent across the two reads. started_at alone is not a
+    # unique total order (app/models/ingest.py:221); the UUID id
+    # tiebreaker gives a deterministic ordering.
+    latest_run = (
+        session.query(PipelineRun)
+        .filter_by(document_id=document_id)
+        .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+        .first()
+    )
 
     # is_stale is only meaningful when a snapshot exists.
     is_stale = False
@@ -2950,13 +2978,15 @@ A follow-up spec may introduce proper shadow-write rollback that preserves prior
 **Pipeline threading:**
 - [ ] `start_ingest_pipeline()` returns `IngestDispatchResult(pipeline_run_id, celery_task_id)`. Callers updated.
 - [ ] Standard reingest and `graph_only` reingest both resolve bundle and snapshot on `PipelineRun`.
-- [ ] `Document.pipeline_status` updates use the existing `app/models/ingest.py:60` vocabulary — `COMPLETE` on `graph_only` success, `PARTIAL_COMPLETE` on any failure, unchanged on `full` success (downstream `finalize_document` terminalizes). No new vocabulary value is introduced.
+- [ ] `Document.pipeline_status` updates use the existing `app/models/ingest.py:60` vocabulary; no new value is introduced. Within the scope of this refactor: **`derive_ontology_graph` success** sets `COMPLETE` for `graph_only` mode (and leaves the status unchanged for `full` mode, deferring to `finalize_document`); **any failure inside `derive_ontology_graph`** (gate failure, merge/import failure, unexpected exception) sets `PARTIAL_COMPLETE` via `_update_document_pipeline_status()` per §5.4. **Outside `derive_ontology_graph`**, pre-purge stages (`prepare_document`, `detect_and_translate`, `derive_document_metadata`) and intermediate post-purge stages (`derive_picture_descriptions`, `derive_text_chunks_and_embeddings`, `derive_image_embeddings`) retain their existing non-uniform status-update behavior — this refactor does not normalize them. Specifically: `derive_picture_descriptions` sets `PARTIAL_COMPLETE` only on soft time limit; `derive_text_chunks_and_embeddings` and `derive_image_embeddings` only set it after retry exhaustion (soft-time-limit paths do not). The DoD for those upstream handlers is their existing behavior, not a new guarantee.
 - [ ] `PipelineRun.status` + `finished_at` terminalization is mode-conditional on the success path per §5.4 and §6.9. Failures terminalize in both modes.
 - [ ] `derive_ontology_graph` includes an `except Exception:` catch-all that records stage-summary failure, terminalizes the run, and attempts best-effort rollback **gated on `tracker.any_mutation_attempted`**.
 - [ ] `GraphWriteTracker` is instantiated once per `derive_ontology_graph` invocation and passed to all three phase helpers. Each helper calls `tracker.mark()` immediately before its first `graph_store` mutation.
 - [ ] `StageRun.rollback_executed` column is set on the stage-summary row in every terminal branch (success=False, gate failure=False, pre-mutation failure=False, post-mutation failure=True).
 - [ ] `PipelineRun.metrics` is written by `_write_pipeline_run_metrics()` between post-merge yield updates and graph import, so merge diagnostics survive import failures.
-- [ ] Status API `graph_queryable` field is a **top-level** sibling of `graph_snapshot` (not nested), and is computed via the authoritative rule in §7.10: `(graph_snapshot IS NOT NULL) AND NOT (any derive_ontology_graph summary row from a run strictly newer than graph_snapshot.pipeline_run_id has rollback_executed=True)`. The rollback check is a **cross-run query**, not a latest-run query, to correctly handle "run B rolled back, run C is now in progress but has no summary yet" sequences. Not derived from `error_message` prefix heuristics. `graph_queryable` must remain meaningful when `graph_snapshot == null`.
+- [ ] Status API `graph_queryable` field is a **top-level** sibling of `graph_snapshot` (not nested), and is computed via the authoritative rule in §7.10: `(graph_snapshot IS NOT NULL) AND NOT (any derive_ontology_graph summary row from a run strictly newer than graph_snapshot.pipeline_run_id has rollback_executed=True)`. The rollback check is a **cross-run query**, not a latest-run query, to correctly handle "run B rolled back, run C is now in progress but has no summary yet" sequences. "Strictly newer" uses composite `(started_at, id)` ordering because `started_at` alone is not a unique total order. Not derived from `error_message` prefix heuristics. `graph_queryable` must remain meaningful when `graph_snapshot == null`.
+- [ ] When the latest run has not yet entered `derive_ontology_graph`, the status API returns `latest_run.passes = []` (empty array) and `latest_run.stage_summary = null` (explicit null). Both fields are always present; they are never absent from the response. Clients can rely on this contract.
+- [ ] "Latest run" queries use composite `(started_at DESC, id DESC)` ordering in every call site (the status API in §7.10 and the `graph_only` reingest inheritance resolver in §5.3). `started_at DESC` alone is not used anywhere.
 
 **Per-pass StageRun outcomes:**
 - [ ] Each pass writes a row per attempt with execution/yield/skip status and counts.
