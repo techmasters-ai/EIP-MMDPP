@@ -1052,7 +1052,22 @@ class DocumentGraphExtraction(Base):
 
 **Latest-snapshot semantics.** `DocumentGraphExtraction` is keyed on `document_id` — one row per document, reflecting the latest successful `derive_ontology_graph` run. Historical extraction ledger lives on `PipelineRun` + `StageRun`, not here.
 
-**Interaction with `purge_document_derivations` (full mode — important caveat).** The `full` ingest pipeline runs these stages in order: `prepare_document`, `detect_and_translate`, `derive_document_metadata`, **`purge_document_derivations`**, `derive_picture_descriptions`, `derive_text_chunks_and_embeddings`, `derive_image_embeddings`, `derive_ontology_graph`, `finalize_document` (see `app/workers/pipeline.py:440, 443, 444, 448`). When `purge_document_derivations` executes, it deletes the existing `DocumentGraphExtraction` row (`pipeline.py:1707`) AND the document-level graph state in ArcadeDB, including `TextChunk`, `ImageChunk`, and the structural `Document` vertex (`arcadedb_graph.py:401`, `pipeline.py:1717`).
+**Interaction with `purge_document_derivations` (full mode — important caveat).** The `full` ingest pipeline runs these stages in order (see `app/workers/pipeline.py:440` and `pipeline.py` stage wiring):
+
+1. `prepare_document`
+2. `detect_and_translate`
+3. `derive_document_metadata`
+4. **`purge_document_derivations`** ← extraction-layer graph is deleted here
+5. `derive_picture_descriptions`
+6. `derive_text_chunks_and_embeddings`
+7. `derive_image_embeddings`
+8. **`derive_ontology_graph`** ← this refactor's target stage
+9. `collect_derivations`
+10. `derive_structure_links`
+11. `derive_canonicalization`
+12. `finalize_document`
+
+When `purge_document_derivations` executes (stage 4), it deletes the existing `DocumentGraphExtraction` row (`pipeline.py:1707`) AND the document-level graph state in ArcadeDB, including `TextChunk`, `ImageChunk`, and the structural `Document` vertex (`arcadedb_graph.py:401`, `pipeline.py:1717`). Stages 9–11 between `derive_ontology_graph` and `finalize_document` are part of the full chain but are out of scope for this refactor; they are listed here only so implementers don't treat the abbreviated chain in §5.4 as exhaustive.
 
 **`full` reingests go through three distinct phases with respect to snapshot preservation:**
 
@@ -1060,7 +1075,7 @@ class DocumentGraphExtraction(Base):
 
 2. **Post-purge, pre-`derive_ontology_graph`-success phase** — purge has executed, deleting the prior snapshot row and graph. `derive_ontology_graph` may not have started, may be in progress, or may have failed. During this window the document has no `DocumentGraphExtraction` row at all. `graph_snapshot == null` and `graph_queryable == false`. Any failure in this phase (including `derive_ontology_graph` gate/pre-mutation/mutation-time/pre-import failures and any failure in the intermediate chunking/embedding stages between purge and `derive_ontology_graph`) leaves the document with no snapshot and no queryable graph until a fresh successful ingest runs.
 
-3. **Post-`derive_ontology_graph`-success phase** — the new extraction has written a replacement `DocumentGraphExtraction` row and populated ArcadeDB. Downstream stages (`finalize_document`, etc.) may still fail, but such failures do not affect the extraction snapshot or its graph — the extraction stage's rollback semantics are scoped to the extraction stage itself.
+3. **Post-`derive_ontology_graph`-success phase** — the new extraction has written a replacement `DocumentGraphExtraction` row and populated ArcadeDB. Downstream stages (`collect_derivations`, `derive_structure_links`, `derive_canonicalization`, `finalize_document`) may still fail, but such failures do not affect the extraction snapshot or its graph — the extraction stage's rollback semantics are scoped to the extraction stage itself.
 
 **This spec does NOT change the purge semantics.** Redesigning `purge_document_derivations` to preserve the prior snapshot until the replacement succeeds is a separate architectural change (shadow-write / staging-namespace / atomic-swap on success) and is explicitly out of scope. The spec treats the existing purge behavior as a **first-class graph invalidation event** and propagates that honesty through §5.4 (terminalization), §6.8 (rollback scope), §7.10 (status API semantics), and §8.5 (test assertions).
 
@@ -1702,18 +1717,26 @@ def _delete_extraction_layer_graph(document_id: str) -> None:
     """Abstract helper wired in PR 1 to the new narrower graph-store method
     `delete_extraction_layer_graph_sync`. User review confirmed the existing
     `delete_document_graph_sync` over-deletes chunks and the structural
-    Document vertex, so PR 1 adds a narrower sibling. See residual check #1.
+    Document vertex, so PR 1 adds a narrower sibling. See residual check #1
+    and §6.8 for the full contract.
 
     MUST delete:
       - document-scoped extracted entity vertices
       - domain edges tagged with this document_id (provenance metadata)
+      - HAS_PROVENANCE edges whose target is the structural Document
+        vertex with this document_id, including edges originating from
+        GLOBAL-scoped source vertices (the source vertices are preserved;
+        only the incident HAS_PROVENANCE edges are deleted)
       - structural edges written by derive_rules in phase 4
-        (identifiable via document_id / source=derive_rules properties)
+        (MENTIONED_IN from extracted entities to TextChunks, identifiable
+        via document_id / source=derive_rules properties)
 
     MUST NOT delete:
       - chunks (TextChunk, ImageChunk) — owned by upstream stages
       - the structural Document vertex — owned by earlier stages
-      - global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.)
+      - global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.) —
+        only their HAS_PROVENANCE edges to THIS document are removed
+      - HAS_PROVENANCE edges from those global vertices to OTHER documents
     """
     graph_store.delete_extraction_layer_graph_sync(document_id)
 
@@ -2292,12 +2315,13 @@ On merge or import failure (and only when `tracker.any_mutation_attempted` is Tr
 **Contract — what `_delete_extraction_layer_graph(document_id)` MUST delete:**
 - Document-scoped extracted entity vertices (their identity includes `document_id`, so every such vertex represents extraction-layer work for this document)
 - Domain edges written by the extraction stage, identifiable via their `document_id` provenance property
-- Structural edges written by `derive_rules` in phase 4, identifiable via their `document_id` / `source=derive_rules` properties
+- **`HAS_PROVENANCE` edges whose target is the structural `Document` vertex with the given `document_id`.** These edges are auto-created in phase 2 by `upsert_nodes_batch_sync` via its internal `_create_provenance_edges_batch_sync` helper whenever a non-None `ProvenanceMetadata` is passed (see §3.8 and §5.6). They exist on BOTH document-scoped and global-scoped source vertices — deleting a document-scoped source vertex removes the incident edge automatically, but deleting a global-scoped source vertex is forbidden. For global-scoped sources, the edge itself must be deleted without touching the source vertex. The delete must be scoped by **the edge's target** (the Document vertex with `document_id = :doc_id`), not by the source, because source scoping would require walking the set of all global entities this run touched. If PR 1 extends `ProvenanceMetadata` and the auto-creation path to tag these edges with `pipeline_run_id` (optional future work), an edge-local `pipeline_run_id` filter becomes a cleaner alternative; for v1 the target-based scope is sufficient.
+- Structural edges written by `derive_rules` in phase 4, identifiable via their `document_id` / `source=derive_rules` properties (these are `MENTIONED_IN` edges from extracted entities to `TextChunk` vertices; they are distinct from the `HAS_PROVENANCE` edges above, which are auto-created in phase 2)
 
 **Contract — what it MUST NOT delete:**
-- Global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.). Their properties may have been merged during the failed run; those merges are not reverted in v1.
+- Global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.). Their properties may have been merged during the failed run; those merges are not reverted in v1. Their `HAS_PROVENANCE` edges for THIS document are deleted (per above), but the vertices themselves and their `HAS_PROVENANCE` edges to OTHER documents remain.
 - Chunks (`TextChunk`, `ImageChunk`) — these are owned by upstream pipeline stages (chunking/embedding), not the extraction stage.
-- The structural `Document` vertex — owned by earlier stages, referenced by extraction but not created by it.
+- The structural `Document` vertex — owned by earlier stages, referenced by extraction but not created by it. Note: the vertex remains; only the `HAS_PROVENANCE` edges incident to it from THIS run's extracted entities are deleted.
 - The document's persisted `docling_document.json` in MinIO, or any derivation state outside the graph.
 
 **Accepted limitations (v1 — explicit non-goals in §8.8):**
@@ -3004,7 +3028,7 @@ A follow-up spec may introduce proper shadow-write rollback that preserves prior
 - [ ] `merge_and_resolve` produces `LogicalIdentity`-keyed IR, no RIDs.
 - [ ] Three-phase import: nodes → domain edges → structural edges. `identity_to_rid` from zipped `upsert_nodes_batch_sync` return with `strict=True`.
 - [ ] Structural edges via `graph_store.create_structural_edge_sync` (RID-based), not `upsert_relationships_batch_sync`.
-- [ ] On merge/import failure (and only when `tracker.any_mutation_attempted` is True), rollback calls `_delete_extraction_layer_graph(document_id)`, which is backed by the new `delete_extraction_layer_graph_sync` primitive added in PR 1. `delete_document_graph_sync` is NOT used in the rollback path — it remains reserved for purge / full-document deletion flows. Global entity property enrichment is explicitly NOT reverted.
+- [ ] On merge/import failure (and only when `tracker.any_mutation_attempted` is True), rollback calls `_delete_extraction_layer_graph(document_id)`, which is backed by the new `delete_extraction_layer_graph_sync` primitive added in PR 1. The primitive deletes document-scoped extracted entities, domain edges tagged with `document_id`, `HAS_PROVENANCE` edges targeting the structural `Document` vertex for this `document_id` (scoped by target, so that HAS_PROVENANCE edges from global entities to THIS document are removed while the global entities themselves and their HAS_PROVENANCE edges to OTHER documents remain), and `MENTIONED_IN` edges from `derive_rules`. `delete_document_graph_sync` is NOT used in the rollback path — it remains reserved for purge / full-document deletion flows. Global entity property enrichment is explicitly NOT reverted.
 
 **Monkey-patch contract tests:**
 - [ ] Tests exist and pass for `_patched_build_request`, `_patched_call_api`, `NodeIDRegistry.get_node_id`.
@@ -3140,7 +3164,7 @@ The refactor is successful only if the post-switchover run, measured against the
 - Run with `mode="full"`: assert `PipelineRun.status == "PROCESSING"`, `PipelineRun.finished_at IS NULL`, `Document.pipeline_status` **unchanged** by `derive_ontology_graph` — because the downstream stages haven't run in this test
 
 **`tests/integration/test_end_to_end_full_ingest.py`** — true full-pipeline E2E
-- Upload a fresh fixture document and run the entire Celery chain to completion (`prepare_document` → Docling convert → chunking/embedding → `derive_ontology_graph` → `finalize_document` → community detection if enabled)
+- Upload a fresh fixture document and run the **entire Celery chain** to completion: `prepare_document` → `detect_and_translate` → `derive_document_metadata` → `purge_document_derivations` → `derive_picture_descriptions` → `derive_text_chunks_and_embeddings` → `derive_image_embeddings` → `derive_ontology_graph` → `collect_derivations` → `derive_structure_links` → `derive_canonicalization` → `finalize_document` → community detection if enabled. The test must wait for the full chain, not stop at `derive_ontology_graph`.
 - Waits for Celery chain completion (with sensible timeout)
 - Assert `Document.pipeline_status == "COMPLETE"` (set by `finalize_document`, NOT by `derive_ontology_graph`)
 - Assert `PipelineRun.status == "COMPLETE"` and `finished_at IS NOT NULL` (set by `finalize_document`)
@@ -3200,14 +3224,22 @@ The refactor is successful only if the post-switchover run, measured against the
 **`tests/integration/test_merge_import_failure_rollback.py`** — three test cases covering the three rollback regimes
 
 **Test case A: mutation-time failure triggers rollback.**
-- Setup: pre-populate graph with one prior successful extraction for this document
+- Setup: pre-populate the graph with one prior successful extraction for this document. Critically, the setup must include at least one global-scoped entity vertex (e.g., `RADAR_SYSTEM`) that has `HAS_PROVENANCE` edges both to THIS document's structural `Document` vertex AND to at least one OTHER document's structural `Document` vertex — this lets the test verify cross-document edge preservation. Also include at least one document-scoped extracted entity (e.g., `SECTION`) with its own `HAS_PROVENANCE` edge to this document's `Document`.
 - Patch the graph store so `upsert_nodes_batch_sync` raises on the first call. This ensures `_import_graph_phase_nodes` calls `tracker.mark()` and then fails inside the mutation call.
-- Assert the abstract rollback primitive `_delete_extraction_layer_graph(document_id)` was invoked exactly once. The test patches `_delete_extraction_layer_graph` itself (the worker-local abstract helper) and asserts its call args — not the concrete `delete_extraction_layer_graph_sync` graph-store method. This keeps the test scoped to the rollback contract rather than the backing implementation.
+- Assert the abstract rollback primitive `_delete_extraction_layer_graph(document_id)` was invoked exactly once. The test patches `_delete_extraction_layer_graph` itself (the worker-local abstract helper) and asserts its call args — not the concrete `delete_extraction_layer_graph_sync` graph-store method. This keeps the rollback-contract assertion separate from the backing-implementation assertion.
+- In a SEPARATE assertion block (after un-patching the abstract helper and allowing the real call), verify the post-rollback graph state:
+  - Document-scoped extracted entity vertices for this document: **gone**
+  - Domain edges tagged with this document_id: **gone**
+  - `HAS_PROVENANCE` edges from the document-scoped entities (now gone) to this document's `Document`: **gone** (cascaded from vertex deletion)
+  - `HAS_PROVENANCE` edges from the global-scoped entity (e.g., RADAR_SYSTEM) to THIS document's `Document`: **gone** (explicitly deleted by the primitive via target-scoping)
+  - `HAS_PROVENANCE` edges from the same global entity to OTHER documents' `Document` vertices: **still present** (not touched)
+  - Global-scoped entity vertex itself: **still present**
+  - Chunks, embeddings, structural `Document` vertex for this document: **still present**
 - Assert `Document.pipeline_status == "PARTIAL_COMPLETE"`
 - Assert stage-summary: `execution_status == "FAILED"`, `rollback_executed == True`, `error_message` starts with `merge_or_import_failed:`
 - Assert the status API returns `graph_queryable == False` for this document
 - Assert `DocumentGraphExtraction` row still present (historical audit record) but `is_stale == True`
-- Assert global-scoped entity vertices still exist as vertices; their properties are NOT asserted against pre-run state (per §8.8 non-goal on property restoration)
+- Global entity properties are NOT asserted against pre-run state (per §8.8 non-goal on property restoration)
 
 **Test case B: pre-mutation failure inside phase 2 does NOT trigger rollback.**
 - Setup: same as A
@@ -3324,21 +3356,62 @@ Carried forward from brainstorm decisions and spec review. These are NOT design 
        """Delete only this document's extraction-layer graph state:
          - document-scoped extracted entity vertices (identity includes document_id)
          - domain edges tagged with document_id in provenance metadata
-         - structural edges produced by derive_rules in phase 4 (source=derive_rules)
-       Does NOT delete: chunks, embeddings, structural Document vertex,
-       global-scoped entity vertices. Any alternative backend implementing
-       GraphStore must honor this contract."""
+         - HAS_PROVENANCE edges whose target is the structural Document
+           vertex with this document_id, REGARDLESS of whether the source
+           vertex is document-scoped or global-scoped. The edges are
+           deleted; global source vertices are preserved.
+         - structural edges produced by derive_rules in phase 4
+           (MENTIONED_IN from extracted entities to TextChunks, tagged
+           with document_id / source=derive_rules)
+       Does NOT delete: chunks, embeddings, the structural Document vertex
+       itself, global-scoped entity vertices, or HAS_PROVENANCE edges from
+       global vertices to OTHER documents. Any alternative backend
+       implementing GraphStore must honor this contract."""
    ```
 
    **Implementation layer — `app/services/arcadedb_graph.py` (concrete ArcadeDB behavior):**
 
-   The `ArcadeDBGraphStore` class implements the method with the specific SQL/Gremlin queries needed to scope deletion correctly under ArcadeDB's vertex/edge model. The implementation must NOT reuse the existing `delete_document_graph_sync` SQL at `arcadedb_graph.py:401` — that query is broader by design and is kept unchanged for purge and full-document-deletion callers.
+   The `ArcadeDBGraphStore` class implements the method with the specific SQL/Gremlin queries needed to scope deletion correctly under ArcadeDB's vertex/edge model. Key implementation detail: current ArcadeDB provenance writers do NOT tag `HAS_PROVENANCE` edges with an edge-local `document_id` selector — they target the Document vertex and set `page_numbers` / `created_at` on the edge. So the `HAS_PROVENANCE` deletion must be scoped by **the edge's target vertex**, not by an edge-local property. Example SQL shape (exact syntax per ArcadeDB's dialect):
+
+   ```sql
+   -- Find the structural Document vertex's RID
+   LET doc_rid = SELECT @rid FROM Document WHERE document_id = :doc_id;
+
+   -- Delete HAS_PROVENANCE edges whose target is that Document RID.
+   -- This removes the edge from both document-scoped AND global-scoped
+   -- sources. Source vertices are untouched; only the edges go.
+   DELETE EDGE HAS_PROVENANCE WHERE in = $doc_rid;
+
+   -- Delete document-scoped extracted entity vertices.
+   -- (Vertex classes implementing identity_scope=document have
+   -- document_id as part of their identity_fields composite index.)
+   DELETE VERTEX FROM <document-scoped-entity-class> WHERE document_id = :doc_id;
+   -- ... repeat for each document-scoped entity class ...
+
+   -- Delete domain edges tagged with this document_id in provenance.
+   -- (Domain edges carry document_id as an edge property via
+   -- ProvenanceMetadata, per existing _create_provenance_edges_batch_sync
+   -- behavior. This is the piece that relies on edge-local tagging.)
+   DELETE EDGE FROM <domain-edge-class> WHERE document_id = :doc_id;
+   -- ... repeat for each domain edge class ...
+
+   -- Delete MENTIONED_IN structural edges from derive_rules
+   DELETE EDGE MENTIONED_IN WHERE document_id = :doc_id AND source = 'derive_rules';
+   ```
+
+   The implementation must NOT reuse the existing `delete_document_graph_sync` SQL at `arcadedb_graph.py:401` — that query is broader by design (it also removes chunks, ImageChunks, and the structural `Document` vertex) and is kept unchanged for purge and full-document-deletion callers.
 
    PR 1's tasks:
-   - Add the new method to the `GraphStore` protocol in `app/services/graph_store.py`.
-   - Implement the method in `ArcadeDBGraphStore` in `app/services/arcadedb_graph.py` with scoping that satisfies the MUST-delete / MUST-NOT-delete contract above.
+   - Add the new method to the `GraphStore` protocol in `app/services/graph_store.py` with the full docstring contract above.
+   - Implement the method in `ArcadeDBGraphStore` in `app/services/arcadedb_graph.py` with scoping SQL along the lines shown above, adapted to ArcadeDB's exact syntax and the current entity/edge class names.
    - Wire the worker-local `_delete_extraction_layer_graph` helper in `app/workers/pipeline.py` to call the new protocol method.
-   - Add a unit test that sets up a document with chunks, embeddings, extracted entities, a structural `Document` vertex, and global-scoped entity vertices; calls the new method; and asserts that only the extracted entities and their domain/derived edges are removed — chunks, embeddings, the structural `Document`, and global entities remain.
+   - Add a unit test with this setup: a document with chunks, embeddings, a structural `Document` vertex, document-scoped extracted entities (e.g., SECTION), global-scoped extracted entities (e.g., RADAR_SYSTEM) that have `HAS_PROVENANCE` edges to this document's `Document` vertex AND to at least one other document's `Document` vertex (to test cross-document preservation), and domain edges between the extracted entities. After calling `delete_extraction_layer_graph_sync(doc_id)`, assert:
+     - Document-scoped extracted entities for this doc: **gone**
+     - Domain edges tagged with this `document_id`: **gone**
+     - `HAS_PROVENANCE` edges from global entities to THIS document's `Document`: **gone**
+     - `HAS_PROVENANCE` edges from global entities to OTHER documents' `Document`: **still present**
+     - Chunks, embeddings, the structural `Document` vertex: **still present**
+     - Global entity vertices themselves (RADAR_SYSTEM, etc.): **still present**
    - Leave `delete_document_graph_sync` and its SQL at `arcadedb_graph.py:401` unchanged; its existing callers (purge and full-document-delete flows) are out of scope for this spec.
 
 2. **Resolve the exact existing `uq_stage_run` constraint name.** The Alembic migration in §4.8 issues `op.drop_constraint(...)` before creating the new indexes. Spec review confirmed the current name is `uq_stage_run` (literal) at `app/models/ingest.py:237`, but PR 1 re-verifies via:
