@@ -738,7 +738,7 @@ entity_types:
 - **`document`** — identity tuple effectively includes `document_id`. Two documents extracting identical identity values produce two distinct vertices.
 - **`global`** — identity tuple omits `document_id`. Two documents extracting the same identity collapse into one vertex.
 
-**Empty `identity_fields: []`** — content-hash fallback. The merge code hashes sorted non-system field values. Strongly recommended to pair with `identity_scope: document` (checker warns on `[]` + `global` — rule 12).
+**Empty `identity_fields: []`** — content-hash fallback. The merge code hashes the sorted non-system field values of the Pydantic extraction model instance, where "non-system" means "all fields declared on the entity's extraction model except `confidence` and any identity-system fields injected at upsert time (e.g., `document_id` for document-scoped entities)." The hash is deterministic across calls with the same inputs (JSON-serialized with sorted keys, SHA-1 prefixed). Strongly recommended to pair with `identity_scope: document` (checker warns on `[]` + `global` — rule 12). In v1, no extract-bucket entity uses `identity_fields: []` — only `ENGAGEMENT_TIMELINE` does, and it's in `validate_only`, so this code path is reachable only via future additions. Unit tests (§8.4 `test_extraction_merge.py`) lock in the determinism invariant so future additions don't silently regress.
 
 **Logical identity at runtime:**
 
@@ -1422,6 +1422,13 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
     # StageRun.status uses "RUNNING" / "COMPLETE" / "FAILED" (Celery-level),
     # which is distinct from PipelineRun.status's "PROCESSING" / "COMPLETE" /
     # "FAILED" vocabulary. The spec does not change either set.
+    #
+    # Note: StageRun.status has a model default of "PENDING"
+    # (app/models/ingest.py:252). This row deliberately overrides that default
+    # with "RUNNING" at creation time, matching the convention used by existing
+    # per-stage writers in app/workers/pipeline.py (e.g., the prepare_document
+    # _update_stage_run call with status="RUNNING"). Downstream observers filter
+    # on "RUNNING" to find in-flight stages.
     stage_summary = StageRun(
         pipeline_run_id=run.id,
         stage_name="derive_ontology_graph",
@@ -2679,6 +2686,8 @@ Carried forward from brainstorm decisions and spec review. These are NOT design 
    PR 1 runs this against the production snapshot before coding the index creation. If any duplicates exist, the migration either (a) deduplicates them in a prior step, or (b) narrows the partial-index `WHERE` clause to target only derive_ontology_graph summary rows: `WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph'`.
 
 4. **Verify `_create_provenance_edges_batch_sync` semantics.** PR 1 confirms that `upsert_nodes_batch_sync` auto-creates `HAS_PROVENANCE` edges exactly once per upsert call when a non-None `ProvenanceMetadata` is passed. If the behavior is conditional on other fields (e.g., only when `page_numbers` is present), the spec's assumption in §3.8 that `HAS_PROVENANCE` is auto-created on every node needs adjustment. The contract is: "phase 2 produces HAS_PROVENANCE edges exactly once per extracted entity, via exactly one of the two possible paths — never both, never neither." PR 1 picks whichever path satisfies that contract.
+
+   **Synchronized update if this check fails:** if PR 1 discovers that auto-creation is conditional on fields the spec did not account for, four sections must be updated in one commit to stay consistent: §2 (coverage.yaml `derive` bucket), §3.3 (reference-pass module docstring), §3.8 (`derive_structural_edges` signature and body), and §5.6 Phase 2 (provenance passing). Piecemeal fixes will silently drift the contract. PR 1's verification step must produce a single synchronized update commit if the assumption doesn't hold — or leave all four in place if it does.
 
 ---
 
