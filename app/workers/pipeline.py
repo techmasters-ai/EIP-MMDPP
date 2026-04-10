@@ -2556,7 +2556,23 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         group_errors: list[str] = []
 
         try:
-            result = extract_graph_all(docling_document_json, document_id)
+            if settings.graph_layered_extraction_enabled:
+                # Layered extraction: run per-layer passes with smaller schemas
+                from app.services.layered_extraction import run_layered_extraction
+                from app.services.ontology_templates import get_active_ontology
+
+                ontology = get_active_ontology()
+                result = run_layered_extraction(
+                    docling_document_json,
+                    document_id,
+                    ontology,
+                    max_passes=settings.graph_layered_max_passes,
+                    cross_layer_enabled=settings.graph_layered_cross_layer_enabled,
+                )
+            else:
+                # Single-pass extraction with full ontology
+                result = extract_graph_all(docling_document_json, document_id)
+
             all_entities = result.get("entities", [])
             all_relationships = result.get("relationships", [])
             provider = result.get("provider", provider)
@@ -2573,6 +2589,18 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             group_errors.append(f"extract-all: {exc}")
             all_entities = []
             all_relationships = []
+
+            # Fail-open: fall back to single-pass if layered failed
+            if settings.graph_layered_extraction_enabled and settings.graph_layered_fail_open_to_single_pass:
+                try:
+                    logger.info("derive_ontology_graph: falling back to single-pass for %s", document_id)
+                    result = extract_graph_all(docling_document_json, document_id)
+                    all_entities = result.get("entities", [])
+                    all_relationships = result.get("relationships", [])
+                    provider = result.get("provider", provider)
+                    model_name = result.get("model", model_name)
+                except Exception:
+                    pass
 
         graph_data = {
             "nodes": all_entities,

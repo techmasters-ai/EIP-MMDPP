@@ -234,7 +234,14 @@ def _normalize_extraction_result(raw: dict[str, Any]) -> dict[str, Any]:
     entities: list[dict[str, Any]] = []
     for node in nodes:
         name = node.get("name", node.get("id", ""))
-        entity_type = node.get("type", node.get("entity_type", "UNKNOWN"))
+        # GraphConverter writes class in label/__class__, type="entity" is generic
+        entity_type = (
+            node.get("label")
+            or node.get("__class__")
+            or node.get("entity_type")
+            or node.get("type")
+            or "UNKNOWN"
+        )
         confidence = node.get("confidence", 0.8)
         # Collect all non-system keys as properties
         skip_keys = {"id", "name", "type", "entity_type", "confidence",
@@ -258,7 +265,7 @@ def _normalize_extraction_result(raw: dict[str, Any]) -> dict[str, Any]:
     for node in nodes:
         nid = str(node.get("id", ""))
         nname = node.get("name", nid)
-        ntype = node.get("type", node.get("entity_type", "UNKNOWN"))
+        ntype = node.get("label") or node.get("__class__") or node.get("entity_type") or node.get("type") or "UNKNOWN"
         node_lookup[nid] = (nname, ntype)
 
     for link in links:

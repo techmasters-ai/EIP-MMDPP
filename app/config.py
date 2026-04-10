@@ -114,6 +114,12 @@ class Settings(BaseSettings):
     # false (default), invalid triples are logged and skipped silently.
     graph_reject_invalid_relationships: bool = False
 
+    # Layered extraction: split ontology by layer for smaller prompts
+    graph_layered_extraction_enabled: bool = False
+    graph_layered_cross_layer_enabled: bool = True
+    graph_layered_fail_open_to_single_pass: bool = True
+    graph_layered_max_passes: int = 10
+
     # Governance: when true, graph mutation patches require two distinct
     # curator approvals before they can be applied.  When false (default),
     # a single approval is sufficient.

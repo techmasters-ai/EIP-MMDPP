@@ -93,8 +93,15 @@ def _patched_build_request(
         # OpenAI-style response_format uses the normalized envelope
         request["response_format"] = {"type": "json_schema", "json_schema": normalized}
         if is_ollama:
-            # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope
-            request["format"] = schema_dict
+            # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope.
+            # Guard: if schema is very large (>50 properties), use simple json mode
+            # to avoid degenerate constrained decoding with huge schemas.
+            schema_str = json.dumps(schema_dict)
+            if len(schema_str) > 8000:
+                _logger.info("Schema too large for Ollama format= (%d chars), using format='json'", len(schema_str))
+                request["format"] = "json"
+            else:
+                request["format"] = schema_dict
     else:
         request["response_format"] = {"type": "json_object"}
         if is_ollama:
@@ -225,6 +232,44 @@ def _apply_litellm_client_patches():
         _logger.info("LiteLLMClient patched for Ollama structured output support")
     except ImportError:
         _logger.warning("Could not patch LiteLLMClient — docling_graph.llm_clients.litellm not available")
+
+    # Fix TABLE_REF node ID collision: split("_")[0] yields "TABLE" for
+    # "TABLE_REF_<fingerprint>", causing false collision.  Use rsplit.
+    try:
+        from docling_graph.core.converters.node_id_registry import NodeIDRegistry
+
+        _original_get_node_id = NodeIDRegistry.get_node_id
+
+        def _patched_get_node_id(self, model_instance, auto_register=True):
+            fingerprint = self._generate_fingerprint(model_instance)
+            class_name = model_instance.__class__.__name__
+
+            if fingerprint in self.fingerprint_to_id:
+                existing_id = self.fingerprint_to_id[fingerprint]
+                existing_class = existing_id.rsplit("_", 1)[0] if "_" in existing_id else existing_id
+                if existing_class != class_name:
+                    raise ValueError(
+                        f"Node ID collision: fingerprint {fingerprint} maps to both "
+                        f"{existing_id} (class: {existing_class}) and {class_name}_... (new class)"
+                    )
+                return existing_id
+
+            if class_name not in self.seen_classes:
+                self.seen_classes[class_name] = set()
+
+            node_id = f"{class_name}_{fingerprint}"
+
+            if auto_register:
+                self.fingerprint_to_id[fingerprint] = node_id
+                self.id_to_fingerprint[node_id] = fingerprint
+                self.seen_classes[class_name].add(fingerprint)
+
+            return node_id
+
+        NodeIDRegistry.get_node_id = _patched_get_node_id
+        _logger.info("NodeIDRegistry patched for underscore class name collision fix")
+    except ImportError:
+        _logger.warning("Could not patch NodeIDRegistry")
 
 
 _apply_litellm_client_patches()
@@ -369,7 +414,12 @@ async def extract_all(request: Request, body: ExtractionRequest):
 
     async with semaphore:
         try:
-            unified = getattr(request.app.state, "unified_template", None)
+            # Use per-request ontology if provided, otherwise app-level default
+            if body.ontology_definition is not None:
+                from app.template_builder import build_unified_template
+                unified = build_unified_template(body.ontology_definition)
+            else:
+                unified = getattr(request.app.state, "unified_template", None)
             context = await asyncio.to_thread(
                 run_extraction_pipeline, body.docling_document_json, templates, unified,
             )
