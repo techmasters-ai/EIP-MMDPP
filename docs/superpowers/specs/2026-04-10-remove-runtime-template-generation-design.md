@@ -43,7 +43,7 @@ See §8.9 for the full list. Most important:
 
 ## Approach
 
-**Approach A — hand-authored fixed schemas, disk-based bundles, worker-side orchestration.** Considered and rejected: (B) build-time codegen, (C) fixing runtime generation in place. A is the only option that removes the brittle feature; C preserves it; B adds tooling complexity without enough payoff at the current scale (24 extract-bucket entities out of 46 total).
+**Approach A — hand-authored fixed schemas, disk-based bundles, worker-side orchestration.** Considered and rejected: (B) build-time codegen, (C) fixing runtime generation in place. A is the only option that removes the brittle feature; C preserves it; B adds tooling complexity without enough payoff at the current scale (23 extract-bucket entities out of 46 total).
 
 Key refinements locked during brainstorming:
 
@@ -299,7 +299,7 @@ relationship_types:
 
 **Bucket semantics:**
 - **`extract`** — the LLM is asked to produce this type, and the checker enforces that an extraction schema exists for it.
-- **`derive`** — produced deterministically post-merge by `derive_rules.py`. Not asked of the LLM. Not part of any pass's extraction contract.
+- **`derive`** — produced deterministically post-merge by the worker. The worker writes these via one of two deterministic paths: (a) `derive_rules.derive_structural_edges()` in phase 4 (e.g. `MENTIONED_IN`), or (b) the auto-creation inside `graph_store.upsert_nodes_batch_sync` when a non-None `ProvenanceMetadata` is passed in phase 2 (specifically `HAS_PROVENANCE`). Either path is a valid implementation of "derived" — the key invariant is that the LLM is not asked to produce these, they are computed from extraction provenance or document structure. See §3.8 for the split between the two paths.
 - **`validate_only`** (computed) — everything in `ontology.yaml` that is neither `extract` nor `derive`. Present in the domain contract for completeness (used by admin views, schema sync, validation matrix) but never asked of the LLM and never produced by deterministic rules. Includes `DOCUMENT` (see §3.5), `COMPONENT`, `SUBSYSTEM`, `CAPABILITY`, `ENGAGEMENT_TIMELINE`, and ~20 others.
 
 ### Bundle loader API
@@ -450,7 +450,9 @@ class ExtractPassResponse(BaseModel):
 - `422` — Pydantic validation of extracted JSON failed after salvage (terminal)
 - `500` — internal service error (retryable)
 
-### Checker rules (full 14-rule list)
+### Checker rules (14-slot list; 13 active rules + one removed placeholder)
+
+Rules are numbered 1–14 for stability of cross-references. Rule 7 is a placeholder for a deleted rule and is intentionally skipped — 13 rules are actively enforced.
 
 `tools/check_extraction_coverage.py` runs in CI. For every bundle:
 
@@ -563,8 +565,10 @@ def normalize_enum(allowed: set[str]):
 ```python
 """Reference pass: document structure.
 
-Extracts document-level anchors. No LLM-extracted relationships — structural
-edges (HAS_PROVENANCE, MENTIONED_IN) are derived post-merge in derive_rules.py.
+Extracts document-level anchors. No LLM-extracted relationships. Post-merge,
+MENTIONED_IN edges are produced by derive_rules.derive_structural_edges;
+HAS_PROVENANCE edges are auto-created by graph_store.upsert_nodes_batch_sync
+in phase 2 (see §3.8 and §5.6 Phase 2) — NOT by derive_rules.
 """
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator, ConfigDict
@@ -1432,7 +1436,7 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
     try:
         manifest = load_bundle_manifest(run.ontology_bundle_key)
         ontology = load_ontology(bundle_key=run.ontology_bundle_key)
-        doc_json = build_docling_document_json(run.document_id)
+        doc_json = _build_docling_document_json(run.document_id)
 
         pass_results: dict[str, PassResult] = {}
         upstream_refs: dict[str, EntityRef] = {}
@@ -1708,19 +1712,19 @@ def _import_graph_phase_nodes(
 
 `upsert_nodes_batch_sync` signature unchanged (still returns `list[str]`). `strict=True` on `zip` guards against length mismatch.
 
-**ProvenanceMetadata extension (PR 1, additive):** the existing `ProvenanceMetadata` dataclass in `app/services/graph_store.py` gains one new optional field:
+**ProvenanceMetadata extension (PR 1, additive):** the existing `ProvenanceMetadata` dataclass in `app/services/graph_store.py` (lines 19–26) gains one new optional field without touching the existing ones:
 
 ```python
-@dataclass
-class ProvenanceMetadata:
-    document_id: str
-    page_numbers: list[int] | None = None
-    upload_datetime: datetime | None = None
-    document_datetime: datetime | None = None
-    pipeline_run_id: str | None = None     # NEW in PR 1 — optional, additive
+# Additive change to app/services/graph_store.py:ProvenanceMetadata —
+# existing fields (document_id, page_numbers with default_factory=list,
+# upload_datetime, document_datetime) keep their exact current types and
+# defaults. Only this new field is added:
+pipeline_run_id: str | None = None     # NEW in PR 1 — optional, additive
 ```
 
-This lets downstream code (including `_create_provenance_edges_batch_sync` and future audit queries) correlate provenance writes back to the run that produced them without changing any existing callers. Populated by the worker in phase 2; used as metadata on the auto-created HAS_PROVENANCE edges.
+This lets downstream code (including `_create_provenance_edges_batch_sync` and future audit queries) correlate provenance writes back to the run that produced them without changing any existing callers or existing field types. Populated by the worker in phase 2; used as metadata on the auto-created HAS_PROVENANCE edges.
+
+**Note on `page_numbers` default:** the current `ProvenanceMetadata.page_numbers` uses `field(default_factory=list)` (not `None`). This stays unchanged. `_create_provenance_edges_batch_sync` relies on `page_numbers` being a list it can iterate, and changing it to `None`-able would break existing callers. The additive change is strictly scoped to `pipeline_run_id`.
 
 **Phase 3 — domain relationship upsert (identity-based):**
 
@@ -1930,6 +1934,7 @@ Run once per ingest, after the pass loop completes and BEFORE merge/import:
 
 ```python
 def check_required_pass_gate(pipeline_run_id: UUID) -> GateResult:
+    run = session.get(PipelineRun, pipeline_run_id)
     manifest = load_bundle_manifest(run.ontology_bundle_key)
     required_passes = [p.name for p in manifest.passes if p.required]
     failures: list[tuple[str, str]] = []
@@ -2060,7 +2065,7 @@ On merge or import failure, rollback calls `graph_store.delete_document_graph_sy
 **Per-ingest PipelineRun:**
 
 ```
-      RUNNING
+     PROCESSING                           (default value per app/models/ingest.py:219)
          │
          ├─ all required passes pass the gate, merge + import OK → COMPLETE
          └─ any failure → FAILED
@@ -2146,7 +2151,7 @@ Three PRs on `feature/extraction-refactor`.
 - Monkey-patches unchanged
 - **New file `docker/docling-graph/app/config.py`** with `ServiceSettings` (pydantic `BaseSettings`) exposing `structured_output_threshold_chars` (default 8000) as an env var. The monkey-patch in `main.py` reads from `settings.structured_output_threshold_chars` instead of the current hardcoded `8000`. The coverage checker reads the same config value so CI and runtime agree by construction.
 
-**Coverage checker:** `tools/check_extraction_coverage.py` implementing all 14 rules. Runs in CI.
+**Coverage checker:** `tools/check_extraction_coverage.py` implementing all 13 active rules (numbered 1–14 with rule 7 as a deleted placeholder). Runs in CI.
 
 **Docker packaging:**
 - `docker/docling-graph/Dockerfile`: build context change, `COPY ontology_bundles`
@@ -2367,7 +2372,7 @@ Every stage transition involves a worker + beat restart.
 - [ ] `ontology/ontology.yaml` symlink exists during PR 1/PR 2; removed in PR 3.
 
 **Coverage checker:**
-- [ ] `tools/check_extraction_coverage.py` runs in CI and passes. All 14 rules + manifest self-consistency sub-checks enforced.
+- [ ] `tools/check_extraction_coverage.py` runs in CI and passes. All 13 active rules (numbered 1–14 with rule 7 as a deleted placeholder) + manifest self-consistency sub-checks enforced.
 
 **Service contract:**
 - [ ] Docling-graph service accepts `(ontology_bundle_key, pass_name, docling_document_json, upstream_entities?)` on `POST /extract-pass`.
