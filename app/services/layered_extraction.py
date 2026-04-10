@@ -2,6 +2,7 @@
 
 Splits the ontology by layer so each extraction pass has a small, focused
 schema. Merges entities across passes with deduplication and canonical IDs.
+Validates edges against the ontology validation_matrix.
 """
 
 from __future__ import annotations
@@ -13,6 +14,70 @@ from typing import Any
 from app.services.ontology_layers import build_all_layer_subsets, load_layer_map
 
 logger = logging.getLogger(__name__)
+
+
+def _build_validation_matrix_set(ontology: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """Build set of valid (source_type, rel_type, target_type) triples."""
+    valid = set()
+    for r in ontology.get("relationship_types", []):
+        rel_name = r["name"]
+        for row in r.get("validation_matrix", []):
+            valid.add((
+                row.get("source_type", "").upper(),
+                rel_name.upper(),
+                row.get("target_type", "").upper(),
+            ))
+    return valid
+
+
+def validate_edges(
+    relationships: list[dict[str, Any]],
+    entities: list[dict[str, Any]],
+    ontology: dict[str, Any],
+    reject_invalid: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate edges against validation_matrix and entity existence.
+
+    Returns (valid_edges, rejected_edges).
+    """
+    valid_triples = _build_validation_matrix_set(ontology)
+    entity_names = {(e.get("name") or "").strip().lower() for e in entities}
+
+    valid_edges = []
+    rejected_edges = []
+
+    for rel in relationships:
+        from_name = (rel.get("from_name") or rel.get("source_name") or "").strip().lower()
+        to_name = (rel.get("to_name") or rel.get("target_name") or "").strip().lower()
+        from_type = (rel.get("from_type") or rel.get("source_type") or "UNKNOWN").upper()
+        to_type = (rel.get("to_type") or rel.get("target_type") or "UNKNOWN").upper()
+        rel_type = (rel.get("relationship_type") or rel.get("rel_type") or "RELATED_TO").upper()
+
+        # Check endpoint existence
+        if from_name not in entity_names or to_name not in entity_names:
+            rejected_edges.append({**rel, "_reject_reason": "endpoint_not_found"})
+            continue
+
+        # Check validation matrix (skip if matrix is empty — no validation)
+        if valid_triples and (from_type, rel_type, to_type) not in valid_triples:
+            if reject_invalid:
+                rejected_edges.append({**rel, "_reject_reason": "invalid_triple"})
+                continue
+            else:
+                logger.debug(
+                    "Edge (%s)-[%s]->(%s) not in validation matrix, allowing",
+                    from_type, rel_type, to_type,
+                )
+
+        valid_edges.append(rel)
+
+    if rejected_edges:
+        logger.info(
+            "Edge validation: %d valid, %d rejected",
+            len(valid_edges), len(rejected_edges),
+        )
+
+    return valid_edges, rejected_edges
 
 
 def _canonical_key(entity: dict[str, Any]) -> str:
@@ -185,4 +250,19 @@ def run_layered_extraction(
     if not pass_results:
         return {"entities": [], "relationships": [], "provider": "docling-graph", "model": "unknown"}
 
-    return merge_extraction_results(pass_results)
+    merged = merge_extraction_results(pass_results)
+
+    # Validate edges against full ontology validation_matrix
+    from app.config import get_settings
+    reject = get_settings().graph_reject_invalid_relationships
+    valid_edges, rejected_edges = validate_edges(
+        merged["relationships"],
+        merged["entities"],
+        ontology,
+        reject_invalid=reject,
+    )
+    merged["relationships"] = valid_edges
+    if rejected_edges:
+        merged.setdefault("metadata", {})["rejected_edges"] = len(rejected_edges)
+
+    return merged

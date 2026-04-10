@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     graph_layered_cross_layer_enabled: bool = True
     graph_layered_fail_open_to_single_pass: bool = True
     graph_layered_max_passes: int = 10
+    graph_layered_shadow_mode: bool = False  # run both, compare, keep single-pass
 
     # Governance: when true, graph mutation patches require two distinct
     # curator approvals before they can be applied.  When false (default),

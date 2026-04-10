@@ -2556,12 +2556,35 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         group_errors: list[str] = []
 
         try:
-            if settings.graph_layered_extraction_enabled:
-                # Layered extraction: run per-layer passes with smaller schemas
+            use_layered = settings.graph_layered_extraction_enabled
+            shadow_mode = settings.graph_layered_shadow_mode
+
+            if use_layered or shadow_mode:
                 from app.services.layered_extraction import run_layered_extraction
                 from app.services.ontology_templates import get_active_ontology
-
                 ontology = get_active_ontology()
+
+            if shadow_mode:
+                # Shadow mode: run BOTH, compare metrics, keep single-pass output
+                result = extract_graph_all(docling_document_json, document_id)
+                try:
+                    shadow_result = run_layered_extraction(
+                        docling_document_json, document_id, ontology,
+                        max_passes=settings.graph_layered_max_passes,
+                        cross_layer_enabled=settings.graph_layered_cross_layer_enabled,
+                    )
+                    shadow_entities = len(shadow_result.get("entities", []))
+                    shadow_edges = len(shadow_result.get("relationships", []))
+                    single_entities = len(result.get("entities", []))
+                    single_edges = len(result.get("relationships", []))
+                    logger.info(
+                        "derive_ontology_graph SHADOW: single-pass=%d/%d layered=%d/%d (entities/edges) for %s",
+                        single_entities, single_edges, shadow_entities, shadow_edges, document_id,
+                    )
+                except Exception as shadow_exc:
+                    logger.warning("derive_ontology_graph: shadow layered failed for %s: %s", document_id, shadow_exc)
+            elif use_layered:
+                # Layered extraction: run per-layer passes with smaller schemas
                 result = run_layered_extraction(
                     docling_document_json,
                     document_id,
