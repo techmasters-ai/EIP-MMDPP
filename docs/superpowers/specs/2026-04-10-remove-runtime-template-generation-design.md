@@ -1699,8 +1699,10 @@ def _attempt_rollback(document_id: str) -> str:
 
 
 def _delete_extraction_layer_graph(document_id: str) -> None:
-    """Abstract helper wired in PR 1 to the concrete graph-store method
-    that satisfies the contract in §6.8:
+    """Abstract helper wired in PR 1 to the new narrower graph-store method
+    `delete_extraction_layer_graph_sync`. User review confirmed the existing
+    `delete_document_graph_sync` over-deletes chunks and the structural
+    Document vertex, so PR 1 adds a narrower sibling. See residual check #1.
 
     MUST delete:
       - document-scoped extracted entity vertices
@@ -1712,16 +1714,8 @@ def _delete_extraction_layer_graph(document_id: str) -> None:
       - chunks (TextChunk, ImageChunk) — owned by upstream stages
       - the structural Document vertex — owned by earlier stages
       - global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.)
-
-    PR 1 verifies whether the existing graph_store.delete_document_graph_sync
-    satisfies this contract. If yes, this helper is a one-line wrapper. If
-    no, PR 1 adds a narrower sibling (e.g., delete_extraction_layer_graph_sync)
-    and wires this helper to it. The runtime code above is unaffected by
-    the choice — it only sees the abstract name. See residual check #1."""
-    # PR 1 picks ONE of the following based on residual check #1 verification:
-    graph_store.delete_document_graph_sync(document_id)
-    # OR:
-    # graph_store.delete_extraction_layer_graph_sync(document_id)
+    """
+    graph_store.delete_extraction_layer_graph_sync(document_id)
 
 
 def _write_pipeline_run_metrics(
@@ -2522,7 +2516,7 @@ Three PRs on `feature/extraction-refactor`.
 5. If staging matches, flip in prod.
 6. **At least 7 days** of regular ingests on `bundle_passes` in prod without incident.
 7. Baseline rerun at least twice during soak with consistent results.
-8. Metric alerts (§7.9) did not fire.
+8. Metric alerts (§7.8) did not fire.
 
 **PR 2 exit criteria:**
 - [ ] Full test suite passes including new unit tests
@@ -3320,12 +3314,23 @@ Each lint is a separate CI job failing the build independently.
 
 Carried forward from brainstorm decisions and spec review. These are NOT design open questions — they are verified during implementation and do not reopen the design.
 
-1. **Wire `_delete_extraction_layer_graph` to a concrete method.** The runtime code in §5.4 calls the abstract helper `_delete_extraction_layer_graph(document_id)` for rollback. PR 1 verifies whether the existing `graph_store.delete_document_graph_sync(document_id)` satisfies the contract in §6.8:
+1. **Add `graph_store.delete_extraction_layer_graph_sync` and wire `_delete_extraction_layer_graph` to it.** User review has confirmed that the existing `graph_store.delete_document_graph_sync` at `app/services/arcadedb_graph.py:401` over-deletes for this use case — it removes `TextChunk`, `ImageChunk`, and the structural `Document` vertex, all of which must be preserved during extraction-stage rollback. PR 1 therefore adds a **new narrower method**:
 
-   - **Must delete** document-scoped extracted entity vertices, domain edges tagged with this `document_id`, and structural edges produced by `derive_rules.py` in phase 4.
-   - **Must not delete** chunks, embeddings, the structural `Document` root, or global-scoped entity vertices.
+   ```python
+   # app/services/graph_store.py — new method in PR 1
+   def delete_extraction_layer_graph_sync(self, document_id: str) -> None:
+       """Delete only this document's extraction-layer graph state:
+         - document-scoped extracted entity vertices (identity includes document_id)
+         - domain edges tagged with document_id in provenance metadata
+         - structural edges produced by derive_rules in phase 4 (source=derive_rules)
+       Does NOT delete: chunks, embeddings, structural Document vertex,
+       global-scoped entity vertices."""
+   ```
 
-   If `delete_document_graph_sync` already satisfies this (its current scope matches), PR 1 wires `_delete_extraction_layer_graph` as a one-line call to it. If it over-deletes (removes chunks or the structural Document root), PR 1 adds a narrower sibling method — e.g., `graph_store.delete_extraction_layer_graph_sync` — that satisfies the contract exactly, and wires the abstract helper to the new method. Either way, the runtime code in §5.4 is unchanged.
+   The runtime code in §5.4 calls the abstract helper `_delete_extraction_layer_graph(document_id)`, which in PR 1 is wired to this new method — not to `delete_document_graph_sync`. The existing `delete_document_graph_sync` remains unchanged for its existing callers (purge, etc.). PR 1's job is:
+   - Implement `delete_extraction_layer_graph_sync` on the graph store with the scoping above.
+   - Wire `_delete_extraction_layer_graph` in `app/workers/pipeline.py` to call the new method.
+   - Add a unit test that sets up a document with chunks, embeddings, extracted entities, and a structural Document vertex, calls the new method, and asserts that only the extracted entities and their edges are removed.
 
 2. **Resolve the exact existing `uq_stage_run` constraint name.** The Alembic migration in §4.8 issues `op.drop_constraint(...)` before creating the new indexes. Spec review confirmed the current name is `uq_stage_run` (literal) at `app/models/ingest.py:237`, but PR 1 re-verifies via:
 
