@@ -2244,7 +2244,7 @@ A failed gate causes (in both `full` and `graph_only` modes):
 **Caveat — prior snapshot preservation is phase-dependent for `full` mode (§4.3):**
 - **`graph_only`:** no earlier stage ran `purge_document_derivations`. The prior snapshot survives the gate failure and remains queryable. Status API returns `graph_snapshot != null`, `graph_queryable=true`.
 - **`full`, gate failure:** by the time `derive_ontology_graph` runs and its gate fires, `purge_document_derivations` has already executed as an earlier pipeline stage and deleted the `DocumentGraphExtraction` row + ArcadeDB graph. The gate failure leaves the document with NO snapshot and NO queryable graph. Status API returns `graph_snapshot=null`, `graph_queryable=false`. This is not a behavior of `derive_ontology_graph` — it's a consequence of the existing purge semantics documented in §4.3.
-- **`full`, failure in pre-purge stages (handled by those stages, not by `derive_ontology_graph`):** if a `full` ingest fails in `prepare_document`, `detect_and_translate`, or `derive_document_metadata`, purge hasn't run yet and the prior snapshot is still intact. `derive_ontology_graph` doesn't see those failures — they're handled by the earlier stages themselves — but the status API will report `graph_snapshot != null`, `graph_queryable=true` because the prior row is still present.
+- **`full`, failure in pre-purge stages (handled by those stages, not by `derive_ontology_graph`):** if a `full` ingest fails in `prepare_document`, `detect_and_translate`, or `derive_document_metadata`, purge hasn't run yet and the prior snapshot is still intact. `derive_ontology_graph` doesn't see those failures — they're handled by the earlier stages themselves. The status API reports `graph_snapshot != null` and `graph_queryable=true` for the graph-preservation signals. `Document.pipeline_status` and `PipelineRun.status` in this case follow the existing behavior of those upstream handlers, which this spec does not normalize.
 
 Gate failure in `derive_ontology_graph` terminalizes the run in both modes because downstream stages cannot proceed with a broken extraction. The mode-conditional terminalization on the SUCCESS path (§5.4) is a separate concern.
 
@@ -2320,7 +2320,7 @@ On merge or import failure (and only when `tracker.any_mutation_attempted` is Tr
 
    - **Failed `graph_only` reingest with preserved prior snapshot** (gate failure or pre-mutation failure — `rollback_executed=False`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot != null` (prior run's row), `graph_queryable=true`. Clients can still query the prior extraction.
    - **Failed `graph_only` reingest with rollback fired** (`rollback_executed=True`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot != null` (prior run's row, historical audit), `graph_queryable=false`. Clients must handle "row exists but vertices are gone" gracefully.
-   - **Failed `full` reingest, pre-purge phase** (failure in `prepare_document` / `detect_and_translate` / `derive_document_metadata`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot != null` (prior run's row — purge never executed), `graph_queryable=true`. Equivalent to a graph_only gate failure from a client's perspective.
+   - **Failed `full` reingest, pre-purge phase** (failure in `prepare_document` / `detect_and_translate` / `derive_document_metadata`): `graph_snapshot != null` (prior run's row — purge never executed), `graph_queryable=true`. `document_status` and `PipelineRun.status` in this case depend on the existing pre-purge stage handlers and are NOT normalized by this refactor — `prepare_document` terminal failures use `STATUS_FAILED`, `derive_document_metadata` writes a failed StageRun without updating document status, and `detect_and_translate` only sets `PARTIAL_COMPLETE` on soft-time-limit hits. This spec only asserts the **graph-preservation** invariants for pre-purge failures (snapshot intact, queryable); it does not assert on status fields controlled by those upstream handlers.
    - **Failed `full` reingest, post-purge phase** (failure in any stage from `derive_picture_descriptions` through `derive_ontology_graph`): `document_status="PARTIAL_COMPLETE"`, `graph_snapshot=null` (purged and not yet replaced), `graph_queryable=false`. Clients see no snapshot at all.
 
    `graph_queryable` is the single authoritative signal for "can I run queries against this document's extraction graph right now?" — computed via §7.10's rule, not by inspecting `rollback_executed` alone or by inferring phase from mode.
@@ -2696,19 +2696,30 @@ Every stage transition involves a worker + beat restart.
 ```
 graph_queryable = (
     graph_snapshot IS NOT NULL
-    AND NOT (latest_stage_summary.rollback_executed IS True)
+    AND NOT (any derive_ontology_graph summary row for this document,
+             from a run STRICTLY NEWER than graph_snapshot.pipeline_run_id,
+             has rollback_executed = True)
 )
 ```
+
+**This is a cross-run query, not a latest-run query.** The rollback signal belongs to whichever run attempted the rollback — not necessarily the latest run. Consider this sequence:
+
+1. Run A (any mode) succeeds and writes `snapshot A`.
+2. Run B (`graph_only`) fails at mutation time. B's `derive_ontology_graph` summary has `rollback_executed=True`. Rollback deletes the graph. Snapshot A is NOT overwritten (per §5.4 failure paths: "`DocumentGraphExtraction` intentionally NOT updated"), so the row for A is still in PostgreSQL.
+3. Run C (`full`) starts. C is in pre-purge stages. C has no `derive_ontology_graph` summary row yet.
+
+Under a "latest run's summary" rule, `latest_run` would be C and `latest_summary` would be None, so the rule would conclude `graph_queryable=true`. **That is wrong** — run B rolled back the graph, and run C hasn't written a new one. The graph is gone.
+
+Under the correct cross-run rule, the query finds B's summary row (which is strictly newer than snapshot A's run) with `rollback_executed=True`, and correctly reports `graph_queryable=false`. Run C's eventual success will overwrite snapshot A with snapshot C (same `document_id` key, fresher `pipeline_run_id`), and the query bounds shift accordingly: only summary rows from runs strictly newer than C's run would then count, and there are none yet, so `graph_queryable=true` again.
 
 In words:
 - If `graph_snapshot` is null → `graph_queryable = false`. This covers:
   - Document never had a successful extraction.
-  - `full` reingest in progress: `purge_document_derivations` deleted the row before `derive_ontology_graph` ran, and the new extraction hasn't written a replacement yet. Even if rollback didn't fire, there's nothing to query.
-  - `full` reingest failed: purge removed the prior row; the failed new extraction left no row behind.
-- If `graph_snapshot` exists AND `latest_stage_summary.rollback_executed == True` → `graph_queryable = false`. The row is a historical audit record; the graph it describes has been rolled back.
-- If `graph_snapshot` exists AND `rollback_executed` is False or NULL → `graph_queryable = true`. The row and its graph are intact.
+  - `full` reingest mid-chain, after `purge_document_derivations` has deleted the prior row but the new extraction hasn't written a replacement yet.
+- If `graph_snapshot` exists AND some run strictly newer than `graph_snapshot.pipeline_run_id` has a `derive_ontology_graph` summary with `rollback_executed == True` → `graph_queryable = false`. The row is a historical audit record; a later extraction run rolled back the graph state it described.
+- Otherwise → `graph_queryable = true`.
 
-`rollback_executed` is one input to the rule, not the whole rule. Snapshot existence is the other input.
+`rollback_executed` is one input to the rule, not the whole rule. Snapshot existence and cross-run ordering are the other inputs.
 
 **Computed independently of `error_message` prefixes.** The authoritative pseudocode is in the "Pseudocode" block further down (§7.10). The case tables below illustrate the rule in action.
 
@@ -2780,14 +2791,6 @@ def compute_status_signals(document_id: str, session) -> StatusSignals:
         document_id=document_id,
     ).order_by(PipelineRun.started_at.desc()).first()
 
-    latest_summary = None
-    if latest_run is not None:
-        latest_summary = session.query(StageRun).filter(
-            StageRun.pipeline_run_id == latest_run.id,
-            StageRun.stage_name == "derive_ontology_graph",
-            StageRun.pass_name.is_(None),
-        ).order_by(StageRun.attempt.desc()).first()
-
     # is_stale is only meaningful when a snapshot exists.
     is_stale = False
     if snapshot is not None:
@@ -2798,12 +2801,48 @@ def compute_status_signals(document_id: str, session) -> StatusSignals:
         )
 
     # graph_queryable — authoritative rule:
-    #   (graph_snapshot exists) AND (rollback_executed is not True)
-    rollback_ran = (
-        latest_summary is not None
-        and latest_summary.rollback_executed is True
-    )
-    graph_queryable = (snapshot is not None) and (not rollback_ran)
+    #   (snapshot exists) AND (no extraction-stage rollback since snapshot was written)
+    #
+    # The rollback check is a CROSS-RUN query, not a latest-run query.
+    # Rationale: after run B rolls back the graph but leaves snapshot A
+    # intact, a subsequent in-progress run C (any mode, any phase) will
+    # not yet have a derive_ontology_graph summary row of its own. A
+    # "latest run's summary" check would miss B's rollback and
+    # incorrectly report graph_queryable=true.
+    if snapshot is None:
+        graph_queryable = False
+    else:
+        snapshot_run = session.query(PipelineRun).filter_by(
+            id=snapshot.pipeline_run_id,
+        ).first()
+        snapshot_started_at = snapshot_run.started_at if snapshot_run else None
+
+        invalidation_q = (
+            session.query(StageRun)
+            .join(PipelineRun, StageRun.pipeline_run_id == PipelineRun.id)
+            .filter(
+                PipelineRun.document_id == document_id,
+                StageRun.stage_name == "derive_ontology_graph",
+                StageRun.pass_name.is_(None),
+                StageRun.rollback_executed.is_(True),
+            )
+        )
+        if snapshot_started_at is not None:
+            # Only rollbacks from runs strictly newer than the snapshot's
+            # run can invalidate it. Older rollbacks are historical and
+            # were already superseded when the snapshot was written.
+            invalidation_q = invalidation_q.filter(
+                PipelineRun.started_at > snapshot_started_at,
+            )
+        # Legacy snapshot with unknown pipeline_run_id (pre-refactor data):
+        # no started_at to compare against. Treat any extraction-stage
+        # rollback for this document as invalidating, because we can't
+        # otherwise bound the comparison. Conservative — may flag as
+        # not-queryable more often than strictly necessary for legacy
+        # rows, which is acceptable given §4.6 legacy semantics.
+
+        graph_invalidated = invalidation_q.first() is not None
+        graph_queryable = not graph_invalidated
 
     return StatusSignals(
         snapshot=snapshot,
@@ -2812,18 +2851,20 @@ def compute_status_signals(document_id: str, session) -> StatusSignals:
     )
 ```
 
-Representative scenarios this rule handles correctly:
+Representative scenarios this rule handles correctly. The "any rollback since snapshot?" column is the cross-run query result; it can be True even when the current run has no summary row yet.
 
-| Scenario | snapshot | rollback_executed | graph_queryable |
+| Scenario | snapshot | any rollback since snapshot? | graph_queryable |
 |---|---|---|---|
-| Fresh successful extraction | row present | False | **True** |
-| `graph_only` gate failure (prior run successful) | row present (prior run's) | False | **True** |
-| `graph_only` pre-mutation failure | row present (prior run's) | False | **True** |
-| `graph_only` mutation-time failure (rollback ran) | row present (prior run's — we don't re-write on failure) | **True** | **False** |
-| `full` reingest in progress, before `derive_ontology_graph` stage | **None** (purged) | NULL (no summary yet) | **False** |
-| `full` reingest in progress, after `derive_ontology_graph` success, before `finalize_document` | row present (new run's) | False | **True** |
-| `full` reingest failed at `derive_ontology_graph` gate | **None** (purged; new run didn't write) | False | **False** |
-| `full` reingest failed at mutation time | **None** (purged; new run didn't write because rollback fired before snapshot upsert) | True | **False** |
+| Fresh successful extraction | row present | no | **True** |
+| `graph_only` gate failure (prior run successful) | row present (prior run's) | no | **True** |
+| `graph_only` pre-mutation failure | row present (prior run's) | no | **True** |
+| `graph_only` mutation-time failure (rollback ran this run) | row present (prior run's — we don't re-write on failure) | **yes** (this run's summary has rollback_executed=True) | **False** |
+| Prior run B rolled back, run C (`full`) now **pre-purge** | row present (still snapshot A — purge hasn't fired yet in C) | **yes** (B's summary has rollback_executed=True, newer than A's run) | **False** — cross-run query catches B's rollback even though C has no summary yet |
+| Prior run B rolled back, run C (`full`) now **post-purge, pre-`derive_ontology_graph`-success** | **None** (purge deleted snapshot A) | n/a (snapshot=None short-circuits) | **False** |
+| `full` reingest in progress, `derive_ontology_graph` just succeeded, downstream running | row present (new run C's, replacing A) | no (snapshot C's run is the newest; B's rollback is older than C) | **True** |
+| `full` reingest failed at `derive_ontology_graph` gate (this is a post-purge gate failure — see §6.8 for the pre-purge case) | **None** (purged; new run didn't write) | n/a (snapshot=None short-circuits) | **False** |
+| `full` reingest failed at mutation time (post-purge) | **None** (purged; new run didn't write because rollback fired before snapshot upsert) | n/a (snapshot=None short-circuits) | **False** |
+| `full` reingest failed in a **pre-purge** stage (e.g., `detect_and_translate`) | row present (prior snapshot A — purge never ran) | no (no new summary row exists, and any prior rollback would have been superseded when A was written) | **True** |
 
 **Response shape — `graph_queryable` is a top-level sibling of `graph_snapshot`:**
 
@@ -2906,7 +2947,7 @@ A follow-up spec may introduce proper shadow-write rollback that preserves prior
 - [ ] `GraphWriteTracker` is instantiated once per `derive_ontology_graph` invocation and passed to all three phase helpers. Each helper calls `tracker.mark()` immediately before its first `graph_store` mutation.
 - [ ] `StageRun.rollback_executed` column is set on the stage-summary row in every terminal branch (success=False, gate failure=False, pre-mutation failure=False, post-mutation failure=True).
 - [ ] `PipelineRun.metrics` is written by `_write_pipeline_run_metrics()` between post-merge yield updates and graph import, so merge diagnostics survive import failures.
-- [ ] Status API `graph_queryable` field is a **top-level** sibling of `graph_snapshot` (not nested), and is computed via the authoritative rule in §7.10: `(graph_snapshot IS NOT NULL) AND NOT (latest_stage_summary.rollback_executed IS True)`. Not derived from `error_message` prefix heuristics. `graph_queryable` must remain meaningful when `graph_snapshot == null`.
+- [ ] Status API `graph_queryable` field is a **top-level** sibling of `graph_snapshot` (not nested), and is computed via the authoritative rule in §7.10: `(graph_snapshot IS NOT NULL) AND NOT (any derive_ontology_graph summary row from a run strictly newer than graph_snapshot.pipeline_run_id has rollback_executed=True)`. The rollback check is a **cross-run query**, not a latest-run query, to correctly handle "run B rolled back, run C is now in progress but has no summary yet" sequences. Not derived from `error_message` prefix heuristics. `graph_queryable` must remain meaningful when `graph_snapshot == null`.
 
 **Per-pass StageRun outcomes:**
 - [ ] Each pass writes a row per attempt with execution/yield/skip status and counts.
@@ -3111,15 +3152,16 @@ The refactor is successful only if the post-switchover run, measured against the
 - Assert `_delete_extraction_layer_graph` NOT called (nothing to roll back to)
 - This test asserts the status quo behavior documented in §4.3, not a desired behavior. If `purge_document_derivations` is ever redesigned to be non-destructive, this test is updated in that follow-up spec.
 
-**`tests/integration/test_required_pass_failure_flow_full_pre_purge.py`** — companion test demonstrating that pre-purge failures leave the prior snapshot intact
-- Setup: document with a prior successful full ingest
-- Trigger a new `full` reingest with forced failure in `detect_and_translate` (or another pre-purge stage — e.g., an invalid language code)
+**`tests/integration/test_required_pass_failure_flow_full_pre_purge.py`** — companion test demonstrating that pre-purge failures leave the prior snapshot intact. **Scope: graph-preservation invariants only.** The existing pre-purge stages (`prepare_document`, `detect_and_translate`, `derive_document_metadata`) have non-uniform status-update behavior — `prepare_document` uses `STATUS_FAILED`, `derive_document_metadata` writes a failed `StageRun` without touching document status, and `detect_and_translate` only sets `PARTIAL_COMPLETE` on soft-time-limit hits. Normalizing that behavior is out of scope for this refactor, so this test deliberately does NOT assert on `Document.pipeline_status` or `PipelineRun.status`. It asserts only what this refactor controls.
+
+- Setup: document with a prior successful full ingest, intact `DocumentGraphExtraction` row, intact ArcadeDB graph
+- Trigger a new `full` reingest with forced failure in a pre-purge stage (e.g., `detect_and_translate` raising before it reaches the soft-time-limit handler)
 - Assert `purge_document_derivations` did NOT run (stage was never reached)
-- Assert `PipelineRun.status=FAILED`, `Document.pipeline_status=PARTIAL_COMPLETE`
 - Assert the prior `DocumentGraphExtraction` row is **still present and unchanged** (same `pipeline_run_id`, `graph_json`, `updated_at` as before the reingest attempt)
 - Assert prior ArcadeDB graph state is still queryable — snapshot's vertices exist
 - Assert status API returns `graph_snapshot != null` AND `graph_queryable=true`
-- This test demonstrates that `full`-mode "snapshot preservation" is phase-dependent, not always-absent.
+- **Do NOT assert** on `Document.pipeline_status` or `PipelineRun.status` — the behavior of those fields in pre-purge stage failures is existing pipeline behavior this refactor does not normalize. If future work normalizes pre-purge failure status, this test is extended in that follow-up spec.
+- This test demonstrates that `full`-mode "snapshot preservation" is phase-dependent, not always-absent, **within the scope of what this refactor controls**.
 
 **`tests/integration/test_merge_import_failure_rollback.py`** — three test cases covering the three rollback regimes
 
