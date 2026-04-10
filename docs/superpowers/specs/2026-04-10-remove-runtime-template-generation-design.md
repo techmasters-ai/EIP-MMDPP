@@ -1111,7 +1111,10 @@ CREATE UNIQUE INDEX uq_stage_runs_run_pass_attempt
 
 CREATE UNIQUE INDEX uq_stage_runs_summary_row
     ON ingest.stage_runs (pipeline_run_id, stage_name, attempt)
-    WHERE pass_name IS NULL;
+    WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph';
+-- Scoped narrowly to the derive_ontology_graph summary row. Without the
+-- second predicate the index would also govern every existing non-extraction
+-- stage row, which could fail the migration on pre-existing duplicates.
 
 CREATE INDEX ix_stage_runs_extraction_pass
     ON ingest.stage_runs (stage_name, pass_name)
@@ -1266,7 +1269,10 @@ def upgrade() -> None:
                     schema='ingest')
     op.create_index('uq_stage_runs_summary_row', 'stage_runs',
                     ['pipeline_run_id', 'stage_name', 'attempt'],
-                    unique=True, postgresql_where=sa.text('pass_name IS NULL'),
+                    unique=True,
+                    postgresql_where=sa.text(
+                        "pass_name IS NULL AND stage_name = 'derive_ontology_graph'"
+                    ),
                     schema='ingest')
     op.create_index('ix_stage_runs_extraction_pass', 'stage_runs',
                     ['stage_name', 'pass_name'],
@@ -1479,6 +1485,10 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
         # Post-merge yield updates (HIT → DEGRADED when rejection ratio high)
         _apply_post_merge_yield_updates(run.id, merged)
 
+        # Run-level metrics: written BEFORE import so merge diagnostics
+        # survive any later import failure. See §6.6.
+        _write_pipeline_run_metrics(run.id, merged, manifest)
+
         # Three-phase graph import
         identity_to_rid = _import_graph_phase_nodes(merged, ontology, run.document_id)
         _import_graph_phase_domain_edges(merged, ontology)
@@ -1494,47 +1504,153 @@ def derive_ontology_graph(self, pipeline_run_id: str) -> dict:
             merged=merged,
         )
 
+        # Stage-summary terminalizes COMPLETE on success (always).
         stage_summary.status = "COMPLETE"
         stage_summary.execution_status = "COMPLETE"
         stage_summary.finished_at = now()
-        run.status = "COMPLETE"
-        _update_document_pipeline_status(run.document_id, "OK")
+
+        # PipelineRun + Document terminalization is MODE-SPECIFIC:
+        #   - graph_only: this stage IS the whole run. Terminalize both.
+        #   - full:       downstream stages follow (finalize_document, etc.).
+        #                 Leave PipelineRun.status = "PROCESSING" and
+        #                 Document.pipeline_status untouched — the later
+        #                 finalize_document stage terminalizes both.
+        if run.mode == "graph_only":
+            run.status = "COMPLETE"
+            run.finished_at = now()
+            # Document.pipeline_status uses the EXISTING vocabulary from
+            # app/models/ingest.py:60 — "COMPLETE" is the success value.
+            # This spec does NOT introduce a new "OK" value; storage and
+            # API both use "COMPLETE".
+            _update_document_pipeline_status(run.document_id, "COMPLETE")
+
         session.commit()
         return {"stage": "derive_ontology_graph", "status": "ok",
                 "entities": len(merged.entities),
                 "edges": len(merged.edges)}
 
     except IngestFailed as exc:
-        # Gate failure — no graph writes occurred, no rollback needed
+        # Gate failure — no graph writes occurred, no rollback needed.
+        # Terminalizes the run in BOTH modes because the ingest cannot
+        # continue once a required pass has failed.
         stage_summary.status = "FAILED"
         stage_summary.execution_status = "FAILED"
         stage_summary.error_message = f"gate_failed: {exc}"
         stage_summary.finished_at = now()
         run.status = "FAILED"
+        run.finished_at = now()
         _update_document_pipeline_status(run.document_id, "PARTIAL_COMPLETE")
         session.commit()
         raise
 
     except (MergeError, GraphImportError) as exc:
-        # Merge/import failure — partial writes may exist
+        # Merge/import failure — partial writes may exist.
+        # Terminalizes the run in BOTH modes: downstream stages cannot
+        # proceed with an inconsistent graph.
         logger.exception("derive_ontology_graph merge/import failure")
-        rollback_note = ""
-        try:
-            graph_store.delete_document_graph_sync(run.document_id)
-        except Exception as rollback_exc:
-            rollback_note = f"; ROLLBACK_ALSO_FAILED: {rollback_exc}"
-            logger.error("rollback during merge/import failure also failed: %s", rollback_exc)
+        rollback_note = _attempt_rollback(run.document_id)
 
         stage_summary.status = "FAILED"
         stage_summary.execution_status = "FAILED"
         stage_summary.error_message = f"merge_or_import_failed: {exc}{rollback_note}"
         stage_summary.finished_at = now()
         run.status = "FAILED"
+        run.finished_at = now()
         _update_document_pipeline_status(run.document_id, "PARTIAL_COMPLETE")
         # DocumentGraphExtraction intentionally NOT updated
         session.commit()
         raise
+
+    except Exception as exc:
+        # Catch-all for everything else: bundle loading failure,
+        # post-merge update failure, snapshot write failure, rollback
+        # itself failing, or any unexpected exception from a helper.
+        # Drives the same terminalization as merge/import failure.
+        logger.exception("derive_ontology_graph unexpected failure")
+        rollback_note = _attempt_rollback(run.document_id)
+
+        try:
+            stage_summary.status = "FAILED"
+            stage_summary.execution_status = "FAILED"
+            stage_summary.error_message = f"unexpected_failure: {exc}{rollback_note}"
+            stage_summary.finished_at = now()
+            run.status = "FAILED"
+            run.finished_at = now()
+            _update_document_pipeline_status(run.document_id, "PARTIAL_COMPLETE")
+            session.commit()
+        except Exception as bookkeeping_exc:
+            # Even the bookkeeping update failed. Log loudly, rollback the
+            # session, and re-raise the ORIGINAL exception so Celery marks
+            # the task failed with the real root cause.
+            logger.error(
+                "derive_ontology_graph: bookkeeping update also failed: %s",
+                bookkeeping_exc,
+            )
+            session.rollback()
+        raise  # re-raise the original unexpected exception
 ```
+
+**Helpers used above:**
+
+```python
+def _attempt_rollback(document_id: str) -> str:
+    """Best-effort rollback via the document-scoped graph-delete primitive.
+    Returns a diagnostic suffix for the stage error_message — empty on
+    success, '; ROLLBACK_ALSO_FAILED: <detail>' on failure."""
+    try:
+        graph_store.delete_document_graph_sync(document_id)
+        return ""
+    except Exception as rollback_exc:
+        logger.error(
+            "rollback during failure handling also failed: %s", rollback_exc,
+        )
+        return f"; ROLLBACK_ALSO_FAILED: {rollback_exc}"
+
+
+def _write_pipeline_run_metrics(
+    pipeline_run_id: UUID,
+    merged: MergedExtraction,
+    manifest: BundleManifest,
+) -> None:
+    """Populate PipelineRun.metrics with the quality-signal blob from §6.6.
+
+    Reads per-pass StageRun outcomes (via v_latest_pass_attempts), computes
+    roll-up signals, and writes them to PipelineRun.metrics. Runs AFTER
+    _apply_post_merge_yield_updates (so yields reflect post-merge state)
+    and BEFORE three-phase import (so diagnostics survive import failure)."""
+    pass_outcomes = _build_pass_outcomes_rollup(pipeline_run_id)
+    run = session.get(PipelineRun, pipeline_run_id)
+    run.metrics = {
+        "pass_outcomes": pass_outcomes,
+        "document_extraction_anomaly": all(
+            outcome.get("yield") in ("EMPTY", "BRIDGES_ONLY")
+            for name, outcome in pass_outcomes.items()
+            if name in {"radar_domain", "missile_domain", "other_systems"}
+               and outcome.get("execution") == "COMPLETE"
+        ),
+        "pass_degraded_count": sum(
+            1 for outcome in pass_outcomes.values()
+            if outcome.get("yield") == "DEGRADED"
+        ),
+        "overall_relationship_rejection_ratio": _compute_rejection_ratio(merged),
+        "rejected_relationships_sample": _build_rejection_sample(merged),
+        "bundle_legacy": False,  # New runs always have a real bundle_key
+        "bundle_key_display": manifest.bundle_key,
+    }
+    session.commit()
+```
+
+**Terminalization rules, summarized (§5.4 + §6.9):**
+
+| Mode | Outcome | `stage_summary` | `PipelineRun.status` | `PipelineRun.finished_at` | `Document.pipeline_status` |
+|---|---|---|---|---|---|
+| `graph_only` | success | COMPLETE | `COMPLETE` | `now()` | `COMPLETE` |
+| `full` | success | COMPLETE | unchanged (`PROCESSING`) | unchanged | unchanged (downstream `finalize_document` terminalizes) |
+| either | gate failure | FAILED | `FAILED` | `now()` | `PARTIAL_COMPLETE` |
+| either | merge/import failure | FAILED | `FAILED` | `now()` | `PARTIAL_COMPLETE` |
+| either | unexpected exception | FAILED | `FAILED` | `now()` | `PARTIAL_COMPLETE` |
+
+`full`-mode success is the only path that leaves `PipelineRun.status = PROCESSING`. All failure paths terminalize the run immediately because downstream stages cannot proceed with a failed graph extraction.
 
 ### §5.5 — Single-pass execution (`_run_single_pass`)
 
@@ -1979,12 +2095,14 @@ def check_required_pass_gate(pipeline_run_id: UUID) -> GateResult:
 - **Pass:** `COMPLETE` (any yield status) OR `SKIPPED` with authorized skip_reason
 - **Fail:** `FAILED` OR `SKIPPED` with unauthorized skip_reason
 
-A failed gate causes:
-1. `PipelineRun.status = "FAILED"`
-2. `Document.pipeline_status = "PARTIAL_COMPLETE"`
+A failed gate causes (in both `full` and `graph_only` modes):
+1. `PipelineRun.status = "FAILED"` and `PipelineRun.finished_at = now()`
+2. `Document.pipeline_status = "PARTIAL_COMPLETE"` (using the existing `Document.pipeline_status` vocabulary from `app/models/ingest.py:60`)
 3. `IngestFailed` exception propagates
 4. `DocumentGraphExtraction` NOT updated — prior snapshot intact
 5. No rollback needed (no graph writes occurred yet)
+
+Note: gate failure terminalizes the run in BOTH modes because downstream stages cannot proceed with a broken extraction. The mode-conditional terminalization is only on the SUCCESS path (see §5.4).
 
 ### §6.5 — Retry policy
 
@@ -2069,25 +2187,32 @@ On merge or import failure, rollback calls `graph_store.delete_document_graph_sy
          └─ skip_reason=NO_UPSTREAM_ENDPOINTS
 ```
 
-**Per-ingest PipelineRun:**
+**Per-ingest PipelineRun (mode-conditional on success):**
 
 ```
      PROCESSING                           (default value per app/models/ingest.py:219)
          │
-         ├─ all required passes pass the gate, merge + import OK → COMPLETE
-         └─ any failure → FAILED
+         ├─ derive_ontology_graph succeeds, mode=graph_only → COMPLETE (terminal)
+         ├─ derive_ontology_graph succeeds, mode=full       → stays PROCESSING
+         │                                                    until finalize_document
+         │                                                    terminalizes
+         └─ any failure in derive_ontology_graph             → FAILED (terminal)
+            (gate, merge/import, unexpected, either mode)
 ```
 
-**Document.pipeline_status transitions:**
+**Document.pipeline_status transitions — from `derive_ontology_graph` only:**
 
-| Trigger | New value |
-|---|---|
-| Gate failure | `PARTIAL_COMPLETE` |
-| Merge/import failure | `PARTIAL_COMPLETE` |
-| Unexpected exception | `PARTIAL_COMPLETE` |
-| Success | `OK` |
+Uses the EXISTING vocabulary in `app/models/ingest.py:60`: `PENDING | PROCESSING | COMPLETE | PARTIAL_COMPLETE | FAILED | PENDING_HUMAN_REVIEW`. This spec does not introduce new values.
 
-Regression from `OK` → `PARTIAL_COMPLETE` on failed `graph_only` reingest is the locked behavior. `Document.pipeline_status` reflects the latest ingest attempt's health; `DocumentGraphExtraction` reflects the latest successful snapshot; both are surfaced separately in the status API.
+| Mode | Trigger | New value |
+|---|---|---|
+| `graph_only` | success | `COMPLETE` |
+| `full` | success | **unchanged** (downstream `finalize_document` terminalizes) |
+| either | gate failure | `PARTIAL_COMPLETE` |
+| either | merge/import failure | `PARTIAL_COMPLETE` |
+| either | unexpected exception | `PARTIAL_COMPLETE` |
+
+Regression from `COMPLETE` → `PARTIAL_COMPLETE` on failed `graph_only` reingest is the locked behavior. `Document.pipeline_status` reflects the latest ingest attempt's health; `DocumentGraphExtraction` reflects the latest successful snapshot; both are surfaced separately in the status API (§7.11).
 
 ---
 
@@ -2144,6 +2269,20 @@ Three PRs on `feature/extraction-refactor`.
 - Drop `prefer_active` parameter
 - Add `bundle_key` with three-tier resolution
 - Split `load_registry_ontology()` into a separate function
+- **Caller audit (pre-migration task in PR 1).** The current default behavior is "active registry ontology first, else repository YAML" (see `app/services/ontology_templates.py:111, 155`). The new default is "system default bundle." This is a silent behavior change for every no-arg caller. Before landing the refactor, PR 1 performs a grep audit:
+
+  ```bash
+  grep -rn "load_ontology\|get_ontology_cache_signature\|prefer_active" app/ tests/
+  ```
+
+  Every hit is classified into one of three buckets:
+  1. **Extraction hot path** — migrates to `load_ontology(bundle_key=...)` driven by `PipelineRun.ontology_bundle_key`.
+  2. **Live non-extraction path that still needs registry behavior** (retrieval, query profiles, admin views that pin to an historical version) — migrates to `load_registry_ontology(version_id=...)` with an explicit version id.
+  3. **Safe no-arg → system default bundle** — no change required beyond dropping `prefer_active=True` if present.
+
+  Every caller in bucket 2 gets a regression test added in the same PR that asserts "this code path still loads the version-pinned ontology it used to load." Callers classified into bucket 3 get a one-line justification comment so a future reader can see why they were considered safe.
+
+  The audit output is committed to PR 1 as a migration note under `docs/superpowers/plans/` (alongside the implementation plan) so reviewers can verify the classification is complete.
 
 **Bundle loader API:**
 - `app/services/ontology_bundles.py` (worker side)
@@ -2382,7 +2521,7 @@ Every stage transition involves a worker + beat restart.
 - [ ] `tools/check_extraction_coverage.py` runs in CI and passes. All 13 active rules (numbered 1–14 with rule 7 as a deleted placeholder) + manifest self-consistency sub-checks enforced.
 
 **Service contract:**
-- [ ] Docling-graph service accepts `(ontology_bundle_key, pass_name, docling_document_json, upstream_entities?)` on `POST /extract-pass`.
+- [ ] Docling-graph service accepts `(bundle_key, pass_name, docling_document_json, upstream_entities?)` on `POST /extract-pass`. Wire field name is `bundle_key` (short), not `ontology_bundle_key`. The longer name is reserved for persisted DB columns (Source, PipelineRun, DocumentGraphExtraction).
 - [ ] Input-mode mismatch → HTTP 400. Unknown bundle/pass → HTTP 404. No fallback.
 - [ ] `ontology_definition` removed from public request schemas, worker-to-service calls, and extraction hot path.
 
@@ -2402,7 +2541,10 @@ Every stage transition involves a worker + beat restart.
 **Pipeline threading:**
 - [ ] `start_ingest_pipeline()` returns `IngestDispatchResult(pipeline_run_id, celery_task_id)`. Callers updated.
 - [ ] Standard reingest and `graph_only` reingest both resolve bundle and snapshot on `PipelineRun`.
-- [ ] `Document.pipeline_status` updated on all terminal states (`OK`/`PARTIAL_COMPLETE`).
+- [ ] `Document.pipeline_status` updates use the existing `app/models/ingest.py:60` vocabulary — `COMPLETE` on `graph_only` success, `PARTIAL_COMPLETE` on any failure, unchanged on `full` success (downstream `finalize_document` terminalizes). No new vocabulary value is introduced.
+- [ ] `PipelineRun.status` + `finished_at` terminalization is mode-conditional on the success path per §5.4 and §6.9. Failures terminalize in both modes.
+- [ ] `derive_ontology_graph` includes an `except Exception:` catch-all that records stage-summary failure, terminalizes the run, and attempts best-effort rollback.
+- [ ] `PipelineRun.metrics` is written by `_write_pipeline_run_metrics()` between post-merge yield updates and graph import, so merge diagnostics survive import failures.
 
 **Per-pass StageRun outcomes:**
 - [ ] Each pass writes a row per attempt with execution/yield/skip status and counts.
@@ -2552,7 +2694,10 @@ The refactor is successful only if the post-switchover run, measured against the
 
 **`tests/integration/test_end_to_end_bundle_extraction.py`** — the smoke test
 - Ingest fixture document through bundle/pass path
-- Assert bundle resolution, 5 per-pass StageRun rows, stage-summary row, `DocumentGraphExtraction` with audit fields, merged graph in ArcadeDB, `Document.pipeline_status=OK`, `HAS_PROVENANCE` + `MENTIONED_IN` edges present
+- Assert bundle resolution, 5 per-pass StageRun rows, stage-summary row, `DocumentGraphExtraction` with audit fields, merged graph in ArcadeDB, `HAS_PROVENANCE` + `MENTIONED_IN` edges present
+- For `mode=graph_only`: assert `Document.pipeline_status == "COMPLETE"`, `PipelineRun.status == "COMPLETE"`, `PipelineRun.finished_at IS NOT NULL`
+- For `mode=full`: assert `Document.pipeline_status` unchanged by `derive_ontology_graph` (downstream `finalize_document` terminalizes), `PipelineRun.status == "PROCESSING"`, `PipelineRun.finished_at IS NULL` after `derive_ontology_graph` returns
+- Assert `PipelineRun.metrics` populated with `pass_outcomes`, `document_extraction_anomaly`, `overall_relationship_rejection_ratio`, `bundle_key_display`
 
 **`tests/integration/test_bundle_resolution_precedence.py`**
 - Source default, system default, explicit override, inherited from latest run, legacy-NULL fallthrough — all precedence orderings
@@ -2673,17 +2818,17 @@ Carried forward from brainstorm decisions and spec review. These are NOT design 
 
    and hardcodes the result into the revision file before the migration is coded.
 
-3. **Existing-data pre-flight for `uq_stage_runs_summary_row`.** The new partial unique index `uq_stage_runs_summary_row` covers `(pipeline_run_id, stage_name, attempt) WHERE pass_name IS NULL`. That `WHERE` clause matches **every existing non-extraction StageRun row** in production. PR 1's migration must verify no existing non-extraction stages have duplicate `(pipeline_run_id, stage_name, attempt)` rows, or the migration will fail with a unique-violation on existing data. Pre-flight query:
+3. **Existing-data pre-flight for `uq_stage_runs_summary_row`.** The partial unique index is deliberately scoped narrowly to `WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph'`, so it does NOT govern existing non-extraction stage rows and cannot fail the migration on pre-existing duplicates from other stages. PR 1 still runs a one-line pre-flight query as a sanity check to confirm no existing `derive_ontology_graph` rows have `pass_name IS NULL` (they shouldn't — the current code writes one row per stage invocation without the new summary-row concept):
 
    ```sql
-   SELECT pipeline_run_id, stage_name, attempt, count(*)
+   SELECT pipeline_run_id, attempt, count(*)
    FROM ingest.stage_runs
-   WHERE pass_name IS NULL
-   GROUP BY 1, 2, 3
+   WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph'
+   GROUP BY 1, 2
    HAVING count(*) > 1;
    ```
 
-   PR 1 runs this against the production snapshot before coding the index creation. If any duplicates exist, the migration either (a) deduplicates them in a prior step, or (b) narrows the partial-index `WHERE` clause to target only derive_ontology_graph summary rows: `WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph'`.
+   If any duplicates exist, PR 1 deduplicates them in a prior migration step before creating the index. The narrowing of the index was done at design time (see §4.4 and §4.8) specifically to avoid the broader blast radius flagged in the user review.
 
 4. **Verify `_create_provenance_edges_batch_sync` semantics.** PR 1 confirms that `upsert_nodes_batch_sync` auto-creates `HAS_PROVENANCE` edges exactly once per upsert call when a non-None `ProvenanceMetadata` is passed. If the behavior is conditional on other fields (e.g., only when `page_numbers` is present), the spec's assumption in §3.8 that `HAS_PROVENANCE` is auto-created on every node needs adjustment. The contract is: "phase 2 produces HAS_PROVENANCE edges exactly once per extracted entity, via exactly one of the two possible paths — never both, never neither." PR 1 picks whichever path satisfies that contract.
 
