@@ -526,7 +526,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §3.3–§3.5.
 
-- [ ] **Step 0: Lock the curated property sets per entity class**
+- [x] **Step 0: Lock the curated property sets per entity class**
 
 The spec fully shows `SectionEntity` (§3.3) and `RadarSystemEntity` + `RadarRelationship` + `RadarDomainPass` top-level (§3.4). For the ~25 other entity classes across the four entity-bearing passes, the plan enumerates the curated property list below. These are **prescriptive for this plan** and every listed property name has been verified against `ontology/ontology.yaml` as of commit `6d14eaf`. Do NOT re-derive during implementation; the coverage checker's rule 8 (extraction ⊆ ontology) will reject any drift.
 
@@ -614,7 +614,7 @@ Only `SystemLinkRelationship` and `SystemLinksPass`. See Step 7 for the relation
 - `OtherSystemsPass`: `{"INSTALLED_ON", "SPECIFIED_BY"}`
 - `SystemLinksPass`: `{"ASSOCIATED_WITH", "CUES"}`
 
-- [ ] **Step 1: Write the failing test for structural invariants**
+- [x] **Step 1: Write the failing test for structural invariants**
 
 Create `tests/unit/test_extraction_schemas.py`:
 
@@ -730,7 +730,7 @@ def test_system_links_has_no_entity_fields():
                 )
 ```
 
-- [ ] **Step 2: Run tests — expect ImportError**
+- [x] **Step 2: Run tests — expect ImportError**
 
 Run:
 ```bash
@@ -739,7 +739,7 @@ pytest tests/unit/test_extraction_schemas.py -v 2>&1 | tail -15
 
 Expected: collection error because the schema modules don't exist yet.
 
-- [ ] **Step 3: Write reference.py**
+- [x] **Step 3: Write reference.py**
 
 Create `ontology_bundles/air_defense_v3/extraction_schemas/reference.py` with:
 - Module docstring clarifying that HAS_PROVENANCE is auto-created by upsert_nodes_batch_sync (not derive_rules) per spec §3.3
@@ -749,7 +749,7 @@ Create `ontology_bundles/air_defense_v3/extraction_schemas/reference.py` with:
 
 Use spec §3.3 as the template.
 
-- [ ] **Step 4: Write radar_domain.py**
+- [x] **Step 4: Write radar_domain.py**
 
 Create `ontology_bundles/air_defense_v3/extraction_schemas/radar_domain.py` per spec §3.4. Entity classes: `RadarSystemEntity`, `AntennaEntity`, `ReceiverEntity`, `TransmitterEntity`, `SPCEntity` (signal processing chain), `FrequencyBandEntity`, `WaveformEntity`, `PlatformEntity`, `SpecificationEntity`. All identity_fields from the ontology must be Pydantic fields (checker rule 9). Use a curated subset of properties, not the exhaustive list.
 
@@ -757,19 +757,19 @@ Create `ontology_bundles/air_defense_v3/extraction_schemas/radar_domain.py` per 
 
 Top-level `RadarDomainPass` with all entity lists + `relationships: list[RadarRelationship]`.
 
-- [ ] **Step 5: Write missile_domain.py**
+- [x] **Step 5: Write missile_domain.py**
 
 Same pattern. Entity classes: `MissileSystemEntity`, `LauncherSystemEntity`, `GuidanceMethodEntity`, `SeekerEntity`, `PropulsionStackEntity`, `PlatformEntity`, `SpecificationEntity` (bridges). `MissileRelationship` + `MissileDomainPass`.
 
-- [ ] **Step 6: Write other_systems.py**
+- [x] **Step 6: Write other_systems.py**
 
 Entity classes: `ADAEntity`, `EWSystemEntity`, `FireControlSystemEntity`, `WeaponSystemEntity`, `IADSEntity`, `PlatformEntity`, `SpecificationEntity`. `OtherSystemsRelationship` + `OtherSystemsPass`.
 
-- [ ] **Step 7: Write system_links.py**
+- [x] **Step 7: Write system_links.py**
 
 Per spec §3.5: NO entity fields. Only a `SystemLinkRelationship` model and a `SystemLinksPass` with `relationships: list[SystemLinkRelationship]`. `SystemLinkRelationship` uses `from_ref_id` / `to_ref_id` (not `from_identity` / `to_identity`) because it operates on pre-extracted entity refs per spec §3.5 wire contract.
 
-- [ ] **Step 8: Run tests — expect pass**
+- [x] **Step 8: Run tests — expect pass**
 
 Run:
 ```bash
@@ -778,7 +778,7 @@ pytest tests/unit/test_extraction_schemas.py -v
 
 Expected: all pass. If any nested model fails the partial-safety check, find the required field and make it Optional with `default=None`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add ontology_bundles/air_defense_v3/extraction_schemas/ tests/unit/test_extraction_schemas.py
