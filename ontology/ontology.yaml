@@ -38,6 +38,8 @@ entity_types:
 
   - name: SECTION
     label: "Document Section"
+    identity_fields: [heading, page_start]
+    identity_scope: document
     description: "A section or heading within a document"
     parent: DocumentResource
     properties:
@@ -49,6 +51,8 @@ entity_types:
 
   - name: FIGURE
     label: "Figure"
+    identity_fields: [figure_id, page]
+    identity_scope: document
     description: "A figure, diagram, or image within a document"
     parent: DocumentResource
     properties:
@@ -61,6 +65,8 @@ entity_types:
 
   - name: TABLE
     label: "Table"
+    identity_fields: [table_id, page]
+    identity_scope: document
     description: "A data table within a document"
     parent: DocumentResource
     properties:
@@ -82,6 +88,8 @@ entity_types:
 
   - name: ASSERTION
     label: "Assertion"
+    identity_fields: [assertion_text]
+    identity_scope: document
     description: "A source-backed claim extracted from a document"
     parent: DocumentResource
     properties:
@@ -97,6 +105,8 @@ entity_types:
   # ---------------------------------------------------------------------------
   - name: PLATFORM
     label: "Platform"
+    identity_fields: [name]
+    identity_scope: global
     description: "Vehicle, vessel, aircraft, or installation that hosts military systems"
     parent: MilitaryAsset
     properties:
@@ -111,6 +121,8 @@ entity_types:
 
   - name: RADAR_SYSTEM
     label: "Radar System"
+    identity_fields: [system_name]
+    identity_scope: global
     description: "Active or passive radar system (search, track, fire control, SAR, AESA, PESA)"
     parent: MilitarySystem
     properties:
@@ -143,6 +155,8 @@ entity_types:
 
   - name: MISSILE_SYSTEM
     label: "Missile System"
+    identity_fields: [system_name]
+    identity_scope: global
     description: "Guided missile weapon system with seeker, guidance, and propulsion"
     parent: MilitarySystem
     properties:
@@ -159,6 +173,8 @@ entity_types:
 
   - name: AIR_DEFENSE_ARTILLERY_SYSTEM
     label: "Air Defense Artillery System"
+    identity_fields: [system_name]
+    identity_scope: global
     description: "Gun-based air defense system (AAA)"
     parent: MilitarySystem
     properties:
@@ -180,6 +196,8 @@ entity_types:
 
   - name: ELECTRONIC_WARFARE_SYSTEM
     label: "Electronic Warfare System"
+    identity_fields: [system_name]
+    identity_scope: global
     description: "EA, ES, or EP system (jammer, receiver, self-protection suite)"
     parent: MilitarySystem
     properties:
@@ -194,6 +212,8 @@ entity_types:
 
   - name: FIRE_CONTROL_SYSTEM
     label: "Fire Control System"
+    identity_fields: [system_name]
+    identity_scope: global
     description: "System that provides targeting and engagement control"
     parent: MilitarySystem
     properties:
@@ -204,6 +224,8 @@ entity_types:
 
   - name: INTEGRATED_AIR_DEFENSE_SYSTEM
     label: "Integrated Air Defense System"
+    identity_fields: [name]
+    identity_scope: global
     description: "System-of-systems combining radar, missile, AAA, and C2 for area defense"
     parent: MilitarySystem
     properties:
@@ -215,6 +237,8 @@ entity_types:
 
   - name: LAUNCHER_SYSTEM
     label: "Launcher System"
+    identity_fields: [system_name]
+    identity_scope: global
     description: "Missile or rocket launcher platform"
     parent: MilitarySystem
     properties:
@@ -226,6 +250,8 @@ entity_types:
 
   - name: WEAPON_SYSTEM
     label: "Weapon System"
+    identity_fields: [system_name]
+    identity_scope: global
     description: "Generic weapon system (not radar, missile, or AAA specifically)"
     parent: MilitarySystem
     properties:
@@ -280,6 +306,8 @@ entity_types:
   # ---------------------------------------------------------------------------
   - name: FREQUENCY_BAND
     label: "Frequency Band"
+    identity_fields: [band_name]
+    identity_scope: global
     description: "IEEE/NATO frequency band designation"
     parent: EMEntity
     properties:
@@ -311,6 +339,8 @@ entity_types:
 
   - name: WAVEFORM
     label: "Waveform"
+    identity_fields: [waveform_name]
+    identity_scope: document
     description: "Radar or communications waveform with pulse/timing characteristics"
     parent: EMEntity
     properties:
@@ -376,6 +406,8 @@ entity_types:
 
   - name: ANTENNA
     label: "Antenna"
+    identity_fields: [name]
+    identity_scope: document
     description: "Antenna system with polarization, beamwidth, gain, and geometry"
     parent: EMEntity
     properties:
@@ -402,6 +434,8 @@ entity_types:
 
   - name: TRANSMITTER
     label: "Transmitter"
+    identity_fields: [name]
+    identity_scope: document
     description: "Radar or communications transmitter with power and loss characteristics"
     parent: EMEntity
     properties:
@@ -417,6 +451,8 @@ entity_types:
 
   - name: RECEIVER
     label: "Receiver"
+    identity_fields: [name]
+    identity_scope: document
     description: "Radar or communications receiver with noise and sensitivity characteristics"
     parent: EMEntity
     properties:
@@ -443,6 +479,8 @@ entity_types:
 
   - name: SIGNAL_PROCESSING_CHAIN
     label: "Signal Processing Chain"
+    identity_fields: [name]
+    identity_scope: document
     description: "Signal processing subsystem with detection, integration, and Doppler parameters"
     parent: EMEntity
     properties:
@@ -473,6 +511,8 @@ entity_types:
   # ---------------------------------------------------------------------------
   - name: SEEKER
     label: "Seeker"
+    identity_fields: [seeker_nomenclature]
+    identity_scope: document
     description: "Missile terminal guidance seeker head"
     parent: WeaponEntity
     properties:
@@ -485,6 +525,8 @@ entity_types:
 
   - name: GUIDANCE_METHOD
     label: "Guidance Method"
+    identity_fields: [guidance_type]
+    identity_scope: global
     description: "Missile guidance scheme (command, beam-riding, homing)"
     parent: WeaponEntity
     properties:
@@ -534,6 +576,8 @@ entity_types:
 
   - name: PROPULSION_STACK
     label: "Propulsion Stack"
+    identity_fields: []
+    identity_scope: document
     description: "Complete missile propulsion system (may contain multiple stages)"
     parent: WeaponEntity
     properties:
@@ -640,6 +684,8 @@ entity_types:
 
   - name: SPECIFICATION
     label: "Specification"
+    identity_fields: [parameter, value]
+    identity_scope: document
     description: "Measurable performance characteristic"
     parent: OperationalEntity
     properties:
