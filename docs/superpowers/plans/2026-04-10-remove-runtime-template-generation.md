@@ -1379,7 +1379,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §2 Bundle loader API.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/unit/test_ontology_bundles.py` with the five test cases from spec §8.4 `test_ontology_bundles.py`:
 
@@ -1389,13 +1389,13 @@ Create `tests/unit/test_ontology_bundles.py` with the five test cases from spec 
 4. `test_load_ontology_bundle_key_none_round_trip` — `load_ontology(bundle_key=None)` returns the system default bundle's ontology dict and is equivalent to `load_ontology(bundle_key=<system_default>)`.
 5. `test_load_ontology_prefer_active_regression` — `load_ontology(prefer_active=True)` raises `TypeError`.
 
-- [ ] **Step 2: Run tests — expect failures**
+- [x] **Step 2: Run tests — expect failures**
 
 ```bash
 pytest tests/unit/test_ontology_bundles.py -v 2>&1 | tail -15
 ```
 
-- [ ] **Step 3: Implement worker-side `app/services/ontology_bundles.py`**
+- [x] **Step 3: Implement worker-side `app/services/ontology_bundles.py`**
 
 Per spec §2 Bundle loader API. In this chunk, declare only:
 
@@ -1406,7 +1406,7 @@ Per spec §2 Bundle loader API. In this chunk, declare only:
 
 **Defer `StatusSignals` to Chunk 3 — do not create it here.** That class belongs to the orchestrator rewrite (Chunk 3 Task covering `extraction_merge.py` and the status roll-up), so declaring it now would leave an unused import surface.
 
-- [ ] **Step 4: Implement service-side `docker/docling-graph/app/bundles.py`**
+- [x] **Step 4: Implement service-side `docker/docling-graph/app/bundles.py`**
 
 Per spec §2:
 
@@ -1423,7 +1423,7 @@ def preload_all_templates() -> None:
 
 The `preload_all_templates()` call is wired into the FastAPI lifespan in Task 2.5 Step 4 when `main.py` is edited — do NOT modify `main.py` in this task. Task 2.5 owns that edit and will import from `app.bundles`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 pytest tests/unit/test_ontology_bundles.py -v
@@ -1431,7 +1431,7 @@ pytest tests/unit/test_ontology_bundles.py -v
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/services/ontology_bundles.py docker/docling-graph/app/bundles.py \

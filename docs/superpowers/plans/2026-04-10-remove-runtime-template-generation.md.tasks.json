@@ -15,7 +15,7 @@
 
     {"id": 128, "subject": "Task 2.1: Refactor load_ontology + caller audit", "status": "completed", "blockedBy": [123]},
     {"id": 129, "subject": "Task 2.2: Alembic 0015 migration + model updates", "status": "completed", "blockedBy": [128]},
-    {"id": 130, "subject": "Task 2.3: Bundle loader modules (worker + service)", "status": "pending", "blockedBy": [128]},
+    {"id": 130, "subject": "Task 2.3: Bundle loader modules (worker + service)", "status": "completed", "blockedBy": [128]},
     {"id": 131, "subject": "Task 2.4: Coverage checker (tools/check_extraction_coverage)", "status": "pending", "blockedBy": [130, 126, 127]},
     {"id": 132, "subject": "Task 2.5: POST /extract-pass endpoint on docling-graph", "status": "pending", "blockedBy": [130]},
     {"id": 133, "subject": "Task 2.6: Docker packaging for ontology_bundles", "status": "pending", "blockedBy": [123]},
@@ -50,5 +50,5 @@
     {"id": 159, "subject": "Task 5.6: Update DocumentGraphExtraction.graph_json docstring", "status": "pending", "blockedBy": [155]},
     {"id": 160, "subject": "Task 5.7: PR 3 post-deletion smoke + open PR 3", "status": "pending", "blockedBy": [155, 156, 157, 158, 159]}
   ],
-  "lastUpdated": "2026-04-11T11:00:00Z"
+  "lastUpdated": "2026-04-11T11:25:00Z"
 }
