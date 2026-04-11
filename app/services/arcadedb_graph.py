@@ -1411,24 +1411,34 @@ class ArcadeDBGraphStore:
     ) -> list[dict]:
         """Run a community detection algorithm and return per-node results.
 
-        If *exclude_types* is provided, nodes whose @class is in that set
-        are filtered out server-side via a WHERE clause on the YIELD, so
-        structural vertices (Document, TextChunk, etc.) do not influence
-        community assignment.
+        If *exclude_types* is provided, nodes whose label is in that set are
+        filtered out server-side via Cypher label negation, so structural
+        vertices (Document, TextChunk, etc.) do not influence community
+        assignment.
+
+        Cypher in ArcadeDB cannot reference ``@class`` or ``@rid`` directly
+        (they are ArcadeDB SQL-only metadata fields), so we filter via
+        ``NOT node:Label`` predicates and derive entity_type from the Cypher
+        ``labels(node)[0]`` accessor.
         """
         algo_params = ", ".join(f"{k}: {v}" for k, v in params.items())
 
         if exclude_types:
-            type_list = ", ".join(f"'{t}'" for t in exclude_types)
-            where_clause = f"WHERE node.@class NOT IN [{type_list}] "
+            # Cypher cannot use @class; use label negation predicates.
+            # Label names are ArcadeDB type names (already safe identifiers).
+            where_clause = (
+                "WHERE "
+                + " AND ".join(f"NOT node:{t}" for t in sorted(exclude_types))
+                + " "
+            )
         else:
             where_clause = ""
 
         cypher = (
             f"CALL algo.{algorithm}({{{algo_params}}}) YIELD node, communityId "
             f"{where_clause}"
-            f"RETURN node.name AS name, node.entity_type AS entity_type, "
-            f"node.@rid AS node_rid, communityId AS community_id"
+            f"RETURN node.name AS name, labels(node)[0] AS entity_type, "
+            f"id(node) AS node_rid, communityId AS community_id"
         )
         return await self._client.query(self._database, "cypher", cypher)
 

@@ -31,6 +31,11 @@ class ArcadeDBClient:
         self._token_time: float = 0
         self._token_ttl: float = 1500  # 25 min (server default 30 min, refresh early)
         self._async_client: httpx.AsyncClient | None = None
+        # The event loop the cached async client is bound to. Celery tasks
+        # that call ``asyncio.run()`` create a fresh loop per invocation, so
+        # we must rebuild the httpx client when the loop changes — otherwise
+        # httpx raises "Event loop is closed" on reuse.
+        self._async_client_loop: Any = None
         self._sync_client: httpx.Client | None = None
 
     # --- Auth ---
@@ -66,7 +71,21 @@ class ArcadeDBClient:
     # --- Client lifecycle ---
 
     def _get_async_client(self) -> httpx.AsyncClient:
-        if self._async_client is None or self._async_client.is_closed:
+        import asyncio
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        # Rebuild on loop mismatch: Celery tasks using asyncio.run() create
+        # a fresh loop each invocation, leaving the previous client's
+        # transport bound to a closed loop. We intentionally do not aclose
+        # the orphaned client because its loop is gone; GC will clean up.
+        if (
+            self._async_client is None
+            or self._async_client.is_closed
+            or self._async_client_loop is not current_loop
+        ):
             self._async_client = httpx.AsyncClient(
                 timeout=60.0,
                 limits=httpx.Limits(
@@ -75,6 +94,10 @@ class ArcadeDBClient:
                     keepalive_expiry=30.0,
                 ),
             )
+            self._async_client_loop = current_loop
+            # Token was bound to the old client session; force re-login.
+            self._token = None
+            self._token_time = 0
         return self._async_client
 
     def _get_sync_client(self) -> httpx.Client:
