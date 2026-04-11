@@ -9,7 +9,7 @@
     {"id": 122, "subject": "Task 1.1: Add identity_fields/identity_scope to ontology.yaml", "status": "completed", "blockedBy": [121]},
     {"id": 123, "subject": "Task 1.2: Create bundle skeleton and symlink ontology.yaml", "status": "completed", "blockedBy": [122]},
     {"id": 124, "subject": "Task 1.3: Write manifest.yaml and coverage.yaml", "status": "completed", "blockedBy": [123]},
-    {"id": 125, "subject": "Task 1.4: Write shared validators.py (TDD)", "status": "pending", "blockedBy": [123]},
+    {"id": 125, "subject": "Task 1.4: Write shared validators.py (TDD)", "status": "completed", "blockedBy": [123]},
     {"id": 126, "subject": "Task 1.5: Write 5 extraction schema modules (TDD)", "status": "pending", "blockedBy": [124, 125]},
     {"id": 127, "subject": "Task 1.6: Write derive_rules.py (TDD)", "status": "pending", "blockedBy": [123]},
 
@@ -50,5 +50,5 @@
     {"id": 159, "subject": "Task 5.6: Update DocumentGraphExtraction.graph_json docstring", "status": "pending", "blockedBy": [155]},
     {"id": 160, "subject": "Task 5.7: PR 3 post-deletion smoke + open PR 3", "status": "pending", "blockedBy": [155, 156, 157, 158, 159]}
   ],
-  "lastUpdated": "2026-04-11T08:50:00Z"
+  "lastUpdated": "2026-04-11T09:00:00Z"
 }

@@ -369,7 +369,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §3.2 shared validators.
 
-- [ ] **Step 1: Write the failing tests first**
+- [x] **Step 1: Write the failing tests first**
 
 Create `tests/unit/test_bundle_validators.py`:
 
@@ -477,7 +477,7 @@ class TestNormalizeEnum:
         assert validator(None) is None
 ```
 
-- [ ] **Step 2: Run tests — expect ImportError**
+- [x] **Step 2: Run tests — expect ImportError**
 
 Run:
 ```bash
@@ -486,11 +486,11 @@ pytest tests/unit/test_bundle_validators.py -v 2>&1 | tail -20
 
 Expected: collection error / import error because `validators.py` doesn't exist yet.
 
-- [ ] **Step 3: Write validators.py**
+- [x] **Step 3: Write validators.py**
 
 Create `ontology_bundles/air_defense_v3/validators.py` with the content from spec §3.2, including `coerce_optional_int`, `coerce_optional_float`, `coerce_optional_confidence`, and `normalize_enum`.
 
-- [ ] **Step 4: Run tests — expect pass**
+- [x] **Step 4: Run tests — expect pass**
 
 Run:
 ```bash
@@ -499,7 +499,7 @@ pytest tests/unit/test_bundle_validators.py -v
 
 Expected: all 22+ test cases pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ontology_bundles/air_defense_v3/validators.py tests/unit/test_bundle_validators.py
