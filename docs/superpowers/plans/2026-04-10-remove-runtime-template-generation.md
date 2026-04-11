@@ -995,7 +995,7 @@ This chunk completes PR 1. It covers: `load_ontology` refactor with caller audit
 
 Spec §7.3 caller audit + §4.6 legacy NULL semantics.
 
-- [ ] **Step 1: Run the caller audit grep**
+- [x] **Step 1: Run the caller audit grep**
 
 Run:
 ```bash
@@ -1006,7 +1006,7 @@ wc -l /tmp/load_ontology_callers.txt
 
 Expected: several dozen hits. Capture the list verbatim in `docs/superpowers/plans/2026-04-10-load-ontology-caller-audit.md`.
 
-- [ ] **Step 2: Classify each caller into one of three buckets**
+- [x] **Step 2: Classify each caller into one of three buckets**
 
 Create `docs/superpowers/plans/2026-04-10-load-ontology-caller-audit.md` with a table:
 
@@ -1027,7 +1027,7 @@ Three buckets (spec §7.3):
 
 Every caller must be classified. If you can't decide, mark it `TBD` and flag for human review.
 
-- [ ] **Step 3: Commit the audit document**
+- [x] **Step 3: Commit the audit document**
 
 ```bash
 git add docs/superpowers/plans/2026-04-10-load-ontology-caller-audit.md
@@ -1040,7 +1040,7 @@ lands. See spec §7.3 and plan Chunk 2 Task 2.1.
 "
 ```
 
-- [ ] **Step 4: Write the failing tests for the new load_ontology signatures**
+- [x] **Step 4: Write the failing tests for the new load_ontology signatures**
 
 Create `tests/unit/test_load_ontology_refactor.py`:
 
@@ -1102,7 +1102,7 @@ def test_load_registry_ontology_exists():
     assert "version_id" in sig.parameters
 ```
 
-- [ ] **Step 5: Run the tests — expect failures**
+- [x] **Step 5: Run the tests — expect failures**
 
 Run:
 ```bash
@@ -1111,7 +1111,7 @@ pytest tests/unit/test_load_ontology_refactor.py -v 2>&1 | tail -30
 
 Expected: several failures because load_registry_ontology doesn't exist yet and load_ontology still accepts `prefer_active`.
 
-- [ ] **Step 6: Refactor app/services/ontology_templates.py**
+- [x] **Step 6: Refactor app/services/ontology_templates.py**
 
 Per spec §2 "Load ontology split":
 
@@ -1149,7 +1149,7 @@ Update `_ensure_cache_populated` and any helper functions. Cache per-bundle via 
 
 Also update `get_ontology_cache_signature()` similarly if it still exists; split into `get_bundle_ontology_signature(bundle_key)` and `get_registry_ontology_signature(version_id)`.
 
-- [ ] **Step 7: Run tests — expect pass**
+- [x] **Step 7: Run tests — expect pass**
 
 Run:
 ```bash
@@ -1158,7 +1158,7 @@ pytest tests/unit/test_load_ontology_refactor.py -v
 
 Expected: all pass.
 
-- [ ] **Step 8: Run the full test suite to catch caller regressions**
+- [x] **Step 8: Run the full test suite to catch caller regressions**
 
 Run:
 ```bash
@@ -1171,7 +1171,7 @@ Bucket-1 (extraction) callers don't exist yet at this point — the legacy path 
 
 Bucket-3 (default) callers may need `prefer_active=True` stripped; that's a mechanical `sed`-level change.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 List every file you actually modified during Steps 6–8 (the refactor plus the caller fixes you had to make to get the suite green) and stage them explicitly. Do NOT use `git add -A`.
 
