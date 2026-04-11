@@ -198,18 +198,18 @@ class TestOntologyCacheInvalidation:
     def test_invalidate_clears_cached_state(self):
         import app.services.ontology_templates as mod
 
-        # Seed the module-level cache manually.
+        # Seed the per-bundle cache manually.
         with mod._cache_lock:
-            mod._cached_default_ontology = {"entity_types": []}
-            mod._cached_default_signature = "test:sig"
-            mod._cached_default_expires_at = 9999999999.0
+            mod._bundle_cache["air_defense_v3"] = (
+                {"entity_types": []},
+                "test:sig",
+                9999999999.0,
+            )
 
         mod.invalidate_ontology_cache()
 
         with mod._cache_lock:
-            assert mod._cached_default_ontology is None
-            assert mod._cached_default_signature is None
-            assert mod._cached_default_expires_at == 0.0
+            assert mod._bundle_cache == {}
 
     def test_register_invalidation_hook_fires_on_invalidate(self):
         import app.services.ontology_templates as mod
@@ -238,12 +238,3 @@ class TestOntologyCacheInvalidation:
         finally:
             mod._invalidation_hooks[:] = original_hooks
 
-    def test_load_ontology_prefer_active_false_falls_back_to_yaml(self):
-        """With prefer_active=False the loader must skip the DB and return
-        the repository YAML directly."""
-        from app.services.ontology_templates import load_ontology
-
-        ontology = load_ontology(prefer_active=False)
-        assert isinstance(ontology, dict)
-        assert "entity_types" in ontology
-        assert "relationship_types" in ontology

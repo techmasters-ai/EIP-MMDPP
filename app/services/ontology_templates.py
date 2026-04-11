@@ -1,8 +1,23 @@
-"""Ontology loading and type-name helpers for graph extraction and retrieval.
+"""Ontology loading with bundle-aware resolution.
 
-Extraction prompt building and Pydantic extraction models have moved to
-the Docling-Graph Docker service.
+Extraction schemas, runtime Pydantic templates, and prompt construction
+have moved to ontology_bundles/<bundle_key>/extraction_schemas/ and the
+docling-graph sidecar service. This module is now a thin loader for
+ontology.yaml content, plus a small registry-lookup helper for audit
+paths.
+
+Public API (spec §2 + §7.3):
+- load_ontology(*, bundle_key=None, path=None) — bundle/path loader
+- load_registry_ontology(version_id) — version-pinned registry lookup
+- load_validation_matrix(*, bundle_key=None, path=None) — derived helper
+- build_entity_type_names / build_relationship_type_names — derived helpers
+- invalidate_ontology_cache() — clear the per-bundle cache
+
+Private helpers:
+- load_repository_ontology(path) — direct file reader, kept for back-compat
+- _ensure_bundle_cached(bundle_key) — per-bundle cache population
 """
+from __future__ import annotations
 
 from copy import deepcopy
 import logging
@@ -15,13 +30,23 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_ONTOLOGY_PATH = Path(__file__).resolve().parent.parent.parent / "ontology" / "ontology.yaml"
 _DEFAULT_CACHE_TTL_SECONDS = 5.0
+SYSTEM_DEFAULT_BUNDLE_KEY = "air_defense_v3"
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_BUNDLE_ROOT = _REPO_ROOT / "ontology_bundles"
+# Symlinked path kept for existing helpers that read the repository file directly.
+_LEGACY_ONTOLOGY_PATH = _REPO_ROOT / "ontology" / "ontology.yaml"
+
+# Per-bundle cache: bundle_key -> (ontology_dict, signature, expires_at_monotonic)
 _cache_lock = Lock()
-_cached_default_ontology: dict[str, Any] | None = None
-_cached_default_signature: str | None = None
-_cached_default_expires_at = 0.0
+_bundle_cache: dict[str, tuple[dict[str, Any], str, float]] = {}
 _invalidation_hooks: list[Callable[[], None]] = []
+
+
+class UnknownBundleError(ValueError):
+    """Raised when a bundle_key does not resolve to a directory under
+    ontology_bundles/."""
 
 
 def register_invalidation_hook(fn: Callable[[], None]) -> None:
@@ -30,16 +55,13 @@ def register_invalidation_hook(fn: Callable[[], None]) -> None:
 
 
 def invalidate_ontology_cache() -> None:
-    """Clear the in-process ontology cache.
+    """Clear the per-bundle in-process ontology cache.
 
     Called after registry create/update/activate operations so backend ontology
     consumers see the newly active ontology immediately.
     """
-    global _cached_default_ontology, _cached_default_signature, _cached_default_expires_at
     with _cache_lock:
-        _cached_default_ontology = None
-        _cached_default_signature = None
-        _cached_default_expires_at = 0.0
+        _bundle_cache.clear()
     for hook in _invalidation_hooks:
         try:
             hook()
@@ -48,132 +70,125 @@ def invalidate_ontology_cache() -> None:
 
 
 def load_repository_ontology(path: Path | None = None) -> dict[str, Any]:
-    """Load and return the repository ontology YAML as a dict."""
-    p = path or _ONTOLOGY_PATH
+    """Load and return the repository ontology YAML as a dict.
+
+    Kept for backwards compatibility. Reads directly from the given path
+    or from the symlinked ontology/ontology.yaml. New code should prefer
+    load_ontology(bundle_key=...) or load_ontology(path=...)."""
+    p = path or _LEGACY_ONTOLOGY_PATH
     with open(p) as f:
         return yaml.safe_load(f)
 
 
-def _repository_signature(path: Path | None = None) -> str:
-    p = (path or _ONTOLOGY_PATH).resolve()
+def _bundle_ontology_path(bundle_key: str) -> Path:
+    p = _BUNDLE_ROOT / bundle_key / "ontology.yaml"
+    if not p.exists():
+        raise UnknownBundleError(
+            f"No ontology.yaml found for bundle_key={bundle_key!r} (expected at {p})"
+        )
+    return p
+
+
+def _bundle_signature(bundle_key: str) -> str:
+    p = _bundle_ontology_path(bundle_key).resolve()
     try:
         mtime_ns = p.stat().st_mtime_ns
     except OSError:
         mtime_ns = 0
-    return f"file:{p}:{mtime_ns}"
+    return f"bundle:{bundle_key}:{mtime_ns}"
 
 
-def _load_active_registry_ontology() -> tuple[dict[str, Any] | None, str | None]:
-    """Return the active registry ontology, if available."""
-    try:
-        from sqlalchemy import select
-
-        from app.db.session import get_sync_session
-        from app.models.query_profiles import QueryProfileRegistry
-
-        with get_sync_session() as session:
-            result = session.execute(
-                select(QueryProfileRegistry)
-                .where(QueryProfileRegistry.is_active.is_(True))
-                .order_by(QueryProfileRegistry.updated_at.desc())
-                .limit(1)
-            )
-            registry = result.scalar_one_or_none()
-
-            if (
-                registry is None
-                or not isinstance(registry.ontology_definition, dict)
-                or not registry.ontology_definition
-            ):
-                return None, None
-
-            ontology = deepcopy(registry.ontology_definition)
-            if registry.ontology_version and not ontology.get("version"):
-                ontology["version"] = registry.ontology_version
-
-            updated_at = (
-                registry.updated_at.isoformat()
-                if getattr(registry, "updated_at", None) is not None
-                else ""
-            )
-            reg_id = registry.id
-
-        return ontology, f"registry:{reg_id}:{updated_at}"
-    except Exception:
-        logger.warning(
-            "Falling back to repository ontology because the active registry ontology "
-            "could not be loaded",
-            exc_info=True,
-        )
-        return None, None
-
-
-def _resolve_default_ontology() -> tuple[dict[str, Any], str]:
-    ontology, signature = _load_active_registry_ontology()
-    if ontology is not None and signature is not None:
-        return ontology, signature
-    return load_repository_ontology(), _repository_signature()
-
-
-def _ensure_cache_populated() -> tuple[dict[str, Any], str]:
-    """Populate the cache if stale/empty, return (ontology_ref, signature).
-
-    The returned ontology_ref is the cached reference — callers that need
-    a mutable copy must deepcopy it themselves.
-    """
-    global _cached_default_ontology, _cached_default_signature, _cached_default_expires_at
-
+def _ensure_bundle_cached(bundle_key: str) -> tuple[dict[str, Any], str]:
     now = time.monotonic()
     with _cache_lock:
-        if (
-            _cached_default_ontology is not None
-            and _cached_default_signature is not None
-            and now < _cached_default_expires_at
-        ):
-            return _cached_default_ontology, _cached_default_signature
+        entry = _bundle_cache.get(bundle_key)
+        if entry is not None:
+            ontology_ref, sig, expires = entry
+            if now < expires:
+                return ontology_ref, sig
 
-    ontology, signature = _resolve_default_ontology()
+    # Load outside the lock, then store.
+    path = _bundle_ontology_path(bundle_key)
+    with open(path) as f:
+        ontology = yaml.safe_load(f)
+    sig = _bundle_signature(bundle_key)
+
     with _cache_lock:
-        _cached_default_ontology = ontology
-        _cached_default_signature = signature
-        _cached_default_expires_at = now + _DEFAULT_CACHE_TTL_SECONDS
-    return ontology, signature
-
-
-def get_ontology_cache_signature(
-    path: Path | None = None,
-    *,
-    prefer_active: bool = True,
-) -> str:
-    """Return a cache signature for the ontology currently in use."""
-    if path is not None or not prefer_active:
-        return _repository_signature(path)
-    _, signature = _ensure_cache_populated()
-    return signature
+        _bundle_cache[bundle_key] = (ontology, sig, now + _DEFAULT_CACHE_TTL_SECONDS)
+    return ontology, sig
 
 
 def load_ontology(
-    path: Path | None = None,
     *,
-    prefer_active: bool = True,
+    bundle_key: str | None = None,
+    path: Path | None = None,
 ) -> dict[str, Any]:
-    """Load the active registry ontology, falling back to repository YAML."""
-    if path is not None or not prefer_active:
-        return load_repository_ontology(path)
-    ontology_ref, _ = _ensure_cache_populated()
+    """Load an ontology definition.
+
+    Resolution order (exactly one applies):
+    1. If `path` is given, load directly from that file.
+    2. Else if `bundle_key` is given, load that bundle's ontology.yaml.
+    3. Else load the system default bundle's ontology.yaml (air_defense_v3).
+
+    This function never consults the registry/version-pinning store.
+    For version-pinned loads, call load_registry_ontology(version_id)
+    explicitly.
+
+    Raises UnknownBundleError when bundle_key does not resolve.
+    """
+    if path is not None:
+        with open(path) as f:
+            return yaml.safe_load(f)
+    resolved_key = bundle_key or SYSTEM_DEFAULT_BUNDLE_KEY
+    ontology_ref, _ = _ensure_bundle_cached(resolved_key)
     return deepcopy(ontology_ref)
 
 
-def load_validation_matrix(
-    path: Path | None = None,
-    *,
-    prefer_active: bool = True,
-) -> set[tuple[str, str, str]]:
-    """Load the ontology validation matrix as a set of (source, rel, target) triples.
+def load_registry_ontology(version_id: str) -> dict[str, Any]:
+    """Load a version-pinned ontology snapshot from the registry.
 
-    Returns an empty set if the ontology doesn't define a validation_matrix.
+    Consults app.models.query_profiles.QueryProfileRegistry, looking up
+    by id (the version_id). Used by audit/historical-reproduction paths
+    and by query-profile-aware readers that need a specific registry row.
+
+    Raises LookupError if no row matches.
     """
-    ontology = load_ontology(path, prefer_active=prefer_active)
+    from sqlalchemy import select
+    from app.db.session import get_sync_session
+    from app.models.query_profiles import QueryProfileRegistry
+
+    with get_sync_session() as session:
+        result = session.execute(
+            select(QueryProfileRegistry)
+            .where(QueryProfileRegistry.id == version_id)
+            .limit(1)
+        )
+        registry = result.scalar_one_or_none()
+        if registry is None or not isinstance(registry.ontology_definition, dict):
+            raise LookupError(
+                f"No registry ontology found for version_id={version_id!r}"
+            )
+        ontology = deepcopy(registry.ontology_definition)
+        if registry.ontology_version and not ontology.get("version"):
+            ontology["version"] = registry.ontology_version
+        return ontology
+
+
+def get_ontology_cache_signature(bundle_key: str | None = None) -> str:
+    """Return a cache signature for the named bundle (or system default)."""
+    resolved_key = bundle_key or SYSTEM_DEFAULT_BUNDLE_KEY
+    _, sig = _ensure_bundle_cached(resolved_key)
+    return sig
+
+
+def load_validation_matrix(
+    *,
+    bundle_key: str | None = None,
+    path: Path | None = None,
+) -> set[tuple[str, str, str]]:
+    """Load the ontology validation matrix as a set of
+    (source, rel, target) triples. Returns empty set if absent."""
+    ontology = load_ontology(bundle_key=bundle_key, path=path)
     matrix: set[tuple[str, str, str]] = set()
     for entry in ontology.get("validation_matrix", []):
         source = entry.get("source", "") or entry.get("source_type", "")
