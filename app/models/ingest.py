@@ -31,6 +31,8 @@ class Source(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    default_ontology_bundle_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    default_use_case_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     documents: Mapped[list["Document"]] = relationship(back_populates="source")
 
@@ -225,6 +227,13 @@ class PipelineRun(Base):
         DateTime(timezone=True), nullable=True
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, server_default="full")
+    ontology_bundle_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    ontology_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ontology_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    use_case_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    extraction_profile_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     stage_runs: Mapped[list["StageRun"]] = relationship(back_populates="pipeline_run")
 
@@ -234,7 +243,9 @@ class StageRun(Base):
 
     __tablename__ = "stage_runs"
     __table_args__ = (
-        UniqueConstraint("pipeline_run_id", "stage_name", "attempt", name="uq_stage_run"),
+        # UniqueConstraint replaced by two partial unique indexes created in migration 0015:
+        #   uq_stage_runs_run_pass_attempt (WHERE pass_name IS NOT NULL)
+        #   uq_stage_runs_summary_row      (WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph')
         {"schema": "ingest"},
     )
 
@@ -259,6 +270,18 @@ class StageRun(Base):
     )
     metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pass_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    execution_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    yield_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    skip_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    primary_entities_extracted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bridge_entities_extracted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    relationships_extracted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    relationships_rejected: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    salvaged: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    schema_size_chars: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    structured_output_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    rollback_executed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
     pipeline_run: Mapped["PipelineRun"] = relationship(back_populates="stage_runs")
 
@@ -328,6 +351,16 @@ class DocumentGraphExtraction(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    pipeline_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.pipeline_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    ontology_bundle_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    ontology_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ontology_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    use_case_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    extraction_profile_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
 
 # Import to resolve forward references
