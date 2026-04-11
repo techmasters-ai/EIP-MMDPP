@@ -1206,7 +1206,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §4.8 full migration. All new columns and indexes, including the explicit drop of the existing `uq_stage_run` uniqueness constraint.
 
-- [ ] **Step 1: Verify the existing uq_stage_run constraint name**
+- [x] **Step 1: Verify the existing uq_stage_run constraint name**
 
 The verification MUST run against a DB that is at Alembic revision 0014 (pre-migration) — otherwise an earlier local attempt may have already dropped the constraint, giving a false negative.
 
@@ -1224,7 +1224,7 @@ docker compose exec postgres psql -U postgres -d eip_arcadedb \
 
 Expected: `uq_stage_run`. Residual check #2 in the spec. If the name differs, record it — the migration hardcodes the exact name.
 
-- [ ] **Step 2: Check existing data for partial-index pre-flight**
+- [x] **Step 2: Check existing data for partial-index pre-flight**
 
 Run against the same DB:
 
@@ -1238,7 +1238,7 @@ docker compose exec postgres psql -U postgres -d eip_arcadedb \
 
 Expected: empty result. If duplicates exist, write a dedupe migration step BEFORE the index creation. Residual check #3 in the spec.
 
-- [ ] **Step 3: Generate the migration skeleton**
+- [x] **Step 3: Generate the migration skeleton**
 
 Run:
 ```bash
@@ -1248,7 +1248,7 @@ ls alembic/versions/ | tail -3
 
 Rename the generated file to `0015_bundle_and_per_pass_extraction.py` if needed to keep the numeric prefix pattern.
 
-- [ ] **Step 4: Write the migration body**
+- [x] **Step 4: Write the migration body**
 
 Use spec §4.8 as the column/index/constraint checklist, but source the actual view SQL from spec §4.4 (§4.8 uses a `...` placeholder for that block). Key sections:
 
@@ -1274,7 +1274,7 @@ The `downgrade()` function must be authored from scratch in strict reverse order
 8. `op.drop_constraint('chk_pipeline_run_mode', 'pipeline_runs', schema='ingest', type_='check')`
 9. `op.drop_column(...)` for every column added in `upgrade()`, in reverse order of addition.
 
-- [ ] **Step 5: Write a migration smoke test**
+- [x] **Step 5: Write a migration smoke test**
 
 Create `tests/unit/test_migration_0015.py`:
 
@@ -1301,7 +1301,7 @@ def test_migration_downgrades_cleanly():
     subprocess.run(["alembic", "upgrade", "head"], check=True)
 ```
 
-- [ ] **Step 6: Run the migration on a fresh DB**
+- [x] **Step 6: Run the migration on a fresh DB**
 
 Run:
 ```bash
@@ -1316,7 +1316,7 @@ docker compose exec postgres psql -U postgres -d eip_arcadedb \
 
 Expected: before upgrade, no new columns. After upgrade, all new columns present and the view exists.
 
-- [ ] **Step 7: Run downgrade and re-upgrade**
+- [x] **Step 7: Run downgrade and re-upgrade**
 
 Run:
 ```bash
@@ -1327,7 +1327,7 @@ pytest tests/unit/test_migration_0015.py -v
 
 Expected: both operations succeed, test passes.
 
-- [ ] **Step 8: Update SQLAlchemy models to match the new schema**
+- [x] **Step 8: Update SQLAlchemy models to match the new schema**
 
 Modify `app/models/ingest.py`:
 - `Source`: add `default_ontology_bundle_key`, `default_use_case_key` per spec §4.1.
@@ -1343,7 +1343,7 @@ pytest tests/ -x 2>&1 | tail -30
 
 Expected: all existing tests still pass. Model changes are additive + one constraint removal.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add alembic/versions/0015_bundle_and_per_pass_extraction.py \
