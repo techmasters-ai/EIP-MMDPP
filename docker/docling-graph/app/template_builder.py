@@ -41,26 +41,39 @@ def derive_graph_id_fields(entity_type: str, properties: dict[str, Any]) -> list
     4. 'title' or 'heading' property
     5. Fallback: first property
     """
+    id_fields, _ = _derive_graph_id_fields_with_source(entity_type, properties)
+    return id_fields
+
+
+def _derive_graph_id_fields_with_source(
+    entity_type: str, properties: dict[str, Any]
+) -> tuple[list[str], bool]:
+    """Internal: returns (id_fields, has_natural_id).
+
+    has_natural_id=False means the id field is the fallback (first property);
+    callers should make such fields Optional in Pydantic to avoid validation
+    failures when the LLM emits differently-named or incomplete identifiers.
+    """
     if entity_type in _COMPOSITE_ID_TYPES:
-        return _COMPOSITE_ID_TYPES[entity_type]
+        return _COMPOSITE_ID_TYPES[entity_type], True
 
     prop_names = list(properties.keys())
     if not prop_names:
-        return ["name"]
+        return ["name"], False
 
     for field_name in ("name", "system_name"):
         if field_name in prop_names:
-            return [field_name]
+            return [field_name], True
 
     for field_name in prop_names:
         if field_name.endswith("_id") and field_name != "entity_type":
-            return [field_name]
+            return [field_name], True
 
     for field_name in ("title", "heading"):
         if field_name in prop_names:
-            return [field_name]
+            return [field_name], True
 
-    return [prop_names[0]]
+    return [prop_names[0]], False
 
 
 def _safe_type_name(ontology_name: str) -> str:
@@ -79,7 +92,7 @@ def _build_single_template(entity_type_def: dict[str, Any]) -> tuple[str, type[B
     # The ontology uses JSON Schema structure: properties.properties
     raw_props: dict[str, Any] = entity_type_def.get("properties", {}).get("properties", {})
 
-    id_fields = derive_graph_id_fields(ontology_name, raw_props)
+    id_fields, has_natural_id = _derive_graph_id_fields_with_source(ontology_name, raw_props)
 
     field_definitions: dict[str, Any] = {}
     for prop_name, prop_schema in raw_props.items():
@@ -91,7 +104,11 @@ def _build_single_template(entity_type_def: dict[str, Any]) -> tuple[str, type[B
         if example is not None:
             field_kwargs["examples"] = [example]
 
-        if prop_name in id_fields:
+        # Required only when the id field is a natural identifier
+        # (name, system_name, *_id, title, heading, or declared composite).
+        # For fallback id fields (first-property heuristic), keep Optional
+        # so LLM extractions aren't rejected when the exact field is missing.
+        if prop_name in id_fields and has_natural_id:
             field_definitions[prop_name] = (py_type, Field(**field_kwargs))
         else:
             field_definitions[prop_name] = (Optional[py_type], Field(default=None, **field_kwargs))

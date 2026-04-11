@@ -2561,8 +2561,8 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
 
             if use_layered or shadow_mode:
                 from app.services.layered_extraction import run_layered_extraction
-                from app.services.ontology_templates import get_active_ontology
-                ontology = get_active_ontology()
+                from app.services.ontology_templates import load_ontology
+                ontology = load_ontology()
 
             if shadow_mode:
                 # Shadow mode: run BOTH, compare metrics, keep single-pass output
@@ -2669,7 +2669,9 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # Collect accepted nodes for batch upsert
         batch_node_records: list[NodeRecord] = []
         for node in graph_data.get("nodes", []):
-            conf = node.get("confidence", 0.8)
+            conf = node.get("confidence")
+            if conf is None:
+                conf = 0.8
             if conf < node_min_conf:
                 nodes_rejected += 1
                 continue
@@ -2698,7 +2700,9 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # Collect accepted edges for batch upsert
         batch_rel_records: list[RelationshipRecord] = []
         for edge in graph_data.get("edges", []):
-            conf = edge.get("confidence", 0.8)
+            conf = edge.get("confidence")
+            if conf is None:
+                conf = 0.8
             from_name = edge.get("from_name", "")
             to_name = edge.get("to_name", "")
             if conf < rel_min_conf or from_name not in accepted_nodes or to_name not in accepted_nodes:
