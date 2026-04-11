@@ -1,0 +1,74 @@
+bundle_key: air_defense_v3
+manifest_schema_version: "1.0.0"
+ontology_name: "EIP Military Equipment Ontology"
+ontology_version: "3.0.0"
+extraction_profile_version: "1.0.0"
+
+passes:
+  - name: reference
+    required: true
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.reference
+    template_class: ReferencePass
+    primary_entity_types: [SECTION, FIGURE, TABLE, ASSERTION]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_domain
+    required: true
+    kind: entities_and_relationships
+    input_mode: document_only
+    module: extraction_schemas.radar_domain
+    template_class: RadarDomainPass
+    primary_entity_types:
+      [RADAR_SYSTEM, ANTENNA, RECEIVER, TRANSMITTER, SIGNAL_PROCESSING_CHAIN,
+       FREQUENCY_BAND, WAVEFORM]
+    bridge_entity_types: [PLATFORM, SPECIFICATION]
+    extracted_relationship_types:
+      [INSTALLED_ON, HAS_ANTENNA, HAS_RECEIVER, HAS_TRANSMITTER,
+       HAS_PROCESSING_CHAIN, OPERATES_IN_BAND, USES_WAVEFORM, SPECIFIED_BY]
+    depends_on: []
+
+  - name: missile_domain
+    required: true
+    kind: entities_and_relationships
+    input_mode: document_only
+    module: extraction_schemas.missile_domain
+    template_class: MissileDomainPass
+    primary_entity_types:
+      [MISSILE_SYSTEM, LAUNCHER_SYSTEM, GUIDANCE_METHOD, SEEKER, PROPULSION_STACK]
+    bridge_entity_types: [PLATFORM, SPECIFICATION]
+    extracted_relationship_types:
+      [INSTALLED_ON, HAS_GUIDANCE, HAS_SEEKER, HAS_PROPULSION, LAUNCHES, SPECIFIED_BY]
+    depends_on: []
+
+  - name: other_systems
+    required: true
+    kind: entities_and_relationships
+    input_mode: document_only
+    module: extraction_schemas.other_systems
+    template_class: OtherSystemsPass
+    primary_entity_types:
+      [AIR_DEFENSE_ARTILLERY_SYSTEM, ELECTRONIC_WARFARE_SYSTEM,
+       FIRE_CONTROL_SYSTEM, WEAPON_SYSTEM, INTEGRATED_AIR_DEFENSE_SYSTEM]
+    bridge_entity_types: [PLATFORM, SPECIFICATION]
+    extracted_relationship_types: [INSTALLED_ON, SPECIFIED_BY]
+    depends_on: []
+
+  - name: system_links
+    required: true
+    kind: relationships_only
+    input_mode: document_plus_entity_refs
+    module: extraction_schemas.system_links
+    template_class: SystemLinksPass
+    primary_entity_types: []
+    bridge_entity_types: []
+    extracted_relationship_types: [ASSOCIATED_WITH, CUES]
+    depends_on: [radar_domain, missile_domain, other_systems]
+    skip_if_no_upstream_endpoints: true
+    skip_justification: >
+      When none of the upstream domain passes produce any linkable system
+      entities, there is nothing for system_links to link. Skipping is
+      preferable to dispatching an LLM call that can only fail.
