@@ -802,7 +802,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §3.8. HAS_PROVENANCE is NOT created here — it's auto-created by `upsert_nodes_batch_sync` in phase 2. Only `MENTIONED_IN` is produced by derive_rules.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/unit/test_derive_rules.py`:
 
@@ -927,14 +927,14 @@ def test_derive_structural_edges_skips_empty_display_label():
     assert edges == []
 ```
 
-- [ ] **Step 2: Run tests — expect ImportError**
+- [x] **Step 2: Run tests — expect ImportError**
 
 Run:
 ```bash
 pytest tests/unit/test_derive_rules.py -v 2>&1 | tail -10
 ```
 
-- [ ] **Step 3: Write derive_rules.py**
+- [x] **Step 3: Write derive_rules.py**
 
 Create `ontology_bundles/air_defense_v3/derive_rules.py` per spec §3.8. Include `ChunkForDerivation` dataclass, `DerivedEdge` dataclass, and `derive_structural_edges()` function. The function walks `merged.entities`, looks up each entity's RID, and emits MENTIONED_IN edges to chunks whose `text_normalized` contains the canonical label. Do NOT create HAS_PROVENANCE.
 
@@ -953,14 +953,14 @@ def normalize_name(name: str | None) -> str:
     return _WHITESPACE_RE.sub(" ", name.strip().lower())
 ```
 
-- [ ] **Step 4: Run tests — expect pass**
+- [x] **Step 4: Run tests — expect pass**
 
 Run:
 ```bash
 pytest tests/unit/test_derive_rules.py -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ontology_bundles/air_defense_v3/derive_rules.py tests/unit/test_derive_rules.py
