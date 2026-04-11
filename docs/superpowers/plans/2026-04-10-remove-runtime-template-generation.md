@@ -20,7 +20,7 @@ Before any refactor work, the 4 uncommitted files on `feature/arcadedb` must be 
 
 **Files:** none (inspection only)
 
-- [ ] **Step 1: Check current branch and uncommitted files**
+- [x] **Step 1: Check current branch and uncommitted files**
 
 Run:
 ```bash
@@ -37,7 +37,7 @@ Expected: on `feature/arcadedb`, with 4 modified files:
 
 You may also see an untracked `?? "ArcadeDB Manual.pdf"` entry. That's fine; leave it untracked. Latest commit should be `6d14eaf` (the twelfth-round spec fix) or more recent. If anything ELSE is uncommitted or untracked that you don't recognize, stop and investigate before proceeding.
 
-- [ ] **Step 2: Skim the uncommitted diffs**
+- [x] **Step 2: Skim the uncommitted diffs**
 
 Run:
 ```bash
@@ -51,7 +51,7 @@ The first two are durable ArcadeDB fixes: event-loop-aware httpx client + Cypher
 
 **Files:** `app/services/arcadedb_client.py`, `app/services/arcadedb_graph.py`
 
-- [ ] **Step 1: Stage the two ArcadeDB files only**
+- [x] **Step 1: Stage the two ArcadeDB files only**
 
 Run:
 ```bash
@@ -61,7 +61,7 @@ git status --short
 
 Expected: only those two files staged, the pipeline.py and template_builder.py files still unstaged.
 
-- [ ] **Step 2: Commit A**
+- [x] **Step 2: Commit A**
 
 Run:
 ```bash
@@ -89,7 +89,7 @@ Expected: new commit on `feature/arcadedb` ahead of `6d14eaf` (or whatever the p
 
 **Files:** `app/workers/pipeline.py`, `docker/docling-graph/app/template_builder.py`
 
-- [ ] **Step 1: Stage and commit B**
+- [x] **Step 1: Stage and commit B**
 
 Run:
 ```bash
@@ -122,7 +122,7 @@ Expected: working tree clean, two new commits on `feature/arcadedb`.
 
 **Files:** none (git operation)
 
-- [ ] **Step 1: Branch from stabilized feature/arcadedb**
+- [x] **Step 1: Branch from stabilized feature/arcadedb**
 
 Run:
 ```bash
@@ -133,7 +133,7 @@ git log --oneline -5
 
 Expected: on `feature/extraction-refactor`, with the two stabilization commits and the spec commit visible in the log. All subsequent tasks in this plan run on this branch.
 
-- [ ] **Step 2: Create TaskCreate tracking entries for the remaining chunks**
+- [x] **Step 2: Create TaskCreate tracking entries for the remaining chunks**
 
 This is a planning checkpoint. Tasks for PR 1 will be created at the start of Chunk 1, PR 2 at Chunk 2, PR 3 at Chunk 3.
 
@@ -152,7 +152,7 @@ This is a planning checkpoint. Tasks for PR 1 will be created at the start of Ch
 
 Spec §3.6 + §4.3 identity scope rules.
 
-- [ ] **Step 1: Read the current ontology.yaml to understand its shape**
+- [x] **Step 1: Read the current ontology.yaml to understand its shape**
 
 Run:
 ```bash
@@ -163,7 +163,7 @@ grep -n "^  - name:" ontology/ontology.yaml | head -50
 
 Confirm: top-level entries under `entity_types:`, each with `name`, `label`, `parent`, `properties`.
 
-- [ ] **Step 2: For each of the 23 extract-bucket entity types, add identity_fields and identity_scope**
+- [x] **Step 2: For each of the 23 extract-bucket entity types, add identity_fields and identity_scope**
 
 **Authoritative values for this PR.** Spec §3.6 enumerates the rules and shows seven examples; the table below is the authoritative set for all 23 extract-bucket entity types and must be used as-is. Every `identity_fields` entry below is verified against the actual property list in `ontology/ontology.yaml` as of commit `6d14eaf` — do NOT re-derive. Scope choices follow spec §3.6: `global` for real-world-shared equipment identified by a stable system designation, `document` for document-local anchors and subordinate components that belong to a specific document's context.
 
@@ -205,7 +205,7 @@ Edit each entity in-place. Example:
       ...
 ```
 
-- [ ] **Step 3: Validate YAML syntax**
+- [x] **Step 3: Validate YAML syntax**
 
 Run:
 ```bash
@@ -214,7 +214,7 @@ python -c "import yaml; yaml.safe_load(open('ontology/ontology.yaml'))" && echo 
 
 Expected: `YAML OK`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add ontology/ontology.yaml
@@ -240,7 +240,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §2 directory layout + §7.3 symlink compatibility.
 
-- [ ] **Step 1: Create directories and __init__.py files**
+- [x] **Step 1: Create directories and __init__.py files**
 
 Run:
 ```bash
@@ -253,7 +253,7 @@ ls -la ontology_bundles/air_defense_v3/
 
 Expected: empty `__init__.py` files present in the three directories.
 
-- [ ] **Step 2: Move ontology.yaml into the bundle**
+- [x] **Step 2: Move ontology.yaml into the bundle**
 
 Run:
 ```bash
@@ -263,7 +263,7 @@ ls -la ontology/ ontology_bundles/air_defense_v3/
 
 Expected: `ontology/` directory may still exist (contains other files); `ontology.yaml` is now only in the bundle.
 
-- [ ] **Step 3: Create symlink for legacy compatibility**
+- [x] **Step 3: Create symlink for legacy compatibility**
 
 Run:
 ```bash
@@ -276,7 +276,7 @@ cat ontology/ontology.yaml | head -20
 
 Expected: `ls -la` shows a symlink arrow pointing to `../ontology_bundles/air_defense_v3/ontology.yaml`; `cat` resolves through the symlink and dumps the same content as the bundle file.
 
-- [ ] **Step 4: Verify the symlink is tracked by git as a symlink**
+- [x] **Step 4: Verify the symlink is tracked by git as a symlink**
 
 Run:
 ```bash
@@ -296,7 +296,7 @@ git ls-files -s ontology/ontology.yaml   # should now show 120000
 
 This is Linux-only-friendly; the deploy target is Linux so the mode should stick. If the clone is on Windows, the symlink will need to be recreated in each checkout.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ontology_bundles/ ontology/ontology.yaml
@@ -320,11 +320,11 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §2 manifest schema + coverage schema. Copy the full content from the spec's §2 code blocks.
 
-- [ ] **Step 1: Write manifest.yaml**
+- [x] **Step 1: Write manifest.yaml**
 
 Create `ontology_bundles/air_defense_v3/manifest.yaml` with the full content from spec §2 "manifest.yaml schema" code block. All 5 passes (reference, radar_domain, missile_domain, other_systems, system_links) with their `name`, `required`, `kind`, `input_mode`, `module`, `template_class`, `primary_entity_types`, `bridge_entity_types`, `extracted_relationship_types`, `depends_on`, and `skip_if_no_upstream_endpoints` (where applicable). Top-level keys: `bundle_key`, `manifest_schema_version`, `ontology_name`, `ontology_version`, `extraction_profile_version`.
 
-- [ ] **Step 2: Validate manifest.yaml is parseable**
+- [x] **Step 2: Validate manifest.yaml is parseable**
 
 Run:
 ```bash
@@ -333,11 +333,11 @@ python -c "import yaml; m = yaml.safe_load(open('ontology_bundles/air_defense_v3
 
 Expected: `5 passes`.
 
-- [ ] **Step 3: Write coverage.yaml**
+- [x] **Step 3: Write coverage.yaml**
 
 Create `ontology_bundles/air_defense_v3/coverage.yaml` with the full content from spec §2 "coverage.yaml schema" code block. `entity_types.extract` has 23 entries; `entity_types.derive` is `[]`; `relationship_types.extract` has 14 entries; `relationship_types.derive` has `HAS_PROVENANCE`, `MENTIONED_IN`, `CONTAINS_TEXT`, `CONTAINS_IMAGE`.
 
-- [ ] **Step 4: Validate coverage.yaml**
+- [x] **Step 4: Validate coverage.yaml**
 
 Run:
 ```bash
@@ -346,7 +346,7 @@ python -c "import yaml; c = yaml.safe_load(open('ontology_bundles/air_defense_v3
 
 Expected: `23 extract entities`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ontology_bundles/air_defense_v3/manifest.yaml ontology_bundles/air_defense_v3/coverage.yaml
