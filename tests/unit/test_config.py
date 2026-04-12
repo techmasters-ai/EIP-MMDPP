@@ -110,3 +110,54 @@ class TestGetSettingsCaching:
         a = get_settings()
         b = get_settings()
         assert a is b
+
+
+# --- Task 3.6: graph_extraction_engine feature flag (spec §7.4) ---------
+
+class TestGraphExtractionEngineFlag:
+    def test_default_is_legacy(self):
+        """PR 2 merge does not auto-switch production traffic."""
+        from app.config import Settings
+        s = Settings(_env_file=None, postgres_password="test")
+        assert s.graph_extraction_engine == "legacy"
+
+    def test_accepts_bundle_passes(self):
+        """Only 'legacy' and 'bundle_passes' are valid values."""
+        from app.config import Settings
+        s = Settings(
+            _env_file=None,
+            postgres_password="test",
+            graph_extraction_engine="bundle_passes",
+        )
+        assert s.graph_extraction_engine == "bundle_passes"
+
+    def test_rejects_unknown_value(self):
+        from pydantic import ValidationError
+        from app.config import Settings
+        with pytest.raises(ValidationError):
+            Settings(
+                _env_file=None,
+                postgres_password="test",
+                graph_extraction_engine="experimental",
+            )
+
+
+# --- Task 3.6: IngestDispatchResult dataclass (spec §5.2) ---------------
+
+class TestIngestDispatchResult:
+    def test_is_frozen(self):
+        from dataclasses import FrozenInstanceError
+        from app.workers.dispatch_types import IngestDispatchResult
+
+        r = IngestDispatchResult(pipeline_run_id="run-1", celery_task_id="task-1")
+        assert r.pipeline_run_id == "run-1"
+        assert r.celery_task_id == "task-1"
+        with pytest.raises(FrozenInstanceError):
+            r.pipeline_run_id = "run-2"  # type: ignore[misc]
+
+    def test_requires_both_fields(self):
+        from app.workers.dispatch_types import IngestDispatchResult
+
+        # Both fields are required
+        with pytest.raises(TypeError):
+            IngestDispatchResult(pipeline_run_id="run-1")  # type: ignore[call-arg]

@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     graph_layered_max_passes: int = 10
     graph_layered_shadow_mode: bool = False  # run both, compare, keep single-pass
 
+    # Spec §7.4 + Task 3.6 — feature flag for the bundle-passes extraction path.
+    # Defaults to 'legacy' so PR 2 merge does NOT auto-switch production
+    # traffic. Flipping to 'bundle_passes' requires a worker + beat
+    # restart (§7.6). Read only via get_settings() — no uncached
+    # per-task reader. PR 3 deletes this flag entirely after soak.
+    graph_extraction_engine: Literal["legacy", "bundle_passes"] = "legacy"
+
     # Governance: when true, graph mutation patches require two distinct
     # curator approvals before they can be applied.  When false (default),
     # a single approval is sufficient.
