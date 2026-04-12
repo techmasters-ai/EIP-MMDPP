@@ -2071,7 +2071,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 **Files:**
 - Create: `tests/integration/test_pr1_scaffolding_smoke.py`
 
-- [ ] **Step 1: Write the PR 1 smoke test**
+- [x] **Step 1: Write the PR 1 smoke test**
 
 Create `tests/integration/test_pr1_scaffolding_smoke.py`:
 
@@ -2137,7 +2137,7 @@ def test_migration_applied():
     assert cols == {"pass_name", "execution_status", "yield_status", "rollback_executed"}
 ```
 
-- [ ] **Step 2: Run the smoke test**
+- [x] **Step 2: Run the smoke test**
 
 ```bash
 pytest tests/integration/test_pr1_scaffolding_smoke.py -v
@@ -2145,7 +2145,7 @@ pytest tests/integration/test_pr1_scaffolding_smoke.py -v
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 ```bash
 pytest tests/ 2>&1 | tail -30
@@ -2153,7 +2153,7 @@ pytest tests/ 2>&1 | tail -30
 
 Expected: green. If any failures, fix them before PR 1 review.
 
-- [ ] **Step 4: Verify legacy path end-to-end with a canary document**
+- [x] **Step 4: Verify legacy path end-to-end with a canary document**
 
 The existing e2e harness at `tests/e2e/test_full_pipeline.py` already runs a real ingest against the compose stack. Re-run it explicitly in PR 1 mode to prove the legacy path still produces a graph after all Chunk 1 + Chunk 2 scaffolding lands:
 
@@ -2188,7 +2188,7 @@ Expected row: `mode='full'` (or the default the test uses), `legacy` JSON contai
 
 Only AFTER this canary passes are the `[x]` items in Task 2.9's PR body allowed to be pre-checked.
 
-- [ ] **Step 5: Commit the smoke test**
+- [x] **Step 5: Commit the smoke test**
 
 ```bash
 git add tests/integration/test_pr1_scaffolding_smoke.py
