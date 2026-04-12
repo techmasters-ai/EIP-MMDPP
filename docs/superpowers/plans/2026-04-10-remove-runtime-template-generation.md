@@ -2918,7 +2918,7 @@ Spec §3.6 + §3.7 + §3.9 + §6.2 + §6.7. This is the biggest single task in t
 
 This task owns `LogicalIdentity`, `PassResult`, `MergedEntityRecord`, `MergedEdgeRecord`, `MergedExtraction`, `ChunkForDerivation`, `DerivedEdge`, `RelationshipRejectionReason`, `merge_and_resolve`, `build_display_label`, `classify_yield`, `classify_yield_from_counts`, and `YieldStatus`.
 
-- [ ] **Step 1: Write failing tests for `RelationshipRejectionReason` (rule 14 coverage)**
+- [x] **Step 1: Write failing tests for `RelationshipRejectionReason` (rule 14 coverage)**
 
 Create `tests/unit/test_extraction_merge.py` with the section that satisfies spec §2 checker rule 14:
 
@@ -3123,7 +3123,7 @@ def test_every_rejection_reason_has_a_test():
 
 Each `test_rejection_*` must build a minimal fixture that triggers that specific reason when fed into `merge_and_resolve`, and assert the rejection appears in `merged.rejected_edges` with the right reason.
 
-- [ ] **Step 2: Write failing tests for `LogicalIdentity` identity dict helpers**
+- [x] **Step 2: Write failing tests for `LogicalIdentity` identity dict helpers**
 
 Append to `tests/unit/test_extraction_merge.py`:
 
@@ -3180,7 +3180,7 @@ def test_logical_identity_document_scope_requires_document_id():
         li.as_upsert_identity_dict()
 ```
 
-- [ ] **Step 3: Write failing tests for `build_display_label`**
+- [x] **Step 3: Write failing tests for `build_display_label`**
 
 ```python
 def test_build_display_label_prefers_system_name_from_identity():
@@ -3229,7 +3229,7 @@ def test_build_display_label_deterministic_hash_fallback():
     assert "12.5" in label1
 ```
 
-- [ ] **Step 4: Write failing tests for `classify_yield_from_counts`**
+- [x] **Step 4: Write failing tests for `classify_yield_from_counts`**
 
 ```python
 # Per spec §6.2 precedence (top wins)
@@ -3261,7 +3261,7 @@ def test_classify_yield_hit_fallthrough():
     assert y == YieldStatus.HIT
 ```
 
-- [ ] **Step 5: Write failing tests for `merge_and_resolve` key properties**
+- [x] **Step 5: Write failing tests for `merge_and_resolve` key properties**
 
 ```python
 def test_merge_collapses_bridge_entity_across_passes():
@@ -3360,7 +3360,7 @@ The first, third, and fourth tests are fully worked examples. The remaining test
 
 Each test constructs a minimal `pass_results` dict + manifest + ontology fixture and asserts a specific merge behavior. Use pytest fixtures to share the minimum ontology slice.
 
-- [ ] **Step 6: Run all tests — expect failures**
+- [x] **Step 6: Run all tests — expect failures**
 
 ```bash
 pytest tests/unit/test_extraction_merge.py -v 2>&1 | tail -40
@@ -3368,7 +3368,7 @@ pytest tests/unit/test_extraction_merge.py -v 2>&1 | tail -40
 
 Expected: every test fails because `app/services/extraction_merge.py` doesn't exist yet.
 
-- [ ] **Step 7: Implement `app/services/extraction_merge.py` in two passes**
+- [x] **Step 7: Implement `app/services/extraction_merge.py` in two passes**
 
 Per spec §3.6 through §3.9 and §6.2 + §6.7. Implement in two checkpoints so the red→green test loop stays tight:
 
@@ -3804,7 +3804,7 @@ def _count_bridge_entities(result: PassResult, pass_def) -> int:
 
 All implementation bodies are provided above. Cross-reference spec §3.7 for edge cases that the fixtures in Step 5 do not cover (e.g., ref_id resolution for cross-pass relationships — the `_resolve_relationship` skeleton does not handle `from_ref_id` / `to_ref_id` yet; extend it when you implement `test_rejection_unknown_ref_id` and `test_merge_cross_pass_resolves_by_ref_id`).
 
-- [ ] **Step 8: Run tests iteratively until green**
+- [x] **Step 8: Run tests iteratively until green**
 
 ```bash
 pytest tests/unit/test_extraction_merge.py -v 2>&1 | tail -40
@@ -3812,7 +3812,7 @@ pytest tests/unit/test_extraction_merge.py -v 2>&1 | tail -40
 
 Fix failures one at a time. Do NOT modify tests to match implementation — modify implementation to match tests. Commit is gated on green suite.
 
-- [ ] **Step 9: Run the coverage checker rule 14 locally**
+- [x] **Step 9: Run the coverage checker rule 14 locally**
 
 The checker (Task 2.4) has rule 14 tied to `tests/unit/test_extraction_merge.py`. Re-run it now that the file exists:
 
@@ -3822,7 +3822,7 @@ python tools/check_extraction_coverage.py
 
 Expected: `PASS air_defense_v3`. (Rule 14 itself is enforced by pytest, not by the coverage-checker binary — but the checker should not regress.)
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add app/services/extraction_merge.py tests/unit/test_extraction_merge.py
