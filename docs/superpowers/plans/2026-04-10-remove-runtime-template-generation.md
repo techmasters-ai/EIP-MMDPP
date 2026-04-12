@@ -6068,7 +6068,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 **Files:**
 - Create: `tests/integration/test_pr2_switchover_smoke.py`
 
-- [ ] **Step 1: Write the smoke test**
+- [x] **Step 1: Write the smoke test**
 
 ```python
 """PR 2 smoke: with graph_extraction_engine=bundle_passes, the full
@@ -6098,7 +6098,7 @@ def test_legacy_still_works_with_default_flag():
     ...
 ```
 
-- [ ] **Step 2: Run the smoke test**
+- [x] **Step 2: Run the smoke test**
 
 ```bash
 docker compose up -d postgres redis arcadedb worker api docling-graph
@@ -6107,7 +6107,7 @@ pytest tests/integration/test_pr2_switchover_smoke.py -v
 
 Expected: both pass.
 
-- [ ] **Step 3: Commit and open PR 2**
+- [x] **Step 3: Commit and open PR 2**
 
 ```bash
 git add tests/integration/test_pr2_switchover_smoke.py
@@ -6169,21 +6169,21 @@ After merge, the flag defaults to legacy. To switch:
 4. Monitor metrics per spec §7.8 for 7 days
 
 ## Test plan
-- [ ] Full pytest suite passes with default flag
-- [ ] test_derive_ontology_graph_bundle_passes.py passes with the flag
+- [x] Full pytest suite passes with default flag
+- [x] test_derive_ontology_graph_bundle_passes.py passes with the flag
       flipped per-test
-- [ ] Legacy e2e still produces a graph end-to-end
-- [ ] Status API returns the §7.10 shape for both snapshot-present and
+- [x] Legacy e2e still produces a graph end-to-end
+- [x] Status API returns the §7.10 shape for both snapshot-present and
       snapshot-null cases
-- [ ] Baseline harness reports baseline_met=true in dev/staging
-- [ ] Rollback integration test still passes after any graph_store changes
+- [x] Baseline harness reports baseline_met=true in dev/staging
+- [x] Rollback integration test still passes after any graph_store changes
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
 
-- [ ] **Step 4: Begin soak procedure**
+- [x] **Step 4: Begin soak procedure**
 
 Per spec §7.4 soak procedure (operational, not a plan task):
 
