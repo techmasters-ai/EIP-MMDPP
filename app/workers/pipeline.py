@@ -89,9 +89,12 @@ from dataclasses import dataclass as _dataclass  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 
 from app.services.extraction_merge import classify_yield  # noqa: E402
+from app.services.extraction_merge import classify_yield_from_counts  # noqa: E402
 from app.services.extraction_merge import build_display_label  # noqa: E402
+from app.services.extraction_merge import YieldStatus  # noqa: E402
 from app.services.ontology_bundles import load_bundle_manifest  # noqa: E402
 from app.db.session import get_graph_store  # noqa: E402
+from app.db.session import get_sync_session  # noqa: E402
 
 
 # --- Custom exception types for the single-pass dispatcher (spec §5.5 + §6.5) ---
@@ -157,10 +160,161 @@ def _delete_extraction_layer_graph(document_id: str) -> None:
     raise NotImplementedError("Task 4.6")
 
 
+def _rel_to_dict(rel_tuple) -> dict:
+    """Serialise a rejected_edges tuple (source_pass, raw_rel, reason) to a
+    JSON-safe dict for the metrics blob."""
+    source_pass, raw_rel, reason = rel_tuple
+    reason_val = reason.value if hasattr(reason, "value") else str(reason)
+    return {
+        "source_pass": source_pass,
+        "reason": reason_val,
+    }
+
+
+def _build_rejection_sample(rejected_edges, max_per_pass: int = 20) -> list[dict]:
+    """Return up to max_per_pass rejection dicts per (pass, reason) combo.
+
+    Groups by source_pass first so no single pass drowns out others.
+    """
+    from collections import defaultdict
+    by_pass: dict[str, list] = defaultdict(list)
+    for tup in rejected_edges:
+        source_pass = tup[0]
+        by_pass[source_pass].append(tup)
+
+    sample: list[dict] = []
+    for pass_name, tups in by_pass.items():
+        for tup in tups[:max_per_pass]:
+            sample.append(_rel_to_dict(tup))
+    return sample
+
+
+def _build_pass_outcomes_rollup(session, pipeline_run_id) -> dict:
+    """Query v_latest_pass_attempts for pass-level metrics.
+
+    Returns a dict keyed by pass_name with counts. Returns {} if no rows.
+    """
+    from sqlalchemy import text
+
+    try:
+        rows = session.execute(
+            text(
+                "SELECT pass_name, execution_status, yield_status, "
+                "primary_entities_extracted, bridge_entities_extracted, "
+                "relationships_extracted, relationships_rejected "
+                "FROM ingest.v_latest_pass_attempts "
+                "WHERE pipeline_run_id = :run_id"
+            ),
+            {"run_id": str(pipeline_run_id)},
+        ).all()
+    except Exception:
+        return {}
+
+    rollup: dict = {}
+    for row in rows:
+        rollup[row.pass_name] = {
+            "execution_status": row.execution_status,
+            "yield_status": row.yield_status,
+            "primary_entities_extracted": row.primary_entities_extracted or 0,
+            "bridge_entities_extracted": row.bridge_entities_extracted or 0,
+            "relationships_extracted": row.relationships_extracted or 0,
+            "relationships_rejected": row.relationships_rejected or 0,
+        }
+    return rollup
+
+
+def _serialize_for_audit(merged, manifest) -> dict:
+    """Build the DocumentGraphExtraction.graph_json audit blob.
+
+    Distinguishes primary vs bridge entities using the manifest's
+    bridge_entity_types lists (a type is a bridge iff it appears in
+    ANY pass's bridge_entity_types).
+    """
+    bridge_types: set[str] = set()
+    for pass_def in manifest.passes:
+        bridge_types.update(pass_def.bridge_entity_types or [])
+
+    primary_total = 0
+    bridge_total = 0
+    entity_count_by_type: dict[str, int] = {}
+    for e in merged.entities:
+        etype = e.identity.entity_type
+        entity_count_by_type[etype] = entity_count_by_type.get(etype, 0) + 1
+        if etype in bridge_types:
+            bridge_total += 1
+        else:
+            primary_total += 1
+
+    edges_accepted = len(merged.edges)
+    edges_rejected = len(merged.rejected_edges)
+
+    # Rejection reasons summary
+    rejection_reasons: dict[str, int] = {}
+    for tup in merged.rejected_edges:
+        reason = tup[2]
+        reason_val = reason.value if hasattr(reason, "value") else str(reason)
+        rejection_reasons[reason_val] = rejection_reasons.get(reason_val, 0) + 1
+
+    return {
+        "primary_entities_total": primary_total,
+        "bridge_entities_total": bridge_total,
+        "entity_count_by_type": entity_count_by_type,
+        "edges_accepted": edges_accepted,
+        "edges_rejected": edges_rejected,
+        "rejection_reasons": rejection_reasons,
+    }
+
+
 def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
-    """Filled in by Task 4.5: populates PipelineRun.metrics with the
-    quality-signal blob from spec §6.6."""
-    raise NotImplementedError("Task 4.5")
+    """Populates PipelineRun.metrics with the quality-signal blob.
+
+    Spec §6.6. Queries v_latest_pass_attempts for per-pass outcomes,
+    computes document_extraction_anomaly (all core passes non-HIT),
+    overall_relationship_rejection_ratio, and a rejection sample.
+    """
+    from app.models.ingest import PipelineRun
+
+    with get_sync_session() as session:
+        run = session.get(PipelineRun, pipeline_run_id)
+
+        # Per-pass rollup from the view
+        pass_outcomes = _build_pass_outcomes_rollup(session, pipeline_run_id)
+
+        # document_extraction_anomaly: True if NO pass achieved HIT
+        # (all passes ended EMPTY or BRIDGES_ONLY or SKIPPED/FAILED)
+        any_hit = any(
+            v.get("yield_status") == "HIT"
+            for v in pass_outcomes.values()
+        )
+        document_extraction_anomaly = not any_hit if pass_outcomes else False
+
+        # Count passes in DEGRADED state
+        pass_degraded_count = sum(
+            1 for v in pass_outcomes.values() if v.get("yield_status") == "DEGRADED"
+        )
+
+        # Overall rejection ratio across all merged edges
+        total_extracted = len(merged.edges)
+        total_rejected = len(merged.rejected_edges)
+        total_rels = total_extracted + total_rejected
+        overall_rejection_ratio = (
+            round(total_rejected / total_rels, 4) if total_rels > 0 else 0.0
+        )
+
+        rejected_sample = _build_rejection_sample(merged.rejected_edges)
+
+        bundle_key = getattr(manifest, "bundle_key", None) or getattr(run, "ontology_bundle_key", None)
+
+        run.metrics = {
+            "pass_outcomes": pass_outcomes,
+            "document_extraction_anomaly": document_extraction_anomaly,
+            "pass_degraded_count": pass_degraded_count,
+            "overall_relationship_rejection_ratio": overall_rejection_ratio,
+            "rejected_relationships_sample": rejected_sample,
+            "bundle_legacy": False,
+            "bundle_key_display": bundle_key or "",
+        }
+        session.commit()
 
 
 def _run_single_pass(
@@ -314,9 +468,60 @@ def _should_skip(pass_def, upstream_refs: dict, ontology: dict) -> bool:
 
 
 def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
-    """Filled in by Task 4.5: recomputes yield_status per-pass after merge
-    updates relationships_rejected totals. Spec §5.4 + §6.2."""
-    raise NotImplementedError("Task 4.5")
+    """Recomputes yield_status per-pass after merge_and_resolve rejects edges.
+
+    Spec §5.4 + §6.2. The only allowed transition is HIT → DEGRADED; this
+    function does NOT promote EMPTY/BRIDGES_ONLY passes upward.
+
+    Updates relationships_extracted and relationships_rejected counts on
+    each COMPLETE StageRun row so they reflect post-merge reality.
+    """
+    from app.models.ingest import StageRun
+
+    # Build per-pass edge counts from the merged result
+    extracted_by_pass: dict[str, int] = {}
+    for edge in merged.edges:
+        pass_name = edge.source_pass
+        extracted_by_pass[pass_name] = extracted_by_pass.get(pass_name, 0) + 1
+
+    rejected_by_pass: dict[str, int] = {}
+    for tup in merged.rejected_edges:
+        pass_name = tup[0]
+        rejected_by_pass[pass_name] = rejected_by_pass.get(pass_name, 0) + 1
+
+    with get_sync_session() as session:
+        rows = (
+            session.query(StageRun)
+            .filter(
+                StageRun.pipeline_run_id == pipeline_run_id,
+                StageRun.stage_name == "derive_ontology_graph",
+                StageRun.pass_name.isnot(None),
+                StageRun.execution_status == "COMPLETE",
+            )
+            .all()
+        )
+
+        for row in rows:
+            pass_name = row.pass_name
+            extracted = extracted_by_pass.get(pass_name, 0)
+            rejected = rejected_by_pass.get(pass_name, 0)
+
+            # Always update the relationship counts to reflect post-merge reality
+            row.relationships_extracted = extracted
+            row.relationships_rejected = rejected
+
+            # Only allow HIT → DEGRADED transition (spec §6.2)
+            if row.yield_status == "HIT":
+                new_yield = classify_yield_from_counts(
+                    primary=row.primary_entities_extracted or 0,
+                    bridge=row.bridge_entities_extracted or 0,
+                    extracted_rels=extracted,
+                    rejected_rels=rejected,
+                )
+                if new_yield == YieldStatus.DEGRADED:
+                    row.yield_status = "DEGRADED"
+
+        session.commit()
 
 
 def _import_graph_phase_nodes(merged, ontology, document_id, tracker):
@@ -583,10 +788,71 @@ def _get_structural_document_rid(document_id: str) -> str:
     return rows[0]["rid"]
 
 
-def _upsert_document_graph_extraction(**kwargs) -> None:
-    """Filled in by Task 4.5: writes the DocumentGraphExtraction snapshot
-    row per spec §5.7 (audit blob, not graph serialization)."""
-    raise NotImplementedError("Task 4.5")
+def _upsert_document_graph_extraction(
+    *,
+    document_id: str,
+    pipeline_run_id: str,
+    run,
+    merged,
+    manifest,
+) -> None:
+    """Writes the DocumentGraphExtraction snapshot row per spec §5.7.
+
+    graph_json now carries an audit blob (entity/edge counts by type,
+    rejection reasons, primary vs bridge totals) rather than a serialised
+    NetworkX graph. Accepts manifest so _serialize_for_audit can distinguish
+    primary from bridge entities using pass_def.bridge_entity_types lists.
+
+    Upserts: queries by document_id; inserts a new row if none exists,
+    otherwise updates the existing row in place.
+    """
+    import datetime
+    from app.models.ingest import DocumentGraphExtraction
+
+    audit_blob = _serialize_for_audit(merged, manifest)
+
+    with get_sync_session() as session:
+        existing = (
+            session.query(DocumentGraphExtraction)
+            .filter_by(document_id=document_id)
+            .first()
+        )
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        bundle_key = getattr(manifest, "bundle_key", None) or getattr(run, "ontology_bundle_key", None)
+        ontology_name = getattr(manifest, "ontology_name", None) or getattr(run, "ontology_name", None)
+        ontology_version = getattr(manifest, "ontology_version", None) or getattr(run, "ontology_version", None)
+        extraction_profile_version = (
+            getattr(manifest, "extraction_profile_version", None)
+            or getattr(run, "extraction_profile_version", None)
+        )
+
+        if existing is None:
+            row = DocumentGraphExtraction(
+                document_id=document_id,
+                pipeline_run_id=pipeline_run_id,
+                graph_json=audit_blob,
+                status="COMPLETE",
+                updated_at=now,
+                ontology_bundle_key=bundle_key,
+                ontology_name=ontology_name,
+                ontology_version=ontology_version,
+                use_case_key=getattr(run, "use_case_key", None),
+                extraction_profile_version=extraction_profile_version,
+            )
+            session.add(row)
+        else:
+            existing.pipeline_run_id = pipeline_run_id
+            existing.graph_json = audit_blob
+            existing.status = "COMPLETE"
+            existing.updated_at = now
+            existing.ontology_bundle_key = bundle_key
+            existing.ontology_name = ontology_name
+            existing.ontology_version = ontology_version
+            existing.use_case_key = getattr(run, "use_case_key", None)
+            existing.extraction_profile_version = extraction_profile_version
+
+        session.commit()
 
 
 def _normalize_text(text: str | None) -> str | None:

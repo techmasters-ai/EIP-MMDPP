@@ -55,22 +55,7 @@ class TestOrchestratorHelperStubs:
         with pytest.raises(NotImplementedError, match="Task 4.6"):
             _delete_extraction_layer_graph("doc-1")
 
-    def test_write_pipeline_run_metrics_stub(self):
-        from app.workers.pipeline import _write_pipeline_run_metrics
-        with pytest.raises(NotImplementedError, match="Task 4.5"):
-            _write_pipeline_run_metrics("run-1", None, None)
-
-    def test_apply_post_merge_yield_updates_stub(self):
-        from app.workers.pipeline import _apply_post_merge_yield_updates
-        with pytest.raises(NotImplementedError, match="Task 4.5"):
-            _apply_post_merge_yield_updates("run-1", None)
-
     def test_update_document_pipeline_status_stub(self):
         from app.workers.pipeline import _update_document_pipeline_status
         with pytest.raises(NotImplementedError, match="Task 4.7"):
             _update_document_pipeline_status("doc-1", "COMPLETE")
-
-    def test_upsert_document_graph_extraction_stub(self):
-        from app.workers.pipeline import _upsert_document_graph_extraction
-        with pytest.raises(NotImplementedError, match="Task 4.5"):
-            _upsert_document_graph_extraction()
