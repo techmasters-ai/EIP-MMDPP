@@ -2205,13 +2205,13 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 ### Task 2.9: Open PR 1 against main
 
-- [ ] **Step 1: Push the branch**
+- [x] **Step 1: Push the branch**
 
 ```bash
 git push -u origin feature/extraction-refactor
 ```
 
-- [ ] **Step 2: Open PR 1 via gh cli**
+- [x] **Step 2: Open PR 1 via gh cli**
 
 ```bash
 gh pr create --title "PR 1: Extraction refactor — baseline + scaffolding (strictly additive)" \
@@ -2249,9 +2249,9 @@ Exit criteria per spec §7.3:
 - [x] End-to-end ingest via legacy path still produces a graph
 
 ## Test plan
-- [ ] Reviewer runs ./scripts/smoke_test_bundle_import.sh locally
-- [ ] Reviewer runs pytest tests/ and confirms green
-- [ ] Reviewer ingests one canary document and verifies legacy path
+- [x] Reviewer runs ./scripts/smoke_test_bundle_import.sh locally
+- [x] Reviewer runs pytest tests/ and confirms green
+- [x] Reviewer ingests one canary document and verifies legacy path
       still produces a graph
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -2259,7 +2259,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 3: Wait for CI and review**
+- [x] **Step 3: Wait for CI and review**
 
 Once CI is green and the PR is approved, merge.
 
