@@ -5485,7 +5485,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §5.4 orchestrator. This is the task that actually puts the new branch behind the feature flag. After this commit, setting `graph_extraction_engine=bundle_passes` and restarting workers routes traffic to the new path.
 
-- [ ] **Step 1: Wire `_delete_extraction_layer_graph` + `_attempt_rollback`**
+- [x] **Step 1: Wire `_delete_extraction_layer_graph` + `_attempt_rollback`**
 
 Replace the stubs from Task 4.1:
 
@@ -5512,7 +5512,7 @@ def _attempt_rollback(document_id: str) -> str:
         return f"; ROLLBACK_ALSO_FAILED: {rollback_exc}"
 ```
 
-- [ ] **Step 2: Implement `_update_document_pipeline_status`**
+- [x] **Step 2: Implement `_update_document_pipeline_status`**
 
 ```python
 def _update_document_pipeline_status(document_id: str, new_status: str) -> None:
@@ -5527,7 +5527,7 @@ def _update_document_pipeline_status(document_id: str, new_status: str) -> None:
             session.commit()
 ```
 
-- [ ] **Step 3: Add the new branch to `derive_ontology_graph`**
+- [x] **Step 3: Add the new branch to `derive_ontology_graph`**
 
 Find the existing `derive_ontology_graph` Celery task. Wrap it so the feature flag dispatches:
 
@@ -5706,7 +5706,7 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str) -> dict:
 
 Define `MergeError` and `GraphImportError` exception classes alongside `IngestFailed` — they can be simple `Exception` subclasses; the spec treats them the same.
 
-- [ ] **Step 4: Write orchestrator-branch tests**
+- [x] **Step 4: Write orchestrator-branch tests**
 
 Create `tests/unit/test_derive_ontology_graph_bundle_passes.py`:
 
@@ -5717,7 +5717,7 @@ Create `tests/unit/test_derive_ontology_graph_bundle_passes.py`:
 - Unexpected failure post-mutation: phase 3 raises; tracker already True from phase 2; rollback runs.
 - Bookkeeping exception swallowed: when bookkeeping update raises AFTER the original exception, the original exception re-raises correctly (no mask).
 
-- [ ] **Step 5: Run tests — feature flag OFF in most tests**
+- [x] **Step 5: Run tests — feature flag OFF in most tests**
 
 The unit tests above set `graph_extraction_engine=bundle_passes` via a monkeypatch fixture. The wider pytest suite should still default to `legacy` so unrelated tests don't drift.
 
@@ -5728,7 +5728,7 @@ pytest tests/ 2>&1 | tail -20
 
 Expected: new tests green, full suite green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/workers/pipeline.py tests/unit/test_derive_ontology_graph_bundle_passes.py
