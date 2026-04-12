@@ -84,7 +84,43 @@ _redis_client = get_redis()
 # derive_ontology_graph to actually call these helpers.
 # ---------------------------------------------------------------------------
 
+import sqlalchemy as sa  # noqa: E402 — used by _write_stage_run partial-index upsert
 from dataclasses import dataclass as _dataclass  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+
+from app.services.extraction_merge import classify_yield  # noqa: E402
+from app.services.ontology_bundles import load_bundle_manifest  # noqa: E402
+
+
+# --- Custom exception types for the single-pass dispatcher (spec §5.5 + §6.5) ---
+
+class PassRetryable(Exception):
+    """Raised by _call_extract_pass for transport errors, timeouts, HTTP 5xx,
+    partial response parse errors, and TransientOllamaBusyError.
+    _run_single_pass retries up to pass_max_retries with exponential backoff."""
+
+
+class PassTerminal(Exception):
+    """Raised by _call_extract_pass / _parse_pass_response for HTTP 4xx, Pydantic
+    validation failure after salvage, UnknownBundleOrPassError, ManifestValidationError,
+    and worker code bugs.  Terminal — no retry."""
+
+
+class IngestFailed(Exception):
+    """Raised by _run_single_pass when a required pass exhausts retries or hits a
+    terminal failure.  The caller (derive_ontology_graph) uses this as its
+    gate-failure marker."""
+
+
+class WorkerInvariantError(Exception):
+    """Raised by check_required_pass_gate when a required pass has NO StageRun at
+    all — this is a worker bug, not a pass failure."""
+
+
+@dataclass
+class GateResult:
+    passed: bool
+    failures: list  # list[tuple[str, str]] — (pass_name, reason_description)
 
 
 @_dataclass
@@ -125,15 +161,154 @@ def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
     raise NotImplementedError("Task 4.5")
 
 
-def _run_single_pass(**kwargs) -> None:
-    """Filled in by Task 4.3: per-pass dispatcher with retry, skip, and
-    required-pass gate handling per spec §5.5."""
-    raise NotImplementedError("Task 4.3")
+def _run_single_pass(
+    *,
+    pipeline_run_id,
+    pass_def,
+    manifest,
+    ontology: dict,
+    bundle_key: str,
+    doc_json: dict,
+    pass_results: dict,
+    upstream_refs: dict,
+    document_id: str,
+) -> None:
+    """Per-pass dispatcher with retry, skip, and required-pass gate handling.
+
+    Spec §5.5 + §6.5.  On success, populates pass_results[pass_def.name] and
+    optionally extends upstream_refs for downstream passes that depend on this
+    one.  Writes a StageRun row for every attempt (including failures) so
+    operators can audit retry history.
+    """
+    max_retries = getattr(settings, "pass_max_retries", 3)
+    attempt = 1
+
+    while True:
+        if _should_skip(pass_def, upstream_refs, ontology):
+            _write_stage_run(
+                pipeline_run_id=pipeline_run_id,
+                pass_def=pass_def,
+                attempt=attempt,
+                execution_status="SKIPPED",
+                yield_status=None,
+                skip_reason="NO_UPSTREAM_ENDPOINTS",
+                counts=None,
+                error=None,
+            )
+            return
+
+        try:
+            request_body = _build_extract_pass_request(
+                bundle_key=bundle_key,
+                pass_def=pass_def,
+                doc_json=doc_json,
+                upstream_refs=(
+                    upstream_refs
+                    if pass_def.input_mode == "document_plus_entity_refs"
+                    else None
+                ),
+            )
+            response = _call_extract_pass(
+                request_body,
+                timeout=settings.docling_graph_timeout,
+            )
+            pass_result = _parse_pass_response(response, pass_def, manifest)
+
+        except PassRetryable as exc:
+            _write_stage_run(
+                pipeline_run_id=pipeline_run_id,
+                pass_def=pass_def,
+                attempt=attempt,
+                execution_status="FAILED",
+                yield_status=None,
+                skip_reason=None,
+                counts=None,
+                error=str(exc),
+            )
+            if attempt >= max_retries:
+                if pass_def.required:
+                    raise IngestFailed(
+                        f"Required pass {pass_def.name} exhausted retries"
+                    ) from exc
+                return
+            _backoff(attempt)
+            attempt += 1
+            continue
+
+        except PassTerminal as exc:
+            _write_stage_run(
+                pipeline_run_id=pipeline_run_id,
+                pass_def=pass_def,
+                attempt=attempt,
+                execution_status="FAILED",
+                yield_status=None,
+                skip_reason=None,
+                counts=None,
+                error=str(exc),
+            )
+            if pass_def.required:
+                raise IngestFailed(
+                    f"Required pass {pass_def.name} terminal failure"
+                ) from exc
+            return
+
+        yield_status_val = classify_yield(pass_result, pass_def, ontology)
+        # classify_yield returns a YieldStatus enum; normalise to string
+        yield_str = (
+            yield_status_val.value
+            if hasattr(yield_status_val, "value")
+            else str(yield_status_val)
+        )
+        counts = _count_pass_output(pass_result, pass_def, ontology)
+        _write_stage_run(
+            pipeline_run_id=pipeline_run_id,
+            pass_def=pass_def,
+            attempt=attempt,
+            execution_status="COMPLETE",
+            yield_status=yield_str,
+            skip_reason=None,
+            counts=counts,
+            error=None,
+        )
+        pass_results[pass_def.name] = pass_result
+
+        if _any_downstream_pass_depends_on(manifest, pass_def.name):
+            _extend_upstream_refs(upstream_refs, pass_result, pass_def, ontology)
+        return
 
 
-def _should_skip(pass_def, upstream_refs, ontology) -> bool:
-    """Filled in by Task 4.3: spec §5.5 skip logic."""
-    raise NotImplementedError("Task 4.3")
+def _should_skip(pass_def, upstream_refs: dict, ontology: dict) -> bool:
+    """Return True iff the pass should be skipped per spec §5.5.
+
+    Only relationships_only passes with skip_if_no_upstream_endpoints=True are
+    candidates.  The check walks pass_def.depends_on, collects the entity types
+    present in upstream_refs (filtered to refs whose pass_origin is in the
+    declared depends_on set), then tests whether any (source, rel, target)
+    triple in ontology["validation_matrix"] can be satisfied by those types.
+    """
+    if pass_def.kind != "relationships_only":
+        return False
+    if not getattr(pass_def, "skip_if_no_upstream_endpoints", False):
+        return False
+
+    declared_deps = set(pass_def.depends_on)
+    available_types: set[str] = {
+        ref.entity_type
+        for ref in upstream_refs.values()
+        if getattr(ref, "pass_origin", None) in declared_deps
+    }
+    if not available_types:
+        return True
+
+    allowed_rels = set(pass_def.extracted_relationship_types)
+    for row in ontology.get("validation_matrix", []):
+        if row.get("relationship") not in allowed_rels:
+            continue
+        if (row.get("source") in available_types
+                and row.get("target") in available_types):
+            return False
+
+    return True
 
 
 def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
@@ -166,9 +341,57 @@ def _update_document_pipeline_status(document_id: str, new_status: str) -> None:
     raise NotImplementedError("Task 4.7")
 
 
-def check_required_pass_gate(pipeline_run_id):
-    """Filled in by Task 4.3: required-pass gate per spec §6.4."""
-    raise NotImplementedError("Task 4.3")
+def check_required_pass_gate(pipeline_run_id) -> GateResult:
+    """Required-pass gate per spec §6.4.
+
+    Queries the latest StageRun per required pass.  COMPLETE and
+    authorized-SKIPPED passes pass; FAILED and unauthorized-SKIPPED passes
+    accumulate as failures.  Missing StageRun rows for required passes are a
+    worker invariant violation (bug, not a pass failure) and raise
+    WorkerInvariantError.
+    """
+    from app.models.ingest import PipelineRun, StageRun
+
+    db = _get_db()
+    try:
+        run = db.get(PipelineRun, uuid.UUID(str(pipeline_run_id)))
+        if run is None:
+            raise WorkerInvariantError(f"PipelineRun {pipeline_run_id} not found")
+        manifest = load_bundle_manifest(run.ontology_bundle_key)
+        required_passes = [p.name for p in manifest.passes if p.required]
+        failures: list[tuple[str, str]] = []
+
+        for pass_name in required_passes:
+            latest = (
+                db.query(StageRun)
+                .filter(
+                    StageRun.pipeline_run_id == uuid.UUID(str(pipeline_run_id)),
+                    StageRun.stage_name == "derive_ontology_graph",
+                    StageRun.pass_name == pass_name,
+                )
+                .order_by(StageRun.attempt.desc())
+                .first()
+            )
+            if latest is None:
+                raise WorkerInvariantError(
+                    f"Required pass {pass_name} has no StageRun"
+                )
+            if latest.execution_status == "COMPLETE":
+                continue
+            if latest.execution_status == "FAILED":
+                failures.append((pass_name, f"FAILED: {latest.error_message}"))
+                continue
+            if latest.execution_status == "SKIPPED":
+                if latest.skip_reason in {"NO_UPSTREAM_ENDPOINTS"}:
+                    continue
+                failures.append(
+                    (pass_name, f"unauthorized skip: {latest.skip_reason}")
+                )
+                continue
+    finally:
+        db.close()
+
+    return GateResult(passed=(not failures), failures=failures)
 
 
 def _build_docling_document_json(document_id: str) -> dict:
@@ -798,6 +1021,250 @@ def _update_stage_run(
         # FK violation if pipeline_run was cleaned up by _cleanup_stale_runs
         db.rollback()
         logger.debug("_update_stage_run skipped (stale run_id %s): %s", pipeline_run_id, exc)
+
+
+def _write_stage_run(
+    *,
+    pipeline_run_id,
+    pass_def,
+    attempt: int,
+    execution_status: str,
+    yield_status: str | None,
+    skip_reason: str | None,
+    counts: dict | None,
+    error: str | None,
+) -> None:
+    """Upsert a per-pass StageRun row targeting the partial unique index
+    uq_stage_runs_run_pass_attempt (WHERE pass_name IS NOT NULL) added in
+    migration 0015.
+
+    Maps execution_status to the legacy celery-level status column so the
+    existing monitoring queries still work:
+      COMPLETE or SKIPPED → 'COMPLETE'
+      FAILED              → 'FAILED'
+
+    counts shape:
+      primary_entities_extracted, bridge_entities_extracted,
+      relationships_extracted, relationships_rejected, schema_size_chars,
+      structured_output_mode, salvaged
+    """
+    from app.models.ingest import StageRun
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    import datetime
+
+    if execution_status in ("COMPLETE", "SKIPPED"):
+        celery_status = "COMPLETE"
+    elif execution_status == "FAILED":
+        celery_status = "FAILED"
+    else:
+        celery_status = execution_status
+
+    values: dict = {
+        "pipeline_run_id": uuid.UUID(str(pipeline_run_id)),
+        "stage_name": "derive_ontology_graph",
+        "pass_name": pass_def.name,
+        "attempt": attempt,
+        "status": celery_status,
+        "execution_status": execution_status,
+        "yield_status": yield_status,
+        "skip_reason": skip_reason,
+        "finished_at": datetime.datetime.now(datetime.timezone.utc),
+    }
+    if counts:
+        values.update({
+            "primary_entities_extracted": counts.get("primary_entities_extracted"),
+            "bridge_entities_extracted": counts.get("bridge_entities_extracted"),
+            "relationships_extracted": counts.get("relationships_extracted"),
+            "relationships_rejected": counts.get("relationships_rejected"),
+            "schema_size_chars": counts.get("schema_size_chars"),
+            "structured_output_mode": counts.get("structured_output_mode"),
+            "salvaged": counts.get("salvaged"),
+        })
+    if error:
+        values["error_message"] = error
+
+    stmt = (
+        pg_insert(StageRun)
+        .values(**values)
+        .on_conflict_do_update(
+            index_elements=["pipeline_run_id", "stage_name", "pass_name", "attempt"],
+            index_where=sa.text("pass_name IS NOT NULL"),
+            set_={
+                k: v
+                for k, v in values.items()
+                if k not in ("pipeline_run_id", "stage_name", "pass_name", "attempt")
+            },
+        )
+    )
+    db = _get_db()
+    try:
+        db.execute(stmt)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.debug(
+            "_write_stage_run skipped (stale run_id %s, pass %s): %s",
+            pipeline_run_id, pass_def.name, exc,
+        )
+    finally:
+        db.close()
+
+
+def _build_extract_pass_request(
+    *, bundle_key: str, pass_def, doc_json: dict, upstream_refs: dict | None
+) -> dict:
+    """Assemble the POST body for /extract-pass."""
+    body: dict = {
+        "bundle_key": bundle_key,
+        "pass_name": pass_def.name,
+        "docling_document_json": doc_json,
+    }
+    if upstream_refs:
+        body["upstream_entities"] = [
+            {
+                "ref_id": ref_id,
+                "entity_type": getattr(ref, "entity_type", None),
+                "identity_values": getattr(ref, "identity_values", {}) or {},
+                "display_label": getattr(ref, "display_label", None),
+            }
+            for ref_id, ref in upstream_refs.items()
+        ]
+    return body
+
+
+def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
+    """Synchronous HTTP POST to the docling-graph /extract-pass endpoint.
+
+    5xx and transport errors are retryable (PassRetryable).
+    4xx and JSON decode errors are terminal (PassTerminal).
+    """
+    url = f"{settings.docling_graph_base_url}/extract-pass"
+    try:
+        response = httpx.post(url, json=request_body, timeout=timeout)
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        raise PassRetryable(f"transport error: {exc}") from exc
+
+    if response.status_code >= 500:
+        raise PassRetryable(f"HTTP {response.status_code}: {response.text[:200]}")
+    if response.status_code >= 400:
+        raise PassTerminal(f"HTTP {response.status_code}: {response.text[:200]}")
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise PassRetryable(f"partial/malformed response: {exc}") from exc
+
+
+def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
+    """Validate the /extract-pass response dict into a PassResult with an
+    instantiated pass template class.
+
+    Pydantic validation errors are terminal — a malformed response won't
+    heal on retry (spec §6.5).
+    """
+    import importlib
+    from pydantic import ValidationError
+    from app.services.extraction_merge import PassResult, ExtractionMetadata
+
+    full_module_path = f"ontology_bundles.{manifest.bundle_key}.{pass_def.module}"
+    try:
+        template_module = importlib.import_module(full_module_path)
+        template_cls = getattr(template_module, pass_def.template_class)
+    except (ImportError, AttributeError) as exc:
+        raise PassTerminal(
+            f"cannot load template {full_module_path}.{pass_def.template_class}: {exc}"
+        ) from exc
+
+    try:
+        template_instance = template_cls.model_validate(
+            response_json.get("pass_output", {})
+        )
+    except ValidationError as exc:
+        raise PassTerminal(f"template validation failed: {exc}") from exc
+
+    metadata_dict = response_json.get("metadata", {}) or {}
+    return PassResult(
+        pass_name=pass_def.name,
+        template_instance=template_instance,
+        metadata=ExtractionMetadata(
+            schema_size_chars=metadata_dict.get("schema_size_chars", 0),
+            structured_output_mode=metadata_dict.get("structured_output_mode", "strict"),
+        ),
+        pre_merge_rejections=[],
+    )
+
+
+def _backoff(attempt: int) -> None:
+    """Exponential backoff per spec §6.5: 30s × 2^(attempt-1), capped at 300s."""
+    import time
+    delay = min(30 * (2 ** (attempt - 1)), 300)
+    time.sleep(delay)
+
+
+def _count_pass_output(pass_result, pass_def, ontology) -> dict:
+    """Count primary/bridge entities and relationships emitted by this pass."""
+    primary = sum(
+        len(list(pass_result.iter_entities_of_type(t)))
+        for t in pass_def.primary_entity_types
+    ) if hasattr(pass_result, "iter_entities_of_type") else 0
+    bridge = sum(
+        len(list(pass_result.iter_entities_of_type(t)))
+        for t in pass_def.bridge_entity_types
+    ) if hasattr(pass_result, "iter_entities_of_type") else 0
+    extracted_rels = len(getattr(pass_result, "relationships", []) or [])
+    rejected_rels = len(getattr(pass_result, "pre_merge_rejections", []) or [])
+    metadata = getattr(pass_result, "metadata", None)
+    return {
+        "primary_entities_extracted": primary,
+        "bridge_entities_extracted": bridge,
+        "relationships_extracted": extracted_rels,
+        "relationships_rejected": rejected_rels,
+        "schema_size_chars": getattr(metadata, "schema_size_chars", None),
+        "structured_output_mode": getattr(metadata, "structured_output_mode", None),
+        "salvaged": False,
+    }
+
+
+def _any_downstream_pass_depends_on(manifest, pass_name: str) -> bool:
+    """True if any later pass in the manifest lists pass_name in its depends_on."""
+    seen_current = False
+    for p in manifest.passes:
+        if seen_current and pass_name in (p.depends_on or []):
+            return True
+        if p.name == pass_name:
+            seen_current = True
+    return False
+
+
+def _extend_upstream_refs(
+    upstream_refs: dict, pass_result, pass_def, ontology
+) -> None:
+    """Add ref_id → ref entries to upstream_refs for every primary entity
+    produced by this pass so downstream passes can reference them."""
+    from types import SimpleNamespace
+
+    start = len(upstream_refs) + 1
+    for entity_type in pass_def.primary_entity_types:
+        if not hasattr(pass_result, "iter_entities_of_type"):
+            break
+        for i, instance in enumerate(
+            pass_result.iter_entities_of_type(entity_type), start=start
+        ):
+            ref_id = f"E{i:03d}"
+            upstream_refs[ref_id] = SimpleNamespace(
+                pass_origin=pass_def.name,
+                entity_type=entity_type,
+                identity_values={
+                    k: v
+                    for k, v in (
+                        instance.__dict__
+                        if hasattr(instance, "__dict__")
+                        else {}
+                    ).items()
+                    if not k.startswith("_")
+                },
+                display_label=None,
+            )
 
 
 def _get_pipeline_run_id(db, document_id: str) -> str | None:

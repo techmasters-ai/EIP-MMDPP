@@ -60,16 +60,6 @@ class TestOrchestratorHelperStubs:
         with pytest.raises(NotImplementedError, match="Task 4.5"):
             _write_pipeline_run_metrics("run-1", None, None)
 
-    def test_run_single_pass_stub(self):
-        from app.workers.pipeline import _run_single_pass
-        with pytest.raises(NotImplementedError, match="Task 4.3"):
-            _run_single_pass()
-
-    def test_should_skip_stub(self):
-        from app.workers.pipeline import _should_skip
-        with pytest.raises(NotImplementedError, match="Task 4.3"):
-            _should_skip(None, {}, {})
-
     def test_apply_post_merge_yield_updates_stub(self):
         from app.workers.pipeline import _apply_post_merge_yield_updates
         with pytest.raises(NotImplementedError, match="Task 4.5"):
@@ -96,11 +86,6 @@ class TestOrchestratorHelperStubs:
         from app.workers.pipeline import _update_document_pipeline_status
         with pytest.raises(NotImplementedError, match="Task 4.7"):
             _update_document_pipeline_status("doc-1", "COMPLETE")
-
-    def test_check_required_pass_gate_stub(self):
-        from app.workers.pipeline import check_required_pass_gate
-        with pytest.raises(NotImplementedError, match="Task 4.3"):
-            check_required_pass_gate("run-1")
 
     def test_upsert_document_graph_extraction_stub(self):
         from app.workers.pipeline import _upsert_document_graph_extraction

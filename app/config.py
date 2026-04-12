@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     docling_graph_base_url: str = "http://docling-graph:8002"
     docling_graph_concurrency: int = 2
     docling_graph_timeout: int = 10800
+    # Max attempts per extraction pass (spec §6.5). Default 3 means 1 initial
+    # call + 2 retries before giving up.
+    pass_max_retries: int = 3
 
     # Docling human-review confidence threshold
     docling_review_confidence_threshold: float = 0.60
