@@ -1465,11 +1465,11 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §2 checker rules 1-14 (rule 7 removed per spec §7.10) and manifest self-consistency sub-checks. The `_shared` subdirectory is intentionally skipped by the CLI loop because it starts with `_`.
 
-- [ ] **Step 1: Write failing tests that drive each checker rule**
+- [x] **Step 1: Write failing tests that drive each checker rule**
 
 Create `tests/unit/test_coverage_checker.py` with unit tests for each rule in spec §2. Use small in-memory fixtures rather than mutating the real bundle. Each test sets up a synthetic manifest/coverage/ontology and calls the checker function for that rule in isolation.
 
-- [ ] **Step 2a: Create the shared schema-size limit module**
+- [x] **Step 2a: Create the shared schema-size limit module**
 
 Spec §409 requires the CI checker and the runtime monkey-patch to read the same `structured_output_threshold_chars` value. Put the default in a shared module that both the worker-side checker and the docling-graph service can import:
 
@@ -1489,7 +1489,7 @@ And an empty `ontology_bundles/_shared/__init__.py` so it imports cleanly.
 
 Both images already COPY `ontology_bundles/` per Task 2.6, so both sides can `from ontology_bundles._shared.limits import DEFAULT_STRUCTURED_OUTPUT_THRESHOLD_CHARS`.
 
-- [ ] **Step 2: Implement `tools/check_extraction_coverage.py` as a small package**
+- [x] **Step 2: Implement `tools/check_extraction_coverage.py` as a small package**
 
 Because the checker has 13 rules + manifest self-consistency + advisory warnings, keep it split into three modules so no file exceeds ~300 lines:
 
@@ -1701,7 +1701,7 @@ def check_manifest_self_consistency(
 
 Implement every `...` body by reading the matching rule text in spec §2 and translating it into Python. Each rule function must return a list of human-readable error strings; callers accumulate them.
 
-- [ ] **Step 3: Run unit tests**
+- [x] **Step 3: Run unit tests**
 
 ```bash
 pytest tests/unit/test_coverage_checker.py -v
@@ -1709,7 +1709,7 @@ pytest tests/unit/test_coverage_checker.py -v
 
 Expected: all pass.
 
-- [ ] **Step 4: Run the checker against the real bundle**
+- [x] **Step 4: Run the checker against the real bundle**
 
 ```bash
 python tools/check_extraction_coverage.py
@@ -1717,7 +1717,7 @@ python tools/check_extraction_coverage.py
 
 Expected: `PASS air_defense_v3`. If any rules fail, fix the bundle content (not the checker) and re-run.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tools/check_extraction_coverage.py tests/unit/test_coverage_checker.py
