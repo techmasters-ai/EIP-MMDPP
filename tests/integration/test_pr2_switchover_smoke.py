@@ -1,60 +1,39 @@
-"""PR 2 switchover smoke test. Task 4.9.
+"""PR 2 switchover smoke test — updated for Task 5.2 (PR 3 cleanup).
 
-Verifies the new bundle_passes extraction path can be activated
-per-test via monkeypatch without breaking the legacy default, and
-that both code paths coexist cleanly behind the feature flag.
+Task 5.2 deleted the legacy path and feature flag. derive_ontology_graph now
+unconditionally delegates to _derive_ontology_graph_bundle_passes. The
+feature-flag dispatch tests have been replaced with a simpler wiring check.
 
 The actual end-to-end extraction (ingest a document, produce a graph)
 requires the full compose stack — tests/e2e/test_full_pipeline.py
 covers that. This smoke test focuses on the code-level wiring: can the
-orchestrator import chain resolve, does the feature-flag dispatch work,
-and are the new symbols importable.
+orchestrator import chain resolve, and are the new symbols importable.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 class TestBundlePassesCodePath:
-    """Verify the new bundle_passes branch is callable and wired."""
+    """Verify the bundle_passes branch is the sole dispatch target."""
 
-    def test_feature_flag_defaults_to_legacy(self):
-        """After PR 2 merges, the flag STILL defaults to legacy.
-        The flip happens during soak, not at merge time."""
+    def test_feature_flag_field_removed(self):
+        """graph_extraction_engine was removed in Task 5.2; extra=ignore
+        means the field simply does not exist on Settings."""
         from app.config import Settings
         s = Settings(_env_file=None, postgres_password="test")
-        assert s.graph_extraction_engine == "legacy"
+        assert not hasattr(s, "graph_extraction_engine")
 
-    def test_derive_ontology_graph_dispatches_to_new_branch_when_flag_set(self):
-        """Setting graph_extraction_engine=bundle_passes routes to the new path."""
+    def test_derive_ontology_graph_always_dispatches_to_bundle_passes(self):
+        """derive_ontology_graph unconditionally routes to bundle_passes branch."""
         from app.workers.pipeline import derive_ontology_graph
 
-        with patch("app.workers.pipeline._derive_ontology_graph_bundle_passes") as mock_new, \
-             patch("app.workers.pipeline._derive_ontology_graph_legacy") as mock_legacy, \
-             patch("app.workers.pipeline.get_settings") as mock_settings:
-            mock_settings.return_value.graph_extraction_engine = "bundle_passes"
+        with patch("app.workers.pipeline._derive_ontology_graph_bundle_passes") as mock_new:
             mock_new.return_value = {"status": "ok"}
-
             # Use .run() to bypass Celery middleware; bind=True passes self implicitly
             derive_ontology_graph.run("doc-1", "run-1")
 
         mock_new.assert_called_once()
-        mock_legacy.assert_not_called()
-
-    def test_derive_ontology_graph_dispatches_to_legacy_when_flag_default(self):
-        """Default flag (legacy) still routes to the unchanged legacy path."""
-        from app.workers.pipeline import derive_ontology_graph
-
-        with patch("app.workers.pipeline._derive_ontology_graph_bundle_passes") as mock_new, \
-             patch("app.workers.pipeline._derive_ontology_graph_legacy") as mock_legacy, \
-             patch("app.workers.pipeline.get_settings") as mock_settings:
-            mock_settings.return_value.graph_extraction_engine = "legacy"
-            mock_legacy.return_value = {"status": "ok"}
-
-            derive_ontology_graph.run("doc-1", "run-1")
-
-        mock_legacy.assert_called_once()
-        mock_new.assert_not_called()
 
 
 class TestNewSymbolsImportable:

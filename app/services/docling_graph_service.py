@@ -140,67 +140,6 @@ def extract_graph(
     return result
 
 
-def extract_graph_all(
-    docling_document_json: dict[str, Any],
-    document_id: str,
-    *,
-    ontology_definition: dict[str, Any] | None = None,
-    ontology_version: str | None = None,
-) -> dict[str, Any]:
-    """Extract all entities + relationships via the /extract-all endpoint.
-
-    Sends the structured DoclingDocument JSON (preserving layout, tables,
-    and element provenance) and returns a normalized dict with keys:
-    ``entities``, ``relationships``, ``ontology_version``, ``model``,
-    ``provider``.
-
-    The Docling-Graph service returns a NetworkX node-link graph; this
-    function normalizes it into the ``{entities, relationships}`` shape
-    that the rest of the pipeline expects.
-    """
-    settings = get_settings()
-    url = f"{settings.docling_graph_base_url}/extract-all"
-    timeout = settings.docling_graph_timeout
-    effective_ontology, effective_ontology_version = _resolve_ontology(
-        ontology_definition, ontology_version,
-    )
-
-    # --- Redis concurrency gate ---
-    permit_lock = _acquire_permit(document_id, timeout)
-
-    logger.info(
-        "Calling Docling-Graph /extract-all for document %s (permit acquired)",
-        document_id,
-    )
-
-    try:
-        response = httpx.post(
-            url,
-            json={
-                "document_id": document_id,
-                "docling_document_json": docling_document_json,
-                "ontology_definition": effective_ontology,
-                "ontology_version": effective_ontology_version,
-            },
-            timeout=timeout,
-        )
-        response.raise_for_status()
-    finally:
-        _release_permit(permit_lock, document_id)
-
-    raw = response.json()
-    result = _normalize_extraction_result(raw)
-    logger.info(
-        "Docling-Graph /extract-all returned %d entities, %d relationships for document %s (model=%s)",
-        len(result.get("entities", [])),
-        len(result.get("relationships", [])),
-        document_id,
-        result.get("model", "unknown"),
-    )
-
-    return result
-
-
 def _normalize_extraction_result(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize Docling-Graph's NetworkX node-link response into the
     ``{entities, relationships}`` shape the pipeline expects.

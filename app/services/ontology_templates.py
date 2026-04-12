@@ -72,12 +72,16 @@ def invalidate_ontology_cache() -> None:
 def load_repository_ontology(path: Path | None = None) -> dict[str, Any]:
     """Load and return the repository ontology YAML as a dict.
 
-    Kept for backwards compatibility. Reads directly from the given path
-    or from the symlinked ontology/ontology.yaml. New code should prefer
-    load_ontology(bundle_key=...) or load_ontology(path=...)."""
-    p = path or _LEGACY_ONTOLOGY_PATH
-    with open(p) as f:
-        return yaml.safe_load(f)
+    Kept for backwards compatibility. When a path is given, reads from it
+    directly. Otherwise falls back to load_ontology() (the default bundle),
+    because ontology/ontology.yaml symlink was removed in Task 5.2.
+    New code should prefer load_ontology(bundle_key=...).
+    """
+    if path is not None:
+        with open(path) as f:
+            return yaml.safe_load(f)
+    # Legacy symlink removed — fall through to bundle-based loader
+    return load_ontology()
 
 
 def _bundle_ontology_path(bundle_key: str) -> Path:

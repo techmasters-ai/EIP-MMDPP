@@ -288,60 +288,30 @@ class TestDeriveOntologyGraphBundlePasses:
 
 
 # ---------------------------------------------------------------------------
-# Feature-flag dispatch tests
+# Dispatch tests — legacy path removed in Task 5.2
 # ---------------------------------------------------------------------------
 
-class TestFeatureFlagDispatch:
-    """Test the feature-flag dispatch in the derive_ontology_graph Celery task.
-
-    Use .run() to invoke the underlying function directly (bypassing Celery's
-    __call__ wrapper which re-injects self). This matches the pattern used
-    throughout tests/unit/test_ingest_pipeline_coverage.py.
+class TestDispatch:
+    """Test that derive_ontology_graph unconditionally delegates to
+    _derive_ontology_graph_bundle_passes (the legacy path was removed in Task 5.2).
     """
 
     @patch("app.workers.pipeline._derive_ontology_graph_bundle_passes")
-    @patch("app.workers.pipeline._derive_ontology_graph_legacy")
-    def test_bundle_passes_flag_dispatches_to_new_branch(self, mock_legacy, mock_new):
-        """graph_extraction_engine='bundle_passes' + run_id → bundle_passes branch."""
+    def test_dispatches_to_bundle_passes(self, mock_new):
+        """derive_ontology_graph always routes to the bundle-passes branch."""
         from app.workers.pipeline import derive_ontology_graph
 
         mock_new.return_value = {"status": "ok"}
-
-        with patch("app.workers.pipeline.get_settings") as mock_settings:
-            mock_settings.return_value.graph_extraction_engine = "bundle_passes"
-            derive_ontology_graph.run("doc-1", "run-1")
+        derive_ontology_graph.run("doc-1", "run-1")
 
         mock_new.assert_called_once()
-        mock_legacy.assert_not_called()
 
     @patch("app.workers.pipeline._derive_ontology_graph_bundle_passes")
-    @patch("app.workers.pipeline._derive_ontology_graph_legacy")
-    def test_legacy_flag_dispatches_to_legacy_branch(self, mock_legacy, mock_new):
-        """graph_extraction_engine='legacy' → legacy branch."""
+    def test_dispatches_without_run_id(self, mock_new):
+        """derive_ontology_graph works even when run_id is None."""
         from app.workers.pipeline import derive_ontology_graph
 
-        mock_legacy.return_value = {"status": "ok"}
+        mock_new.return_value = {"status": "ok"}
+        derive_ontology_graph.run("doc-1")
 
-        with patch("app.workers.pipeline.get_settings") as mock_settings:
-            mock_settings.return_value.graph_extraction_engine = "legacy"
-            derive_ontology_graph.run("doc-1", "run-1")
-
-        mock_legacy.assert_called_once()
-        mock_new.assert_not_called()
-
-    @patch("app.workers.pipeline._derive_ontology_graph_bundle_passes")
-    @patch("app.workers.pipeline._derive_ontology_graph_legacy")
-    def test_bundle_passes_without_run_id_falls_back_to_legacy(self, mock_legacy, mock_new):
-        """bundle_passes flag set but no run_id → falls back to legacy branch
-        (cannot determine pipeline_run_id without run_id)."""
-        from app.workers.pipeline import derive_ontology_graph
-
-        mock_legacy.return_value = {"status": "ok"}
-
-        with patch("app.workers.pipeline.get_settings") as mock_settings:
-            mock_settings.return_value.graph_extraction_engine = "bundle_passes"
-            # run_id not provided (None)
-            derive_ontology_graph.run("doc-1")
-
-        mock_legacy.assert_called_once()
-        mock_new.assert_not_called()
+        mock_new.assert_called_once()

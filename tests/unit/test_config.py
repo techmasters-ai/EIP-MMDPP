@@ -80,7 +80,7 @@ class TestRerankerConfig:
         s = Settings(_env_file=None, postgres_password="test")
         assert s.docling_graph_base_url == "http://docling-graph:8002"
         assert s.docling_graph_concurrency == 2
-        assert s.docling_graph_timeout == 300
+        assert s.docling_graph_timeout == 10800  # 3 hours — matches extraction workload
 
     def test_ollama_settings_present(self):
         """Ollama settings should be present."""
@@ -112,34 +112,15 @@ class TestGetSettingsCaching:
         assert a is b
 
 
-# --- Task 3.6: graph_extraction_engine feature flag (spec §7.4) ---------
+# --- Task 5.2: graph_extraction_engine removed (spec §7.5 cleanup) ---------
 
-class TestGraphExtractionEngineFlag:
-    def test_default_is_legacy(self):
-        """PR 2 merge does not auto-switch production traffic."""
+class TestGraphExtractionEngineRemoved:
+    def test_field_does_not_exist(self):
+        """graph_extraction_engine was deleted in Task 5.2; Settings.extra=ignore
+        means env values for this key are silently dropped."""
         from app.config import Settings
         s = Settings(_env_file=None, postgres_password="test")
-        assert s.graph_extraction_engine == "legacy"
-
-    def test_accepts_bundle_passes(self):
-        """Only 'legacy' and 'bundle_passes' are valid values."""
-        from app.config import Settings
-        s = Settings(
-            _env_file=None,
-            postgres_password="test",
-            graph_extraction_engine="bundle_passes",
-        )
-        assert s.graph_extraction_engine == "bundle_passes"
-
-    def test_rejects_unknown_value(self):
-        from pydantic import ValidationError
-        from app.config import Settings
-        with pytest.raises(ValidationError):
-            Settings(
-                _env_file=None,
-                postgres_password="test",
-                graph_extraction_engine="experimental",
-            )
+        assert not hasattr(s, "graph_extraction_engine")
 
     def test_default_ontology_bundle_key(self):
         from app.config import Settings

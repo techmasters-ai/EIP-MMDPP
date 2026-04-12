@@ -52,7 +52,8 @@ def test_imports_all_chunk3_symbols():
     # Task 3.5: StatusSignals on the bundle loader module
     from app.services.ontology_bundles import StatusSignals  # noqa: F401
 
-    # Task 3.6: IngestDispatchResult dispatch type + graph_extraction_engine flag
+    # Task 3.6: IngestDispatchResult dispatch type
+    # (graph_extraction_engine flag was removed in Task 5.2)
     from app.workers.dispatch_types import IngestDispatchResult  # noqa: F401
     from app.config import Settings  # noqa: F401
 
@@ -64,18 +65,14 @@ def test_imports_all_chunk3_symbols():
     )
 
 
-def test_feature_flag_defaults_to_legacy():
-    """The 'nothing switched traffic' invariant for Chunk 3.
-
-    At the end of Chunk 3 the feature flag MUST still default to
-    'legacy' so merging PR 2 foundations does not auto-switch
-    production. The flip to 'bundle_passes' happens during the soak
-    procedure in Chunk 4 (§7.4), not here.
+def test_feature_flag_removed():
+    """Task 5.2: graph_extraction_engine was deleted in PR 3.
+    Settings.extra=ignore means env values for this key are silently dropped.
     """
     from app.config import Settings
 
     s = Settings(_env_file=None, postgres_password="test")
-    assert s.graph_extraction_engine == "legacy"
+    assert not hasattr(s, "graph_extraction_engine")
 
 
 def test_delete_extraction_layer_graph_sync_present_on_arcadedb_store():

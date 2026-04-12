@@ -117,24 +117,6 @@ class Settings(BaseSettings):
     # false (default), invalid triples are logged and skipped silently.
     graph_reject_invalid_relationships: bool = False
 
-    # Layered extraction: split ontology by layer for smaller prompts.
-    # Per spec §7.3 PR 0 equivalent (Task 2.7): both fail-open and shadow
-    # default to False so the legacy path fails honestly and the Chunk 3
-    # baseline harness gets truthful numbers. Env-var overridable if ops
-    # needs to temporarily re-enable.
-    graph_layered_extraction_enabled: bool = False
-    graph_layered_cross_layer_enabled: bool = True
-    graph_layered_fail_open_to_single_pass: bool = False
-    graph_layered_max_passes: int = 10
-    graph_layered_shadow_mode: bool = False  # run both, compare, keep single-pass
-
-    # Spec §7.4 + Task 3.6 — feature flag for the bundle-passes extraction path.
-    # Defaults to 'legacy' so PR 2 merge does NOT auto-switch production
-    # traffic. Flipping to 'bundle_passes' requires a worker + beat
-    # restart (§7.6). Read only via get_settings() — no uncached
-    # per-task reader. PR 3 deletes this flag entirely after soak.
-    graph_extraction_engine: Literal["legacy", "bundle_passes"] = "legacy"
-
     # Default bundle for brand-new documents when neither the caller nor
     # the Source overrides. Spec §4.5 bundle selection threading + §7.4.
     # Kept as a Settings field (not a module-level constant) so ops can

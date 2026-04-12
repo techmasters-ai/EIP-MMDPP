@@ -2,7 +2,7 @@
 
 Verifies every Chunk-1/Chunk-2 exit criterion from spec §7.3:
 - The air_defense_v3 bundle directory is complete.
-- ontology/ontology.yaml is a symlink into the bundle.
+- ontology/ontology.yaml symlink was removed in Task 5.2 (bundle ontology is canonical).
 - tools/check_extraction_coverage.py exits 0 with "PASS air_defense_v3".
 - load_ontology() returns the bundle ontology.
 - load_bundle_manifest() parses all five passes.
@@ -44,12 +44,17 @@ def test_bundle_directory_complete():
         assert f.exists(), f"Missing extraction schema: {pass_file}.py"
 
 
-def test_ontology_symlink_resolves():
+def test_ontology_symlink_removed():
+    """ontology/ontology.yaml symlink was removed in Task 5.2.
+    The bundle ontology lives directly in ontology_bundles/air_defense_v3/ontology.yaml."""
     p = REPO_ROOT / "ontology" / "ontology.yaml"
-    assert p.is_symlink(), f"{p} is not a symlink"
-    resolved = p.resolve()
-    assert resolved.name == "ontology.yaml"
-    assert "ontology_bundles/air_defense_v3" in str(resolved)
+    assert not p.exists(), (
+        "ontology/ontology.yaml should have been removed in Task 5.2 "
+        "but still exists. Delete it with: git rm ontology/ontology.yaml"
+    )
+    # The canonical location is the bundle itself
+    bundle_ont = REPO_ROOT / "ontology_bundles" / "air_defense_v3" / "ontology.yaml"
+    assert bundle_ont.exists(), f"Bundle ontology missing: {bundle_ont}"
 
 
 def test_coverage_checker_passes():

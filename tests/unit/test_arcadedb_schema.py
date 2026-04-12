@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 import yaml
 from pathlib import Path
 
-ONTOLOGY_PATH = Path(__file__).parent.parent.parent / "ontology" / "ontology.yaml"
+ONTOLOGY_PATH = (
+    Path(__file__).parent.parent.parent
+    / "ontology_bundles" / "air_defense_v3" / "ontology.yaml"
+)
 
 
 def _load_ontology():

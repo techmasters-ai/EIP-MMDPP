@@ -148,10 +148,7 @@ services:
       context: .
       dockerfile: docker/docling-graph/Dockerfile
     restart: unless-stopped
-    volumes:
-      - ./ontology:/app/ontology:ro
     environment:
-      ONTOLOGY_PATH: /app/ontology/ontology.yaml
       # config_builder.py reads DOCLING_GRAPH_* prefixed env vars via pydantic-settings
       DOCLING_GRAPH_LLM_PROVIDER: ${DOCLING_GRAPH_LLM_PROVIDER:-ollama}
       DOCLING_GRAPH_LLM_MODEL: ${DOCLING_GRAPH_LLM_MODEL:-gpt-oss:120b}

@@ -230,13 +230,16 @@ class TestEnsureReadyPropagation:
         return inspect.getsource(func)
 
     def test_derive_ontology_graph_calls_ensure_ready(self):
-        # After Task 4.6, ensure_ready_sync lives in _derive_ontology_graph_legacy
-        # (the legacy path) — the dispatch wrapper delegates to it.
+        # After Task 5.2, the legacy path was removed. The new bundle_passes path
+        # writes to the graph store via phase helpers (_import_graph_phase_nodes etc.)
+        # which call get_graph_store(). ensure_ready_sync is called by
+        # derive_structure_links (which always runs after graph extraction) and by
+        # other derivation tasks. Verify the graph phase helpers access graph_store.
         import importlib
         import inspect
         pipeline = importlib.import_module("app.workers.pipeline")
-        legacy_source = inspect.getsource(pipeline._derive_ontology_graph_legacy)
-        assert "ensure_ready_sync" in legacy_source
+        phase_source = inspect.getsource(pipeline._import_graph_phase_nodes)
+        assert "graph_store" in phase_source
 
     def test_derive_text_chunks_calls_ensure_ready(self):
         source = self._get_stage_source("derive_text_chunks_and_embeddings")
