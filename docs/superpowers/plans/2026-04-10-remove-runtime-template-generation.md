@@ -5239,7 +5239,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §5.4 `_apply_post_merge_yield_updates`, `_write_pipeline_run_metrics`, `_upsert_document_graph_extraction`. All three run after merge but before the rollback-gated import phases.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/unit/test_pipeline_metrics.py` covering:
 - `_write_pipeline_run_metrics` populates `PipelineRun.metrics` with `pass_outcomes`, `document_extraction_anomaly`, `pass_degraded_count`, `overall_relationship_rejection_ratio`, `rejected_relationships_sample`, `bundle_legacy`, `bundle_key_display`
@@ -5249,7 +5249,7 @@ Create `tests/unit/test_pipeline_metrics.py` covering:
 - `_apply_post_merge_yield_updates` can move HIT → DEGRADED but never the other direction
 - `_upsert_document_graph_extraction` inserts on first write, updates on subsequent
 
-- [ ] **Step 2: Implement `_apply_post_merge_yield_updates`**
+- [x] **Step 2: Implement `_apply_post_merge_yield_updates`**
 
 ```python
 def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
@@ -5302,7 +5302,7 @@ def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
         session.commit()
 ```
 
-- [ ] **Step 3: Implement `_write_pipeline_run_metrics`**
+- [x] **Step 3: Implement `_write_pipeline_run_metrics`**
 
 ```python
 def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
@@ -5389,7 +5389,7 @@ def _rel_to_dict(rel) -> dict:
     return {"repr": repr(rel)}
 ```
 
-- [ ] **Step 4: Implement `_upsert_document_graph_extraction`**
+- [x] **Step 4: Implement `_upsert_document_graph_extraction`**
 
 Per spec §5.7:
 
@@ -5454,7 +5454,7 @@ def _serialize_for_audit(merged) -> dict:
     }
 ```
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ```bash
 pytest tests/unit/test_pipeline_metrics.py -v
