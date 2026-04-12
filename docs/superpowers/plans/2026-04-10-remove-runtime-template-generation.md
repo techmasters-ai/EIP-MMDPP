@@ -1742,7 +1742,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §5.9 wire contract + §2 packaging §2.9 + §7.3 PR 1 deliverables.
 
-- [ ] **Step 1: Write failing endpoint tests**
+- [x] **Step 1: Write failing endpoint tests**
 
 Create `docker/docling-graph/tests/test_extract_pass_endpoint.py` with the 7 test cases from spec §8.6:
 - document_only pass with unexpected upstream_entities → 400
@@ -1753,7 +1753,7 @@ Create `docker/docling-graph/tests/test_extract_pass_endpoint.py` with the 7 tes
 - valid document_only request → 200
 - valid document_plus_entity_refs request → 200
 
-- [ ] **Step 2: Create `docker/docling-graph/app/config.py`**
+- [x] **Step 2: Create `docker/docling-graph/app/config.py`**
 
 Scope this PR-1 change to ONE setting only: the structured-output threshold currently hardcoded as `8000` inside `_patched_build_request`. Other scattered config stays where it is; later PRs may consolidate more, but that is out of scope for PR 1.
 
@@ -1777,11 +1777,11 @@ settings = ServiceSettings()
 
 The default is sourced from `ontology_bundles/_shared/limits.py` (created in Task 2.4 Step 2a) so the CI checker and the runtime monkey-patch cannot drift per spec §409.
 
-- [ ] **Step 3: Add ExtractPassRequest / ExtractPassResponse / EntityRef to schemas.py**
+- [x] **Step 3: Add ExtractPassRequest / ExtractPassResponse / EntityRef to schemas.py**
 
 Per spec §5.9 wire contract. Do NOT remove `ExtractAllRequest` or `ontology_definition` yet — PR 1 is additive.
 
-- [ ] **Step 4: Add POST /extract-pass to main.py**
+- [x] **Step 4: Add POST /extract-pass to main.py**
 
 Before writing new code, read the existing `POST /extract-all` handler in `docker/docling-graph/app/main.py` end-to-end. The new handler MUST invoke `docling_graph.run_pipeline` (or whichever function the existing handler calls) with the exact same shape of arguments, except that `template_cls` is passed as the single fixed pass template from `load_pass_template(bundle_key, pass_name)` instead of the runtime-generated template the legacy path builds. Nothing else about the pipeline call — logger, error translation, response body assembly — should differ from the legacy handler. Reuse, do not reinvent.
 
@@ -1834,7 +1834,7 @@ async def extract_pass(body: ExtractPassRequest, request: Request):
 
 Finally, replace the hardcoded `8000` threshold in the existing `_patched_build_request` monkey-patch with `settings.structured_output_threshold_chars`. Import `settings` from `app.config`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 The endpoint tests are contract/protocol tests per spec §8.6 — they do NOT run the real pipeline. Use `pytest` with `fastapi.testclient.TestClient` and `unittest.mock.patch` to replace `docling_graph.run_pipeline` (or whichever helper the legacy handler calls) with a stub that returns a canned response shape. The tests assert request-validation behavior (400/404/200 status codes and error detail strings), not extraction correctness.
 
@@ -1844,7 +1844,7 @@ pytest docker/docling-graph/tests/test_extract_pass_endpoint.py -v
 
 Expected: all 7 tests pass without a running docling-graph service.
 
-- [ ] **Step 6: Verify legacy /extract-all still responds**
+- [x] **Step 6: Verify legacy /extract-all still responds**
 
 Rebuild and restart the docling-graph service (the image COPY uses baked-in code, not a volume mount — stored preference in MEMORY.md):
 
@@ -1864,7 +1864,7 @@ curl -X POST http://localhost:8002/extract-all \
 
 Expected: 200 OK (or whatever the existing endpoint returned pre-change). The old path must still work after all PR 1 scaffolding landed.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add docker/docling-graph/app/main.py docker/docling-graph/app/schemas.py \
