@@ -233,6 +233,12 @@ def run_layered_extraction(
             logger.info("Skipping empty pass '%s'", pass_name)
             continue
 
+        # Per spec §7.3 PR 0 (Task 2.7): no error swallowing. A failed
+        # pass used to be turned into an empty result so the outer loop
+        # could keep going; that masked real extraction failures and
+        # contaminated the baseline. Now we log at ERROR and re-raise,
+        # letting derive_ontology_graph's existing exception handler
+        # translate to IngestFailed and mark the stage as FAILED.
         try:
             result = extract_graph_all(
                 docling_document_json,
@@ -241,11 +247,11 @@ def run_layered_extraction(
             )
             pass_results.append((pass_name, result))
         except Exception as exc:
-            logger.warning(
+            logger.error(
                 "Layered extraction pass '%s' failed for %s: %s",
                 pass_name, document_id, exc,
             )
-            pass_results.append((pass_name, {"entities": [], "relationships": []}))
+            raise
 
     if not pass_results:
         return {"entities": [], "relationships": [], "provider": "docling-graph", "model": "unknown"}

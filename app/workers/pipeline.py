@@ -2555,9 +2555,17 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         model_name = "unknown"
         group_errors: list[str] = []
 
+        # Track which extraction mode was attempted vs what actually completed,
+        # so Chunk 3's baseline harness can distinguish "layered attempted,
+        # single-pass completed via fail-open" from "single-pass only".
+        # Spec §7.3 PR 0 equivalent + §8.3 baseline harness. Task 2.7.
+        attempted_mode: str = "single_pass"
+        completed_mode: str = "single_pass"
         try:
             use_layered = settings.graph_layered_extraction_enabled
             shadow_mode = settings.graph_layered_shadow_mode
+            if use_layered or shadow_mode:
+                attempted_mode = "layered"
 
             if use_layered or shadow_mode:
                 from app.services.layered_extraction import run_layered_extraction
@@ -2592,9 +2600,11 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                     max_passes=settings.graph_layered_max_passes,
                     cross_layer_enabled=settings.graph_layered_cross_layer_enabled,
                 )
+                completed_mode = "layered"
             else:
                 # Single-pass extraction with full ontology
                 result = extract_graph_all(docling_document_json, document_id)
+                completed_mode = "single_pass"
 
             all_entities = result.get("entities", [])
             all_relationships = result.get("relationships", [])
@@ -2613,7 +2623,11 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             all_entities = []
             all_relationships = []
 
-            # Fail-open: fall back to single-pass if layered failed
+            # Fail-open: fall back to single-pass if layered failed.
+            # Per spec §7.3 PR 0 equivalent (Task 2.7), the default for
+            # graph_layered_fail_open_to_single_pass is now False so the
+            # legacy path fails honestly. This branch only runs when ops
+            # has explicitly opted in via env var.
             if settings.graph_layered_extraction_enabled and settings.graph_layered_fail_open_to_single_pass:
                 try:
                     logger.info("derive_ontology_graph: falling back to single-pass for %s", document_id)
@@ -2622,6 +2636,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                     all_relationships = result.get("relationships", [])
                     provider = result.get("provider", provider)
                     model_name = result.get("model", model_name)
+                    completed_mode = "single_pass"  # silent mode drift — Chunk 3 harness flags this
                 except Exception:
                     pass
 
@@ -2769,6 +2784,13 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 metrics={
                     "nodes": nodes_created, "edges": edges_created, "provider": provider,
                     "nodes_rejected": nodes_rejected, "edges_rejected": edges_rejected,
+                    # Task 2.7: legacy-extraction mode tracking so Chunk 3's
+                    # baseline harness can distinguish layered-attempted vs
+                    # single-pass-completed (silent drift via fail-open).
+                    "legacy_extraction": {
+                        "attempted_mode": attempted_mode,
+                        "completed_mode": completed_mode,
+                    },
                 },
             )
             db.commit()

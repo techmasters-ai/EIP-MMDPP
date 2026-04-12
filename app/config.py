@@ -114,10 +114,14 @@ class Settings(BaseSettings):
     # false (default), invalid triples are logged and skipped silently.
     graph_reject_invalid_relationships: bool = False
 
-    # Layered extraction: split ontology by layer for smaller prompts
+    # Layered extraction: split ontology by layer for smaller prompts.
+    # Per spec §7.3 PR 0 equivalent (Task 2.7): both fail-open and shadow
+    # default to False so the legacy path fails honestly and the Chunk 3
+    # baseline harness gets truthful numbers. Env-var overridable if ops
+    # needs to temporarily re-enable.
     graph_layered_extraction_enabled: bool = False
     graph_layered_cross_layer_enabled: bool = True
-    graph_layered_fail_open_to_single_pass: bool = True
+    graph_layered_fail_open_to_single_pass: bool = False
     graph_layered_max_passes: int = 10
     graph_layered_shadow_mode: bool = False  # run both, compare, keep single-pass
 
