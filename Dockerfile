@@ -121,6 +121,7 @@ COPY app/ ./app/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 COPY ontology/ ./ontology/
+COPY ontology_bundles/ ./ontology_bundles/
 COPY scripts/ ./scripts/
 
 RUN chmod +x scripts/*.sh

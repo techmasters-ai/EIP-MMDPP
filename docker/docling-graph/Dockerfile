@@ -79,12 +79,16 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
 
 WORKDIR /app
 
+ENV PYTHONPATH=/app
+
 ARG CACHE_BUST
-COPY requirements.txt .
+COPY docker/docling-graph/requirements.txt .
 RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so pip install --no-cache-dir --upgrade -r requirements.txt \
     && rm -f /usr/local/lib/libfips_bypass.so
 
-COPY app/ ./app/
+COPY docker/docling-graph/app /app/app
+COPY docker/docling-graph/repo /app/repo
+COPY ontology_bundles /app/ontology_bundles
 
 EXPOSE 8002
 
