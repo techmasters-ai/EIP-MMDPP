@@ -9,11 +9,15 @@ Spec §2 Bundle loader API.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from app.models.ingest import DocumentGraphExtraction
 
 from app.services.ontology_templates import (
     UnknownBundleError,
@@ -152,3 +156,34 @@ def resolve_bundle_key_for_graph_only(
 def describe_bundle_for_display(bundle_key: str | None) -> str:
     """Return a human-readable label for a bundle_key. None -> LEGACY_BUNDLE_LABEL."""
     return bundle_key if bundle_key else LEGACY_BUNDLE_LABEL
+
+
+@dataclass
+class StatusSignals:
+    """Status API roll-up per spec §7.10 + Task 3.5.
+
+    Produced by the ``compute_status_signals`` helper (added in Chunk 4
+    Task 4.7) and consumed by the document-status endpoint to build the
+    three-concept response: document_status, latest_run, graph_snapshot
+    (+ top-level graph_queryable).
+
+    Fields:
+        snapshot:         The DocumentGraphExtraction row for this document,
+                          or None if no row exists (never written, or purged
+                          by a full reingest's pre-derive_ontology_graph phase).
+        is_stale:         Meaningful iff ``snapshot is not None``. True when
+                          the snapshot's pipeline_run_id doesn't match the
+                          most recent PipelineRun OR when that run is not
+                          COMPLETE. Has no meaning when ``snapshot is None``
+                          and the status API omits the nested ``is_stale``
+                          field from the response in that case.
+        graph_queryable:  ALWAYS meaningful, even when ``snapshot is None``.
+                          Computed via the cross-run rollback query from
+                          spec §7.10 — True iff a queryable extraction-layer
+                          graph exists for this document right now. This is
+                          the top-level field in the status response.
+    """
+
+    snapshot: "DocumentGraphExtraction | None"
+    is_stale: bool
+    graph_queryable: bool

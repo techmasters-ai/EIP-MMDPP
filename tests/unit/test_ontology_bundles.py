@@ -119,3 +119,25 @@ def test_load_bundle_manifest_unknown_raises():
     from app.services.ontology_bundles import load_bundle_manifest
     with pytest.raises(Exception):
         load_bundle_manifest("does_not_exist")
+
+
+# --- Task 3.5: StatusSignals dataclass (spec §7.10) ----------------------
+
+def test_status_signals_shape():
+    """StatusSignals is a dataclass with snapshot, is_stale, graph_queryable."""
+    from dataclasses import fields
+
+    from app.services.ontology_bundles import StatusSignals
+
+    field_names = {f.name for f in fields(StatusSignals)}
+    assert field_names == {"snapshot", "is_stale", "graph_queryable"}
+
+
+def test_status_signals_can_be_constructed_with_none_snapshot():
+    """Happy path: graph_queryable remains meaningful when snapshot is None."""
+    from app.services.ontology_bundles import StatusSignals
+
+    s = StatusSignals(snapshot=None, is_stale=False, graph_queryable=False)
+    assert s.snapshot is None
+    assert s.is_stale is False
+    assert s.graph_queryable is False
