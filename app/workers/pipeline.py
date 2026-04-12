@@ -89,7 +89,9 @@ from dataclasses import dataclass as _dataclass  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 
 from app.services.extraction_merge import classify_yield  # noqa: E402
+from app.services.extraction_merge import build_display_label  # noqa: E402
 from app.services.ontology_bundles import load_bundle_manifest  # noqa: E402
+from app.db.session import get_graph_store  # noqa: E402
 
 
 # --- Custom exception types for the single-pass dispatcher (spec §5.5 + §6.5) ---
@@ -318,20 +320,128 @@ def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
 
 
 def _import_graph_phase_nodes(merged, ontology, document_id, tracker):
-    """Filled in by Task 4.4: phase 2 node upsert. Spec §5.6."""
-    raise NotImplementedError("Task 4.4")
+    """Spec §5.6 phase 2 — node upsert.
+
+    Builds the full NodeRecord list in pure Python FIRST so that any
+    pre-mutation failure (e.g. build_display_label raising) leaves
+    tracker.any_mutation_attempted == False and the rollback gate
+    correctly skips.  tracker.mark() is called AFTER the list is built
+    and IMMEDIATELY before the first graph_store mutation.
+
+    Task 4.4.
+    """
+    from app.services.graph_store import NodeRecord, ProvenanceMetadata
+
+    # Build all records in pure Python first. If this raises, tracker
+    # stays False and the rollback gate correctly skips.
+    node_records = [
+        NodeRecord(
+            entity_type=e.identity.entity_type,
+            identity_fields=e.identity.as_upsert_identity_dict(),
+            name=build_display_label(
+                e.identity.entity_type,
+                e.identity.identity_values_dict(),
+                e.properties,
+            ),
+            properties=e.properties,
+            extraction_confidence=e.confidence,
+        )
+        for e in merged.entities
+    ]
+
+    provenance = ProvenanceMetadata(
+        document_id=document_id,
+        pipeline_run_id=merged.pipeline_run_id,
+    )
+
+    tracker.mark()
+    graph_store = get_graph_store()
+    node_rids: list[str] = graph_store.upsert_nodes_batch_sync(node_records, provenance)
+
+    identity_to_rid = dict(
+        zip(
+            (e.identity for e in merged.entities),
+            node_rids,
+            strict=True,
+        )
+    )
+    return identity_to_rid
 
 
 def _import_graph_phase_domain_edges(merged, ontology, tracker) -> None:
-    """Filled in by Task 4.4: phase 3 domain edge upsert. Spec §5.6."""
-    raise NotImplementedError("Task 4.4")
+    """Spec §5.6 phase 3 — domain edge upsert (identity-based).
+
+    Builds RelationshipRecord list in pure Python, calls tracker.mark()
+    defensively (idempotent — phase 2 likely already marked), then
+    upserts.  An empty edges list still calls upsert_relationships_batch_sync
+    with an empty list to match graph_store semantics.
+
+    Task 4.4.
+    """
+    from app.services.graph_store import RelationshipRecord, ProvenanceMetadata
+
+    rel_records = [
+        RelationshipRecord(
+            from_type=e.from_identity.entity_type,
+            from_identity=e.from_identity.as_upsert_identity_dict(),
+            to_type=e.to_identity.entity_type,
+            to_identity=e.to_identity.as_upsert_identity_dict(),
+            rel_type=e.rel_type,
+            extraction_confidence=e.confidence,
+        )
+        for e in merged.edges
+    ]
+
+    provenance = ProvenanceMetadata(
+        document_id=merged.document_id,
+        pipeline_run_id=merged.pipeline_run_id,
+    )
+
+    tracker.mark()  # idempotent — phase 2 likely already marked
+    graph_store = get_graph_store()
+    graph_store.upsert_relationships_batch_sync(rel_records, provenance)
 
 
 def _import_graph_phase_structural_edges(
     merged, identity_to_rid, document_id, pipeline_run_id, tracker,
 ) -> None:
-    """Filled in by Task 4.4: phase 4 derived structural edges. Spec §5.6."""
-    raise NotImplementedError("Task 4.4")
+    """Spec §5.6 phase 4 — derived structural edges (MENTIONED_IN, etc.).
+
+    Loads TextChunk vertices from ArcadeDB, looks up the structural
+    Document vertex RID, calls derive_rules.derive_structural_edges,
+    then writes each DerivedEdge via create_structural_edge_sync.
+
+    tracker.mark() is called inside the loop so an empty derived list is
+    a true no-op (tracker state unchanged).
+
+    Task 4.4.
+    """
+    from ontology_bundles.air_defense_v3 import derive_rules
+
+    chunks = _load_chunks_for_derivation(document_id)
+    document_rid = _get_structural_document_rid(document_id)
+
+    derived = derive_rules.derive_structural_edges(
+        merged=merged,
+        identity_to_rid=identity_to_rid,
+        chunks=chunks,
+        document_rid=document_rid,
+    )
+
+    graph_store = get_graph_store()
+    for edge in derived:
+        tracker.mark()  # idempotent
+        graph_store.create_structural_edge_sync(
+            from_id=edge.from_id,
+            to_id=edge.to_id,
+            rel_type=edge.rel_type,
+            properties={
+                "document_id": document_id,
+                "pipeline_run_id": pipeline_run_id,
+                "extraction_confidence": edge.confidence,
+                "source": "derive_rules",
+            },
+        )
 
 
 def _update_document_pipeline_status(document_id: str, new_status: str) -> None:
@@ -395,11 +505,82 @@ def check_required_pass_gate(pipeline_run_id) -> GateResult:
 
 
 def _build_docling_document_json(document_id: str) -> dict:
-    """Filled in by Task 4.4: loads the persisted docling_document.json
-    from MinIO and applies enrichment overlays. An existing helper in
-    the legacy path may already do this — Task 4.4 reuses it rather
-    than duplicating."""
-    raise NotImplementedError("Task 4.4")
+    """Load the persisted docling_document.json for a document from MinIO.
+
+    Mirrors the pattern used at multiple legacy call sites in this module.
+    When the new derive_ontology_graph branch (Task 4.6) calls this, it
+    expects the enriched DoclingDocument JSON that earlier stages
+    (prepare_document, derive_picture_descriptions) persisted.
+
+    Task 4.4.
+    """
+    import json as _json_mod
+    from app.services.storage import download_bytes_sync
+
+    _s = get_settings()
+    base_key = f"artifacts/{document_id}"
+    raw = download_bytes_sync(
+        _s.minio_bucket_derived,
+        f"{base_key}/docling_document.json",
+    )
+    return _json_mod.loads(raw)
+
+
+def _load_chunks_for_derivation(document_id: str) -> list:
+    """Load TextChunk vertices from ArcadeDB and convert to ChunkForDerivation DTOs.
+
+    The derive_rules MENTIONED_IN logic needs the vertex RID + normalized
+    text for substring matching.  Postgres retrieval.text_chunks does NOT
+    store the ArcadeDB RID, so this queries ArcadeDB directly.
+
+    ArcadeDB TextChunk vertex schema (see arcadedb_graph.py _build_text_chunk_sql):
+      - chunk_id, text, document_id  (plus optional embedding + props)
+
+    Task 4.4.
+    """
+    import re
+    from app.services.extraction_merge import ChunkForDerivation
+
+    graph_store = get_graph_store()
+    rows = graph_store._client.query_sync(
+        graph_store._database, "sql",
+        "SELECT @rid AS rid, text FROM TextChunk WHERE document_id = :doc_id",
+        params={"doc_id": document_id},
+    )
+
+    whitespace_re = re.compile(r"\s+")
+    chunks = []
+    for row in rows:
+        raw_text = row.get("text") or ""
+        text_normalized = whitespace_re.sub(" ", raw_text.strip().lower())
+        chunks.append(ChunkForDerivation(
+            rid=row["rid"],
+            text_normalized=text_normalized,
+        ))
+    return chunks
+
+
+def _get_structural_document_rid(document_id: str) -> str:
+    """Look up the ArcadeDB @rid of the structural Document vertex.
+
+    The vertex is guaranteed to exist at this point because the
+    prepare_document stage created it earlier in the pipeline.  If it
+    is missing, that is a worker-invariant violation (bug, not a pass
+    failure).
+
+    Task 4.4.
+    """
+    graph_store = get_graph_store()
+    rows = graph_store._client.query_sync(
+        graph_store._database, "sql",
+        "SELECT @rid AS rid FROM Document WHERE document_id = :doc_id",
+        params={"doc_id": document_id},
+    )
+    if not rows:
+        raise WorkerInvariantError(
+            f"No structural Document vertex found for document_id={document_id}"
+        )
+    return rows[0]["rid"]
 
 
 def _upsert_document_graph_extraction(**kwargs) -> None:

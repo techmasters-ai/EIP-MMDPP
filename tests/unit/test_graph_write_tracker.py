@@ -65,23 +65,6 @@ class TestOrchestratorHelperStubs:
         with pytest.raises(NotImplementedError, match="Task 4.5"):
             _apply_post_merge_yield_updates("run-1", None)
 
-    def test_import_graph_phase_nodes_stub(self):
-        from app.workers.pipeline import _import_graph_phase_nodes
-        with pytest.raises(NotImplementedError, match="Task 4.4"):
-            _import_graph_phase_nodes(None, {}, "doc-1", GraphWriteTracker())
-
-    def test_import_graph_phase_domain_edges_stub(self):
-        from app.workers.pipeline import _import_graph_phase_domain_edges
-        with pytest.raises(NotImplementedError, match="Task 4.4"):
-            _import_graph_phase_domain_edges(None, {}, GraphWriteTracker())
-
-    def test_import_graph_phase_structural_edges_stub(self):
-        from app.workers.pipeline import _import_graph_phase_structural_edges
-        with pytest.raises(NotImplementedError, match="Task 4.4"):
-            _import_graph_phase_structural_edges(
-                None, {}, "doc-1", "run-1", GraphWriteTracker(),
-            )
-
     def test_update_document_pipeline_status_stub(self):
         from app.workers.pipeline import _update_document_pipeline_status
         with pytest.raises(NotImplementedError, match="Task 4.7"):
