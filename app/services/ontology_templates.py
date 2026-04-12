@@ -35,8 +35,6 @@ SYSTEM_DEFAULT_BUNDLE_KEY = "air_defense_v3"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _BUNDLE_ROOT = _REPO_ROOT / "ontology_bundles"
-# Symlinked path kept for existing helpers that read the repository file directly.
-_LEGACY_ONTOLOGY_PATH = _REPO_ROOT / "ontology" / "ontology.yaml"
 
 # Per-bundle cache: bundle_key -> (ontology_dict, signature, expires_at_monotonic)
 _cache_lock = Lock()
