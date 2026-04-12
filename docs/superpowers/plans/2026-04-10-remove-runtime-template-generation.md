@@ -4074,7 +4074,7 @@ Spec §7.4 bundle-threading subsection. Two concerns are bundled in this task be
 1. Add `default_ontology_bundle_key` + `default_use_case_key` to the existing `SourceCreate` / `SourceResponse` at `app/schemas/sources.py:16-21`. These are purely additive (optional, default None).
 2. Introduce a brand-new `ReingestRequest` Pydantic model and wire it into the `POST /documents/{document_id}/reingest` route at `app/api/v1/sources.py:291`, which currently uses `body: dict = None`. The route's behavior must be unchanged except that it now accepts the new bundle fields (which are forwarded to `start_ingest_pipeline` — that forwarding lands in Chunk 4's orchestrator rewrite; in this task the fields are accepted but not yet acted on).
 
-- [ ] **Step 1: Inspect the current schemas and route**
+- [x] **Step 1: Inspect the current schemas and route**
 
 ```bash
 grep -n "class SourceCreate\|class SourceResponse\|class SourceUpdate" app/schemas/sources.py
@@ -4083,7 +4083,7 @@ grep -n "reingest\|class Reingest" app/api/v1/sources.py
 
 Capture the current `SourceCreate` / `SourceResponse` field lists. Confirm there is no existing `ReingestRequest`. Confirm the reingest route at `app/api/v1/sources.py:291` takes `body: dict = None` today.
 
-- [ ] **Step 2: Write failing schema tests**
+- [x] **Step 2: Write failing schema tests**
 
 Create `tests/unit/test_source_schemas.py`:
 
@@ -4165,7 +4165,7 @@ pytest tests/unit/test_source_schemas.py tests/unit/test_reingest_request.py -v
 
 Expected: every test fails (new fields + new class don't exist yet).
 
-- [ ] **Step 3: Extend `SourceCreate` / `SourceResponse`**
+- [x] **Step 3: Extend `SourceCreate` / `SourceResponse`**
 
 Open `app/schemas/sources.py` at line 16. Add the two new optional fields to `SourceCreate` (and any other sibling schemas already there):
 
@@ -4184,7 +4184,7 @@ class SourceResponse(APIModel):
 
 If a `SourceUpdate` schema exists, add the same two fields there too. Keep the additions purely additive — do not change existing field defaults or required-ness.
 
-- [ ] **Step 4: Introduce `ReingestRequest` in the same file**
+- [x] **Step 4: Introduce `ReingestRequest` in the same file**
 
 Append to `app/schemas/sources.py`:
 
@@ -4205,7 +4205,7 @@ class ReingestRequest(APIModel):
     use_case_key: str | None = None
 ```
 
-- [ ] **Step 5: Update the reingest route signature to accept `ReingestRequest`**
+- [x] **Step 5: Update the reingest route signature to accept `ReingestRequest`**
 
 Open `app/api/v1/sources.py` at line 291. Replace the current signature:
 
@@ -4243,7 +4243,7 @@ async def reingest_document(
 
 Do NOT change how the route dispatches to `start_ingest_pipeline` or the other mode-specific code paths. The only behavior change is: clients can now send `{"mode": "full", "ontology_bundle_key": "..."}` and the schema will validate and ignore the bundle key (for now).
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 pytest tests/unit/test_source_schemas.py tests/unit/test_reingest_request.py -v
@@ -4251,7 +4251,7 @@ pytest tests/unit/test_source_schemas.py tests/unit/test_reingest_request.py -v
 
 Expected: all pass.
 
-- [ ] **Step 7: Run the full suite**
+- [x] **Step 7: Run the full suite**
 
 ```bash
 pytest tests/ -x 2>&1 | tail -20
@@ -4259,7 +4259,7 @@ pytest tests/ -x 2>&1 | tail -20
 
 Expected: green. Existing reingest-route tests that send `{"mode": "graph_only"}` as raw dicts still work because FastAPI validates the dict into `ReingestRequest` transparently.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add app/schemas/sources.py app/api/v1/sources.py \

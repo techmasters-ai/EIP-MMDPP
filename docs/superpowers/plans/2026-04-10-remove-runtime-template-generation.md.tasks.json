@@ -29,7 +29,7 @@
     {"id": 140, "subject": "Task 3.4: Write app/services/extraction_merge.py (TDD)", "status": "completed", "blockedBy": [136]},
     {"id": 141, "subject": "Task 3.5: Add StatusSignals dataclass to ontology_bundles", "status": "completed", "blockedBy": [130]},
     {"id": 142, "subject": "Task 3.6: Add graph_extraction_engine flag + IngestDispatchResult", "status": "completed", "blockedBy": [136]},
-    {"id": 143, "subject": "Task 3.7: Bundle threading on Source + ReingestRequest schemas", "status": "pending", "blockedBy": [136]},
+    {"id": 143, "subject": "Task 3.7: Bundle threading on Source + ReingestRequest schemas", "status": "completed", "blockedBy": [136]},
     {"id": 144, "subject": "Task 3.8: Chunk 3 foundations smoke test", "status": "pending", "blockedBy": [137, 138, 139, 140, 141, 142, 143]},
 
     {"id": 145, "subject": "Task 4.1: GraphWriteTracker + orchestrator helper stubs", "status": "pending", "blockedBy": [144]},
@@ -50,5 +50,5 @@
     {"id": 159, "subject": "Task 5.6: Update DocumentGraphExtraction.graph_json docstring", "status": "pending", "blockedBy": [155]},
     {"id": 160, "subject": "Task 5.7: PR 3 post-deletion smoke + open PR 3", "status": "pending", "blockedBy": [155, 156, 157, 158, 159]}
   ],
-  "lastUpdated": "2026-04-11T15:05:00Z"
+  "lastUpdated": "2026-04-11T15:20:00Z"
 }
