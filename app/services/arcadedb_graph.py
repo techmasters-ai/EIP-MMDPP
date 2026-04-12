@@ -2009,6 +2009,168 @@ class ArcadeDBGraphStore:
 
         return total
 
+    def delete_extraction_layer_graph_sync(self, document_id: str) -> int:
+        """Narrower rollback primitive. Spec §6.8 + residual check #1.
+
+        Deleted:
+          - Document-scoped extracted entity vertices (SECTION, FIGURE, TABLE,
+            ASSERTION, WAVEFORM, ANTENNA, TRANSMITTER, RECEIVER,
+            SIGNAL_PROCESSING_CHAIN, SEEKER, PROPULSION_STACK, SPECIFICATION —
+            per ontology.yaml identity_scope='document')
+          - Domain edges via ``document_ids CONTAINS :doc_id`` — removes this
+            doc_id from the list, then prunes edges whose list is now empty.
+            (Mirrors _build_delete_document_graph_sql; covers MENTIONED_IN
+            edges written through upsert_relationships_batch_sync.)
+          - HAS_PROVENANCE edges whose *in* vertex is the structural Document
+            vertex with this document_id (target-scoped; edges from global
+            sources are also removed without touching the source vertices).
+          - MENTIONED_IN structural edges written by derive_rules via
+            create_structural_edge_sync — these have no document_id field, so
+            they are found by traversal: where the *in* (target) vertex is a
+            TextChunk with document_id = :doc_id.
+
+        Preserved:
+          - TextChunk, ImageChunk vertices (owned by upstream stages)
+          - The structural Document vertex itself
+          - Global entity vertices (RADAR_SYSTEM, PLATFORM, MISSILE_SYSTEM, …)
+          - HAS_PROVENANCE edges from global entities to OTHER documents
+          - Domain edges that reference other documents in their document_ids
+            lists (the list shrinks but is not emptied)
+
+        Returns the total number of SQL statements that executed successfully
+        (approximates the count of modified classes, NOT the count of
+        individual vertices/edges). This matches delete_document_graph_sync's
+        return-value semantics for logging parity.
+        """
+        try:
+            from app.services.ontology_templates import load_ontology
+            ontology = load_ontology()
+        except Exception:
+            ontology = {}
+
+        document_scoped_entity_classes = [
+            e["name"] for e in ontology.get("entity_types", [])
+            if e.get("identity_scope") == "document"
+        ]
+        domain_edge_classes = [
+            r["name"] for r in ontology.get("relationship_types", [])
+        ]
+
+        executed = 0
+        params = {"doc_id": document_id}
+
+        # 1. Look up the structural Document vertex RID for HAS_PROVENANCE
+        #    target-scoped deletion.
+        doc_rid: str | None = None
+        try:
+            rows = self._client.query_sync(
+                self._database, "sql",
+                "SELECT @rid AS rid FROM Document WHERE document_id = :doc_id",
+                params,
+            )
+            if rows:
+                doc_rid = str(rows[0].get("rid", ""))
+        except Exception as exc:
+            logger.warning(
+                "delete_extraction_layer_graph_sync: failed to look up "
+                "Document RID for %s: %s",
+                document_id, exc,
+            )
+
+        # 2. Delete HAS_PROVENANCE edges whose *in* (target) is this Document
+        #    vertex.  Global source vertices are untouched.
+        #    ArcadeDB uses @in (not plain 'in') to reference the target vertex
+        #    RID in WHERE clauses on edge types.
+        if doc_rid:
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    "DELETE FROM HAS_PROVENANCE WHERE @in = :doc_rid",
+                    {"doc_rid": doc_rid},
+                )
+                executed += 1
+            except Exception as exc:
+                logger.warning(
+                    "delete_extraction_layer_graph_sync: HAS_PROVENANCE "
+                    "delete failed for %s: %s",
+                    document_id, exc,
+                )
+
+        # 3. Delete document-scoped extracted entity vertices.
+        for vertex_class in document_scoped_entity_classes:
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    f"DELETE VERTEX FROM {vertex_class} WHERE document_id = :doc_id",
+                    params,
+                )
+                executed += 1
+            except Exception as exc:
+                logger.debug(
+                    "delete_extraction_layer_graph_sync: %s vertex delete "
+                    "skipped: %s",
+                    vertex_class, exc,
+                )
+
+        # 4. Domain edges: remove doc_id from document_ids list, then prune
+        #    edges whose list is now empty.  Mirrors _build_delete_document_graph_sql.
+        for edge_class in domain_edge_classes:
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    f"UPDATE {edge_class} "
+                    f"SET document_ids = document_ids.remove(:doc_id) "
+                    f"WHERE document_ids CONTAINS :doc_id",
+                    params,
+                )
+                executed += 1
+            except Exception as exc:
+                logger.debug(
+                    "delete_extraction_layer_graph_sync: %s cleanup skipped: %s",
+                    edge_class, exc,
+                )
+
+        for edge_class in domain_edge_classes:
+            try:
+                self._client.command_sync(
+                    self._database, "sql",
+                    f"DELETE FROM {edge_class} "
+                    f"WHERE document_ids IS NOT NULL AND document_ids.size() = 0",
+                )
+                executed += 1
+            except Exception as exc:
+                logger.debug(
+                    "delete_extraction_layer_graph_sync: %s prune skipped: %s",
+                    edge_class, exc,
+                )
+
+        # 5. MENTIONED_IN structural edges written by derive_rules via
+        #    create_structural_edge_sync — no document_id stored on the edge
+        #    itself, so filter by in-vertex (TextChunk) document_id.
+        #    ArcadeDB uses @in.<prop> (not plain in.<prop>) for property
+        #    traversal on edge target vertices in WHERE clauses.
+        try:
+            self._client.command_sync(
+                self._database, "sql",
+                "DELETE FROM MENTIONED_IN WHERE @in.document_id = :doc_id",
+                params,
+            )
+            executed += 1
+        except Exception as exc:
+            logger.debug(
+                "delete_extraction_layer_graph_sync: MENTIONED_IN "
+                "(derive_rules) delete skipped: %s",
+                exc,
+            )
+
+        logger.info(
+            "delete_extraction_layer_graph_sync: %d SQL statements executed "
+            "for document %s (preserved chunks, Document vertex, global "
+            "entities, cross-doc HAS_PROVENANCE)",
+            executed, document_id,
+        )
+        return executed
+
     def ensure_ready_sync(self) -> None:
         """Synchronous ensure_ready with time-based caching."""
         from app.config import get_settings as _gs
