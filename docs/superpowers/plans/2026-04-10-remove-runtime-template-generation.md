@@ -2404,7 +2404,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Residual check #1 implementation half. This is the ArcadeDB-specific SQL for the narrower rollback primitive.
 
-- [ ] **Step 1: Read the existing `delete_document_graph_sync` impl as a style reference**
+- [x] **Step 1: Read the existing `delete_document_graph_sync` impl as a style reference**
 
 ```bash
 grep -n "delete_document_graph_sync\|_build_delete_document_graph_sql" app/services/arcadedb_graph.py
@@ -2418,7 +2418,7 @@ Read the block starting at line ~1975 (actual location — spec reference is §4
 
 Your new method must match these idioms exactly. Do NOT reuse this method's SQL — it over-deletes for rollback's scope — but DO reuse its parameter-binding and class-iteration style. Mismatches between the two methods will make future maintenance harder.
 
-- [ ] **Step 2: Inventory current entity and edge class names in ArcadeDB**
+- [x] **Step 2: Inventory current entity and edge class names in ArcadeDB**
 
 ```bash
 docker compose exec arcadedb /opt/arcadedb/bin/console.sh -c "
@@ -2436,7 +2436,7 @@ Capture the vertex and edge class lists. Identify:
 
 Write the lists into a comment block at the top of the new method so future maintainers can cross-check.
 
-- [ ] **Step 3a: Locate or create the integration-test ArcadeDB fixture**
+- [x] **Step 3a: Locate or create the integration-test ArcadeDB fixture**
 
 ```bash
 grep -rn "ArcadeDBGraphStore\|ArcadeDBClient\|arcadedb_graph_store" tests/ | head -20
@@ -2471,7 +2471,7 @@ def arcadedb_store():
 
 If the connection helper constructor signatures differ from what's shown, read `app/services/arcadedb_graph.py` at the class definition and mirror what it already expects. Do NOT invent environment variable names — reuse what `get_settings()` already exposes.
 
-- [ ] **Step 3b: Write the integration test (it must fail)**
+- [x] **Step 3b: Write the integration test (it must fail)**
 
 Create `tests/integration/test_arcadedb_extraction_rollback.py`:
 
@@ -2669,7 +2669,7 @@ pytest tests/integration/test_arcadedb_extraction_rollback.py -v
 
 Expected: test fails with `AttributeError: 'ArcadeDBGraphStore' object has no attribute 'delete_extraction_layer_graph_sync'`.
 
-- [ ] **Step 4: Implement `delete_extraction_layer_graph_sync` in `ArcadeDBGraphStore`**
+- [x] **Step 4: Implement `delete_extraction_layer_graph_sync` in `ArcadeDBGraphStore`**
 
 Add the method to `app/services/arcadedb_graph.py`. **The SQL shown below is a starting point, not drop-in code** — ArcadeDB's SQL dialect has quirks (RID binding, `DELETE VERTEX` vs `DELETE FROM`, parameter syntax) that must be verified against the ArcadeDB manual (`ArcadeDB Manual.pdf` in the repo root) and against the existing `_build_delete_document_graph_sql` helper's actual SQL. Read that helper before writing this one — it shows the idioms the team already relies on.
 
@@ -2772,7 +2772,7 @@ _DOMAIN_EDGE_CLASSES: tuple[str, ...] = (
 
 Wire the class-name lists to the actual inventory from Step 2. Do NOT hardcode names not confirmed by BOTH ontology.yaml AND the live inventory query. An inventory-check assertion at module import time (raising if the two disagree) is a reasonable belt-and-suspenders addition, but not required for the first commit.
 
-- [ ] **Step 5: Run the integration test**
+- [x] **Step 5: Run the integration test**
 
 ```bash
 docker compose up -d arcadedb postgres
@@ -2781,7 +2781,7 @@ pytest tests/integration/test_arcadedb_extraction_rollback.py -v
 
 Expected: test passes. If any assertion fails, fix the SQL — do NOT relax the test.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/services/arcadedb_graph.py tests/integration/test_arcadedb_extraction_rollback.py
