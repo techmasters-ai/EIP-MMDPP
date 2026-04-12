@@ -24,6 +24,12 @@ class ProvenanceMetadata:
     page_numbers: list[int] = field(default_factory=list)
     upload_datetime: str | None = None
     document_datetime: str | None = None
+    # Added in PR 2 (Task 3.3) per spec §5.6. Strictly additive — all
+    # existing positional and keyword callers keep working because this
+    # field has a default of None and the existing fields are unchanged.
+    # Used by the new orchestrator in Chunk 4 to correlate provenance
+    # writes with the PipelineRun that produced them.
+    pipeline_run_id: str | None = None
 
 
 @dataclass

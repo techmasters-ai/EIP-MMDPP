@@ -34,6 +34,23 @@ class TestDataClasses:
         assert p.upload_datetime == "2024-01-01T00:00:00Z"
         assert p.document_datetime == "2023-06-15"
 
+    def test_provenance_metadata_has_pipeline_run_id_default_none(self):
+        """Task 3.3 / spec §5.6: additive Optional[str] field, default None."""
+        from app.services.graph_store import ProvenanceMetadata
+
+        p = ProvenanceMetadata(document_id="doc-3")
+        assert p.pipeline_run_id is None
+
+    def test_provenance_metadata_accepts_pipeline_run_id(self):
+        """Task 3.3: new field can be passed as a kwarg."""
+        from app.services.graph_store import ProvenanceMetadata
+
+        p = ProvenanceMetadata(document_id="doc-4", pipeline_run_id="run-xyz")
+        assert p.pipeline_run_id == "run-xyz"
+        # Existing fields still take their defaults
+        assert p.page_numbers == []
+        assert p.upload_datetime is None
+
     def test_node_record_defaults(self):
         from app.services.graph_store import NodeRecord
 
