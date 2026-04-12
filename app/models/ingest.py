@@ -340,7 +340,16 @@ class DocumentGraphExtraction(Base):
     provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     extraction_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    graph_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    graph_json: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment=(
+            "Audit blob (entity/edge counts, rejection reasons, pass summaries). "
+            "NOT a serialized graph — the prior NetworkX node-link payload shape "
+            "was replaced in PR 2. Read spec §5.7 serialize_for_audit for the "
+            "authoritative shape."
+        ),
+    )
     status: Mapped[str] = mapped_column(
         String(50), nullable=False, default="PENDING"
     )

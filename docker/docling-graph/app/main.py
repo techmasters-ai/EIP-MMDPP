@@ -328,9 +328,9 @@ def run_extraction_pass(
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
-    Mirrors run_extraction_pipeline() exactly but takes the template class
-    directly from the bundle loader instead of resolving it from a runtime
-    ontology_definition. upstream_entities is accepted but is NOT threaded
+    Mirrors the deleted run_extraction_pipeline() exactly but takes the template
+    class directly from the bundle loader instead of resolving it from a dynamic
+    definition blob. upstream_entities is accepted but is NOT threaded
     into docling_graph.run_pipeline in PR 1 — the integration of upstream
     refs into the service prompt preamble is handled by PR 2 alongside the
     worker-side refactor. For now, upstream_entities is logged and passed
