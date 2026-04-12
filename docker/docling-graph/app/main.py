@@ -96,8 +96,10 @@ def _patched_build_request(
             # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope.
             # Guard: if schema is very large (>50 properties), use simple json mode
             # to avoid degenerate constrained decoding with huge schemas.
+            from app.config import settings as _service_settings
             schema_str = json.dumps(schema_dict)
-            if len(schema_str) > 8000:
+            threshold = _service_settings.structured_output_threshold_chars
+            if len(schema_str) > threshold:
                 _logger.info("Schema too large for Ollama format= (%d chars), using format='json'", len(schema_str))
                 request["format"] = "json"
             else:
@@ -274,12 +276,16 @@ def _apply_litellm_client_patches():
 
 _apply_litellm_client_patches()
 
+from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app.config_builder import build_pipeline_config
 from app.schemas import (
     ExtractionMetadata,
     ExtractionRequest,
     ExtractionResponse,
     HealthResponse,
+    ExtractPassRequest,
+    ExtractPassResponse,
+    EntityRef,
 )
 from app.template_builder import build_templates_with_edges
 
@@ -302,6 +308,14 @@ def _validate_library_surface() -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # NEW: pre-import every bundle's extraction schemas so per-request
+    # dispatch via load_pass_template is constant-time.
+    try:
+        preload_all_templates()
+        logger.info("Preloaded all bundle extraction schemas")
+    except Exception as exc:
+        logger.warning("preload_all_templates failed: %s", exc)
+
     app.state.pipeline_version = _validate_library_surface()
     logger.info("docling-graph library version: %s", app.state.pipeline_version)
 
@@ -367,6 +381,41 @@ def run_extraction_pipeline(
         template_cls = unified_template or (
             next(iter(templates.values())) if templates else None
         )
+        config = build_pipeline_config(source=tmp_path, template_class=template_cls)
+        return run_pipeline(config)
+    finally:
+        os.unlink(tmp_path)
+
+
+def run_extraction_pass(
+    docling_document_json: dict[str, Any],
+    template_cls: type,
+    upstream_entities: list | None = None,
+) -> Any:
+    """Run docling-graph pipeline for a SINGLE fixed-template pass.
+
+    Mirrors run_extraction_pipeline() exactly but takes the template class
+    directly from the bundle loader instead of resolving it from a runtime
+    ontology_definition. upstream_entities is accepted but is NOT threaded
+    into docling_graph.run_pipeline in PR 1 — the integration of upstream
+    refs into the service prompt preamble is handled by PR 2 alongside the
+    worker-side refactor. For now, upstream_entities is logged and passed
+    through as metadata only.
+    """
+    import tempfile
+    from docling_graph import run_pipeline
+
+    if upstream_entities:
+        logger.info(
+            "extract-pass: received %d upstream entity refs (not yet threaded into prompt in PR 1)",
+            len(upstream_entities),
+        )
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+        json.dump(docling_document_json, tmp, ensure_ascii=False, default=str)
+        tmp_path = tmp.name
+
+    try:
         config = build_pipeline_config(source=tmp_path, template_class=template_cls)
         return run_pipeline(config)
     finally:
@@ -445,4 +494,95 @@ async def extract_all(request: Request, body: ExtractionRequest):
         model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
         provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
         ontology_version=request.app.state.ontology_version,
+    )
+
+
+@app.post("/extract-pass", response_model=ExtractPassResponse)
+async def extract_pass(request: Request, body: ExtractPassRequest):
+    """Fixed-template extraction for ONE pass from a bundle. Spec §5.9."""
+    semaphore = request.app.state.extraction_semaphore
+    if semaphore is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    # 1. Resolve bundle + pass
+    try:
+        manifest = load_bundle_manifest(body.bundle_key)
+    except (KeyError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail=f"Unknown bundle_key: {body.bundle_key}")
+
+    pass_def = None
+    for p in manifest.get("passes", []):
+        if p.get("name") == body.pass_name:
+            pass_def = p
+            break
+    if pass_def is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown pass_name: {body.pass_name} in bundle {body.bundle_key}",
+        )
+
+    # 2. Validate input_mode compatibility
+    input_mode = pass_def.get("input_mode")
+    if input_mode == "document_only" and body.upstream_entities:
+        raise HTTPException(
+            status_code=400,
+            detail=f"document_only pass {body.pass_name} received upstream_entities",
+        )
+    if input_mode == "document_plus_entity_refs" and not body.upstream_entities:
+        raise HTTPException(
+            status_code=400,
+            detail=f"document_plus_entity_refs pass {body.pass_name} missing upstream_entities",
+        )
+
+    # 3. Load the pre-imported fixed template
+    try:
+        template_cls = load_pass_template(body.bundle_key, body.pass_name)
+    except (ImportError, AttributeError, KeyError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load template for {body.bundle_key}/{body.pass_name}: {exc}",
+        )
+
+    # 4. Run the pipeline
+    async with semaphore:
+        try:
+            context = await asyncio.to_thread(
+                run_extraction_pass,
+                body.docling_document_json,
+                template_cls,
+                body.upstream_entities,
+            )
+        except Exception as exc:
+            logger.exception("extract-pass pipeline failed for %s", body.document_id)
+            raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
+
+    # 5. Build response — mirror the /extract-all metadata shape
+    graph = context.knowledge_graph
+    meta = context.graph_metadata
+    metadata = ExtractionMetadata(
+        node_count=getattr(meta, "node_count", graph.number_of_nodes()),
+        edge_count=getattr(meta, "edge_count", graph.number_of_edges()),
+        node_types=getattr(meta, "node_types", {}),
+        edge_types=getattr(meta, "edge_types", {}),
+        extraction_contract=os.environ.get("DOCLING_GRAPH_EXTRACTION_CONTRACT", "delta"),
+    )
+
+    # pass_output is the dumped template instance so the worker can re-parse it
+    pass_output: dict[str, Any] = {}
+    template_instance = getattr(context, "template_instance", None)
+    if template_instance is not None and hasattr(template_instance, "model_dump"):
+        pass_output = template_instance.model_dump(mode="json")
+    else:
+        # Fallback: serialize the graph as the pass_output until Chunk 3
+        # wires template_instance through the docling-graph pipeline
+        import networkx as nx
+        pass_output = {"graph": nx.node_link_data(graph, edges="links")}
+
+    return ExtractPassResponse(
+        bundle_key=body.bundle_key,
+        pass_name=body.pass_name,
+        pass_output=pass_output,
+        metadata=metadata,
+        model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
+        provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
     )
