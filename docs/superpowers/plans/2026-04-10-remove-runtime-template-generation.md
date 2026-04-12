@@ -5960,7 +5960,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §8.3 baseline harness. Runs the same corpus through both paths (by flipping the flag) and compares per-entity-type and per-edge-type counts + rejection rates.
 
-- [ ] **Step 1: Write the harness**
+- [x] **Step 1: Write the harness**
 
 Create `tools/extraction_baseline_harness.py`:
 
@@ -6026,7 +6026,7 @@ if __name__ == "__main__":
 
 Implement `run_corpus` (iterate files, call the upload API, poll for completion, read PipelineRun.metrics) and `compare` (field-by-field comparison with the spec §8.3 thresholds). Baseline criteria per spec §8.3: extraction rates within 10% of legacy, rejection ratio within 5 percentage points, no pass regresses from HIT to EMPTY/DEGRADED.
 
-- [ ] **Step 2: Run the harness in dev**
+- [x] **Step 2: Run the harness in dev**
 
 Per the soak procedure (spec §7.4):
 
@@ -6046,7 +6046,7 @@ python tools/extraction_baseline_harness.py --compare \
 
 Expected: `baseline_met=true` in the diff output, OR a clear per-field breakdown of where the new path diverges. If divergences exist that aren't in the "acceptable drift" bucket, investigate before proceeding with soak.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tools/extraction_baseline_harness.py

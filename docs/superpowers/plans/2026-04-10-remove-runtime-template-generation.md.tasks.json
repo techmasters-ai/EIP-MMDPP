@@ -39,7 +39,7 @@
     {"id": 149, "subject": "Task 4.5: Merge post-processing, metrics, snapshot write", "status": "completed", "blockedBy": [140, 129, 145]},
     {"id": 150, "subject": "Task 4.6: Wire rollback + new derive_ontology_graph branch", "status": "completed", "blockedBy": [142, 147, 148, 149]},
     {"id": 151, "subject": "Task 4.7: Status API with cross-run graph_queryable rule", "status": "completed", "blockedBy": [141, 129]},
-    {"id": 152, "subject": "Task 4.8: Baseline harness + soak comparison", "status": "pending", "blockedBy": [150]},
+    {"id": 152, "subject": "Task 4.8: Baseline harness + soak comparison", "status": "completed", "blockedBy": [150]},
     {"id": 153, "subject": "Task 4.9: PR 2 smoke test + open PR 2", "status": "pending", "blockedBy": [146, 150, 151, 152]},
 
     {"id": 154, "subject": "Task 5.1: Verify PR 3 pre-merge gates", "status": "pending", "blockedBy": [153]},
@@ -50,5 +50,5 @@
     {"id": 159, "subject": "Task 5.6: Update DocumentGraphExtraction.graph_json docstring", "status": "pending", "blockedBy": [155]},
     {"id": 160, "subject": "Task 5.7: PR 3 post-deletion smoke + open PR 3", "status": "pending", "blockedBy": [155, 156, 157, 158, 159]}
   ],
-  "lastUpdated": "2026-04-11T17:40:00Z"
+  "lastUpdated": "2026-04-11T18:00:00Z"
 }
