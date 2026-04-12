@@ -43,12 +43,12 @@
     {"id": 153, "subject": "Task 4.9: PR 2 smoke test + open PR 2", "status": "completed", "blockedBy": [146, 150, 151, 152]},
 
     {"id": 154, "subject": "Task 5.1: Verify PR 3 pre-merge gates", "status": "pending", "blockedBy": [153]},
-    {"id": 155, "subject": "Task 5.2: Delete legacy extraction code", "status": "pending", "blockedBy": [154]},
-    {"id": 156, "subject": "Task 5.3: Rename template_count → schema_count", "status": "pending", "blockedBy": [155]},
+    {"id": 155, "subject": "Task 5.2: Delete legacy extraction code", "status": "completed", "blockedBy": [154]},
+    {"id": 156, "subject": "Task 5.3: Rename template_count → schema_count", "status": "completed", "blockedBy": [155]},
     {"id": 157, "subject": "Task 5.4: CI lints for legacy-reference prevention", "status": "pending", "blockedBy": [155, 156]},
     {"id": 158, "subject": "Task 5.5: Monkey-patch contract tests", "status": "pending", "blockedBy": [155]},
     {"id": 159, "subject": "Task 5.6: Update DocumentGraphExtraction.graph_json docstring", "status": "pending", "blockedBy": [155]},
     {"id": 160, "subject": "Task 5.7: PR 3 post-deletion smoke + open PR 3", "status": "pending", "blockedBy": [155, 156, 157, 158, 159]}
   ],
-  "lastUpdated": "2026-04-11T18:15:00Z"
+  "lastUpdated": "2026-04-12T10:00:00Z"
 }

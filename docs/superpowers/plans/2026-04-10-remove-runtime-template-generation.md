@@ -6273,7 +6273,7 @@ Copy the answers from Steps 1–5 into a text file you'll paste into the PR desc
 
 Spec §7.5 deletions.
 
-- [ ] **Step 1: Remove the legacy branch of `derive_ontology_graph`**
+- [x] **Step 1: Remove the legacy branch of `derive_ontology_graph`**
 
 Open `app/workers/pipeline.py`. The current dispatcher is:
 
@@ -6296,7 +6296,7 @@ Then delete `_derive_ontology_graph_legacy` entirely from the same file. Also de
 - Any legacy helper functions it called that are not used by the new branch
 - `graph_layered_*` related code (config reads, helpers)
 
-- [ ] **Step 2: Delete the legacy modules**
+- [x] **Step 2: Delete the legacy modules**
 
 ```bash
 git rm docker/docling-graph/app/template_builder.py \
@@ -6308,7 +6308,7 @@ git rm docker/docling-graph/app/template_builder.py \
        ontology/layer_map.yaml
 ```
 
-- [ ] **Step 3: Delete the `ontology/ontology.yaml` symlink**
+- [x] **Step 3: Delete the `ontology/ontology.yaml` symlink**
 
 ```bash
 # Verify it's still a symlink (not a real file)
@@ -6320,11 +6320,11 @@ git rm ontology/ontology.yaml
 
 Nothing in the new path reads from `ontology/ontology.yaml` — the bundle loader uses the bundle's own path. The symlink was a PR 1/PR 2 compatibility shim for code that still assumed the legacy path existed.
 
-- [ ] **Step 4: Remove the `./ontology` bind mount from `docker-compose.yml`**
+- [x] **Step 4: Remove the `./ontology` bind mount from `docker-compose.yml`**
 
 Open `docker-compose.yml`, find the `docling-graph` service, and delete the `./ontology:/app/ontology:ro` volume line. With the symlink gone, this mount has nothing meaningful inside.
 
-- [ ] **Step 5: Delete `ExtractAllRequest`, `ontology_definition`, and POST /extract-all**
+- [x] **Step 5: Delete `ExtractAllRequest`, `ontology_definition`, and POST /extract-all**
 
 In `docker/docling-graph/app/schemas.py`:
 - Delete the `ExtractAllRequest` class entirely
@@ -6340,11 +6340,11 @@ In `app/services/docling_graph_service.py` (or wherever the worker-side HTTP cli
 - Delete `extract_graph_all` method
 - Delete `ontology_definition` parameter from any helper
 
-- [ ] **Step 6: Delete the feature flag itself**
+- [x] **Step 6: Delete the feature flag itself**
 
 Open `app/config.py`. Remove `graph_extraction_engine` field from `Settings`. Remove `graph_layered_shadow_mode` and `graph_layered_fail_open_to_single_pass` fields (they were Task 2.7 honest-failure stabilizers that are no longer needed — the new path doesn't use them).
 
-- [ ] **Step 7: Run the full test suite**
+- [x] **Step 7: Run the full test suite**
 
 ```bash
 pytest tests/ 2>&1 | tail -30
@@ -6352,7 +6352,7 @@ pytest tests/ 2>&1 | tail -30
 
 Expected: every test touched by the deletions either (a) is itself deleted, (b) updates because it was asserting against removed behavior, or (c) still passes because it was only referencing shared helpers. If any test fails because it imports a deleted module, update its imports. If a test was asserting on legacy behavior only, delete it.
 
-- [ ] **Step 8: Rebuild both images and re-run the e2e test**
+- [x] **Step 8: Rebuild both images and re-run the e2e test**
 
 ```bash
 docker compose build worker docling-graph
@@ -6362,7 +6362,7 @@ pytest tests/e2e/test_full_pipeline.py -v
 
 Expected: green end-to-end. The new path is now the ONLY path.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A
@@ -6399,7 +6399,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §7.9 rename.
 
-- [ ] **Step 1: Grep for the old name**
+- [x] **Step 1: Grep for the old name**
 
 ```bash
 grep -rn "template_count" docker/ app/ tests/
@@ -6407,17 +6407,17 @@ grep -rn "template_count" docker/ app/ tests/
 
 Capture every site.
 
-- [ ] **Step 2: Rename**
+- [x] **Step 2: Rename**
 
 Replace `template_count` with `schema_count` at every captured site. The `HealthResponse` model gets the renamed field; the health endpoint handler builds the response with `schema_count` keyed off the current bundle's template count.
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 pytest tests/ 2>&1 | tail -20
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docker/docling-graph/app/ app/ tests/
