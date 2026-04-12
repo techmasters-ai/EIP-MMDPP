@@ -140,3 +140,54 @@ class TestDataClasses:
 
         # GraphStore should be a runtime-checkable Protocol
         assert hasattr(GraphStore, "__protocol_attrs__") or hasattr(GraphStore, "_is_protocol")
+
+
+class TestDeletePrimitives:
+    """Spec residual check #1: the new narrower rollback primitive
+    delete_extraction_layer_graph_sync must appear on the backend-agnostic
+    Protocol declaration so any alternative backend that implements
+    GraphStore is forced to honor the contract. The existing broader
+    delete_document_graph_sync is kept unchanged for purge callers."""
+
+    def test_delete_extraction_layer_graph_sync_is_declared(self):
+        """The new narrower rollback primitive must be part of the protocol.
+
+        `from __future__ import annotations` makes return-type annotations
+        strings at runtime, so we use `eval_str=True` to resolve them.
+        """
+        import inspect
+
+        from app.services.graph_store import GraphStore
+
+        assert hasattr(GraphStore, "delete_extraction_layer_graph_sync")
+        sig = inspect.signature(
+            GraphStore.delete_extraction_layer_graph_sync, eval_str=True
+        )
+        params = list(sig.parameters)
+        assert params == ["self", "document_id"], (
+            f"Unexpected signature: {params}"
+        )
+        # Return type matches the existing delete_document_graph_sync for
+        # logging parity — both return int (count of deletions).
+        assert sig.return_annotation is int, (
+            f"Expected -> int, got {sig.return_annotation}"
+        )
+
+    def test_delete_document_graph_sync_unchanged(self):
+        """The existing broader primitive is kept unchanged for purge callers."""
+        import inspect
+
+        from app.services.graph_store import GraphStore
+
+        assert hasattr(GraphStore, "delete_document_graph_sync")
+        sig = inspect.signature(
+            GraphStore.delete_document_graph_sync, eval_str=True
+        )
+        params = list(sig.parameters)
+        assert params == ["self", "document_id"], (
+            f"Unexpected signature: {params}"
+        )
+        assert sig.return_annotation is int, (
+            f"delete_document_graph_sync regression: return type changed "
+            f"from int to {sig.return_annotation}"
+        )

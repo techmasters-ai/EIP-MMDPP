@@ -618,6 +618,44 @@ class GraphStore(Protocol):
         """Synchronous variant of :meth:`delete_document_graph`."""
         ...
 
+    def delete_extraction_layer_graph_sync(
+        self,
+        document_id: str,
+    ) -> int:
+        """Delete only this document's extraction-layer graph state.
+
+        Narrower rollback primitive used by ``derive_ontology_graph``'s
+        failure path. Returns the total count of vertices + edges deleted
+        (for logging parity with :meth:`delete_document_graph_sync`).
+
+        MUST delete:
+          - Document-scoped extracted entity vertices (identity includes
+            ``document_id``).
+          - Domain edges tagged with ``document_id`` in provenance metadata.
+          - ``HAS_PROVENANCE`` edges whose target is the structural
+            ``Document`` vertex with this ``document_id``, REGARDLESS of
+            whether the source vertex is document-scoped or global-scoped.
+            The edges are deleted; global source vertices are preserved.
+          - Structural edges produced by ``derive_rules`` in phase 4
+            (``MENTIONED_IN`` from extracted entities to ``TextChunk``
+            vertices, tagged with ``document_id`` / ``source=derive_rules``).
+
+        MUST NOT delete:
+          - Chunks (``TextChunk``, ``ImageChunk``).
+          - The structural ``Document`` vertex itself.
+          - Global-scoped entity vertices (PLATFORM, RADAR_SYSTEM, etc.).
+          - ``HAS_PROVENANCE`` edges from those global vertices to OTHER
+            documents.
+
+        Any alternative backend implementing :class:`GraphStore` must honor
+        this contract. This is narrower than
+        :meth:`delete_document_graph_sync`, which is reserved for purge /
+        full-document-delete callers.
+
+        Spec §6.8 + residual check #1.
+        """
+        ...
+
     def ensure_ready_sync(self) -> None:
         """Synchronous variant of :meth:`ensure_ready`."""
         ...
