@@ -1471,8 +1471,11 @@ def _update_stage_run(
     if error:
         values["error_message"] = error
 
+    from sqlalchemy import text as sa_text
+
     stmt = pg_insert(StageRun).values(**values).on_conflict_do_update(
-        constraint="stage_runs_pipeline_run_id_stage_name_attempt_key",
+        index_elements=["pipeline_run_id", "stage_name", "attempt"],
+        index_where=sa_text("pass_name IS NULL"),
         set_={k: v for k, v in values.items() if k not in ("pipeline_run_id", "stage_name", "attempt")},
     )
     try:

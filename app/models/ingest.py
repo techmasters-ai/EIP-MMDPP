@@ -243,9 +243,9 @@ class StageRun(Base):
 
     __tablename__ = "stage_runs"
     __table_args__ = (
-        # UniqueConstraint replaced by two partial unique indexes created in migration 0015:
-        #   uq_stage_runs_run_pass_attempt (WHERE pass_name IS NOT NULL)
-        #   uq_stage_runs_summary_row      (WHERE pass_name IS NULL AND stage_name = 'derive_ontology_graph')
+        # UniqueConstraint replaced by two partial unique indexes:
+        #   uq_stage_runs_run_pass_attempt (WHERE pass_name IS NOT NULL) — migration 0015
+        #   uq_stage_runs_summary_row      (WHERE pass_name IS NULL)    — widened in migration 0016
         {"schema": "ingest"},
     )
 
