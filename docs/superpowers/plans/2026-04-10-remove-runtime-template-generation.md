@@ -2280,7 +2280,7 @@ This chunk is the first half of PR 2. It lands the foundation pieces that the or
 
 Residual check #1 protocol half. Adds the method to the backend-agnostic Protocol declaration. Implementation lands in Task 3.2.
 
-- [ ] **Step 1: Locate the existing `GraphStore` protocol**
+- [x] **Step 1: Locate the existing `GraphStore` protocol**
 
 ```bash
 grep -n "class GraphStore\|delete_document_graph_sync" app/services/graph_store.py
@@ -2288,7 +2288,7 @@ grep -n "class GraphStore\|delete_document_graph_sync" app/services/graph_store.
 
 Capture the file layout (class definition, existing method signatures). The new method goes after `delete_document_graph_sync`.
 
-- [ ] **Step 2: Write the failing contract test**
+- [x] **Step 2: Write the failing contract test**
 
 Create `tests/unit/test_graph_store_protocol.py`:
 
@@ -2335,7 +2335,7 @@ pytest tests/unit/test_graph_store_protocol.py -v
 
 Expected: `test_delete_extraction_layer_graph_sync_is_declared` FAILS (method does not yet exist).
 
-- [ ] **Step 3: Add the method to the protocol**
+- [x] **Step 3: Add the method to the protocol**
 
 Insert after the existing `delete_document_graph_sync` declaration at `app/services/graph_store.py:614`. The existing primitive returns `int` (deletion count); the new primitive returns `int` for logging parity so both code paths can emit counts uniformly.
 
@@ -2371,7 +2371,7 @@ def delete_extraction_layer_graph_sync(self, document_id: str) -> int:
     ...
 ```
 
-- [ ] **Step 4: Run tests — expect pass**
+- [x] **Step 4: Run tests — expect pass**
 
 ```bash
 pytest tests/unit/test_graph_store_protocol.py -v
@@ -2379,7 +2379,7 @@ pytest tests/unit/test_graph_store_protocol.py -v
 
 Expected: both tests pass. The concrete `ArcadeDBGraphStore` implementation is in Task 3.2 — the Protocol declaration alone is enough for this test.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/services/graph_store.py tests/unit/test_graph_store_protocol.py
