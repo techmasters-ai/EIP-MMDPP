@@ -5761,7 +5761,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §7.10 three-concept split + cross-run `graph_queryable` query.
 
-- [ ] **Step 1: Write failing tests for `compute_status_signals`**
+- [x] **Step 1: Write failing tests for `compute_status_signals`**
 
 Create `tests/unit/test_compute_status_signals.py` covering every row of the case tables in spec §7.10:
 
@@ -5774,7 +5774,7 @@ Create `tests/unit/test_compute_status_signals.py` covering every row of the cas
 - No successful extraction ever → `graph_snapshot=None`, `graph_queryable=False`
 - Snapshot orphan (snapshot_run deleted) → legacy safety behavior: conservative `graph_queryable` via "any rollback" fallback
 
-- [ ] **Step 2: Implement `compute_status_signals`**
+- [x] **Step 2: Implement `compute_status_signals`**
 
 Create `app/services/status_signals.py`:
 
@@ -5854,7 +5854,7 @@ def compute_status_signals(document_id: str, session: Session) -> StatusSignals:
     )
 ```
 
-- [ ] **Step 3: Update the status endpoint response shape**
+- [x] **Step 3: Update the status endpoint response shape**
 
 Find the document-status endpoint in `app/api/v1/sources.py` (search for `@router.get.*status` or the existing status return shape). Rewrite its response shaper to match spec §7.10:
 
@@ -5917,7 +5917,7 @@ def _shape_status_response(document, latest_run, signals):
 
 `_row_to_pass` and `_row_to_summary` map a StageRun row to the JSON shape shown in spec §7.10. Keep them as local helper functions in the same module.
 
-- [ ] **Step 4: Integration test — response shape**
+- [x] **Step 4: Integration test — response shape**
 
 Create `tests/integration/test_status_api_shape.py` that drives the real endpoint with seeded fixtures and asserts:
 - Top-level keys: `document_id`, `document_status`, `latest_run`, `graph_snapshot`, `graph_queryable`
@@ -5925,7 +5925,7 @@ Create `tests/integration/test_status_api_shape.py` that drives the real endpoin
 - `is_stale` nested inside `graph_snapshot` only when `graph_snapshot is not None`
 - `latest_run.passes == []` and `latest_run.stage_summary is None` when `derive_ontology_graph` hasn't started
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ```bash
 pytest tests/unit/test_compute_status_signals.py tests/integration/test_status_api_shape.py -v
