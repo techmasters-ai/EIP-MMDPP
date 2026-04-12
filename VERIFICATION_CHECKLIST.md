@@ -11,7 +11,7 @@
 This checklist reflects the post-migration architecture:
 - **Graph + Vectors:** ArcadeDB (replaces Neo4j + Qdrant)
 - **Document conversion:** Docling (unchanged)
-- **Entity extraction:** Docling-Graph service with delta extraction via `run_pipeline()` (refactored from hand-rolled LLM calls)
+- **Entity extraction:** Docling-Graph service with bundle-based five-pass extraction via `/extract-pass` endpoint (hand-authored fixed Pydantic schemas under `ontology_bundles/`)
 - **Global query:** Community detection (Louvain/Leiden) + LLM report synthesis (replaces Microsoft GraphRAG)
 - **Chunk storage:** PostgreSQL authoritative for content; ArcadeDB carries embeddings + filter metadata via TextChunk/ImageChunk vertices
 - **Provenance:** EXTRACTED_FROM edges with document_id and page_numbers (entity vertices are shared across documents)
@@ -89,13 +89,12 @@ Before writing custom logic, check whether the library already provides the capa
 | Stale run cleanup on worker startup | Crashed workers leave documents in PROCESSING permanently | Kill worker mid-ingest, restart; document reverts to PENDING | 2.18 |
 | Re-upload on failure | Re-uploading failed doc returns 409 indefinitely | Upload doc, let it fail, re-upload same file without error | 2 |
 
-### 1.2 Parallel Derivations & Chord Resilience
+### 1.2 Sequential Pipeline & Stage Resilience
 
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| Parallel chord (text/image/graph run concurrently) | 3x ingest latency per document | Upload doc; verify text, image, graph tasks overlap in time | 1, 2.22 |
-| Chord tasks return error dicts instead of raising | Single task failure kills entire document pipeline | Ingest doc with corrupted image; pipeline still reaches PARTIAL_COMPLETE | 2.22 |
-| Chord `on_error` errback marks doc FAILED | Hard time limit kill leaves document in PROCESSING forever | Set very short time limit, ingest large doc; verify FAILED not PROCESSING | 2.22 |
+| Sequential 12-stage chain (no parallel chord) | Stage ordering violations; race conditions | Upload doc; verify stages execute in order: prepare → detect_and_translate → ... → finalize_document | 3.2 |
+| Stage tasks return error dicts instead of raising | Single task failure kills entire document pipeline | Ingest doc with corrupted image; pipeline still reaches PARTIAL_COMPLETE | 2.22 |
 | `ensure_ready_sync()` called on every graph-writing task | Worker starts before ArcadeDB schema sync; writes fail | Each derive_* task calls `graph_store.ensure_ready_sync()` before first write; retries on missing types | 3.0 |
 
 ### 1.3 Element Deduplication
@@ -149,21 +148,38 @@ Before writing custom logic, check whether the library already provides the capa
 
 > **ArcadeDB reference:** Consult `ArcadeDB Manual.pdf` sections 4.8 (Schema), 4.10 (Graph Database), 4.9 (Indexes), and 6.10 (SQL Syntax) when verifying ArcadeDB-backed features below.
 
+### 2.1 Bundle-Based Extraction Architecture
+
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| Docling-Graph service uses `run_pipeline()` with delta extraction | Hand-rolled LLM calls bypass library features; lower extraction quality | `/extract-all` receives DoclingDocument JSON, returns NetworkX graph with stable node IDs | 3.0 |
-| Ontology-driven Pydantic templates with `edge()` fields | Delta extraction cannot discover relationships from schema | Template builder generates models with `graph_id_fields` and `edge()` from validation_matrix | 3.0 |
-| Per-entity-type `graph_id_fields` derivation | DOCUMENT/FIGURE/TABLE/SECTION entities merge incorrectly | RADAR_SYSTEM uses `system_name`, DOCUMENT uses `document_id`, SECTION uses `heading`, SPECIFICATION uses `[parameter, value]` | 3.0 |
-| Reserved word handling (TABLE → TABLE_REF) | ArcadeDB schema creation fails on reserved SQL keyword | TABLE ontology type maps to TABLE_REF vertex type; downstream code uses original name | 3.0 |
-| Delta extraction with direct fallback | Quality gate failures leave empty graph | Run on short doc; quality gate fails → falls back to direct extraction | 3.0 |
-| Delta resolvers (semantic entity dedup) | Duplicate entities with minor variations (e.g., "SA-20" vs "SA-20 Triumf") | Two documents mentioning same system with variants merge to one vertex | 3.0 |
-| Gleaning second-pass extraction | Entities mentioned only briefly are missed | Enabled by default; logs show gleaning pass ran | 3.0 |
-| Validation pass (post-extraction relationship check) | SPECIFIED_BY and similar heuristic edges missed | Ingest doc with specifications; graph has SPECIFIED_BY edges from system → spec | 3.0 |
+| Bundle-based extraction (`ontology_bundles/air_defense_v3/`) | No extraction schemas; pipeline cannot extract | Bundle directory contains ontology.yaml, manifest.yaml, coverage.yaml, validators.py, 5 extraction schema modules, derive_rules.py. Run `python tools/check_extraction_coverage.py` — 0 errors | 3.2 |
+| Five-pass extraction (reference, radar_domain, missile_domain, other_systems, system_links) | Monolithic extraction misses domain-specific entities | All 5 passes declared in manifest.yaml; each pass has a corresponding module in `extraction_schemas/` with a top-level Pydantic class | 3.2 |
+| Per-pass StageRun tracking | Cannot diagnose which pass failed or produced low yield | Each pass writes its own StageRun row with execution_status, yield_status, skip_reason, entity count, relationship count | 3.2 |
+| Required-pass gate | Merge proceeds with incomplete data; graph missing critical entities | All 5 required passes must complete or be authorized-skipped before merge proceeds; IngestFailed if any required pass exhausts retries | 3.2 |
+| Merge and resolve | Duplicate entities across passes; broken relationships | Entities keyed by LogicalIdentity; bridge entities (PlatformEntity, SpecificationEntity) collapse across passes; relationships resolved by identity-dict or ref_id lookup; 6 rejection reasons tracked in merge metrics | 3.2 |
+| Three-phase graph import (nodes → domain edges → structural edges) | Missing edges or broken provenance | Nodes imported with `tracker.mark()`, then domain edges, then structural edges (MENTIONED_IN from derive_rules). HAS_PROVENANCE auto-created by `upsert_nodes_batch_sync` | 3.2 |
+| Tracker-gated rollback | Failures before first mutation trigger unnecessary graph deletion; failures after first mutation leave stale data | GraphWriteTracker gates `_delete_extraction_layer_graph` — failures before first mutation skip rollback; failures after first mutation trigger rollback | 3.2 |
+| `/extract-pass` replaces `/extract-all` | Old endpoint returns 404; extraction fails | New wire contract: `{bundle_key, pass_name, docling_document_json, upstream_entities?}`. Verify Docling-Graph service responds to POST `/extract-pass` | 3.2 |
+| Bundle selection threading | Wrong bundle used for extraction | `Source.default_ontology_bundle_key` persisted at source level; `PipelineRun.ontology_bundle_key` snapshotted at dispatch time; three-tier precedence: explicit override → source default → system default (`DEFAULT_ONTOLOGY_BUNDLE_KEY`) | 3.2 |
+
+### 2.2 Extraction Status & Monitoring
+
+| Feature | What breaks without it | Verify | Phase |
+|---|---|---|---|
+| Extraction status endpoint (`GET /documents/{id}/extraction-status`) | Cannot inspect per-pass results or graph state | Returns three-concept split: `document_status`, `latest_run` (with per-pass details including execution_status, yield_status, entity/rel counts), `graph_snapshot` (nullable), `graph_queryable` (cross-run rollback-aware) | 3.2 |
+| Coverage checker in CI (`tools/check_extraction_coverage.py`) | Schema drift silently breaks extraction | Runs 13 rules + manifest self-consistency; all entity/relationship types in manifest appear in coverage.yaml; schema fields subset of ontology properties | 3.2 |
+| CI lints (`tools/ci_lints.sh`) | Legacy references to deleted code creep back | Prevents 8 classes of legacy references: template_builder, layered_extraction, ontology_layers, /extract-all, graph_layered_*, layer_map.yaml, ontology symlink, graph_extraction_engine flag | 3.2 |
+
+### 2.3 Entity Resolution & Provenance (unchanged)
+
+| Feature | What breaks without it | Verify | Phase |
+|---|---|---|---|
 | Entity merge on `(entity_type, identity_fields)` NOT universal name | Cross-type name collisions merge unrelated entities | Doc with "Patriot" PLATFORM and "Patriot" MISSILE_SYSTEM creates two distinct vertices | 3.0 |
 | Provenance via EXTRACTED_FROM edges (not vertex property) | Shared entities lose track of source documents | Entity mentioned in 3 docs has 3 EXTRACTED_FROM edges; deleting 1 doc leaves 2 | 3.0 |
 | Relationship edges carry `document_ids` list | Relationships established by multiple docs lose provenance | Same relationship from 2 docs has `document_ids=[doc1, doc2]` | 3.0 |
 | Entity alias resolution (exact → alias → fuzzy match → new) | "S-75" and "SA-2 Dvina" are separate entities; expansion incomplete | Ingest 2 docs with alternate names; query returns unified entity | 2.9 |
 | Classification preserved on conflict | Reingest overwrites human-curated classification | Set classification to SECRET, reingest; verify still SECRET | 2.23 |
+| Reserved word handling (TABLE → TABLE_REF) | ArcadeDB schema creation fails on reserved SQL keyword | TABLE ontology type maps to TABLE_REF vertex type; downstream code uses original name | 3.0 |
 | ArcadeDB schema sync from active ontology | Schema drifts from ontology definition | API startup, registry activation, active registry PUT — schema sync runs with correct ontology | 3.0 |
 | Schema sync is additive only | Schema sync removes types that still have data | Remove entity type from ontology, re-sync; type remains in ArcadeDB (data preserved) | 3.0 |
 
@@ -351,6 +367,12 @@ These features have broken before and should be tested carefully after any chang
 22. **ArcadeDB UPSERT RETURN AFTER** (3.1) — All UPSERT statements must use `RETURN AFTER @rid` to get the RID back. Without this, upserts return `{count: 1}` instead of the RID, breaking downstream operations.
 23. **ArcadeDB CONTAINSTEXT** (3.1) — Fulltext search must use `CONTAINSTEXT` keyword, NOT `LUCENE`. Per-type iteration required since ArcadeDB has no abstract `V` base type.
 24. **upsert_relationship param collision** (3.1) — from_identity and to_identity params must use `f_`/`t_` prefixes to avoid key collision when both contain `name`.
+25. **Bundle coverage checker rule 8** (3.2) — extraction schema field names must be a subset of ontology properties (SYSTEM_FIELDS exempt). Drift between hand-authored schemas and ontology.yaml silently produces empty extraction results.
+26. **Bridge entity consistency across passes** (3.2) — PlatformEntity and SpecificationEntity must be structurally identical in radar_domain, missile_domain, and other_systems (checker rule 13).
+27. **Graph import tracker ordering** (3.2) — `tracker.mark()` must be called AFTER pure-Python record construction and BEFORE the first graph_store mutation. A misplaced mark causes either missed rollback (mark too late) or unnecessary rollback (mark too early).
+28. **`document_ids` list on domain edges** (3.2) — domain relationship edges carry `document_ids` as a LIST, not `document_id` as a string. The rollback primitive uses "remove from list + prune empty" — not simple `WHERE document_id = :id`.
+29. **ArcadeDB `@in` vs `in`** (3.2) — HAS_PROVENANCE edge target traversal requires `@in` (not plain `in`) in WHERE clauses. Plain `in` silently returns 0 rows.
+30. **Partial unique index upsert** (3.2) — `_write_stage_run` uses `ON CONFLICT` with `index_elements` + `index_where` for the partial unique index. SQLAlchemy versions < 2.0 may not support `index_where` on `on_conflict_do_update`.
 
 ---
 
@@ -376,7 +398,7 @@ These features have broken before and should be tested carefully after any chang
 6. Verify document delete removes chunk vertices and cleans orphan entities
 
 ### Regression Test (60 min)
-Run against all 24 Known Fragile Features listed above.
+Run against all 30 Known Fragile Features listed above.
 
 ---
 
@@ -398,8 +420,6 @@ Run against all 24 Known Fragile Features listed above.
 | `COMMUNITY_DETECTION_ALGORITHM` | `leiden` | Wrong algorithm may fail on small graphs |
 | `COMMUNITY_DETECTION_INTERVAL_MINUTES` | 60 | Too frequent = LLM cost; too rare = stale reports |
 | `COMMUNITY_DETECTION_POST_INGEST_THRESHOLD` | 5 | Hook triggers too often or too rarely |
-| `DOCLING_GRAPH_EXTRACTION_CONTRACT` | `delta` | `direct` loses delta resolvers and gleaning |
-| `DOCLING_GRAPH_PARALLEL_WORKERS` | 2 | Too low = slow extraction; too high = GPU contention |
-| `DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE` | 2048 | Too large = LLM context overflow; too small = too many batches |
-| `DOCLING_GRAPH_GLEANING_ENABLED` | true | Lower extraction recall |
-| `DOCLING_GRAPH_RESOLVERS_ENABLED` | true | Duplicate entities across batches |
+| `DEFAULT_ONTOLOGY_BUNDLE_KEY` | `air_defense_v3` | Bundle resolution falls back to system default; wrong value = unknown bundle error |
+| `PASS_MAX_RETRIES` | `3` | Per-pass retry budget; exhausted = IngestFailed for required passes |
+| `STRUCTURED_OUTPUT_THRESHOLD_CHARS` | `8000` | Schema size ceiling for structured LLM output; exceeded = fallback to JSON mode |

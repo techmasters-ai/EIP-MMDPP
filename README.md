@@ -2,7 +2,7 @@
 
 Multi-modal document processing and retrieval platform for defense/military use cases.
 
-Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (CLIP) into ArcadeDB vector collections → builds a military equipment knowledge graph (ArcadeDB) via parallel ontology-driven entity/relationship extraction → runs Louvain community detection and LLM-generated community reports → maintains governed trusted data (dedicated vector collection with human-review gate). Supports 3 retrieval strategies: basic (text vector search), hybrid (text + image multi-modal), and global (community-aware LLM synthesis). Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
+Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawings → converts documents via Docling (PdfPipeline + dlparse_v4 + EasyOCR) → extracts LLM-generated document metadata (summary, date, classification, source characterization) and picture descriptions via Ollama → embeds text (BGE-M3 via Ollama) and images (CLIP) into ArcadeDB vector collections → builds a military equipment knowledge graph (ArcadeDB) via bundle-based five-pass entity/relationship extraction (hand-authored fixed schemas, per-pass dispatch + merge-and-resolve + three-phase graph import) → runs Louvain community detection and LLM-generated community reports → maintains governed trusted data (dedicated vector collection with human-review gate). Supports 3 retrieval strategies: basic (text vector search), hybrid (text + image multi-modal), and global (community-aware LLM synthesis). Includes a user feedback → curator patch approval workflow, document cancel/delete lifecycle, and a React web UI.
 
 ## Architecture
 
@@ -51,7 +51,7 @@ Ingests PDFs, DOCX, PPTX, XLSX, HTML, Markdown, CSV, images, and technical drawi
 | Reranker | `BAAI/bge-reranker-v2-m3` cross-encoder (GPU-accelerated) |
 | Document Conversion | Docling PdfPipeline (dlparse_v4 + EasyOCR + TableFormer), SimplePipeline for Office/HTML/MD |
 | Document Analysis | LLM-based metadata extraction (summary, date, classification, source) + multimodal picture descriptions via Ollama |
-| Graph Extraction | Docling-Graph service (chunked entity extraction across 5 ontology groups in parallel + global relationship pass on full text, with few-shot examples and ontology-derived validation, port 8002) |
+| Graph Extraction | Docling-Graph service (bundle-based `/extract-pass` endpoint, 5 extraction passes with hand-authored Pydantic schemas, per-pass dispatch + retry + skip, merge-and-resolve, three-phase graph import, port 8002) |
 | Community Detection | Louvain community detection over ArcadeDB graph + LLM-generated community summaries |
 | Trusted Data | ArcadeDB trusted_text collection + Celery indexing (human-reviewed, vector-indexed) |
 | Frontend | React 18 + TypeScript + Vite (TecMasters design system) |
@@ -143,11 +143,13 @@ DOCLING_GRAPH_LLM_PROVIDER=ollama                 # ollama | openai (defaults to
 
 # Docling-Graph service (ontology-driven graph extraction)
 DOCLING_GRAPH_BASE_URL=http://docling-graph:8002  # Docling-Graph service URL
-DOCLING_GRAPH_TIMEOUT=300                         # HTTP timeout for extraction calls (seconds)
+DOCLING_GRAPH_TIMEOUT=300                         # HTTP timeout per extraction pass (seconds)
 DOCLING_GRAPH_CONCURRENCY=2                       # Max concurrent extraction requests
 GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for ArcadeDB import
 GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for ArcadeDB import
 
+DEFAULT_ONTOLOGY_BUNDLE_KEY=air_defense_v3         # Bundle resolution system default
+PASS_MAX_RETRIES=3                                 # Per-pass retry budget
 DOCLING_FALLBACK_ENABLED=false                    # Fall back to legacy extraction on Docling 5xx (default false)
 ```
 
@@ -201,7 +203,8 @@ KEEP_STACK=1 ./scripts/run_tests.sh
 | `GET` | `/v1/documents/{id}/status` | Poll pipeline status (includes stage summary) |
 | `POST` | `/v1/documents/batch-status` | Batch status check for multiple document IDs |
 | `GET` | `/v1/documents/{id}/stages` | Detailed pipeline stage diagnostics (per-stage status, attempt, metrics, error) |
-| `POST` | `/v1/documents/{id}/reingest` | Re-run pipeline — `{"mode": "full|embeddings_only|graph_only"}`; 409 if already PROCESSING |
+| `POST` | `/v1/documents/{id}/reingest` | Re-run pipeline — `{"mode": "full|embeddings_only|graph_only", "ontology_bundle_key"?: str, "use_case_key"?: str}`; 409 if already PROCESSING |
+| `GET` | `/v1/documents/{id}/extraction-status` | Three-concept extraction status: document_status, latest_run (per-pass details), graph_snapshot, graph_queryable (cross-run rollback-aware) |
 | `POST` | `/v1/documents/{id}/cancel` | Cancel PROCESSING document — revokes Celery tasks, cleans up all data stores |
 | `DELETE` | `/v1/documents/{id}` | Hard-delete a non-processing document and all derived data |
 | `DELETE` | `/v1/sources/{id}/documents` | Delete all documents in a source (409 if any are PROCESSING) |
@@ -603,7 +606,435 @@ The knowledge graph uses a 5-layer ontology grounded in DoDAF DM2 concepts:
 
 46 entity types, 50 relationship predicates, enforced via validation matrix at graph write time. Entity resolution uses exact → alias → fuzzy match canonicalization.
 
-See `ontology/ontology.yaml` for the full schema.
+See `ontology_bundles/air_defense_v3/ontology.yaml` for the full schema.
+
+## Adding a Custom Ontology Bundle
+
+The extraction system is domain-agnostic. While the shipped `air_defense_v3` bundle targets military equipment, you can create bundles for any domain: medical records, legal contracts, financial reports, supply chain, etc.
+
+### Bundle Architecture
+
+A bundle is a self-contained directory under `ontology_bundles/<bundle_key>/` containing everything the extraction pipeline needs:
+
+```
+ontology_bundles/
+└── <your_bundle_key>/
+    ├── __init__.py                     # Empty (makes it a Python package)
+    ├── ontology.yaml                   # Domain ontology (entity types, relationships, properties)
+    ├── manifest.yaml                   # Pass registry (which passes exist, in what order)
+    ├── coverage.yaml                   # What's extracted vs derived vs validate-only
+    ├── validators.py                   # Shared Pydantic field validators for messy LLM output
+    ├── derive_rules.py                 # Deterministic post-merge edge derivation
+    └── extraction_schemas/
+        ├── __init__.py
+        └── <pass_name>.py             # One module per extraction pass
+```
+
+### Step-by-Step: Creating a Medical Records Bundle
+
+This walkthrough creates a `medical_records_v1` bundle that extracts patients, diagnoses, medications, procedures, and their relationships from clinical documents.
+
+#### Step 1: Define the ontology (`ontology.yaml`)
+
+The ontology declares your domain's entity types, their properties, identity fields, and a validation matrix of allowed relationships.
+
+```yaml
+# ontology_bundles/medical_records_v1/ontology.yaml
+
+entity_types:
+  - name: PATIENT
+    label: "Patient"
+    identity_fields: [patient_id]
+    identity_scope: document          # Different patients per document
+    description: "A patient record"
+    properties:
+      type: object
+      properties:
+        patient_id: { type: string, description: "Medical record number" }
+        name: { type: string, description: "Patient full name" }
+        date_of_birth: { type: string, description: "DOB in ISO format" }
+        gender: { type: string, description: "Patient gender" }
+
+  - name: DIAGNOSIS
+    label: "Diagnosis"
+    identity_fields: [icd_code]
+    identity_scope: global            # Same ICD code = same diagnosis everywhere
+    description: "A medical diagnosis"
+    properties:
+      type: object
+      properties:
+        icd_code: { type: string, description: "ICD-10 code" }
+        description: { type: string, description: "Diagnosis description" }
+        severity: { type: string, description: "mild / moderate / severe / critical" }
+
+  - name: MEDICATION
+    label: "Medication"
+    identity_fields: [drug_name]
+    identity_scope: global
+    description: "A prescribed medication"
+    properties:
+      type: object
+      properties:
+        drug_name: { type: string, description: "Generic drug name" }
+        dosage: { type: string, description: "Dosage with units" }
+        route: { type: string, description: "Route of administration" }
+        frequency: { type: string, description: "Dosing frequency" }
+
+  - name: PROCEDURE
+    label: "Medical Procedure"
+    identity_fields: [procedure_name]
+    identity_scope: document
+    description: "A medical procedure performed"
+    properties:
+      type: object
+      properties:
+        procedure_name: { type: string, description: "Procedure name" }
+        cpt_code: { type: string, description: "CPT code" }
+        date_performed: { type: string, description: "Date in ISO format" }
+        outcome: { type: string, description: "Procedure outcome" }
+
+  - name: LAB_RESULT
+    label: "Lab Result"
+    identity_fields: [test_name, date_collected]
+    identity_scope: document
+    description: "A laboratory test result"
+    properties:
+      type: object
+      properties:
+        test_name: { type: string, description: "Lab test name" }
+        value: { type: string, description: "Result value with units" }
+        reference_range: { type: string, description: "Normal range" }
+        date_collected: { type: string, description: "Collection date" }
+        abnormal: { type: string, description: "normal / high / low / critical" }
+
+  # Document-structure entities (same as air_defense_v3)
+  - name: SECTION
+    label: "Document Section"
+    identity_fields: [heading, page_start]
+    identity_scope: document
+    properties:
+      type: object
+      properties:
+        heading: { type: string }
+        page_start: { type: integer }
+        page_end: { type: integer }
+
+relationship_types:
+  - name: DIAGNOSED_WITH
+    description: "Patient has this diagnosis"
+    source_type: PATIENT
+    target_type: DIAGNOSIS
+  - name: PRESCRIBED
+    description: "Patient is prescribed this medication"
+    source_type: PATIENT
+    target_type: MEDICATION
+  - name: UNDERWENT
+    description: "Patient underwent this procedure"
+    source_type: PATIENT
+    target_type: PROCEDURE
+  - name: HAS_LAB_RESULT
+    description: "Patient has this lab result"
+    source_type: PATIENT
+    target_type: LAB_RESULT
+  - name: TREATS
+    description: "Medication treats this diagnosis"
+    source_type: MEDICATION
+    target_type: DIAGNOSIS
+  - name: INDICATED_BY
+    description: "Procedure indicated by lab finding"
+    source_type: PROCEDURE
+    target_type: LAB_RESULT
+
+validation_matrix:
+  - { source: PATIENT, relationship: DIAGNOSED_WITH, target: DIAGNOSIS }
+  - { source: PATIENT, relationship: PRESCRIBED, target: MEDICATION }
+  - { source: PATIENT, relationship: UNDERWENT, target: PROCEDURE }
+  - { source: PATIENT, relationship: HAS_LAB_RESULT, target: LAB_RESULT }
+  - { source: MEDICATION, relationship: TREATS, target: DIAGNOSIS }
+  - { source: PROCEDURE, relationship: INDICATED_BY, target: LAB_RESULT }
+```
+
+**Key design decisions:**
+- `identity_scope: global` for things that are the same concept across all documents (e.g., a specific drug or ICD code)
+- `identity_scope: document` for things scoped to a specific patient encounter (e.g., a patient, a specific lab result)
+- `identity_fields` must be properties the LLM can reliably extract -- choose the most stable, unique identifiers
+
+#### Step 2: Define the extraction passes (`manifest.yaml`)
+
+Passes control how many LLM calls happen per document and what each call extracts.
+
+```yaml
+# ontology_bundles/medical_records_v1/manifest.yaml
+
+bundle_key: medical_records_v1
+manifest_schema_version: "1.0.0"
+ontology_name: "Clinical Document Ontology"
+ontology_version: "1.0.0"
+extraction_profile_version: "1.0.0"
+
+passes:
+  - name: document_structure
+    required: true
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.document_structure
+    template_class: DocumentStructurePass
+    primary_entity_types: [SECTION]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: clinical_entities
+    required: true
+    kind: entities_and_relationships
+    input_mode: document_only
+    module: extraction_schemas.clinical_entities
+    template_class: ClinicalEntitiesPass
+    primary_entity_types: [PATIENT, DIAGNOSIS, MEDICATION, PROCEDURE, LAB_RESULT]
+    bridge_entity_types: []
+    extracted_relationship_types:
+      [DIAGNOSED_WITH, PRESCRIBED, UNDERWENT, HAS_LAB_RESULT]
+    depends_on: []
+
+  - name: clinical_links
+    required: true
+    kind: relationships_only
+    input_mode: document_plus_entity_refs
+    module: extraction_schemas.clinical_links
+    template_class: ClinicalLinksPass
+    primary_entity_types: []
+    bridge_entity_types: []
+    extracted_relationship_types: [TREATS, INDICATED_BY]
+    depends_on: [clinical_entities]
+    skip_if_no_upstream_endpoints: true
+    skip_justification: >
+      When clinical_entities finds no medications, procedures, or lab
+      results, there is nothing for clinical_links to connect.
+```
+
+**Design guidance:**
+- Start with 2-3 passes. More passes = more LLM calls = slower but potentially more accurate per-call.
+- Put all "primary" entity extraction in one pass. Put cross-entity relationships in a second.
+- Use `depends_on` + `input_mode: document_plus_entity_refs` for relationship-only passes that need to reference entities from earlier passes.
+
+#### Step 3: Declare coverage (`coverage.yaml`)
+
+```yaml
+# ontology_bundles/medical_records_v1/coverage.yaml
+
+bundle_key: medical_records_v1
+version: "1.0.0"
+
+entity_types:
+  extract:
+    - SECTION
+    - PATIENT
+    - DIAGNOSIS
+    - MEDICATION
+    - PROCEDURE
+    - LAB_RESULT
+  derive: []
+
+relationship_types:
+  extract:
+    - DIAGNOSED_WITH
+    - PRESCRIBED
+    - UNDERWENT
+    - HAS_LAB_RESULT
+    - TREATS
+    - INDICATED_BY
+  derive:
+    - HAS_PROVENANCE
+    - MENTIONED_IN
+```
+
+#### Step 4: Write the extraction schemas
+
+Each pass gets a Python module with Pydantic models. **Every field must be `Optional` with a default** so partial LLM output does not crash.
+
+```python
+# ontology_bundles/medical_records_v1/extraction_schemas/clinical_entities.py
+
+from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from ..validators import coerce_optional_confidence
+
+
+class PatientEntity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    patient_id: Optional[str] = None
+    name: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    gender: Optional[str] = None
+    confidence: Optional[float] = None
+    _v_conf = field_validator("confidence", mode="before")(coerce_optional_confidence)
+
+
+class DiagnosisEntity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    icd_code: Optional[str] = None
+    description: Optional[str] = None
+    severity: Optional[str] = None
+    confidence: Optional[float] = None
+    _v_conf = field_validator("confidence", mode="before")(coerce_optional_confidence)
+
+
+class MedicationEntity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    drug_name: Optional[str] = None
+    dosage: Optional[str] = None
+    route: Optional[str] = None
+    frequency: Optional[str] = None
+    confidence: Optional[float] = None
+    _v_conf = field_validator("confidence", mode="before")(coerce_optional_confidence)
+
+
+class ProcedureEntity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    procedure_name: Optional[str] = None
+    cpt_code: Optional[str] = None
+    date_performed: Optional[str] = None
+    outcome: Optional[str] = None
+    confidence: Optional[float] = None
+    _v_conf = field_validator("confidence", mode="before")(coerce_optional_confidence)
+
+
+class LabResultEntity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    test_name: Optional[str] = None
+    value: Optional[str] = None
+    reference_range: Optional[str] = None
+    date_collected: Optional[str] = None
+    abnormal: Optional[str] = None
+    confidence: Optional[float] = None
+    _v_conf = field_validator("confidence", mode="before")(coerce_optional_confidence)
+
+
+class ClinicalRelationship(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    rel_type: Optional[str] = None
+    from_type: Optional[str] = None
+    from_identity: Optional[dict[str, Any]] = None
+    to_type: Optional[str] = None
+    to_identity: Optional[dict[str, Any]] = None
+    confidence: Optional[float] = None
+    _v_conf = field_validator("confidence", mode="before")(coerce_optional_confidence)
+
+
+class ClinicalEntitiesPass(BaseModel):
+    """Top-level template for the clinical_entities pass."""
+    model_config = ConfigDict(extra="ignore")
+    patients: list[PatientEntity] = Field(default_factory=list)
+    diagnoses: list[DiagnosisEntity] = Field(default_factory=list)
+    medications: list[MedicationEntity] = Field(default_factory=list)
+    procedures: list[ProcedureEntity] = Field(default_factory=list)
+    lab_results: list[LabResultEntity] = Field(default_factory=list)
+    relationships: list[ClinicalRelationship] = Field(default_factory=list)
+```
+
+**Naming convention:** The top-level pass class field names MUST be the lowercase plural of the entity type name (e.g., `PATIENT` -> `patients`, `LAB_RESULT` -> `lab_results`). The merge layer uses this convention to discover entity lists.
+
+#### Step 5: Write shared validators (`validators.py`)
+
+Copy from `ontology_bundles/air_defense_v3/validators.py` as a starting point. Add domain-specific validators if needed (e.g., ICD-10 code normalization).
+
+#### Step 6: Write derive_rules (`derive_rules.py`)
+
+Copy the structure from `ontology_bundles/air_defense_v3/derive_rules.py`. The `derive_structural_edges` function produces deterministic edges (like `MENTIONED_IN` from entities to text chunks). Customize or keep as-is.
+
+#### Step 7: Activate your bundle
+
+Set the system default in `.env`:
+
+```bash
+DEFAULT_ONTOLOGY_BUNDLE_KEY=medical_records_v1
+```
+
+Or set it per-source via the API:
+
+```python
+requests.post(f"{BASE}/sources", json={
+    "name": "patient-records",
+    "default_ontology_bundle_key": "medical_records_v1",
+})
+```
+
+Or override per-reingest:
+
+```python
+requests.post(f"{BASE}/documents/{doc_id}/reingest", json={
+    "mode": "graph_only",
+    "ontology_bundle_key": "medical_records_v1",
+})
+```
+
+#### Step 8: Validate with the coverage checker
+
+```bash
+python tools/check_extraction_coverage.py
+```
+
+This runs 13 rules against your bundle and reports any issues:
+- Every entity in manifest.yaml must be in coverage.yaml
+- Every relationship must be in the validation_matrix
+- Schema size must be under the structured-output threshold
+- All fields must be Optional (partial-safety)
+- Identity fields must exist as properties
+- Bridge entities must be consistent across passes
+
+Fix any reported errors before ingesting documents.
+
+#### Step 9: Rebuild and test
+
+```bash
+# Rebuild images (the Dockerfiles COPY ontology_bundles/)
+docker compose build worker docling-graph
+
+# Verify importability
+./scripts/smoke_test_bundle_import.sh
+
+# Ingest a test document
+curl -X POST http://localhost:8000/v1/sources/{source_id}/documents \
+  -F "file=@patient_record.pdf"
+```
+
+### Multiple Bundles
+
+You can have multiple bundles side by side:
+
+```
+ontology_bundles/
+├── air_defense_v3/     # Military equipment
+├── medical_records_v1/ # Clinical documents
+└── legal_contracts_v1/ # Legal agreements
+```
+
+Different sources can use different bundles:
+
+```python
+# Military source
+requests.post(f"{BASE}/sources", json={
+    "name": "intel-reports",
+    "default_ontology_bundle_key": "air_defense_v3",
+})
+
+# Medical source
+requests.post(f"{BASE}/sources", json={
+    "name": "patient-records",
+    "default_ontology_bundle_key": "medical_records_v1",
+})
+```
+
+Documents ingested from each source automatically use the source's default bundle. The system default (`DEFAULT_ONTOLOGY_BUNDLE_KEY`) is the fallback when a source does not specify one.
+
+### Design Tips
+
+1. **Start small.** Begin with 3-5 entity types and 3-5 relationships. Add more after validating extraction quality.
+2. **Choose identity_fields carefully.** These determine entity merge behavior. Pick fields the LLM can reliably extract and that uniquely identify the entity.
+3. **Use `identity_scope: global` sparingly.** Global entities merge across documents -- great for well-known things (drug names, ICD codes) but risky for ambiguous names.
+4. **Keep schemas under 8000 chars.** The JSON schema is sent to the LLM for structured output. Huge schemas degrade extraction quality. Split into more passes if needed.
+5. **Test with `graph_only` reingest.** After tuning schemas, use `mode: "graph_only"` to re-extract without re-processing the document through Docling.
+6. **Check the coverage checker.** Run `python tools/check_extraction_coverage.py` after every schema change. It catches drift before it reaches production.
 
 ## Creating Custom Queries
 
@@ -973,17 +1404,17 @@ detect_and_translate  (per-element language detection + LLM translation if non-E
     ↓
 derive_document_metadata  (LLM: summary, date, classification, source characterization)
     ↓
-derive_picture_descriptions  (LLM: multimodal image descriptions with summary context)
-    ↓
 purge_document_derivations  (clean up prior run data for reingest)
     ↓
-┌── derive_text_chunks_and_embeddings ──┐
-│      (includes image description       │
-│       section embedding pass)          │
-│── derive_image_embeddings             │  (parallel Celery chord)
-└── derive_ontology_graph ──────────────┘
+derive_picture_descriptions  (LLM: multimodal image descriptions with summary context)
     ↓
-collect_derivations  (chord callback)
+derive_text_chunks_and_embeddings  (includes image description section embedding pass)
+    ↓
+derive_image_embeddings
+    ↓
+derive_ontology_graph  (5-pass extraction → merge-and-resolve → three-phase graph import)
+    ↓
+collect_derivations
     ↓
 derive_structure_links  (needs embedding output committed)
     ↓
@@ -994,7 +1425,8 @@ finalize_document
 
 Key features:
 - **Canonical element store** (`document_elements` table) — parse once, derive many
-- **Parallel derivations** — embedding and graph extraction run concurrently via Celery chord
+- **Sequential 12-stage chain** — all stages run sequentially (the parallel chord was removed)
+- **Bundle-based graph extraction** — `derive_ontology_graph` dispatches 5 extraction passes via `/extract-pass`, merges results, resolves entities, and imports in three phases (nodes → domain edges → structural edges)
 - **Sequential structure links** — runs after embeddings are committed (avoids race condition)
 - **Entity canonicalization** — post-extraction alias resolution (exact → alias → fuzzy match → new)
 - **Idempotent writes** — deterministic chunk keys with `ON CONFLICT DO UPDATE`
@@ -1006,7 +1438,7 @@ Key features:
 - **Docling concurrency gate** — Redis semaphore with `DOCLING_CONCURRENCY` permits (default 1) controls parallel Docling conversions; queued tasks wait and retry instead of timing out; health check is advisory (logs warning but proceeds with conversion) to avoid starvation when the Docling service runs CPU-bound VLM conversion; health probe timeout configurable via `DOCLING_HEALTH_TIMEOUT` (default 5s)
 - **Docling threadpool isolation** — The Docling service runs conversion in a threadpool (`run_in_threadpool`) so the `/health` endpoint remains responsive during CPU-bound VLM processing; an `asyncio.Semaphore` (capacity from `DOCLING_MAX_CONCURRENT`, default 1 on CPU) gates concurrent conversions and returns 503 when saturated
 - **Configurable retries** — retry counts and delays for all pipeline stages configurable via env vars (`PREPARE_MAX_RETRIES`, `EMBED_MAX_RETRIES`, etc.); documents stay in PROCESSING status during retries and only show FAILED after all retries are exhausted; Docling 503 (busy) and `SoftTimeLimitExceeded` retries do NOT consume the retry budget
-- **Chord resilience** — derivation tasks (text/image embeddings, graph extraction) return error dicts instead of raising on terminal failure, ensuring the chord callback and `finalize_document` always execute; `SoftTimeLimitExceeded` caught explicitly to return gracefully; chord `on_error` errback marks document FAILED if a hard time limit kills a chord member
+- **Stage resilience** — derivation tasks return error dicts instead of raising on terminal failure, ensuring `finalize_document` always executes; `SoftTimeLimitExceeded` caught explicitly to return gracefully
 - **Truncated JSON repair** — LLM graph extraction output truncated by token limits is automatically repaired via `json-repair` before falling back to `DeterministicExtractionError`
 - **Recursive chunk splitting** — when a graph extraction chunk fails with deterministic LLM error, the chunk is recursively halved (2500→1250→625, floor 600 chars) and each sub-chunk retried; partial graph from successful chunks/sub-chunks still allows COMPLETE status; only total failure of all chunks triggers PARTIAL_COMPLETE
 - **Batched text embedding + ArcadeDB upserts** — large documents (thousands of text elements) are batched via `EMBED_TEXT_BATCH_SIZE` (default 128) before writing to ArcadeDB
@@ -1029,7 +1461,7 @@ Key features:
 
 The `prepare_document` task calls the dedicated Docling service which extracts text, tables, images, equations, and schematics in a single VLM pass. If the Docling service is unavailable and `DOCLING_FALLBACK_ENABLED=true`, the pipeline falls back to legacy extraction.
 
-Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-all` endpoint, which runs all 5 ontology groups in parallel (reference, equipment, rf_signal, weapon, operational) plus a relationship extraction pass — 6 LLM calls total instead of the previous ~45 sequential calls. Each group extracts ALL entity instances (multiple per type) via direct LLM calls with structured JSON output, bypassing the slow per-entity-type `run_pipeline` approach. The pipeline's `derive_ontology_graph` task makes a single HTTP call and imports the returned entities/relationships into ArcadeDB. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. Graph data is stored once per document (`document_graph_extractions`). Extraction runs on a dedicated `graph_extract` queue.
+Graph extraction is performed by the **Docling-Graph service** (port 8002) via the `/extract-pass` endpoint using a bundle-based architecture. The orchestrator in `derive_ontology_graph` dispatches 5 extraction passes (reference, radar_domain, missile_domain, other_systems, system_links) sequentially, each with its own hand-authored Pydantic schema from the active ontology bundle (`ontology_bundles/air_defense_v3/`). Each pass sends `{bundle_key, pass_name, docling_document_json, upstream_entities?}` to the Docling-Graph service, which returns extracted entities and relationships. After all required passes complete (with per-pass retry + skip logic and a required-pass gate), the merge-and-resolve layer collapses bridge entities across passes, resolves relationships by identity-dict or ref_id lookup, and tracks rejection reasons. The three-phase graph import writes nodes (with `tracker.mark()`), then domain edges, then structural edges (MENTIONED_IN from derive_rules). HAS_PROVENANCE edges are auto-created during node upsert. Entities below `GRAPH_NODE_MIN_CONFIDENCE` (default 0.60) and relationships below `GRAPH_REL_MIN_CONFIDENCE` (default 0.55) are filtered at import time. The `GraphWriteTracker` gates rollback on failure — failures before the first graph mutation skip rollback to avoid deleting data from a prior successful run.
 
 ## Data Migration (from Neo4j + Qdrant to ArcadeDB)
 
@@ -1128,6 +1560,7 @@ Start command: `docker compose --profile split up -d --build`
 | 2.28 | GraphRAG architecture overhaul: separated bridge input/ from GraphRAG output/ (fixed overwrite bug), fixed `_get_method()` double-suffix bug (`standard-update-update`), removed dead Neo4j entity/relationship bridge exports (Path A — GraphRAG owns extraction), fixed double-chunking (pass full documents not pre-chunked), fixed auto-tune prompt filename mismatch, incremental indexing with pre-update backup/restore, stale Redis lock cleanup on worker startup, configurable response types per search method, cache toggle, fast method option, dry-run mode, dynamic community selection, covariates support, increased default cluster size (10→50) | Complete |
 | 2.29 | Async GraphRAG queries: submit/poll/fetch pattern via Celery tasks to eliminate browser timeout on long-running LLM queries (1-3+ min), exponential backoff polling in frontend, Redis singleton + job tracking for bogus ID detection, Literal-typed status schema, monkey-patch for GraphRAG incremental indexing `update_final_documents` NaN bug, 29 unit tests covering task + endpoints + helpers | Complete |
 | 2.30 | Image display fixes: standalone image files (JPEG/PNG/TIFF/etc.) synthesize an image element when Docling returns 0 elements (CLIP embed + LLM describe + text search), DoclingViewer shows image + description panel; server-side annotation injection in docling-raw endpoint wires `{kind: "description"}` annotations to Docling JSON pictures for hover tooltips; image dedup includes raw image bytes hash to prevent distinct same-page images from being dropped; `image-descriptions` endpoint returns `artifact_id` for image display | Complete |
+| 3.2 | Extraction refactor: remove runtime template generation, bundle-based fixed schemas, 5-pass extraction, per-pass StageRun tracking, merge-and-resolve, tracker-gated rollback, status API with cross-run graph_queryable, CI lints, baseline harness | Complete |
 | 3 | Auth (JWT + ABAC), governance workflow | Planned |
 | 4 | Hardening, full test coverage, observability | Planned |
 | 5 | Ontology versioning, CI/CD, advanced features | Planned |
@@ -1160,10 +1593,14 @@ app/
 │   ├── chunking.py             # Native HybridChunker integration (Docling)
 │   ├── reranker.py             # Cross-encoder reranker (bge-reranker-v2-m3)
 │   ├── translation.py          # Foreign language detection + LLM translation
-│   ├── ontology_templates.py   # YAML → Pydantic extraction templates + validation
-│   └── storage.py              # MinIO storage operations
+│   ├── extraction_merge.py        # Merge + resolve logic for bundle-passes path
+│   ├── status_signals.py          # Cross-run graph_queryable computation
+│   ├── ontology_bundles.py        # Worker-side bundle loader (manifest, coverage, resolve)
+│   ├── ontology_templates.py      # YAML → Pydantic extraction templates + validation
+│   └── storage.py                 # MinIO storage operations
 ├── workers/
-│   ├── pipeline.py             # Celery ingest pipeline (parallel text/image embed)
+│   ├── pipeline.py             # Celery ingest pipeline (sequential 12-stage chain)
+│   ├── dispatch_types.py       # IngestDispatchResult frozen dataclass
 │   ├── trusted_data_tasks.py   # Celery task for trusted data embedding + ArcadeDB indexing
 │   └── watcher.py              # Celery Beat directory watcher
 ├── models/               # SQLAlchemy ORM (ingest, retrieval, governance, auth, trusted_data)
@@ -1173,8 +1610,31 @@ docker/
 ├── docling-graph/        # Docling-Graph extraction service (ontology-driven, port 8002)
 ├── arcadedb/             # ArcadeDB built from source (Dockerfile + JDK 21)
 └── postgres/             # Custom Postgres (metadata, governance)
-ontology/
-└── ontology.yaml         # Military equipment ontology (5 layers, 35+ types, 44 predicates)
+ontology_bundles/
+├── __init__.py
+├── _shared/
+│   └── limits.py               # Shared schema-size threshold constant
+└── air_defense_v3/
+    ├── __init__.py
+    ├── ontology.yaml           # Canonical ontology (identity_fields + identity_scope)
+    ├── manifest.yaml           # 5-pass registry (names, kinds, input modes, entity/rel types)
+    ├── coverage.yaml           # Extract/derive bucket declarations
+    ├── validators.py           # Shared Pydantic field validators
+    ├── derive_rules.py         # Deterministic structural edge derivation (MENTIONED_IN)
+    └── extraction_schemas/
+        ├── __init__.py
+        ├── reference.py        # SECTION, FIGURE, TABLE, ASSERTION
+        ├── radar_domain.py     # 7 primary + 2 bridge entities + relationships
+        ├── missile_domain.py   # 5 primary + 2 bridge entities + relationships
+        ├── other_systems.py    # 5 primary + 2 bridge entities + relationships
+        └── system_links.py     # Cross-pass relationships only (ASSOCIATED_WITH, CUES)
+tools/
+├── check_extraction_coverage.py   # Bundle coverage checker (13 rules + manifest consistency)
+├── ci_lints.sh                    # 8 legacy-reference prevention lints
+├── extraction_baseline_harness.py # Soak comparison CLI tool
+└── extraction_coverage/
+    ├── rules.py                   # Rule implementations
+    └── manifest_consistency.py    # Manifest self-consistency sub-checks
 scripts/
 └── seed_ontology.py              # Seed ontology types from YAML
 frontend/
