@@ -4763,7 +4763,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §5.5 + §6.4. Per-pass dispatcher with retry, skip, gate logic.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/unit/test_run_single_pass.py` with TDD coverage:
 - `_should_skip` returns True for relationships_only pass with no satisfiable triple
@@ -4781,7 +4781,7 @@ Create `tests/unit/test_run_single_pass.py` with TDD coverage:
 
 Use mocked `_call_extract_pass` (the HTTP helper) so tests don't hit the real docling-graph service.
 
-- [ ] **Step 2: Implement `_should_skip`**
+- [x] **Step 2: Implement `_should_skip`**
 
 Per spec §5.5 skip logic block:
 
@@ -4812,7 +4812,7 @@ def _should_skip(pass_def, upstream_refs: dict, ontology: dict) -> bool:
     return True
 ```
 
-- [ ] **Step 3: Implement `_run_single_pass`**
+- [x] **Step 3: Implement `_run_single_pass`**
 
 Per spec §5.5. Skeleton:
 
@@ -4928,7 +4928,7 @@ Implement the private helpers (`_build_extract_pass_request`, `_call_extract_pas
 
 `_backoff(attempt)` uses the spec-declared backoff: `min(30 * 2**(attempt-1), 300)` seconds.
 
-- [ ] **Step 4: Implement `check_required_pass_gate`**
+- [x] **Step 4: Implement `check_required_pass_gate`**
 
 Per spec §6.4:
 
@@ -4984,7 +4984,7 @@ def check_required_pass_gate(pipeline_run_id) -> GateResult:
         return GateResult(passed=(not failures), failures=failures)
 ```
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ```bash
 pytest tests/unit/test_run_single_pass.py -v
