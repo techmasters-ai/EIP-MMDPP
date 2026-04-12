@@ -4376,7 +4376,7 @@ This chunk is the back half of PR 2. Everything in Chunk 3 was strictly foundati
 
 Spec §5.4 tracker gate. Starts with the tracker dataclass and the skeleton of the helper functions the new orchestrator branch will call. Nothing wires to the live extraction path yet — all under the `graph_extraction_engine == "bundle_passes"` branch.
 
-- [ ] **Step 1: Write failing tracker tests**
+- [x] **Step 1: Write failing tracker tests**
 
 Create `tests/unit/test_graph_write_tracker.py`:
 
@@ -4411,7 +4411,7 @@ pytest tests/unit/test_graph_write_tracker.py -v
 
 Expected: fails on import.
 
-- [ ] **Step 2: Add `GraphWriteTracker` to `app/workers/pipeline.py`**
+- [x] **Step 2: Add `GraphWriteTracker` to `app/workers/pipeline.py`**
 
 Near the top of the file (after existing imports, before the Celery tasks):
 
@@ -4433,7 +4433,7 @@ class GraphWriteTracker:
 
 Run tests — expect pass.
 
-- [ ] **Step 3: Add helper function stubs that raise NotImplementedError**
+- [x] **Step 3: Add helper function stubs that raise NotImplementedError**
 
 Near `GraphWriteTracker`, add stubs for every helper the new branch needs. Each raises `NotImplementedError` until its specific task lands. This lets dependent tasks reference the names without breaking imports.
 
@@ -4478,7 +4478,7 @@ def _upsert_document_graph_extraction(**kwargs) -> None:
     raise NotImplementedError("Task 4.5")
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/workers/pipeline.py tests/unit/test_graph_write_tracker.py
