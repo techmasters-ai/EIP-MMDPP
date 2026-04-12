@@ -1,12 +1,10 @@
 """Spec §5.4 ``GraphWriteTracker`` — worker-local rollback gate.
 
 Task 4.1 of the extraction-refactor plan. Asserts the tracker's default
-state, its one-way transition semantics (``.mark()`` is idempotent), and
-that the helper stubs raise NotImplementedError with a task-ID back-
-pointer so partial runs during Chunk 4 incremental delivery fail loudly.
+state and its one-way transition semantics (``.mark()`` is idempotent).
+The helper stubs from Task 4.1 were replaced with real implementations
+in Task 4.6 and are tested in test_derive_ontology_graph_bundle_passes.py.
 """
-import pytest
-
 from app.workers.pipeline import GraphWriteTracker
 
 
@@ -37,25 +35,3 @@ class TestGraphWriteTracker:
         a.mark()
         assert a.any_mutation_attempted is True
         assert b.any_mutation_attempted is False
-
-
-class TestOrchestratorHelperStubs:
-    """Every helper stub added in Task 4.1 raises NotImplementedError with
-    a task-ID back-pointer so partial deliveries fail loudly instead of
-    silently no-op'ing. The back-pointer text is asserted so nobody
-    accidentally swallows the marker while filling in the body later."""
-
-    def test_attempt_rollback_stub(self):
-        from app.workers.pipeline import _attempt_rollback
-        with pytest.raises(NotImplementedError, match="Task 4.6"):
-            _attempt_rollback("doc-1")
-
-    def test_delete_extraction_layer_graph_stub(self):
-        from app.workers.pipeline import _delete_extraction_layer_graph
-        with pytest.raises(NotImplementedError, match="Task 4.6"):
-            _delete_extraction_layer_graph("doc-1")
-
-    def test_update_document_pipeline_status_stub(self):
-        from app.workers.pipeline import _update_document_pipeline_status
-        with pytest.raises(NotImplementedError, match="Task 4.7"):
-            _update_document_pipeline_status("doc-1", "COMPLETE")

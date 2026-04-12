@@ -230,8 +230,13 @@ class TestEnsureReadyPropagation:
         return inspect.getsource(func)
 
     def test_derive_ontology_graph_calls_ensure_ready(self):
-        source = self._get_stage_source("derive_ontology_graph")
-        assert "ensure_ready_sync" in source
+        # After Task 4.6, ensure_ready_sync lives in _derive_ontology_graph_legacy
+        # (the legacy path) — the dispatch wrapper delegates to it.
+        import importlib
+        import inspect
+        pipeline = importlib.import_module("app.workers.pipeline")
+        legacy_source = inspect.getsource(pipeline._derive_ontology_graph_legacy)
+        assert "ensure_ready_sync" in legacy_source
 
     def test_derive_text_chunks_calls_ensure_ready(self):
         source = self._get_stage_source("derive_text_chunks_and_embeddings")

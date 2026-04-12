@@ -92,7 +92,9 @@ from app.services.extraction_merge import classify_yield  # noqa: E402
 from app.services.extraction_merge import classify_yield_from_counts  # noqa: E402
 from app.services.extraction_merge import build_display_label  # noqa: E402
 from app.services.extraction_merge import YieldStatus  # noqa: E402
+from app.services.extraction_merge import merge_and_resolve  # noqa: E402
 from app.services.ontology_bundles import load_bundle_manifest  # noqa: E402
+from app.services.ontology_templates import load_ontology  # noqa: E402
 from app.db.session import get_graph_store  # noqa: E402
 from app.db.session import get_sync_session  # noqa: E402
 
@@ -147,17 +149,22 @@ class GraphWriteTracker:
 
 # --- Orchestrator helper stubs (filled in by later Chunk 4 tasks) -----------
 
-def _attempt_rollback(document_id: str) -> str:
-    """Filled in by Task 4.6: calls ``_delete_extraction_layer_graph`` and
-    returns a diagnostic suffix (empty on success, ``"; ROLLBACK_ALSO_FAILED: ..."``
-    on failure) to concatenate into the stage row's error_message."""
-    raise NotImplementedError("Task 4.6")
-
-
 def _delete_extraction_layer_graph(document_id: str) -> None:
-    """Filled in by Task 4.6: thin wrapper over
-    ``graph_store.delete_extraction_layer_graph_sync``."""
-    raise NotImplementedError("Task 4.6")
+    """Thin wrapper over graph_store.delete_extraction_layer_graph_sync."""
+    graph_store = get_graph_store()
+    graph_store.delete_extraction_layer_graph_sync(str(document_id))
+
+
+def _attempt_rollback(document_id: str) -> str:
+    """Calls _delete_extraction_layer_graph; returns empty string on success
+    or a diagnostic suffix on failure to concatenate into the stage row's
+    error_message."""
+    try:
+        _delete_extraction_layer_graph(document_id)
+        return ""
+    except Exception as rollback_exc:
+        logger.error("rollback during failure handling also failed: %s", rollback_exc)
+        return f"; ROLLBACK_ALSO_FAILED: {rollback_exc}"
 
 
 def _rel_to_dict(rel_tuple) -> dict:
@@ -650,10 +657,16 @@ def _import_graph_phase_structural_edges(
 
 
 def _update_document_pipeline_status(document_id: str, new_status: str) -> None:
-    """Filled in by Task 4.7: writes Document.pipeline_status via the
-    existing vocabulary from app/models/ingest.py:60. Spec §5.4 +
-    §6.9."""
-    raise NotImplementedError("Task 4.7")
+    """Writes Document.pipeline_status. Spec §5.4 + §6.9."""
+    from app.models.ingest import Document
+    db = _get_db()
+    try:
+        doc = db.get(Document, uuid.UUID(str(document_id)))
+        if doc:
+            doc.pipeline_status = new_status
+            db.commit()
+    finally:
+        db.close()
 
 
 def check_required_pass_gate(pipeline_run_id) -> GateResult:
@@ -3636,13 +3649,10 @@ def _build_entity_mentions(
     return mentions
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
-                 soft_time_limit=settings.graph_soft_time_limit,
-                 time_limit=settings.graph_time_limit)
-def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
-    """Read ordered text elements -> Docling-Graph service extraction -> upsert document_graph_extractions -> import to GraphStore.
-
-    Stores graph extraction once per document (not per artifact).
+def _derive_ontology_graph_legacy(self, document_id: str, run_id: str | None = None) -> dict:
+    """Legacy extraction path (single-pass / layered). Called by derive_ontology_graph
+    when graph_extraction_engine != 'bundle_passes'. Body is identical to the
+    original derive_ontology_graph implementation — DO NOT modify.
     """
     from app.models.ingest import DocumentElement, DocumentGraphExtraction
     from app.db.session import get_graph_store
@@ -4044,6 +4054,187 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         raise self.retry(exc=exc)
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# New bundle_passes branch — spec §5.4 orchestrator. Task 4.6.
+# ---------------------------------------------------------------------------
+
+def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id: str) -> dict:
+    """New path: fixed per-pass templates, merge, import, rollback. Spec §5.4."""
+    from app.models.ingest import PipelineRun, StageRun
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    # 1. Stage-summary row
+    db = _get_db()
+    try:
+        run = db.get(PipelineRun, uuid.UUID(pipeline_run_id))
+        stage_summary = StageRun(
+            pipeline_run_id=uuid.UUID(pipeline_run_id),
+            stage_name="derive_ontology_graph",
+            pass_name=None,
+            attempt=self.request.retries + 1,
+            status="RUNNING",
+            started_at=datetime.utcnow(),
+        )
+        db.add(stage_summary)
+        db.flush()
+        stage_summary_id = stage_summary.id
+        run_document_id = str(run.document_id)
+        run_mode = run.mode
+        bundle_key = run.ontology_bundle_key
+        db.commit()
+    finally:
+        db.close()
+
+    tracker = GraphWriteTracker()
+
+    def _terminalize_failure(exc_type, error_msg, should_rollback):
+        rollback_note = _attempt_rollback(run_document_id) if should_rollback else ""
+        db2 = _get_db()
+        try:
+            from datetime import datetime as dt
+            row = db2.get(StageRun, stage_summary_id)
+            if row:
+                row.status = "FAILED"
+                row.execution_status = "FAILED"
+                row.rollback_executed = should_rollback
+                row.error_message = f"{exc_type}: {error_msg}{rollback_note}"
+                row.finished_at = dt.utcnow()
+            run_row = db2.get(PipelineRun, uuid.UUID(pipeline_run_id))
+            if run_row:
+                run_row.status = "FAILED"
+                run_row.finished_at = dt.utcnow()
+            db2.commit()
+        except Exception as bookkeeping_exc:
+            db2.rollback()
+            logger.error(
+                "derive_ontology_graph: bookkeeping also failed: %s", bookkeeping_exc
+            )
+        finally:
+            db2.close()
+        _update_document_pipeline_status(run_document_id, "PARTIAL_COMPLETE")
+
+    try:
+        manifest = load_bundle_manifest(bundle_key)
+        ontology = load_ontology(bundle_key=bundle_key)
+        doc_json = _build_docling_document_json(run_document_id)
+
+        pass_results: dict = {}
+        upstream_refs: dict = {}
+
+        for pass_def in manifest.passes:
+            _run_single_pass(
+                pipeline_run_id=pipeline_run_id,
+                pass_def=pass_def,
+                manifest=manifest,
+                ontology=ontology,
+                bundle_key=bundle_key,
+                doc_json=doc_json,
+                pass_results=pass_results,
+                upstream_refs=upstream_refs,
+                document_id=run_document_id,
+            )
+
+        gate = check_required_pass_gate(pipeline_run_id)
+        if not gate.passed:
+            raise IngestFailed(f"Required passes failed: {gate.failures}")
+
+        merged = merge_and_resolve(
+            pass_results=pass_results,
+            manifest=manifest,
+            ontology=ontology,
+            document_id=run_document_id,
+            pipeline_run_id=str(pipeline_run_id),
+        )
+
+        _apply_post_merge_yield_updates(pipeline_run_id, merged)
+        _write_pipeline_run_metrics(pipeline_run_id, merged, manifest)
+
+        identity_to_rid = _import_graph_phase_nodes(
+            merged, ontology, run_document_id, tracker,
+        )
+        _import_graph_phase_domain_edges(merged, ontology, tracker)
+        _import_graph_phase_structural_edges(
+            merged, identity_to_rid, run_document_id, str(pipeline_run_id), tracker,
+        )
+
+        # Build a detachment-safe snapshot so _upsert_document_graph_extraction
+        # can access run metadata after the original DB session was closed.
+        run_snapshot = SimpleNamespace(
+            ontology_bundle_key=bundle_key,
+            ontology_name=getattr(manifest, "ontology_name", None),
+            ontology_version=getattr(manifest, "ontology_version", None),
+            use_case_key=None,
+            extraction_profile_version=getattr(manifest, "extraction_profile_version", None),
+        )
+
+        _upsert_document_graph_extraction(
+            document_id=run_document_id,
+            pipeline_run_id=pipeline_run_id,
+            run=run_snapshot,
+            merged=merged,
+            manifest=manifest,
+        )
+
+        # Success terminalization
+        db3 = _get_db()
+        try:
+            from datetime import datetime as dt
+            row = db3.get(StageRun, stage_summary_id)
+            if row:
+                row.status = "COMPLETE"
+                row.execution_status = "COMPLETE"
+                row.rollback_executed = False
+                row.finished_at = dt.utcnow()
+
+            run_row = db3.get(PipelineRun, uuid.UUID(pipeline_run_id))
+            if run_row and run_mode == "graph_only":
+                run_row.status = "COMPLETE"
+                run_row.finished_at = dt.utcnow()
+            db3.commit()
+        finally:
+            db3.close()
+
+        if run_mode == "graph_only":
+            _update_document_pipeline_status(run_document_id, "COMPLETE")
+
+        return {
+            "stage": "derive_ontology_graph",
+            "status": "ok",
+            "entities": len(merged.entities),
+            "edges": len(merged.edges),
+        }
+
+    except IngestFailed as exc:
+        _terminalize_failure("gate_failed", str(exc), should_rollback=False)
+        raise
+    except Exception as exc:
+        logger.exception("derive_ontology_graph bundle_passes failure")
+        _terminalize_failure(
+            "unexpected_failure", str(exc),
+            should_rollback=tracker.any_mutation_attempted,
+        )
+        raise
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
+                 soft_time_limit=settings.graph_soft_time_limit,
+                 time_limit=settings.graph_time_limit)
+def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
+    """Feature-flag dispatch for graph extraction.
+
+    With graph_extraction_engine='bundle_passes' (and a run_id present),
+    routes to the new per-pass orchestrator (_derive_ontology_graph_bundle_passes).
+    Otherwise falls through to the legacy single-pass / layered path.
+
+    Callers always dispatch as derive_ontology_graph.si(document_id, run_id),
+    so in the bundle_passes branch run_id IS the pipeline_run_id.
+    """
+    if get_settings().graph_extraction_engine == "bundle_passes" and run_id:
+        return _derive_ontology_graph_bundle_passes(self, run_id, document_id)
+    return _derive_ontology_graph_legacy(self, document_id, run_id)
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
