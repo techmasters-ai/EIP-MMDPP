@@ -89,13 +89,37 @@ Before writing custom logic, check whether the library already provides the capa
 | Stale run cleanup on worker startup | Crashed workers leave documents in PROCESSING permanently | Kill worker mid-ingest, restart; document reverts to PENDING | 2.18 |
 | Re-upload on failure | Re-uploading failed doc returns 409 indefinitely | Upload doc, let it fail, re-upload same file without error | 2 |
 
-### 1.2 Sequential Pipeline & Stage Resilience
+### 1.2 Pipeline Stage Ordering & Resilience
+
+The ingest pipeline is a sequential 12-stage Celery chain. Each stage receives `(document_id, run_id)` and writes a `StageRun` row. The stages execute in this exact order:
+
+```
+1.  prepare_document                — Docling conversion, element extraction, MinIO persistence
+2.  detect_and_translate            — Per-element language detection + LLM translation
+3.  derive_document_metadata        — LLM metadata extraction (summary, date, classification)
+4.  purge_document_derivations      — Clean up prior run data (for reingest)
+5.  derive_picture_descriptions     — LLM multimodal image descriptions
+6.  derive_text_chunks_and_embeddings — Chunking + BGE text embedding → ArcadeDB TextChunk vertices
+7.  derive_image_embeddings         — CLIP image embedding → ArcadeDB ImageChunk vertices
+8.  derive_ontology_graph           — Bundle-passes extraction (see §2.0 for full workflow)
+9.  collect_derivations             — Post-derivation checkpoint (marks PROCESSING)
+10. derive_structure_links          — Chunk links (NEXT_CHUNK, SAME_SECTION, SAME_ARTIFACT, SAME_PAGE)
+11. derive_canonicalization         — Entity alias resolution (exact → alias → fuzzy → new)
+12. finalize_document               — Terminal status (COMPLETE / PARTIAL_COMPLETE)
+```
+
+`start_ingest_pipeline(document_id, *, ontology_bundle_key=None, use_case_key=None)` resolves the bundle via three-tier precedence (explicit → source default → system default), snapshots bundle metadata onto the `PipelineRun` row, and dispatches the 12-stage chain. Returns `IngestDispatchResult(pipeline_run_id, celery_task_id)`.
+
+`reingest_graph_only(doc_id, request)` resolves the bundle via four-tier graph_only precedence (explicit → inherited from latest run → source default → system default), creates a new `PipelineRun` with `mode='graph_only'`, and dispatches a 3-stage chain: `derive_ontology_graph → derive_structure_links → finalize_document`.
 
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
-| Sequential 12-stage chain (no parallel chord) | Stage ordering violations; race conditions | Upload doc; verify stages execute in order: prepare → detect_and_translate → ... → finalize_document | 3.2 |
+| Sequential 12-stage chain (no parallel chord) | Stage ordering violations; race conditions | Upload doc; verify stages execute in order via `GET /documents/{id}/stages` | 3.2 |
 | Stage tasks return error dicts instead of raising | Single task failure kills entire document pipeline | Ingest doc with corrupted image; pipeline still reaches PARTIAL_COMPLETE | 2.22 |
 | `ensure_ready_sync()` called on every graph-writing task | Worker starts before ArcadeDB schema sync; writes fail | Each derive_* task calls `graph_store.ensure_ready_sync()` before first write; retries on missing types | 3.0 |
+| Bundle snapshotted on PipelineRun at dispatch time | Downstream stages use wrong ontology version | `PipelineRun.ontology_bundle_key` matches the resolved bundle; does not change if system default changes mid-run | 3.2 |
+| Duplicate dispatch prevention (FOR UPDATE) | Concurrent uploads create multiple PipelineRuns for same document | `start_ingest_pipeline` uses `SELECT ... FOR UPDATE` on active runs; returns existing run_id if active | 2.23 |
+| `graph_only` reingest inherits bundle from latest run | Re-extraction uses wrong ontology after source default changes | `reingest_graph_only` reads `latest_run.ontology_bundle_key` as inheritance tier; falls back to source/system default if NULL (legacy run) | 3.2 |
 
 ### 1.3 Element Deduplication
 
@@ -148,6 +172,62 @@ Before writing custom logic, check whether the library already provides the capa
 
 > **ArcadeDB reference:** Consult `ArcadeDB Manual.pdf` sections 4.8 (Schema), 4.10 (Graph Database), 4.9 (Indexes), and 6.10 (SQL Syntax) when verifying ArcadeDB-backed features below.
 
+### 2.0 Extraction Workflow — End-to-End Technical Detail
+
+This section documents the full logical flow inside `derive_ontology_graph` when `graph_extraction_engine` is the bundle-passes path (the only path after PR 3). Each numbered step corresponds to a code path that can be individually verified.
+
+**Entry:** The Celery task `derive_ontology_graph(self, document_id, run_id)` is called as stage 8 of the 12-stage ingest pipeline. It is preceded by `derive_image_embeddings` and followed by `collect_derivations`.
+
+**Step 1 — Stage-summary StageRun creation.** A summary row is inserted into `ingest.stage_runs` with `pass_name=NULL`, `stage_name='derive_ontology_graph'`, `status='RUNNING'`, `attempt=self.request.retries+1`. This row tracks the overall stage outcome (separate from per-pass rows). The `stage_summary_id` is captured for later terminalization.
+
+**Step 2 — GraphWriteTracker initialization.** A `GraphWriteTracker()` instance is created with `any_mutation_attempted=False`. This tracker is passed to every phase helper and flipped to `True` immediately before the first graph_store mutation. If the orchestrator catches an exception, it consults `tracker.any_mutation_attempted` to decide whether rollback is needed.
+
+**Step 3 — Bundle + ontology + document loading.** The `PipelineRun` row is read to get `ontology_bundle_key`. The bundle manifest is loaded via `load_bundle_manifest(bundle_key)`. The ontology is loaded via `load_ontology(bundle_key=bundle_key)`. The enriched DoclingDocument JSON is downloaded from MinIO via `_build_docling_document_json(document_id)`.
+
+**Step 4 — Per-pass loop.** For each pass in `manifest.passes` (in declared order):
+
+- **4a — Skip check** (`_should_skip`). Only fires for `kind=relationships_only` passes with `skip_if_no_upstream_endpoints=True`. Walks `depends_on`, filters `upstream_refs` by `pass_origin`, and checks whether any `(source_type, rel_type, target_type)` triple in `validation_matrix` can be satisfied. If not, writes a StageRun with `execution_status=SKIPPED`, `skip_reason=NO_UPSTREAM_ENDPOINTS` and returns.
+
+- **4b — HTTP call** (`_call_extract_pass`). POSTs `{bundle_key, pass_name, docling_document_json, upstream_entities?}` to the docling-graph service's `/extract-pass` endpoint. Transport errors and HTTP 5xx raise `PassRetryable`; HTTP 4xx raises `PassTerminal`.
+
+- **4c — Response parsing** (`_parse_pass_response`). The service response's `pass_output` dict is validated into the pass's Pydantic template class via `model_validate()`. Pydantic validation failures raise `PassTerminal` (not retryable — the LLM output shape won't heal on retry).
+
+- **4d — Retry / terminal handling.** `PassRetryable` triggers backoff (`30s × 2^(attempt-1)`, capped 300s) and a new StageRun row with `attempt+1`. After `pass_max_retries` (default 3) exhausted, a required pass raises `IngestFailed`; an optional pass returns silently. `PassTerminal` immediately raises `IngestFailed` for required passes.
+
+- **4e — Yield classification** (`classify_yield`). Computes `YieldStatus` from entity/relationship counts: `DEGRADED` (≥4 rels, ≥75% rejected), `EMPTY` (0 primary + 0 bridge + 0 rels), `BRIDGES_ONLY` (0 primary, >0 bridge), or `HIT` (everything else).
+
+- **4f — StageRun write** (`_write_stage_run`). Upserts a per-pass StageRun row with `execution_status`, `yield_status`, `skip_reason`, entity/relationship counts, schema_size_chars, structured_output_mode. Uses the partial unique index `uq_stage_runs_run_pass_attempt`.
+
+- **4g — Upstream ref extension.** If any downstream pass `depends_on` this pass, the extracted entities are added to `upstream_refs` keyed by compact ref_ids (`E001`, `E002`, ...) so the downstream pass can reference them via `from_ref_id` / `to_ref_id`.
+
+**Step 5 — Required-pass gate** (`check_required_pass_gate`). Queries the latest StageRun per required pass. `COMPLETE` or `SKIPPED` with authorized reason (`NO_UPSTREAM_ENDPOINTS`) passes. `FAILED` or unauthorized skip fails. Missing StageRun raises `WorkerInvariantError`. Gate failure raises `IngestFailed`.
+
+**Step 6 — Merge and resolve** (`merge_and_resolve`). Two-pass algorithm:
+- **Entity merge.** Walks every entity type in the ontology; for each, iterates the pass template's list field (e.g., `radar_systems`). Builds a `LogicalIdentity` from `identity_fields` + `identity_scope`. Bridge entities with identical identity across passes collapse into one `MergedEntityRecord` with `pass_origins = {pass_a, pass_b}`. Confidence = max across merges.
+- **Relationship resolve.** For each relationship, checks in order: `MISSING_REL_TYPE` → `INVALID_IDENTITY_PAYLOAD` → `UNKNOWN_REF_ID` (system_links ref_id lookup) → `FROM_ENDPOINT_NOT_FOUND` → `TO_ENDPOINT_NOT_FOUND` → `INVALID_TRIPLE` (validation_matrix check). Accepted edges get `confidence = 0.8 if None else raw` (explicit 0.0 preserved). Rejected edges are counted per-pass and sampled in metrics.
+
+**Step 7 — Post-merge yield updates** (`_apply_post_merge_yield_updates`). Recomputes yield_status for each COMPLETE pass using post-merge rejection counts. Only `HIT → DEGRADED` transitions are applied (the only direction spec §6.2 allows post-merge).
+
+**Step 8 — Run metrics write** (`_write_pipeline_run_metrics`). Populates `PipelineRun.metrics` JSONB with: `pass_outcomes` (rolled up from `v_latest_pass_attempts`), `document_extraction_anomaly` (true iff all 3 core passes ended EMPTY/BRIDGES_ONLY), `pass_degraded_count`, `overall_relationship_rejection_ratio`, `rejected_relationships_sample` (up to 20 per pass per reason), `bundle_legacy` (always False for new runs), `bundle_key_display`.
+
+**Step 9 — Three-phase graph import.**
+- **Phase 2 — Node upsert** (`_import_graph_phase_nodes`). Builds `NodeRecord` list in pure Python. Calls `tracker.mark()`. Calls `graph_store.upsert_nodes_batch_sync(records, provenance)`. `HAS_PROVENANCE` edges are auto-created by the graph store. Returns `identity_to_rid` mapping.
+- **Phase 3 — Domain edge upsert** (`_import_graph_phase_domain_edges`). Builds `RelationshipRecord` list. Calls `tracker.mark()` (idempotent). Calls `graph_store.upsert_relationships_batch_sync(records, provenance)`. Domain edges carry `document_ids` as a LIST, not a single string.
+- **Phase 4 — Structural edges** (`_import_graph_phase_structural_edges`). Loads TextChunk vertices from ArcadeDB. Calls `derive_rules.derive_structural_edges()` to produce `MENTIONED_IN` edges (entity display label substring-matched against chunk text). Iterates derived edges, calling `tracker.mark()` + `graph_store.create_structural_edge_sync()` for each. Empty derived list = true no-op.
+
+**Step 10 — DocumentGraphExtraction snapshot write** (`_upsert_document_graph_extraction`). Upserts the `DocumentGraphExtraction` row with audit-blob `graph_json` (entity/edge counts by type, primary vs bridge totals, rejection reasons), `pipeline_run_id`, `ontology_bundle_key`, `ontology_name`, `ontology_version`.
+
+**Step 11 — Success terminalization.** Stage-summary StageRun → `COMPLETE`, `rollback_executed=False`. For `graph_only` mode: `PipelineRun.status=COMPLETE`, `Document.pipeline_status=COMPLETE`. For `full` mode: PipelineRun stays `PROCESSING` (downstream `finalize_document` terminalizes).
+
+**Failure paths:**
+- **Gate failure** (`IngestFailed`): `rollback_executed=False`, `PipelineRun.status=FAILED`, `Document.pipeline_status=PARTIAL_COMPLETE`. No rollback (no graph writes occurred).
+- **Unexpected exception** (any other): checks `tracker.any_mutation_attempted`. If True: calls `_attempt_rollback(document_id)` → `_delete_extraction_layer_graph(document_id)` → `graph_store.delete_extraction_layer_graph_sync()`, sets `rollback_executed=True`. If False: skips rollback, sets `rollback_executed=False`. In both cases: `PipelineRun.status=FAILED`, `Document.pipeline_status=PARTIAL_COMPLETE`.
+- **Bookkeeping failure** (exception during terminalization itself): logged at ERROR, session rolled back, original exception re-raised.
+
+**Rollback contract** (`delete_extraction_layer_graph_sync`):
+- DELETES: document-scoped entity vertices, domain edges (remove doc from `document_ids` list + prune empty), `HAS_PROVENANCE` edges targeting this Document vertex (via `@in`), `MENTIONED_IN` edges with `source='derive_rules'`.
+- PRESERVES: TextChunk/ImageChunk vertices, the structural Document vertex, global entity vertices, cross-document `HAS_PROVENANCE` edges.
+
 ### 2.1 Bundle-Based Extraction Architecture
 
 | Feature | What breaks without it | Verify | Phase |
@@ -167,6 +247,8 @@ Before writing custom logic, check whether the library already provides the capa
 | Feature | What breaks without it | Verify | Phase |
 |---|---|---|---|
 | Extraction status endpoint (`GET /documents/{id}/extraction-status`) | Cannot inspect per-pass results or graph state | Returns three-concept split: `document_status`, `latest_run` (with per-pass details including execution_status, yield_status, entity/rel counts), `graph_snapshot` (nullable), `graph_queryable` (cross-run rollback-aware) | 3.2 |
+| `graph_queryable` cross-run computation (`compute_status_signals`) | False-positive "graph queryable" after rollback | Uses composite `(started_at, id)` row-constructor comparison to find `rollback_executed=True` summary rows from runs strictly newer than the snapshot's run. Handles: no-snapshot → False; snapshot + no rollback → True; snapshot + newer rollback → False; orphan snapshot (deleted PipelineRun) → conservative False | 3.2 |
+| `is_stale` computation | Stale graph not flagged to users | True when `latest_run.id != snapshot.pipeline_run_id` OR `latest_run.status != COMPLETE`. Nested inside `graph_snapshot` only when snapshot exists; omitted when null | 3.2 |
 | Coverage checker in CI (`tools/check_extraction_coverage.py`) | Schema drift silently breaks extraction | Runs 13 rules + manifest self-consistency; all entity/relationship types in manifest appear in coverage.yaml; schema fields subset of ontology properties | 3.2 |
 | CI lints (`tools/ci_lints.sh`) | Legacy references to deleted code creep back | Prevents 8 classes of legacy references: template_builder, layered_extraction, ontology_layers, /extract-all, graph_layered_*, layer_map.yaml, ontology symlink, graph_extraction_engine flag | 3.2 |
 
