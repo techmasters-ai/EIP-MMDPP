@@ -5015,7 +5015,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §5.6. Three phase helpers: nodes, domain edges, structural edges. Each calls `tracker.mark()` immediately before its first graph_store mutation.
 
-- [ ] **Step 1: Write failing tests for tracker semantics**
+- [x] **Step 1: Write failing tests for tracker semantics**
 
 Create `tests/unit/test_graph_import_phases.py`:
 
@@ -5054,7 +5054,7 @@ def test_phase_structural_edges_is_noop_for_empty_derived_list():
 
 Tests use `MagicMock()` for `graph_store` and `tracker` — this is unit-level; real GraphStore wiring is covered by the Chunk 3 rollback integration test.
 
-- [ ] **Step 2: Implement phase 2 — node upsert**
+- [x] **Step 2: Implement phase 2 — node upsert**
 
 Per spec §5.6 phase 2:
 
@@ -5104,7 +5104,7 @@ def _import_graph_phase_nodes(
     return identity_to_rid
 ```
 
-- [ ] **Step 3: Implement phase 3 — domain edges**
+- [x] **Step 3: Implement phase 3 — domain edges**
 
 ```python
 def _import_graph_phase_domain_edges(merged, ontology: dict, tracker: GraphWriteTracker) -> None:
@@ -5132,7 +5132,7 @@ def _import_graph_phase_domain_edges(merged, ontology: dict, tracker: GraphWrite
     graph_store.upsert_relationships_batch_sync(rel_records, provenance)
 ```
 
-- [ ] **Step 4: Implement phase 4 — derived structural edges**
+- [x] **Step 4: Implement phase 4 — derived structural edges**
 
 ```python
 def _import_graph_phase_structural_edges(
@@ -5207,7 +5207,7 @@ def _get_structural_document_rid(document_id: str) -> str:
 
 Verify `retrieval.text_chunks` column names against the actual ingest schema before committing — the `rid` column may be named `arcadedb_rid` or similar. Grep: `grep -n "class TextChunk\|text_chunks" app/models/`.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ```bash
 pytest tests/unit/test_graph_import_phases.py -v
