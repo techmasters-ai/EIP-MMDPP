@@ -2813,7 +2813,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Additive change per spec §5.6 ProvenanceMetadata extension. The new field is optional — existing callers remain unchanged.
 
-- [ ] **Step 1: Write the failing field-presence test**
+- [x] **Step 1: Write the failing field-presence test**
 
 Append to `tests/unit/test_graph_store_protocol.py`:
 
@@ -2849,7 +2849,7 @@ pytest tests/unit/test_graph_store_protocol.py::test_provenance_metadata_has_pip
 
 Expected: FAIL — `pipeline_run_id` is not a field of `ProvenanceMetadata` yet.
 
-- [ ] **Step 2: Add the field**
+- [x] **Step 2: Add the field**
 
 Open `app/services/graph_store.py` at the `ProvenanceMetadata` dataclass (lines 19-26 in the current file). The existing fields are:
 
@@ -2876,7 +2876,7 @@ class ProvenanceMetadata:
 
 Do NOT touch the existing field types or defaults. Do NOT touch `_create_provenance_edges_batch_sync` — this field is not required by the current auto-creation path (per §5.6 note).
 
-- [ ] **Step 3: Run the tests**
+- [x] **Step 3: Run the tests**
 
 ```bash
 pytest tests/unit/test_graph_store_protocol.py -v
@@ -2884,7 +2884,7 @@ pytest tests/unit/test_graph_store_protocol.py -v
 
 Expected: all pass.
 
-- [ ] **Step 4: Run the full suite to catch existing callers**
+- [x] **Step 4: Run the full suite to catch existing callers**
 
 ```bash
 pytest tests/ -x 2>&1 | tail -20
@@ -2892,7 +2892,7 @@ pytest tests/ -x 2>&1 | tail -20
 
 Expected: green. Additive changes to an Optional field with default `None` cannot break existing positional or keyword callers.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/services/graph_store.py tests/unit/test_graph_store_protocol.py
