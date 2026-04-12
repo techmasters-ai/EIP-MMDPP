@@ -1897,7 +1897,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §2 packaging section + §7.3 Docker packaging.
 
-- [ ] **Step 1: Update docker-compose.yml for docling-graph build context**
+- [x] **Step 1: Update docker-compose.yml for docling-graph build context**
 
 Edit the `docling-graph` service:
 ```yaml
@@ -1909,7 +1909,7 @@ docling-graph:
 
 Keep the existing `./ontology:/app/ontology:ro` bind mount — the symlink from Task 1.2 makes it continue to work.
 
-- [ ] **Step 2: Update docker/docling-graph/Dockerfile**
+- [x] **Step 2: Update docker/docling-graph/Dockerfile**
 
 Change COPY paths to be relative to repo root:
 ```dockerfile
@@ -1918,14 +1918,14 @@ COPY ontology_bundles /app/ontology_bundles
 ENV PYTHONPATH=/app
 ```
 
-- [ ] **Step 3: Update docker/worker/Dockerfile**
+- [x] **Step 3: Update docker/worker/Dockerfile**
 
 Add:
 ```dockerfile
 COPY ontology_bundles /app/ontology_bundles
 ```
 
-- [ ] **Step 4: Create the smoke-test script**
+- [x] **Step 4: Create the smoke-test script**
 
 Create `scripts/smoke_test_bundle_import.sh`:
 ```bash
@@ -1944,7 +1944,7 @@ print('docling-graph OK:', RadarDomainPass)
 "
 ```
 
-- [ ] **Step 5: Run the smoke test**
+- [x] **Step 5: Run the smoke test**
 
 ```bash
 chmod +x scripts/smoke_test_bundle_import.sh
@@ -1953,7 +1953,7 @@ chmod +x scripts/smoke_test_bundle_import.sh
 
 Expected: both services print `OK` and the class repr.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docker-compose.yml docker/docling-graph/Dockerfile docker/worker/Dockerfile \
