@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field
 
@@ -16,14 +16,49 @@ from app.schemas.common import APIModel
 class SourceCreate(APIModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    # Task 3.7 + spec §7.4 bundle threading. Purely additive. Both default
+    # to None so existing callers that don't know about bundles keep
+    # working unchanged. Chunk 4 Task 4.2 wires these into
+    # start_ingest_pipeline's resolve_bundle_key precedence as the
+    # source-default tier.
+    default_ontology_bundle_key: Optional[str] = None
+    default_use_case_key: Optional[str] = None
 
 
 class SourceResponse(APIModel):
     id: uuid.UUID
     name: str
     description: Optional[str]
+    # Task 3.7: exposed on the response so UIs can display which bundle
+    # a source defaults to.
+    default_ontology_bundle_key: Optional[str] = None
+    default_use_case_key: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Reingest request (Task 3.7)
+# ---------------------------------------------------------------------------
+
+class ReingestRequest(APIModel):
+    """Body for ``POST /documents/{document_id}/reingest``.
+
+    All fields optional. Introduced in PR 2 (Task 3.7) to thread bundle
+    overrides through the reingest path. Previously the route accepted
+    ``body: dict = None`` which made the shape opaque. Existing clients
+    that send ``{"mode": "full"}`` keep working because every field has
+    a sensible default.
+
+    The ``ontology_bundle_key`` and ``use_case_key`` fields are accepted
+    by the route but not yet forwarded into ``start_ingest_pipeline`` —
+    that wiring lands in Chunk 4 Task 4.2. Accepting the fields now
+    (without acting on them) keeps the API surface forward-compatible.
+    """
+
+    mode: Literal["full", "embeddings_only", "graph_only"] = "full"
+    ontology_bundle_key: Optional[str] = None
+    use_case_key: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

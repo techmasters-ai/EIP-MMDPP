@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from app.schemas.sources import (
     BatchStatusRequest,
     DocumentResponse,
     DocumentStatusResponse,
+    ReingestRequest,
     SourceCreate,
     SourceResponse,
     WatchDirCreate,
@@ -291,13 +293,15 @@ async def get_document_stages(
 @router.post("/documents/{document_id}/reingest")
 async def reingest_document(
     document_id: uuid.UUID,
-    body: dict = None,
+    body: Optional[ReingestRequest] = None,
     db: AsyncSession = Depends(get_async_session),
 ):
     """Re-run the ingest pipeline for an existing document.
 
     Body (optional):
-        {"mode": "full" | "embeddings_only" | "graph_only"}
+        {"mode": "full" | "embeddings_only" | "graph_only",
+         "ontology_bundle_key": "...",   # Task 3.7 bundle override (forwarded in Chunk 4)
+         "use_case_key": "..."}          # Task 3.7 use-case override (forwarded in Chunk 4)
     """
     doc = await db.get(Document, document_id)
     if not doc:
@@ -310,7 +314,16 @@ async def reingest_document(
     doc.pipeline_status = "PENDING"
     await db.commit()
 
-    mode = (body or {}).get("mode", "full")
+    # Task 3.7: normalize body to ReingestRequest so the mode lookup and
+    # bundle fields are well-typed. Clients sending no body (or
+    # {"mode":"..."}) get the default ReingestRequest, which preserves
+    # the previous behavior exactly.
+    if body is None:
+        body = ReingestRequest()
+    mode = body.mode
+    # body.ontology_bundle_key / body.use_case_key are accepted but
+    # not yet forwarded into start_ingest_pipeline — Chunk 4 Task 4.2
+    # wires that through.
 
     if mode == "full":
         from app.workers.pipeline import start_ingest_pipeline
