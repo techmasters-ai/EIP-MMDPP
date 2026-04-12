@@ -141,6 +141,11 @@ class TestGraphExtractionEngineFlag:
                 graph_extraction_engine="experimental",
             )
 
+    def test_default_ontology_bundle_key(self):
+        from app.config import Settings
+        s = Settings(_env_file=None, postgres_password="test")
+        assert s.default_ontology_bundle_key == "air_defense_v3"
+
 
 # --- Task 3.6: IngestDispatchResult dataclass (spec §5.2) ---------------
 

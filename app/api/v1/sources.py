@@ -151,7 +151,12 @@ async def upload_document(
 
     # Dispatch ingest pipeline (document is now visible to workers)
     from app.workers.pipeline import start_ingest_pipeline
-    task_id = start_ingest_pipeline(str(document.id))
+    dispatch = start_ingest_pipeline(str(document.id))
+    task_id = dispatch.celery_task_id
+    logger.info(
+        "upload: document_id=%s pipeline_run_id=%s celery_task_id=%s",
+        document.id, dispatch.pipeline_run_id, task_id,
+    )
 
     # Update celery_task_id via ORM (not raw UPDATE) to avoid
     # expiring updated_at and triggering MissingGreenlet.
@@ -321,13 +326,18 @@ async def reingest_document(
     if body is None:
         body = ReingestRequest()
     mode = body.mode
-    # body.ontology_bundle_key / body.use_case_key are accepted but
-    # not yet forwarded into start_ingest_pipeline — Chunk 4 Task 4.2
-    # wires that through.
+
+    pipeline_run_id: str | None = None
 
     if mode == "full":
         from app.workers.pipeline import start_ingest_pipeline
-        task_id = start_ingest_pipeline(str(document_id))
+        dispatch = start_ingest_pipeline(
+            str(document_id),
+            ontology_bundle_key=body.ontology_bundle_key,
+            use_case_key=body.use_case_key,
+        )
+        task_id = dispatch.celery_task_id
+        pipeline_run_id = dispatch.pipeline_run_id
     elif mode == "embeddings_only":
         from app.workers.pipeline import (
             derive_text_chunks_and_embeddings, derive_image_embeddings, finalize_document,
@@ -344,20 +354,19 @@ async def reingest_document(
         ).apply_async()
         task_id = result.id
     elif mode == "graph_only":
-        from app.workers.pipeline import (
-            derive_ontology_graph, derive_structure_links, finalize_document,
-        )
-        from celery import chain as celery_chain
-        result = celery_chain(
-            derive_ontology_graph.si(str(document_id)),
-            derive_structure_links.si(str(document_id)),
-            finalize_document.si(str(document_id)),
-        ).apply_async()
-        task_id = result.id
+        from app.workers.pipeline import reingest_graph_only
+        result = reingest_graph_only(document_id, body)
+        task_id = result["celery_task_id"]
+        pipeline_run_id = result["pipeline_run_id"]
     else:
         raise HTTPException(status_code=400, detail=f"Unknown reingest mode: {mode}")
 
-    return {"document_id": str(document_id), "mode": mode, "task_id": task_id}
+    return {
+        "document_id": str(document_id),
+        "mode": mode,
+        "task_id": task_id,
+        "pipeline_run_id": pipeline_run_id if mode in ("full", "graph_only") else None,
+    }
 
 
 @router.post("/documents/{document_id}/cancel", status_code=status.HTTP_202_ACCEPTED)

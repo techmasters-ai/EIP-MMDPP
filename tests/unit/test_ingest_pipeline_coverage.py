@@ -262,12 +262,20 @@ class TestStartIngestPipeline:
     @patch("app.workers.pipeline._create_pipeline_run")
     @patch("app.workers.pipeline._get_db")
     def test_creates_run_and_dispatches(self, mock_get_db, mock_create_run, mock_chain, mock_errback):
+        from unittest.mock import patch as _patch
         from app.workers.pipeline import start_ingest_pipeline
+        from app.workers.dispatch_types import IngestDispatchResult
+
+        fake_manifest = MagicMock()
+        fake_manifest.ontology_name = "Test Ontology"
+        fake_manifest.ontology_version = "1.0.0"
+        fake_manifest.extraction_profile_version = "1.0.0"
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
         # No active run exists
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        mock_db.get.return_value = None  # no Document row
         mock_create_run.return_value = RUN_ID
 
         mock_result = MagicMock()
@@ -276,15 +284,21 @@ class TestStartIngestPipeline:
 
         mock_errback.s.return_value = MagicMock()
 
-        result = start_ingest_pipeline(DOC_ID)
-        assert result == "celery-task-id-abc"
-        mock_create_run.assert_called_once_with(mock_db, DOC_ID)
+        with _patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
+            result = start_ingest_pipeline(DOC_ID)
+        assert isinstance(result, IngestDispatchResult)
+        assert result.celery_task_id == "celery-task-id-abc"
+        # _create_pipeline_run now receives keyword bundle args
+        mock_create_run.assert_called_once()
+        assert mock_create_run.call_args.args[0] is mock_db
+        assert mock_create_run.call_args.args[1] == DOC_ID
         mock_chain.return_value.apply_async.assert_called_once()
         mock_db.commit.assert_called()
 
     @patch("app.workers.pipeline._get_db")
     def test_skips_if_active_run_exists(self, mock_get_db):
         from app.workers.pipeline import start_ingest_pipeline
+        from app.workers.dispatch_types import IngestDispatchResult
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
@@ -292,7 +306,9 @@ class TestStartIngestPipeline:
         mock_db.execute.return_value.scalar_one_or_none.return_value = active_id
 
         result = start_ingest_pipeline(DOC_ID)
-        assert result == str(active_id)
+        assert isinstance(result, IngestDispatchResult)
+        assert result.pipeline_run_id == str(active_id)
+        assert result.celery_task_id == ""  # empty signals already-dispatched
         mock_db.commit.assert_called()  # releases FOR UPDATE lock
 
 

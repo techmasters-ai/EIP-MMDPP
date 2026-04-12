@@ -22,26 +22,39 @@ class TestStartIngestPipeline:
     @patch("app.workers.pipeline._get_db")
     @patch("app.workers.pipeline._create_pipeline_run", return_value="run-123")
     def test_creates_run_before_chain(self, mock_create_run, mock_get_db, mock_chain):
+        from unittest.mock import patch as _patch
         from app.workers.pipeline import start_ingest_pipeline
+        from app.workers.dispatch_types import IngestDispatchResult
+
+        fake_manifest = MagicMock()
+        fake_manifest.ontology_name = "Test Ontology"
+        fake_manifest.ontology_version = "1.0.0"
+        fake_manifest.extraction_profile_version = "1.0.0"
 
         db = MagicMock()
         db.execute.return_value.scalar_one_or_none.return_value = None
+        db.get.return_value = None  # no Document row
         mock_get_db.return_value = db
         mock_chain.return_value.apply_async.return_value = MagicMock(id="task-abc")
 
         doc_id = str(uuid.uuid4())
-        result = start_ingest_pipeline(doc_id)
+        with _patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
+            result = start_ingest_pipeline(doc_id)
 
-        # PipelineRun created before chain
-        mock_create_run.assert_called_once_with(db, doc_id)
+        # PipelineRun created before chain — new signature passes kwargs
+        mock_create_run.assert_called_once()
+        assert mock_create_run.call_args.args[0] is db
+        assert mock_create_run.call_args.args[1] == doc_id
         db.commit.assert_called_once()
         db.close.assert_called_once()
-        assert result == "task-abc"
+        assert isinstance(result, IngestDispatchResult)
+        assert result.celery_task_id == "task-abc"
 
     @patch("app.workers.pipeline.chain")
     @patch("app.workers.pipeline._get_db")
     @patch("app.workers.pipeline._create_pipeline_run", return_value="run-456")
     def test_run_id_passed_to_all_tasks(self, mock_create_run, mock_get_db, mock_chain):
+        from unittest.mock import patch as _patch
         from app.workers.pipeline import (
             start_ingest_pipeline,
             prepare_document,
@@ -53,16 +66,22 @@ class TestStartIngestPipeline:
             finalize_document,
         )
 
+        fake_manifest = MagicMock()
+        fake_manifest.ontology_name = "Test Ontology"
+        fake_manifest.ontology_version = "1.0.0"
+        fake_manifest.extraction_profile_version = "1.0.0"
+
         db = MagicMock()
         db.execute.return_value.scalar_one_or_none.return_value = None
+        db.get.return_value = None  # no Document row
         mock_get_db.return_value = db
         mock_chain.return_value.apply_async.return_value = MagicMock(id="task-abc")
 
         doc_id = str(uuid.uuid4())
-        start_ingest_pipeline(doc_id)
+        with _patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
+            start_ingest_pipeline(doc_id)
 
         # Verify chain was called — the .si() calls should include run_id
-        chain_call = mock_chain.call_args
         # The chain receives positional args — first is prepare_document.si(doc_id, run_id)
         # We can't easily inspect .si() mock args, but we verify the chain was called
         assert mock_chain.called
@@ -158,10 +177,17 @@ class TestConcurrentIngests:
     def test_concurrent_ingests_different_run_ids(
         self, mock_create_run, mock_get_db, mock_chain,
     ):
+        from unittest.mock import patch as _patch
         from app.workers.pipeline import start_ingest_pipeline
+
+        fake_manifest = MagicMock()
+        fake_manifest.ontology_name = "Test Ontology"
+        fake_manifest.ontology_version = "1.0.0"
+        fake_manifest.extraction_profile_version = "1.0.0"
 
         db = MagicMock()
         db.execute.return_value.scalar_one_or_none.return_value = None
+        db.get.return_value = None  # no Document row
         mock_get_db.return_value = db
         mock_chain.return_value.apply_async.return_value = MagicMock(id="task-1")
 
@@ -170,8 +196,9 @@ class TestConcurrentIngests:
         run_id_2 = str(uuid.uuid4())
         mock_create_run.side_effect = [run_id_1, run_id_2]
 
-        start_ingest_pipeline(doc_id)
-        start_ingest_pipeline(doc_id)
+        with _patch("app.services.ontology_bundles.load_bundle_manifest", return_value=fake_manifest):
+            start_ingest_pipeline(doc_id)
+            start_ingest_pipeline(doc_id)
 
         assert mock_create_run.call_count == 2
         # Each call gets a distinct run_id

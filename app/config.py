@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # per-task reader. PR 3 deletes this flag entirely after soak.
     graph_extraction_engine: Literal["legacy", "bundle_passes"] = "legacy"
 
+    # Default bundle for brand-new documents when neither the caller nor
+    # the Source overrides. Spec §4.5 bundle selection threading + §7.4.
+    # Kept as a Settings field (not a module-level constant) so ops can
+    # override via env var DOCLING_GRAPH_DEFAULT_ONTOLOGY_BUNDLE_KEY in
+    # a different deployment profile.
+    default_ontology_bundle_key: str = "air_defense_v3"
+
     # Governance: when true, graph mutation patches require two distinct
     # curator approvals before they can be applied.  When false (default),
     # a single approval is sufficient.

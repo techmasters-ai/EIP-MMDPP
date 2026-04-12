@@ -35,6 +35,7 @@ from typing import Optional
 import httpx
 import redis as redis_lib
 from celery import chain
+from celery import chain as celery_chain  # alias used by reingest_graph_only (patchable at module level)
 from celery.exceptions import Retry as CeleryRetry, SoftTimeLimitExceeded
 from celery.signals import worker_ready
 
@@ -519,10 +520,29 @@ def _chord_error_handler(self, request, exc, traceback, document_id: str, run_id
             db.close()
 
 
-def start_ingest_pipeline(document_id: str) -> str:
-    """Enqueue the ingest pipeline for a document. Returns Celery task ID."""
-    from app.models.ingest import PipelineRun
+def start_ingest_pipeline(
+    document_id: str,
+    *,
+    ontology_bundle_key: str | None = None,
+    use_case_key: str | None = None,
+) -> "IngestDispatchResult":
+    """Enqueue the ingest pipeline for a document. Returns IngestDispatchResult.
+
+    Resolves the ontology bundle via the three-tier precedence:
+        explicit (caller-supplied) → Source default → system default (settings)
+
+    When the FOR UPDATE duplicate-dispatch guard hits an already-PROCESSING run,
+    returns IngestDispatchResult(pipeline_run_id=str(active), celery_task_id='')
+    — an empty celery_task_id signals "already dispatched by a prior caller."
+
+    Spec §5.2 / Task 4.2.
+    """
+    from app.workers.dispatch_types import IngestDispatchResult
+    from app.models.ingest import PipelineRun, Document
+    from app.services.ontology_bundles import resolve_bundle_key, load_bundle_manifest
     from sqlalchemy import select
+
+    _settings = get_settings()
 
     db = _get_db()
     try:
@@ -543,12 +563,44 @@ def start_ingest_pipeline(document_id: str) -> str:
                 document_id, active,
             )
             db.commit()  # release FOR UPDATE lock
-            return str(active)
+            return IngestDispatchResult(
+                pipeline_run_id=str(active),
+                celery_task_id="",
+            )
 
-        run_id = _create_pipeline_run(db, document_id)
+        # Resolve bundle key via three-tier precedence (spec §4.5)
+        document = db.get(Document, uuid.UUID(document_id))
+        source_key = (
+            document.source.default_ontology_bundle_key
+            if document and document.source
+            else None
+        )
+        resolved_key = resolve_bundle_key(
+            run_key=ontology_bundle_key,
+            source_key=source_key,
+            system_default=_settings.default_ontology_bundle_key,
+        )
+
+        manifest = load_bundle_manifest(resolved_key)
+
+        run_id = _create_pipeline_run(
+            db,
+            document_id,
+            mode="full",
+            ontology_bundle_key=resolved_key,
+            ontology_name=manifest.ontology_name,
+            ontology_version=manifest.ontology_version,
+            use_case_key=use_case_key,
+            extraction_profile_version=manifest.extraction_profile_version,
+        )
         db.commit()
     finally:
         db.close()
+
+    logger.info(
+        "start_ingest_pipeline: document_id=%s pipeline_run_id=%s bundle=%s",
+        document_id, run_id, resolved_key,
+    )
 
     # Fully sequential pipeline — no chords.  Celery 5.x chords with Redis
     # silently drop callbacks regardless of positioning, so we run every stage
@@ -570,22 +622,145 @@ def start_ingest_pipeline(document_id: str) -> str:
         finalize_document.si(document_id, run_id),
     )
     result = pipeline.apply_async()
-    return result.id
+    return IngestDispatchResult(
+        pipeline_run_id=run_id,
+        celery_task_id=result.id,
+    )
 
 
-def _create_pipeline_run(db, document_id: str) -> str:
-    """Create a PipelineRun record and return its id as string."""
+def _create_pipeline_run(
+    db,
+    document_id: str,
+    *,
+    mode: str = "full",
+    ontology_bundle_key: str | None = None,
+    ontology_name: str | None = None,
+    ontology_version: str | None = None,
+    use_case_key: str | None = None,
+    extraction_profile_version: str | None = None,
+) -> str:
+    """Create a PipelineRun record and return its id as string.
+
+    This is the single place where PipelineRun row construction happens.
+    All callers (start_ingest_pipeline, reingest_graph_only) go through here.
+    """
     from app.models.ingest import PipelineRun
-    import uuid as uuid_mod
 
     run = PipelineRun(
         document_id=uuid.UUID(document_id),
         pipeline_version="1.0",
         status="PROCESSING",
+        mode=mode,
+        ontology_bundle_key=ontology_bundle_key,
+        ontology_name=ontology_name,
+        ontology_version=ontology_version,
+        use_case_key=use_case_key,
+        extraction_profile_version=extraction_profile_version,
     )
     db.add(run)
     db.flush()
     return str(run.id)
+
+
+def reingest_graph_only(doc_id, request) -> dict:
+    """Dispatch a graph_only reingest. Spec §5.3 + Task 4.2.
+
+    Resolves the bundle via graph_only precedence (explicit →
+    inherited from latest run → source default → system default),
+    creates a new PipelineRun with mode='graph_only' and the bundle
+    snapshot, then dispatches the 3-stage graph-only chain
+    (derive_ontology_graph, derive_structure_links, finalize_document).
+
+    Returns a dict matching the legacy route's response shape:
+        {
+            "pipeline_run_id": str,
+            "celery_task_id": str,
+            "ontology_bundle_key": str,
+        }
+
+    Task 4.6 later changes derive_ontology_graph's signature; Task 4.2
+    keeps the legacy (document_id, run_id) positional args so the
+    graph_only chain still dispatches correctly today.
+    """
+    from app.models.ingest import Document, PipelineRun
+    from app.services.ontology_bundles import (
+        resolve_bundle_key_for_graph_only,
+        load_bundle_manifest,
+    )
+
+    _settings = get_settings()
+    doc_id_str = str(doc_id)
+
+    db = _get_db()
+    try:
+        document = db.get(Document, uuid.UUID(doc_id_str))
+        latest_run = (
+            db.query(PipelineRun)
+            .filter_by(document_id=uuid.UUID(doc_id_str))
+            .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+            .first()
+        )
+        inherited_bundle = (
+            latest_run.ontology_bundle_key
+            if latest_run and latest_run.ontology_bundle_key
+            else None
+        )
+
+        explicit_override = getattr(request, "ontology_bundle_key", None)
+        source_key = (
+            document.source.default_ontology_bundle_key
+            if document and document.source
+            else None
+        )
+
+        resolved_key = resolve_bundle_key_for_graph_only(
+            run_key=explicit_override,
+            inherited_from_run=inherited_bundle,
+            source_key=source_key,
+            system_default=_settings.default_ontology_bundle_key,
+        )
+
+        if inherited_bundle is None and latest_run is not None:
+            logger.info(
+                "reingest_graph_only: latest run for document %s is legacy "
+                "(ontology_bundle_key NULL); bundle inferred from source/system default (%s)",
+                doc_id_str, resolved_key,
+            )
+
+        manifest = load_bundle_manifest(resolved_key)
+
+        explicit_use_case = getattr(request, "use_case_key", None)
+        resolved_use_case = explicit_use_case or (
+            latest_run.use_case_key if latest_run else None
+        )
+
+        run_id = _create_pipeline_run(
+            db,
+            doc_id_str,
+            mode="graph_only",
+            ontology_bundle_key=resolved_key,
+            ontology_name=manifest.ontology_name,
+            ontology_version=manifest.ontology_version,
+            use_case_key=resolved_use_case,
+            extraction_profile_version=manifest.extraction_profile_version,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    # Same 3-stage chain the legacy reingest route used to build inline,
+    # but now with the newly-created run_id.
+    result = celery_chain(
+        derive_ontology_graph.si(doc_id_str, run_id),
+        derive_structure_links.si(doc_id_str, run_id),
+        finalize_document.si(doc_id_str, run_id),
+    ).apply_async()
+
+    return {
+        "pipeline_run_id": run_id,
+        "celery_task_id": result.id,
+        "ontology_bundle_key": resolved_key,
+    }
 
 
 def _update_stage_run(
