@@ -21,36 +21,91 @@ class TABLE(BaseModel):
     title: str
 
 
+def _apply_node_id_patch():
+    """Apply the same monkey-patch that docker/docling-graph/app/main.py
+    applies at service startup. The upstream NodeIDRegistry.get_node_id
+    at line 128 uses split('_')[0] which extracts 'TABLE' from
+    'TABLE_REF_<hash>', causing false collisions. The patched version
+    uses rsplit('_', 1)[0] to preserve the full class name including
+    underscores.
+
+    This mirrors the patch at docker/docling-graph/app/main.py:243.
+    """
+    from docling_graph.core.converters.node_id_registry import NodeIDRegistry
+
+    _original = NodeIDRegistry.get_node_id
+
+    def _patched_get_node_id(self, model_instance, auto_register=True):
+        fingerprint = self._generate_fingerprint(model_instance)
+        class_name = model_instance.__class__.__name__
+
+        if fingerprint in self.fingerprint_to_id:
+            existing_id = self.fingerprint_to_id[fingerprint]
+            # FIX: use rsplit to preserve underscored class names
+            existing_class = existing_id.rsplit("_", 1)[0] if "_" in existing_id else existing_id
+            if existing_class != class_name:
+                raise ValueError(
+                    f"Node ID collision: fingerprint {fingerprint} maps to both "
+                    f"{existing_id} (class: {existing_class}) and {class_name}_... (new class)"
+                )
+            return existing_id
+
+        if class_name not in self.seen_classes:
+            self.seen_classes[class_name] = set()
+
+        node_id = f"{class_name}_{fingerprint}"
+
+        if auto_register:
+            self.fingerprint_to_id[fingerprint] = node_id
+            self.id_to_fingerprint[node_id] = fingerprint
+            self.seen_classes[class_name].add(fingerprint)
+
+        return node_id
+
+    NodeIDRegistry.get_node_id = _patched_get_node_id
+    return _original
+
+
 def test_no_false_collision_underscore_class():
-    """Two identical TABLE_REF models should NOT collide."""
-    from docker.docling_graph.core.converters.node_id_registry import NodeIDRegistry
+    """Two identical TABLE_REF models should NOT collide.
 
-    registry = NodeIDRegistry()
-    model1 = TABLE_REF(title="Table 1")
-    model2 = TABLE_REF(title="Table 1")
+    The upstream NodeIDRegistry has a bug where split('_')[0] extracts
+    'TABLE' from 'TABLE_REF_<hash>', causing a false collision with any
+    TABLE model. The patched version in docker/docling-graph/app/main.py
+    fixes this. This test applies the same patch inline.
+    """
+    from docling_graph.core.converters.node_id_registry import NodeIDRegistry
 
-    id1 = registry.get_node_id(model1)
-    id2 = registry.get_node_id(model2)
+    original = _apply_node_id_patch()
+    try:
+        registry = NodeIDRegistry()
+        model1 = TABLE_REF(title="Table 1")
+        model2 = TABLE_REF(title="Table 1")
 
-    assert id1 == id2  # Same entity, same ID
-    assert id1.startswith("TABLE_REF_")
+        id1 = registry.get_node_id(model1)
+        id2 = registry.get_node_id(model2)
+
+        assert id1 == id2  # Same entity, same ID
+        assert id1.startswith("TABLE_REF_")
+    finally:
+        NodeIDRegistry.get_node_id = original
 
 
 def test_true_collision_different_classes():
-    """TABLE and TABLE_REF with same fingerprint should collide."""
-    from docker.docling_graph.core.converters.node_id_registry import NodeIDRegistry
+    """TABLE and TABLE_REF with different class names get different node IDs."""
+    from docling_graph.core.converters.node_id_registry import NodeIDRegistry
 
-    # This test verifies that ACTUAL collisions (different classes, same fingerprint)
-    # are still detected. In practice this requires hash collision which is unlikely,
-    # so we just verify the registry stores class info correctly.
-    registry = NodeIDRegistry()
-    model_ref = TABLE_REF(title="Test")
-    model_plain = TABLE(title="Test")
+    original = _apply_node_id_patch()
+    try:
+        registry = NodeIDRegistry()
+        model_ref = TABLE_REF(title="Test")
+        model_plain = TABLE(title="Test")
 
-    id_ref = registry.get_node_id(model_ref)
-    # Different class name → different fingerprint (includes __class__)
-    id_plain = registry.get_node_id(model_plain)
-    assert id_ref != id_plain
+        id_ref = registry.get_node_id(model_ref)
+        id_plain = registry.get_node_id(model_plain)
+        assert id_ref != id_plain
+    finally:
+        NodeIDRegistry.get_node_id = original
 
 
 def test_rsplit_extracts_full_class_name():

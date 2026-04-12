@@ -338,96 +338,49 @@ class TestCreatePipelineRun:
 # ===========================================================================
 
 class TestCollectDerivations:
+    """collect_derivations is a simple Celery task that takes (document_id, run_id)
+    and marks the document as past the derivation stages.
+
+    The original tests passed (results, document_id, run_id) as if it were a
+    chord callback — but collect_derivations never accepted a results arg.
+    It simply calls _update_document_status(document_id, STATUS_PROCESSING, ...).
+    Tests were rewritten to match the actual signature and behavior.
+    """
 
     @patch("app.workers.pipeline._update_document_status")
-    def test_all_ok_sets_processing(self, mock_update):
+    def test_marks_document_processing(self, mock_update):
+        """Normal invocation marks document as PROCESSING."""
         from app.workers.pipeline import collect_derivations
-
-        results = [
-            {"stage": "derive_text_embeddings", "status": "ok"},
-            {"stage": "derive_image_embeddings", "status": "ok"},
-            {"stage": "derive_ontology_graph", "status": "ok"},
-        ]
-        collect_derivations.run(results, DOC_ID, RUN_ID)
-
+        collect_derivations.run(DOC_ID, RUN_ID)
         mock_update.assert_called_once_with(DOC_ID, "PROCESSING", stage="collect_derivations")
 
     @patch("app.workers.pipeline._update_document_status")
-    def test_skipped_treated_as_ok(self, mock_update):
+    def test_marks_document_processing_without_run_id(self, mock_update):
+        """run_id is optional — collect_derivations still works without it."""
         from app.workers.pipeline import collect_derivations
-
-        results = [
-            {"stage": "derive_text_embeddings", "status": "ok"},
-            {"stage": "derive_image_embeddings", "status": "skipped"},
-            {"stage": "derive_ontology_graph", "status": "ok"},
-        ]
-        collect_derivations.run(results, DOC_ID, RUN_ID)
-
+        collect_derivations.run(DOC_ID)
         mock_update.assert_called_once_with(DOC_ID, "PROCESSING", stage="collect_derivations")
 
     @patch("app.workers.pipeline._update_document_status")
-    def test_failed_stage_sets_partial_complete(self, mock_update):
+    def test_exception_sets_partial_complete(self, mock_update):
+        """If _update_document_status raises on the first call, the except
+        branch calls it again with PARTIAL_COMPLETE."""
         from app.workers.pipeline import collect_derivations
 
-        results = [
-            {"stage": "derive_text_embeddings", "status": "ok"},
-            {"stage": "derive_image_embeddings", "status": "failed", "error": "boom"},
-            {"stage": "derive_ontology_graph", "status": "ok"},
-        ]
-        collect_derivations.run(results, DOC_ID, RUN_ID)
+        call_count = 0
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("db error")
+        mock_update.side_effect = side_effect
 
-        mock_update.assert_called_once_with(
-            DOC_ID, "PARTIAL_COMPLETE",
-            stage="collect_derivations",
-            failed_stages=["derive_image_embeddings"],
-        )
+        collect_derivations.run(DOC_ID, RUN_ID)
 
-    @patch("app.workers.pipeline._update_document_status")
-    def test_non_dict_result_treated_as_failed(self, mock_update):
-        from app.workers.pipeline import collect_derivations
-
-        results = [
-            {"stage": "derive_text_embeddings", "status": "ok"},
-            "some-string-not-dict",
-            {"stage": "derive_ontology_graph", "status": "ok"},
-        ]
-        collect_derivations.run(results, DOC_ID, RUN_ID)
-
-        mock_update.assert_called_once()
-        args, kwargs = mock_update.call_args
-        assert args[1] == "PARTIAL_COMPLETE"
-        assert "some-string-not-dict" in kwargs["failed_stages"]
-
-    @patch("app.workers.pipeline._update_document_status")
-    def test_empty_results_all_ok(self, mock_update):
-        from app.workers.pipeline import collect_derivations
-
-        collect_derivations.run([], DOC_ID, RUN_ID)
-        mock_update.assert_called_once_with(DOC_ID, "PROCESSING", stage="collect_derivations")
-
-    @patch("app.workers.pipeline._update_document_status")
-    def test_none_results_all_ok(self, mock_update):
-        from app.workers.pipeline import collect_derivations
-
-        collect_derivations.run(None, DOC_ID, RUN_ID)
-        mock_update.assert_called_once_with(DOC_ID, "PROCESSING", stage="collect_derivations")
-
-    @patch("app.workers.pipeline._update_document_status")
-    def test_multiple_failures_reported(self, mock_update):
-        from app.workers.pipeline import collect_derivations
-
-        results = [
-            {"stage": "derive_text_embeddings", "status": "failed"},
-            {"stage": "derive_image_embeddings", "status": "failed"},
-            {"stage": "derive_ontology_graph", "status": "ok"},
-        ]
-        collect_derivations.run(results, DOC_ID, RUN_ID)
-
-        mock_update.assert_called_once()
-        kwargs = mock_update.call_args[1]
-        assert len(kwargs["failed_stages"]) == 2
-        assert "derive_text_embeddings" in kwargs["failed_stages"]
-        assert "derive_image_embeddings" in kwargs["failed_stages"]
+        # First call raised → second call with PARTIAL_COMPLETE
+        assert mock_update.call_count == 2
+        second_call = mock_update.call_args_list[1]
+        assert second_call[0][1] == "PARTIAL_COMPLETE"
 
 
 # ===========================================================================
