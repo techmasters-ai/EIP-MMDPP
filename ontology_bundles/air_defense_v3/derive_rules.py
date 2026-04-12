@@ -13,8 +13,15 @@ HAS_PROVENANCE edges per entity. See spec §3.8 + §5.6 Phase 2.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import Any
+
+# ChunkForDerivation and DerivedEdge are canonically defined in
+# app.services.extraction_merge (Task 3.4). Import from there to avoid
+# duplication. Re-export so existing callers that import from this module
+# continue to work without changes.
+from app.services.extraction_merge import ChunkForDerivation, DerivedEdge
+
+__all__ = ["ChunkForDerivation", "DerivedEdge", "normalize_name", "derive_structural_edges"]
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -25,27 +32,6 @@ def normalize_name(name: str | None) -> str:
     if not name:
         return ""
     return _WHITESPACE_RE.sub(" ", name.strip().lower())
-
-
-@dataclass
-class ChunkForDerivation:
-    """DTO used by derive_structural_edges. Distinct from the SQLAlchemy
-    TextChunk ORM model — carries only the fields derivation needs.
-    Constructed by the worker from TextChunk rows before calling
-    derive_rules.derive_structural_edges."""
-    rid: str                    # ArcadeDB vertex RID of this chunk
-    text_normalized: str        # lowercased, whitespace-collapsed text
-
-
-@dataclass
-class DerivedEdge:
-    """Output of derive_structural_edges. Uses RID-based endpoints because
-    both source (extracted entity) and target (Document/TextChunk) RIDs are
-    already known at derivation time."""
-    from_id: str                # extracted entity RID (from identity_to_rid)
-    to_id: str                  # Document or TextChunk RID
-    rel_type: str
-    confidence: float | None
 
 
 def derive_structural_edges(
