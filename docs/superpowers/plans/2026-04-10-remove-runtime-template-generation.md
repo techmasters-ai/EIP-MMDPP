@@ -3938,7 +3938,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §7.4 feature flag + §5.2 IngestDispatchResult. The flag defaults to `legacy` and is read via `get_settings()` only — no uncached per-task reader — because flipping it requires a worker+beat restart (§7.6).
 
-- [ ] **Step 1: Write the failing config test**
+- [x] **Step 1: Write the failing config test**
 
 Create or append `tests/unit/test_config.py`:
 
@@ -3967,7 +3967,7 @@ def test_graph_extraction_engine_rejects_unknown_value():
         Settings(graph_extraction_engine="experimental")
 ```
 
-- [ ] **Step 2: Add the flag to `app/config.py`**
+- [x] **Step 2: Add the flag to `app/config.py`**
 
 Find the `Settings` class and add:
 
@@ -3986,7 +3986,7 @@ class Settings(BaseSettings):
 
 Do NOT add a per-task reader helper. `get_settings()` is the only access point.
 
-- [ ] **Step 3: Run the config tests**
+- [x] **Step 3: Run the config tests**
 
 ```bash
 pytest tests/unit/test_config.py -v
@@ -3994,7 +3994,7 @@ pytest tests/unit/test_config.py -v
 
 Expected: all pass.
 
-- [ ] **Step 4: Create `IngestDispatchResult` dataclass**
+- [x] **Step 4: Create `IngestDispatchResult` dataclass**
 
 Create `app/workers/dispatch_types.py`:
 
@@ -4016,7 +4016,7 @@ class IngestDispatchResult:
 
 A standalone module is used so both `app/workers/pipeline.py` and `app/api/v1/sources.py` can import it without creating a circular dependency between workers and API.
 
-- [ ] **Step 5: Write a smoke test for the dataclass**
+- [x] **Step 5: Write a smoke test for the dataclass**
 
 Append to `tests/unit/test_config.py` (which already imports `pytest` at the top):
 
@@ -4034,7 +4034,7 @@ def test_ingest_dispatch_result_is_frozen():
         r.pipeline_run_id = "run-2"  # type: ignore[misc]
 ```
 
-- [ ] **Step 6: Run the tests and commit**
+- [x] **Step 6: Run the tests and commit**
 
 ```bash
 pytest tests/unit/test_config.py -v
