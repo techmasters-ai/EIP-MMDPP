@@ -4503,7 +4503,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §5.2 + §5.3. `start_ingest_pipeline` returns `IngestDispatchResult` and snapshots the bundle on `PipelineRun`. `reingest_graph_only` uses `resolve_bundle_key_for_graph_only` with inheritance precedence.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/unit/test_start_ingest_pipeline.py`:
 
@@ -4563,7 +4563,7 @@ pytest tests/unit/test_start_ingest_pipeline.py -v
 
 Expected: tests fail (functions don't exist or have old signatures).
 
-- [ ] **Step 2: Refactor `start_ingest_pipeline` per spec §5.2**
+- [x] **Step 2: Refactor `start_ingest_pipeline` per spec §5.2**
 
 In `app/workers/pipeline.py`, find the current `start_ingest_pipeline` and replace with:
 
@@ -4621,7 +4621,7 @@ def start_ingest_pipeline(
 
 `dispatch_ingest_chain(run_id)` is the existing Celery chain builder — if the current file uses a different name, preserve that name and only change the input argument shape. The goal is to return `IngestDispatchResult`, not rename infrastructure.
 
-- [ ] **Step 3: Add `reingest_graph_only` per spec §5.3**
+- [x] **Step 3: Add `reingest_graph_only` per spec §5.3**
 
 Add the new function to `app/workers/pipeline.py`:
 
@@ -4698,7 +4698,7 @@ def reingest_graph_only(doc_id, request):
     }
 ```
 
-- [ ] **Step 4: Update `POST /documents/{id}/reingest` route to consume `ReingestRequest`**
+- [x] **Step 4: Update `POST /documents/{id}/reingest` route to consume `ReingestRequest`**
 
 Open `app/api/v1/sources.py` line 291. The route already accepts `ReingestRequest` as of Chunk 3 Task 3.7. In this task, make it forward the bundle override to the new entry points:
 
@@ -4724,7 +4724,7 @@ elif mode == "embeddings_only":
 
 Update the response body to include `pipeline_run_id` where newly available.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 pytest tests/unit/test_start_ingest_pipeline.py -v
@@ -4733,7 +4733,7 @@ pytest tests/ -x 2>&1 | tail -20
 
 Expected: green. If the existing upload route depends on the old `start_ingest_pipeline` return type (it used to return a bare Celery task id), update its caller at `app/api/v1/sources.py` per spec §5.2's caller-update example. Mechanical 3-line change.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/workers/pipeline.py app/api/v1/sources.py tests/unit/test_start_ingest_pipeline.py
