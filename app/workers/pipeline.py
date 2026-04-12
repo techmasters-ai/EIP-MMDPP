@@ -66,6 +66,124 @@ settings = get_settings()
 _redis_client = get_redis()
 
 
+# ---------------------------------------------------------------------------
+# Chunk 4 (PR 2 orchestrator rewrite) scaffolding — spec §5.4 tracker gate
+#
+# GraphWriteTracker is the worker-local rollback gate. Phase helpers call
+# .mark() immediately before the first graph_store mutation in each phase,
+# so failures that happen BEFORE the first mutation leave the flag False
+# and the rollback primitive is skipped. This prevents "rollback a
+# document that was never actually written to" bugs on early failures
+# (gate check, merge, manifest load, etc.).
+#
+# The helper stubs below let downstream Chunk 4 tasks (4.3, 4.4, 4.5,
+# 4.6, 4.7) import these names without breaking the module's import
+# graph. Each stub raises NotImplementedError with a task-ID back-pointer
+# so partial runs are loud. Task 4.6 is the one that rewrites
+# derive_ontology_graph to actually call these helpers.
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dataclass  # noqa: E402
+
+
+@_dataclass
+class GraphWriteTracker:
+    """Worker-local rollback gate per spec §5.4.
+
+    Phase helpers in the new derive_ontology_graph branch (Task 4.6) call
+    ``.mark()`` immediately before their first graph_store mutation. If
+    the orchestrator catches an exception, it consults
+    ``any_mutation_attempted`` to decide whether to invoke
+    ``_attempt_rollback``. Failures before the first mark are rollback-
+    free because no graph state changed.
+    """
+    any_mutation_attempted: bool = False
+
+    def mark(self) -> None:
+        self.any_mutation_attempted = True
+
+
+# --- Orchestrator helper stubs (filled in by later Chunk 4 tasks) -----------
+
+def _attempt_rollback(document_id: str) -> str:
+    """Filled in by Task 4.6: calls ``_delete_extraction_layer_graph`` and
+    returns a diagnostic suffix (empty on success, ``"; ROLLBACK_ALSO_FAILED: ..."``
+    on failure) to concatenate into the stage row's error_message."""
+    raise NotImplementedError("Task 4.6")
+
+
+def _delete_extraction_layer_graph(document_id: str) -> None:
+    """Filled in by Task 4.6: thin wrapper over
+    ``graph_store.delete_extraction_layer_graph_sync``."""
+    raise NotImplementedError("Task 4.6")
+
+
+def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
+    """Filled in by Task 4.5: populates PipelineRun.metrics with the
+    quality-signal blob from spec §6.6."""
+    raise NotImplementedError("Task 4.5")
+
+
+def _run_single_pass(**kwargs) -> None:
+    """Filled in by Task 4.3: per-pass dispatcher with retry, skip, and
+    required-pass gate handling per spec §5.5."""
+    raise NotImplementedError("Task 4.3")
+
+
+def _should_skip(pass_def, upstream_refs, ontology) -> bool:
+    """Filled in by Task 4.3: spec §5.5 skip logic."""
+    raise NotImplementedError("Task 4.3")
+
+
+def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
+    """Filled in by Task 4.5: recomputes yield_status per-pass after merge
+    updates relationships_rejected totals. Spec §5.4 + §6.2."""
+    raise NotImplementedError("Task 4.5")
+
+
+def _import_graph_phase_nodes(merged, ontology, document_id, tracker):
+    """Filled in by Task 4.4: phase 2 node upsert. Spec §5.6."""
+    raise NotImplementedError("Task 4.4")
+
+
+def _import_graph_phase_domain_edges(merged, ontology, tracker) -> None:
+    """Filled in by Task 4.4: phase 3 domain edge upsert. Spec §5.6."""
+    raise NotImplementedError("Task 4.4")
+
+
+def _import_graph_phase_structural_edges(
+    merged, identity_to_rid, document_id, pipeline_run_id, tracker,
+) -> None:
+    """Filled in by Task 4.4: phase 4 derived structural edges. Spec §5.6."""
+    raise NotImplementedError("Task 4.4")
+
+
+def _update_document_pipeline_status(document_id: str, new_status: str) -> None:
+    """Filled in by Task 4.7: writes Document.pipeline_status via the
+    existing vocabulary from app/models/ingest.py:60. Spec §5.4 +
+    §6.9."""
+    raise NotImplementedError("Task 4.7")
+
+
+def check_required_pass_gate(pipeline_run_id):
+    """Filled in by Task 4.3: required-pass gate per spec §6.4."""
+    raise NotImplementedError("Task 4.3")
+
+
+def _build_docling_document_json(document_id: str) -> dict:
+    """Filled in by Task 4.4: loads the persisted docling_document.json
+    from MinIO and applies enrichment overlays. An existing helper in
+    the legacy path may already do this — Task 4.4 reuses it rather
+    than duplicating."""
+    raise NotImplementedError("Task 4.4")
+
+
+def _upsert_document_graph_extraction(**kwargs) -> None:
+    """Filled in by Task 4.5: writes the DocumentGraphExtraction snapshot
+    row per spec §5.7 (audit blob, not graph serialization)."""
+    raise NotImplementedError("Task 4.5")
+
+
 def _normalize_text(text: str | None) -> str | None:
     """Replace problematic Unicode chars with ASCII equivalents."""
     if text is None:
