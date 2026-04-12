@@ -228,6 +228,131 @@ async def get_document_status(
     return resp
 
 
+@router.get("/documents/{document_id}/extraction-status")
+async def get_document_extraction_status(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Three-concept status split per spec §7.10.
+
+    Returns: document_status, latest_run (with passes[] and stage_summary),
+    graph_snapshot (nullable, with nested is_stale), and top-level
+    graph_queryable that remains meaningful even when graph_snapshot is null.
+    """
+    import asyncio
+    from app.services.status_signals import compute_status_signals
+    from app.models.ingest import PipelineRun, StageRun
+    from app.db.session import get_sync_session
+
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    # compute_status_signals uses sync ORM queries; bridge via thread
+    def _compute():
+        session = get_sync_session()
+        try:
+            return compute_status_signals(str(document_id), session)
+        finally:
+            session.close()
+
+    signals = await asyncio.to_thread(_compute)
+
+    # Build latest_run block
+    run_result = await db.execute(
+        select(PipelineRun)
+        .where(PipelineRun.document_id == document_id)
+        .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+        .limit(1)
+    )
+    latest_run = run_result.scalar_one_or_none()
+
+    latest_run_block = None
+    if latest_run is not None:
+        # Fetch per-pass StageRuns for this run
+        pass_result = await db.execute(
+            select(StageRun)
+            .where(
+                StageRun.pipeline_run_id == latest_run.id,
+                StageRun.stage_name == "derive_ontology_graph",
+                StageRun.pass_name.isnot(None),
+            )
+            .order_by(StageRun.started_at.nullslast())
+        )
+        pass_rows = pass_result.scalars().all()
+
+        summary_result = await db.execute(
+            select(StageRun)
+            .where(
+                StageRun.pipeline_run_id == latest_run.id,
+                StageRun.stage_name == "derive_ontology_graph",
+                StageRun.pass_name.is_(None),
+            )
+            .limit(1)
+        )
+        stage_summary_row = summary_result.scalar_one_or_none()
+
+        latest_run_block = {
+            "pipeline_run_id": str(latest_run.id),
+            "status": latest_run.status,
+            "mode": getattr(latest_run, "mode", None) or "full",
+            "started_at": latest_run.started_at.isoformat() if latest_run.started_at else None,
+            "finished_at": latest_run.finished_at.isoformat() if latest_run.finished_at else None,
+            "ontology_bundle_key": getattr(latest_run, "ontology_bundle_key", None),
+            "ontology_bundle_label": getattr(latest_run, "ontology_bundle_key", None) or "legacy/unknown",
+            "ontology_name": getattr(latest_run, "ontology_name", None),
+            "ontology_version": getattr(latest_run, "ontology_version", None),
+            "passes": [
+                {
+                    "pass_name": r.pass_name,
+                    "execution_status": r.execution_status,
+                    "yield_status": r.yield_status,
+                    "attempt": r.attempt,
+                    "primary_entities_extracted": r.primary_entities_extracted,
+                    "bridge_entities_extracted": r.bridge_entities_extracted,
+                    "relationships_extracted": r.relationships_extracted,
+                    "relationships_rejected": r.relationships_rejected,
+                    "schema_size_chars": r.schema_size_chars,
+                    "structured_output_mode": r.structured_output_mode,
+                    "error_message": r.error_message,
+                }
+                for r in pass_rows
+            ],
+            "stage_summary": (
+                {
+                    "execution_status": stage_summary_row.execution_status,
+                    "attempt": stage_summary_row.attempt,
+                    "error_message": stage_summary_row.error_message,
+                }
+                if stage_summary_row
+                else None
+            ),
+        }
+
+    # Build graph_snapshot block
+    snapshot_block = None
+    if signals.snapshot is not None:
+        graph_json = getattr(signals.snapshot, "graph_json", None) or {}
+        snapshot_block = {
+            "pipeline_run_id": str(signals.snapshot.pipeline_run_id) if signals.snapshot.pipeline_run_id else None,
+            "ontology_bundle_key": getattr(signals.snapshot, "ontology_bundle_key", None),
+            "ontology_bundle_label": getattr(signals.snapshot, "ontology_bundle_key", None) or "legacy/unknown",
+            "ontology_version": getattr(signals.snapshot, "ontology_version", None),
+            "entity_count": sum(graph_json.get("entity_count_by_type", {}).values()) if isinstance(graph_json, dict) else 0,
+            "edge_count": (graph_json.get("edges_accepted", 0) if isinstance(graph_json, dict) else 0),
+            "updated_at": signals.snapshot.updated_at.isoformat() if signals.snapshot.updated_at else None,
+            "is_stale": signals.is_stale,
+        }
+
+    return {
+        "document_id": str(doc.id),
+        "document_status": doc.pipeline_status,
+        "latest_run": latest_run_block,
+        "graph_snapshot": snapshot_block,
+        "graph_queryable": signals.graph_queryable,
+    }
+
+
 @router.post("/documents/batch-status", response_model=list[DocumentStatusResponse])
 async def batch_document_status(
     body: BatchStatusRequest,
