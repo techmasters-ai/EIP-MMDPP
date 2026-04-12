@@ -3857,7 +3857,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Chunk 2 Task 2.3 deferred `StatusSignals` to Chunk 3. This task adds the dataclass next to the bundle loader so the status API in Chunk 4 can import it. Spec §7.10 `StatusSignals` declaration.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/unit/test_ontology_bundles.py`:
 
@@ -3877,7 +3877,7 @@ pytest tests/unit/test_ontology_bundles.py::test_status_signals_shape -v
 
 Expected: ImportError or AttributeError.
 
-- [ ] **Step 2: Add `StatusSignals` to `app/services/ontology_bundles.py`**
+- [x] **Step 2: Add `StatusSignals` to `app/services/ontology_bundles.py`**
 
 Append to the module:
 
@@ -3905,7 +3905,7 @@ class StatusSignals:
 
 Use `TYPE_CHECKING` to avoid a circular import between `app.services.ontology_bundles` and `app.models.ingest`.
 
-- [ ] **Step 3: Run tests — expect pass**
+- [x] **Step 3: Run tests — expect pass**
 
 ```bash
 pytest tests/unit/test_ontology_bundles.py -v
@@ -3913,7 +3913,7 @@ pytest tests/unit/test_ontology_bundles.py -v
 
 Expected: all pass, including the new one.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/services/ontology_bundles.py tests/unit/test_ontology_bundles.py
