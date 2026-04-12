@@ -4289,7 +4289,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 A small integration test that imports every new symbol introduced in Chunk 3 and smoke-tests that the Chunk 3 slice hasn't broken the legacy path. Written to give Chunk 4 a clean baseline.
 
-- [ ] **Step 1: Write the smoke test**
+- [x] **Step 1: Write the smoke test**
 
 Create `tests/integration/test_chunk3_foundations_smoke.py`:
 
@@ -4331,7 +4331,7 @@ def test_provenance_metadata_accepts_pipeline_run_id():
     assert m.pipeline_run_id == "run-1"
 ```
 
-- [ ] **Step 2: Run the smoke test AND the legacy e2e test as two separate invocations**
+- [x] **Step 2: Run the smoke test AND the legacy e2e test as two separate invocations**
 
 Nesting `pytest` inside `pytest` via `subprocess.run` is an anti-pattern — conftest search paths, working directory, and fixture state all get confused. Run them as two separate top-level invocations:
 
@@ -4343,7 +4343,7 @@ pytest tests/e2e/test_full_pipeline.py -v
 
 Expected: both suites pass. The smoke test covers the Chunk 3 invariants; the e2e test covers the legacy-path end-to-end assertion. In CI, wire these as two sequential steps in the pipeline YAML — do NOT combine them into one test module.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/integration/test_chunk3_foundations_smoke.py
