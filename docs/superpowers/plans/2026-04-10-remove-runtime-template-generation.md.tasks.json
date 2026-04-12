@@ -19,7 +19,7 @@
     {"id": 131, "subject": "Task 2.4: Coverage checker (tools/check_extraction_coverage)", "status": "completed", "blockedBy": [130, 126, 127]},
     {"id": 132, "subject": "Task 2.5: POST /extract-pass endpoint on docling-graph", "status": "completed", "blockedBy": [130]},
     {"id": 133, "subject": "Task 2.6: Docker packaging for ontology_bundles", "status": "completed", "blockedBy": [123]},
-    {"id": 134, "subject": "Task 2.7: Honest failures on legacy path (PR 0 equivalent)", "status": "pending", "blockedBy": [129]},
+    {"id": 134, "subject": "Task 2.7: Honest failures on legacy path (PR 0 equivalent)", "status": "completed", "blockedBy": [129]},
     {"id": 135, "subject": "Task 2.8: PR 1 integration smoke test + canary verification", "status": "pending", "blockedBy": [128, 129, 130, 131, 132, 133, 134]},
     {"id": 136, "subject": "Task 2.9: Open PR 1", "status": "pending", "blockedBy": [135]},
 
@@ -50,5 +50,5 @@
     {"id": 159, "subject": "Task 5.6: Update DocumentGraphExtraction.graph_json docstring", "status": "pending", "blockedBy": [155]},
     {"id": 160, "subject": "Task 5.7: PR 3 post-deletion smoke + open PR 3", "status": "pending", "blockedBy": [155, 156, 157, 158, 159]}
   ],
-  "lastUpdated": "2026-04-11T13:00:00Z"
+  "lastUpdated": "2026-04-11T13:20:00Z"
 }

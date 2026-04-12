@@ -1979,7 +1979,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Spec §7.3 PR 0 equivalent. This change establishes a truthful baseline on the legacy path before switchover, so the §8.3 baseline harness in Chunk 3 has honest numbers to compare against.
 
-- [ ] **Step 1: Flip default flags in app/config.py**
+- [x] **Step 1: Flip default flags in app/config.py**
 
 ```python
 # Before:
@@ -1993,7 +1993,7 @@ graph_layered_fail_open_to_single_pass: bool = False
 
 Leave the settings as env-var-overridable so ops can re-enable if production needs it.
 
-- [ ] **Step 2: Remove error-swallowing in layered_extraction.py**
+- [x] **Step 2: Remove error-swallowing in layered_extraction.py**
 
 Locate the per-pass try/except that catches exceptions and converts them to empty-result sentinels. Find it with:
 
@@ -2011,7 +2011,7 @@ Replace each block with: log at ERROR level, then `raise`. The outer caller (`de
 
 If there are multiple error-swallowing sites, fix every one — any one remaining swallower defeats the PR 0 baseline honesty goal.
 
-- [ ] **Step 3: Persist attempted_mode / completed_mode on the legacy stage metrics**
+- [x] **Step 3: Persist attempted_mode / completed_mode on the legacy stage metrics**
 
 This step writes to `PipelineRun.metrics` (the new JSONB column added in migration 0015 Task 2.2 Step 8). `StageRun` does NOT have a `metrics` column — its per-run fields are first-class columns only. So the "metrics blob" here means the `PipelineRun.metrics` dict, which the legacy `derive_ontology_graph` stage updates in-memory and commits alongside its StageRun row.
 
@@ -2032,7 +2032,7 @@ pipeline_run.metrics = run_metrics
 
 If the existing code path does not flow through an in-memory `pipeline_run.metrics` update, use whichever persistence helper the legacy branch already uses for its stats — do NOT introduce a new write path. The point is that the data lands on `PipelineRun.metrics`, not how.
 
-- [ ] **Step 4: Run the existing extraction tests**
+- [x] **Step 4: Run the existing extraction tests**
 
 ```bash
 pytest tests/unit/test_layered_extraction.py tests/unit/test_pipeline.py -v
@@ -2040,7 +2040,7 @@ pytest tests/unit/test_layered_extraction.py tests/unit/test_pipeline.py -v
 
 Expected: some tests may fail because they assumed silent fail-open. Fix the tests to assert the loud-failure behavior or mark them xfail with a tracking note.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 List every file you actually modified in Steps 1–4 (including the specific test files Step 4 forced you to touch) and stage them explicitly. Do NOT stage `tests/` as a directory — that would pick up unrelated in-flight files.
 
