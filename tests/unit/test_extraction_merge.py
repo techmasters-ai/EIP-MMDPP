@@ -598,3 +598,94 @@ class TestLogicalIdentityFromDict:
             "UNKNOWN_TYPE", {"system_name": "X"}, self.ONTOLOGY, "doc-1",
         )
         assert identity is None
+
+
+def test_system_links_resolves_valid_ref_ids():
+    """Plan 1 success path: when pass_result.upstream_refs is populated with
+    real LogicalIdentity values AND those identities exist in the merged
+    entity_index, system_links emits a merged edge (not UNKNOWN_REF_ID).
+
+    Note: _make_pass_result's real signature (test_extraction_merge.py:53)
+    takes entities as a list of (entity_type, identity_dict, properties_dict)
+    tuples — not dicts. The local ontology below extends MINIMAL_ONTOLOGY
+    with MISSILE_SYSTEM and an ASSOCIATED_WITH validation-matrix row; adjust
+    the top-of-file MINIMAL_ONTOLOGY if those are missing.
+    """
+    local_ontology = {
+        "entity_types": [
+            {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"],
+             "identity_scope": "global", "properties": ["system_name"]},
+            {"name": "MISSILE_SYSTEM", "identity_fields": ["system_name"],
+             "identity_scope": "global", "properties": ["system_name"]},
+        ],
+        "validation_matrix": [
+            {"source": "RADAR_SYSTEM", "relationship": "ASSOCIATED_WITH",
+             "target": "MISSILE_SYSTEM"},
+        ],
+    }
+
+    radar_identity = LogicalIdentity(
+        entity_type="RADAR_SYSTEM",
+        identity_field_names=("system_name",),
+        identity_tuple=("Fan Song",),
+        scope="global",
+        document_id=None,
+    )
+    missile_identity = LogicalIdentity(
+        entity_type="MISSILE_SYSTEM",
+        identity_field_names=("system_name",),
+        identity_tuple=("SA-2",),
+        scope="global",
+        document_id=None,
+    )
+
+    # Pre-seed entity extractions so merge already has both endpoints.
+    # _make_pass_result expects (entity_type, identity_dict, properties_dict).
+    radar_pass_result = _make_pass_result(
+        pass_name="radar_domain",
+        entities=[("RADAR_SYSTEM", {"system_name": "Fan Song"}, {})],
+        relationships=[],
+    )
+    missile_pass_result = _make_pass_result(
+        pass_name="missile_domain",
+        entities=[("MISSILE_SYSTEM", {"system_name": "SA-2"}, {})],
+        relationships=[],
+    )
+    # system_links: the relationship uses ref_ids; upstream_refs resolves them.
+    links_pass_result = _make_pass_result(
+        pass_name="system_links",
+        entities=[],
+        relationships=[{
+            "rel_type": "ASSOCIATED_WITH",
+            "from_ref_id": "E001",
+            "to_ref_id": "E002",
+            "confidence": 0.9,
+        }],
+    )
+    links_pass_result.upstream_refs = {
+        "E001": radar_identity,
+        "E002": missile_identity,
+    }
+
+    merged = merge_and_resolve(
+        pass_results={
+            "radar_domain": radar_pass_result,
+            "missile_domain": missile_pass_result,
+            "system_links": links_pass_result,
+        },
+        manifest=_fake_manifest(["radar_domain", "missile_domain", "system_links"]),
+        ontology=local_ontology,
+        document_id="doc-1",
+        pipeline_run_id="run-1",
+    )
+
+    assert len(merged.rejected_edges) == 0
+    # One ASSOCIATED_WITH edge between the two systems.
+    # NOTE: MergedEdgeRecord field is `rel_type`, NOT `relationship_type`
+    # (extraction_merge.py:150).
+    assert any(
+        e.rel_type == "ASSOCIATED_WITH"
+        and e.from_identity == radar_identity
+        and e.to_identity == missile_identity
+        for e in merged.edges
+    )

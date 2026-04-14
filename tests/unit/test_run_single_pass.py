@@ -411,3 +411,176 @@ class TestCheckRequiredPassGate:
 
             with pytest.raises(WorkerInvariantError, match="radar_domain"):
                 check_required_pass_gate("00000000-0000-0000-0000-000000000001")
+
+
+# --- TestPassResultUpstreamRefsAttachment -----------------------------------
+
+class TestPassResultUpstreamRefsAttachment:
+    """After Task 4, document_plus_entity_refs passes must have
+    pass_result.upstream_refs populated with LogicalIdentity values so
+    merge_and_resolve can match from_ref_id / to_ref_id. document_only
+    passes must NOT have upstream_refs attached."""
+
+    ONTOLOGY = {
+        "entity_types": [
+            {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"],
+             "identity_scope": "global"},
+            {"name": "MISSILE_SYSTEM", "identity_fields": ["system_name"],
+             "identity_scope": "global"},
+        ],
+        "validation_matrix": [
+            {"source": "RADAR_SYSTEM", "relationship": "ASSOCIATED_WITH",
+             "target": "MISSILE_SYSTEM"},
+        ],
+    }
+
+    def _fake_pass_result(self):
+        return SimpleNamespace(
+            pass_name="system_links",
+            template_instance=SimpleNamespace(),
+            metadata=SimpleNamespace(schema_size_chars=500,
+                                     structured_output_mode="strict"),
+            pre_merge_rejections=[],
+            relationships=[],
+            upstream_refs=None,  # _run_single_pass should populate this
+        )
+
+    def test_document_plus_entity_refs_pass_attaches_upstream_refs(self):
+        """system_links is document_plus_entity_refs; after the parsed
+        result returns, pass_result.upstream_refs must be a dict of
+        LogicalIdentity objects keyed by ref_id (filtered through
+        _select_upstream_refs_for_pass)."""
+        from app.workers.pipeline import _run_single_pass
+        from app.services.extraction_merge import LogicalIdentity
+
+        system_links_def = _fake_pass_def(
+            name="system_links",
+            kind="relationships_only",
+            input_mode="document_plus_entity_refs",
+            required=True,
+            depends_on=["radar_domain", "missile_domain"],
+            primary=(),  # relationships_only — no primary entity output
+            bridge=(),
+            rels=("ASSOCIATED_WITH",),
+        )
+        manifest = _fake_manifest([system_links_def])
+        pass_results: dict = {}
+
+        # Upstream refs accumulated by earlier (mocked) passes.
+        accumulated_refs = {
+            "E001": SimpleNamespace(
+                pass_origin="radar_domain",
+                entity_type="RADAR_SYSTEM",
+                identity_values={"system_name": "Fan Song"},
+                display_label="Fan Song",
+            ),
+            "E002": SimpleNamespace(
+                pass_origin="missile_domain",
+                entity_type="MISSILE_SYSTEM",
+                identity_values={"system_name": "SA-2"},
+                display_label="SA-2",
+            ),
+        }
+
+        fake_pass_result = self._fake_pass_result()
+
+        with patch("app.workers.pipeline._call_extract_pass") as mock_call, \
+             patch("app.workers.pipeline._parse_pass_response",
+                   return_value=fake_pass_result), \
+             patch("app.workers.pipeline._write_stage_run"), \
+             patch("app.workers.pipeline._count_pass_output", return_value={
+                 "primary_entities_extracted": 0,
+                 "bridge_entities_extracted": 0,
+                 "relationships_extracted": 0,
+                 "relationships_rejected": 0,
+                 "schema_size_chars": 500,
+                 "structured_output_mode": "strict",
+                 "salvaged": False,
+             }), \
+             patch("app.workers.pipeline.classify_yield", return_value="HIT"):
+            mock_call.return_value = {"pass_output": {}, "metadata": {}}
+            _run_single_pass(
+                pipeline_run_id="run-1",
+                pass_def=system_links_def,
+                manifest=manifest,
+                ontology=self.ONTOLOGY,
+                bundle_key="air_defense_v3",
+                doc_json={},
+                pass_results=pass_results,
+                upstream_refs=accumulated_refs,
+                document_id="doc-1",
+            )
+
+        # The pass was recorded.
+        assert "system_links" in pass_results
+        result = pass_results["system_links"]
+
+        # Both refs attached as LogicalIdentity (both pass the shared
+        # validity rule AND are valid endpoints for ASSOCIATED_WITH).
+        assert result.upstream_refs is not None
+        assert set(result.upstream_refs.keys()) == {"E001", "E002"}
+        assert all(
+            isinstance(v, LogicalIdentity)
+            for v in result.upstream_refs.values()
+        )
+        assert result.upstream_refs["E001"].entity_type == "RADAR_SYSTEM"
+        assert result.upstream_refs["E002"].entity_type == "MISSILE_SYSTEM"
+
+    def test_document_only_pass_does_not_attach_upstream_refs(self):
+        """radar_domain is document_only — pass_result.upstream_refs must
+        remain None/absent even when accumulated upstream refs exist."""
+        from app.workers.pipeline import _run_single_pass
+
+        radar_def = _fake_pass_def(
+            name="radar_domain",
+            kind="entities_and_relationships",
+            input_mode="document_only",
+            primary=("RADAR_SYSTEM",),
+            rels=("INSTALLED_ON",),
+        )
+        manifest = _fake_manifest([radar_def])
+        pass_results: dict = {}
+
+        accumulated_refs = {
+            "E001": SimpleNamespace(
+                pass_origin="reference",
+                entity_type="SECTION",
+                identity_values={"heading": "Intro"},
+                display_label="Intro",
+            ),
+        }
+
+        fake_pass_result = self._fake_pass_result()
+        fake_pass_result.pass_name = "radar_domain"
+
+        with patch("app.workers.pipeline._call_extract_pass") as mock_call, \
+             patch("app.workers.pipeline._parse_pass_response",
+                   return_value=fake_pass_result), \
+             patch("app.workers.pipeline._write_stage_run"), \
+             patch("app.workers.pipeline._count_pass_output", return_value={
+                 "primary_entities_extracted": 0,
+                 "bridge_entities_extracted": 0,
+                 "relationships_extracted": 0,
+                 "relationships_rejected": 0,
+                 "schema_size_chars": 500,
+                 "structured_output_mode": "strict",
+                 "salvaged": False,
+             }), \
+             patch("app.workers.pipeline.classify_yield", return_value="HIT"):
+            mock_call.return_value = {"pass_output": {}, "metadata": {}}
+            _run_single_pass(
+                pipeline_run_id="run-1",
+                pass_def=radar_def,
+                manifest=manifest,
+                ontology=self.ONTOLOGY,
+                bundle_key="air_defense_v3",
+                doc_json={},
+                pass_results=pass_results,
+                upstream_refs=accumulated_refs,
+                document_id="doc-1",
+            )
+
+        result = pass_results["radar_domain"]
+        # document_only passes do not consume upstream refs, so the post-
+        # parse attach block must not populate this field.
+        assert result.upstream_refs is None

@@ -361,21 +361,47 @@ def _run_single_pass(
             return
 
         try:
+            selected_refs = (
+                _select_upstream_refs_for_pass(pass_def, upstream_refs, ontology)
+                if pass_def.input_mode == "document_plus_entity_refs"
+                else None
+            )
             request_body = _build_extract_pass_request(
                 bundle_key=bundle_key,
                 pass_def=pass_def,
                 doc_json=doc_json,
-                upstream_refs=(
-                    upstream_refs
-                    if pass_def.input_mode == "document_plus_entity_refs"
-                    else None
-                ),
+                upstream_refs=selected_refs,
+                document_id=document_id,
             )
             response = _call_extract_pass(
                 request_body,
                 timeout=settings.docling_graph_timeout,
             )
             pass_result = _parse_pass_response(response, pass_def, manifest)
+
+            # Attach the filtered, ordered upstream refs AS LogicalIdentity objects
+            # so merge_and_resolve can resolve from_ref_id / to_ref_id directly
+            # (extraction_merge.py:384). Only document_plus_entity_refs passes use
+            # this — document_only passes do not consume upstream refs.
+            if pass_def.input_mode == "document_plus_entity_refs":
+                from app.services.extraction_merge import logical_identity_from_dict
+                # Use the SAME selection + validity filter that built the
+                # request body, so the merge side sees exactly the refs the
+                # LLM was told about. Invalid refs were already dropped by
+                # _is_valid_upstream_ref inside _select_upstream_refs_for_pass.
+                selected = _select_upstream_refs_for_pass(
+                    pass_def, upstream_refs, ontology,
+                )
+                pass_result.upstream_refs = {}
+                for ref_id, ref in selected.items():
+                    identity = logical_identity_from_dict(
+                        ref.entity_type,
+                        ref.identity_values or {},
+                        ontology,
+                        document_id,
+                    )
+                    if identity is not None:
+                        pass_result.upstream_refs[ref_id] = identity
 
         except PassRetryable as exc:
             _write_stage_run(
@@ -423,6 +449,11 @@ def _run_single_pass(
             else str(yield_status_val)
         )
         counts = _count_pass_output(pass_result, pass_def, ontology)
+        counts["metrics"] = {
+            "rejections_by_reason": _build_rejections_by_reason(
+                getattr(pass_result, "pre_merge_rejections", None),
+            ),
+        }
         _write_stage_run(
             pipeline_run_id=pipeline_run_id,
             pass_def=pass_def,
@@ -496,6 +527,12 @@ def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
         pass_name = tup[0]
         rejected_by_pass[pass_name] = rejected_by_pass.get(pass_name, 0) + 1
 
+    # Group merged.rejected_edges by source_pass for per-pass metrics.
+    rejections_by_pass: dict[str, list] = {}
+    for tup in merged.rejected_edges:
+        source_pass = tup[0]
+        rejections_by_pass.setdefault(source_pass, []).append(tup)
+
     with get_sync_session() as session:
         rows = (
             session.query(StageRun)
@@ -527,6 +564,17 @@ def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
                 )
                 if new_yield == YieldStatus.DEGRADED:
                     row.yield_status = "DEGRADED"
+
+            # Plan 1: per-pass post-merge rejection breakdown into metrics JSONB.
+            # Merge with any pre-merge counts already written — post-merge
+            # wins on conflict because it is authoritative for resolve-stage reasons
+            # like UNKNOWN_REF_ID.
+            post_merge = _build_rejections_by_reason(rejections_by_pass.get(pass_name, []))
+            merged_metrics = dict(row.metrics or {})
+            existing = dict(merged_metrics.get("rejections_by_reason") or {})
+            existing.update(post_merge)  # post-merge values take precedence
+            merged_metrics["rejections_by_reason"] = existing
+            row.metrics = merged_metrics
 
         session.commit()
 
@@ -1574,6 +1622,8 @@ def _write_stage_run(
             "structured_output_mode": counts.get("structured_output_mode"),
             "salvaged": counts.get("salvaged"),
         })
+        if counts.get("metrics"):
+            values["metrics"] = counts["metrics"]
     if error:
         values["error_message"] = error
 
@@ -1605,12 +1655,19 @@ def _write_stage_run(
 
 
 def _build_extract_pass_request(
-    *, bundle_key: str, pass_def, doc_json: dict, upstream_refs: dict | None
+    *, bundle_key: str, pass_def, doc_json: dict,
+    upstream_refs: dict | None, document_id: str,
 ) -> dict:
-    """Assemble the POST body for /extract-pass."""
+    """Assemble the POST body for /extract-pass.
+
+    document_id is always included so the service can log and attribute
+    extraction runs to a specific document (useful when correlating
+    salvage warnings and timeout retries across the batch).
+    """
     body: dict = {
         "bundle_key": bundle_key,
         "pass_name": pass_def.name,
+        "document_id": document_id,
         "docling_document_json": doc_json,
     }
     if upstream_refs:
@@ -1730,6 +1787,69 @@ def _any_downstream_pass_depends_on(manifest, pass_name: str) -> bool:
     return False
 
 
+def _build_rejections_by_reason(
+    rejections: list | None,
+) -> dict[str, int]:
+    """Bucket rejection tuples by the reason enum's ``.value``
+    (lowercase, e.g. 'unknown_ref_id'). Accepts both tuple shapes:
+
+    * ``(rel, reason)`` — ``pass_result.pre_merge_rejections``
+    * ``(source_pass, raw_rel, reason)`` — ``MergedExtraction.rejected_edges``
+      (see extraction_merge.py:159)
+
+    The helper treats the **last** element of each tuple as the reason,
+    which works for both shapes without the caller needing a conditional.
+    Used to persist per-reason counts into ``StageRun.metrics`` JSONB so
+    UNKNOWN_REF_ID trends are queryable from the DB without reprocessing
+    passes."""
+    result: dict[str, int] = {}
+    for tup in rejections or []:
+        if not tup:
+            continue
+        reason = tup[-1]
+        key = reason.value if hasattr(reason, "value") else str(reason)
+        result[key] = result.get(key, 0) + 1
+    return result
+
+
+def _is_valid_upstream_ref(ref, ontology: dict) -> bool:
+    """Single shared validity rule used at ref emission, request build, and
+    merge attachment. A ref is valid iff:
+      (a) its entity_type is in the ontology,
+      (b) every ontology identity_field for that type is present as a key
+          in identity_values,
+      (c) every such value is truthy after ``str.strip()`` for strings
+          (None, "", "   " all reject).
+
+    Applied at three sites so invalid refs cannot leak into the request
+    body, the prompt preamble, or ``PassResult.upstream_refs``. A ref
+    that fails this check simply never existed as far as the rest of the
+    pipeline is concerned — no UNKNOWN_REF_ID rejection, no polluted
+    LogicalIdentity.
+    """
+    entity_type = getattr(ref, "entity_type", None)
+    identity_values = getattr(ref, "identity_values", None) or {}
+    entity_def = next(
+        (e for e in ontology.get("entity_types", []) if e["name"] == entity_type),
+        None,
+    )
+    if entity_def is None:
+        return False
+    identity_fields = list(entity_def.get("identity_fields") or ())
+    if not identity_fields:
+        # Rule (b): no anchors → not usable as an upstream ref.
+        return False
+    for field in identity_fields:
+        if field not in identity_values:
+            return False
+        val = identity_values[field]
+        if val is None:
+            return False
+        if isinstance(val, str) and not val.strip():
+            return False
+    return True
+
+
 def _extend_upstream_refs(
     upstream_refs: dict, pass_result, pass_def, ontology
 ) -> None:
@@ -1781,14 +1901,96 @@ def _extend_upstream_refs(
                 entity_type, identity_values, properties,
             )
 
-            ref_id = f"E{counter:03d}"
-            upstream_refs[ref_id] = SimpleNamespace(
+            ref = SimpleNamespace(
                 pass_origin=pass_def.name,
                 entity_type=entity_type,
                 identity_values=identity_values,
                 display_label=display_label,
             )
+            if not _is_valid_upstream_ref(ref, ontology):
+                continue  # Drop refs with missing/empty identity; see _is_valid_upstream_ref.
+            upstream_refs[f"E{counter:03d}"] = ref
             counter += 1
+
+
+def _endpoint_types_for_rel_types(
+    ontology: dict, rel_types: list[str],
+) -> set[str]:
+    """Return the set of entity types that appear as source or target for
+    any of the given relationship types in the ontology validation_matrix.
+
+    Used by _select_upstream_refs_for_pass to drop upstream refs whose
+    entity_type cannot legally participate in any relationship the
+    downstream pass extracts. For system_links (ASSOCIATED_WITH, CUES)
+    this resolves to the system-level entity types only."""
+    if not rel_types:
+        return set()
+    wanted = set(rel_types)
+    endpoint_types: set[str] = set()
+    for row in ontology.get("validation_matrix", []):
+        if row.get("relationship") in wanted:
+            src = row.get("source")
+            tgt = row.get("target")
+            if src:
+                endpoint_types.add(src)
+            if tgt:
+                endpoint_types.add(tgt)
+    return endpoint_types
+
+
+def _select_upstream_refs_for_pass(
+    pass_def, upstream_refs: dict, ontology: dict,
+) -> dict:
+    """Filter upstream_refs so the downstream pass only sees refs it can
+    legally use: (1) pass_origin in pass_def.depends_on, (2) the ref is
+    valid (see _is_valid_upstream_ref), and (3) the ref's entity_type is
+    a valid source or target for at least one of
+    pass_def.extracted_relationship_types in the ontology validation_matrix.
+    Returns a dict ordered by (pass_origin, entity_type, identity) so
+    repeat runs produce the same preamble."""
+    depends_on = set(getattr(pass_def, "depends_on", None) or [])
+    if not depends_on:
+        return {}
+
+    rel_types = list(getattr(pass_def, "extracted_relationship_types", None) or [])
+    endpoint_types = _endpoint_types_for_rel_types(ontology, rel_types)
+
+    # Precompute the ontology-declared identity_fields order per type so
+    # the sort key matches LogicalIdentity's canonical ordering
+    # (extraction_merge.py:43-ish: identity_field_names comes straight
+    # from entity_def["identity_fields"]). Sorting by sorted(dict.keys())
+    # would diverge from that canonical order on any multi-field
+    # identity, which means the LLM preamble and the merge identity
+    # tuple could disagree on which value goes first.
+    identity_fields_by_type = {
+        e["name"]: tuple(e.get("identity_fields") or ())
+        for e in ontology.get("entity_types", [])
+    }
+
+    eligible = []
+    for ref_id, ref in upstream_refs.items():
+        if getattr(ref, "pass_origin", None) not in depends_on:
+            continue
+        if not _is_valid_upstream_ref(ref, ontology):
+            continue
+        # When the downstream pass extracts relationships, the ref's type
+        # must be legal for at least one of them. If the pass declares
+        # no extracted_relationship_types, keep all depends_on refs.
+        if endpoint_types and ref.entity_type not in endpoint_types:
+            continue
+        eligible.append((ref_id, ref))
+
+    def _sort_key(item):
+        _ref_id, ref = item
+        identity_values = getattr(ref, "identity_values", {}) or {}
+        # Use ontology-declared identity_fields order (same as
+        # LogicalIdentity.identity_tuple), NOT sorted(dict.keys()).
+        fields = identity_fields_by_type.get(ref.entity_type, ())
+        identity_tuple = tuple(identity_values.get(k) for k in fields)
+        return (ref.pass_origin, ref.entity_type, identity_tuple)
+
+    eligible.sort(key=_sort_key)
+    return {ref_id: ref for ref_id, ref in eligible}
 
 
 def _get_pipeline_run_id(db, document_id: str) -> str | None:
