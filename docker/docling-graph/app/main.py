@@ -441,55 +441,62 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         body.bundle_key, body.pass_name, pass_def.get("input_mode"),
         body.document_id, upstream_ref_count,
     )
-    async with semaphore:
-        try:
-            context = await asyncio.to_thread(
-                run_extraction_pass,
-                body.docling_document_json,
-                template_cls,
-                body.upstream_entities,
-            )
-        except Exception as exc:
-            logger.exception(
-                "extract-pass pipeline failed for document_id=%s bundle=%s pass=%s",
-                body.document_id, body.bundle_key, body.pass_name,
-            )
-            raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
-    # 5. Build response — mirror the /extract-all metadata shape
-    graph = context.knowledge_graph
-    meta = context.graph_metadata
-    metadata = ExtractionMetadata(
-        node_count=getattr(meta, "node_count", graph.number_of_nodes()),
-        edge_count=getattr(meta, "edge_count", graph.number_of_edges()),
-        node_types=getattr(meta, "node_types", {}),
-        edge_types=getattr(meta, "edge_types", {}),
-        extraction_contract=os.environ.get("DOCLING_GRAPH_EXTRACTION_CONTRACT", "delta"),
-        # --- Plan 1 — appended below. -----------------------------------
-        upstream_ref_count=upstream_ref_count,
-        upstream_preamble_applied=False,  # flipped to True in Task 5b
-    )
-    logger.info(
-        "extract-pass: END bundle=%s pass=%s document_id=%s node_count=%d edge_count=%d",
-        body.bundle_key, body.pass_name, body.document_id,
-        metadata.node_count, metadata.edge_count,
-    )
+    # Sentinels: -1 means extraction did not complete (failure path).
+    node_count_for_log = -1
+    edge_count_for_log = -1
+    try:
+        async with semaphore:
+            try:
+                context = await asyncio.to_thread(
+                    run_extraction_pass,
+                    body.docling_document_json,
+                    template_cls,
+                    body.upstream_entities,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "extract-pass pipeline failed for document_id=%s bundle=%s pass=%s",
+                    body.document_id, body.bundle_key, body.pass_name,
+                )
+                raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
+        # 5. Build response — mirror the /extract-all metadata shape
+        graph = context.knowledge_graph
+        meta = context.graph_metadata
+        metadata = ExtractionMetadata(
+            node_count=getattr(meta, "node_count", graph.number_of_nodes()),
+            edge_count=getattr(meta, "edge_count", graph.number_of_edges()),
+            node_types=getattr(meta, "node_types", {}),
+            edge_types=getattr(meta, "edge_types", {}),
+            extraction_contract=os.environ.get("DOCLING_GRAPH_EXTRACTION_CONTRACT", "delta"),
+            # --- Plan 1 — appended below. -----------------------------------
+            upstream_ref_count=upstream_ref_count,
+            upstream_preamble_applied=False,  # flipped to True in Task 5b
+        )
+        node_count_for_log = metadata.node_count
+        edge_count_for_log = metadata.edge_count
 
-    # pass_output is the dumped template instance so the worker can re-parse it
-    pass_output: dict[str, Any] = {}
-    template_instance = getattr(context, "template_instance", None)
-    if template_instance is not None and hasattr(template_instance, "model_dump"):
-        pass_output = template_instance.model_dump(mode="json")
-    else:
-        # Fallback: serialize the graph as the pass_output until Chunk 3
-        # wires template_instance through the docling-graph pipeline
-        import networkx as nx
-        pass_output = {"graph": nx.node_link_data(graph, edges="links")}
+        # pass_output is the dumped template instance so the worker can re-parse it
+        pass_output: dict[str, Any] = {}
+        template_instance = getattr(context, "template_instance", None)
+        if template_instance is not None and hasattr(template_instance, "model_dump"):
+            pass_output = template_instance.model_dump(mode="json")
+        else:
+            # Fallback: serialize the graph as the pass_output until Chunk 3
+            # wires template_instance through the docling-graph pipeline
+            import networkx as nx
+            pass_output = {"graph": nx.node_link_data(graph, edges="links")}
 
-    return ExtractPassResponse(
-        bundle_key=body.bundle_key,
-        pass_name=body.pass_name,
-        pass_output=pass_output,
-        metadata=metadata,
-        model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
-        provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
-    )
+        return ExtractPassResponse(
+            bundle_key=body.bundle_key,
+            pass_name=body.pass_name,
+            pass_output=pass_output,
+            metadata=metadata,
+            model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
+            provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
+        )
+    finally:
+        logger.info(
+            "extract-pass: END bundle=%s pass=%s document_id=%s node_count=%d edge_count=%d",
+            body.bundle_key, body.pass_name, body.document_id,
+            node_count_for_log, edge_count_for_log,
+        )

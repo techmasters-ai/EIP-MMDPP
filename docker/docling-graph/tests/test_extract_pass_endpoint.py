@@ -227,3 +227,23 @@ def test_metadata_reports_zero_refs_for_document_only(client):
     meta = resp.json()["metadata"]
     assert meta["upstream_ref_count"] == 0
     assert meta["upstream_preamble_applied"] is False
+
+
+def test_extract_pass_logs_end_even_on_extraction_failure(client, caplog):
+    """Regression: the END log must fire whether extraction succeeded or
+    raised. Previously it was placed after metadata construction and was
+    skipped when run_extraction_pass raised before that point."""
+    import logging
+    caplog.set_level(logging.INFO)
+    with patch(f"{_DG_MODULE_NAME}.run_extraction_pass") as mock_run:
+        mock_run.side_effect = RuntimeError("simulated extraction failure")
+        resp = client.post("/extract-pass", json={
+            "bundle_key": "air_defense_v3",
+            "pass_name": "reference",
+            "docling_document_json": {"name": "test"},
+        })
+    assert resp.status_code == 500
+    start_logs = [r for r in caplog.records if "extract-pass: START" in r.message]
+    end_logs = [r for r in caplog.records if "extract-pass: END" in r.message]
+    assert len(start_logs) == 1
+    assert len(end_logs) == 1, "END log must fire even when extraction raises"
