@@ -1,0 +1,13 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-13-upstream-refs-plan-1.md",
+  "tasks": [
+    {"id": 8, "subject": "Task 1: Service logging + ExtractionMetadata observability", "status": "pending"},
+    {"id": 9, "subject": "Task 2: Promote logical_identity_from_dict to public", "status": "pending"},
+    {"id": 10, "subject": "Task 3: Fix _extend_upstream_refs (unique ids, ontology identity, display_label)", "status": "pending"},
+    {"id": 11, "subject": "Task 4: Validity filter + upstream_refs attach + rejection metrics", "status": "pending", "blockedBy": [9, 10]},
+    {"id": 12, "subject": "Task 5a: Discovery — locate prompt hook in docling-graph library", "status": "pending"},
+    {"id": 14, "subject": "Task 5b: Implement preamble injection using chosen hook", "status": "pending", "blockedBy": [11, 12]},
+    {"id": 13, "subject": "Task 6: Full suite + rebuild + recreate + live smoke", "status": "pending", "blockedBy": [14]}
+  ],
+  "lastUpdated": "2026-04-13T19:00:00Z"
+}
