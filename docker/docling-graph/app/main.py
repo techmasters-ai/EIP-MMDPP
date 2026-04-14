@@ -430,6 +430,15 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         )
 
     # 4. Run the pipeline
+    #
+    # The docling-graph library emits validation-salvage warnings
+    # (e.g. `specifications -> N -> value: Input should be a valid string`)
+    # without naming the pass. Bracket the call with bundle/pass context
+    # so operators can correlate those warnings to the offending pass.
+    logger.info(
+        "extract-pass: START bundle=%s pass=%s document_id=%s",
+        body.bundle_key, body.pass_name, body.document_id,
+    )
     async with semaphore:
         try:
             context = await asyncio.to_thread(
@@ -439,8 +448,15 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 body.upstream_entities,
             )
         except Exception as exc:
-            logger.exception("extract-pass pipeline failed for %s", body.document_id)
+            logger.exception(
+                "extract-pass pipeline failed for document_id=%s bundle=%s pass=%s",
+                body.document_id, body.bundle_key, body.pass_name,
+            )
             raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
+    logger.info(
+        "extract-pass: END bundle=%s pass=%s document_id=%s",
+        body.bundle_key, body.pass_name, body.document_id,
+    )
 
     # 5. Build response — mirror the /extract-all metadata shape
     graph = context.knowledge_graph
