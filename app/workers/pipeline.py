@@ -1745,7 +1745,6 @@ def _extend_upstream_refs(
     a meaningful name.
     """
     from types import SimpleNamespace
-    from app.services.extraction_merge import build_display_label
 
     ontology_by_type = {
         e["name"]: e for e in ontology.get("entity_types", [])
