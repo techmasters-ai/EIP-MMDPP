@@ -19,11 +19,15 @@ def test_load_bundle_manifest_populates_pass_metadata():
     from app.services.ontology_bundles import load_bundle_manifest
     m = load_bundle_manifest("air_defense_v3")
     radar = m.find_pass("radar_domain")
-    assert radar.required is True
+    # Domain passes (radar/missile/other_systems) are non-required so docs
+    # without matching content don't fail the pipeline on empty LLM output.
+    assert radar.required is False
     assert radar.kind == "entities_and_relationships"
     assert radar.input_mode == "document_only"
     assert "PLATFORM" in radar.bridge_entity_types
     assert "RADAR_SYSTEM" in radar.primary_entity_types
+    # Reference pass must remain required — every doc has structural elements.
+    assert m.find_pass("reference").required is True
 
 
 def test_resolve_bundle_key_precedence_run_wins():

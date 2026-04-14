@@ -65,6 +65,7 @@ class TestDeriveOntologyGraphBundlePasses:
     @patch("app.workers.pipeline._update_document_pipeline_status")
     @patch("app.workers.pipeline._upsert_document_graph_extraction")
     @patch("app.workers.pipeline._import_graph_phase_structural_edges")
+    @patch("app.workers.pipeline._ensure_structural_document_vertex", return_value="#1:0")
     @patch("app.workers.pipeline._import_graph_phase_domain_edges")
     @patch("app.workers.pipeline._import_graph_phase_nodes", return_value={})
     @patch("app.workers.pipeline._write_pipeline_run_metrics")
@@ -78,7 +79,7 @@ class TestDeriveOntologyGraphBundlePasses:
     def test_happy_path_graph_only(
         self, mock_db, mock_manifest_fn, mock_ontology, mock_doc_json,
         mock_gate, mock_merge, mock_yield, mock_metrics,
-        mock_nodes, mock_domain_edges, mock_structural, mock_upsert, mock_status,
+        mock_nodes, mock_domain_edges, mock_ensure_doc, mock_structural, mock_upsert, mock_status,
     ):
         """graph_only mode: stage_summary COMPLETE, run COMPLETE,
         Document.pipeline_status updated to COMPLETE."""
@@ -113,6 +114,7 @@ class TestDeriveOntologyGraphBundlePasses:
     @patch("app.workers.pipeline._update_document_pipeline_status")
     @patch("app.workers.pipeline._upsert_document_graph_extraction")
     @patch("app.workers.pipeline._import_graph_phase_structural_edges")
+    @patch("app.workers.pipeline._ensure_structural_document_vertex", return_value="#1:0")
     @patch("app.workers.pipeline._import_graph_phase_domain_edges")
     @patch("app.workers.pipeline._import_graph_phase_nodes", return_value={})
     @patch("app.workers.pipeline._write_pipeline_run_metrics")
@@ -126,7 +128,7 @@ class TestDeriveOntologyGraphBundlePasses:
     def test_happy_path_full_mode_leaves_run_processing(
         self, mock_db, mock_manifest_fn, mock_ontology, mock_doc_json,
         mock_gate, mock_merge, mock_yield, mock_metrics,
-        mock_nodes, mock_domain_edges, mock_structural, mock_upsert, mock_status,
+        mock_nodes, mock_domain_edges, mock_ensure_doc, mock_structural, mock_upsert, mock_status,
     ):
         """full mode: stage_summary COMPLETE, run stays PROCESSING
         (downstream finalize_document terminalizes). Document.pipeline_status

@@ -17,7 +17,10 @@ passes:
     depends_on: []
 
   - name: radar_domain
-    required: true
+    # Non-required: mixed-corpus documents (e.g. handwritten notes, non-radar
+    # papers) legitimately have no radar content. When the LLM returns empty
+    # output for this pass, that's a true negative, not a pipeline failure.
+    required: false
     kind: entities_and_relationships
     input_mode: document_only
     module: extraction_schemas.radar_domain
@@ -32,7 +35,9 @@ passes:
     depends_on: []
 
   - name: missile_domain
-    required: true
+    # Non-required: a radar-only or non-missile document shouldn't fail the
+    # pipeline just because there's nothing to extract for this domain.
+    required: false
     kind: entities_and_relationships
     input_mode: document_only
     module: extraction_schemas.missile_domain
@@ -45,7 +50,8 @@ passes:
     depends_on: []
 
   - name: other_systems
-    required: true
+    # Non-required: not every doc has AD artillery / EW / fire-control content.
+    required: false
     kind: entities_and_relationships
     input_mode: document_only
     module: extraction_schemas.other_systems
