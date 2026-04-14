@@ -385,13 +385,11 @@ def _run_single_pass(
             # this — document_only passes do not consume upstream refs.
             if pass_def.input_mode == "document_plus_entity_refs":
                 from app.services.extraction_merge import logical_identity_from_dict
-                # Use the SAME selection + validity filter that built the
-                # request body, so the merge side sees exactly the refs the
-                # LLM was told about. Invalid refs were already dropped by
-                # _is_valid_upstream_ref inside _select_upstream_refs_for_pass.
-                selected = _select_upstream_refs_for_pass(
-                    pass_def, upstream_refs, ontology,
-                )
+                # Reuse the same selection that built the request body above —
+                # ensures the merge side sees exactly the refs the LLM was
+                # told about, and removes a drift surface where future edits
+                # could cause the two sites to disagree.
+                selected = selected_refs or {}
                 pass_result.upstream_refs = {}
                 for ref_id, ref in selected.items():
                     identity = logical_identity_from_dict(
