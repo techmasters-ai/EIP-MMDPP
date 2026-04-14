@@ -207,10 +207,13 @@ def _build_text_chunk_sql(
     record: TextChunkRecord,
     row_idx: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Build a single CREATE VERTEX TextChunk statement, optionally folding in embedding.
+    """Build an idempotent UPDATE…UPSERT for a TextChunk, folding in embedding.
 
-    When ``row_idx`` is provided, param keys are suffixed with ``_{row_idx}``
-    so the statement can be combined with others in a sqlscript batch.
+    Uses UPSERT keyed on the UNIQUE ``chunk_id`` index so repeat calls (e.g.
+    Celery retries of ``derive_text_chunks_and_embeddings`` after a transient
+    ArcadeDB error) replace the existing vertex instead of throwing a
+    duplicate-key 503. When ``row_idx`` is provided, param keys are suffixed
+    with ``_{row_idx}`` so the statement can be combined in a sqlscript batch.
     """
     suffix = f"_{row_idx}" if row_idx is not None else ""
     props = dict(record.properties or {})
@@ -232,8 +235,8 @@ def _build_text_chunk_sql(
         set_parts.append(f"{k} = :{pk}")
 
     sql = (
-        f"CREATE VERTEX TextChunk SET {', '.join(set_parts)}, "
-        f"created_at = sysdate()"
+        f"UPDATE TextChunk SET {', '.join(set_parts)}, updated_at = sysdate() "
+        f"UPSERT RETURN AFTER @rid WHERE chunk_id = :chunk_id{suffix}"
     )
     return sql, params
 
@@ -242,7 +245,13 @@ def _build_image_chunk_sql(
     record: ImageChunkRecord,
     row_idx: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Build a single CREATE VERTEX ImageChunk statement, optionally folding in embedding."""
+    """Build an idempotent UPDATE…UPSERT for an ImageChunk, folding in embedding.
+
+    Uses UPSERT keyed on the UNIQUE ``chunk_id`` index so repeat calls (e.g.
+    Celery retries of ``derive_image_embeddings`` after a transient ArcadeDB
+    error) replace the existing vertex instead of throwing a duplicate-key
+    503.
+    """
     suffix = f"_{row_idx}" if row_idx is not None else ""
     props = dict(record.properties or {})
     if record.embedding is not None:
@@ -262,8 +271,8 @@ def _build_image_chunk_sql(
         set_parts.append(f"{k} = :{pk}")
 
     sql = (
-        f"CREATE VERTEX ImageChunk SET {', '.join(set_parts)}, "
-        f"created_at = sysdate()"
+        f"UPDATE ImageChunk SET {', '.join(set_parts)}, updated_at = sysdate() "
+        f"UPSERT RETURN AFTER @rid WHERE chunk_id = :chunk_id{suffix}"
     )
     return sql, params
 

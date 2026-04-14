@@ -482,7 +482,8 @@ class TestSyncVariants:
         script = client.command_sync.call_args.args[2]
         params = client.command_sync.call_args.args[3]
         assert language == "sqlscript"
-        assert script.count("CREATE VERTEX TextChunk") == 2
+        assert script.count("UPDATE TextChunk SET") == 2
+        assert script.count("UPSERT RETURN AFTER @rid WHERE chunk_id = :chunk_id_") == 2
         assert params["text_embedding_0"] == [0.1, 0.2, 0.3]
         assert params["text_embedding_1"] == [0.4, 0.5, 0.6]
         assert result == ["#30:0", "#30:1"]
