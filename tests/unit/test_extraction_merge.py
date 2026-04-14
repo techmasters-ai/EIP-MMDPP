@@ -17,6 +17,7 @@ from app.services.extraction_merge import (
     build_display_label,
     classify_yield,
     classify_yield_from_counts,
+    logical_identity_from_dict,
     YieldStatus,
 )
 
@@ -567,7 +568,6 @@ class TestLogicalIdentityFromDict:
     }
 
     def test_happy_path_global_scope(self):
-        from app.services.extraction_merge import logical_identity_from_dict
         identity = logical_identity_from_dict(
             "RADAR_SYSTEM", {"system_name": "Fan Song"}, self.ONTOLOGY, "doc-1",
         )
@@ -578,7 +578,6 @@ class TestLogicalIdentityFromDict:
         assert identity.document_id is None  # global scope drops document_id
 
     def test_happy_path_document_scope(self):
-        from app.services.extraction_merge import logical_identity_from_dict
         identity = logical_identity_from_dict(
             "SPECIFICATION",
             {"parameter": "range", "value": "150"},
@@ -589,14 +588,12 @@ class TestLogicalIdentityFromDict:
         assert identity.identity_tuple == ("range", "150")
 
     def test_missing_identity_key_returns_none(self):
-        from app.services.extraction_merge import logical_identity_from_dict
         identity = logical_identity_from_dict(
             "SPECIFICATION", {"parameter": "range"}, self.ONTOLOGY, "doc-1",
         )
         assert identity is None
 
     def test_unknown_entity_type_returns_none(self):
-        from app.services.extraction_merge import logical_identity_from_dict
         identity = logical_identity_from_dict(
             "UNKNOWN_TYPE", {"system_name": "X"}, self.ONTOLOGY, "doc-1",
         )
