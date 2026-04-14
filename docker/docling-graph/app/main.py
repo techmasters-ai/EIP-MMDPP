@@ -281,7 +281,7 @@ from app.schemas import (
     HealthResponse,
     ExtractPassRequest,
     ExtractPassResponse,
-    EntityRef,
+    EntityRef,  # for typing only; runtime uses attribute access
 )
 
 logger = logging.getLogger(__name__)
@@ -321,6 +321,43 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Docling-Graph Extraction Service", version="2.0.0", lifespan=lifespan)
 
 
+def _render_upstream_entities_preamble(upstream_entities: list | None) -> str:
+    """Render a plain-text preamble listing upstream entity refs for the LLM.
+
+    Returns an empty string when:
+    - upstream_entities is None or empty
+    - DOCLING_GRAPH_UPSTREAM_PREAMBLE env var is "false" / "0" / "no"
+
+    The returned string is designed to be prepended to the document body so all
+    three docling-graph extraction contracts (direct, delta, staged) see it.
+    """
+    flag = os.environ.get("DOCLING_GRAPH_UPSTREAM_PREAMBLE", "true")
+    if flag.lower() in ("false", "0", "no"):
+        return ""
+
+    if not upstream_entities:
+        return ""
+
+    lines = ["Upstream entities:"]
+    for entity in upstream_entities:
+        ref_id = getattr(entity, "ref_id", None) or entity.get("ref_id", "")
+        entity_type = getattr(entity, "entity_type", None) or entity.get("entity_type", "")
+        display_label = getattr(entity, "display_label", None)
+        if display_label is None and isinstance(entity, dict):
+            display_label = entity.get("display_label")
+
+        if display_label:
+            lines.append(f"  [{ref_id}] {entity_type} \u2014 {display_label}")
+        else:
+            lines.append(f"  [{ref_id}] {entity_type}")
+
+    lines.append(
+        "Only emit from_ref_id and to_ref_id values from the list above "
+        "when referencing these upstream entities."
+    )
+    return "\n".join(lines)
+
+
 def run_extraction_pass(
     docling_document_json: dict[str, Any],
     template_cls: type,
@@ -330,20 +367,46 @@ def run_extraction_pass(
 
     Mirrors the deleted run_extraction_pipeline() exactly but takes the template
     class directly from the bundle loader instead of resolving it from a dynamic
-    definition blob. upstream_entities is accepted but is NOT threaded
-    into docling_graph.run_pipeline in PR 1 — the integration of upstream
-    refs into the service prompt preamble is handled by PR 2 alongside the
-    worker-side refactor. For now, upstream_entities is logged and passed
-    through as metadata only.
+    definition blob.
+
+    Path B preamble injection: if DOCLING_GRAPH_UPSTREAM_PREAMBLE is enabled and
+    upstream_entities is non-empty, the preamble is appended to the document's
+    texts array and prepended to body.children so that export_to_markdown()
+    includes it at the top of the document body for all three extraction contracts.
     """
     import tempfile
     from docling_graph import run_pipeline
 
-    if upstream_entities:
-        logger.info(
-            "extract-pass: received %d upstream entity refs (not yet threaded into prompt in PR 1)",
-            len(upstream_entities),
-        )
+    # --- Path B injection -------------------------------------------------
+    preamble = _render_upstream_entities_preamble(upstream_entities)
+    preamble_applied = False
+
+    if preamble:
+        new_index = len(docling_document_json.get("texts", []))
+        preamble_item = {
+            "self_ref": f"#/texts/{new_index}",
+            "parent": {"$ref": "#/body"},
+            "children": [],
+            "content_layer": "body",
+            "label": "text",
+            "prov": [],
+            "orig": preamble,
+            "text": preamble,
+        }
+        # Append to texts (preserves existing indices so RefItem lookups don't break)
+        new_texts = list(docling_document_json.get("texts", [])) + [preamble_item]
+        # Prepend a body-child ref so the preamble appears first in markdown
+        existing_body = docling_document_json.get("body", {})
+        new_body = dict(existing_body)
+        new_body["children"] = [
+            {"$ref": f"#/texts/{new_index}"}
+        ] + list(new_body.get("children", []))
+        # Copy-on-write: never mutate the caller's dict
+        docling_document_json = dict(docling_document_json)
+        docling_document_json["texts"] = new_texts
+        docling_document_json["body"] = new_body
+        preamble_applied = True
+    # ----------------------------------------------------------------------
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
         json.dump(docling_document_json, tmp, ensure_ascii=False, default=str)
@@ -351,7 +414,12 @@ def run_extraction_pass(
 
     try:
         config = build_pipeline_config(source=tmp_path, template_class=template_cls)
-        return run_pipeline(config)
+        context = run_pipeline(config)
+        try:
+            context._upstream_preamble_applied = preamble_applied
+        except AttributeError:
+            pass
+        return context
     finally:
         os.unlink(tmp_path)
 
@@ -470,7 +538,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             extraction_contract=os.environ.get("DOCLING_GRAPH_EXTRACTION_CONTRACT", "delta"),
             # --- Plan 1 — appended below. -----------------------------------
             upstream_ref_count=upstream_ref_count,
-            upstream_preamble_applied=False,  # flipped to True in Task 5b
+            upstream_preamble_applied=getattr(context, "_upstream_preamble_applied", False),
         )
         node_count_for_log = metadata.node_count
         edge_count_for_log = metadata.edge_count
