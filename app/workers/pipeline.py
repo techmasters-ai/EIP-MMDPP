@@ -30,7 +30,7 @@ Task graph (manifest-first, parallel derivations, idempotent):
 import hashlib
 import logging
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 import redis as redis_lib
@@ -781,12 +781,9 @@ def _load_chunks_for_derivation(document_id: str) -> list:
 def _get_structural_document_rid(document_id: str) -> str:
     """Look up the ArcadeDB @rid of the structural Document vertex.
 
-    The vertex is guaranteed to exist at this point because the
-    prepare_document stage created it earlier in the pipeline.  If it
-    is missing, that is a worker-invariant violation (bug, not a pass
-    failure).
-
-    Task 4.4.
+    Callers must have previously invoked ``_ensure_structural_document_vertex``
+    (derive_ontology_graph does this just before phase 4). A missing vertex at
+    this point is a worker-invariant violation, not a pass failure.
     """
     graph_store = get_graph_store()
     rows = graph_store._client.query_sync(
@@ -799,6 +796,40 @@ def _get_structural_document_rid(document_id: str) -> str:
             f"No structural Document vertex found for document_id={document_id}"
         )
     return rows[0]["rid"]
+
+
+def _ensure_structural_document_vertex(document_id: str) -> str:
+    """Idempotently upsert the structural Document vertex and return its @rid.
+
+    Why: derive_ontology_graph's phase-4 structural edges (MENTIONED_IN, etc.)
+    reference a Document vertex, but the full metadata-rich upsert in
+    ``derive_structure_links`` runs LATER in the chain. Calling this earlier
+    guarantees the vertex exists. ``derive_structure_links`` performs the same
+    upsert with richer properties; both calls merge via identity on
+    ``document_id``.
+    """
+    from app.models.ingest import Document as _Document
+    from app.services.graph_store import NodeRecord as _NR
+
+    db = _get_db()
+    try:
+        doc = db.get(_Document, uuid.UUID(document_id))
+        filename = doc.filename if doc else document_id
+        source_id = str(doc.source_id) if doc and doc.source_id else None
+    finally:
+        db.close()
+
+    graph_store = get_graph_store()
+    graph_store.ensure_ready_sync()
+    props: dict[str, Any] = {"title": filename}
+    if source_id:
+        props["source_id"] = source_id
+    return graph_store.upsert_node_sync(_NR(
+        entity_type="Document",
+        identity_fields={"document_id": document_id},
+        name=filename,
+        properties=props,
+    ))
 
 
 def _upsert_document_graph_extraction(
@@ -3685,6 +3716,15 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
             merged, ontology, run_document_id, tracker,
         )
         _import_graph_phase_domain_edges(merged, ontology, tracker)
+
+        # Ensure the structural Document vertex exists before phase 4 references
+        # it. The chain creates this vertex in `derive_structure_links` which
+        # runs AFTER derive_ontology_graph, but phase 4 (_import_graph_phase_
+        # structural_edges) needs it to exist now for MENTIONED_IN edges. The
+        # upsert is idempotent — derive_structure_links will later update it
+        # with full document metadata (summary, classification, etc.).
+        _ensure_structural_document_vertex(run_document_id)
+
         _import_graph_phase_structural_edges(
             merged, identity_to_rid, run_document_id, str(pipeline_run_id), tracker,
         )
