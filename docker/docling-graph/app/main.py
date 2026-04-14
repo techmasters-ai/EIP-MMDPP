@@ -435,9 +435,11 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     # (e.g. `specifications -> N -> value: Input should be a valid string`)
     # without naming the pass. Bracket the call with bundle/pass context
     # so operators can correlate those warnings to the offending pass.
+    upstream_ref_count = len(body.upstream_entities) if body.upstream_entities else 0
     logger.info(
-        "extract-pass: START bundle=%s pass=%s document_id=%s",
-        body.bundle_key, body.pass_name, body.document_id,
+        "extract-pass: START bundle=%s pass=%s input_mode=%s document_id=%s upstream_ref_count=%d",
+        body.bundle_key, body.pass_name, pass_def.get("input_mode"),
+        body.document_id, upstream_ref_count,
     )
     async with semaphore:
         try:
@@ -453,11 +455,6 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 body.document_id, body.bundle_key, body.pass_name,
             )
             raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
-    logger.info(
-        "extract-pass: END bundle=%s pass=%s document_id=%s",
-        body.bundle_key, body.pass_name, body.document_id,
-    )
-
     # 5. Build response — mirror the /extract-all metadata shape
     graph = context.knowledge_graph
     meta = context.graph_metadata
@@ -467,6 +464,14 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         node_types=getattr(meta, "node_types", {}),
         edge_types=getattr(meta, "edge_types", {}),
         extraction_contract=os.environ.get("DOCLING_GRAPH_EXTRACTION_CONTRACT", "delta"),
+        # --- Plan 1 — appended below. -----------------------------------
+        upstream_ref_count=upstream_ref_count,
+        upstream_preamble_applied=False,  # flipped to True in Task 5b
+    )
+    logger.info(
+        "extract-pass: END bundle=%s pass=%s document_id=%s node_count=%d edge_count=%d",
+        body.bundle_key, body.pass_name, body.document_id,
+        metadata.node_count, metadata.edge_count,
     )
 
     # pass_output is the dumped template instance so the worker can re-parse it

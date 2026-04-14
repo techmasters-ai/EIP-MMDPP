@@ -191,3 +191,39 @@ def test_extract_pass_valid_document_plus_entity_refs_returns_200(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["pass_name"] == "system_links"
+
+
+def test_metadata_reports_upstream_ref_count_for_document_plus_entity_refs(client):
+    with patch(f"{_DG_MODULE_NAME}.run_extraction_pass") as mock_run:
+        mock_run.return_value = _mock_run_pipeline_return()
+        resp = client.post("/extract-pass", json={
+            "bundle_key": "air_defense_v3",
+            "pass_name": "system_links",
+            "docling_document_json": {"name": "test"},
+            "upstream_entities": [
+                {"ref_id": "E001", "entity_type": "RADAR_SYSTEM",
+                 "identity_values": {"system_name": "Fan Song"},
+                 "display_label": "Fan Song"},
+                {"ref_id": "E002", "entity_type": "MISSILE_SYSTEM",
+                 "identity_values": {"system_name": "SA-2"},
+                 "display_label": "SA-2"},
+            ],
+        })
+    assert resp.status_code == 200, resp.text
+    meta = resp.json()["metadata"]
+    assert meta["upstream_ref_count"] == 2
+    assert meta["upstream_preamble_applied"] is False  # flipped to True in Task 5b
+
+
+def test_metadata_reports_zero_refs_for_document_only(client):
+    with patch(f"{_DG_MODULE_NAME}.run_extraction_pass") as mock_run:
+        mock_run.return_value = _mock_run_pipeline_return()
+        resp = client.post("/extract-pass", json={
+            "bundle_key": "air_defense_v3",
+            "pass_name": "reference",
+            "docling_document_json": {"name": "test"},
+        })
+    assert resp.status_code == 200, resp.text
+    meta = resp.json()["metadata"]
+    assert meta["upstream_ref_count"] == 0
+    assert meta["upstream_preamble_applied"] is False

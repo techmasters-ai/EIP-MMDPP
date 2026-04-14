@@ -19,6 +19,9 @@ class ExtractionMetadata(BaseModel):
     quality_gate_passed: bool = True
     validation_pass_applied: bool = False
     validation_pass_edges_added: int = 0
+    # Plan 1 observability — populated by the extract_pass handler.
+    upstream_ref_count: int = 0
+    upstream_preamble_applied: bool = False
 
 
 class HealthResponse(BaseModel):
