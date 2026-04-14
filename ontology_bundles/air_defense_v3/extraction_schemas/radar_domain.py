@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..validators import (
     coerce_optional_float,
     coerce_optional_confidence,
+    coerce_optional_text,
     normalize_enum,
 )
 
@@ -133,6 +134,13 @@ class SpecificationEntity(BaseModel):
     unit: Optional[str] = None
     confidence: Optional[float] = None
 
+    # LLMs often emit numeric values for parameter/value/unit, which would
+    # fail Pydantic's str validation and force salvage. Coerce numbers to
+    # their string form so SPECIFICATION identity (`[parameter, value]`) is
+    # stable whether the model returns 150 or "150".
+    _v_parameter = field_validator("parameter", mode="before")(coerce_optional_text)
+    _v_value = field_validator("value", mode="before")(coerce_optional_text)
+    _v_unit = field_validator("unit", mode="before")(coerce_optional_text)
     _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
 
 

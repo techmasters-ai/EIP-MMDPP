@@ -3,6 +3,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..validators import (
     coerce_optional_confidence,
+    coerce_optional_text,
     normalize_enum,
 )
 
@@ -90,6 +91,10 @@ class SpecificationEntity(BaseModel):
     unit: Optional[str] = None
     confidence: Optional[float] = None
 
+    # See radar_domain.SpecificationEntity for rationale.
+    _v_parameter = field_validator("parameter", mode="before")(coerce_optional_text)
+    _v_value = field_validator("value", mode="before")(coerce_optional_text)
+    _v_unit = field_validator("unit", mode="before")(coerce_optional_text)
     _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
 
 

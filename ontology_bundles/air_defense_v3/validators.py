@@ -71,6 +71,36 @@ def coerce_optional_float(value: Any) -> float | None:
     return None
 
 
+def coerce_optional_text(value: Any) -> str | None:
+    """Return a stripped string, or None. Used for SpecificationEntity
+    fields (parameter, value, unit) where the LLM frequently emits the
+    numeric part of a specification as a raw int/float instead of a
+    string, which Pydantic would otherwise reject as ``Input should be
+    a valid string``.
+
+    Rules:
+    - None / empty / whitespace-only string -> None.
+    - str -> stripped str (empty-after-strip collapses to None).
+    - int / float -> ``str(value)`` so 150 and '150' agree on identity.
+    - bool -> None: True/False for a SPECIFICATION.value is almost
+      always an LLM mistake; surfacing it as 'True' would pollute the
+      graph and destabilize SPECIFICATION identity (``[parameter, value]``).
+    - dict / list / any other type -> None: there is no stable stringify
+      rule (``str({'a': 1}) == "{'a': 1}"`` depends on dict iteration
+      order), so coerce to None rather than fragment the graph.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return None
+
+
 # Text-confidence mappings used when the LLM returns "high"/"medium"/"low"
 # instead of a numeric value. These are arbitrary bucket midpoints chosen
 # to roughly agree with the extraction calibration in spec §6.6.

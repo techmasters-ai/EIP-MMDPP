@@ -4,6 +4,7 @@ import pytest
 from ontology_bundles.air_defense_v3.validators import (
     coerce_optional_int,
     coerce_optional_float,
+    coerce_optional_text,
     coerce_optional_confidence,
     normalize_enum,
 )
@@ -77,6 +78,50 @@ class TestCoerceOptionalConfidence:
     def test_explicit_zero_preserved(self):
         # Regression: the 'or 0.8' bug would have defaulted this.
         assert coerce_optional_confidence(0.0) == 0.0
+
+
+class TestCoerceOptionalText:
+    def test_none_returns_none(self):
+        assert coerce_optional_text(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert coerce_optional_text("") is None
+
+    def test_whitespace_string_returns_none(self):
+        assert coerce_optional_text("   ") is None
+
+    def test_string_passes_through_stripped(self):
+        assert coerce_optional_text("  hello  ") == "hello"
+
+    def test_int_becomes_string(self):
+        # Primary fix: the LLM emits integers for SpecificationEntity.value
+        # and Pydantic rejects them with "Input should be a valid string".
+        assert coerce_optional_text(150) == "150"
+
+    def test_negative_int_becomes_string(self):
+        assert coerce_optional_text(-42) == "-42"
+
+    def test_float_becomes_string(self):
+        assert coerce_optional_text(150.5) == "150.5"
+
+    def test_whole_float_becomes_string(self):
+        # 150.0 should render as '150.0' — don't silently lose the decimal.
+        assert coerce_optional_text(150.0) == "150.0"
+
+    def test_bool_returns_none(self):
+        # bools are not intentionally preserved — SPECIFICATION.value of True
+        # is almost always an LLM mistake, so drop it rather than emit 'True'.
+        assert coerce_optional_text(True) is None
+        assert coerce_optional_text(False) is None
+
+    def test_dict_returns_none(self):
+        # Never silently stringify nested dicts — that would produce
+        # unstable identity strings like "{'a': 1}".
+        assert coerce_optional_text({"a": 1}) is None
+
+    def test_list_returns_none(self):
+        # Same reasoning as dicts: no stable coercion rule.
+        assert coerce_optional_text([1, 2, 3]) is None
 
 
 class TestNormalizeEnum:
