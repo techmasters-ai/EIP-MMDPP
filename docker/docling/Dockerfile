@@ -102,10 +102,17 @@ ARG CACHE_BUST
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Allow online model downloads at runtime — TableFormer, CodeFormulaV2, and
-# EasyOCR models are downloaded on first use by the pipeline.
-# Remove HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE to permit this.
-# For fully air-gapped deployments, pre-populate /opt/huggingface at build time.
+# Pre-download EasyOCR models (craft detector + English recognizer). Without
+# this, the first PDF that triggers OCR downloads ~100MB at request time and
+# a transient HTTP 502 from GitHub release assets will fail the conversion
+# and every subsequent OCR request in the container's lifetime. Baking the
+# models into the image makes cold starts deterministic.
+RUN python3 -c "import easyocr; easyocr.Reader(['en'], gpu=False, verbose=False)"
+
+# Allow online model downloads at runtime — TableFormer and CodeFormulaV2
+# models are downloaded on first use by the pipeline. Remove
+# HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE to permit this. For fully air-gapped
+# deployments, pre-populate /opt/huggingface at build time.
 
 COPY app/ ./app/
 
