@@ -1,5 +1,21 @@
 """Celery application configuration."""
 
+import sys
+
+# The `celery` CLI script sets sys.path[0] to its own directory
+# (/usr/local/bin), not the project root, so dynamic imports of sibling
+# packages like `ontology_bundles` (imported via importlib during graph
+# extraction passes) fail with ModuleNotFoundError.
+#
+# Insert /app unconditionally. We intentionally do NOT guard with
+# `"/app" not in sys.path` — celery's `cwd_in_path` context manager
+# (celery/utils/imports.py) briefly adds cwd (=/app) to sys.path for
+# the import of this module, then removes it again. A guarded insert
+# would see celery's temporary entry and skip, leaving forked workers
+# without /app when tasks run. Inserting unconditionally leaves our
+# entry behind after celery pops its own copy.
+sys.path.insert(0, "/app")
+
 from datetime import timedelta
 
 from celery import Celery
