@@ -542,3 +542,62 @@ def test_derived_edge_fields():
     assert edge.to_id == "#5:1"
     assert edge.rel_type == "MENTIONED_IN"
     assert edge.confidence == 0.9
+
+
+# --- TestLogicalIdentityFromDict --------------------------------------------
+
+class TestLogicalIdentityFromDict:
+    """logical_identity_from_dict (renamed from the private helper) is the
+    canonical way the worker converts upstream entity refs into
+    LogicalIdentity objects for PassResult.upstream_refs."""
+
+    ONTOLOGY = {
+        "entity_types": [
+            {
+                "name": "RADAR_SYSTEM",
+                "identity_fields": ["system_name"],
+                "identity_scope": "global",
+            },
+            {
+                "name": "SPECIFICATION",
+                "identity_fields": ["parameter", "value"],
+                "identity_scope": "document",
+            },
+        ],
+    }
+
+    def test_happy_path_global_scope(self):
+        from app.services.extraction_merge import logical_identity_from_dict
+        identity = logical_identity_from_dict(
+            "RADAR_SYSTEM", {"system_name": "Fan Song"}, self.ONTOLOGY, "doc-1",
+        )
+        assert identity is not None
+        assert identity.entity_type == "RADAR_SYSTEM"
+        assert identity.identity_tuple == ("Fan Song",)
+        assert identity.scope == "global"
+        assert identity.document_id is None  # global scope drops document_id
+
+    def test_happy_path_document_scope(self):
+        from app.services.extraction_merge import logical_identity_from_dict
+        identity = logical_identity_from_dict(
+            "SPECIFICATION",
+            {"parameter": "range", "value": "150"},
+            self.ONTOLOGY, "doc-7",
+        )
+        assert identity is not None
+        assert identity.document_id == "doc-7"
+        assert identity.identity_tuple == ("range", "150")
+
+    def test_missing_identity_key_returns_none(self):
+        from app.services.extraction_merge import logical_identity_from_dict
+        identity = logical_identity_from_dict(
+            "SPECIFICATION", {"parameter": "range"}, self.ONTOLOGY, "doc-1",
+        )
+        assert identity is None
+
+    def test_unknown_entity_type_returns_none(self):
+        from app.services.extraction_merge import logical_identity_from_dict
+        identity = logical_identity_from_dict(
+            "UNKNOWN_TYPE", {"system_name": "X"}, self.ONTOLOGY, "doc-1",
+        )
+        assert identity is None

@@ -313,16 +313,24 @@ def _build_logical_identity(
     )
 
 
-def _identity_from_dict(
+def logical_identity_from_dict(
     entity_type: str,
     identity_dict: dict,
     ontology: dict,
     document_id: str,
 ) -> LogicalIdentity | None:
-    """Build a LogicalIdentity from a raw identity dict (as emitted on
-    a relationship's from_identity / to_identity field).
-    Returns None if the entity_type isn't in the ontology or the payload
-    is missing required identity keys."""
+    """Build a LogicalIdentity from a raw identity dict.
+
+    This is the canonical way the worker converts an upstream entity ref's
+    ``identity_values`` into a ``LogicalIdentity`` suitable for
+    ``PassResult.upstream_refs``. The merge resolver compares these
+    objects by value (``@dataclass(frozen=True)``) against the merged
+    entity index, so the identity tuple must come straight from the
+    ontology's ``identity_fields`` list in declared order.
+
+    Returns None if the entity_type is unknown or the payload is missing
+    a required identity key — in that case the caller should drop the ref.
+    """
     entity_def = next(
         (e for e in ontology.get("entity_types", []) if e["name"] == entity_type),
         None,
@@ -396,10 +404,10 @@ def _resolve_relationship(
         if not isinstance(from_identity_dict, dict) or not isinstance(to_identity_dict, dict):
             return RelationshipRejectionReason.INVALID_IDENTITY_PAYLOAD
 
-        from_identity = _identity_from_dict(
+        from_identity = logical_identity_from_dict(
             from_type, from_identity_dict, ontology, document_id
         )
-        to_identity = _identity_from_dict(
+        to_identity = logical_identity_from_dict(
             to_type, to_identity_dict, ontology, document_id
         )
 
