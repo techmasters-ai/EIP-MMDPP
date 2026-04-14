@@ -1734,31 +1734,62 @@ def _extend_upstream_refs(
     upstream_refs: dict, pass_result, pass_def, ontology
 ) -> None:
     """Add ref_id → ref entries to upstream_refs for every primary entity
-    produced by this pass so downstream passes can reference them."""
-    from types import SimpleNamespace
+    produced by this pass so downstream passes can reference them.
 
-    start = len(upstream_refs) + 1
+    Uses a SINGLE monotonic counter across all primary_entity_types so
+    ids don't collide (previous impl restarted the enumerate() counter per
+    entity type). identity_values is filtered to the ontology's
+    identity_fields only — merge_and_resolve compares refs by identity
+    tuple, so extra keys would fragment identity. display_label is
+    populated via build_display_label so downstream prompts and UIs get
+    a meaningful name.
+    """
+    from types import SimpleNamespace
+    from app.services.extraction_merge import build_display_label
+
+    ontology_by_type = {
+        e["name"]: e for e in ontology.get("entity_types", [])
+    }
+
+    counter = len(upstream_refs) + 1
+    if not hasattr(pass_result, "iter_entities_of_type"):
+        return
+
     for entity_type in pass_def.primary_entity_types:
-        if not hasattr(pass_result, "iter_entities_of_type"):
-            break
-        for i, instance in enumerate(
-            pass_result.iter_entities_of_type(entity_type), start=start
-        ):
-            ref_id = f"E{i:03d}"
+        entity_def = ontology_by_type.get(entity_type)
+        if entity_def is None:
+            # Not in ontology — skip rather than emit a malformed ref.
+            continue
+        identity_fields = list(entity_def.get("identity_fields") or ())
+
+        for instance in pass_result.iter_entities_of_type(entity_type):
+            instance_dict = (
+                instance.__dict__
+                if hasattr(instance, "__dict__")
+                else {}
+            )
+            identity_values = {
+                k: instance_dict.get(k) for k in identity_fields
+            }
+            # Everything non-identity that isn't private goes into
+            # properties so build_display_label can use it as a fallback.
+            properties = {
+                k: v
+                for k, v in instance_dict.items()
+                if not k.startswith("_") and k not in identity_values
+            }
+            display_label = build_display_label(
+                entity_type, identity_values, properties,
+            )
+
+            ref_id = f"E{counter:03d}"
             upstream_refs[ref_id] = SimpleNamespace(
                 pass_origin=pass_def.name,
                 entity_type=entity_type,
-                identity_values={
-                    k: v
-                    for k, v in (
-                        instance.__dict__
-                        if hasattr(instance, "__dict__")
-                        else {}
-                    ).items()
-                    if not k.startswith("_")
-                },
-                display_label=None,
+                identity_values=identity_values,
+                display_label=display_label,
             )
+            counter += 1
 
 
 def _get_pipeline_run_id(db, document_id: str) -> str | None:
