@@ -65,7 +65,7 @@ class DocumentEntity(BaseModel):
     documents: List["DocumentEntity"] = edge(label="DERIVED_FROM", default_factory=list)
     documents: List["DocumentEntity"] = edge(label="SUPERSEDES", default_factory=list)
     organizations: List["OrganizationEntity"] = edge(label="REVIEWED_BY", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SectionEntity(BaseModel):
     """Document Section — A section or heading within a document
@@ -75,7 +75,7 @@ class SectionEntity(BaseModel):
     heading: str = Field(..., description="Section heading or title text", examples=['Chapter 3: Maintenance Procedures', 'Chapter 3: Maintenance Procedures'])
     page_start: int = Field(..., description="Starting page number of the section", examples=[42, 42])
     page_end: Optional[int] = Field(default=None, description="Ending page number of the section", examples=[67])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class FigureEntity(BaseModel):
     """Figure — A figure, diagram, or image within a document
@@ -86,7 +86,7 @@ class FigureEntity(BaseModel):
     caption: Optional[str] = Field(default=None, description="Figure caption text", examples=['Antenna Feed Assembly Exploded View'])
     page: int = Field(..., description="Page number where the figure appears", examples=[55, 55])
     figure_type: Optional[str] = Field(default=None, description="Category of the figure", json_schema_extra={"enum": ["BLOCK_DIAGRAM", "SCHEMATIC", "PHOTO", "SPECTRUM_PLOT", "WIRING_DIAGRAM", "FLOWCHART"]})
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class TableEntity(BaseModel):
     """Table — A data table within a document
@@ -96,7 +96,7 @@ class TableEntity(BaseModel):
     table_id: str = Field(..., description="Table number or identifier within the document", examples=['Table 4-1', 'Table 4-1'])
     caption: Optional[str] = Field(default=None, description="Table caption or title", examples=['Radar System Frequency Parameters'])
     page: int = Field(..., description="Page number where the table appears", examples=[78, 78])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SpreadsheetEntity(BaseModel):
     """Spreadsheet — A spreadsheet workbook or sheet (MDE checklist, parametric data)
@@ -105,7 +105,7 @@ class SpreadsheetEntity(BaseModel):
 
     workbook_name: Optional[str] = Field(default=None, description="Name of the spreadsheet workbook file", examples=['SA-20_MDE_Checklist.xlsx'])
     sheet_name: Optional[str] = Field(default=None, description="Name of the specific worksheet tab", examples=['Radar Parameters'])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class AssertionEntity(BaseModel):
     """Assertion — A source-backed claim extracted from a document
@@ -131,7 +131,6 @@ class AssertionEntity(BaseModel):
     components: List["ComponentEntity"] = edge(label="ABOUT", default_factory=list)
     documents: List["DocumentEntity"] = edge(label="DERIVED_FROM", default_factory=list)
     organizations: List["OrganizationEntity"] = edge(label="REVIEWED_BY", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
 
 
 # ----------------------------------------------------------------------
@@ -145,10 +144,10 @@ class OrganizationEntity(BaseModel):
 
     name: Optional[str] = Field(default=None, description="Full name of the organization", examples=['Raytheon Missiles & Defense'])
     org_type: Optional[str] = Field(default=None, description="Category of organization", json_schema_extra={"enum": ["PRIME_CONTRACTOR", "SUBCONTRACTOR", "PROGRAM_OFFICE", "MILITARY_BRANCH", "GOVERNMENT_AGENCY"]})
-    cage_code: Optional[str] = Field(default=None, description="5-character CAGE code for the organization", examples=['58064'])
+    cage_code: Optional[str] = Field(default=None, description="5-character CAGE code for the organization", examples=['58064'], pattern='^[A-Z0-9]{5}$')
     country: Optional[str] = Field(default=None, description="Country where the organization is headquartered", examples=['United States'])
     location: Optional[str] = Field(default=None, description="Primary facility location", examples=['Tucson, AZ'])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class PlatformEntity(BaseModel):
     """Platform — Vehicle, vessel, aircraft, or installation that hosts military systems
@@ -164,7 +163,7 @@ class PlatformEntity(BaseModel):
     organizations: List["OrganizationEntity"] = edge(label="OPERATED_BY", default_factory=list)
     organizations: List["OrganizationEntity"] = edge(label="MANUFACTURED_BY", default_factory=list)
     platforms: List["PlatformEntity"] = edge(label="INSTANCE_OF", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class WeaponSystemEntity(BaseModel):
     """Weapon System — Generic weapon system (not radar, missile, or AAA specifically)
@@ -178,7 +177,7 @@ class WeaponSystemEntity(BaseModel):
     subsystems: List["SubsystemEntity"] = edge(label="HAS_SUBSYSTEM", default_factory=list)
     components: List["ComponentEntity"] = edge(label="HAS_COMPONENT", default_factory=list)
     platforms: List["PlatformEntity"] = edge(label="ENGAGES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class EquipmentSystemEntity(BaseModel):
     """Equipment System — Top-level integrated weapon or defense system (generic)
@@ -186,7 +185,7 @@ class EquipmentSystemEntity(BaseModel):
     model_config = ConfigDict(ontology_name="EQUIPMENT_SYSTEM", graph_id_fields=[], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
     name: Optional[str] = Field(default=None, description="Common name or designation of the system", examples=['Patriot PAC-3'])
-    designation: Optional[str] = Field(default=None, description="Military AN/ designation or program designation", examples=['AN/MPQ-65'])
+    designation: Optional[str] = Field(default=None, description="Military AN/ designation or program designation", examples=['AN/MPQ-65'], pattern='^AN/[A-Z]{3}-\\d+')
     program_office: Optional[str] = Field(default=None, description="Managing program office", examples=['PEO Missiles and Space'])
     status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
     prime_contractor: Optional[str] = Field(default=None, description="Lead contractor organization", examples=['Lockheed Martin'])
@@ -201,7 +200,7 @@ class EquipmentSystemEntity(BaseModel):
     standards: List["StandardEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
     specifications: List["SpecificationEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
     test_events: List["TestEventEntity"] = edge(label="TESTED_IN", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SubsystemEntity(BaseModel):
     """Subsystem — Major functional component within a military system
@@ -216,7 +215,7 @@ class SubsystemEntity(BaseModel):
     radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
     missile_systems: List["MissileSystemEntity"] = edge(label="PART_OF", default_factory=list)
     capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ComponentEntity(BaseModel):
     """Component — Individual physical or logical part within a subsystem or assembly
@@ -225,9 +224,9 @@ class ComponentEntity(BaseModel):
 
     name: Optional[str] = Field(default=None, description="Common name of the component", examples=['Traveling Wave Tube'])
     component_type: Optional[str] = Field(default=None, description="Category or class of the component", examples=['Amplifier'])
-    part_number: Optional[str] = Field(default=None, description="Manufacturer-assigned part number (alphanumeric with dashes)", examples=['PN-12345-A'])
-    nsn: Optional[str] = Field(default=None, description="National Stock Number in NNNN-NN-NNN-NNNN format", examples=['5961-01-234-5678'])
-    cage_code: Optional[str] = Field(default=None, description="5-character Commercial and Government Entity code identifying the manufacturer", examples=['1ABC3'])
+    part_number: Optional[str] = Field(default=None, description="Manufacturer-assigned part number (alphanumeric with dashes)", examples=['PN-12345-A'], pattern='^[A-Z0-9][A-Z0-9\\-/]{2,20}$')
+    nsn: Optional[str] = Field(default=None, description="National Stock Number in NNNN-NN-NNN-NNNN format", examples=['5961-01-234-5678'], pattern='^\\d{4}-\\d{2}-\\d{3}-\\d{4}$')
+    cage_code: Optional[str] = Field(default=None, description="5-character Commercial and Government Entity code identifying the manufacturer", examples=['1ABC3'], pattern='^[A-Z0-9]{5}$')
     manufacturer: Optional[str] = Field(default=None, description="Name of the component manufacturer", examples=['L3Harris Technologies'])
     material: Optional[str] = Field(default=None, description="Primary material composition of the component", examples=['Aluminum 7075-T6'])
     weight_kg: Optional[float] = Field(default=None, description="Weight of the component in kilograms", examples=[2.5])
@@ -235,7 +234,7 @@ class ComponentEntity(BaseModel):
     organizations: List["OrganizationEntity"] = edge(label="MANUFACTURED_BY", default_factory=list)
     standards: List["StandardEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
     test_events: List["TestEventEntity"] = edge(label="TESTED_IN", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class RadarSystemEntity(BaseModel):
     """Radar System — Active or passive radar system (search, track, fire control, SAR, AESA, PESA)
@@ -287,7 +286,7 @@ class RadarSystemEntity(BaseModel):
     platforms: List["PlatformEntity"] = edge(label="DETECTS", default_factory=list)
     platforms: List["PlatformEntity"] = edge(label="DESIGNATES", default_factory=list)
     missile_systems: List["MissileSystemEntity"] = edge(label="SUPPORTS_ENGAGEMENT_OF", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class MissileSystemEntity(BaseModel):
     """Missile System — Guided missile weapon system with seeker, guidance, and propulsion
@@ -314,7 +313,7 @@ class MissileSystemEntity(BaseModel):
     specifications: List["SpecificationEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
     test_events: List["TestEventEntity"] = edge(label="TESTED_IN", default_factory=list)
     platforms: List["PlatformEntity"] = edge(label="ENGAGES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class AirDefenseArtillerySystemEntity(BaseModel):
     """Air Defense Artillery System — Gun-based air defense system (AAA)
@@ -338,7 +337,7 @@ class AirDefenseArtillerySystemEntity(BaseModel):
     capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
     weapon_systems: List["WeaponSystemEntity"] = edge(label="IS_A", default_factory=list)
     platforms: List["PlatformEntity"] = edge(label="ENGAGES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ElectronicWarfareSystemEntity(BaseModel):
     """Electronic Warfare System — EA, ES, or EP system (jammer, receiver, self-protection suite)
@@ -355,7 +354,7 @@ class ElectronicWarfareSystemEntity(BaseModel):
     frequency_bands: List["FrequencyBandEntity"] = edge(label="OPERATES_IN_BAND", default_factory=list)
     capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
     rf_emissions: List["RfEmissionEntity"] = edge(label="DETECTS", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class FireControlSystemEntity(BaseModel):
     """Fire Control System — System that provides targeting and engagement control
@@ -368,7 +367,7 @@ class FireControlSystemEntity(BaseModel):
     platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
     platforms: List["PlatformEntity"] = edge(label="TRACKS", default_factory=list)
     platforms: List["PlatformEntity"] = edge(label="DESIGNATES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class IntegratedAirDefenseSystemEntity(BaseModel):
     """Integrated Air Defense System — System-of-systems combining radar, missile, AAA, and C2 for area defense
@@ -384,7 +383,7 @@ class IntegratedAirDefenseSystemEntity(BaseModel):
     platforms: List["PlatformEntity"] = edge(label="DEPLOYED_ON", default_factory=list)
     capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
     platforms: List["PlatformEntity"] = edge(label="SUPPORTS_ENGAGEMENT_OF", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class LauncherSystemEntity(BaseModel):
     """Launcher System — Missile or rocket launcher platform
@@ -396,7 +395,7 @@ class LauncherSystemEntity(BaseModel):
     capacity: Optional[int] = Field(default=None, description="Number of missiles the launcher can hold", examples=[16])
     missile_systems: List["MissileSystemEntity"] = edge(label="LAUNCHES", default_factory=list)
     platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 
 # ----------------------------------------------------------------------
@@ -413,7 +412,7 @@ class FrequencyBandEntity(BaseModel):
     freq_min_mhz: Optional[float] = Field(default=None, description="Lower frequency limit of the band in MHz", examples=[8000])
     freq_max_mhz: Optional[float] = Field(default=None, description="Upper frequency limit of the band in MHz", examples=[12000])
     standard_family: Optional[str] = Field(default=None, description="Standard body that defined the band (IEEE or NATO)", examples=['IEEE'])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ModulationEntity(BaseModel):
     """Modulation — Intra-pulse or inter-pulse modulation characteristics
@@ -428,7 +427,7 @@ class ModulationEntity(BaseModel):
     pulse_compression_ratio: Optional[float] = Field(default=None, description="Ratio of uncompressed to compressed pulse width", examples=[100])
     pulse_compression_gain_db: Optional[float] = Field(default=None, description="Processing gain from pulse compression in dB", examples=[20])
     pulse_compression_weighting_function: Optional[str] = Field(default=None, description="Weighting function applied to reduce sidelobes", examples=['Hamming'])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class RfSignatureEntity(BaseModel):
     """RF Signature — Composite RF fingerprint for emitter identification
@@ -446,7 +445,7 @@ class RfSignatureEntity(BaseModel):
     beam_characteristics: Optional[str] = Field(default=None, description="Observed beam shape and scanning characteristics", examples=['Pencil beam, 1.5 deg azimuth'])
     dwell_time: Optional[str] = Field(default=None, description="Time the beam dwells on a given angular position", examples=['50 ms'])
     pulses_per_dwell: Optional[int] = Field(default=None, description="Number of pulses transmitted per beam dwell", examples=[20])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class RfEmissionEntity(BaseModel):
     """RF Emission — Observed or catalogued RF emission with power and spectral characteristics
@@ -464,7 +463,7 @@ class RfEmissionEntity(BaseModel):
     radome_loss_db: Optional[float] = Field(default=None, description="Signal loss through the radome in dB", examples=[0.5])
     total_system_losses_db: Optional[float] = Field(default=None, description="Total system losses from transmitter to antenna in dB", examples=[3.2])
     rf_signatures: List["RfSignatureEntity"] = edge(label="HAS_SIGNATURE", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class WaveformEntity(BaseModel):
     """Waveform — Radar or communications waveform with pulse/timing characteristics
@@ -481,7 +480,7 @@ class WaveformEntity(BaseModel):
     duty_cycle: Optional[float] = Field(default=None, description="Waveform duty cycle ratio (0.0 to 1.0)", examples=[0.02])
     modulations: List["ModulationEntity"] = edge(label="USES_MODULATION", default_factory=list)
     rf_signatures: List["RfSignatureEntity"] = edge(label="HAS_SIGNATURE", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ScanPatternEntity(BaseModel):
     """Scan Pattern — Antenna scan type and timing
@@ -494,7 +493,7 @@ class ScanPatternEntity(BaseModel):
     illumination_time: Optional[str] = Field(default=None, description="Time target is illuminated per scan", examples=['40 ms'])
     dwell_time: Optional[str] = Field(default=None, description="Time the beam dwells at each position", examples=['50 ms'])
     pulses_per_dwell: Optional[int] = Field(default=None, description="Number of pulses per beam dwell", examples=[20])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class AntennaEntity(BaseModel):
     """Antenna — Antenna system with polarization, beamwidth, gain, and geometry
@@ -521,7 +520,7 @@ class AntennaEntity(BaseModel):
     first_sidelobe_level_el_db: Optional[float] = Field(default=None, description="First elevation sidelobe level relative to main beam in dB", examples=[-25])
     radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
     rf_emissions: List["RfEmissionEntity"] = edge(label="RADIATES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class TransmitterEntity(BaseModel):
     """Transmitter — Radar or communications transmitter with power and loss characteristics
@@ -536,7 +535,7 @@ class TransmitterEntity(BaseModel):
     other_system_losses_db: Optional[float] = Field(default=None, description="Other system losses (filters, switches) in dB", examples=[0.5])
     total_system_losses_db: Optional[float] = Field(default=None, description="Total system losses from transmitter to antenna in dB", examples=[2.0])
     radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ReceiverEntity(BaseModel):
     """Receiver — Radar or communications receiver with noise and sensitivity characteristics
@@ -553,7 +552,7 @@ class ReceiverEntity(BaseModel):
     average_power_noise_bandwidth_mhz: Optional[float] = Field(default=None, description="Noise bandwidth for average power measurement in MHz", examples=[0.5])
     radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
     rf_emissions: List["RfEmissionEntity"] = edge(label="RECEIVES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class IfAmplifierEntity(BaseModel):
     """IF Amplifier — Intermediate frequency amplifier stage
@@ -563,7 +562,7 @@ class IfAmplifierEntity(BaseModel):
     stage_number: Optional[int] = Field(default=None, description="Stage number in the IF amplifier chain", examples=[1])
     bandwidth_3db_mhz: Optional[float] = Field(default=None, description="3 dB bandwidth of the IF stage in MHz", examples=[5.0])
     receivers: List["ReceiverEntity"] = edge(label="PART_OF", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SignalProcessingChainEntity(BaseModel):
     """Signal Processing Chain — Signal processing subsystem with detection, integration, and Doppler parameters
@@ -591,7 +590,7 @@ class SignalProcessingChainEntity(BaseModel):
     drop_track_threshold_improvement_db: Optional[float] = Field(default=None, description="Additional SNR margin for maintaining track in dB", examples=[3])
     radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
     rf_emissions: List["RfEmissionEntity"] = edge(label="PROCESSES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 
 # ----------------------------------------------------------------------
@@ -606,7 +605,7 @@ class GuidanceMethodEntity(BaseModel):
     guidance_type: str = Field(..., description="Type of guidance method", json_schema_extra={"enum": ["COMMAND", "SARH", "ARH", "IR", "BEAM_RIDING", "TVM", "GPS_INS", "DUAL_MODE"]})
     firing_doctrine: Optional[str] = Field(default=None, description="Firing doctrine (shoot-look-shoot, ripple, etc.)", examples=['Shoot-look-shoot'])
     track_quality: Optional[str] = Field(default=None, description="Required track quality for guidance", examples=['Fire-control quality track required'])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SeekerEntity(BaseModel):
     """Seeker — Missile terminal guidance seeker head
@@ -617,7 +616,7 @@ class SeekerEntity(BaseModel):
     seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter")
     seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker")
     seeker_type: Optional[str] = Field(default=None, description="Guidance technology used by the seeker", json_schema_extra={"enum": ["ACTIVE_RADAR", "SEMI_ACTIVE_RADAR", "IR", "DUAL_MODE", "ARM", "GPS_INS", "COMMAND"]})
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class MissilePerformanceEntity(BaseModel):
     """Missile Performance — Missile kinematic and engagement performance envelope
@@ -643,7 +642,7 @@ class MissilePerformanceEntity(BaseModel):
     maximum_missile_speed_mach: Optional[float] = Field(default=None, description="Maximum missile speed in Mach number", examples=[5.0])
     maximum_flyout_time_s: Optional[float] = Field(default=None, description="Maximum missile flight time in seconds", examples=[60])
     maximum_offset_deg: Optional[float] = Field(default=None, description="Maximum target offset angle from launcher in degrees", examples=[360])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class MissilePhysicalCharacteristicsEntity(BaseModel):
     """Missile Physical Characteristics — Missile body dimensions and mass
@@ -653,7 +652,7 @@ class MissilePhysicalCharacteristicsEntity(BaseModel):
     body_diameter_m: Optional[float] = Field(default=None, description="Missile body diameter in meters", examples=[0.255])
     overall_length_m: Optional[float] = Field(default=None, description="Overall missile length in meters", examples=[5.2])
     total_mass_kg: Optional[float] = Field(default=None, description="Total missile mass at launch in kilograms", examples=[312])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class PropulsionStackEntity(BaseModel):
     """Propulsion Stack — Complete missile propulsion system (may contain multiple stages)
@@ -666,7 +665,7 @@ class PropulsionStackEntity(BaseModel):
     total_burntime_s: Optional[float] = Field(default=None, description="Total burn time across all propulsion stages in seconds", examples=[25])
     propulsion_stages: List["PropulsionStageEntity"] = edge(label="CONTAINS", default_factory=list)
     propulsion_stages: List["PropulsionStageEntity"] = edge(label="HAS_STAGE", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class PropulsionStageEntity(BaseModel):
     """Propulsion Stage — Individual propulsion stage (ejector, booster, sustainer)
@@ -679,7 +678,7 @@ class PropulsionStageEntity(BaseModel):
     mass_kg: Optional[float] = Field(default=None, description="Stage mass in kilograms", examples=[150])
     diameter_m: Optional[float] = Field(default=None, description="Stage diameter in meters", examples=[0.255])
     length_m: Optional[float] = Field(default=None, description="Stage length in meters", examples=[2.0])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 
 # ----------------------------------------------------------------------
@@ -694,7 +693,7 @@ class CapabilityEntity(BaseModel):
     capability_name: Optional[str] = Field(default=None, description="Name of the functional capability", examples=['Terminal Phase Guidance'])
     capability_class: Optional[str] = Field(default=None, description="Capability domain or class", json_schema_extra={"enum": ["DETECTION", "TRACKING", "DESIGNATION", "ENGAGEMENT", "FIRE_CONTROL", "AIR_DEFENSE", "ELECTRONIC_ATTACK", "ELECTRONIC_SUPPORT", "SURVEILLANCE", "COMMUNICATIONS"]})
     trl: Optional[int] = Field(default=None, description="Technology Readiness Level on a scale of 1-9", examples=[7])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class RadarPerformanceEntity(BaseModel):
     """Radar Performance — Radar detection, range, and velocity performance envelope
@@ -711,7 +710,7 @@ class RadarPerformanceEntity(BaseModel):
     max_range_of_velocity_response_mps: Optional[float] = Field(default=None, description="Maximum radial velocity for detection in m/s", examples=[3000])
     minimum_detectable_velocity_mps: Optional[float] = Field(default=None, description="Minimum detectable target velocity due to clutter rejection in m/s", examples=[30])
     maximum_detectable_velocity_mps: Optional[float] = Field(default=None, description="Maximum detectable target velocity (aliasing limit) in m/s", examples=[3000])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class EngagementTimelineEntity(BaseModel):
     """Engagement Timeline — Time sequence from detection through engagement
@@ -726,7 +725,7 @@ class EngagementTimelineEntity(BaseModel):
     launch_delay_s: Optional[float] = Field(default=None, description="Delay from fire command to missile launch in seconds", examples=[3])
     intercept_assessment_time_s: Optional[float] = Field(default=None, description="Time to assess intercept result in seconds", examples=[5])
     time_to_go_s: Optional[float] = Field(default=None, description="Estimated time from launch to intercept in seconds", examples=[30])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ForceStructureEntity(BaseModel):
     """Force Structure — Military organizational unit or echelon
@@ -736,7 +735,7 @@ class ForceStructureEntity(BaseModel):
     name: Optional[str] = Field(default=None, description="Name of the force structure unit", examples=['108th Air Defense Artillery Brigade'])
     echelon: Optional[str] = Field(default=None, description="Military echelon level", examples=['Brigade'])
     service: Optional[str] = Field(default=None, description="Military service branch", examples=['U.S. Army'])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class AssemblyEntity(BaseModel):
     """Assembly — Grouping of components that function together as a unit
@@ -746,7 +745,7 @@ class AssemblyEntity(BaseModel):
     name: Optional[str] = Field(default=None, description="Name of the assembly unit", examples=['Antenna Feed Assembly'])
     assembly_number: Optional[str] = Field(default=None, description="Assembly drawing or identification number", examples=['ASM-7891-A'])
     equipment_systems: List["EquipmentSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SpecificationEntity(BaseModel):
     """Specification — Measurable performance characteristic
@@ -759,20 +758,20 @@ class SpecificationEntity(BaseModel):
     condition: Optional[str] = Field(default=None, description="Operating conditions under which the spec applies", examples=['sea level, standard atmosphere'])
     source_document: Optional[str] = Field(default=None, description="Document where this specification is defined", examples=['TM 9-1425-386-12'])
     specifications: List["SpecificationEntity"] = edge(label="SUPERSEDES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class StandardEntity(BaseModel):
     """Standard / Specification Document — Reference standard (MIL-STD, MIL-DTL, etc.)
     """
     model_config = ConfigDict(ontology_name="STANDARD", graph_id_fields=[], identity_scope="global", dodaf_parent="DocumentResource", is_entity=True)
 
-    designation: Optional[str] = Field(default=None, description="Official standard designation number (e.g. MIL-STD-1553B)", examples=['MIL-STD-1553B'])
+    designation: Optional[str] = Field(default=None, description="Official standard designation number (e.g. MIL-STD-1553B)", examples=['MIL-STD-1553B'], pattern='^MIL-[A-Z]+-\\d+[A-Z]?')
     title: Optional[str] = Field(default=None, description="Full title of the standard document", examples=['Digital Time Division Command/Response Multiplex Data Bus'])
     issuing_org: Optional[str] = Field(default=None, description="Organization that published the standard", examples=['Department of Defense'])
     version: Optional[str] = Field(default=None, description="Revision letter or version number", examples=['B'])
     supersedes: Optional[str] = Field(default=None, description="Designation of the standard this one replaces", examples=['MIL-STD-1553A'])
     standards: List["StandardEntity"] = edge(label="SUPERSEDES", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ProcedureEntity(BaseModel):
     """Procedure — Maintenance, operational, or test procedure
@@ -784,7 +783,7 @@ class ProcedureEntity(BaseModel):
     periodicity: Optional[str] = Field(default=None, description="How often the procedure must be performed", examples=['Semi-annual'])
     skill_level: Optional[str] = Field(default=None, description="Required maintenance skill level", examples=['20C (Patriot Repairer)'])
     organizations: List["OrganizationEntity"] = edge(label="OPERATED_BY", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class FailureModeEntity(BaseModel):
     """Failure Mode — Known failure mode with FMECA severity
@@ -798,7 +797,7 @@ class FailureModeEntity(BaseModel):
     components: List["ComponentEntity"] = edge(label="AFFECTS", default_factory=list)
     subsystems: List["SubsystemEntity"] = edge(label="AFFECTS", default_factory=list)
     equipment_systems: List["EquipmentSystemEntity"] = edge(label="AFFECTS", default_factory=list)
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class TestEventEntity(BaseModel):
     """Test Event — Test or evaluation event with outcomes
@@ -810,7 +809,7 @@ class TestEventEntity(BaseModel):
     location: Optional[str] = Field(default=None, description="Test range or facility location", examples=['White Sands Missile Range, NM'])
     test_type: Optional[str] = Field(default=None, description="Category of test event", json_schema_extra={"enum": ["DT", "OT", "IOT", "LFT", "DEVELOPMENTAL"]})
     outcome: Optional[str] = Field(default=None, description="Overall test result", json_schema_extra={"enum": ["PASS", "FAIL", "PARTIAL", "INCONCLUSIVE"]})
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 
 # ----------------------------------------------------------------------

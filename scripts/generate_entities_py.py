@@ -126,28 +126,23 @@ def format_field(name: str, prop_def: dict, is_identity: bool) -> str:
     description = (prop_def.get("description") or "").replace('"', '\\"')
     example = prop_def.get("example")
     enum = prop_def.get("enum")
+    pattern = prop_def.get("pattern")
 
     kwargs = []
     if description:
         kwargs.append(f'description="{description}"')
     if example is not None:
-        # YAML has singular 'example'; Pydantic uses plural 'examples'.
-        # Provide two examples for identity fields (per Task 8) — use the
-        # YAML example twice for type stability; a second example is a
-        # manual refinement target during Phase 2 review.
         if is_identity:
             kwargs.append(f"examples=[{example!r}, {example!r}]")
         else:
             kwargs.append(f"examples=[{example!r}]")
+    if pattern:
+        kwargs.append(f"pattern={pattern!r}")
     if enum:
-        # Document the constraint in description but don't enforce as Enum
-        # at field level — Phase 2 pins the string type; Phase 5 can tighten
-        # per-field enums as the LLM surface stabilizes.
         enum_str = ", ".join(f'"{v}"' for v in enum)
         kwargs.append(f'json_schema_extra={{"enum": [{enum_str}]}}')
 
     if is_identity:
-        # Required: no default.
         ann = py_type
         args = "..., " + ", ".join(kwargs) if kwargs else "..."
     else:
@@ -219,13 +214,17 @@ def build_class_source(et: dict, edge_fields: list[tuple], is_entity: bool) -> s
             f'    {field}: {ann} = edge(label="{rel}", {default})'
         )
 
-    # Confidence (system field)
-    if is_entity:
+    # System confidence — only emit if YAML does not already declare a
+    # domain `confidence` property (e.g. ASSERTION). Tag with
+    # ``json_schema_extra={"system_field": True}`` so introspection can
+    # filter it out when producing a YAML-parity ``properties`` view.
+    if is_entity and "confidence" not in props:
         field_lines.append(
             '    confidence: Optional[float] = Field('
             'default=None, '
             'description="Extraction confidence for this instance, 0–1.", '
-            'ge=0.0, le=1.0)'
+            'ge=0.0, le=1.0, '
+            'json_schema_extra={"system_field": True})'
         )
 
     if not field_lines:
