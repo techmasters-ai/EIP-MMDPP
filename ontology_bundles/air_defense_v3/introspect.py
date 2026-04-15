@@ -15,6 +15,10 @@ from pydantic.fields import FieldInfo
 
 from ontology_bundles.air_defense_v3.entities import ALL_ENTITIES
 from ontology_bundles.air_defense_v3.relationships import RELATIONSHIP_METADATA
+from ontology_bundles.air_defense_v3.validation_matrix import (
+    SCORING_WEIGHTS,
+    VALIDATION_MATRIX,
+)
 
 
 _PY_TO_YAML_TYPE: dict[type, str] = {
@@ -125,6 +129,32 @@ def build_entity_types_list() -> list[dict[str, Any]]:
     (``json_schema_extra.system_field``) are excluded from ``properties``.
     """
     return [_build_entity_entry(name, cls) for name, cls in ALL_ENTITIES.items()]
+
+
+def build_validation_matrix_list() -> list[dict[str, str]]:
+    """Introspect ``VALIDATION_MATRIX`` and produce a YAML-parity list.
+
+    Each entry is ``{source, relationship, target}`` (enum values
+    serialized as strings). The frozenset is ordered deterministically by
+    ``(source, relationship.value, target)`` so list equality does not
+    depend on hash insertion order. Note: ``ontology.yaml`` has one
+    duplicate triple (``RADAR_SYSTEM``, ``INSTALLED_ON``, ``PLATFORM``);
+    the frozenset collapses it, so this list is 127 unique entries.
+    Parity tests must dedupe the YAML side before comparing.
+    """
+    sorted_triples = sorted(
+        VALIDATION_MATRIX, key=lambda t: (t[0], t[1].value, t[2])
+    )
+    return [
+        {"source": src, "relationship": rel.value, "target": tgt}
+        for (src, rel, tgt) in sorted_triples
+    ]
+
+
+def build_scoring_weights() -> dict[str, float]:
+    """Return ``SCORING_WEIGHTS`` as-is — already YAML-shaped (dict of
+    ``{relationship_name_or_default: float}``)."""
+    return dict(SCORING_WEIGHTS)
 
 
 def build_relationship_types_list() -> list[dict[str, Any]]:
