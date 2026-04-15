@@ -21,7 +21,7 @@ def coerce_optional_int(value: Any) -> int | None:
         return None
     if isinstance(value, bool):
         # bool is a subclass of int — reject to avoid surprising True -> 1
-        return int(value)
+        return None
     if isinstance(value, int):
         return value
     if isinstance(value, float):
@@ -51,7 +51,8 @@ def coerce_optional_float(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        return float(value)
+        # bool is a subclass of int — reject to avoid surprising True -> 1.0
+        return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
@@ -128,7 +129,10 @@ def coerce_optional_confidence(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        return float(value)
+        # True/False for confidence is meaningless — drop rather than coerce
+        # to 1.0, which would spuriously mark an extraction as maximally
+        # confident.
+        return None
     if isinstance(value, (int, float)):
         f = float(value)
         if f > 1.0:

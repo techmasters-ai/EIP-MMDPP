@@ -35,6 +35,13 @@ class TestCoerceOptionalInt:
     def test_unparseable_returns_none(self):
         assert coerce_optional_int("unknown") is None
 
+    def test_bool_returns_none(self):
+        # bool is a subclass of int; passing True/False almost always means
+        # the LLM conflated a boolean field with a numeric one. Return None
+        # to drop rather than coerce to 1/0 and pollute the graph.
+        assert coerce_optional_int(True) is None
+        assert coerce_optional_int(False) is None
+
 
 class TestCoerceOptionalFloat:
     def test_none_returns_none(self):
@@ -51,6 +58,12 @@ class TestCoerceOptionalFloat:
 
     def test_unparseable_returns_none(self):
         assert coerce_optional_float("abc") is None
+
+    def test_bool_returns_none(self):
+        # Same reasoning as int: True/False in a numeric field is an LLM
+        # conflation bug; drop rather than coerce to 1.0/0.0.
+        assert coerce_optional_float(True) is None
+        assert coerce_optional_float(False) is None
 
 
 class TestCoerceOptionalConfidence:
@@ -78,6 +91,13 @@ class TestCoerceOptionalConfidence:
     def test_explicit_zero_preserved(self):
         # Regression: the 'or 0.8' bug would have defaulted this.
         assert coerce_optional_confidence(0.0) == 0.0
+
+    def test_bool_returns_none(self):
+        # A boolean value for confidence is meaningless — return None rather
+        # than coerce True to 1.0 (which would spuriously mark an extraction
+        # as maximally confident).
+        assert coerce_optional_confidence(True) is None
+        assert coerce_optional_confidence(False) is None
 
 
 class TestCoerceOptionalText:
