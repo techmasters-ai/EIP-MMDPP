@@ -65,8 +65,17 @@ def test_top_level_instantiates_empty(module, class_name):
 def test_all_fields_optional_or_default_recursive(module, class_name):
     cls = getattr(module, class_name)
     for model in [cls, *_iter_nested_models(cls)]:
+        identity_fields = set(
+            (model.model_config or {}).get("graph_id_fields", []) or []
+        )
         for field_name, field_info in model.model_fields.items():
             if field_name in SYSTEM_FIELDS:
+                continue
+            # Identity fields MUST be required (spec: "Avoid optional identity
+            # fields in staged and delta extraction"). Their requiredness is
+            # pinned by the companion test_identity_fields_are_required; exempt
+            # them here so the partial-safety contract does not contradict it.
+            if field_name in identity_fields:
                 continue
             is_optional = (
                 not field_info.is_required()
@@ -76,6 +85,38 @@ def test_all_fields_optional_or_default_recursive(module, class_name):
             assert is_optional, (
                 f"{model.__name__}.{field_name} is required; "
                 f"extraction models must tolerate partial LLM output"
+            )
+
+
+@pytest.mark.parametrize("module,class_name", PASS_MODULES)
+def test_identity_fields_are_required(module, class_name):
+    """Companion to test_all_fields_optional_or_default_recursive.
+
+    Every field listed in a class's ``model_config["graph_id_fields"]`` must
+    be required (no default, not `= None`, Pydantic-required). Identity can't
+    be partially-extracted without destabilizing entity dedup. Vacuously
+    passes for models that don't declare graph_id_fields yet (Phase 1 state).
+    """
+    cls = getattr(module, class_name)
+    for model in [cls, *_iter_nested_models(cls)]:
+        identity_fields = (model.model_config or {}).get("graph_id_fields", []) or []
+        if not identity_fields:
+            continue
+        for field_name in identity_fields:
+            field_info = model.model_fields.get(field_name)
+            assert field_info is not None, (
+                f"{model.__name__} declares graph_id_fields={identity_fields} "
+                f"but field {field_name!r} is not defined on the model."
+            )
+            is_required = (
+                field_info.is_required()
+                and field_info.default is None
+                and field_info.default_factory is None
+            )
+            assert is_required, (
+                f"{model.__name__}.{field_name} is an identity field "
+                f"(graph_id_fields) but is not required. Identity fields "
+                f"MUST be required — partial identity destabilizes dedup."
             )
 
 
