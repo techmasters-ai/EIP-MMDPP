@@ -1,58 +1,178 @@
 {
   "planPath": "docs/superpowers/plans/2026-04-14-docling-graph-schema-compliance.md",
-  "notes": "Path B v3 — docs-compliant consolidation. Reviewer findings #1-#8 accepted + residual brittleness added. Identity redesigns (PROPULSION_STACK, ASSERTION) moved to Plan 2. Merge-path refactor added as Phase 5. Total ~48 tasks.",
-  "tasks": [
-    {"id": 1, "subject": "Task 0: Capture expanded baseline", "status": "pending"},
-    {"id": 56, "subject": "Task 1a: Fix watcher.py IngestDispatchResult", "status": "pending", "blockedBy": [1]},
-    {"id": 57, "subject": "Task 1b: Fix graph_json mentions/nodes mismatch", "status": "pending", "blockedBy": [1]},
-    {"id": 16, "subject": "Task 1: Fix validator bool-coercion", "status": "pending", "blockedBy": [1]},
-    {"id": 17, "subject": "Task 2: Add _normalize_enum helper", "status": "pending", "blockedBy": [16]},
-    {"id": 18, "subject": "Task 3: Update partial-safety test", "status": "pending", "blockedBy": [17]},
-    {"id": 19, "subject": "Task 4: Contract test — entity-or-component (xfail)", "status": "pending", "blockedBy": [18]},
-    {"id": 20, "subject": "Task 5: Contract test — edge_label on every list-of-entity field (xfail)", "status": "pending", "blockedBy": [18]},
-    {"id": 21, "subject": "Task 6: Contract test — identity examples (xfail)", "status": "pending", "blockedBy": [18]},
-    {"id": 58, "subject": "Task 6b: Contract test — ontology_name on canonical entities (xfail)", "status": "pending", "blockedBy": [18]},
-    {"id": 22, "subject": "Task 7: RelationshipType enum", "status": "pending", "blockedBy": [17]},
-    {"id": 59, "subject": "Task 7a: RelationshipMetadata model + registry", "status": "pending", "blockedBy": [22]},
-    {"id": 23, "subject": "Task 8: VALIDATION_MATRIX frozenset", "status": "pending", "blockedBy": [22]},
-    {"id": 60, "subject": "Task 8a: SCORING_WEIGHTS dict", "status": "pending", "blockedBy": [22]},
-    {"id": 24, "subject": "Task 9: entities.py Layer 1 (reference)", "status": "pending", "blockedBy": [17, 22]},
-    {"id": 25, "subject": "Task 10: entities.py Layer 2 (DoDAF)", "status": "pending", "blockedBy": [24]},
-    {"id": 26, "subject": "Task 11: entities.py Layer 3 (EM/RF)", "status": "pending", "blockedBy": [24]},
-    {"id": 27, "subject": "Task 12: entities.py Layer 4 (weapon/missile)", "status": "pending", "blockedBy": [24]},
-    {"id": 28, "subject": "Task 13: entities.py Layer 5 (operational)", "status": "pending", "blockedBy": [24]},
-    {"id": 29, "subject": "Task 14: ALL_ENTITIES registry + coverage test", "status": "pending", "blockedBy": [24, 25, 26, 27, 28]},
-    {"id": 30, "subject": "Task 15: introspect.build_entity_types_list", "status": "pending", "blockedBy": [23, 29, 59, 60]},
-    {"id": 31, "subject": "Task 16: Introspect relationship_types + validation_matrix", "status": "pending", "blockedBy": [30]},
-    {"id": 61, "subject": "Task 16a: build_ontology_dict byte-equivalent parity", "status": "pending", "blockedBy": [30, 31, 59, 60]},
-    {"id": 32, "subject": "Task 17: ONTOLOGY_SOURCE flag (ontology_templates.py)", "status": "pending", "blockedBy": [61]},
-    {"id": 33, "subject": "Task 18: Migrate extraction_merge.py", "status": "pending", "blockedBy": [32]},
-    {"id": 34, "subject": "Task 19: Migrate arcadedb_schema + arcadedb_graph", "status": "pending", "blockedBy": [32]},
-    {"id": 35, "subject": "Task 20: Migrate pipeline.py", "status": "pending", "blockedBy": [32]},
-    {"id": 36, "subject": "Task 21: Migrate canonicalization.py", "status": "pending", "blockedBy": [32]},
-    {"id": 37, "subject": "Task 22: Migrate query_profiles.py", "status": "pending", "blockedBy": [32]},
-    {"id": 38, "subject": "Task 23: Migrate dossier_service.py", "status": "pending", "blockedBy": [32]},
-    {"id": 39, "subject": "Task 24: Migrate graph_store.py", "status": "pending", "blockedBy": [32]},
-    {"id": 40, "subject": "Task 25: Migrate ontology_templates internals + remaining", "status": "pending", "blockedBy": [32]},
-    {"id": 41, "subject": "Task 26: Migrate main/API/schemas", "status": "pending", "blockedBy": [32]},
-    {"id": 42, "subject": "Task 27: Flip default to pydantic", "status": "pending", "blockedBy": [33, 34, 35, 36, 37, 38, 39, 40, 41]},
-    {"id": 62, "subject": "Task 27a: Phase 5 before-metrics baseline", "status": "pending", "blockedBy": [42]},
-    {"id": 63, "subject": "Task 27b: Rewrite merge_and_resolve for typed edges", "status": "pending", "blockedBy": [62]},
-    {"id": 45, "subject": "Task 30: Rewrite reference.py", "status": "pending", "blockedBy": [63]},
-    {"id": 46, "subject": "Task 31: Rewrite radar_domain.py", "status": "pending", "blockedBy": [63]},
-    {"id": 47, "subject": "Task 32: Rewrite missile_domain.py", "status": "pending", "blockedBy": [63]},
-    {"id": 48, "subject": "Task 33: Rewrite other_systems.py", "status": "pending", "blockedBy": [63]},
-    {"id": 49, "subject": "Task 34: Rewrite system_links.py", "status": "pending", "blockedBy": [63]},
-    {"id": 64, "subject": "Task 27c: Delete DTO relationship classes", "status": "pending", "blockedBy": [63, 45, 46, 47, 48, 49]},
-    {"id": 50, "subject": "Task 35: Remove xfail markers", "status": "pending", "blockedBy": [64]},
-    {"id": 65, "subject": "Task 34a: Phase 5 after-metrics gate", "status": "pending", "blockedBy": [64, 50]},
-    {"id": 51, "subject": "Task 36: Delete ontology.yaml", "status": "pending", "blockedBy": [65]},
-    {"id": 52, "subject": "Task 37: Worker _classify_extraction_quality", "status": "pending", "blockedBy": [51]},
-    {"id": 53, "subject": "Task 38: Expanded E2E on b1b0d596", "status": "pending", "blockedBy": [51, 52]},
-    {"id": 54, "subject": "Task 39: Regression 3+ docs", "status": "pending", "blockedBy": [53]},
-    {"id": 55, "subject": "Task 40: Final summary + MEMORY", "status": "pending", "blockedBy": [54]}
+  "version": "v20 — review-18 wiring clarity applied",
+  "notes": "Reviewer-18: (1) Pre-merge JSONB writer path made explicit — new Step 2.premerge-writer edits pipeline.py:449 to populate counts['metrics'] with all 5 keys (counts_authoritative, mirrored relationships_extracted/rejected, empty rejection_sample, rejections_by_reason); new Step 2.premerge-writer-test asserts the exact shape independent of the post-merge lockstep test; symmetric Step 2.postmerge-writer lifts the overwrite-all-5-keys requirement in _apply_post_merge_yield_updates. (2) Task 52a provenance aggregation now explicitly uses logical_identity_from_dict at extraction_merge.py:316 (NOT raw dict comparison); added identity-helper-contract, document-scoped-identity, malformed-payload-drop, and unknown-entity-type-drop failing tests (d)-(g). Total 66 tasks.",
+  "openIssuesResolved_v20": {
+    "premerge_metrics_jsonb_writer_explicit": "Pass loop at pipeline.py:449 now has a concrete implementation step to populate counts['metrics'] with all 5 keys (counts_authoritative=False, mirrored relationships_extracted/rejected, empty rejection_sample, existing rejections_by_reason). Writer contract now matches the test's pre-merge assertion set. Symmetric post-merge overwrite step added for _apply_post_merge_yield_updates.",
+    "provenance_identity_uses_canonical_helper": "Task 52a specifies logical_identity_from_dict(entity_type, identity_dict, ontology, document_id) at extraction_merge.py:316 — the same helper the upstream-refs path uses — NOT raw (ontology_name, identity_values) dict comparison. Prevents drift on identity_scope / document_id / key ordering. Failing tests (d)/(e) assert LogicalIdentity equality across _build_logical_identity and logical_identity_from_dict; (f)/(g) assert drop-with-WARNING on malformed/unknown payloads."
+  },
+  "openIssuesResolved_v19": {
+    "task_35a_step2_label_test_corrected": "Non-name-like identity {label_id:'x-42'} test now asserts display_label == 'x-42' (step 2 identity-values join), consistent with build_display_label's actual resolution order. Previous 'Primary' assertion conflicted with the surrounding rationale in the plan.",
+    "files_touched_walker_api": "Files touched inventory updated: removed stale harvest_entities_from_entity_graph reference; added walk_entities_only / walk_entity_graph / PreMergeWalkSummary / PerPassEdgeMetrics / MergedEdgeRecord.pass_origins — all consistent with Phase 5 Task 34b/35a/35b/36 detailed design.",
+    "decision_11_phase_9_removed": "Decision 11 now attributes the before/after verification diff to Task 44 (Phase 5 gate) with /tmp/phase5-diff.md deliverable, and Task 47 (Phase 7 end-to-end re-verification). Explicit note that plan ends at Phase 8 — no Phase 9."
+  },
+  "openIssuesResolved_v18": {
+    "real_caller_of_post_merge_yield_updates": "_derive_ontology_graph_bundle_passes at pipeline.py:3853, call site :3942, manifest already in scope from load_bundle_manifest at :3910. Previous draft's start_ingest_pipeline at :1283 was the Celery dispatch function, not a merge-path caller.",
+    "task_34b_yield_downgrade_description": "Corrected to match current code: HIT→DEGRADED only (guarded on yield_status=='HIT'), no HIT→BRIDGES_ONLY/EMPTY path. Makes Task 34b and Task 36 consistent in their mental model of the existing helper.",
+    "upstream_ref_label_test_stability": "Replaced subjective 'no worse' assertion with two exact-equality tests pinned to today's build_display_label: identity-with-name → exact identity value; identity-without-name-key → step 2 identity-values join (step 3 never reached with non-empty identity). Test becomes load-bearing signal for any future builder-extension plan."
+  },
+  "openIssuesResolved_v17": {
+    "relationships_only_yield_classifier_delegation": "Branch in _apply_post_merge_yield_updates calls classify_yield_from_counts with primary=0, bridge=0; EMPTY/DEGRADED/HIT all come out consistent with pre-merge semantics without hardcoding.",
+    "apply_post_merge_yield_updates_signature": "Now _apply_post_merge_yield_updates(pipeline_run_id, merged, manifest: BundleManifest). Uses manifest.find_pass(pass_name).kind (ontology_bundles.py:65) — NOT get_pass. Caller identification corrected in v18.",
+    "counts_authoritative_lockstep_assertion": "test_counts_authoritative_lifecycle asserts row.relationships_extracted == metrics['relationships_extracted'] (and same for rejected) post-update. XOR of surfaces is a test failure. Added relationships-only sub-case for accepted=0 rejected=3 → EMPTY."
+  },
+  "openIssuesResolved_v16": {
+    "label_builder_scope": "Tests verify the accumulator receives merged data — not that the current label builder uses it. Builder extension is explicitly out of scope.",
+    "system_links_post_merge_yield": "relationships-only pass branch in _apply_post_merge_yield_updates promotes HIT→EMPTY when accepted==0. Uses manifest.yaml pass.kind='relationships_only' as discriminator."
+  },
+  "contractTests": [
+    "test_is_entity_true_classes_declare_graph_id_fields_key",
+    "test_edge_label_on_entity_to_entity_fields",
+    "test_identity_fields_have_examples",
+    "test_canonical_entities_declare_ontology_name",
+    "test_extraction_views_subset_of_canonical_with_validator_parity",
+    "test_every_class_declares_is_entity_explicitly",
+    "test_descriptions_and_examples_on_extraction_relevant_fields",
+    "test_pass_root_list_dedup_schema_local",
+    "test_edge_label_targets_are_is_entity_true"
   ],
-  "deletedTasks": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 43, 44],
-  "deletedNote": "IDs 2-15 were Path A tasks replaced by Path B. IDs 43-44 were PROPULSION_STACK and ASSERTION identity redesigns — moved to Plan 2.",
-  "lastUpdated": "2026-04-14T22:45:00Z"
+  "stageRunLifecycle": {
+    "mechanism": "metrics['counts_authoritative']: bool",
+    "regression_test": "test_counts_authoritative_lifecycle + new system_links HIT→EMPTY subtest"
+  },
+  "yieldStatusAuthority": {
+    "typed_edge_passes": "existing HIT→DEGRADED downgrade in _apply_post_merge_yield_updates (guarded on yield_status=='HIT'); no other transitions",
+    "relationships_only_passes": "new branch delegates to classify_yield_from_counts(primary=0, bridge=0, extracted_rels=accepted, rejected_rels=rejected); row.yield_status overwritten unconditionally with classifier result",
+    "signature": "_apply_post_merge_yield_updates(pipeline_run_id, merged, manifest: BundleManifest); dispatch via manifest.find_pass(pass_name).kind",
+    "caller": "_derive_ontology_graph_bundle_passes at pipeline.py:3853; call site :3942; manifest in scope from load_bundle_manifest(bundle_key) at :3910"
+  },
+  "upstreamRefDedup": {
+    "key_construction": "ontology-ordered identity_fields tuple",
+    "accumulator": "detached scratch dict, no live mutation",
+    "label_builder_interaction": "accumulator merged data is passed TO the builder; the current builder's output depth is a separate concern out of scope"
+  },
+  "preMergeCarrier": {
+    "type": "PreMergeWalkSummary(entities, raw_edge_count)",
+    "typed_edge_passes": "walker populates both",
+    "system_links_special_case": "entities=[]; raw_edge_count=len(template_instance.relationships)"
+  },
+  "preMergeJsonbWriter": {
+    "call_site": "pipeline.py:449 (pass loop, inside _run_single_pass)",
+    "keys_written": ["counts_authoritative", "relationships_extracted", "relationships_rejected", "rejection_sample", "rejections_by_reason"],
+    "counts_authoritative_premerge": false,
+    "rejection_sample_premerge": "[] (populated post-merge only)",
+    "test": "test_premerge_metrics_jsonb_shape — asserts exact 5-key shape independent of lockstep test"
+  },
+  "provenanceIdentityHelper": {
+    "function": "logical_identity_from_dict at app/services/extraction_merge.py:316",
+    "reason": "Single canonical surface for dict → LogicalIdentity; identical contract to upstream-refs path; handles identity_scope + document_id + declared-order key tuple.",
+    "failure_mode": "Returns None on missing/unknown → aggregation drops entry with WARNING citing instance_id + entity_type.",
+    "forbidden_alternative": "raw (ontology_name, identity_values) dict comparison — would drift on scope / document_id / key order."
+  },
+  "metricsSemantics": {
+    "perPassEdgeMetrics_fields": ["attempted", "accepted", "rejected", "rejection_sample", "rejections_by_reason"],
+    "mapping": "StageRun.metrics['relationships_extracted']=accepted; ['relationships_rejected']=rejected; ['counts_authoritative']=bool"
+  },
+  "dedupLayers": {
+    "schema_layer_9d": "Pydantic @model_validator — dedupes within one response",
+    "upstream_refs": "detached scratch accumulator, non-mutating, ontology-ordered key",
+    "merger_layer_36_step2b": "SCALAR-ONLY merge into MergedEntityRecord.properties"
+  },
+  "edgeProvenanceSemantics": {
+    "dataclass": "MergedEdgeRecord.pass_origins: set[str]",
+    "perPassMetricsCarrier": "MergedExtraction.per_pass_edge_metrics: dict[str, PerPassEdgeMetrics]",
+    "rejectionRules": {
+      "schema_contract_violations": "CI-caught; NOT rejected_edges",
+      "validation_matrix_triple_violations": "rejected_edges reason=INVALID_TRIPLE",
+      "pydantic_parse_failures": "PassTerminal"
+    }
+  },
+  "provenanceAggregation": {
+    "layer1_collect": "by LogicalIdentity",
+    "layer2_dedup": "by instance_id"
+  },
+  "walkerSplit": {
+    "walk_entities_only": "no context; PassResult fallback",
+    "walk_entity_graph": "full — merge + PreMergeWalkSummary construction"
+  },
+  "phases": {
+    "1": "Bug fixes + test infrastructure",
+    "1.5": "Relationship Placement Design",
+    "2": "Canonical entities + relationships",
+    "3": "Introspection + ONTOLOGY_SOURCE flag",
+    "4": "Consumer migration",
+    "5": "Walker split + PreMergeWalkSummary + merge refactor (incl. system_links HIT→EMPTY) + extraction rewrites",
+    "6": "Delete ontology.yaml",
+    "7": "Worker quality check + expanded E2E",
+    "8": "Provenance plumbing"
+  },
+  "tasks": [
+    {"id": 1, "subject": "Task 0: baseline", "status": "pending"},
+    {"id": 56, "subject": "Task 1a: fix watcher IngestDispatchResult", "status": "pending", "blockedBy": [1]},
+    {"id": 57, "subject": "Task 1b: DEFERRED to Phase 8", "status": "pending", "blockedBy": [1]},
+    {"id": 16, "subject": "Task 1: validator bool-coercion", "status": "pending", "blockedBy": [1]},
+    {"id": 17, "subject": "Task 2: _normalize_enum helper", "status": "pending", "blockedBy": [16]},
+    {"id": 18, "subject": "Task 3: partial-safety test update", "status": "pending", "blockedBy": [17]},
+    {"id": 19, "subject": "Contract: is_entity=True declares graph_id_fields key (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 20, "subject": "Contract: edge_label entity-to-entity (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 21, "subject": "Contract: identity >=2 examples (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 58, "subject": "Contract: ontology_name on canonical (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 73, "subject": "Contract: subset + validator parity (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 74, "subject": "Contract: explicit is_entity (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 75, "subject": "Contract: descriptions/examples on is_entity=True (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 76, "subject": "Contract: schema-local dedup (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 80, "subject": "Contract: edge_label → is_entity=True (xfail)", "status": "pending", "blockedBy": [18]},
+    {"id": 22, "subject": "RelationshipType enum", "status": "pending", "blockedBy": [17]},
+    {"id": 59, "subject": "RelationshipMetadata + registry", "status": "pending", "blockedBy": [22]},
+    {"id": 23, "subject": "VALIDATION_MATRIX frozenset", "status": "pending", "blockedBy": [22]},
+    {"id": 60, "subject": "SCORING_WEIGHTS dict", "status": "pending", "blockedBy": [22]},
+    {"id": 66, "subject": "Phase 1.5: Relationship Placement Design", "status": "pending", "blockedBy": [23]},
+    {"id": 24, "subject": "entities.py Layer 1", "status": "pending", "blockedBy": [66]},
+    {"id": 25, "subject": "entities.py Layer 2", "status": "pending", "blockedBy": [24]},
+    {"id": 26, "subject": "entities.py Layer 3", "status": "pending", "blockedBy": [24]},
+    {"id": 27, "subject": "entities.py Layer 4", "status": "pending", "blockedBy": [24]},
+    {"id": 28, "subject": "entities.py Layer 5", "status": "pending", "blockedBy": [24]},
+    {"id": 29, "subject": "ALL_ENTITIES registry", "status": "pending", "blockedBy": [24, 25, 26, 27, 28]},
+    {"id": 30, "subject": "introspect.build_entity_types_list", "status": "pending", "blockedBy": [23, 29, 59, 60]},
+    {"id": 31, "subject": "Introspect relationships + validation_matrix", "status": "pending", "blockedBy": [30]},
+    {"id": 61, "subject": "build_ontology_dict canonical-JSON parity", "status": "pending", "blockedBy": [30, 31, 59, 60]},
+    {"id": 32, "subject": "ONTOLOGY_SOURCE flag", "status": "pending", "blockedBy": [61]},
+    {"id": 33, "subject": "Migrate extraction_merge.py", "status": "pending", "blockedBy": [32]},
+    {"id": 34, "subject": "Migrate arcadedb_schema + arcadedb_graph", "status": "pending", "blockedBy": [32]},
+    {"id": 35, "subject": "Migrate pipeline.py", "status": "pending", "blockedBy": [32]},
+    {"id": 36, "subject": "Migrate canonicalization.py", "status": "pending", "blockedBy": [32]},
+    {"id": 37, "subject": "Migrate query_profiles.py", "status": "pending", "blockedBy": [32]},
+    {"id": 38, "subject": "Migrate dossier_service.py", "status": "pending", "blockedBy": [32]},
+    {"id": 39, "subject": "Migrate graph_store.py", "status": "pending", "blockedBy": [32]},
+    {"id": 40, "subject": "Migrate ontology_templates internals", "status": "pending", "blockedBy": [32]},
+    {"id": 41, "subject": "Migrate main/API/schemas", "status": "pending", "blockedBy": [32]},
+    {"id": 42, "subject": "Flip default ONTOLOGY_SOURCE=pydantic", "status": "pending", "blockedBy": [33, 34, 35, 36, 37, 38, 39, 40, 41]},
+    {"id": 62, "subject": "Phase 5 before-metrics", "status": "pending", "blockedBy": [42]},
+    {"id": 79, "subject": "35b: walk_entity_graph + walk_entities_only sibling", "status": "pending", "blockedBy": [62]},
+    {"id": 82, "subject": "34b: PreMergeWalkSummary (incl. system_links DTO special-case)", "status": "pending", "blockedBy": [79]},
+    {"id": 77, "subject": "35a: split walker; scratch-dict dedup; no-mutation + no-worse-label tests", "status": "pending", "blockedBy": [82]},
+    {"id": 81, "subject": "35c: counters consume PreMergeWalkSummary (no re-walks)", "status": "pending", "blockedBy": [82]},
+    {"id": 63, "subject": "27b: merge refactor (incl. system_links HIT→EMPTY + counts_authoritative regression)", "status": "pending", "blockedBy": [77, 81]},
+    {"id": 45, "subject": "Rewrite reference.py", "status": "pending", "blockedBy": [63]},
+    {"id": 46, "subject": "Rewrite radar_domain.py", "status": "pending", "blockedBy": [63]},
+    {"id": 47, "subject": "Rewrite missile_domain.py", "status": "pending", "blockedBy": [63]},
+    {"id": 48, "subject": "Rewrite other_systems.py", "status": "pending", "blockedBy": [63]},
+    {"id": 49, "subject": "Update system_links.py (DTO + edge() verbatim)", "status": "pending", "blockedBy": [63]},
+    {"id": 64, "subject": "Delete intra-pass DTOs", "status": "pending", "blockedBy": [63, 45, 46, 47, 48, 49]},
+    {"id": 50, "subject": "Remove xfail from 9 contract tests", "status": "pending", "blockedBy": [64, 73, 74, 75, 76, 80]},
+    {"id": 65, "subject": "Phase 5 after-metrics gate", "status": "pending", "blockedBy": [64, 50]},
+    {"id": 51, "subject": "Delete ontology.yaml", "status": "pending", "blockedBy": [65]},
+    {"id": 52, "subject": "Worker _classify_extraction_quality", "status": "pending", "blockedBy": [51]},
+    {"id": 53, "subject": "Expanded E2E on b1b0d596", "status": "pending", "blockedBy": [51, 52]},
+    {"id": 54, "subject": "Regression 3+ docs", "status": "pending", "blockedBy": [53]},
+    {"id": 67, "subject": "Phase 8: ExtractionProvenance (instance_id)", "status": "pending", "blockedBy": [54]},
+    {"id": 68, "subject": "Phase 8: service emits provenance", "status": "pending", "blockedBy": [67]},
+    {"id": 69, "subject": "Phase 8: worker carries provenance", "status": "pending", "blockedBy": [68]},
+    {"id": 78, "subject": "Phase 8: aggregate by identity + dedup by instance_id", "status": "pending", "blockedBy": [69]},
+    {"id": 70, "subject": "Phase 8: _serialize_for_audit writes mentions", "status": "pending", "blockedBy": [78]},
+    {"id": 71, "subject": "Phase 8: verify entity-chunk edges", "status": "pending", "blockedBy": [70]},
+    {"id": 72, "subject": "Phase 8: multi-doc regression", "status": "pending", "blockedBy": [71]},
+    {"id": 55, "subject": "Final summary + MEMORY", "status": "pending", "blockedBy": [54, 72]}
+  ],
+  "lastUpdated": "2026-04-15T15:00:00Z"
 }
