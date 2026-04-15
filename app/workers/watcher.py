@@ -160,22 +160,27 @@ def _scan_directory(db, watch_dir) -> None:
 
             # Enqueue ingest pipeline
             from app.workers.pipeline import start_ingest_pipeline
-            task_id = start_ingest_pipeline(str(document.id))
+            dispatch = start_ingest_pipeline(str(document.id))
 
-            # Update document with task ID
+            # Update document with Celery task id from the dispatch result.
+            # start_ingest_pipeline returns IngestDispatchResult; storing
+            # the dataclass itself would produce an unusable repr in the
+            # celery_task_id column.
             from sqlalchemy import update
             db.execute(
                 update(Document)
                 .where(Document.id == document.id)
-                .values(celery_task_id=task_id)
+                .values(celery_task_id=dispatch.celery_task_id)
             )
             db.commit()
 
             logger.info(
-                "Enqueued ingest for watcher file: %s document_id=%s task_id=%s",
+                "Enqueued ingest for watcher file: %s document_id=%s "
+                "pipeline_run_id=%s celery_task_id=%s",
                 file_path,
                 document.id,
-                task_id,
+                dispatch.pipeline_run_id,
+                dispatch.celery_task_id,
             )
 
         except Exception as e:
