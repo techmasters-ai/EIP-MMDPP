@@ -116,10 +116,6 @@ def _unwrap_annotated_types(annotation):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2: is_entity / graph_id_fields metadata land in entities.py",
-)
 def test_is_entity_true_classes_declare_graph_id_fields_key():
     offenders: list[str] = []
     entity_count = 0
@@ -144,10 +140,6 @@ def test_is_entity_true_classes_declare_graph_id_fields_key():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 5: typed-edge migration puts edge_label on every entity-to-entity field",
-)
 def test_edge_label_on_entity_to_entity_fields():
     offenders: list[str] = []
     entity_to_entity_fields = 0
@@ -216,10 +208,6 @@ def test_identity_fields_have_examples():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2: entities.py lands with model_config['ontology_name'] on every class",
-)
 def test_canonical_entities_declare_ontology_name():
     canon = _try_import_canonical()
     assert canon is not None, "entities.py module not yet created (Phase 2)"
@@ -247,10 +235,6 @@ def test_canonical_entities_declare_ontology_name():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 5: extraction-schemas rewrite aligns every field with canonical peer",
-)
 def test_extraction_views_subset_of_canonical_with_validator_parity():
     canon = _try_import_canonical()
     assert canon is not None, "entities.py not yet created (Phase 2)"
@@ -462,10 +446,6 @@ def test_pass_root_list_dedup_schema_local():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 5: edge_label fields always point at is_entity=True targets",
-)
 def test_edge_label_targets_are_is_entity_true():
     offenders: list[str] = []
     edge_label_fields = 0
