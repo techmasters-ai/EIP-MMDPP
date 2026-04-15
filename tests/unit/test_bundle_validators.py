@@ -1,4 +1,6 @@
 """Tests for ontology_bundles.air_defense_v3.validators."""
+from enum import Enum
+
 import pytest
 
 from ontology_bundles.air_defense_v3.validators import (
@@ -7,7 +9,14 @@ from ontology_bundles.air_defense_v3.validators import (
     coerce_optional_text,
     coerce_optional_confidence,
     normalize_enum,
+    _normalize_enum,
 )
+
+
+class _SampleEnum(str, Enum):
+    RADAR = "RADAR"
+    SONAR = "SONAR"
+    FAN_SONG = "FAN_SONG"
 
 
 class TestCoerceOptionalInt:
@@ -164,3 +173,36 @@ class TestNormalizeEnum:
     def test_none_returns_none(self):
         validator = normalize_enum({"RADAR"})
         assert validator(None) is None
+
+
+class TestNormalizeEnumClassForm:
+    """_normalize_enum(enum_cls, v) — the docs-signature form."""
+
+    def test_exact_match(self):
+        assert _normalize_enum(_SampleEnum, "RADAR") == "RADAR"
+
+    def test_case_insensitive(self):
+        assert _normalize_enum(_SampleEnum, "radar") == "RADAR"
+
+    def test_space_to_underscore(self):
+        # 'fan song' -> 'FAN_SONG' (enum value).
+        assert _normalize_enum(_SampleEnum, "fan song") == "FAN_SONG"
+
+    def test_unknown_returns_none(self):
+        assert _normalize_enum(_SampleEnum, "UNKNOWN") is None
+
+    def test_none_returns_none(self):
+        assert _normalize_enum(_SampleEnum, None) is None
+
+    def test_non_string_returns_none(self):
+        assert _normalize_enum(_SampleEnum, 123) is None
+
+    def test_empty_string_returns_none(self):
+        assert _normalize_enum(_SampleEnum, "") is None
+
+    def test_whitespace_string_returns_none(self):
+        assert _normalize_enum(_SampleEnum, "   ") is None
+
+    def test_enum_instance_passes_through_as_value(self):
+        # Passing an actual enum member returns its string value.
+        assert _normalize_enum(_SampleEnum, _SampleEnum.RADAR) == "RADAR"

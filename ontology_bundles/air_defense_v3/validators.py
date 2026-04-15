@@ -7,6 +7,7 @@ ontology_bundles/air_defense_v3/extraction_schemas/."""
 from __future__ import annotations
 
 import re
+from enum import Enum
 from typing import Any, Callable
 
 _INT_RE = re.compile(r"-?\d+")
@@ -153,6 +154,38 @@ def coerce_optional_confidence(value: Any) -> float | None:
             return f / 100.0
         return f
     return None
+
+
+def _normalize_enum(enum_cls: type[Enum], v: Any) -> str | None:
+    """Normalize a value to one of ``enum_cls``'s string values, or None.
+
+    Docs-signature form of the enum normalization helper — takes the Enum
+    class directly. Intended for use with
+    ``field_validator("field", mode="before")(partial(_normalize_enum, MyEnum))``
+    or wrapped in a closure. Keeps ``normalize_enum(set[str])`` around for
+    back-compat with existing call sites.
+
+    Normalization rules match the set-based ``normalize_enum``:
+    - None -> None
+    - Enum member (of ``enum_cls`` or any) -> its ``value`` attribute
+    - Non-string, non-Enum -> None
+    - Empty / whitespace-only string -> None
+    - Exact match against any member's ``value`` -> that value
+    - Case-insensitive + space-to-underscore match -> the canonical value
+    - No match -> None
+    """
+    if v is None:
+        return None
+    if isinstance(v, Enum):
+        return v.value
+    if not isinstance(v, str):
+        return None
+    stripped = v.strip()
+    if not stripped:
+        return None
+    canonical = {m.value.upper(): m.value for m in enum_cls}
+    normalized = stripped.upper().replace(" ", "_")
+    return canonical.get(normalized)
 
 
 def normalize_enum(allowed: set[str]) -> Callable[[Any], str | None]:
