@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
 from ontology_bundles.air_defense_v3.entities import ALL_ENTITIES
+from ontology_bundles.air_defense_v3.relationships import RELATIONSHIP_METADATA
 
 
 _PY_TO_YAML_TYPE: dict[type, str] = {
@@ -124,3 +125,28 @@ def build_entity_types_list() -> list[dict[str, Any]]:
     (``json_schema_extra.system_field``) are excluded from ``properties``.
     """
     return [_build_entity_entry(name, cls) for name, cls in ALL_ENTITIES.items()]
+
+
+def build_relationship_types_list() -> list[dict[str, Any]]:
+    """Introspect ``RELATIONSHIP_METADATA`` and produce a YAML-parity
+    ``relationship_types`` list.
+
+    Each entry matches the legacy ``ontology.yaml`` shape: ``name``,
+    ``label``, ``description``, ``source_type``, ``target_type``
+    (always emitted; YAML carries ``null`` for unscoped relationships),
+    and optional ``cardinality`` (omitted when unset). The enum values
+    serialize as plain strings — same shape as the YAML.
+    """
+    entries: list[dict[str, Any]] = []
+    for rt, meta in RELATIONSHIP_METADATA.items():
+        entry: dict[str, Any] = {
+            "name": rt.value,
+            "label": meta.label,
+            "description": meta.description,
+            "source_type": meta.source_type,
+            "target_type": meta.target_type,
+        }
+        if meta.cardinality is not None:
+            entry["cardinality"] = meta.cardinality
+        entries.append(entry)
+    return entries
