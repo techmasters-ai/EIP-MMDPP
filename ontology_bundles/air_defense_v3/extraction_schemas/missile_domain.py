@@ -33,7 +33,6 @@ from ..validators import (
     coerce_optional_float,
     coerce_optional_confidence,
     coerce_optional_text,
-    normalize_enum,
 )
 
 
@@ -359,46 +358,19 @@ class SpecificationEntity(BaseModel):
 
 
 # ----------------------------------------------------------------------
-# Legacy intra-pass DTO — retained until Task 64 removes.
-# ----------------------------------------------------------------------
-
-class MissileRelationship(BaseModel):
-    """Intra-pass relationship DTO — DEPRECATED.
-
-    Typed edges on MissileSystemEntity / LauncherSystemEntity replace
-    this in Phase 5. Retained only until Task 64 deletes it.
-    """
-    model_config = ConfigDict(extra="ignore", is_entity=False)
-
-    rel_type: Optional[str] = None
-    from_type: Optional[str] = None
-    from_identity: Optional[dict[str, Any]] = None
-    to_type: Optional[str] = None
-    to_identity: Optional[dict[str, Any]] = None
-    confidence: Optional[float] = None
-
-    _v_rel_type = field_validator("rel_type", mode="before")(
-        normalize_enum({
-            "INSTALLED_ON", "HAS_GUIDANCE", "HAS_SEEKER",
-            "HAS_PROPULSION", "LAUNCHES", "SPECIFIED_BY",
-        }),
-    )
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
-# ----------------------------------------------------------------------
 # Pass-root container — is_entity=False (Decision 4a).
+# Intra-pass MissileRelationship DTO removed in Task 64 (plan Task 37);
+# typed edges on MissileSystemEntity and LauncherSystemEntity replace it.
 # ----------------------------------------------------------------------
 
 class MissileDomainPass(BaseModel):
     """Missile-domain pass root. Guidance / seeker / propulsion / platform
     are reached via typed edges on MissileSystemEntity; launcher_systems
-    stay at pass root. Specifications + relationships (legacy) at pass root."""
+    stay at pass root. Specifications at pass root as bridge entity."""
     model_config = ConfigDict(extra="ignore", is_entity=False)
 
     missile_systems: List[MissileSystemEntity] = Field(default_factory=list)
     launcher_systems: List[LauncherSystemEntity] = Field(default_factory=list)
     specifications: List[SpecificationEntity] = Field(default_factory=list)
-    relationships: List[MissileRelationship] = Field(default_factory=list)
 
     _dedupe_root_entities = model_validator(mode="before")(_dedupe_entities_by_identity)

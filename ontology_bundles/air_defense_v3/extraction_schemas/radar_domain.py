@@ -37,7 +37,6 @@ from ..validators import (
     coerce_optional_float,
     coerce_optional_confidence,
     coerce_optional_text,
-    normalize_enum,
 )
 
 
@@ -505,37 +504,10 @@ class SpecificationEntity(BaseModel):
 
 
 # ----------------------------------------------------------------------
-# Legacy intra-pass DTO — retained until Task 64 (plan Task 37) removes.
-# ----------------------------------------------------------------------
-
-class RadarRelationship(BaseModel):
-    """Intra-pass relationship DTO — DEPRECATED.
-
-    Typed edges on RadarSystemEntity replace this in Phase 5. The class
-    is retained only until Task 64 deletes it; in production the LLM
-    emits typed edges and ``relationships`` stays empty.
-    """
-    model_config = ConfigDict(extra="ignore", is_entity=False)
-
-    rel_type: Optional[str] = None
-    from_type: Optional[str] = None
-    from_identity: Optional[dict[str, Any]] = None
-    to_type: Optional[str] = None
-    to_identity: Optional[dict[str, Any]] = None
-    confidence: Optional[float] = None
-
-    _v_rel_type = field_validator("rel_type", mode="before")(
-        normalize_enum({
-            "INSTALLED_ON", "HAS_ANTENNA", "HAS_RECEIVER", "HAS_TRANSMITTER",
-            "HAS_PROCESSING_CHAIN", "OPERATES_IN_BAND", "USES_WAVEFORM",
-            "SPECIFIED_BY",
-        }),
-    )
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
-# ----------------------------------------------------------------------
 # Pass-root container — is_entity=False (Decision 4a).
+# Intra-pass RadarRelationship DTO removed in Task 64 (plan Task 37);
+# typed edges on RadarSystemEntity replace it. SystemLinkRelationship in
+# system_links.py remains the only surviving DTO (Decision 4).
 # ----------------------------------------------------------------------
 
 class RadarDomainPass(BaseModel):
@@ -549,6 +521,5 @@ class RadarDomainPass(BaseModel):
 
     radar_systems: List[RadarSystemEntity] = Field(default_factory=list)
     specifications: List[SpecificationEntity] = Field(default_factory=list)
-    relationships: List[RadarRelationship] = Field(default_factory=list)
 
     _dedupe_root_entities = model_validator(mode="before")(_dedupe_entities_by_identity)

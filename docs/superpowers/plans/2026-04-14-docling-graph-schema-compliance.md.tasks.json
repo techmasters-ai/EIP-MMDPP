@@ -158,7 +158,7 @@
     {"id": 47, "subject": "Rewrite missile_domain.py", "status": "completed", "blockedBy": [63], "notes": "Docs-compliance rewrite + typed edges on MissileSystemEntity (HAS_GUIDANCE, HAS_SEEKER, HAS_PROPULSION, INSTALLED_ON) and LauncherSystemEntity (LAUNCHES, INSTALLED_ON). PROPULSION_STACK keeps empty graph_id_fields (known anti-pattern). MissileRelationship DTO retained until Task 64."},
     {"id": 48, "subject": "Rewrite other_systems.py", "status": "completed", "blockedBy": [63], "notes": "Docs-compliance rewrite + typed INSTALLED_ON edges on AirDefenseArtillerySystemEntity, ElectronicWarfareSystemEntity, FireControlSystemEntity. Narrow-class aliases (ADAEntity, EWSystemEntity, IADSEntity) preserved for import compat. Canonical class names (AirDefenseArtillerySystemEntity etc.) used so ontology_name matches canonical. OtherSystemsRelationship DTO retained until Task 64. Also batched: limit threshold 8000→20000, Rule 6 identity exemption, Rule 8 edge_label exemption, subset-parity test uses ontology_name_signature for BaseModel comparison."},
     {"id": 49, "subject": "Update system_links.py (DTO + edge() verbatim)", "status": "completed", "blockedBy": [63], "notes": "Docs-housekeeping: Decision 4 module docstring, edge() helper verbatim (unused — DTO pattern replaces typed edges per Decision 4), SystemLinkRelationship carries description+examples on rel_type/from_ref_id/to_ref_id, rel_type validator uses the full RelationshipType enum value set. SystemLinksPass.relationships remains plain List[SystemLinkRelationship]. is_entity=False on both DTO and pass root. xfail dropped on test_every_class_declares_is_entity_explicitly (9b) since all classes now declare explicitly."},
-    {"id": 64, "subject": "Delete intra-pass DTOs", "status": "pending", "blockedBy": [63, 45, 46, 47, 48, 49]},
+    {"id": 64, "subject": "Delete intra-pass DTOs", "status": "completed", "blockedBy": [63, 45, 46, 47, 48, 49], "notes": "RadarRelationship, MissileRelationship, OtherSystemsRelationship classes + their relationships: List[...] fields on RadarDomainPass/MissileDomainPass/OtherSystemsPass all removed. SystemLinkRelationship kept (Decision 4). PassResult.relationships kept (system_links branch only consumer). normalize_enum import cleaned from radar/missile/other_systems imports. No consumers broke — the DTO field hadn't been the edge-production path since Task 63c landed the walker-based harvester."
     {"id": 50, "subject": "Remove xfail from 9 contract tests", "status": "pending", "blockedBy": [64, 73, 74, 75, 76, 80]},
     {"id": 65, "subject": "Phase 5 after-metrics gate", "status": "pending", "blockedBy": [64, 50]},
     {"id": 51, "subject": "Delete ontology.yaml", "status": "pending", "blockedBy": [65]},
@@ -174,5 +174,5 @@
     {"id": 72, "subject": "Phase 8: multi-doc regression", "status": "pending", "blockedBy": [71]},
     {"id": 55, "subject": "Final summary + MEMORY", "status": "pending", "blockedBy": [54, 72]}
   ],
-  "lastUpdated": "2026-04-16T19:00:00Z"
+  "lastUpdated": "2026-04-16T19:15:00Z"
 }
