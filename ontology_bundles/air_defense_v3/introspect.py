@@ -20,6 +20,11 @@ from ontology_bundles.air_defense_v3.validation_matrix import (
     VALIDATION_MATRIX,
 )
 
+# Bundle version. Mirrors ``manifest.yaml:ontology_version``; Phase 6
+# deletes ``ontology.yaml`` but keeps the manifest, so this constant
+# stays in sync with the manifest by hand at each version bump.
+ONTOLOGY_VERSION = "3.0.0"
+
 
 _PY_TO_YAML_TYPE: dict[type, str] = {
     str: "string",
@@ -180,3 +185,80 @@ def build_relationship_types_list() -> list[dict[str, Any]]:
             entry["cardinality"] = meta.cardinality
         entries.append(entry)
     return entries
+
+
+def build_ontology_dict() -> dict[str, Any]:
+    """Compose all four introspection builders into a single ontology
+    dict shaped like the legacy ``ontology.yaml`` load output.
+
+    Consumers that previously read ``load_ontology()`` see the same
+    top-level keys (``version``, ``entity_types``, ``relationship_types``,
+    ``validation_matrix``, ``scoring_weights``). Downstream parity is
+    covered by the Task 23 canonical-JSON test.
+    """
+    return {
+        "version": ONTOLOGY_VERSION,
+        "entity_types": build_entity_types_list(),
+        "relationship_types": build_relationship_types_list(),
+        "validation_matrix": build_validation_matrix_list(),
+        "scoring_weights": build_scoring_weights(),
+    }
+
+
+def _sort_props(props: dict[str, Any]) -> dict[str, Any]:
+    return {k: props[k] for k in sorted(props)}
+
+
+def _canonicalize_entity_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    out = {k: entry[k] for k in sorted(entry)}
+    if "properties" in out and isinstance(out["properties"], dict):
+        inner = out["properties"].get("properties")
+        if isinstance(inner, dict):
+            sorted_inner = {name: _sort_props(inner[name]) for name in sorted(inner)}
+            out["properties"] = {**out["properties"], "properties": sorted_inner}
+        out["properties"] = {k: out["properties"][k] for k in sorted(out["properties"])}
+    return out
+
+
+def canonicalize_ontology_dict(d: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic re-shape of an ontology dict for equality comparison.
+
+    - Top-level dict keys sorted.
+    - ``entity_types`` sorted by ``name``; each entry's keys sorted;
+      each entry's ``properties.properties`` sorted by field name;
+      each property's inner keys sorted.
+    - ``relationship_types`` sorted by ``name``; each entry's keys sorted.
+    - ``validation_matrix`` deduped and sorted by
+      ``(source, relationship, target)``; each entry's keys sorted.
+    - ``scoring_weights`` keys sorted.
+
+    Eliminates flake from frozenset ordering, dict insertion order,
+    or YAML duplicates.
+    """
+    out: dict[str, Any] = {}
+
+    if "version" in d:
+        out["version"] = d["version"]
+
+    if "entity_types" in d:
+        sorted_entities = sorted(d["entity_types"], key=lambda e: e["name"])
+        out["entity_types"] = [_canonicalize_entity_entry(e) for e in sorted_entities]
+
+    if "relationship_types" in d:
+        sorted_rels = sorted(d["relationship_types"], key=lambda e: e["name"])
+        out["relationship_types"] = [{k: e[k] for k in sorted(e)} for e in sorted_rels]
+
+    if "validation_matrix" in d:
+        unique = {
+            (e["source"], e["relationship"], e["target"]) for e in d["validation_matrix"]
+        }
+        out["validation_matrix"] = [
+            {"relationship": r, "source": s, "target": t}
+            for (s, r, t) in sorted(unique)
+        ]
+
+    if "scoring_weights" in d:
+        weights = d["scoring_weights"]
+        out["scoring_weights"] = {k: weights[k] for k in sorted(weights)}
+
+    return {k: out[k] for k in sorted(out)}
