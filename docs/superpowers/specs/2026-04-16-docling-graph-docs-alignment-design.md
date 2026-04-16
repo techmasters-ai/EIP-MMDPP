@@ -35,7 +35,7 @@ This plan realigns the `air_defense_v3` canonical ontology and extraction schema
 
 ## 2. Canonical entity classification
 
-The audit examined all 48 canonical entities in `ontology_bundles/air_defense_v3/entities.py`. Below is the classification table that drives every rewrite in Chunk B.
+The audit examined all 46 canonical entities in `ontology_bundles/air_defense_v3/entities.py` (verified via `grep -c "^class .*(BaseModel):" entities.py`). Below is the classification table that drives every rewrite in Chunk B. Every canonical class is accounted for in exactly one bucket.
 
 ### 2.1 Dropped from ontology (2)
 
@@ -44,7 +44,7 @@ The audit examined all 48 canonical entities in `ontology_bundles/air_defense_v3
 | ASSERTION | Q3 decision + longstanding KNOWN ANTI-PATTERN (`graph_id_fields=["assertion_text"]` violates R2 "short identities"). Drop entirely; reintroduce later if a concrete use-case emerges with a better design. |
 | SPREADSHEET | Redundant with DOCUMENT. Consolidate by adding `SPREADSHEET` to `DocumentEntity.source_type` enum. `workbook_name` and `sheet_name` become optional properties on DocumentEntity. |
 
-### 2.2 Give proper identity (14)
+### 2.2 Give proper identity (15)
 
 | Entity | Current | New `graph_id_fields` | Scope | Notes |
 |---|---|---|---|---|
@@ -83,13 +83,31 @@ Deduplicate by full content per docs L17225+ pattern.
 | RADAR_PERFORMANCE | Performance envelope. |
 | ENGAGEMENT_TIMELINE | Timing envelope. |
 
-### 2.4 Unchanged (20 entities, already docs-compliant)
+### 2.4 Unchanged (17 entities, already docs-compliant)
 
-PLATFORM, WEAPON_SYSTEM, RADAR_SYSTEM, MISSILE_SYSTEM, AIR_DEFENSE_ARTILLERY_SYSTEM, ELECTRONIC_WARFARE_SYSTEM, FIRE_CONTROL_SYSTEM, INTEGRATED_AIR_DEFENSE_SYSTEM, LAUNCHER_SYSTEM, FREQUENCY_BAND, WAVEFORM, ANTENNA, TRANSMITTER, RECEIVER, SIGNAL_PROCESSING_CHAIN, GUIDANCE_METHOD, SEEKER, (plus DOCUMENT/SECTION/FIGURE/TABLE/SUBSYSTEM/etc. after revision as entities — but counted separately above).
+| # | Entity | Identity | Scope |
+|---|---|---|---|
+| 1 | PlatformEntity | `["name"]` | global |
+| 2 | WeaponSystemEntity | `["system_name"]` | global |
+| 3 | RadarSystemEntity | `["system_name"]` | global |
+| 4 | MissileSystemEntity | `["system_name"]` | global |
+| 5 | AirDefenseArtillerySystemEntity | `["system_name"]` | global |
+| 6 | ElectronicWarfareSystemEntity | `["system_name"]` | global |
+| 7 | FireControlSystemEntity | `["system_name"]` | global |
+| 8 | IntegratedAirDefenseSystemEntity | `["name"]` | global |
+| 9 | LauncherSystemEntity | `["system_name"]` | global |
+| 10 | FrequencyBandEntity | `["band_name"]` | global |
+| 11 | WaveformEntity | `["waveform_name"]` | document |
+| 12 | AntennaEntity | `["name"]` | document |
+| 13 | TransmitterEntity | `["name"]` | document |
+| 14 | ReceiverEntity | `["name"]` | document |
+| 15 | SignalProcessingChainEntity | `["name"]` | document |
+| 16 | GuidanceMethodEntity | `["guidance_type"]` (enum) | global |
+| 17 | SeekerEntity | `["seeker_nomenclature"]` | document |
 
-All have single-field short identities on already-extracted named concepts (`system_name`, `name`, `band_name`, `designation`, etc.).
+All have single-field short identities on already-extracted named concepts. **These still receive docs-compliance touch-ups in Chunk B**: identity field examples get the §4.3 treatment (distinct, no duplicates, R16/R17-aligned), non-identity fields confirmed `Optional[T] = None` per §4.4, `edge(label=...)` fields gain `description` + `examples` kwargs per §7.1. But the identity shape doesn't change.
 
-**Totals:** 48 → 46 entities → **34 entities + 12 components** after classification.
+**Totals:** 46 canonical classes today → 2 dropped + 15 give-identity + 12 demoted + 17 unchanged = **46 accounted for**. Post-refactor: **32 entities + 12 components = 44 models** in `entities.py`.
 
 ### 2.5 Rule-conflict reconciliation for SECTION
 
@@ -97,7 +115,53 @@ Docs rules R14 ("prefer descriptive IDs"), R17 ("avoid examples like `3.1`"), an
 
 The reconciliation: **R14/R17 apply to LLM-emitted identities** (the intent is to steer model output via examples). **R21 applies to system-constructed identities** (section numbers ARE listed as preferred). SECTION is populated deterministically by the Docling anchor walker; the LLM never sees SECTION's `section_number` field. Therefore R21 governs, and `section_number` with positional-enumeration examples (`["1", "1.1", "2.3.4"]`) is correct.
 
-This reconciliation is captured in a `# Docs rule note:` comment on the SECTION class in entities.py, referencing the spec section.
+Captured in a `# Docs rule note:` comment on the SECTION class in entities.py, referencing this section.
+
+### 2.6 Per-entity Chunk B task list
+
+For the implementation plan's Chunk B, this is the per-entity rewrite task list. 27 entities need structural changes (15 give-identity + 12 demote) + 17 touch-ups. Ordered by dependency (entities referenced by others come first):
+
+**Drops (2 tasks):**
+1. Delete `AssertionEntity` + remove all references.
+2. Delete `SpreadsheetEntity` + merge into `DocumentEntity.source_type` enum.
+
+**Give-identity batch (15 tasks):**
+3. `DocumentEntity.graph_id_fields=["document_id"]` required.
+4. `SectionEntity.graph_id_fields=["section_number"]` required.
+5. `FigureEntity.graph_id_fields=["figure_ref"]` required; `figure_label` added as optional.
+6. `TableEntity.graph_id_fields=["table_ref"]` required; `table_label` added as optional.
+7. `OrganizationEntity.graph_id_fields=["name"]` required.
+8. `StandardEntity.graph_id_fields=["designation"]` required.
+9. `EquipmentSystemEntity.graph_id_fields=["name"]` required.
+10. `ComponentEntity.graph_id_fields=["part_number"]` required.
+11. `AssemblyEntity.graph_id_fields=["assembly_number"]` required.
+12. `CapabilityEntity.graph_id_fields=["capability_name"]` required.
+13. `ProcedureEntity.graph_id_fields=["name"]` required, scope=document.
+14. `FailureModeEntity.graph_id_fields=["name"]` required, scope=document.
+15. `TestEventEntity.graph_id_fields=["name"]` required.
+16. `ForceStructureEntity.graph_id_fields=["name"]` required.
+17. `SubsystemEntity.graph_id_fields=["name"]` required, scope=document.
+
+**Demote batch (12 tasks):**
+18. `SpecificationEntity`: `is_entity=False`.
+19. `ModulationEntity`: `is_entity=False`.
+20. `RfSignatureEntity`: `is_entity=False`.
+21. `RfEmissionEntity`: `is_entity=False`.
+22. `ScanPatternEntity`: `is_entity=False`.
+23. `IfAmplifierEntity`: `is_entity=False`.
+24. `MissilePerformanceEntity`: `is_entity=False`.
+25. `MissilePhysicalCharacteristicsEntity`: `is_entity=False`.
+26. `PropulsionStackEntity`: `is_entity=False`.
+27. `PropulsionStageEntity`: `is_entity=False`.
+28. `RadarPerformanceEntity`: `is_entity=False`.
+29. `EngagementTimelineEntity`: `is_entity=False`.
+
+**Touch-up batch (aggregated, 3 tasks — batched not per-entity):**
+30. All 17 unchanged entities: apply R16/R17 example-list cleanup (2-5 distinct, no duplicated examples). One commit.
+31. All entities: confirm non-identity fields are `Optional[T] = None`; flip any that aren't. One commit.
+32. All entities with `edge(label=...)` fields: extend `edge()` helper to accept `description` + `examples` kwargs, update every call site. One commit.
+
+**Chunk B total: 32 tasks, 32 commits.** (Up from the earlier 18 estimate.)
 
 ## 3. Docling-derived anchors — architecture
 
@@ -130,14 +194,92 @@ Inputs:
 
 Outputs:
 - 1 `DocumentEntity` with `document_id = UUID`.
-- N `SectionEntity` records — one per unique `section_path` encountered. `section_number` is the positional enumeration walked in order: `"1"`, `"1.1"`, `"1.2"`, `"2"`, `"2.1"`, etc.
-- M `FigureEntity` records — one per entry in `docling_document.pictures`. `figure_ref = item.self_ref`. `figure_label` pulled from Docling annotations if present.
+- N `SectionEntity` records — one per unique `section_path` encountered (deduplicated across elements sharing that path).
+- M `FigureEntity` records — one per entry in `docling_document.pictures`.
 - K `TableEntity` records — one per entry in `docling_document.tables`.
-- Edges:
-  - `(DOCUMENT)-[:HAS_SECTION]->(SECTION)` for each section.
-  - `(DOCUMENT)-[:HAS_FIGURE]->(FIGURE)` for each figure.
-  - `(DOCUMENT)-[:HAS_TABLE]->(TABLE)` for each table.
-  - `(SECTION)-[:CHILD_OF]->(SECTION)` for hierarchical nesting (parent section_path is a prefix of child).
+- Edges: `(DOCUMENT)-[:HAS_SECTION]->(SECTION)`, `(DOCUMENT)-[:HAS_FIGURE]->(FIGURE)`, `(DOCUMENT)-[:HAS_TABLE]->(TABLE)`, `(SECTION)-[:CHILD_OF]->(SECTION)`.
+
+#### Deterministic algorithm (pseudocode)
+
+```python
+def walk(docling_doc: dict, document_uuid: str) -> MergedExtraction:
+    doc_entity = DocumentEntity(document_id=document_uuid, ...)
+
+    # --- Sections: dedup + enumerate by document-order first-occurrence --------
+    # Walk texts (and any other body descendants with prov) in document order.
+    # For each element, read prov[0].section_path — a list of heading-stem strings
+    # that Docling assigns as the element's ancestor chain.
+    # First occurrence of each unique tuple-path establishes a SECTION.
+    # section_number is the 1-based positional enumeration within the parent path.
+
+    section_by_path: OrderedDict[tuple[str, ...], SectionEntity] = OrderedDict()
+    sibling_counters: dict[tuple[str, ...], int] = defaultdict(int)
+
+    for elem in iter_body_descendants_in_order(docling_doc):
+        path_tuple = tuple(prov_section_path(elem))  # () for root-level elements
+        if path_tuple and path_tuple not in section_by_path:
+            parent_tuple = path_tuple[:-1]
+            sibling_counters[parent_tuple] += 1
+            idx = sibling_counters[parent_tuple]
+            if parent_tuple and parent_tuple in section_by_path:
+                parent_number = section_by_path[parent_tuple].section_number
+                section_number = f"{parent_number}.{idx}"
+            else:
+                section_number = str(idx)
+            section_by_path[path_tuple] = SectionEntity(
+                section_number=section_number,
+                heading=path_tuple[-1],  # descriptive-only; not identity
+                ...,
+            )
+
+    # --- Figures: one per Docling self_ref --------------------------------------
+    figures = [
+        FigureEntity(
+            figure_ref=item["self_ref"],
+            figure_label=extract_caption_label(item),  # "Figure 3-12" or None
+            ...,
+        )
+        for item in docling_doc.get("pictures", [])
+    ]
+
+    # --- Tables: one per Docling self_ref ---------------------------------------
+    tables = [
+        TableEntity(
+            table_ref=item["self_ref"],
+            table_label=extract_caption_label(item),
+            ...,
+        )
+        for item in docling_doc.get("tables", [])
+    ]
+
+    # --- Edges ------------------------------------------------------------------
+    edges = []
+    for section in section_by_path.values():
+        edges.append(MergedEdgeRecord(from=doc_entity, to=section, label="HAS_SECTION"))
+    for section in section_by_path.values():
+        if "." in section.section_number:
+            parent_number = section.section_number.rsplit(".", 1)[0]
+            parent = find_by_number(section_by_path, parent_number)
+            if parent is not None:
+                edges.append(MergedEdgeRecord(from=section, to=parent, label="CHILD_OF"))
+    for fig in figures:
+        edges.append(MergedEdgeRecord(from=doc_entity, to=fig, label="HAS_FIGURE"))
+    for tbl in tables:
+        edges.append(MergedEdgeRecord(from=doc_entity, to=tbl, label="HAS_TABLE"))
+
+    return MergedExtraction(
+        merged_entities=[doc_entity, *section_by_path.values(), *figures, *tables],
+        merged_edges=edges,
+    )
+```
+
+#### Determinism properties
+
+- `iter_body_descendants_in_order`: uses Docling's own `body.children` → recursive descent via `$ref` lookups, in declared order. Identical input JSON → identical output order.
+- Dedup key for SECTION: the tuple of strings from `prov[0].section_path`. Two elements that share that exact tuple attach to the same SECTION.
+- `section_number` tie-breaking: document-order first-occurrence. If `section_path=["A", "B"]` appears at elem 10 and `section_path=["A", "C"]` appears at elem 20, then B gets number "1.1" and C gets "1.2" (assuming A is "1").
+- Parent-child edge resolution: by parsed `section_number` prefix (splitting on `"."`), not by raw path. Deterministic because `section_number` is assigned by the algorithm above.
+- `figure_ref` / `table_ref` are Docling's own refs — globally unique within a single `DoclingDocument`.
 
 ### 3.4 Fallback for weak structure
 
@@ -240,11 +382,43 @@ Config lives in `docker/docling-graph/repo/docling_graph/cli/config_builder.py` 
 
 ### 5.1 Pre-migration state to wipe
 
-- Postgres: truncate all tables except `auth.*`, `alembic_version`, `ingest.sources`, `ingest.documents` (metadata + storage keys), `ingest.watch_dirs`.
-- ArcadeDB: DROP + recreate schema.
-- MinIO `derived/*` bucket: empty.
-- MinIO `originals/*` bucket: **preserved** (source PDFs stay; no re-upload).
-- Redis: `FLUSHALL` to clear Celery queues.
+**Postgres — explicit per-table action** (ordered by FK-dependency for truncate):
+
+| Table | Action |
+|---|---|
+| `ingest.stage_runs` | TRUNCATE |
+| `ingest.pipeline_runs` | TRUNCATE |
+| `ingest.document_graph_extractions` | TRUNCATE |
+| `ingest.document_elements` | TRUNCATE |
+| `ingest.artifacts` | TRUNCATE |
+| `retrieval.chunk_links` | TRUNCATE |
+| `retrieval.text_chunks` | TRUNCATE |
+| `retrieval.image_chunks` | TRUNCATE |
+| `retrieval.chunks_legacy` | TRUNCATE |
+| `retrieval.community_runs` | TRUNCATE |
+| `governance.feedback` | TRUNCATE |
+| `governance.patch_approvals` | TRUNCATE |
+| `governance.patch_events` | TRUNCATE |
+| `governance.patches` | TRUNCATE |
+| `governance.query_profile_registries` | TRUNCATE |
+| `governance.trusted_data_submissions` | TRUNCATE |
+| `ontology.entity_types` | TRUNCATE |
+| `ontology.relationship_types` | TRUNCATE |
+| `ontology.versions` | TRUNCATE |
+| `ingest.documents` | UPDATE pipeline_status='PENDING', pipeline_stage=NULL, failed_stages=NULL, error_message=NULL, celery_task_id=NULL (preserve rows) |
+| `ingest.watch_logs` | TRUNCATE |
+| `ingest.sources` | PRESERVE |
+| `ingest.watch_dirs` | PRESERVE |
+| `auth.users`, `auth.user_roles` | PRESERVE |
+| `public.alembic_version` | PRESERVE |
+
+Any tables added to the schema after this spec is written get TRUNCATE by default; the migration script reads `pg_tables` and truncates anything not in the preserve-list. A dry-run flag prints the list before executing.
+
+**ArcadeDB:** DROP + recreate schema.
+
+**MinIO:** empty `derived/*` bucket; preserve `originals/*`.
+
+**Redis:** `FLUSHALL` to clear Celery queues.
 
 ### 5.2 Migration script
 
@@ -283,22 +457,35 @@ Single-branch design. Git-revert + re-run the same migration script on reverted 
 
 ## 6. Consumer updates
 
-### 6.1 Hardcoded entity-type lists (must update)
+### 6.1 Hardcoded entity-type lists — complete inventory
 
-| File | Change |
-|---|---|
-| `frontend/src/components/GraphExplorer.tsx:33` | Remove `"ASSERTION"` from filter list. |
-| `app/services/arcadedb_graph.py:2020–2026` | Update `delete_extraction_layer_graph_sync` docstring — drop ASSERTION, update identity-scope entity list. |
-| Any additional hardcoded list found during implementation (grep for `"ASSERTION"`, `"SPECIFICATION"`, `"SUBSYSTEM"`, `"MODULATION"` etc. across `app/`, `frontend/`) | Case-by-case. |
+Grep of `app/`, `frontend/src/` (excluding tests, migrations, `__pycache__`, `node_modules`) for hardcoded entity-type name strings returns the following concrete hits. Each gets an update in Chunk E.
+
+| File:Line | Current string | Action |
+|---|---|---|
+| `frontend/src/components/GraphExplorer.tsx:27` | `"SUBSYSTEM"` | Keep (SUBSYSTEM stays entity per §2.2). |
+| `frontend/src/components/GraphExplorer.tsx:29` | `"SPECIFICATION"` | Remove — SPECIFICATION demotes to component. |
+| `frontend/src/components/GraphExplorer.tsx:33` | `"ASSERTION"` | Remove — entity dropped. |
+| `app/services/dossier_service.py:40` | `"RF_EMISSION"` in a `_RF_ENTITY_TYPES` list | Keep (still valid entity_type for query); verify list still queries correctly since RF_EMISSION is now a component. |
+| `app/services/dossier_service.py:42–63` | `"MODULATION"`, `"RF_SIGNATURE"`, `"SCAN_PATTERN"`, `"IF_AMPLIFIER"`, `"SPECIFICATION"`, `"RADAR_PERFORMANCE"`, `"ENGAGEMENT_TIMELINE"`, `"MISSILE_PERFORMANCE"`, `"MISSILE_PHYSICAL_CHARACTERISTICS"`, `"PROPULSION_STACK"`, `"PROPULSION_STAGE"`, `"SPECIFICATION"` (duplicated) | Audit: these lists filter dossier sections by ontology_name. Components still have ontology_name; the filters still match. Verify Cypher query emits component-kind vertices correctly. Remove the duplicated `"SPECIFICATION"` entry. |
+| `app/services/query_profiles.py:51–74` | Same set as dossier_service.py | Same audit. |
+| `app/services/arcadedb_graph.py:2020–2026` | Docstring listing SECTION/FIGURE/TABLE/ASSERTION/WAVEFORM/... as document-scoped entity classes | Drop ASSERTION, update identity-scope list to match new canonical. |
+
+**Audit note for query_profiles + dossier_service:** these files' entity-type filters are load-bearing for retrieval. Demoting SPECIFICATION/MODULATION/etc. to components changes how they appear in ArcadeDB vertex classes. Components are still stored as vertices (with content-based dedup), so filter-by-ontology_name still works. **Verification step in Chunk E**: write a small integration test that executes the dossier's filtered query against a re-ingested doc and confirms non-zero vertex matches for each of these ontology_names. If any filter fails, the fix is either (a) the filter's entity_type enumeration needs updating, or (b) the component's vertex class name in ArcadeDB differs from expected (unlikely; `arcadedb_schema` keys vertex class off `ontology_name`).
 
 ### 6.2 Identity-field references
 
+A focused grep for attribute reads `\.heading\b`, `\.figure_id\b`, `\.table_id\b`, `\.page_start\b`, `\.assertion_text\b` across `app/` and `frontend/src/` (excluding tests, migrations, `__pycache__`, `node_modules`) returned **zero hits**. No consumer code currently reads these as entity attributes. The identity fields only exist inside `entities.py`, `extraction_schemas/reference.py`, and test files.
+
 - `app/services/extraction_merge.py:305` — change `_NAME_LIKE_KEYS` tuple's `"heading"` → `"section_number"`.
-- All other `heading`/`page_start`/`assertion_text`/`figure_id`/`table_id` references found outside migrations/tests: updated or deleted.
+- `ontology_bundles/air_defense_v3/extraction_schemas/reference.py` — deleted entirely per §3.7.
+- Test files updated as part of Chunk B/C schema rewrites.
 
 ### 6.3 Retrieval / dossier / query profiles
 
-Most query paths filter by `ontology_name` which is unchanged. Verified no `.heading`/`.figure_id` identity-field reads in `app/api/v1/query_profiles.py` or `app/services/dossier_service.py`; re-grep during implementation.
+Most query paths filter by `ontology_name` which is unchanged. The concrete consumer surface is documented in §6.1 above — the two entity-type lists in `dossier_service.py` and `query_profiles.py`.
+
+No `.heading` / `.figure_id` / `.table_id` / `.page_start` identity-field attribute reads exist (confirmed in §6.2 grep). All retrieval consumers query by `ontology_name`.
 
 ### 6.4 Derive-rules + structure-links
 
@@ -311,8 +498,7 @@ Most query paths filter by `ontology_name` which is unchanged. Verified no `.hea
 
 ### 6.5 Canonicalization
 
-`app/services/canonicalization.py`:
-- Verify SPECIFICATION canonicalization path handles is_entity=False demotion (components don't canonicalize; if SPECIFICATION was keyed during canonicalization, remove it).
+`app/services/canonicalization.py` — verified via grep: contains no `"SPECIFICATION"` or other demoted-entity-name hardcoded references. The canonicalization pathway is ontology-agnostic (it canonicalizes entity names generically), so demotions don't break it. No change required beyond what the re-ingest naturally produces.
 
 ### 6.6 Pipeline config audit
 
@@ -331,17 +517,29 @@ Every test constructing old-identity entities updated to new shape. Parity tests
 
 ### 7.2 Parity tests deleted
 
-Tests introduced in Task 44b of the current plan compared Pydantic introspection to the frozen `tests/fixtures/ontology/air_defense_v3_snapshot.yaml`. After canonical rewrite the fixture has no valid oracle. Delete:
+Tests introduced by the YAML→Pydantic migration (current plan) compared Pydantic introspection to the frozen `tests/fixtures/ontology/air_defense_v3_snapshot.yaml`. After canonical rewrite the fixture has no valid oracle. Complete list of parity tests to evaluate for deletion (actual files confirmed via `ls tests/unit/*parity*.py`):
 
-- `tests/unit/test_introspect_entity_types.py`
-- `tests/unit/test_introspect_ontology_dict.py`
-- `tests/unit/test_introspect_relationship_types.py`
-- `tests/unit/test_introspect_validation_and_weights.py`
-- `tests/unit/test_ontology_source_flag.py`
-- `tests/unit/test_relationships_parity.py`
-- `tests/unit/test_validation_matrix_parity.py`
-- YAML-comparison assertions within `tests/unit/test_arcadedb_schema.py` (schema-creation assertions stay)
-- `tests/fixtures/ontology/air_defense_v3_snapshot.yaml`
+| File | Disposition |
+|---|---|
+| `tests/unit/test_arcadedb_schema_ontology_source_parity.py` | Delete (YAML vs Pydantic parity). |
+| `tests/unit/test_canonicalization_ontology_source_parity.py` | Delete. |
+| `tests/unit/test_dossier_service_ontology_source_parity.py` | Delete. |
+| `tests/unit/test_extraction_merge_ontology_source_parity.py` | Delete. |
+| `tests/unit/test_graph_store_ontology_source_parity.py` | Delete. |
+| `tests/unit/test_main_api_ontology_source_parity.py` | Delete. |
+| `tests/unit/test_pipeline_ontology_source_parity.py` | Delete. |
+| `tests/unit/test_query_profiles_ontology_source_parity.py` | Delete. |
+| `tests/unit/test_relationships_parity.py` | Delete. |
+| `tests/unit/test_validation_matrix_parity.py` | Delete. |
+| `tests/unit/test_introspect_entity_types.py` | Delete. |
+| `tests/unit/test_introspect_ontology_dict.py` | Delete. |
+| `tests/unit/test_introspect_relationship_types.py` | Delete. |
+| `tests/unit/test_introspect_validation_and_weights.py` | Delete. |
+| `tests/unit/test_ontology_source_flag.py` | Delete (ONTOLOGY_SOURCE is a no-op post-Task-51). |
+| `tests/unit/test_arcadedb_schema.py` | Keep file. Remove YAML-comparison assertions only; keep schema-creation assertions. |
+| `tests/fixtures/ontology/air_defense_v3_snapshot.yaml` | Delete. |
+
+**15 full test-file deletions + 1 in-place edit + 1 fixture deletion.** Each deleted file gets its own task in Chunk F so the diff stays reviewable.
 
 ### 7.3 New contract tests
 
@@ -374,32 +572,32 @@ Add 10 new tests (R-rule references link to docs):
 
 ### 7.5 Acceptance gate for test suite
 
-- All 19 contract tests pass (9 existing + 10 new); 0 xfails.
-- All parity tests deleted.
+- All 19 contract tests pass (**9 existing** in `test_docs_compliance_contracts.py` — count verified via `grep -c "^def test_"` — **+ 10 new**); 0 xfails.
+- All 15 parity test files + snapshot fixture deleted.
 - Anchor walker tests pass.
-- Full `pytest tests/unit/` run passes.
+- Full `pytest tests/unit/` run passes, zero failures.
 
 ## 8. Plan chunks and task count estimate
 
-| Chunk | Theme | Approx tasks |
+| Chunk | Theme | Tasks |
 |---|---|---|
-| A | Prep: contract tests (xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs | 6 |
-| B | Canonical `entities.py` rewrite — per-entity commits | 18 |
+| A | Prep: 10 new contract tests (added xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs | 6 |
+| B | Canonical `entities.py` rewrite — 2 drops + 15 give-identity + 12 demote + 3 batched touch-ups (see §2.6) | 32 |
 | C | Extraction schemas rewrite + manifest change + reference.py delete | 5 |
 | D | Docling anchor walker + new worker task + fixtures + tests | 4 |
-| E | Consumer updates — derive_rules, structure_links, arcadedb_graph, frontend, extraction_merge, canonicalization | 6 |
-| F | Test cleanup — delete parity tests, un-xfail contract tests, verify 19/19 | 3 |
-| G | Migration — write script, execute on 21-doc corpus, produce report, acceptance gate | 4 |
+| E | Consumer updates — derive_rules, structure_links, arcadedb_graph, frontend (3 lines), extraction_merge (1 line), dossier_service filter lists, query_profiles filter lists, canonicalization verification | 8 |
+| F | Test cleanup — 15 parity test deletions + 1 in-place edit + 1 fixture delete + un-xfail 2 contract tests + verify 19/19 | 6 |
+| G | Migration — write script, dry-run, execute on 21-doc corpus, produce report, acceptance gate | 4 |
 
-**Total: ~46 tasks, ~46 commits, ~8–15 days of execution.**
+**Total: ~65 tasks, ~65 commits, ~12–20 days of execution.**
 
-Sequencing: A → B → C → D, E after B/C/D, F after E, G last.
+Sequencing: A → B → C → D, E after B/C/D, F after E, G last. Chunk B's 32 tasks can technically parallelize by entity but per-entity sequential commits keep diffs reviewable.
 
 ## 9. Risks + mitigations
 
 | Risk | Mitigation |
 |---|---|
-| 18 canonical entity rewrites cause reviewer fatigue | One-entity-per-commit discipline in Chunk B. Each commit is small and individually reviewable. |
+| 29 canonical entity rewrites + 3 batched touch-ups cause reviewer fatigue | One-entity-per-commit discipline in Chunk B. Each commit is small and individually reviewable. Grouped batches (touch-ups 30–32) land as three small commits. |
 | Docling's `section_path` sparse on some docs → zero SECTIONs | §3.4 fallback emits single `section_number="0"` for document body. |
 | Migration on 21 docs is slow | MinIO originals preserved → no Docling re-conversion needed. ~1–3 hours LLM time total (acceptable). |
 | Frontend graph visualization shifts due to component demotion | Visually different ≠ broken. Document in migration report. Frontend doesn't need explicit changes beyond ASSERTION filter. |
