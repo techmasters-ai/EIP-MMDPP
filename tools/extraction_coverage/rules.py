@@ -207,8 +207,17 @@ def _check_schema_size(template_cls: type[BaseModel]) -> list[str]:
 def _check_recursive_partial_safety(template_cls: type[BaseModel]) -> list[str]:
     errors: list[str] = []
     for model in [template_cls, *_iter_nested_models(template_cls)]:
+        # Identity fields (graph_id_fields) are REQUIRED — partial identity
+        # destabilizes dedup. This rule exempts them so the partial-safety
+        # contract doesn't contradict the identity-required contract pinned
+        # by tests/unit/test_extraction_schemas.py::test_identity_fields_are_required.
+        identity_fields = set(
+            (model.model_config or {}).get("graph_id_fields", []) or []
+        )
         for field_name, field_info in model.model_fields.items():
             if field_name in SYSTEM_FIELDS:
+                continue
+            if field_name in identity_fields:
                 continue
             # In Pydantic v2, field_info.is_required() is the authoritative
             # check.  field_info.default is PydanticUndefined (not None) for

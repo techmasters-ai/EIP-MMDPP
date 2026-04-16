@@ -108,11 +108,10 @@ def test_identity_fields_are_required(module, class_name):
                 f"{model.__name__} declares graph_id_fields={identity_fields} "
                 f"but field {field_name!r} is not defined on the model."
             )
-            is_required = (
-                field_info.is_required()
-                and field_info.default is None
-                and field_info.default_factory is None
-            )
+            # is_required() already reflects "no default and no default_factory";
+            # the raw ``default`` is ``PydanticUndefined`` (sentinel) for
+            # required fields, not ``None``. Trust the Pydantic predicate.
+            is_required = field_info.is_required()
             assert is_required, (
                 f"{model.__name__}.{field_name} is an identity field "
                 f"(graph_id_fields) but is not required. Identity fields "

@@ -385,10 +385,6 @@ def test_descriptions_and_examples_on_extraction_relevant_fields():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 5: merge-preserving dedup validator lands on every pass-root list",
-)
 def test_pass_root_list_dedup_schema_local():
     """Pass-root list fields of entity classes with non-empty graph_id_fields
     must have a Pydantic model_validator that deduplicates by identity and
