@@ -27,7 +27,13 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
-def edge(label: str, **field_kwargs: Any) -> Any:
+def edge(
+    label: str,
+    *,
+    description: str | None = None,
+    examples: list | None = None,
+    **field_kwargs: Any,
+) -> Any:
     """Helper: declare a typed entity-to-entity edge field.
 
     Stores ``edge_label`` in ``json_schema_extra`` so introspection
@@ -37,11 +43,17 @@ def edge(label: str, **field_kwargs: Any) -> Any:
     Args:
         label: The relationship type name (e.g. ``"HAS_ANTENNA"``).
             Must match a member of ``RelationshipType``.
+        description: Forwarded to ``Field(description=...)``.
+        examples: Forwarded to ``Field(examples=...)``.
         **field_kwargs: Forwarded to ``Field`` (``default``,
-            ``default_factory``, ``description``, etc.).
+            ``default_factory``, etc.).
     """
     existing_extra = field_kwargs.pop("json_schema_extra", None) or {}
     existing_extra["edge_label"] = label
+    if description is not None:
+        field_kwargs["description"] = description
+    if examples is not None:
+        field_kwargs["examples"] = examples
     return Field(json_schema_extra=existing_extra, **field_kwargs)
 
 

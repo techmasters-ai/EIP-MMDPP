@@ -36,7 +36,13 @@ from ..validators import (
 )
 
 
-def edge(label: str, **field_kwargs: Any) -> Any:
+def edge(
+    label: str,
+    *,
+    description: str | None = None,
+    examples: list | None = None,
+    **field_kwargs: Any,
+) -> Any:
     """Helper: declare a typed entity-to-entity edge field.
 
     Per docs "Template Basics → Edge Helper Function → Required Definition":
@@ -44,6 +50,10 @@ def edge(label: str, **field_kwargs: Any) -> Any:
     """
     existing_extra = field_kwargs.pop("json_schema_extra", None) or {}
     existing_extra["edge_label"] = label
+    if description is not None:
+        field_kwargs["description"] = description
+    if examples is not None:
+        field_kwargs["examples"] = examples
     return Field(json_schema_extra=existing_extra, **field_kwargs)
 
 
