@@ -1,96 +1,494 @@
 {
   "planPath": "docs/superpowers/plans/2026-04-16-docling-graph-docs-alignment.md",
   "specPath": "docs/superpowers/plans/../specs/2026-04-16-docling-graph-docs-alignment-design.md",
-  "version": "v1 — post-brainstorming approval",
+  "version": "v1 \u2014 post-brainstorming approval",
   "notes": "77 tasks across 8 chunks. Blocks the earlier schema-compliance plan until Chunk G acceptance gate passes. Authoritative reference: docling-graph-docs.md at repo root.",
   "chunks": [
-    {"id": "A0", "subject": "Walker + schema prereqs", "tasks": 6, "status": "pending"},
-    {"id": "A",  "subject": "Contract tests + helper extensions", "tasks": 6, "status": "pending"},
-    {"id": "B",  "subject": "Canonical entities.py rewrite", "tasks": 32, "status": "pending", "blockedBy": ["A0", "A"]},
-    {"id": "C",  "subject": "Extraction schemas rewrite", "tasks": 5, "status": "pending", "blockedBy": ["B"]},
-    {"id": "D",  "subject": "Docling anchor walker + worker task", "tasks": 6, "status": "pending", "blockedBy": ["C"]},
-    {"id": "E",  "subject": "Consumer updates", "tasks": 11, "status": "pending", "blockedBy": ["B", "C", "D"]},
-    {"id": "F",  "subject": "Test cleanup", "tasks": 7, "status": "pending", "blockedBy": ["E"]},
-    {"id": "G",  "subject": "Migration + validation", "tasks": 4, "status": "pending", "blockedBy": ["F"]}
+    {
+      "id": "A0",
+      "subject": "Walker + schema prereqs",
+      "tasks": 6,
+      "status": "pending"
+    },
+    {
+      "id": "A",
+      "subject": "Contract tests + helper extensions",
+      "tasks": 6,
+      "status": "pending"
+    },
+    {
+      "id": "B",
+      "subject": "Canonical entities.py rewrite",
+      "tasks": 32,
+      "status": "pending",
+      "blockedBy": [
+        "A0",
+        "A"
+      ]
+    },
+    {
+      "id": "C",
+      "subject": "Extraction schemas rewrite",
+      "tasks": 5,
+      "status": "pending",
+      "blockedBy": [
+        "B"
+      ]
+    },
+    {
+      "id": "D",
+      "subject": "Docling anchor walker + worker task",
+      "tasks": 6,
+      "status": "pending",
+      "blockedBy": [
+        "C"
+      ]
+    },
+    {
+      "id": "E",
+      "subject": "Consumer updates",
+      "tasks": 11,
+      "status": "pending",
+      "blockedBy": [
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "id": "F",
+      "subject": "Test cleanup",
+      "tasks": 7,
+      "status": "pending",
+      "blockedBy": [
+        "E"
+      ]
+    },
+    {
+      "id": "G",
+      "subject": "Migration + validation",
+      "tasks": 4,
+      "status": "pending",
+      "blockedBy": [
+        "F"
+      ]
+    }
   ],
   "tasks": [
-    {"id": "A0-1", "subject": "Content-based identity for components", "status": "pending"},
-    {"id": "A0-2", "subject": "Walker emits components via edge_label", "status": "pending", "blockedBy": ["A0-1"]},
-    {"id": "A0-3", "subject": "Add 4 structural edge types", "status": "pending"},
-    {"id": "A0-4", "subject": "Relax contract test 9e", "status": "pending", "blockedBy": ["A0-2"]},
-    {"id": "A0-5", "subject": "test_components_have_no_edge_label_fields", "status": "pending"},
-    {"id": "A0-6", "subject": "test_arcadedb_schema_introspection.py", "status": "pending", "blockedBy": ["A0-3"]},
-    {"id": "A-1",  "subject": "edge() helper description+examples kwargs", "status": "pending"},
-    {"id": "A-2",  "subject": "Lenient coercer logging", "status": "pending"},
-    {"id": "A-3",  "subject": "quality_min_instances config", "status": "pending"},
-    {"id": "A-4",  "subject": "Identity contract tests (xfailed)", "status": "pending"},
-    {"id": "A-5",  "subject": "LLM-style + component contract tests (xfailed)", "status": "pending"},
-    {"id": "A-6",  "subject": "MergedEntityRecord component flag (if needed)", "status": "pending"},
-    {"id": "B-1",  "subject": "Drop AssertionEntity", "status": "pending"},
-    {"id": "B-2",  "subject": "Merge SpreadsheetEntity → DOCUMENT.source_type", "status": "pending"},
-    {"id": "B-3",  "subject": "DOCUMENT identity=document_number", "status": "pending"},
-    {"id": "B-4",  "subject": "SECTION identity=section_number", "status": "pending"},
-    {"id": "B-5",  "subject": "FIGURE identity=figure_ref", "status": "pending"},
-    {"id": "B-6",  "subject": "TABLE identity=table_ref", "status": "pending"},
-    {"id": "B-7",  "subject": "ORGANIZATION identity=name", "status": "pending"},
-    {"id": "B-8",  "subject": "STANDARD identity=designation", "status": "pending"},
-    {"id": "B-9",  "subject": "EQUIPMENT_SYSTEM identity=name", "status": "pending"},
-    {"id": "B-10", "subject": "COMPONENT identity=part_number", "status": "pending"},
-    {"id": "B-11", "subject": "ASSEMBLY identity=assembly_number", "status": "pending"},
-    {"id": "B-12", "subject": "CAPABILITY identity=capability_name", "status": "pending"},
-    {"id": "B-13", "subject": "PROCEDURE identity=name (document)", "status": "pending"},
-    {"id": "B-14", "subject": "FAILURE_MODE identity=name (document)", "status": "pending"},
-    {"id": "B-15", "subject": "TEST_EVENT identity=name", "status": "pending"},
-    {"id": "B-16", "subject": "FORCE_STRUCTURE identity=name", "status": "pending"},
-    {"id": "B-17", "subject": "SUBSYSTEM identity=name (document)", "status": "pending"},
-    {"id": "B-18", "subject": "SPECIFICATION → is_entity=False", "status": "pending"},
-    {"id": "B-19", "subject": "MODULATION → is_entity=False", "status": "pending"},
-    {"id": "B-20", "subject": "RF_SIGNATURE → is_entity=False", "status": "pending"},
-    {"id": "B-21", "subject": "RF_EMISSION → is_entity=False", "status": "pending"},
-    {"id": "B-22", "subject": "SCAN_PATTERN → is_entity=False", "status": "pending"},
-    {"id": "B-23", "subject": "IF_AMPLIFIER → is_entity=False", "status": "pending"},
-    {"id": "B-24", "subject": "MISSILE_PERFORMANCE → is_entity=False", "status": "pending"},
-    {"id": "B-25", "subject": "MISSILE_PHYSICAL_CHARACTERISTICS → is_entity=False", "status": "pending"},
-    {"id": "B-26", "subject": "PROPULSION_STACK → is_entity=False", "status": "pending"},
-    {"id": "B-27", "subject": "PROPULSION_STAGE → is_entity=False", "status": "pending"},
-    {"id": "B-28", "subject": "RADAR_PERFORMANCE → is_entity=False", "status": "pending"},
-    {"id": "B-29", "subject": "ENGAGEMENT_TIMELINE → is_entity=False", "status": "pending"},
-    {"id": "B-30", "subject": "R16/R17 example cleanup for 17 unchanged entities", "status": "pending"},
-    {"id": "B-31", "subject": "Flip remaining required non-identity fields to Optional", "status": "pending"},
-    {"id": "B-32", "subject": "edge() calls gain description+examples", "status": "pending"},
-    {"id": "C-1",  "subject": "Delete extraction_schemas/reference.py", "status": "pending"},
-    {"id": "C-2",  "subject": "Delete reference pass from manifest.yaml", "status": "pending"},
-    {"id": "C-3",  "subject": "Rewrite radar_domain.py", "status": "pending"},
-    {"id": "C-4",  "subject": "Rewrite missile_domain.py + other_systems.py", "status": "pending"},
-    {"id": "C-5",  "subject": "system_links.py R17 cleanup", "status": "pending"},
-    {"id": "D-1",  "subject": "_to_merged_entity_record helper", "status": "pending"},
-    {"id": "D-2",  "subject": "_extract_document_number_from_front_matter", "status": "pending"},
-    {"id": "D-3",  "subject": "Anchor walker walk()", "status": "pending", "blockedBy": ["D-1", "D-2"]},
-    {"id": "D-4",  "subject": "derive_document_anchors Celery task", "status": "pending", "blockedBy": ["D-3"]},
-    {"id": "D-5",  "subject": "DoclingDocument fixtures", "status": "pending"},
-    {"id": "D-6",  "subject": "Real-doc smoke test", "status": "pending", "blockedBy": ["D-4"]},
-    {"id": "E-1",  "subject": "derive_rules identity lookups", "status": "pending"},
-    {"id": "E-2",  "subject": "derive_structure_links SAME_SECTION comment", "status": "pending"},
-    {"id": "E-3",  "subject": "finalize_document REQUIRED_STAGES", "status": "pending"},
-    {"id": "E-4",  "subject": "arcadedb_graph docstring refresh", "status": "pending"},
-    {"id": "E-5",  "subject": "Frontend GraphExplorer + entityTypes", "status": "pending"},
-    {"id": "E-6",  "subject": "_NAME_LIKE_KEYS uses section_number", "status": "pending"},
-    {"id": "E-7",  "subject": "Dossier filter-list coverage test", "status": "pending"},
-    {"id": "E-8",  "subject": "canonicalization verification (no-op)", "status": "pending"},
-    {"id": "E-9",  "subject": "_classify_extraction_quality rewrite", "status": "pending"},
-    {"id": "E-10", "subject": "graph_store.count_ontology_nodes_sync (if missing)", "status": "pending"},
-    {"id": "E-11", "subject": "Update reference-assuming tests", "status": "pending"},
-    {"id": "F-1",  "subject": "Delete 3 parity tests (batch 1)", "status": "pending"},
-    {"id": "F-2",  "subject": "Delete 3 parity tests (batch 2)", "status": "pending"},
-    {"id": "F-3",  "subject": "Delete 3 parity tests (batch 3)", "status": "pending"},
-    {"id": "F-4",  "subject": "Delete 2 relationship-parity tests", "status": "pending"},
-    {"id": "F-5",  "subject": "Delete 4 introspect-parity tests", "status": "pending"},
-    {"id": "F-6",  "subject": "Delete test_arcadedb_schema + snapshot + ontology_source_flag", "status": "pending"},
-    {"id": "F-7",  "subject": "Drop xfail markers, verify 21/21 contract tests green", "status": "pending"},
-    {"id": "G-1",  "subject": "Write full_purge_and_reingest.py", "status": "pending"},
-    {"id": "G-2",  "subject": "Dry-run migration script", "status": "pending", "blockedBy": ["G-1"]},
-    {"id": "G-3",  "subject": "Real migration run on 21-doc corpus", "status": "pending", "blockedBy": ["G-2"]},
-    {"id": "G-4",  "subject": "Acceptance gate + commit migration report", "status": "pending", "blockedBy": ["G-3"]}
+    {
+      "id": "A0-1",
+      "subject": "Content-based identity for components",
+      "status": "completed",
+      "commit": "b7facc38"
+    },
+    {
+      "id": "A0-2",
+      "subject": "Walker emits components via edge_label",
+      "status": "pending",
+      "blockedBy": [
+        "A0-1"
+      ]
+    },
+    {
+      "id": "A0-3",
+      "subject": "Add 4 structural edge types",
+      "status": "pending"
+    },
+    {
+      "id": "A0-4",
+      "subject": "Relax contract test 9e",
+      "status": "pending",
+      "blockedBy": [
+        "A0-2"
+      ]
+    },
+    {
+      "id": "A0-5",
+      "subject": "test_components_have_no_edge_label_fields",
+      "status": "pending"
+    },
+    {
+      "id": "A0-6",
+      "subject": "test_arcadedb_schema_introspection.py",
+      "status": "pending",
+      "blockedBy": [
+        "A0-3"
+      ]
+    },
+    {
+      "id": "A-1",
+      "subject": "edge() helper description+examples kwargs",
+      "status": "pending"
+    },
+    {
+      "id": "A-2",
+      "subject": "Lenient coercer logging",
+      "status": "pending"
+    },
+    {
+      "id": "A-3",
+      "subject": "quality_min_instances config",
+      "status": "pending"
+    },
+    {
+      "id": "A-4",
+      "subject": "Identity contract tests (xfailed)",
+      "status": "pending"
+    },
+    {
+      "id": "A-5",
+      "subject": "LLM-style + component contract tests (xfailed)",
+      "status": "pending"
+    },
+    {
+      "id": "A-6",
+      "subject": "MergedEntityRecord component flag (if needed)",
+      "status": "pending"
+    },
+    {
+      "id": "B-1",
+      "subject": "Drop AssertionEntity",
+      "status": "pending"
+    },
+    {
+      "id": "B-2",
+      "subject": "Merge SpreadsheetEntity \u2192 DOCUMENT.source_type",
+      "status": "pending"
+    },
+    {
+      "id": "B-3",
+      "subject": "DOCUMENT identity=document_number",
+      "status": "pending"
+    },
+    {
+      "id": "B-4",
+      "subject": "SECTION identity=section_number",
+      "status": "pending"
+    },
+    {
+      "id": "B-5",
+      "subject": "FIGURE identity=figure_ref",
+      "status": "pending"
+    },
+    {
+      "id": "B-6",
+      "subject": "TABLE identity=table_ref",
+      "status": "pending"
+    },
+    {
+      "id": "B-7",
+      "subject": "ORGANIZATION identity=name",
+      "status": "pending"
+    },
+    {
+      "id": "B-8",
+      "subject": "STANDARD identity=designation",
+      "status": "pending"
+    },
+    {
+      "id": "B-9",
+      "subject": "EQUIPMENT_SYSTEM identity=name",
+      "status": "pending"
+    },
+    {
+      "id": "B-10",
+      "subject": "COMPONENT identity=part_number",
+      "status": "pending"
+    },
+    {
+      "id": "B-11",
+      "subject": "ASSEMBLY identity=assembly_number",
+      "status": "pending"
+    },
+    {
+      "id": "B-12",
+      "subject": "CAPABILITY identity=capability_name",
+      "status": "pending"
+    },
+    {
+      "id": "B-13",
+      "subject": "PROCEDURE identity=name (document)",
+      "status": "pending"
+    },
+    {
+      "id": "B-14",
+      "subject": "FAILURE_MODE identity=name (document)",
+      "status": "pending"
+    },
+    {
+      "id": "B-15",
+      "subject": "TEST_EVENT identity=name",
+      "status": "pending"
+    },
+    {
+      "id": "B-16",
+      "subject": "FORCE_STRUCTURE identity=name",
+      "status": "pending"
+    },
+    {
+      "id": "B-17",
+      "subject": "SUBSYSTEM identity=name (document)",
+      "status": "pending"
+    },
+    {
+      "id": "B-18",
+      "subject": "SPECIFICATION \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-19",
+      "subject": "MODULATION \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-20",
+      "subject": "RF_SIGNATURE \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-21",
+      "subject": "RF_EMISSION \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-22",
+      "subject": "SCAN_PATTERN \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-23",
+      "subject": "IF_AMPLIFIER \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-24",
+      "subject": "MISSILE_PERFORMANCE \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-25",
+      "subject": "MISSILE_PHYSICAL_CHARACTERISTICS \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-26",
+      "subject": "PROPULSION_STACK \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-27",
+      "subject": "PROPULSION_STAGE \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-28",
+      "subject": "RADAR_PERFORMANCE \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-29",
+      "subject": "ENGAGEMENT_TIMELINE \u2192 is_entity=False",
+      "status": "pending"
+    },
+    {
+      "id": "B-30",
+      "subject": "R16/R17 example cleanup for 17 unchanged entities",
+      "status": "pending"
+    },
+    {
+      "id": "B-31",
+      "subject": "Flip remaining required non-identity fields to Optional",
+      "status": "pending"
+    },
+    {
+      "id": "B-32",
+      "subject": "edge() calls gain description+examples",
+      "status": "pending"
+    },
+    {
+      "id": "C-1",
+      "subject": "Delete extraction_schemas/reference.py",
+      "status": "pending"
+    },
+    {
+      "id": "C-2",
+      "subject": "Delete reference pass from manifest.yaml",
+      "status": "pending"
+    },
+    {
+      "id": "C-3",
+      "subject": "Rewrite radar_domain.py",
+      "status": "pending"
+    },
+    {
+      "id": "C-4",
+      "subject": "Rewrite missile_domain.py + other_systems.py",
+      "status": "pending"
+    },
+    {
+      "id": "C-5",
+      "subject": "system_links.py R17 cleanup",
+      "status": "pending"
+    },
+    {
+      "id": "D-1",
+      "subject": "_to_merged_entity_record helper",
+      "status": "pending"
+    },
+    {
+      "id": "D-2",
+      "subject": "_extract_document_number_from_front_matter",
+      "status": "pending"
+    },
+    {
+      "id": "D-3",
+      "subject": "Anchor walker walk()",
+      "status": "pending",
+      "blockedBy": [
+        "D-1",
+        "D-2"
+      ]
+    },
+    {
+      "id": "D-4",
+      "subject": "derive_document_anchors Celery task",
+      "status": "pending",
+      "blockedBy": [
+        "D-3"
+      ]
+    },
+    {
+      "id": "D-5",
+      "subject": "DoclingDocument fixtures",
+      "status": "pending"
+    },
+    {
+      "id": "D-6",
+      "subject": "Real-doc smoke test",
+      "status": "pending",
+      "blockedBy": [
+        "D-4"
+      ]
+    },
+    {
+      "id": "E-1",
+      "subject": "derive_rules identity lookups",
+      "status": "pending"
+    },
+    {
+      "id": "E-2",
+      "subject": "derive_structure_links SAME_SECTION comment",
+      "status": "pending"
+    },
+    {
+      "id": "E-3",
+      "subject": "finalize_document REQUIRED_STAGES",
+      "status": "pending"
+    },
+    {
+      "id": "E-4",
+      "subject": "arcadedb_graph docstring refresh",
+      "status": "pending"
+    },
+    {
+      "id": "E-5",
+      "subject": "Frontend GraphExplorer + entityTypes",
+      "status": "pending"
+    },
+    {
+      "id": "E-6",
+      "subject": "_NAME_LIKE_KEYS uses section_number",
+      "status": "pending"
+    },
+    {
+      "id": "E-7",
+      "subject": "Dossier filter-list coverage test",
+      "status": "pending"
+    },
+    {
+      "id": "E-8",
+      "subject": "canonicalization verification (no-op)",
+      "status": "pending"
+    },
+    {
+      "id": "E-9",
+      "subject": "_classify_extraction_quality rewrite",
+      "status": "pending"
+    },
+    {
+      "id": "E-10",
+      "subject": "graph_store.count_ontology_nodes_sync (if missing)",
+      "status": "pending"
+    },
+    {
+      "id": "E-11",
+      "subject": "Update reference-assuming tests",
+      "status": "pending"
+    },
+    {
+      "id": "F-1",
+      "subject": "Delete 3 parity tests (batch 1)",
+      "status": "pending"
+    },
+    {
+      "id": "F-2",
+      "subject": "Delete 3 parity tests (batch 2)",
+      "status": "pending"
+    },
+    {
+      "id": "F-3",
+      "subject": "Delete 3 parity tests (batch 3)",
+      "status": "pending"
+    },
+    {
+      "id": "F-4",
+      "subject": "Delete 2 relationship-parity tests",
+      "status": "pending"
+    },
+    {
+      "id": "F-5",
+      "subject": "Delete 4 introspect-parity tests",
+      "status": "pending"
+    },
+    {
+      "id": "F-6",
+      "subject": "Delete test_arcadedb_schema + snapshot + ontology_source_flag",
+      "status": "pending"
+    },
+    {
+      "id": "F-7",
+      "subject": "Drop xfail markers, verify 21/21 contract tests green",
+      "status": "pending"
+    },
+    {
+      "id": "G-1",
+      "subject": "Write full_purge_and_reingest.py",
+      "status": "pending"
+    },
+    {
+      "id": "G-2",
+      "subject": "Dry-run migration script",
+      "status": "pending",
+      "blockedBy": [
+        "G-1"
+      ]
+    },
+    {
+      "id": "G-3",
+      "subject": "Real migration run on 21-doc corpus",
+      "status": "pending",
+      "blockedBy": [
+        "G-2"
+      ]
+    },
+    {
+      "id": "G-4",
+      "subject": "Acceptance gate + commit migration report",
+      "status": "pending",
+      "blockedBy": [
+        "G-3"
+      ]
+    }
   ],
-  "lastUpdated": "2026-04-16T00:00:00Z"
+  "lastUpdated": "2026-04-16T22:00:45.641709+00:00"
 }
