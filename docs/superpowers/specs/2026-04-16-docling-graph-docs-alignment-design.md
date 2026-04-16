@@ -228,6 +228,12 @@ def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
     # AFTER the push (for heading items — so a heading appears inside its own
     # section). This matches the chunking contract at converter.py:317.
 
+    # HEADING_LABELS intentionally narrower than converter.py:302–307 —
+    # converter includes PAGE_HEADER/PAGE_FOOTER so running headers/footers
+    # appear in chunk-level section_path strings. For graph-visible SECTION
+    # nodes those crumbs are noise (cosmetic repeats per page), so the
+    # walker excludes them. Deliberate divergence; do not add to this tuple
+    # without also considering the SECTION-node clutter trade-off.
     HEADING_LABELS = (
         DocItemLabel.SECTION_HEADER,
         DocItemLabel.TITLE,
