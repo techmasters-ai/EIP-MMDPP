@@ -1221,7 +1221,7 @@ Tests that must have xfail removed (listed by test function name — plan task n
 6. `test_every_class_declares_is_entity_explicitly`
 7. `test_descriptions_and_examples_on_extraction_relevant_fields`
 8. `test_pass_root_list_dedup_schema_local`
-9. `test_edge_label_targets_are_is_entity_true`
+9. `test_edge_label_targets_are_is_entity_true_or_is_component`
 
 - [ ] Commit: `test(schemas): drop xfail — nine contract tests are now release gates`
 
@@ -1953,7 +1953,7 @@ Rollback tolerance claim is verified for all known consumers. If a future consum
    - `test_every_class_declares_is_entity_explicitly`
    - `test_descriptions_and_examples_on_extraction_relevant_fields`
    - `test_pass_root_list_dedup_schema_local`
-   - `test_edge_label_targets_are_is_entity_true`
+   - `test_edge_label_targets_are_is_entity_true_or_is_component`
 
    Carve-outs for `SystemLinkRelationship` and pass-root list fields are coded into each test's fixture/parametrization — tests explicitly skip those classes rather than relying on implicit type inference.
 6. **Residual brittleness items resolved:** watcher consumes `IngestDispatchResult` (Phase 1). Provenance plumbing complete: `ExtractPassResponse.provenance` populated, `_serialize_for_audit` writes `mentions`, `derive_structure_links` produces non-zero entity-chunk edges (Phase 8).

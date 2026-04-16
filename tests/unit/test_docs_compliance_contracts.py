@@ -21,7 +21,7 @@ Plan task mapping (by contract-test function name):
 - test_every_class_declares_is_entity_explicitly              — Task 9b
 - test_descriptions_and_examples_on_extraction_relevant_fields — Task 9c
 - test_pass_root_list_dedup_schema_local                      — Task 9d
-- test_edge_label_targets_are_is_entity_true                  — Task 9e
+- test_edge_label_targets_are_is_entity_true_or_is_component  — Task 9e
 """
 from __future__ import annotations
 
@@ -459,11 +459,13 @@ def test_pass_root_list_dedup_schema_local():
 
 
 # ---------------------------------------------------------------------------
-# Task 9e: edge_label fields target is_entity=True classes.
+# Task 9e: edge_label fields target is_entity=True entities OR
+# is_entity=False components (§4.8). Components became valid edge targets
+# in A0-2; only a missing is_entity flag is a violation.
 # ---------------------------------------------------------------------------
 
 
-def test_edge_label_targets_are_is_entity_true():
+def test_edge_label_targets_are_is_entity_true_or_is_component():
     offenders: list[str] = []
     edge_label_fields = 0
     for cls, src in _iter_all_basemodels():
@@ -478,14 +480,16 @@ def test_edge_label_targets_are_is_entity_true():
             ]
             for t in targets:
                 tcfg = t.model_config or {}
-                if tcfg.get("is_entity") is not True:
+                flag = tcfg.get("is_entity")
+                if flag is None:
                     offenders.append(
-                        f"{src}.{cls.__name__}.{fname} -> {t.__name__} (is_entity={tcfg.get('is_entity')!r})"
+                        f"{src}.{cls.__name__}.{fname} -> {t.__name__} (is_entity not declared)"
                     )
+                # Both True (entity) and False (component) are now allowed.
     assert edge_label_fields > 0, (
         "No edge_label fields found — Phase 5 typed-edge migration not yet landed."
     )
     assert not offenders, (
-        "edge_label fields pointing at non-entity targets: "
+        "edge_label fields pointing at targets with no is_entity declared: "
         + ", ".join(offenders)
     )
