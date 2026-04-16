@@ -342,10 +342,6 @@ def test_extraction_views_subset_of_canonical_with_validator_parity():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2: every BaseModel gains an explicit is_entity setting",
-)
 def test_every_class_declares_is_entity_explicitly():
     offenders: list[str] = []
     total = 0
