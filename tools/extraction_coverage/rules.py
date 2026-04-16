@@ -250,8 +250,15 @@ def _check_extraction_subset_of_ontology(
         if not ontology_props:
             # Unknown entity name — rule 2 will catch the actual violation
             continue
-        for field_name in model.model_fields:
+        for field_name, field_info in model.model_fields.items():
             if field_name in SYSTEM_FIELDS:
+                continue
+            # Phase 5 typed edges: fields declared via edge(label=...) carry
+            # json_schema_extra["edge_label"]. Those are graph edges, not
+            # entity properties — the ontology declares them under
+            # relationships, not under properties. Exempt them from Rule 8.
+            extra = field_info.json_schema_extra or {}
+            if isinstance(extra, dict) and "edge_label" in extra:
                 continue
             if field_name not in ontology_props:
                 errors.append(

@@ -277,12 +277,37 @@ def test_extraction_views_subset_of_canonical_with_validator_parity():
                     f"{obj.__name__}: graph_id_fields={ev_ids} vs canonical={cn_ids}"
                 )
             # Every extraction field is a subset of canonical fields.
+            def _ontology_name_signature(ann):
+                """Reduce an annotation to a comparable signature where
+                BaseModel types are represented by their ontology_name so
+                that parallel narrow-view classes (extraction_schemas) and
+                canonical classes (entities.py) compare equal when they
+                refer to the same ontology entity."""
+                if ann is None:
+                    return None
+                if isinstance(ann, type) and issubclass(ann, BaseModel):
+                    return (
+                        "basemodel",
+                        (ann.model_config or {}).get("ontology_name") or ann.__name__,
+                    )
+                origin = get_origin(ann)
+                if origin is None:
+                    return ("raw", ann)
+                return (
+                    "generic",
+                    origin,
+                    tuple(_ontology_name_signature(a) for a in get_args(ann)),
+                )
+
             for fname, ev_finfo in obj.model_fields.items():
                 cn_finfo = canonical.model_fields.get(fname)
                 if cn_finfo is None:
                     offenders.append(f"{obj.__name__}.{fname} not on canonical")
                     continue
-                if ev_finfo.annotation != cn_finfo.annotation:
+                if (
+                    _ontology_name_signature(ev_finfo.annotation)
+                    != _ontology_name_signature(cn_finfo.annotation)
+                ):
                     offenders.append(
                         f"{obj.__name__}.{fname} type drift: "
                         f"{ev_finfo.annotation!r} vs {cn_finfo.annotation!r}"
