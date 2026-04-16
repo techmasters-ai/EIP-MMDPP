@@ -438,6 +438,8 @@ The four new labels `HAS_SECTION`, `HAS_FIGURE`, `HAS_TABLE`, `CHILD_OF` must be
 
 This classification preserves the separation of ontology-domain (LLM-extracted, validation-gated) vs structural (deterministic, layout-level) edges.
 
+**Explicit docs-adherence note:** `HAS_SECTION` / `HAS_FIGURE` / `HAS_TABLE` / `CHILD_OF` are **intentionally outside** the ontology relationship validation system. They are NOT registered in `RelationshipType` enum, NOT in `VALIDATION_MATRIX`, and NOT written via `upsert_relationships_batch_sync` (which enforces matrix triples and would reject them). They are written via `create_structural_edge_sync` (§3.5) — the same code path that writes `CONTAINS_TEXT`/`SAME_SECTION`/`HAS_PROVENANCE`/`EXTRACTED_FROM` today. This keeps ontology-domain semantics (radar-HAS_ANTENNA-antenna, missile-HAS_SEEKER-seeker, etc.) cleanly separated from document-layout semantics (doc-HAS_SECTION-section, section-CHILD_OF-section).
+
 **Prerequisite for Chunk D:** these declarations must land as part of Chunk A0 (new prep chunk, see §8) before Chunk D's anchor walker runs, or ArcadeDB will reject edge creation for undeclared types.
 
 ### 3.6 Manifest change
@@ -482,14 +484,27 @@ The existing `_dedupe_entities_by_identity` model_validator is hoisted from `ext
 
 No pass-root drop-invalid-identity validator is added. Library-level identity_filter + quality_gate handle bad LLM output for us (R22).
 
-### 4.3 Identity field examples (R16, R17)
+### 4.3 Identity field examples (R16, R17) — rule differs by source
 
-All `examples=[...]` lists on identity fields:
-- 2–5 distinct values.
-- Short.
-- Document-derived style for LLM-emitted identities (e.g. `examples=["AN/MPQ-65", "AN/TPY-2", "AN/SPY-6"]` for radar nomenclature).
-- Positional for Docling-derived identities (e.g. `examples=["1", "1.1", "2.3.4"]` for section_number).
-- No duplicates (catches current `examples=[42, 42]` anti-pattern).
+**LLM-emitted identities** (every `is_entity=True` class in `ontology_bundles/air_defense_v3/extraction_schemas/*.py`):
+- 2–5 distinct values; short; no duplicates.
+- **MUST NOT use section/chapter-heading style examples** per docs:18470 and R17. Forbidden patterns: bare numeric (`"1.1"`, `"2.3.4"`), heading titles (`"Chapter 3"`, `"Section 3.1"`), single letters (`"A"`), Roman numerals (`"III"`). These steer the LLM toward inventing heading-style IDs and trigger the library's identity filter.
+- Docs-preferred: named items, designators, refs. Examples:
+  - `RadarSystemEntity.system_name`: `["Tombstone", "AN/MPQ-65", "AN/TPY-2"]`
+  - `StandardEntity.designation`: `["MIL-STD-1553B", "MIL-DTL-31000G", "ANSI/IEEE 802.11"]`
+  - `ComponentEntity.part_number`: `["PN-12345-A", "5961-01-234-5678"]`
+- Enforced by the new contract test `test_llm_emitted_identity_examples_not_heading_style` (§7.3) which scans `extraction_schemas/*.py` only.
+
+**Docling-derived / system-constructed identities** (SECTION.section_number populated by the anchor walker; FIGURE.figure_ref / TABLE.table_ref populated from Docling `self_ref`):
+- Positional numeric is explicitly allowed per docs:18470 ("section numbers, figure/table labels, named items").
+- `SectionEntity.section_number`: `["1", "2.3", "4.1.2"]`.
+- `FigureEntity.figure_ref`: `["#/pictures/0", "#/pictures/12"]`.
+- `TableEntity.table_ref`: `["#/tables/0", "#/tables/3"]`.
+- Excluded from the LLM-style contract test scope because `entities.py` carries these — not `extraction_schemas/`.
+
+**Catches current anti-patterns:**
+- `examples=["Chapter 3: Maintenance Procedures", "Chapter 3: Maintenance Procedures"]` — heading-style + duplicated.
+- `examples=[42, 42]` — duplicated.
 
 ### 4.4 Optional non-identity fields (R19)
 
@@ -522,13 +537,13 @@ The current walker in `app/services/extraction_merge.py` has two lines that prev
 
 The docs pattern is: components ARE emitted as graph nodes when reached via an `edge(label=...)` field on a parent entity, deduplicated by full-content equality (not by `graph_id_fields`). The plan updates the walker and supporting schema to match:
 
-1. **Walker change 1 — component emission via edge:** When iterating `edge_label` fields on an entity, if the child is `is_entity=False`, emit it via `on_entity` (with a flag indicating "component"), construct a content-based identity, and do NOT recurse further. Components cannot contain other components as sub-edges (docs flatness rule R11).
+1. **Walker change 1 — component emission via edge:** When iterating `edge_label` fields on an entity, if the child is `is_entity=False`, emit it via `on_entity` (with a flag indicating "component"), construct a content-based identity (per step 4 below), and do NOT recurse further. The "no recurse" policy is safe only if we also enforce the schema rule that **components cannot carry their own `edge(label=...)` fields** — docs R11 (flatness, docs:16957) implies components should be leaf values, and docs:17517 (staged-extraction considerations) treats components as non-identity paths by default. The plan adds a new contract test `test_components_have_no_edge_label_fields` enforcing this at schema-validation time — any violation is a CI failure, preventing silent drop of content paths. If a future use-case genuinely needs component→component edges, that component should be promoted to `is_entity=True` with a proper identity.
 
 2. **Walker change 2 — embedded component short-circuit:** The existing `return` on line 564 stays for non-edge-reached components (embedded data inside a parent's non-edge fields). This preserves the current embedded-scalar semantics for components that aren't attached via `edge()`.
 
 3. **Contract test relaxation:** Test `test_edge_label_targets_are_is_entity_true` (contract Task 9e per existing plan tracker) is replaced with `test_edge_label_targets_are_is_entity_true_or_is_component`. Either target class is allowed, matching docs.
 
-4. **Content-based identity for components:** `_build_logical_identity` gains a branch for `is_entity=False` types: identity tuple is the full tuple of non-None scalar property values, sorted by field name. Two components with identical content produce identical identities → upsert merges them. This matches docs content-dedup semantics.
+4. **Content-based identity for components:** `_build_logical_identity` gains a branch for `is_entity=False` types. Per docs R3 (docs:17235 — *"All fields are used for deduplication"*), identity MUST cover **all fields in canonical form, including `None` and `list[primitive]` values**, not just non-None scalars. Concretely: iterate every field in `model_fields` order (deterministic via Pydantic v2), serialize each value canonically (`None` → literal `None`, `list[primitive]` → tuple of primitives), and wrap the full sequence as the identity tuple. Two components with identical field values (even with some fields `None`) produce identical identities → upsert merges them. A wider dedup key than "non-None scalars only" is required for docs alignment: otherwise a component with `{street: "X", city: None}` collides with `{street: "X", city: "Paris"}`, which is wrong.
 
 5. **ArcadeDB vertex classes — no new schema-creation work required.** Code path already creates vertex types for every entry in the `entity_types` output of `ontology_bundles/air_defense_v3/introspect.py:build_entity_types_list` (which iterates `ALL_ENTITIES.items()` at `introspect.py:136`), and `app/services/arcadedb_schema.py:185` iterates `ontology["entity_types"]` unconditionally. Because demoted components REMAIN in `ALL_ENTITIES` (they're still registered model classes, just with `is_entity=False`), they automatically get vertex classes once the canonical change in Chunk B lands. Common-props set is unchanged: every vertex class (entity or component) retains `id`, `name`, `entity_type`, `canonical_name`, `extraction_confidence`, `created_at`, `updated_at`. For component vertices, `name` is populated from content-fingerprint (derived from the content-based identity at step 4) rather than being left null — keeps `_upsert_node_impl_sync` at `arcadedb_graph.py:1722` working uniformly without a component-branch. No schema changes required; no NodeRecord redesign required.
 
@@ -784,6 +799,8 @@ Add 10 new tests (R-rule references link to docs):
 | `test_no_nested_property_dicts` | R11 | Non-edge, non-BaseModel properties are primitive or `list[primitive]`. |
 | `test_component_fields_attached_via_edge_helper` | R3 | Components used in catalog paths attach via `edge(label=...)` on parent entities. |
 | `test_identity_example_values_populated_for_library_filter` | R22 | Every `is_entity=True` model has ≥2 examples on every identity field. |
+| `test_components_have_no_edge_label_fields` | R11, docs:17517 | No `is_entity=False` class has any field with `json_schema_extra["edge_label"]`. Prevents component→component edges (see §4.8 walker change 1). |
+| `test_llm_emitted_identity_examples_not_heading_style` | R17, docs:18470 | For every `is_entity=True` model in `extraction_schemas/*.py` (LLM-emitted identities — excludes `entities.py` SECTION because that's Docling-derived per §2.5), every identity-field example string must not match a section/chapter-heading regex (`^\d+(\.\d+)*$`, `^(Chapter|Section|Part) `, `^[A-Z]$` single-letter, `^[IVX]+$` Roman-only). Ensures LLM prompts don't get steered toward invented heading-style IDs. |
 
 ### 7.4 New anchor-walker tests
 
@@ -794,7 +811,7 @@ Add 10 new tests (R-rule references link to docs):
 
 ### 7.5 Acceptance gate for test suite
 
-- All 19 contract tests pass (**9 existing** in `test_docs_compliance_contracts.py` — count verified via `grep -c "^def test_"` — **+ 10 new**); 0 xfails.
+- All 21 contract tests pass (**9 existing** in `test_docs_compliance_contracts.py` — count verified via `grep -c "^def test_"` — **+ 12 new**); 0 xfails.
 - All 17 parity/schema test files + snapshot fixture deleted; new `test_arcadedb_schema_introspection.py` (Chunk A0) passes.
 - Anchor walker tests pass.
 - Full `pytest tests/unit/` run passes, zero failures.
