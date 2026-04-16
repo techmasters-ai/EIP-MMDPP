@@ -44,15 +44,10 @@ def _flush_cache():
     invalidate_ontology_cache()
 
 
-@pytest.fixture(params=["yaml", "pydantic"])
-def ontology_source(request, monkeypatch):
-    monkeypatch.setenv("ONTOLOGY_SOURCE", request.param)
-    return request.param
-
-
-def test_default_lookup_canonical_parity_under_both_sources(ontology_source):
+def test_default_lookup_returns_introspection_matching_snapshot():
     """``load_ontology()`` with no args returns canonical-JSON-equivalent
-    output under ``ONTOLOGY_SOURCE=yaml`` and ``=pydantic``."""
+    output to the frozen snapshot fixture (the oracle since plan Task 51
+    deleted ontology_bundles/air_defense_v3/ontology.yaml)."""
     result = load_ontology()
     with ONTOLOGY_YAML.open() as f:
         yaml_truth = yaml.safe_load(f)
@@ -64,8 +59,8 @@ def test_default_lookup_canonical_parity_under_both_sources(ontology_source):
     )
 
 
-def test_explicit_bundle_key_canonical_parity_under_both_sources(ontology_source):
-    """``bundle_key='air_defense_v3'`` mirrors no-args behavior under both modes."""
+def test_explicit_bundle_key_matches_snapshot():
+    """``bundle_key='air_defense_v3'`` mirrors the no-args behavior."""
     result = load_ontology(bundle_key=SYSTEM_DEFAULT_BUNDLE_KEY)
     with ONTOLOGY_YAML.open() as f:
         yaml_truth = yaml.safe_load(f)
@@ -73,23 +68,33 @@ def test_explicit_bundle_key_canonical_parity_under_both_sources(ontology_source
     assert canonicalize_ontology_dict(result) == canonicalize_ontology_dict(yaml_truth)
 
 
-def test_pydantic_flag_returns_introspection_when_default_bundle(monkeypatch):
-    """Under ``ONTOLOGY_SOURCE=pydantic``, the no-args call returns the
-    Pydantic introspection dict (not a YAML deepcopy)."""
-    monkeypatch.setenv("ONTOLOGY_SOURCE", "pydantic")
+def test_default_bundle_returns_introspection_not_yaml():
+    """The default bundle path returns the Pydantic introspection dict
+    — there is no YAML file to fall back to after Task 51."""
     introspected = build_ontology_dict()
     loaded = load_ontology()
     assert canonicalize_ontology_dict(loaded) == canonicalize_ontology_dict(introspected)
 
 
-def test_explicit_path_always_uses_yaml_even_with_pydantic_flag(monkeypatch):
-    """Loader contract: an explicit path= always reads that file as
-    YAML, regardless of ONTOLOGY_SOURCE."""
-    monkeypatch.setenv("ONTOLOGY_SOURCE", "pydantic")
+def test_explicit_path_loads_referenced_yaml_file():
+    """Loader contract preserved: an explicit path= always reads that
+    file as YAML. Fixtures, tooling, and migration helpers all rely
+    on this path."""
     loaded = load_ontology(path=ONTOLOGY_YAML)
     with ONTOLOGY_YAML.open() as f:
         expected = yaml.safe_load(f)
     assert loaded == expected
+
+
+def test_ontology_source_env_var_is_obsolete_for_default_bundle(monkeypatch):
+    """Post-Task-51: ONTOLOGY_SOURCE has no effect on the default bundle
+    path — introspection is unconditional. Setting it to 'yaml' does
+    NOT re-engage a YAML loader (the bundle yaml no longer exists)."""
+    monkeypatch.setenv("ONTOLOGY_SOURCE", "yaml")
+    introspected = build_ontology_dict()
+    loaded = load_ontology()
+    # Same introspection dict whether env says 'yaml' or is unset.
+    assert canonicalize_ontology_dict(loaded) == canonicalize_ontology_dict(introspected)
 
 
 def test_non_default_bundle_key_falls_through_to_yaml(monkeypatch, tmp_path):

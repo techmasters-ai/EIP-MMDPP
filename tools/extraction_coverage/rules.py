@@ -426,10 +426,24 @@ def check_bundle(bundle_path: Path) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
 
-    ontology = yaml.safe_load((bundle_path / "ontology.yaml").read_text())
+    bundle_key = bundle_path.name
+    # Plan Task 51 (Phase 6) deleted ontology.yaml from the air_defense_v3
+    # bundle; load via the Pydantic introspection path for that bundle,
+    # else fall back to per-bundle ontology.yaml for any future bundle
+    # that hasn't been migrated yet.
+    ontology_yaml_path = bundle_path / "ontology.yaml"
+    if ontology_yaml_path.exists():
+        ontology = yaml.safe_load(ontology_yaml_path.read_text())
+    elif bundle_key == "air_defense_v3":
+        from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
+        ontology = build_ontology_dict()
+    else:
+        raise FileNotFoundError(
+            f"No ontology source for bundle '{bundle_key}' (no ontology.yaml "
+            f"at {ontology_yaml_path} and no introspection module)"
+        )
     manifest = yaml.safe_load((bundle_path / "manifest.yaml").read_text())
     coverage = yaml.safe_load((bundle_path / "coverage.yaml").read_text())
-    bundle_key = bundle_path.name
 
     errors += _check_coverage_subset(ontology, coverage)
     errors += _check_manifest_entities_in_coverage(manifest, coverage)

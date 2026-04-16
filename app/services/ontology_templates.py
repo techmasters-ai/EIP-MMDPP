@@ -129,21 +129,21 @@ def load_ontology(
     """Load an ontology definition.
 
     Resolution order (exactly one applies):
-    1. If `path` is given, load directly from that file. (YAML only;
-       ``ONTOLOGY_SOURCE`` is ignored so explicit-path loads stay
-       deterministic.)
-    2. Else if the resolved bundle is ``air_defense_v3`` AND
-       ``ONTOLOGY_SOURCE`` is unset or ``pydantic`` (default), return
-       Pydantic introspection output (canonical-JSON-equivalent to
-       the YAML; see ``ontology_bundles.air_defense_v3.introspect``).
-    3. Else if `bundle_key` is given, load that bundle's ontology.yaml.
-    4. Else load the system default bundle's ontology.yaml
-       (``air_defense_v3``) — explicit ``ONTOLOGY_SOURCE=yaml``
-       escape hatch for rollback / debugging during the transition.
+    1. If ``path`` is given, load directly from that file (YAML). The
+       ``path=`` contract is preserved permanently for fixtures,
+       tooling, and any caller that already points at a YAML file.
+    2. Else if the resolved bundle is ``air_defense_v3``, return the
+       Pydantic introspection output. This is the only source for the
+       default bundle after plan Task 51 deleted
+       ``ontology_bundles/air_defense_v3/ontology.yaml``; the
+       ``ONTOLOGY_SOURCE`` env var that previously gated this path is
+       obsolete and no longer consulted.
+    3. Else fall through to the per-bundle YAML lookup. No other
+       bundles exist today; the path is retained so future bundles
+       can ship as YAML until they are separately migrated.
 
     This function never consults the registry/version-pinning store.
-    For version-pinned loads, call load_registry_ontology(version_id)
-    explicitly.
+    For version-pinned loads, call ``load_registry_ontology(version_id)``.
 
     Raises UnknownBundleError when bundle_key does not resolve.
     """
@@ -151,10 +151,7 @@ def load_ontology(
         with open(path) as f:
             return yaml.safe_load(f)
     resolved_key = bundle_key or SYSTEM_DEFAULT_BUNDLE_KEY
-    if (
-        os.environ.get("ONTOLOGY_SOURCE", "pydantic").lower() == "pydantic"
-        and resolved_key == "air_defense_v3"
-    ):
+    if resolved_key == "air_defense_v3":
         from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
 
         return build_ontology_dict()
@@ -193,8 +190,21 @@ def load_registry_ontology(version_id: str) -> dict[str, Any]:
 
 
 def get_ontology_cache_signature(bundle_key: str | None = None) -> str:
-    """Return a cache signature for the named bundle (or system default)."""
+    """Return a cache signature for the named bundle (or system default).
+
+    For ``air_defense_v3`` (post-Task-51 introspection-backed bundle),
+    derive the signature from the hash of the canonical introspection
+    dict — stable per Python process and changes only when the
+    Pydantic classes change.
+    """
     resolved_key = bundle_key or SYSTEM_DEFAULT_BUNDLE_KEY
+    if resolved_key == "air_defense_v3":
+        from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
+        import hashlib
+        import json
+        dump = json.dumps(build_ontology_dict(), sort_keys=True, default=str)
+        digest = hashlib.sha256(dump.encode()).hexdigest()[:16]
+        return f"pydantic:{resolved_key}:{digest}"
     _, sig = _ensure_bundle_cached(resolved_key)
     return sig
 
