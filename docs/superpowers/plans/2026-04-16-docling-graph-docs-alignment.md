@@ -100,7 +100,7 @@ def _build_logical_identity(entity_type, node, ontology, document_id):
     # ... existing entity branch unchanged
 ```
 
-Also update `NodeRecord` construction for components (wherever records are built from `MergedEntityRecord`): populate `name` from a content fingerprint so `_upsert_node_impl_sync` at `arcadedb_graph.py:1722` keeps writing uniformly. See `_to_merged_entity_record` spec §8.2 — component case sets `display_label` from the content digest.
+Also update `NodeRecord` construction for components (wherever records are built from `MergedEntityRecord`): populate `name` from a content fingerprint so `_upsert_node_impl_sync` at `arcadedb_graph.py:1722` keeps writing uniformly. **Fingerprint formula (pinned so two executors can't diverge):** `name = f"{ontology_name.lower()}-{sha1(repr(identity_values).encode()).hexdigest()[:16]}"` — e.g. `"modulation-0a1b2c3d4e5f6789"`. See `_to_merged_entity_record` spec §8.2 — component case sets `display_label` from this same fingerprint.
 
 - [ ] **Step 4: Run tests to verify they pass + full suite**
   `.venv/bin/python -m pytest tests/unit/test_build_logical_identity_components.py -v` → PASS
@@ -439,9 +439,11 @@ def test_edge_helper_accepts_description_and_examples():
 
 - [ ] **Step 2: Run → FAIL** (current `edge()` doesn't forward description/examples to Field).
 
-- [ ] **Step 3: Update `edge()`**
+- [ ] **Step 3: Update `edge()`** (add `from pydantic import Field` import at the top of each affected file if not already present)
 
 ```python
+from pydantic import Field  # ensure at top of file
+
 def edge(label: str, *, description: str | None = None, examples: list | None = None, **field_kwargs):
     existing_extra = field_kwargs.pop("json_schema_extra", None) or {}
     existing_extra["edge_label"] = label
@@ -661,7 +663,7 @@ Plan: docs-alignment"
 - Create: `tests/unit/contracts/test_extraction_schema_contract.py`
 - Create: `tests/unit/contracts/test_component_contract.py`
 
-- [ ] **Step 1: Write 5 tests (xfailed)**
+- [ ] **Step 1: Write 4 tests (xfailed)** — 3 in `test_extraction_schema_contract.py` + 1 in `test_component_contract.py`. (Together with A-4's 7 tests + A0-5's 1 test = 12 new contract tests total.)
 
 ```python
 # tests/unit/contracts/test_extraction_schema_contract.py
@@ -807,23 +809,20 @@ git commit -m "test(contracts): LLM-style + component contract tests (xfailed) (
 Plan: docs-alignment"
 ```
 
-### Task A-6: Extend `MergedEntityRecord` + NodeRecord for component stamping (if needed)
+### Task A-6: Audit `MergedEntityRecord` component-flag need (skippable)
 
 **Files:**
-- Modify: `app/services/extraction_merge.py` — add `is_component: bool = False` flag on `MergedEntityRecord` if downstream needs to branch
-- Test: `tests/unit/test_merged_entity_record_shape.py` (new)
+- Optional modify: `app/services/extraction_merge.py` — add `is_component: bool = False` on `MergedEntityRecord` if audit reveals a need.
 
-- [ ] **Step 1: Audit** — grep call sites that read `MergedEntityRecord.properties` and decide whether a flag is needed. If downstream can distinguish by `model_config["is_entity"]` via identity, skip this task (no-op).
+- [ ] **Step 1: Audit decision — mechanically falsifiable.** Run:
+  ```
+  grep -rn "MergedEntityRecord\." app/ | grep -v "tests/\|__pycache__" | grep -vE "\.identity|\.properties|\.confidence|\.pass_origins|\.display_label"
+  ```
+  If the grep returns zero hits (all call sites use documented fields only), the task is a no-op — **SKIP this task, no commit.** If any site reads a would-be `is_component` flag, proceed to step 2.
 
-- [ ] **Step 2: If needed**, add the flag with a minimal test and commit. Else commit a note-only change (empty task OK).
+- [ ] **Step 2: If step 1 found call sites**, add `is_component: bool = False` field, update all call sites to populate it from `cfg["is_entity"] is False`, add a unit test, and commit: `feat(merge): MergedEntityRecord.is_component (A-6)`
 
-- [ ] **Step 3: Commit if applicable**
-
-```bash
-git commit -m "chore(merge): MergedEntityRecord component-flag (if needed) (A-6)
-
-Plan: docs-alignment"
-```
+- [ ] **Step 3: If skipped**, record the grep output + "SKIP" decision in the task's checkbox comment. No commit.
 
 ---
 
@@ -862,8 +861,8 @@ Run applicable contract tests after each: once all B-3..B-17 land, `test_entity_
 
 - [ ] **B-3** DocumentEntity: `graph_id_fields=["document_number"]`. Also: `document_id` field (internal UUID) STAYS as non-identity property (preserves structural-vs-ontology distinction from spec §2.2 thesis 2). Commit: `refactor(entities): DOCUMENT identity=document_number (B-3)`
 - [ ] **B-4** SectionEntity: `graph_id_fields=["section_number"]` + add `heading`, `section_path`, `document_id` as Optional[str]=None non-identity properties (spec §2.2). Commit: `refactor(entities): SECTION identity=section_number (B-4)`
-- [ ] **B-5** FigureEntity: `graph_id_fields=["figure_ref"]` + `figure_label`, `document_id` Optional. Commit: `refactor(entities): FIGURE identity=figure_ref (B-5)`
-- [ ] **B-6** TableEntity: `graph_id_fields=["table_ref"]` + `table_label`, `document_id` Optional. Commit: `refactor(entities): TABLE identity=table_ref (B-6)`
+- [ ] **B-5** FigureEntity: `graph_id_fields=["figure_ref"]` required; add `figure_label: Optional[str] = None` + `document_id: Optional[str] = None` as non-identity properties (spec §2.2). Commit: `refactor(entities): FIGURE identity=figure_ref (B-5)`
+- [ ] **B-6** TableEntity: `graph_id_fields=["table_ref"]` required; add `table_label: Optional[str] = None` + `document_id: Optional[str] = None` as non-identity properties (spec §2.2). Commit: `refactor(entities): TABLE identity=table_ref (B-6)`
 - [ ] **B-7** OrganizationEntity: `graph_id_fields=["name"]`. Commit: `refactor(entities): ORGANIZATION identity=name (B-7)`
 - [ ] **B-8** StandardEntity: `graph_id_fields=["designation"]`. Commit: `refactor(entities): STANDARD identity=designation (B-8)`
 - [ ] **B-9** EquipmentSystemEntity: `graph_id_fields=["name"]`. Commit: `refactor(entities): EQUIPMENT_SYSTEM identity=name (B-9)`
@@ -897,7 +896,7 @@ Each flip: set `is_entity=False`, remove `graph_id_fields` (empty tuple), flip a
 
 - [ ] **B-30** All 17 unchanged entities: apply R16/R17 example-list cleanup (no duplicates, distinct values, heading-style examples removed from LLM-emitted identities). One commit across the batch. See spec §4.3 and §2.4 for which entities. Commit: `refactor(entities): R16/R17 example cleanup for 17 unchanged entities (B-30)`
 - [ ] **B-31** All entities: audit and flip any remaining required non-identity fields to `Optional[T] = None`. Commit: `refactor(entities): flip remaining required non-identity fields to Optional (B-31)`
-- [ ] **B-32** Update every `edge(label=...)` call site in `entities.py` to add `description` + `examples` per A-1's extended helper. The 10 new contract tests in A-4/A-5 should now all un-xfail. **DO NOT drop xfail markers here — that's Chunk F.** Commit: `refactor(entities): edge() calls gain description+examples (B-32)`
+- [ ] **B-32** Update every `edge(label=...)` call site in `entities.py` to add `description` + `examples` per A-1's extended helper. After B-32 lands, the 11 new contract tests in A-4/A-5 will have their underlying assertions PASS — but their `xfail(strict=True)` markers are still in place, so pytest reports them as `XFAIL` (failure hidden by marker). **DO NOT drop markers here — Chunk F does that explicitly.** Commit: `refactor(entities): edge() calls gain description+examples (B-32)`
 
 ---
 
@@ -1076,7 +1075,14 @@ Plan: docs-alignment"
 - Modify: `app/services/docling_anchors.py` — add `walk()` function
 - Test: `tests/unit/test_docling_anchor_walker.py` (main battery)
 
-- [ ] **Step 1: Failing tests** — 6-8 fixtures exercising: empty-structure fallback, 3-level hierarchy, figure+table counts from pictures/tables arrays, CHILD_OF edges by path prefix, HAS_* skipped when document_number absent.
+- [ ] **Step 1: Failing tests** — exercise each of these 7 scenarios (one test per scenario):
+  1. Empty-structure doc → fallback emits single SECTION(section_number="0").
+  2. 3-level hierarchy (Chapter 1 → Section 1.1 → Subsection 1.1.2) → 3 SECTION records with numbers "1", "1.1", "1.1.1".
+  3. Two siblings at same depth ({A,B} → {A,C}) → B gets "1.1", C gets "1.2".
+  4. Figure count matches `docling_document.pictures` length; each figure_ref = the item's `self_ref`.
+  5. Table count matches `docling_document.tables` length.
+  6. CHILD_OF edges: for each path_tuple with non-empty parent tuple, one edge from child SECTION to parent SECTION.
+  7. HAS_SECTION/HAS_FIGURE/HAS_TABLE edges are skipped entirely when no document_number extractable (doc_entity is None).
 
 - [ ] **Step 2: Implement `walk()` per spec §3.3 pseudocode** — full function with section_stack, `_register_section`, `_caption_label`, conditional DocumentEntity, edge construction using `MergedEdgeRecord(from_identity=, to_identity=, rel_type=, confidence=1.0, pass_origins={"document_anchors"})`, return `MergedExtraction(entities=, edges=, rejected_edges=[], rejections_by_pass={}, pipeline_run_id=, document_id=)`.
 
@@ -1264,7 +1270,8 @@ Each fixture is a minimal JSON matching the `DoclingDocument.model_dump()` shape
 ### Task E-7: `dossier_service.py` + `query_profiles.py` filter-list audit
 
 - [ ] Audit `app/services/dossier_service.py:38-68` lists + `app/services/query_profiles.py:49-79` lists.
-- [ ] No removals needed per spec §6.1 — demoted components retain their ontology_name. Add integration test that issues a dossier query for each demoted-to-component entity type and asserts non-zero results when the data exists.
+- [ ] No removals needed per spec §6.1 — demoted components retain their ontology_name.
+- [ ] Create `tests/integration/test_dossier_component_coverage.py` (marked `@pytest.mark.integration`): for each of the 13 demoted ontology_names (MODULATION, RF_SIGNATURE, RF_EMISSION, SCAN_PATTERN, IF_AMPLIFIER, SPECIFICATION, MISSILE_PERFORMANCE, MISSILE_PHYSICAL_CHARACTERISTICS, PROPULSION_STACK, PROPULSION_STAGE, RADAR_PERFORMANCE, ENGAGEMENT_TIMELINE, SUBSYSTEM — wait, SUBSYSTEM stays entity; use just the 12 demoted), issue a dossier query and assert graph-store-level vertex-match at least 1 when test-fixture data is loaded.
 - [ ] Commit: `test(retrieval): dossier filter-list component-vertex coverage (E-7)`
 
 ### Task E-8: `canonicalization.py` verification
@@ -1349,9 +1356,9 @@ Plan: docs-alignment"
 
 ### Task F-7: Drop xfail markers + verify 21/21
 
-- [ ] Remove `@pytest.mark.xfail(strict=True, reason="Chunk B will fix")` from the 12 new contract tests in `tests/unit/contracts/*`
-- [ ] Remove the 2 remaining xfails from `tests/unit/test_docs_compliance_contracts.py` (`test_identity_fields_have_examples`, `test_descriptions_and_examples_on_extraction_relevant_fields`)
-- [ ] Run `.venv/bin/python -m pytest tests/unit/ -q` — expect: **21 contract tests green, 0 xfails remain**.
+- [ ] Remove `@pytest.mark.xfail(strict=True, reason="Chunk B will fix")` from the **11 tests under `tests/unit/contracts/*`** (7 in `test_identity_contract.py` from A-4 + 3 in `test_extraction_schema_contract.py` + 1 in `test_component_contract.py`, both from A-5). A0-5's `test_components_have_no_edge_label_fields` lives in `test_docs_compliance_contracts.py` and was never xfailed (passes from the start).
+- [ ] Remove the 2 remaining xfails from `tests/unit/test_docs_compliance_contracts.py` (`test_identity_fields_have_examples`, `test_descriptions_and_examples_on_extraction_relevant_fields`).
+- [ ] Run `.venv/bin/python -m pytest tests/unit/ -q` — expect: **21 contract tests green** (9 existing in `test_docs_compliance_contracts.py` + 1 new there from A0-5 + 11 under `tests/unit/contracts/`), **0 xfails remain**.
 - [ ] Commit: `test(contracts): drop xfails, all 21 contract tests green (F-7)`
 
 ---
@@ -1393,6 +1400,7 @@ Plan: docs-alignment"
 - [ ] Execute `.venv/bin/python scripts/full_purge_and_reingest.py --i-understand-this-deletes-derived-data`.
 - [ ] Wait 3-6 hours for completion.
 - [ ] Report lands at `/tmp/migration-report-{timestamp}.md`.
+- [ ] **Partial-run recovery:** if any doc errors out mid-run, capture `docker logs eip-mmdpp-worker-1 --since <start-time>` and `docker logs eip-mmdpp-docling-graph-1 --since <start-time>` into `/tmp/migration-failure-{timestamp}.log`. Root-cause before re-running. **Do NOT proceed to G-4 on a partial run** — the acceptance gate is an all-or-nothing signal.
 - [ ] No commit (observational).
 
 ### Task G-4: Acceptance gate
@@ -1418,10 +1426,12 @@ Plan: docs-alignment"
 
 ---
 
-## Post-plan: handoff to current plan
+## Post-plan: handoff to previous plan (user-directed)
+
+Per user instruction 2026-04-16: "When the docling-graph-docs-alignment task is completed, move on to completing the previous plan."
 
 Once G-4 commits the acceptance gate:
 
-- [ ] Open `docs/superpowers/plans/2026-04-14-docling-graph-schema-compliance.md.tasks.json` and mark Task 53 as unblocked.
-- [ ] Resume via `/superpowers-extended-cc:executing-plans docs/superpowers/plans/2026-04-14-docling-graph-schema-compliance.md`.
+- [ ] Open `docs/superpowers/plans/2026-04-14-docling-graph-schema-compliance.md.tasks.json` and mark Task 53 as unblocked (was blocked pending this plan's acceptance).
+- [ ] **Resume the previous plan** via `/superpowers-extended-cc:executing-plans docs/superpowers/plans/2026-04-14-docling-graph-schema-compliance.md`. Remaining tasks there: Task 53 (live E2E gate on b1b0d596), Task 54 (3+ doc regression), Task 50 remainder (drop final 2 xfails if still present — may be a no-op since this plan's F-7 already dropped them), Tasks 67–72 / 78 (Phase 8 provenance plumbing — `ExtractionProvenance`, element_uid/bbox/mentions), Task 55 (final summary + MEMORY). Roughly ~10–15 remaining tasks + Phase 8.
 - [ ] Update `/home/josh/.claude/projects/-home-josh-development-EIP-MMDPP/memory/MEMORY.md` — add a project memory pointing at this plan's commit SHA as the canonical reset point.
