@@ -203,7 +203,7 @@ def build_class_source(et: dict, edge_fields: list[tuple], is_entity: bool) -> s
         )
 
     # System confidence — only emit if YAML does not already declare a
-    # domain `confidence` property (e.g. ASSERTION). Tag with
+    # domain `confidence` property. Tag with
     # ``json_schema_extra={"system_field": True}`` so introspection can
     # filter it out when producing a YAML-parity ``properties`` view.
     if is_entity and "confidence" not in props:

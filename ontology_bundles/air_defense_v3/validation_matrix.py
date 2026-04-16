@@ -32,10 +32,10 @@ VALIDATION_MATRIX: frozenset[tuple[str, RelationshipType, str]] = frozenset({
     ("ANTENNA", RelationshipType.PART_OF, "RADAR_SYSTEM"),
     ("ANTENNA", RelationshipType.RADIATES, "RF_EMISSION"),
     ("ASSEMBLY", RelationshipType.PART_OF, "EQUIPMENT_SYSTEM"),
-    # TODO(docs-alignment Chunk F): ASSERTION triples pending removal.
-    # AssertionEntity was dropped in B-1 (commit 2498a20); these entries
-    # remain dead but are kept for parity with relationships.py until
-    # Chunk F's test cleanup.
+    # TODO(docs-alignment): ASSERTION triples are dead — the AssertionEntity
+    # class was dropped in B-1 (commit 2498a20). They're retained here for
+    # parity with relationships.py + the YAML snapshot; once F-4 deletes the
+    # parity tests, these rows can be stripped.
     ("ASSERTION", RelationshipType.ABOUT, "COMPONENT"),
     ("ASSERTION", RelationshipType.ABOUT, "EQUIPMENT_SYSTEM"),
     ("ASSERTION", RelationshipType.ABOUT, "MISSILE_SYSTEM"),
