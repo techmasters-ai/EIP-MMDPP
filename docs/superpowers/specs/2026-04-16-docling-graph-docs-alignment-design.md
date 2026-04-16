@@ -13,11 +13,13 @@ This plan realigns the `air_defense_v3` canonical ontology and extraction schema
 
 ### Core theses
 
-1. **Document structure comes from Docling, not the LLM.** SECTION/FIGURE/TABLE/DOCUMENT are emitted by a new deterministic worker pre-pass that walks `DoclingDocument` structure. The LLM reference pass is deleted.
-2. **Every canonical entity gets a docs-compliant identity.** No `graph_id_fields=[]`. No long-text identities. No multi-field identities for document structure. Value objects become `is_entity=False` components.
-3. **ASSERTION is dropped** from the ontology entirely (YAGNI — reintroduce later with real design if a concrete use-case emerges).
-4. **Schemas are fault-tolerant by construction.** Strict required identity + lenient coercers on non-identity fields + library-level identity filter and quality gate (R22) handle messy LLM output.
-5. **Full corpus re-ingest after canonical changes.** 21 docs re-processed via full pipeline to validate end-to-end on new schemas.
+1. **Document structure comes from Docling, not the LLM.** SECTION/FIGURE/TABLE are emitted by a new deterministic worker pre-pass that walks `DoclingDocument` structure. The LLM reference pass is deleted. (Ontology DOCUMENT is distinct from the structural `Document` graph vertex — see thesis 2.)
+2. **Two DOCUMENT concepts, keep them separate.** The **structural `Document`** vertex (capitalized, ArcadeDB class, identity = UUID) remains the target of `HAS_PROVENANCE`/`CONTAINS_TEXT`/`EXTRACTED_FROM` and is created by `_ensure_structural_document_vertex` + `derive_structure_links` — unchanged by this plan. The **ontology `DOCUMENT`** entity (uppercase, `entities.py`, identity = `document_number` like `"TM 9-1425-386-12"`) is created by the new anchors pre-pass only when `document_number` is extractable; otherwise skipped.
+3. **Every canonical entity gets a docs-compliant identity.** No `graph_id_fields=[]`. No long-text identities. No multi-field identities for document structure. Value objects become `is_entity=False` components.
+4. **Components are first-class graph vertices per docs.** The existing walker hard-skips components (`extraction_merge.py:564`, `:593`), a divergence from docs where components are shared graph nodes (docs:17500–17509). The plan updates the walker to emit components reached via `edge(label=...)` as proper graph vertices with content-based dedup, matching docs.
+5. **ASSERTION is dropped** from the ontology entirely (YAGNI — reintroduce later with real design if a concrete use-case emerges).
+6. **Schemas are fault-tolerant by construction.** Strict required identity + lenient coercers on non-identity fields + library-level identity filter and quality gate (R22) handle messy LLM output.
+7. **Full corpus re-ingest after canonical changes.** 21 docs re-processed via full pipeline (including Docling reconversion in `prepare_document`) to validate end-to-end on new schemas.
 
 ### Out of scope
 
@@ -48,7 +50,7 @@ The audit examined all 46 canonical entities in `ontology_bundles/air_defense_v3
 
 | Entity | Current | New `graph_id_fields` | Scope | Notes |
 |---|---|---|---|---|
-| DOCUMENT | `[]` | `["document_id"]` required | global | Internal UUID assigned at upload. Populated by `derive_document_anchors`, never by LLM. Not subject to R14 "descriptive ID" because it's system-constructed, not LLM-emitted. |
+| DOCUMENT | `[]` | `["document_number"]` required | global | Ontology-level identity = official document designator (e.g. `"TM 9-1425-386-12"`, `"MIL-STD-1553B"`). **Distinct from the structural `Document` vertex** whose identity is the internal UUID and whose lifecycle stays in `derive_structure_links`. The anchors walker emits ontology DOCUMENT only when `document_number` is extractable from the source (e.g. front-matter designator); otherwise no ontology DOCUMENT is created for that doc — the structural vertex still exists. |
 | SECTION | `["heading","page_start"]` | `["section_number"]` required | document | Positional enumeration from Docling `section_path` walk (e.g. `"1"`, `"1.1"`, `"2.3.4"`). R17 exempted because Docling-derived (see §2.5 rationale). `heading` becomes descriptive property. |
 | FIGURE | `["figure_id","page"]` | `["figure_ref"]` required | document | Docling `self_ref` (e.g. `"#/pictures/3"`). `figure_label: Optional[str]` added as descriptive property for human-readable labels (`"Figure 3-12"` pulled from Docling caption when available). |
 | TABLE | `["table_id","page"]` | `["table_ref"]` required | document | Docling `self_ref` (e.g. `"#/tables/1"`). `table_label: Optional[str]` added as descriptive property. |
@@ -126,7 +128,7 @@ For the implementation plan's Chunk B, this is the per-entity rewrite task list.
 2. Delete `SpreadsheetEntity` + merge into `DocumentEntity.source_type` enum.
 
 **Give-identity batch (15 tasks):**
-3. `DocumentEntity.graph_id_fields=["document_id"]` required.
+3. `DocumentEntity.graph_id_fields=["document_number"]` required; rename `document_id` field (if present) to avoid collision with structural vertex's `document_id` property.
 4. `SectionEntity.graph_id_fields=["section_number"]` required.
 5. `FigureEntity.graph_id_fields=["figure_ref"]` required; `figure_label` added as optional.
 6. `TableEntity.graph_id_fields=["table_ref"]` required; `table_label` added as optional.
@@ -171,6 +173,8 @@ For the implementation plan's Chunk B, this is the per-entity rewrite task list.
 File: `app/workers/pipeline.py`
 Task: `derive_document_anchors(document_id, run_id)` with queue `graph` (co-located with `derive_ontology_graph`).
 
+**Scope clarification:** this task emits ontology-layer entities (SECTION/FIGURE/TABLE + optionally ontology DOCUMENT) and the ontology-layer edges between them (`HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE`/`CHILD_OF`). It does **not** create or modify the structural `Document` vertex — that lifecycle stays with `_ensure_structural_document_vertex` (pipeline.py:999) and `derive_structure_links` (pipeline.py ~line 4433).
+
 ### 3.2 Position in Celery chain
 
 Between `derive_image_embeddings` and `derive_ontology_graph`:
@@ -194,11 +198,17 @@ Inputs:
 - Document UUID (for `DocumentEntity.document_id`).
 
 Outputs:
-- 1 `DocumentEntity` with `document_id = UUID`.
+- **Ontology `DocumentEntity`** — emitted **only when** `document_number` is extractable from the Docling document's front matter (heuristic: first `TITLE` + `SECTION_HEADER` items scanned for MIL-STD / TM / similar-pattern designators via regex). If no `document_number` is found, **no ontology DOCUMENT is created** and the `HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE` edges below are skipped. The structural `Document` vertex (separate concept, identity = UUID) is unaffected — it's always created by `derive_structure_links`.
 - N `SectionEntity` records — one per unique `section_path` encountered (deduplicated across elements sharing that path).
 - M `FigureEntity` records — one per entry in `docling_document.pictures`.
 - K `TableEntity` records — one per entry in `docling_document.tables`.
-- Edges: `(DOCUMENT)-[:HAS_SECTION]->(SECTION)`, `(DOCUMENT)-[:HAS_FIGURE]->(FIGURE)`, `(DOCUMENT)-[:HAS_TABLE]->(TABLE)`, `(SECTION)-[:CHILD_OF]->(SECTION)`.
+- Edges (only when ontology DOCUMENT was emitted):
+  - `(ontology DOCUMENT)-[:HAS_SECTION]->(SECTION)` for each SECTION
+  - `(ontology DOCUMENT)-[:HAS_FIGURE]->(FIGURE)` for each FIGURE
+  - `(ontology DOCUMENT)-[:HAS_TABLE]->(TABLE)` for each TABLE
+  - `(SECTION)-[:CHILD_OF]->(SECTION)` for hierarchical nesting
+
+SECTION/FIGURE/TABLE vertices are still emitted when no ontology DOCUMENT is created; they just don't get doc-level edges. They remain queryable and attach to the structural `Document` vertex via `derive_structure_links`' `CONTAINS_TEXT`/`EXTRACTED_FROM` edges (unchanged structural flow).
 
 #### Design decision: where does `section_path` come from?
 
@@ -366,7 +376,19 @@ The fallback also serves as the anchor for items whose section_stack is empty (e
 
 Uses the existing `graph_store.upsert_nodes_batch_sync` + `upsert_relationships_batch_sync`. Identity resolution is automatic because these helpers consult `graph_id_fields` from the entity's `model_config`.
 
-Creates a `DocumentGraphExtraction` audit row with `pass_name="document_anchors"` for bookkeeping parity with other passes.
+Audit row: the task creates a `StageRun` row with `stage_name="derive_document_anchors"` and `pass_name=NULL` (per the StageRun schema at `app/models/ingest.py:273`; `DocumentGraphExtraction` is one-row-per-document and has no `pass_name` column — it's not a per-pass audit channel). StageRun metrics on the new row record: section_count, figure_count, table_count, document_ontology_emitted (bool: whether `document_number` was extractable), fallback_fired (bool: whether §3.4 sentinel SECTION was needed).
+
+### 3.5a New edge-type declarations (precondition)
+
+The four new labels `HAS_SECTION`, `HAS_FIGURE`, `HAS_TABLE`, `CHILD_OF` must be declared across three registries before the anchor walker can write them. These are **structural/document-layout edges** (they don't participate in the ontology's military-domain semantics), so they go in the structural-edge registry, not the ontology-relationship enum:
+
+- **`app/services/arcadedb_schema.py`**: add to `_STRUCTURAL_EDGE_TYPES` list (currently: `CONTAINS_TEXT`, `CONTAINS_IMAGE`, `SAME_PAGE`, `SAME_SECTION`, `SAME_ARTIFACT`, `NEXT_CHUNK`, `HAS_PROVENANCE`, `EXTRACTED_FROM`, `HAS_ALIAS` — line 79). New entries: `HAS_SECTION`, `HAS_FIGURE`, `HAS_TABLE`, `CHILD_OF`.
+- **`ontology_bundles/air_defense_v3/relationships.py`**: these do NOT get added to `RelationshipType` enum — that enum is for ontology-domain relationships (HAS_ANTENNA, USES_WAVEFORM, etc.). Document-structure edges stay out of the ontology relationship set.
+- **`ontology_bundles/air_defense_v3/validation_matrix.py`**: same principle — no validation-matrix entries for these (the matrix is ontology-domain triples). Comment added at file top noting the structural-edge exclusion.
+
+This classification preserves the separation of ontology-domain (LLM-extracted, validation-gated) vs structural (deterministic, layout-level) edges.
+
+**Prerequisite for Chunk D:** these declarations must land as part of Chunk A0 (new prep chunk, see §8) before Chunk D's anchor walker runs, or ArcadeDB will reject edge creation for undeclared types.
 
 ### 3.6 Manifest change
 
@@ -437,9 +459,32 @@ Affected parent entities (no edge changes, just receive components):
 Pipeline config set:
 - `delta_identity_filter_enabled = True` (default, keep on).
 - `delta_identity_filter_strict = False` (default, keep off — want real document-derived values, not just allowlisted examples).
-- `delta_quality_min_instances` — tune per pass. Default 20 is too strict for short docs. Set to 3 for domain passes (radar_domain/missile_domain/other_systems), 1 for system_links.
+- `delta_quality_min_instances` — tune per pass. Docs default varies (docs:2748 shows 20 for older versions; docs:35661 shows 1 for current library versions). Local service currently reads `settings.docling_graph_quality_min_instances` from env (see `docker/docling-graph/app/config_builder.py:108`), default per that settings object. The plan pins this explicitly: add env overrides to `docker-compose.yml` for the docling-graph service: `DOCLING_GRAPH_QUALITY_MIN_INSTANCES=3` as the radar/missile/other default, overridden to `1` for system_links via per-pass config.
 
-Config lives in `docker/docling-graph/repo/docling_graph/cli/config_builder.py` or passed per-request via `/extract-pass`.
+Config lives in `docker/docling-graph/app/config_builder.py` (the actual service config, not the vendored library's `cli/config_builder.py`). Modifications land there.
+
+### 4.8 Walker + schema changes to make components first-class vertices
+
+The current walker in `app/services/extraction_merge.py` has two lines that prevent components from becoming graph vertices — both a divergence from docs (docs:17500-17509 "Same address node is shared across multiple people/organizations"):
+
+- **`extraction_merge.py:564`** — `if cfg.get("is_entity") is False: return` skips components entirely during traversal.
+- **`extraction_merge.py:593-601`** — when walking `edge(label=...)` fields, rejects any child whose `is_entity is not True` with a "contract violation" warning.
+
+The docs pattern is: components ARE emitted as graph nodes when reached via an `edge(label=...)` field on a parent entity, deduplicated by full-content equality (not by `graph_id_fields`). The plan updates the walker and supporting schema to match:
+
+1. **Walker change 1 — component emission via edge:** When iterating `edge_label` fields on an entity, if the child is `is_entity=False`, emit it via `on_entity` (with a flag indicating "component"), construct a content-based identity, and do NOT recurse further. Components cannot contain other components as sub-edges (docs flatness rule R11).
+
+2. **Walker change 2 — embedded component short-circuit:** The existing `return` on line 564 stays for non-edge-reached components (embedded data inside a parent's non-edge fields). This preserves the current embedded-scalar semantics for components that aren't attached via `edge()`.
+
+3. **Contract test relaxation:** Test `test_edge_label_targets_are_is_entity_true` (contract Task 9e per existing plan tracker) is replaced with `test_edge_label_targets_are_is_entity_true_or_is_component`. Either target class is allowed, matching docs.
+
+4. **Content-based identity for components:** `_build_logical_identity` gains a branch for `is_entity=False` types: identity tuple is the full tuple of non-None scalar property values, sorted by field name. Two components with identical content produce identical identities → upsert merges them. This matches docs content-dedup semantics.
+
+5. **ArcadeDB vertex classes:** `app/services/arcadedb_schema.py` currently creates vertex classes only for `is_entity=True` canonical types. After this plan, it also creates vertex classes for every demoted component type (MODULATION, RF_SIGNATURE, RF_EMISSION, SCAN_PATTERN, IF_AMPLIFIER, SPECIFICATION, MISSILE_PERFORMANCE, MISSILE_PHYSICAL_CHARACTERISTICS, PROPULSION_STACK, PROPULSION_STAGE, RADAR_PERFORMANCE, ENGAGEMENT_TIMELINE) — 12 new vertex classes. Same common-props set; no `id`/`name`/`canonical_name` (components don't have named identity), but still carry `entity_type`, `created_at`, `updated_at`.
+
+6. **Merge-layer dedup:** `arcadedb_graph.upsert_nodes_batch_sync` already keys by `(entity_type, identity_tuple)`. The content-based identity from step 4 makes this Just Work for components — same content-hash = same vertex.
+
+These changes sequence BEFORE Chunk B (the canonical rewrite) so entity demotions don't strand components mid-plan. See §8 Chunk A0 additions.
 
 ### 4.7 Extraction schema rewrites
 
@@ -493,7 +538,9 @@ Any tables added to the schema after this spec is written get TRUNCATE by defaul
 
 **ArcadeDB:** DROP + recreate schema.
 
-**MinIO:** empty `derived/*` bucket; preserve `originals/*`.
+**MinIO:** empty `derived/*` bucket (includes `docling_document.json` enrichments); preserve `originals/*`.
+
+**Docling reconversion:** because `derived/*` is wiped, `prepare_document` will re-run Docling conversion on each PDF when the pipeline chain restarts. This is necessary (the cached `docling_document.json` is in `derived/`) and accounts for the bulk of migration runtime. Earlier drafts of this spec incorrectly claimed "no Docling reconversion" — that was wrong.
 
 **Redis:** `FLUSHALL` to clear Celery queues.
 
@@ -541,8 +588,10 @@ Grep of `app/`, `frontend/src/` (excluding tests, migrations, `__pycache__`, `no
 | File:Line | Current string | Action |
 |---|---|---|
 | `frontend/src/components/GraphExplorer.tsx:27` | `"SUBSYSTEM"` | Keep (SUBSYSTEM stays entity per §2.2). |
-| `frontend/src/components/GraphExplorer.tsx:29` | `"SPECIFICATION"` | Remove — SPECIFICATION demotes to component. |
+| `frontend/src/components/GraphExplorer.tsx:29` | `"SPECIFICATION"` | Per §4.8 revision: SPECIFICATION becomes a first-class component vertex. Keep as filter option. |
 | `frontend/src/components/GraphExplorer.tsx:33` | `"ASSERTION"` | Remove — entity dropped. |
+| `frontend/src/constants/entityTypes.ts:23` | `"Assertion"` in `REFERENCE_TYPES` array | Remove. |
+| `frontend/src/constants/entityTypes.ts` (rest of file) | CamelCase categorized arrays (MILITARY_TYPES, EMRF_TYPES, WEAPON_TYPES, OPERATIONAL_TYPES, REFERENCE_TYPES) | Audit against §2 classification and §4.8 component-vertex rule. Demoted entities (Modulation, RFEmission, RFSignature, ScanPattern, IFAmplifier, Specification, MissilePerformance, MissilePhysicalCharacteristics, PropulsionStack, PropulsionStage, RadarPerformance, EngagementTimeline) all STAY in their respective arrays — they're still renderable vertices, just components now. Only structural changes: drop `"Assertion"` (line 23), drop `"Spreadsheet"` if present. |
 | `app/services/dossier_service.py:38–52` (`RF_ENTITY_TYPES` list) | Demoted entries: `RF_EMISSION`, `MODULATION`, `RF_SIGNATURE`, `SCAN_PATTERN`, `IF_AMPLIFIER`, `SPECIFICATION`. Unchanged entries in the same list: `FREQUENCY_BAND`, `WAVEFORM`, `ANTENNA`, `TRANSMITTER`, `RECEIVER`, `SIGNAL_PROCESSING_CHAIN`, `SEEKER`. | Audit only the **demoted entries**: verify filter-by-ontology_name still matches component-kind vertices in ArcadeDB. No entries are deleted from the list — components retain their ontology_name. |
 | `app/services/dossier_service.py:54–68` (`PERFORMANCE_ENTITY_TYPES` list) | Demoted entries: `RADAR_PERFORMANCE`, `ENGAGEMENT_TIMELINE`, `MISSILE_PERFORMANCE`, `MISSILE_PHYSICAL_CHARACTERISTICS`, `PROPULSION_STACK`, `PROPULSION_STAGE`, `SPECIFICATION`. Unchanged: `CAPABILITY`, `GUIDANCE_METHOD`, `STANDARD`, `PROCEDURE`, `FAILURE_MODE`, `TEST_EVENT`. | Same audit-only treatment. `SPECIFICATION` correctly appears in both lists (RF and PERFORMANCE categorizations are intentionally cross-indexed — not a duplicate to remove). |
 | `app/services/query_profiles.py:49–79` (`_CURRENT_RF_ENTITY_TYPES` + `_CURRENT_PERFORMANCE_ENTITY_TYPES` + related `_CURRENT_*` lists) | Same demoted entries, same pattern as dossier_service. `SPECIFICATION` appears in both RF and PERFORMANCE lists — same intentional cross-indexing. | Same audit-only treatment. |
@@ -566,12 +615,13 @@ No `.heading` / `.figure_id` / `.table_id` / `.page_start` identity-field attrib
 
 ### 6.4 Derive-rules + structure-links
 
-`app/services/derive_rules.py :: derive_structural_edges`:
-- Lookup SECTION/FIGURE/TABLE vertices by new single-field identities.
+`ontology_bundles/air_defense_v3/derive_rules.py :: derive_structural_edges` (path corrected — `derive_rules.py` lives in the ontology bundle, not in `app/services/`):
+- Lookup SECTION/FIGURE/TABLE vertices by new single-field identities (`section_number`, `figure_ref`, `table_ref`).
 
 `app/workers/pipeline.py :: derive_structure_links`:
-- Remove DOCUMENT-node creation (now done upstream by `derive_document_anchors`).
-- SAME_SECTION edge resolution keys on new SECTION identity.
+- **Structural `Document` vertex creation stays here — unchanged.** The reviewer-flagged earlier draft was wrong: the anchors task targets ontology DOCUMENT (distinct), not the structural vertex.
+- SAME_SECTION edge resolution keys on new SECTION identity (`section_number`).
+- `CONTAINS_TEXT` / `EXTRACTED_FROM` edges continue to target the structural `Document` / SECTION / FIGURE / TABLE vertices; only the SECTION identity key changes.
 
 ### 6.5 Canonicalization
 
@@ -584,6 +634,40 @@ Verify `delta_identity_filter_enabled` and `delta_quality_min_instances` are set
 ### 6.7 Tests updated
 
 Every test constructing old-identity entities updated to new shape. Parity tests deleted (§7.2).
+
+### 6.8 `_classify_extraction_quality` rewrite
+
+`app/workers/pipeline.py:282–317` currently reads `pass_outcomes.get("reference")` to distinguish `degraded` (reference HIT, no domain HIT) from `anomaly` (no pass HIT at all). Reference is deleted in this plan; the helper needs new semantics.
+
+**New classifier logic** (replaces `_classify_extraction_quality`):
+
+- `ok` — at least one domain pass (radar_domain / missile_domain / other_systems / system_links) achieved `yield_status="HIT"`.
+- `degraded` — SECTION vertex count > 0 AND TextChunk count > 0 AND no domain pass HIT. Signal: "real document with readable structure, content off-topic from our ontology."
+- `anomaly` — (SECTION vertex count == 0 OR TextChunk count == 0) AND no domain pass HIT. Signal: processing failure or pathological doc.
+
+Source of truth shifts from "reference pass's StageRun row" to graph counts:
+- SECTION count: `SELECT COUNT(*) FROM SECTION WHERE document_id = :doc_id` (or equivalent for identity-scoped SECTION lookup).
+- TextChunk count: `SELECT COUNT(*) FROM retrieval.text_chunks WHERE document_id = :doc_id`.
+
+Both queries already available via `graph_store` and the sync session. The helper becomes:
+
+```python
+def _classify_extraction_quality(pass_outcomes: dict, section_count: int, text_chunk_count: int) -> str:
+    domain_hit = any(
+        v.get("yield_status") == "HIT"
+        for k, v in pass_outcomes.items()
+        if k in _DOMAIN_PASS_NAMES
+    )
+    if domain_hit:
+        return "ok"
+    if section_count > 0 and text_chunk_count > 0:
+        return "degraded"
+    return "anomaly"
+```
+
+Caller `_write_pipeline_run_metrics` is updated to compute `section_count` + `text_chunk_count` from the graph and pass them in.
+
+`_DOMAIN_PASS_NAMES` constant retains the 4 domain passes (reference removed). Matching test update in `tests/unit/test_classify_extraction_quality.py`: rewrite all test cases to exercise the new three-argument signature + new degraded semantics. Also update `tests/unit/test_extraction_schemas.py` and `tests/unit/test_ontology_bundles.py` wherever they assert "5 passes" or reference-pass-specific behavior (they currently do per reviewer finding #4).
 
 ## 7. Contract tests + xfail resolution
 
@@ -614,10 +698,10 @@ Tests introduced by the YAML→Pydantic migration (current plan) compared Pydant
 | `tests/unit/test_introspect_validation_and_weights.py` | Delete. |
 | `tests/unit/test_ontology_source_flag.py` | Delete (ONTOLOGY_SOURCE is a no-op post-Task-51). |
 | `tests/unit/test_ontology_templates_internals_parity.py` | Delete (YAML-vs-Pydantic internals parity; loses oracle with fixture deletion). |
-| `tests/unit/test_arcadedb_schema.py` | Keep file. Remove YAML-comparison assertions only; keep schema-creation assertions. |
+| `tests/unit/test_arcadedb_schema.py` | Delete. The file is snapshot/YAML-driven throughout — no preservable schema-creation assertions are separable from the YAML comparison. New `tests/unit/test_arcadedb_schema_introspection.py` is added in Chunk A0 to cover schema creation against the Pydantic ontology (no YAML oracle). |
 | `tests/fixtures/ontology/air_defense_v3_snapshot.yaml` | Delete. |
 
-**16 full test-file deletions + 1 in-place edit + 1 fixture deletion.** Each deleted file gets its own task in Chunk F so the diff stays reviewable.
+**17 full test-file deletions + 1 fixture deletion.** Each deleted file gets its own task in Chunk F so the diff stays reviewable.
 
 ### 7.3 New contract tests
 
@@ -651,7 +735,7 @@ Add 10 new tests (R-rule references link to docs):
 ### 7.5 Acceptance gate for test suite
 
 - All 19 contract tests pass (**9 existing** in `test_docs_compliance_contracts.py` — count verified via `grep -c "^def test_"` — **+ 10 new**); 0 xfails.
-- All 16 parity test files + snapshot fixture deleted.
+- All 17 parity/schema test files + snapshot fixture deleted; new `test_arcadedb_schema_introspection.py` (Chunk A0) passes.
 - Anchor walker tests pass.
 - Full `pytest tests/unit/` run passes, zero failures.
 
@@ -659,17 +743,18 @@ Add 10 new tests (R-rule references link to docs):
 
 | Chunk | Theme | Tasks |
 |---|---|---|
-| A | Prep: 10 new contract tests (added xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs | 6 |
+| A0 | **Prereqs for canonical changes**: walker update (§4.8) to emit components as graph nodes, `arcadedb_schema` vertex classes for 12 component types, 4 new structural edge types (`HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE`/`CHILD_OF`) in `_STRUCTURAL_EDGE_TYPES`, contract test 9e relaxation, new `test_arcadedb_schema_introspection.py` | 7 |
+| A | Prep: 10 new contract tests (added xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs (per §4.6 path) | 6 |
 | B | Canonical `entities.py` rewrite — 2 drops + 15 give-identity + 12 demote + 3 batched touch-ups (see §2.6) | 32 |
 | C | Extraction schemas rewrite + manifest change + reference.py delete | 5 |
-| D | Docling anchor walker + new worker task + fixtures + tests | 4 |
-| E | Consumer updates — derive_rules, structure_links, arcadedb_graph, frontend (3 lines), extraction_merge (1 line), dossier_service filter lists, query_profiles filter lists, canonicalization verification | 8 |
-| F | Test cleanup — 16 parity test deletions + 1 in-place edit + 1 fixture delete + un-xfail 2 contract tests + verify 19/19 | 6 |
-| G | Migration — write script, dry-run, execute on 21-doc corpus, produce report, acceptance gate | 4 |
+| D | Docling anchor walker + new worker task + fixtures + tests + document_number heuristic | 5 |
+| E | Consumer updates — derive_rules (ontology bundle path), structure_links (SECTION identity only, NOT Document-vertex move), arcadedb_graph docstring, frontend `GraphExplorer.tsx` + `entityTypes.ts`, extraction_merge `_NAME_LIKE_KEYS`, dossier_service filter lists (audit only), query_profiles filter lists (audit only), canonicalization verification (no-op confirmed), `_classify_extraction_quality` rewrite per §6.8 | 10 |
+| F | Test cleanup — 17 parity/schema test deletions + 1 fixture delete + un-xfail 2 contract tests + verify 19/19 | 7 |
+| G | Migration — write script, dry-run, execute on 21-doc corpus (accepts 3–6hr runtime including Docling reconversion), produce report, acceptance gate | 4 |
 
-**Total: ~65 tasks, ~65 commits, ~12–20 days of execution.**
+**Total: ~76 tasks, ~76 commits, ~15–25 days of execution.**
 
-Sequencing: A → B → C → D, E after B/C/D, F after E, G last. Chunk B's 32 tasks can technically parallelize by entity but per-entity sequential commits keep diffs reviewable.
+Sequencing: **A0 + A** (parallel-ok) → **B** → **C** → **D**, **E** after B/C/D, **F** after E, **G** last. A0 MUST land before B or canonical demotions break mid-plan (components won't get vertex classes). A0 and A can be worked in parallel if the team has bandwidth since they're independent.
 
 ## 9. Risks + mitigations
 
@@ -677,7 +762,7 @@ Sequencing: A → B → C → D, E after B/C/D, F after E, G last. Chunk B's 32 
 |---|---|
 | Chunk B is large: 2 drops + 27 structural rewrites + 3 batched touch-ups = 32 commits. Reviewer fatigue risk. | One-entity-per-commit discipline for the 27 structural rewrites. Each commit is small and individually reviewable. The 3 touch-up commits are deliberate batches. |
 | Docling's `section_path` sparse on some docs → zero SECTIONs | §3.4 fallback emits single `section_number="0"` for document body. |
-| Migration on 21 docs is slow | MinIO originals preserved → no Docling re-conversion needed. ~1–3 hours LLM time total (acceptable). |
+| Migration on 21 docs is slow | MinIO originals preserved so no re-upload, but Docling reconversion runs (derived bucket wiped) + full LLM passes. Realistic runtime 3–6 hours end-to-end on 21 docs (acceptable one-time cost for the canonical reset). |
 | Frontend graph visualization shifts due to component demotion | Visually different ≠ broken. Document in migration report. Frontend doesn't need explicit changes beyond ASSERTION filter. |
 | Upstream docling-graph salvage bug for required int fields | Avoided by §4.4 (no required non-identity fields) + §4.6 (library identity_filter catches empty-string identities). |
 | Canonicalization path for SPECIFICATION breaks with is_entity=False | §6.5 audit during implementation. Components aren't canonicalized; remove SPECIFICATION from any canonicalization registry. |
