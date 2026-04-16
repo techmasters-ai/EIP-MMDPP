@@ -141,7 +141,9 @@
     {
       "id": "A-4",
       "subject": "Identity contract tests (xfailed)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "a6c2126",
+      "notes": "3 of 7 already green (Phase 5/6/7 invariants); 4 xfail pending Chunk B."
     },
     {
       "id": "A-5",
@@ -498,5 +500,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T00:30:00.000000+00:00"
+  "lastUpdated": "2026-04-17T00:50:00.000000+00:00"
 }
