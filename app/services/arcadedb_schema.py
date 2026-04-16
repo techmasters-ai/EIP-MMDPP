@@ -86,6 +86,12 @@ _STRUCTURAL_EDGE_TYPES = [
     "HAS_PROVENANCE",
     "EXTRACTED_FROM",
     "HAS_ALIAS",
+    # Document-anchor edges (per spec §3.5a).
+    # Intentionally OUTSIDE ontology validation (RelationshipType/VALIDATION_MATRIX).
+    "HAS_SECTION",
+    "HAS_FIGURE",
+    "HAS_TABLE",
+    "CHILD_OF",
 ]
 
 # Common properties on all ontology entity vertex types
