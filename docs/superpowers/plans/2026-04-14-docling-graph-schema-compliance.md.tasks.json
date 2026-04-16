@@ -140,13 +140,13 @@
     {"id": 33, "subject": "Migrate extraction_merge.py", "status": "completed", "blockedBy": [32]},
     {"id": 34, "subject": "Migrate arcadedb_schema + arcadedb_graph", "status": "completed", "blockedBy": [32]},
     {"id": 35, "subject": "Migrate pipeline.py", "status": "completed", "blockedBy": [32]},
-    {"id": 36, "subject": "Migrate canonicalization.py", "status": "pending", "blockedBy": [32]},
-    {"id": 37, "subject": "Migrate query_profiles.py", "status": "pending", "blockedBy": [32]},
-    {"id": 38, "subject": "Migrate dossier_service.py", "status": "pending", "blockedBy": [32]},
-    {"id": 39, "subject": "Migrate graph_store.py", "status": "pending", "blockedBy": [32]},
-    {"id": 40, "subject": "Migrate ontology_templates internals", "status": "pending", "blockedBy": [32]},
-    {"id": 41, "subject": "Migrate main/API/schemas", "status": "pending", "blockedBy": [32]},
-    {"id": 42, "subject": "Flip default ONTOLOGY_SOURCE=pydantic", "status": "pending", "blockedBy": [33, 34, 35, 36, 37, 38, 39, 40, 41]},
+    {"id": 36, "subject": "Migrate canonicalization.py", "status": "completed", "blockedBy": [32]},
+    {"id": 37, "subject": "Migrate query_profiles.py", "status": "completed", "blockedBy": [32]},
+    {"id": 38, "subject": "Migrate dossier_service.py", "status": "completed", "blockedBy": [32]},
+    {"id": 39, "subject": "Migrate graph_store.py", "status": "completed", "blockedBy": [32]},
+    {"id": 40, "subject": "Migrate ontology_templates internals", "status": "completed", "blockedBy": [32]},
+    {"id": 41, "subject": "Migrate main/API/schemas", "status": "completed", "blockedBy": [32]},
+    {"id": 42, "subject": "Flip default ONTOLOGY_SOURCE=pydantic", "status": "completed", "blockedBy": [33, 34, 35, 36, 37, 38, 39, 40, 41]},
     {"id": 62, "subject": "Phase 5 before-metrics", "status": "pending", "blockedBy": [42]},
     {"id": 79, "subject": "35b: walk_entity_graph + walk_entities_only sibling", "status": "pending", "blockedBy": [62]},
     {"id": 82, "subject": "34b: PreMergeWalkSummary (incl. system_links DTO special-case)", "status": "pending", "blockedBy": [79]},
@@ -174,5 +174,5 @@
     {"id": 72, "subject": "Phase 8: multi-doc regression", "status": "pending", "blockedBy": [71]},
     {"id": 55, "subject": "Final summary + MEMORY", "status": "pending", "blockedBy": [54, 72]}
   ],
-  "lastUpdated": "2026-04-15T17:30:00Z"
+  "lastUpdated": "2026-04-15T18:30:00Z"
 }
