@@ -202,21 +202,43 @@ Outputs:
 #### Deterministic algorithm (pseudocode)
 
 ```python
-def walk(docling_doc: dict, document_uuid: str) -> MergedExtraction:
+def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
+    """Derive DOCUMENT/SECTION/FIGURE/TABLE entities + edges from a DoclingDocument.
+
+    Input:  the persisted docling_document.json dict (as returned by
+            _build_docling_document_json at app/workers/pipeline.py:923).
+    Output: MergedExtraction carrying the entity + edge records.
+    """
     doc_entity = DocumentEntity(document_id=document_uuid, ...)
 
     # --- Sections: dedup + enumerate by document-order first-occurrence --------
-    # Walk texts (and any other body descendants with prov) in document order.
-    # For each element, read prov[0].section_path — a list of heading-stem strings
-    # that Docling assigns as the element's ancestor chain.
-    # First occurrence of each unique tuple-path establishes a SECTION.
-    # section_number is the 1-based positional enumeration within the parent path.
+    # Load the DoclingDocument pydantic model and iterate via its first-party API:
+    # DoclingDocument.iterate_items() yields (item, level) for every body descendant
+    # in declared order, recursing via self_ref → resolved $ref pointers.
+    # (See docling_core.types.doc.DoclingDocument; also used by
+    # docker/docling/app/converter.py.)
+
+    from docling_core.types.doc import DoclingDocument
+    docling_doc = DoclingDocument.model_validate(docling_doc_json)
 
     section_by_path: OrderedDict[tuple[str, ...], SectionEntity] = OrderedDict()
     sibling_counters: dict[tuple[str, ...], int] = defaultdict(int)
 
-    for elem in iter_body_descendants_in_order(docling_doc):
-        path_tuple = tuple(prov_section_path(elem))  # () for root-level elements
+    def _section_path_tuple(item) -> tuple[str, ...]:
+        """Extract the section_path from an item's prov, as a tuple.
+
+        DoclingDocument items expose prov: list[ProvenanceItem]. The first prov
+        element's section_path is a list[str] of ancestor heading stems (may be
+        empty for root-level text). Returns () when no prov or no section_path.
+        """
+        prov = getattr(item, "prov", None) or []
+        if not prov:
+            return ()
+        raw_path = getattr(prov[0], "section_path", None) or []
+        return tuple(raw_path)
+
+    for item, _level in docling_doc.iterate_items():
+        path_tuple = _section_path_tuple(item)
         if path_tuple and path_tuple not in section_by_path:
             parent_tuple = path_tuple[:-1]
             sibling_counters[parent_tuple] += 1
@@ -239,7 +261,7 @@ def walk(docling_doc: dict, document_uuid: str) -> MergedExtraction:
             figure_label=extract_caption_label(item),  # "Figure 3-12" or None
             ...,
         )
-        for item in docling_doc.get("pictures", [])
+        for item in docling_doc_json.get("pictures", [])
     ]
 
     # --- Tables: one per Docling self_ref ---------------------------------------
@@ -249,19 +271,22 @@ def walk(docling_doc: dict, document_uuid: str) -> MergedExtraction:
             table_label=extract_caption_label(item),
             ...,
         )
-        for item in docling_doc.get("tables", [])
+        for item in docling_doc_json.get("tables", [])
     ]
 
     # --- Edges ------------------------------------------------------------------
     edges = []
     for section in section_by_path.values():
         edges.append(MergedEdgeRecord(from=doc_entity, to=section, label="HAS_SECTION"))
-    for section in section_by_path.values():
-        if "." in section.section_number:
-            parent_number = section.section_number.rsplit(".", 1)[0]
-            parent = find_by_number(section_by_path, parent_number)
-            if parent is not None:
-                edges.append(MergedEdgeRecord(from=section, to=parent, label="CHILD_OF"))
+    # CHILD_OF: parent is looked up by path tuple directly — no section_number
+    # string parsing, avoiding the roundtrip-ambiguity problem.
+    for path_tuple, section in section_by_path.items():
+        parent_tuple = path_tuple[:-1]
+        if parent_tuple and parent_tuple in section_by_path:
+            parent_section = section_by_path[parent_tuple]
+            edges.append(
+                MergedEdgeRecord(from=section, to=parent_section, label="CHILD_OF")
+            )
     for fig in figures:
         edges.append(MergedEdgeRecord(from=doc_entity, to=fig, label="HAS_FIGURE"))
     for tbl in tables:
@@ -275,11 +300,12 @@ def walk(docling_doc: dict, document_uuid: str) -> MergedExtraction:
 
 #### Determinism properties
 
-- `iter_body_descendants_in_order`: uses Docling's own `body.children` → recursive descent via `$ref` lookups, in declared order. Identical input JSON → identical output order.
-- Dedup key for SECTION: the tuple of strings from `prov[0].section_path`. Two elements that share that exact tuple attach to the same SECTION.
-- `section_number` tie-breaking: document-order first-occurrence. If `section_path=["A", "B"]` appears at elem 10 and `section_path=["A", "C"]` appears at elem 20, then B gets number "1.1" and C gets "1.2" (assuming A is "1").
-- Parent-child edge resolution: by parsed `section_number` prefix (splitting on `"."`), not by raw path. Deterministic because `section_number` is assigned by the algorithm above.
-- `figure_ref` / `table_ref` are Docling's own refs — globally unique within a single `DoclingDocument`.
+- `DoclingDocument.iterate_items()` walks body descendants in declared order, resolving `self_ref`/`$ref` pointers. Identical input JSON → identical output order. (Canonical Docling API, used elsewhere in the codebase.)
+- `_section_path_tuple` returns `()` for root-level elements without prov, elements whose prov lacks `section_path`, or empty `section_path` lists. Elements with `()` path never create a SECTION.
+- Dedup key for SECTION: the tuple of strings from `prov[0].section_path`. Two elements sharing that tuple attach to the same SECTION.
+- `section_number` tie-breaking: document-order first-occurrence. If `section_path=["A", "B"]` appears at item index 10 and `section_path=["A", "C"]` appears at index 20, then B gets number "1.1" and C gets "1.2" (assuming A is "1").
+- Parent-child edge resolution: by `path_tuple[:-1]` key lookup on `section_by_path` — no `section_number` string parsing. Deterministic and cheap.
+- `figure_ref` / `table_ref` are Docling's own `self_ref` values — globally unique within a single `DoclingDocument`.
 
 ### 3.4 Fallback for weak structure
 
@@ -412,7 +438,7 @@ Config lives in `docker/docling-graph/repo/docling_graph/cli/config_builder.py` 
 | `auth.users`, `auth.user_roles` | PRESERVE |
 | `public.alembic_version` | PRESERVE |
 
-Any tables added to the schema after this spec is written get TRUNCATE by default; the migration script reads `pg_tables` and truncates anything not in the preserve-list. A dry-run flag prints the list before executing.
+Any tables added to the schema after this spec is written get TRUNCATE by default; the migration script reads `pg_tables` and truncates anything not in the preserve-list. A dry-run flag (`--dry-run`) prints the list before executing; dry-run output is also included in the migration report (§5.3) so the exact set of truncated tables is audit-able post-hoc.
 
 **ArcadeDB:** DROP + recreate schema.
 
@@ -447,7 +473,7 @@ Any tables added to the schema after this spec is written get TRUNCATE by defaul
 - All 21 docs reach `COMPLETE` or `PARTIAL_COMPLETE` (not `FAILED`).
 - ≥3 radar/missile-heavy docs produce `extraction_quality="ok"`.
 - Every doc produces ≥1 SECTION, ≥1 TextChunk, and a DOCUMENT node (deterministic anchor-walker guarantee).
-- Zero `page_start: Input should be a valid integer`-style errors in docling-graph logs.
+- Zero `page_start: Input should be a valid integer`-style errors in docling-graph container logs. Check via `docker logs eip-mmdpp-docling-graph-1 --since <migration-start> 2>&1 | grep -E "Input should be a valid"` — acceptance requires zero lines.
 
 If the gate fails, root-cause before merging the branch.
 
@@ -466,12 +492,12 @@ Grep of `app/`, `frontend/src/` (excluding tests, migrations, `__pycache__`, `no
 | `frontend/src/components/GraphExplorer.tsx:27` | `"SUBSYSTEM"` | Keep (SUBSYSTEM stays entity per §2.2). |
 | `frontend/src/components/GraphExplorer.tsx:29` | `"SPECIFICATION"` | Remove — SPECIFICATION demotes to component. |
 | `frontend/src/components/GraphExplorer.tsx:33` | `"ASSERTION"` | Remove — entity dropped. |
-| `app/services/dossier_service.py:40` | `"RF_EMISSION"` in a `_RF_ENTITY_TYPES` list | Keep (still valid entity_type for query); verify list still queries correctly since RF_EMISSION is now a component. |
-| `app/services/dossier_service.py:42–63` | `"MODULATION"`, `"RF_SIGNATURE"`, `"SCAN_PATTERN"`, `"IF_AMPLIFIER"`, `"SPECIFICATION"`, `"RADAR_PERFORMANCE"`, `"ENGAGEMENT_TIMELINE"`, `"MISSILE_PERFORMANCE"`, `"MISSILE_PHYSICAL_CHARACTERISTICS"`, `"PROPULSION_STACK"`, `"PROPULSION_STAGE"`, `"SPECIFICATION"` (duplicated) | Audit: these lists filter dossier sections by ontology_name. Components still have ontology_name; the filters still match. Verify Cypher query emits component-kind vertices correctly. Remove the duplicated `"SPECIFICATION"` entry. |
-| `app/services/query_profiles.py:51–74` | Same set as dossier_service.py | Same audit. |
+| `app/services/dossier_service.py:38–52` (`RF_ENTITY_TYPES` list) | Demoted entries: `RF_EMISSION`, `MODULATION`, `RF_SIGNATURE`, `SCAN_PATTERN`, `IF_AMPLIFIER`, `SPECIFICATION`. Unchanged entries in the same list: `FREQUENCY_BAND`, `WAVEFORM`, `ANTENNA`, `TRANSMITTER`, `RECEIVER`, `SIGNAL_PROCESSING_CHAIN`, `SEEKER`. | Audit only the **demoted entries**: verify filter-by-ontology_name still matches component-kind vertices in ArcadeDB. No entries are deleted from the list — components retain their ontology_name. |
+| `app/services/dossier_service.py:54–68` (`PERFORMANCE_ENTITY_TYPES` list) | Demoted entries: `RADAR_PERFORMANCE`, `ENGAGEMENT_TIMELINE`, `MISSILE_PERFORMANCE`, `MISSILE_PHYSICAL_CHARACTERISTICS`, `PROPULSION_STACK`, `PROPULSION_STAGE`, `SPECIFICATION`. Unchanged: `CAPABILITY`, `GUIDANCE_METHOD`, `STANDARD`, `PROCEDURE`, `FAILURE_MODE`, `TEST_EVENT`. | Same audit-only treatment. `SPECIFICATION` correctly appears in both lists (RF and PERFORMANCE categorizations are intentionally cross-indexed — not a duplicate to remove). |
+| `app/services/query_profiles.py:49–79` (`_CURRENT_RF_ENTITY_TYPES` + `_CURRENT_PERFORMANCE_ENTITY_TYPES` + related `_CURRENT_*` lists) | Same demoted entries, same pattern as dossier_service. `SPECIFICATION` appears in both RF and PERFORMANCE lists — same intentional cross-indexing. | Same audit-only treatment. |
 | `app/services/arcadedb_graph.py:2020–2026` | Docstring listing SECTION/FIGURE/TABLE/ASSERTION/WAVEFORM/... as document-scoped entity classes | Drop ASSERTION, update identity-scope list to match new canonical. |
 
-**Audit note for query_profiles + dossier_service:** these files' entity-type filters are load-bearing for retrieval. Demoting SPECIFICATION/MODULATION/etc. to components changes how they appear in ArcadeDB vertex classes. Components are still stored as vertices (with content-based dedup), so filter-by-ontology_name still works. **Verification step in Chunk E**: write a small integration test that executes the dossier's filtered query against a re-ingested doc and confirms non-zero vertex matches for each of these ontology_names. If any filter fails, the fix is either (a) the filter's entity_type enumeration needs updating, or (b) the component's vertex class name in ArcadeDB differs from expected (unlikely; `arcadedb_schema` keys vertex class off `ontology_name`).
+**Audit note for query_profiles + dossier_service:** these files' entity-type filters are load-bearing for retrieval. Demoting SPECIFICATION/MODULATION/etc. to components changes how they're deduplicated (content-based) but NOT their `ontology_name` or their ArcadeDB vertex class (both remain keyed off `ontology_name` in `arcadedb_schema`). Filters should still match. **Verification step in Chunk E**: write a small integration test that executes the dossier's filtered query against a re-ingested doc and confirms non-zero vertex matches for each of the 13 demoted ontology_names. If any filter fails, the fix is either (a) the filter's entity_type enumeration needs updating, or (b) the component's vertex class name in ArcadeDB differs from expected (unlikely; documented fail-safe only).
 
 ### 6.2 Identity-field references
 
@@ -536,10 +562,11 @@ Tests introduced by the YAML→Pydantic migration (current plan) compared Pydant
 | `tests/unit/test_introspect_relationship_types.py` | Delete. |
 | `tests/unit/test_introspect_validation_and_weights.py` | Delete. |
 | `tests/unit/test_ontology_source_flag.py` | Delete (ONTOLOGY_SOURCE is a no-op post-Task-51). |
+| `tests/unit/test_ontology_templates_internals_parity.py` | Delete (YAML-vs-Pydantic internals parity; loses oracle with fixture deletion). |
 | `tests/unit/test_arcadedb_schema.py` | Keep file. Remove YAML-comparison assertions only; keep schema-creation assertions. |
 | `tests/fixtures/ontology/air_defense_v3_snapshot.yaml` | Delete. |
 
-**15 full test-file deletions + 1 in-place edit + 1 fixture deletion.** Each deleted file gets its own task in Chunk F so the diff stays reviewable.
+**16 full test-file deletions + 1 in-place edit + 1 fixture deletion.** Each deleted file gets its own task in Chunk F so the diff stays reviewable.
 
 ### 7.3 New contract tests
 
@@ -573,7 +600,7 @@ Add 10 new tests (R-rule references link to docs):
 ### 7.5 Acceptance gate for test suite
 
 - All 19 contract tests pass (**9 existing** in `test_docs_compliance_contracts.py` — count verified via `grep -c "^def test_"` — **+ 10 new**); 0 xfails.
-- All 15 parity test files + snapshot fixture deleted.
+- All 16 parity test files + snapshot fixture deleted.
 - Anchor walker tests pass.
 - Full `pytest tests/unit/` run passes, zero failures.
 
@@ -597,7 +624,7 @@ Sequencing: A → B → C → D, E after B/C/D, F after E, G last. Chunk B's 32 
 
 | Risk | Mitigation |
 |---|---|
-| 29 canonical entity rewrites + 3 batched touch-ups cause reviewer fatigue | One-entity-per-commit discipline in Chunk B. Each commit is small and individually reviewable. Grouped batches (touch-ups 30–32) land as three small commits. |
+| Chunk B is large: 2 drops + 27 structural rewrites + 3 batched touch-ups = 32 commits. Reviewer fatigue risk. | One-entity-per-commit discipline for the 27 structural rewrites. Each commit is small and individually reviewable. The 3 touch-up commits are deliberate batches. |
 | Docling's `section_path` sparse on some docs → zero SECTIONs | §3.4 fallback emits single `section_number="0"` for document body. |
 | Migration on 21 docs is slow | MinIO originals preserved → no Docling re-conversion needed. ~1–3 hours LLM time total (acceptable). |
 | Frontend graph visualization shifts due to component demotion | Visually different ≠ broken. Document in migration report. Frontend doesn't need explicit changes beyond ASSERTION filter. |
