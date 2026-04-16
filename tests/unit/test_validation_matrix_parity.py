@@ -20,9 +20,10 @@ from ontology_bundles.air_defense_v3.validation_matrix import (
 def yaml_ontology() -> dict:
     path = (
         Path(__file__).parent.parent.parent
-        / "ontology_bundles"
-        / "air_defense_v3"
-        / "ontology.yaml"
+        / "tests"
+        / "fixtures"
+        / "ontology"
+        / "air_defense_v3_snapshot.yaml"
     )
     with path.open() as f:
         return yaml.safe_load(f)

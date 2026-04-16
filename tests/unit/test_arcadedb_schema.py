@@ -7,7 +7,7 @@ from pathlib import Path
 
 ONTOLOGY_PATH = (
     Path(__file__).parent.parent.parent
-    / "ontology_bundles" / "air_defense_v3" / "ontology.yaml"
+    / "tests" / "fixtures" / "ontology" / "air_defense_v3_snapshot.yaml"
 )
 
 

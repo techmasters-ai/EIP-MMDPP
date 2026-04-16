@@ -17,9 +17,10 @@ from ontology_bundles.air_defense_v3.introspect import build_entity_types_list
 
 ONTOLOGY_YAML = (
     Path(__file__).resolve().parents[2]
-    / "ontology_bundles"
-    / "air_defense_v3"
-    / "ontology.yaml"
+    / "tests"
+    / "fixtures"
+    / "ontology"
+    / "air_defense_v3_snapshot.yaml"
 )
 
 

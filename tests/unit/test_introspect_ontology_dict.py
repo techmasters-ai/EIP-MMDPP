@@ -21,9 +21,10 @@ from ontology_bundles.air_defense_v3.introspect import (
 
 ONTOLOGY_YAML = (
     Path(__file__).resolve().parents[2]
-    / "ontology_bundles"
-    / "air_defense_v3"
-    / "ontology.yaml"
+    / "tests"
+    / "fixtures"
+    / "ontology"
+    / "air_defense_v3_snapshot.yaml"
 )
 
 
@@ -46,7 +47,12 @@ def test_ontology_dict_has_all_top_level_keys():
 
 def test_ontology_dict_version_matches_manifest():
     """ONTOLOGY_VERSION must mirror manifest.yaml:ontology_version."""
-    manifest_path = ONTOLOGY_YAML.parent / "manifest.yaml"
+    manifest_path = (
+        Path(__file__).resolve().parents[2]
+        / "ontology_bundles"
+        / "air_defense_v3"
+        / "manifest.yaml"
+    )
     with manifest_path.open() as f:
         manifest = yaml.safe_load(f)
     assert build_ontology_dict()["version"] == manifest["ontology_version"]
