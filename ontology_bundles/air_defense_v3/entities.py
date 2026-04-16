@@ -64,11 +64,11 @@ def edge(
 class DocumentEntity(BaseModel):
     """Source Document — Technical manual, specification, report, drawing, or other source artifact
     """
-    model_config = ConfigDict(ontology_name="DOCUMENT", graph_id_fields=[], identity_scope="global", dodaf_parent="DocumentResource", is_entity=True)
+    model_config = ConfigDict(ontology_name="DOCUMENT", graph_id_fields=["document_number"], identity_scope="global", dodaf_parent="DocumentResource", is_entity=True)
 
+    document_number: str = Field(..., description="Official document designator (TM/MIL-STD/MIL-DTL number)", examples=['TM 9-1425-386-12', 'MIL-STD-1553B', 'MIL-DTL-31000G'])
     title: Optional[str] = Field(default=None, description="Full title of the document", examples=['Operator Manual for Patriot Missile System'])
     document_id: Optional[str] = Field(default=None, description="Internal system-assigned document identifier")
-    document_number: Optional[str] = Field(default=None, description="Official document identifier or TM number", examples=['TM 9-1425-386-12'])
     classification: Optional[str] = Field(default=None, description="Security classification level", examples=['UNCLASSIFIED'])
     publication_date: Optional[str] = Field(default=None, description="Publication or revision date (YYYY-MM-DD)", examples=['2023-06-15'])
     source_type: Optional[str] = Field(default=None, description="Category of the source document", json_schema_extra={"enum": ["MANUAL", "REPORT", "BRIEFING", "NOTE", "SCHEMATIC", "DRAWING", "SPECIFICATION", "CHECKLIST", "SPREADSHEET"]})

@@ -137,10 +137,9 @@ def test_propulsion_stack_empty_identity_scope_document(pyd_entity_types):
     assert stack["identity_scope"] == "document"
 
 
-def test_document_omits_identity_keys(pyd_entity_types):
-    """DOCUMENT has graph_id_fields=[] and identity_scope='global' →
-    neither key present in YAML → neither key emitted."""
+def test_document_identity_is_document_number(pyd_entity_types):
+    """Post-B-3: DOCUMENT identity is document_number (docs R17; spec §2.2)."""
     pyd_by_name = {e["name"]: e for e in pyd_entity_types}
     document = pyd_by_name["DOCUMENT"]
-    assert "identity_fields" not in document
-    assert "identity_scope" not in document
+    assert document["identity_fields"] == ["document_number"]
+    assert document["identity_scope"] == "global"

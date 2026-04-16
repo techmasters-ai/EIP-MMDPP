@@ -22,14 +22,16 @@ entity_types:
   # ---------------------------------------------------------------------------
   - name: DOCUMENT
     label: "Source Document"
+    identity_fields: [document_number]
+    identity_scope: global
     description: "Technical manual, specification, report, drawing, or other source artifact"
     parent: DocumentResource
     properties:
       type: object
       properties:
+        document_number: {type: string, description: "Official document designator (TM/MIL-STD/MIL-DTL number)", example: "TM 9-1425-386-12"}
         title: {type: string, description: "Full title of the document", example: "Operator Manual for Patriot Missile System"}
         document_id: {type: string, description: "Internal system-assigned document identifier"}
-        document_number: {type: string, description: "Official document identifier or TM number", example: "TM 9-1425-386-12"}
         classification: {type: string, description: "Security classification level", example: "UNCLASSIFIED"}
         publication_date: {type: string, description: "Publication or revision date (YYYY-MM-DD)", example: "2023-06-15"}
         source_type: {type: string, description: "Category of the source document", enum: [MANUAL, REPORT, BRIEFING, NOTE, SCHEMATIC, DRAWING, SPECIFICATION, CHECKLIST, SPREADSHEET]}
