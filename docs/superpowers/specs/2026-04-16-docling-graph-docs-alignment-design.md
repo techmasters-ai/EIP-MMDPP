@@ -346,30 +346,56 @@ def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
     ]
 
     # --- Edges ------------------------------------------------------------------
+    # MergedEdgeRecord fields per app/services/extraction_merge.py:222 —
+    # from_identity, to_identity, rel_type (NOT from/to/label).
+    # MergedExtraction fields per :262 — entities, edges (NOT merged_entities/merged_edges).
     edges = []
-    # HAS_* edges only when ontology DOCUMENT was emitted (doc_entity is not None).
     if doc_entity is not None:
+        doc_identity = _build_logical_identity("DOCUMENT", doc_entity, ontology, document_uuid)
         for section in section_by_path.values():
-            edges.append(MergedEdgeRecord(from=doc_entity, to=section, label="HAS_SECTION"))
+            section_identity = _build_logical_identity("SECTION", section, ontology, document_uuid)
+            edges.append(MergedEdgeRecord(
+                from_identity=doc_identity, to_identity=section_identity,
+                rel_type="HAS_SECTION", confidence=1.0, pass_origins={"document_anchors"},
+            ))
         for fig in figures:
-            edges.append(MergedEdgeRecord(from=doc_entity, to=fig, label="HAS_FIGURE"))
+            fig_identity = _build_logical_identity("FIGURE", fig, ontology, document_uuid)
+            edges.append(MergedEdgeRecord(
+                from_identity=doc_identity, to_identity=fig_identity,
+                rel_type="HAS_FIGURE", confidence=1.0, pass_origins={"document_anchors"},
+            ))
         for tbl in tables:
-            edges.append(MergedEdgeRecord(from=doc_entity, to=tbl, label="HAS_TABLE"))
-    # CHILD_OF: hierarchical section nesting, independent of ontology DOCUMENT presence.
-    # Parent is looked up by path_tuple[:-1] key — no section_number parsing.
+            tbl_identity = _build_logical_identity("TABLE", tbl, ontology, document_uuid)
+            edges.append(MergedEdgeRecord(
+                from_identity=doc_identity, to_identity=tbl_identity,
+                rel_type="HAS_TABLE", confidence=1.0, pass_origins={"document_anchors"},
+            ))
+    # CHILD_OF: hierarchical, independent of ontology DOCUMENT.
     for path_tuple, section in section_by_path.items():
         parent_tuple = path_tuple[:-1]
         if parent_tuple and parent_tuple in section_by_path:
             parent_section = section_by_path[parent_tuple]
-            edges.append(MergedEdgeRecord(from=section, to=parent_section, label="CHILD_OF"))
+            child_identity = _build_logical_identity("SECTION", section, ontology, document_uuid)
+            parent_identity = _build_logical_identity("SECTION", parent_section, ontology, document_uuid)
+            edges.append(MergedEdgeRecord(
+                from_identity=child_identity, to_identity=parent_identity,
+                rel_type="CHILD_OF", confidence=1.0, pass_origins={"document_anchors"},
+            ))
 
-    entities = [*section_by_path.values(), *figures, *tables]
+    entity_models = [*section_by_path.values(), *figures, *tables]
     if doc_entity is not None:
-        entities.insert(0, doc_entity)
+        entity_models.insert(0, doc_entity)
+    # Wrap each as MergedEntityRecord (ontology_name, identity, properties, confidence,
+    # pass_origins, display_label) — fields per extraction_merge.py:213.
+    merged_entities = [_to_merged_entity_record(m, ontology, document_uuid) for m in entity_models]
 
     return MergedExtraction(
-        merged_entities=entities,
-        merged_edges=edges,
+        entities=merged_entities,
+        edges=edges,
+        rejected_edges=[],
+        rejections_by_pass={},
+        pipeline_run_id=pipeline_run_id,
+        document_id=document_uuid,
     )
 ```
 
@@ -386,13 +412,19 @@ def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
 
 ### 3.4 Fallback for weak structure
 
-If the walker encounters no `SECTION_HEADER` / `TITLE` items at all (a pathological case — Docling usually emits at least a title), the post-loop guard in §3.3 emits one `SectionEntity(section_number="0", heading=None)` representing the whole document body. All TextChunks attach to this sentinel anchor during `derive_structure_links`. Prevents zero-SECTION docs.
+If the walker encounters no `SECTION_HEADER` / `TITLE` items at all (a pathological case — Docling usually emits at least a title), the post-loop guard in §3.3 emits one `SectionEntity(section_number="0", heading=None)` representing the whole document body. Prevents zero-SECTION docs.
 
-The fallback also serves as the anchor for items whose section_stack is empty (e.g., text items that appear BEFORE the first heading in a document) — but because the walker's `_register_section` no-ops on the empty tuple, such items simply don't create a pre-heading SECTION; they attach to `section_number="0"` if that fallback fires, or to nothing (the TextChunk has no SECTION parent) otherwise. `derive_structure_links` handles the orphan-TextChunk case by connecting directly to DOCUMENT.
+**Clarification on TextChunk ↔ SECTION linkage:** in the current code, `derive_structure_links` at `app/workers/pipeline.py:4376` creates `SAME_SECTION` edges **chunk-to-chunk** (text_chunk ↔ text_chunk sharing `artifact_element_map[str(tc.artifact_id)].section_path`). It does NOT create TextChunk → SECTION-vertex edges. This plan does not add that attachment either; SECTION vertices are queryable graph nodes but are not directly linked to TextChunks. Retrieval consumers that need the link can join via a shared `section_path` string property:
+
+- SECTION gains a new optional property `section_path: Optional[str]` holding the joined Docling path (e.g. `"Chapter 3 > Section 3.1"`) — the same string shape as `TextChunk.section_path`. This is a non-identity property; identity stays `section_number`.
+- Graph-side joins become possible without adding new edge types (query: `MATCH (tc:TextChunk), (s:SECTION) WHERE tc.section_path = s.section_path AND tc.document_id = s.document_id`).
+- Adding `TextChunk-[CONTAINED_IN]->SECTION` edges is deferred (would be new structural-edge work + a new pass over text_chunks). Out of scope for this plan.
 
 ### 3.5 Write path
 
-Uses the existing `graph_store.upsert_nodes_batch_sync` + `upsert_relationships_batch_sync`. Identity resolution is automatic because these helpers consult `graph_id_fields` from the entity's `model_config`.
+Vertex upserts use `graph_store.upsert_nodes_batch_sync` — identity resolution is automatic via `graph_id_fields` in `model_config`.
+
+**Edge writes use `graph_store.create_structural_edge_sync`**, NOT `upsert_relationships_batch_sync`. The latter (at `arcadedb_graph.py:1796`) enforces the ontology validation-matrix via `_enforce_relationship_triple` at `:1806` and rejects any triple not in `VALIDATION_MATRIX`. Since `HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE`/`CHILD_OF` are deliberately classified as structural (not ontology-domain, per §3.5a), they're not in the validation matrix and must go through the structural path. `create_structural_edge_sync` (at `:1816`) takes a source `@rid`, target `@rid`, and label — no matrix check. The anchors task first upserts vertices (batch sync), then iterates the edge list and calls `create_structural_edge_sync` for each. This mirrors how `derive_structure_links` already writes `CONTAINS_TEXT`/`SAME_SECTION`/`SAME_PAGE`.
 
 Audit row: the task creates a `StageRun` row with `stage_name="derive_document_anchors"` and `pass_name=NULL` (per the StageRun schema at `app/models/ingest.py:273`; `DocumentGraphExtraction` is one-row-per-document and has no `pass_name` column — it's not a per-pass audit channel). StageRun metrics on the new row record: section_count, figure_count, table_count, document_ontology_emitted (bool: whether `document_number` was extractable), fallback_fired (bool: whether §3.4 sentinel SECTION was needed).
 
@@ -498,7 +530,7 @@ The docs pattern is: components ARE emitted as graph nodes when reached via an `
 
 4. **Content-based identity for components:** `_build_logical_identity` gains a branch for `is_entity=False` types: identity tuple is the full tuple of non-None scalar property values, sorted by field name. Two components with identical content produce identical identities → upsert merges them. This matches docs content-dedup semantics.
 
-5. **ArcadeDB vertex classes:** `app/services/arcadedb_schema.py` currently creates vertex classes only for `is_entity=True` canonical types. After this plan, it also creates vertex classes for every demoted component type (MODULATION, RF_SIGNATURE, RF_EMISSION, SCAN_PATTERN, IF_AMPLIFIER, SPECIFICATION, MISSILE_PERFORMANCE, MISSILE_PHYSICAL_CHARACTERISTICS, PROPULSION_STACK, PROPULSION_STAGE, RADAR_PERFORMANCE, ENGAGEMENT_TIMELINE) — 12 new vertex classes. Same common-props set; no `id`/`name`/`canonical_name` (components don't have named identity), but still carry `entity_type`, `created_at`, `updated_at`.
+5. **ArcadeDB vertex classes — no new schema-creation work required.** Code path already creates vertex types for every entry in the `entity_types` output of `ontology_bundles/air_defense_v3/introspect.py:build_entity_types_list` (which iterates `ALL_ENTITIES.items()` at `introspect.py:136`), and `app/services/arcadedb_schema.py:185` iterates `ontology["entity_types"]` unconditionally. Because demoted components REMAIN in `ALL_ENTITIES` (they're still registered model classes, just with `is_entity=False`), they automatically get vertex classes once the canonical change in Chunk B lands. Common-props set is unchanged: every vertex class (entity or component) retains `id`, `name`, `entity_type`, `canonical_name`, `extraction_confidence`, `created_at`, `updated_at`. For component vertices, `name` is populated from content-fingerprint (derived from the content-based identity at step 4) rather than being left null — keeps `_upsert_node_impl_sync` at `arcadedb_graph.py:1722` working uniformly without a component-branch. No schema changes required; no NodeRecord redesign required.
 
 6. **Merge-layer dedup:** `arcadedb_graph.upsert_nodes_batch_sync` already keys by `(entity_type, identity_tuple)`. The content-based identity from step 4 makes this Just Work for components — same content-hash = same vertex.
 
@@ -588,7 +620,8 @@ Any tables added to the schema after this spec is written get TRUNCATE by defaul
 
 - All 21 docs reach `COMPLETE` or `PARTIAL_COMPLETE` (not `FAILED`).
 - ≥3 radar/missile-heavy docs produce `extraction_quality="ok"`.
-- Every doc produces ≥1 SECTION, ≥1 TextChunk, and a DOCUMENT node (deterministic anchor-walker guarantee).
+- Every doc produces ≥1 SECTION (or the §3.4 sentinel `section_number="0"`), ≥1 TextChunk, and a **structural `Document` vertex** (identity = UUID; created by `derive_structure_links`, always present for any successfully ingested doc).
+- **Ontology DOCUMENT vertex is NOT required per-doc** — it's emitted only when `document_number` is extractable (§3.3). Acceptance gate on ontology DOCUMENT: ≥50% of the 21-doc corpus emits an ontology DOCUMENT (sanity check that the `_extract_document_number_from_front_matter` heuristic actually fires on typical docs). Lower ratio acceptable if manually verifiable that the docs genuinely lack MIL-STD/TM-style designators.
 - Zero `page_start: Input should be a valid integer`-style errors in docling-graph container logs. Check via `docker logs eip-mmdpp-docling-graph-1 --since <migration-start> 2>&1 | grep -E "Input should be a valid"` — acceptance requires zero lines.
 
 If the gate fails, root-cause before merging the branch.
@@ -631,15 +664,19 @@ Most query paths filter by `ontology_name` which is unchanged. The concrete cons
 
 No `.heading` / `.figure_id` / `.table_id` / `.page_start` identity-field attribute reads exist (confirmed in §6.2 grep). All retrieval consumers query by `ontology_name`.
 
-### 6.4 Derive-rules + structure-links
+### 6.4 Derive-rules + structure-links + finalize_document
 
 `ontology_bundles/air_defense_v3/derive_rules.py :: derive_structural_edges` (path corrected — `derive_rules.py` lives in the ontology bundle, not in `app/services/`):
 - Lookup SECTION/FIGURE/TABLE vertices by new single-field identities (`section_number`, `figure_ref`, `table_ref`).
 
 `app/workers/pipeline.py :: derive_structure_links`:
 - **Structural `Document` vertex creation stays here — unchanged.** The reviewer-flagged earlier draft was wrong: the anchors task targets ontology DOCUMENT (distinct), not the structural vertex.
-- SAME_SECTION edge resolution keys on new SECTION identity (`section_number`).
-- `CONTAINS_TEXT` / `EXTRACTED_FROM` edges continue to target the structural `Document` / SECTION / FIGURE / TABLE vertices; only the SECTION identity key changes.
+- **SAME_SECTION edge creation is chunk-to-chunk keyed on `section_path` string match (see `pipeline.py:4376`) — unchanged.** No dependency on SECTION vertex identity because it doesn't target SECTION vertices. The SAME_SECTION logic continues as-is.
+- `CONTAINS_TEXT` / `EXTRACTED_FROM` edges continue to target the structural `Document` vertex; these don't change.
+
+`app/workers/pipeline.py :: finalize_document` at `:4799`:
+- Has a hardcoded `REQUIRED_STAGES` set used to decide `STATUS_COMPLETE` vs `STATUS_PARTIAL_COMPLETE`. The new `derive_document_anchors` stage must be added to this set or finalize will mark docs `PARTIAL_COMPLETE` because it sees the anchors stage as "missing."
+- Update task: add `"derive_document_anchors"` to `REQUIRED_STAGES`. Update `tests/unit/test_derive_ontology_graph_bundle_passes.py` (or the finalize-specific test file) to exercise the new required stage.
 
 ### 6.5 Canonicalization
 
@@ -685,7 +722,12 @@ def _classify_extraction_quality(pass_outcomes: dict, section_count: int, text_c
 
 Caller `_write_pipeline_run_metrics` is updated to compute `section_count` + `text_chunk_count` from the graph and pass them in.
 
-`_DOMAIN_PASS_NAMES` constant retains the 4 domain passes (reference removed). Matching test update in `tests/unit/test_classify_extraction_quality.py`: rewrite all test cases to exercise the new three-argument signature + new degraded semantics. Also update `tests/unit/test_extraction_schemas.py` and `tests/unit/test_ontology_bundles.py` wherever they assert "5 passes" or reference-pass-specific behavior (they currently do per reviewer finding #4).
+`_DOMAIN_PASS_NAMES` constant retains the 4 domain passes (reference removed). Matching test updates required:
+- `tests/unit/test_classify_extraction_quality.py` — rewrite all test cases to exercise the new three-argument signature + new degraded semantics.
+- `tests/unit/test_extraction_schemas.py` at `:8` — update `"5 passes" / extraction_schemas.reference` references.
+- `tests/unit/test_ontology_bundles.py` at `:11` — same.
+- `tests/unit/test_coverage_checker.py` at `:68` — `module="extraction_schemas.reference"` reference; either delete the test case or re-target to remaining passes.
+- Any other test using `extraction_schemas.reference` path — grep during Chunk E.
 
 ## 7. Contract tests + xfail resolution
 
@@ -761,28 +803,27 @@ Add 10 new tests (R-rule references link to docs):
 
 | Chunk | Theme | Tasks |
 |---|---|---|
-| A0 | **Prereqs for canonical changes** — 7 explicit tasks below | 7 |
+| A0 | **Prereqs for canonical changes** — 6 explicit tasks below | 6 |
 | A | Prep: 10 new contract tests (added xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs (per §4.6 path) | 6 |
 | B | Canonical `entities.py` rewrite — 2 drops + 15 give-identity + 12 demote + 3 batched touch-ups (see §2.6) | 32 |
 | C | Extraction schemas rewrite + manifest change + reference.py delete | 5 |
 | D | Docling anchor walker + new worker task + fixtures + tests + document_number heuristic | 5 |
-| E | Consumer updates — derive_rules (ontology bundle path), structure_links (SECTION identity only, NOT Document-vertex move), arcadedb_graph docstring, frontend `GraphExplorer.tsx` + `entityTypes.ts`, extraction_merge `_NAME_LIKE_KEYS`, dossier_service filter lists (audit only), query_profiles filter lists (audit only), canonicalization verification (no-op confirmed), `_classify_extraction_quality` rewrite per §6.8 | 10 |
+| E | Consumer updates — derive_rules (ontology bundle path), `finalize_document.REQUIRED_STAGES` adds `derive_document_anchors`, structure_links (no behavior change — SAME_SECTION stays chunk-to-chunk), arcadedb_graph docstring, frontend `GraphExplorer.tsx` + `entityTypes.ts`, extraction_merge `_NAME_LIKE_KEYS`, dossier_service filter lists (audit only), query_profiles filter lists (audit only), canonicalization verification (no-op confirmed), `_classify_extraction_quality` rewrite per §6.8, graph_store count helper if missing per §6.8, update `test_coverage_checker.py`+`test_extraction_schemas.py`+`test_ontology_bundles.py` for 4-pass reality | 11 |
 | F | Test cleanup — 17 parity/schema test deletions + 1 fixture delete + un-xfail 2 contract tests + verify 19/19 | 7 |
 | G | Migration — write script, dry-run, execute on 21-doc corpus (accepts 3–6hr runtime including Docling reconversion), produce report, acceptance gate | 4 |
 
-**Total: ~76 tasks, ~76 commits, ~15–25 days of execution.**
+**Total: 6 + 6 + 32 + 5 + 5 + 11 + 7 + 4 = 76 tasks, ~76 commits, ~15–25 days of execution.**
 
 ### 8.1 Chunk A0 explicit task list
 
-A0 carries seven sequential tasks that land before Chunk B begins:
+A0 carries six sequential tasks that land before Chunk B begins (reduced from seven; the "add 12 vertex classes" task was redundant — vertex classes are generated automatically from `ALL_ENTITIES` via `introspect.build_entity_types_list` at `introspect.py:136` + `arcadedb_schema.py:185`):
 
-1. Extend `_build_logical_identity` at `app/services/extraction_merge.py:416` with a content-based branch for `is_entity=False` types — returns identity = tuple of non-None scalar property values sorted by field name.
-2. Update the walker at `app/services/extraction_merge.py:564` — remove the unconditional `return` for components; keep embedded semantics for components NOT reached via `edge_label`.
-3. Update the walker at `app/services/extraction_merge.py:593-601` — change the "contract violation" skip into a component-emit path (calls `on_entity` with a component flag).
-4. Add 12 component vertex classes to `app/services/arcadedb_schema.py` — one per demoted canonical type; common-props set omits `id`/`name`/`canonical_name` but keeps `entity_type`/`created_at`/`updated_at`.
-5. Add 4 structural edge types (`HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE`/`CHILD_OF`) to `_STRUCTURAL_EDGE_TYPES` at `app/services/arcadedb_schema.py:79`.
-6. Relax contract test 9e — rename `test_edge_label_targets_are_is_entity_true` to `test_edge_label_targets_are_is_entity_true_or_is_component`; update the assertion to allow both.
-7. Add new `tests/unit/test_arcadedb_schema_introspection.py` — schema-creation coverage driven by Pydantic introspection (replaces the deleted YAML-snapshot-driven `test_arcadedb_schema.py`).
+1. Extend `_build_logical_identity` at `app/services/extraction_merge.py:416` with a content-based branch for `is_entity=False` types — returns identity = tuple of non-None scalar property values sorted by field name. Also populate `name` on the `NodeRecord` from a content fingerprint (so `_upsert_node_impl_sync` at `arcadedb_graph.py:1722` continues working uniformly without a component-branch).
+2. Update the walker at `app/services/extraction_merge.py:564` — remove the unconditional `return` for components reached via `edge_label` fields; keep embedded semantics for components NOT reached via `edge_label` (plain property fields).
+3. Update the walker at `app/services/extraction_merge.py:593-601` — change the "contract violation" skip into a component-emit path (calls `on_entity` with a component flag and still emits via `on_edge` when available).
+4. Add 4 structural edge types (`HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE`/`CHILD_OF`) to `_STRUCTURAL_EDGE_TYPES` at `app/services/arcadedb_schema.py:79`.
+5. Relax contract test 9e — rename `test_edge_label_targets_are_is_entity_true` to `test_edge_label_targets_are_is_entity_true_or_is_component`; update the assertion to allow both.
+6. Add new `tests/unit/test_arcadedb_schema_introspection.py` — schema-creation coverage driven by Pydantic introspection (replaces the deleted YAML-snapshot-driven `test_arcadedb_schema.py`).
 
 Sequencing: **A0 + A** (parallel-ok) → **B** → **C** → **D**, **E** after B/C/D, **F** after E, **G** last. A0 MUST land before B or canonical demotions break mid-plan (components won't get vertex classes). A0 and A can be worked in parallel if the team has bandwidth since they're independent.
 
