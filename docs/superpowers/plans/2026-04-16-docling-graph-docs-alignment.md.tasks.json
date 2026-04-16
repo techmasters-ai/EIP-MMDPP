@@ -14,7 +14,7 @@
       "id": "A",
       "subject": "Contract tests + helper extensions",
       "tasks": 6,
-      "status": "pending"
+      "status": "completed"
     },
     {
       "id": "B",
@@ -155,7 +155,8 @@
     {
       "id": "A-6",
       "subject": "MergedEntityRecord component flag (if needed)",
-      "status": "pending"
+      "status": "completed",
+      "notes": "Audit grep returned zero hits — no-op per plan step 1 (no commit)."
     },
     {
       "id": "B-1",
@@ -502,5 +503,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T01:05:00.000000+00:00"
+  "lastUpdated": "2026-04-17T01:15:00.000000+00:00"
 }
