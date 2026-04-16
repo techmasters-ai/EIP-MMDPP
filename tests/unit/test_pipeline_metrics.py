@@ -237,7 +237,7 @@ class TestApplyPostMergeYieldUpdates:
         from app.workers.pipeline import _apply_post_merge_yield_updates
 
         merged = _fake_merged(
-            edges=[SimpleNamespace(source_pass="radar_domain", rel_type="INSTALLED_ON")],
+            edges=[SimpleNamespace(pass_origins={"radar_domain"}, rel_type="INSTALLED_ON")],
             rejected_edges=[
                 ("radar_domain", SimpleNamespace(), SimpleNamespace(value="invalid_triple"))
                 for _ in range(9)
@@ -269,7 +269,7 @@ class TestApplyPostMergeYieldUpdates:
         from app.workers.pipeline import _apply_post_merge_yield_updates
 
         merged = _fake_merged(
-            edges=[SimpleNamespace(source_pass="radar_domain", rel_type="INSTALLED_ON") for _ in range(5)],
+            edges=[SimpleNamespace(pass_origins={"radar_domain"}, rel_type="INSTALLED_ON") for _ in range(5)],
             rejected_edges=[],
         )
 

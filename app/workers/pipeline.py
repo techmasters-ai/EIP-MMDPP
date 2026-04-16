@@ -566,11 +566,15 @@ def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
     """
     from app.models.ingest import StageRun
 
-    # Build per-pass edge counts from the merged result
+    # Build per-pass edge counts from the merged result. An edge emitted
+    # by multiple passes (e.g. a typed edge reproducing a system_links
+    # triple) contributes to each pass in its pass_origins set — matching
+    # the "each pass gets its own contribution counted separately" rule
+    # in plan Task 36.
     extracted_by_pass: dict[str, int] = {}
     for edge in merged.edges:
-        pass_name = edge.source_pass
-        extracted_by_pass[pass_name] = extracted_by_pass.get(pass_name, 0) + 1
+        for pass_name in edge.pass_origins:
+            extracted_by_pass[pass_name] = extracted_by_pass.get(pass_name, 0) + 1
 
     rejected_by_pass: dict[str, int] = {}
     for tup in merged.rejected_edges:

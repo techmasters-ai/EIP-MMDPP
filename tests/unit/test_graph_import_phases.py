@@ -46,7 +46,7 @@ def _fake_merged_edge(
         to_identity=_fake_identity(entity_type="PLATFORM", values=(to_entity,)),
         rel_type=rel_type,
         confidence=confidence,
-        source_pass="radar_domain",
+        pass_origins={"radar_domain"},
     )
 
 

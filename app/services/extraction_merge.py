@@ -225,7 +225,37 @@ class MergedEdgeRecord:
     to_identity: LogicalIdentity
     rel_type: str
     confidence: float
-    source_pass: str
+    # Plan Task 36: one edge may be emitted by multiple passes (e.g. a typed
+    # edge and a system_links DTO that resolve to the same triple). The
+    # cross-pass reducer unions pass_origins across contributing passes.
+    pass_origins: set[str]
+
+
+@dataclass
+class PerPassEdgeMetrics:
+    """Per-pass post-merge edge accounting (plan Task 36).
+
+    Populated by ``merge_and_resolve`` for EVERY pass — typed-edge and
+    system_links alike — so ``_apply_post_merge_yield_updates`` can read
+    a uniform-shape carrier without branching on pass kind at the
+    accounting level. Field semantics:
+      * ``attempted`` — raw pre-validation count (walker edge emissions
+        for typed-edge passes; ``len(DTO list)`` for ``system_links``).
+      * ``accepted`` — after VALIDATION_MATRIX triple check + Pydantic
+        parse. Maps to ``StageRun.relationships_extracted`` authoritatively.
+      * ``rejected`` — ``attempted - accepted``. Includes INVALID_TRIPLE
+        and any pass-specific rejection reasons. Maps to
+        ``StageRun.relationships_rejected`` authoritatively.
+      * ``rejection_sample`` — up to N sampled rejected tuples in
+        ``_rel_to_dict`` shape for observability.
+      * ``rejections_by_reason`` — per-reason counts; preserves parity
+        with the current ``_build_rejections_by_reason`` path.
+    """
+    attempted: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    rejection_sample: list[dict] = field(default_factory=list)
+    rejections_by_reason: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -236,6 +266,10 @@ class MergedExtraction:
     rejections_by_pass: dict[str, int]
     pipeline_run_id: str
     document_id: str
+    # Plan Task 36 post-merge accounting: populated per pass by
+    # merge_and_resolve. _apply_post_merge_yield_updates reads this
+    # uniformly for typed-edge and system_links passes.
+    per_pass_edge_metrics: dict[str, PerPassEdgeMetrics] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -664,7 +698,7 @@ def _resolve_relationship(
         to_identity=to_identity,
         rel_type=rel_type,
         confidence=confidence,
-        source_pass=pass_name,
+        pass_origins={pass_name},
     )
 
 
