@@ -48,6 +48,19 @@ def _fake_merged(
     )
 
 
+def _fake_manifest(pass_kind_by_name: dict | None = None):
+    """Minimal BundleManifest-shaped stub exposing .find_pass(name).kind.
+
+    Default: any pass name resolves to kind='entities_and_relationships'
+    (typed-edge path). Pass a dict to override per-name.
+    """
+    mapping = dict(pass_kind_by_name or {})
+    def _find(pname):
+        kind = mapping.get(pname, "entities_and_relationships")
+        return SimpleNamespace(name=pname, kind=kind)
+    return SimpleNamespace(find_pass=_find, passes=[])
+
+
 def _fake_manifest(bundle_key="air_defense_v3"):
     """BundleManifest-ish stub."""
     return SimpleNamespace(
@@ -257,7 +270,7 @@ class TestApplyPostMergeYieldUpdates:
         session.query.return_value.filter.return_value.all.return_value = [stage_row]
 
         with patch("app.workers.pipeline.get_sync_session", return_value=session):
-            _apply_post_merge_yield_updates("run-1", merged)
+            _apply_post_merge_yield_updates("run-1", merged, _fake_manifest())
 
         # HIT → DEGRADED because 9/10 = 90% rejection ratio, above 75% threshold
         assert stage_row.yield_status == "DEGRADED"
@@ -285,7 +298,7 @@ class TestApplyPostMergeYieldUpdates:
         session.query.return_value.filter.return_value.all.return_value = [stage_row]
 
         with patch("app.workers.pipeline.get_sync_session", return_value=session):
-            _apply_post_merge_yield_updates("run-1", merged)
+            _apply_post_merge_yield_updates("run-1", merged, _fake_manifest())
 
         assert stage_row.yield_status == "HIT"
 
@@ -308,7 +321,7 @@ class TestApplyPostMergeYieldUpdates:
         session.query.return_value.filter.return_value.all.return_value = [stage_row]
 
         with patch("app.workers.pipeline.get_sync_session", return_value=session):
-            _apply_post_merge_yield_updates("run-1", merged)
+            _apply_post_merge_yield_updates("run-1", merged, _fake_manifest())
 
         # Stays EMPTY — the only allowed transition is HIT→DEGRADED
         assert stage_row.yield_status == "EMPTY"

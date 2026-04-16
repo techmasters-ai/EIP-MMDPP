@@ -569,7 +569,14 @@ def test_apply_post_merge_yield_updates_writes_rejections_by_reason_per_pass(mon
         rejections_by_pass={"system_links": 2, "radar_domain": 1},
         pipeline_run_id="run-1", document_id="doc-1",
     )
-    _pipeline._apply_post_merge_yield_updates("run-1", merged)
+    manifest = SimpleNamespace(
+        passes=[],
+        find_pass=lambda p: SimpleNamespace(
+            name=p,
+            kind=("relationships_only" if p == "system_links" else "entities_and_relationships"),
+        ),
+    )
+    _pipeline._apply_post_merge_yield_updates("run-1", merged, manifest)
 
     assert row_links.metrics["rejections_by_reason"] == {"unknown_ref_id": 2}
     # Pre-existing metrics keys survive; rejections_by_reason is added.

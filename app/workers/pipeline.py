@@ -499,7 +499,18 @@ def _run_single_pass(
             else str(yield_status_val)
         )
         counts = _count_pass_output(pass_result, pass_def, ontology)
+        # Plan Task 36 pre-merge JSONB shape: all 5 authoritative-shape keys
+        # are present on every write. counts_authoritative=False so readers
+        # know the values are provisional; _apply_post_merge_yield_updates
+        # overwrites all 5 keys + flips counts_authoritative=True post-merge.
+        # Top-level StageRun columns (relationships_extracted / _rejected)
+        # are mirrored into the JSONB block so the two projections never
+        # drift — lockstep contract pinned by test_counts_authoritative_lifecycle.
         counts["metrics"] = {
+            "counts_authoritative": False,
+            "relationships_extracted": counts["relationships_extracted"],
+            "relationships_rejected": counts["relationships_rejected"],
+            "rejection_sample": [],
             "rejections_by_reason": _build_rejections_by_reason(
                 getattr(pass_result, "pre_merge_rejections", None),
             ),
@@ -555,37 +566,47 @@ def _should_skip(pass_def, upstream_refs: dict, ontology: dict) -> bool:
     return True
 
 
-def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
-    """Recomputes yield_status per-pass after merge_and_resolve rejects edges.
+def _apply_post_merge_yield_updates(pipeline_run_id, merged, manifest) -> None:
+    """Authoritative per-pass yield + metrics update after merge (plan Task 36).
 
-    Spec §5.4 + §6.2. The only allowed transition is HIT → DEGRADED; this
-    function does NOT promote EMPTY/BRIDGES_ONLY passes upward.
+    Reads ``merged.per_pass_edge_metrics[pass_name]`` (populated uniformly
+    for typed-edge AND system_links passes by ``merge_and_resolve``) and
+    writes the full post-merge picture in lockstep across BOTH the
+    ``StageRun`` top-level columns and the ``StageRun.metrics`` JSONB:
+    ``relationships_extracted``, ``relationships_rejected``,
+    ``counts_authoritative=True``, ``rejection_sample``, and
+    ``rejections_by_reason``. An XOR of the two surfaces is a regression.
 
-    Updates relationships_extracted and relationships_rejected counts on
-    each COMPLETE StageRun row so they reflect post-merge reality.
+    Yield dispatch by ``manifest.find_pass(pass_name).kind``:
+    - ``relationships_only`` (e.g. system_links): ``yield_status``
+      overwritten unconditionally via ``classify_yield_from_counts(primary=0,
+      bridge=0, extracted_rels=accepted, rejected_rels=rejected)``.
+      Promotes HIT→EMPTY (0 accepted, <4 total) and HIT→DEGRADED (≥4 total
+      with ≥75% rejected) without hardcoded values.
+    - Otherwise (entity-bearing passes): existing HIT → DEGRADED rule
+      (guarded on ``yield_status == "HIT"``) preserved; EMPTY/BRIDGES_ONLY
+      are never promoted upward.
+
+    Fallback when ``merged.per_pass_edge_metrics`` is not yet populated
+    (interim builds / test fixtures): derive ``accepted``/``rejected``
+    from ``merged.edges``/``merged.rejected_edges`` grouped by pass name,
+    ``rejection_sample=[]`` (populated only when the carrier is present),
+    ``rejections_by_reason`` via ``_build_rejections_by_reason``.
     """
     from app.models.ingest import StageRun
 
-    # Build per-pass edge counts from the merged result. An edge emitted
-    # by multiple passes (e.g. a typed edge reproducing a system_links
-    # triple) contributes to each pass in its pass_origins set — matching
-    # the "each pass gets its own contribution counted separately" rule
-    # in plan Task 36.
-    extracted_by_pass: dict[str, int] = {}
+    # Fallback path (carrier empty) — per-pass counts + rejections from the
+    # edge/rejected_edges lists. Typed-edge and system_links alike.
+    accepted_fallback: dict[str, int] = {}
     for edge in merged.edges:
         for pass_name in edge.pass_origins:
-            extracted_by_pass[pass_name] = extracted_by_pass.get(pass_name, 0) + 1
-
-    rejected_by_pass: dict[str, int] = {}
+            accepted_fallback[pass_name] = accepted_fallback.get(pass_name, 0) + 1
+    rejected_fallback: dict[str, int] = {}
+    rejections_by_pass_fallback: dict[str, list] = {}
     for tup in merged.rejected_edges:
         pass_name = tup[0]
-        rejected_by_pass[pass_name] = rejected_by_pass.get(pass_name, 0) + 1
-
-    # Group merged.rejected_edges by source_pass for per-pass metrics.
-    rejections_by_pass: dict[str, list] = {}
-    for tup in merged.rejected_edges:
-        source_pass = tup[0]
-        rejections_by_pass.setdefault(source_pass, []).append(tup)
+        rejected_fallback[pass_name] = rejected_fallback.get(pass_name, 0) + 1
+        rejections_by_pass_fallback.setdefault(pass_name, []).append(tup)
 
     with get_sync_session() as session:
         rows = (
@@ -601,33 +622,64 @@ def _apply_post_merge_yield_updates(pipeline_run_id, merged) -> None:
 
         for row in rows:
             pass_name = row.pass_name
-            extracted = extracted_by_pass.get(pass_name, 0)
-            rejected = rejected_by_pass.get(pass_name, 0)
+            metrics_entry = merged.per_pass_edge_metrics.get(pass_name)
+            if metrics_entry is not None:
+                accepted = metrics_entry.accepted
+                rejected = metrics_entry.rejected
+                rejection_sample = list(metrics_entry.rejection_sample)
+                rejections_by_reason_post = dict(metrics_entry.rejections_by_reason)
+            else:
+                accepted = accepted_fallback.get(pass_name, 0)
+                rejected = rejected_fallback.get(pass_name, 0)
+                rejection_sample = []
+                rejections_by_reason_post = _build_rejections_by_reason(
+                    rejections_by_pass_fallback.get(pass_name, []),
+                )
 
-            # Always update the relationship counts to reflect post-merge reality
-            row.relationships_extracted = extracted
+            # Lockstep update: top-level columns and JSONB metrics move together.
+            row.relationships_extracted = accepted
             row.relationships_rejected = rejected
 
-            # Only allow HIT → DEGRADED transition (spec §6.2)
-            if row.yield_status == "HIT":
-                new_yield = classify_yield_from_counts(
-                    primary=row.primary_entities_extracted or 0,
-                    bridge=row.bridge_entities_extracted or 0,
-                    extracted_rels=extracted,
+            # Yield-status authority — dispatch by manifest pass kind.
+            try:
+                pass_def = manifest.find_pass(pass_name)
+                pass_kind = pass_def.kind
+            except (KeyError, AttributeError):
+                pass_kind = None
+
+            if pass_kind == "relationships_only":
+                # system_links et al: overwrite unconditionally from the
+                # canonical classifier so EMPTY/DEGRADED/HIT transitions
+                # match pre-merge semantics across the DTO/typed-edge split.
+                authoritative = classify_yield_from_counts(
+                    primary=0,
+                    bridge=0,
+                    extracted_rels=accepted,
                     rejected_rels=rejected,
                 )
-                if new_yield == YieldStatus.DEGRADED:
-                    row.yield_status = "DEGRADED"
+                row.yield_status = authoritative.value
+            else:
+                # Entity-bearing passes: existing HIT→DEGRADED rule only.
+                if row.yield_status == "HIT":
+                    new_yield = classify_yield_from_counts(
+                        primary=row.primary_entities_extracted or 0,
+                        bridge=row.bridge_entities_extracted or 0,
+                        extracted_rels=accepted,
+                        rejected_rels=rejected,
+                    )
+                    if new_yield == YieldStatus.DEGRADED:
+                        row.yield_status = "DEGRADED"
 
-            # Plan 1: per-pass post-merge rejection breakdown into metrics JSONB.
-            # Merge with any pre-merge counts already written — post-merge
-            # wins on conflict because it is authoritative for resolve-stage reasons
-            # like UNKNOWN_REF_ID.
-            post_merge = _build_rejections_by_reason(rejections_by_pass.get(pass_name, []))
+            # JSONB: overwrite all 5 authoritative-shape keys. Flip
+            # counts_authoritative=True so readers can filter for post-merge.
             merged_metrics = dict(row.metrics or {})
-            existing = dict(merged_metrics.get("rejections_by_reason") or {})
-            existing.update(post_merge)  # post-merge values take precedence
-            merged_metrics["rejections_by_reason"] = existing
+            merged_metrics["counts_authoritative"] = True
+            merged_metrics["relationships_extracted"] = accepted
+            merged_metrics["relationships_rejected"] = rejected
+            merged_metrics["rejection_sample"] = rejection_sample
+            existing_reasons = dict(merged_metrics.get("rejections_by_reason") or {})
+            existing_reasons.update(rejections_by_reason_post)  # post-merge wins
+            merged_metrics["rejections_by_reason"] = existing_reasons
             row.metrics = merged_metrics
 
         session.commit()
@@ -4054,7 +4106,7 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
             pipeline_run_id=str(pipeline_run_id),
         )
 
-        _apply_post_merge_yield_updates(pipeline_run_id, merged)
+        _apply_post_merge_yield_updates(pipeline_run_id, merged, manifest)
         _write_pipeline_run_metrics(pipeline_run_id, merged, manifest)
 
         identity_to_rid = _import_graph_phase_nodes(
