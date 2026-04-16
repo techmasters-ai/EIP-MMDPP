@@ -93,7 +93,8 @@
     {
       "id": "A0-3",
       "subject": "Add 4 structural edge types",
-      "status": "pending"
+      "status": "completed",
+      "commit": "b5b3183"
     },
     {
       "id": "A0-4",
@@ -491,5 +492,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-16T22:23:41.791053+00:00"
+  "lastUpdated": "2026-04-16T22:45:00.000000+00:00"
 }
