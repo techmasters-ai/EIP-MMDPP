@@ -6,7 +6,6 @@ entity_types:
     - SECTION
     - FIGURE
     - TABLE
-    - ASSERTION
     - RADAR_SYSTEM
     - PLATFORM
     - ANTENNA

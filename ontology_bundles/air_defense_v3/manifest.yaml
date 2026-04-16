@@ -11,7 +11,7 @@ passes:
     input_mode: document_only
     module: extraction_schemas.reference
     template_class: ReferencePass
-    primary_entity_types: [SECTION, FIGURE, TABLE, ASSERTION]
+    primary_entity_types: [SECTION, FIGURE, TABLE]
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []

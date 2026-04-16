@@ -119,32 +119,6 @@ class SpreadsheetEntity(BaseModel):
     sheet_name: Optional[str] = Field(default=None, description="Name of the specific worksheet tab", examples=['Radar Parameters'])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
-class AssertionEntity(BaseModel):
-    """Assertion — A source-backed claim extracted from a document
-
-    KNOWN ANTI-PATTERN: identity is the full assertion text (``graph_id_fields=['assertion_text']``).
-    Long-text identity destabilizes dedup. Flagged for Plan 2 cleanup.
-    """
-    model_config = ConfigDict(ontology_name="ASSERTION", graph_id_fields=['assertion_text'], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
-
-    assertion_text: str = Field(..., description="The verbatim or paraphrased claim text", examples=['Maximum detection range is 300 km against a 1 m^2 target', 'Maximum detection range is 300 km against a 1 m^2 target'])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence score (0.0 to 1.0)", examples=[0.85])
-    extraction_method: Optional[str] = Field(default=None, description="Method used to extract the assertion", json_schema_extra={"enum": ["LLM", "NER", "MANUAL", "RULE"]})
-    review_status: Optional[str] = Field(default=None, description="Current curation review status", json_schema_extra={"enum": ["UNREVIEWED", "APPROVED", "REJECTED"]})
-    documents: List["DocumentEntity"] = edge(label="SUPPORTED_BY", default_factory=list)
-    sections: List["SectionEntity"] = edge(label="SUPPORTED_BY", default_factory=list)
-    figures: List["FigureEntity"] = edge(label="SUPPORTED_BY", default_factory=list)
-    tables: List["TableEntity"] = edge(label="SUPPORTED_BY", default_factory=list)
-    spreadsheets: List["SpreadsheetEntity"] = edge(label="SUPPORTED_BY", default_factory=list)
-    equipment_systems: List["EquipmentSystemEntity"] = edge(label="ABOUT", default_factory=list)
-    radar_systems: List["RadarSystemEntity"] = edge(label="ABOUT", default_factory=list)
-    missile_systems: List["MissileSystemEntity"] = edge(label="ABOUT", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="ABOUT", default_factory=list)
-    components: List["ComponentEntity"] = edge(label="ABOUT", default_factory=list)
-    documents: List["DocumentEntity"] = edge(label="DERIVED_FROM", default_factory=list)
-    organizations: List["OrganizationEntity"] = edge(label="REVIEWED_BY", default_factory=list)
-
-
 # ----------------------------------------------------------------------
 # Layer 2
 # ----------------------------------------------------------------------
@@ -834,7 +808,6 @@ ALL_ENTITIES: dict[str, type[BaseModel]] = {
     "FIGURE": FigureEntity,
     "TABLE": TableEntity,
     "SPREADSHEET": SpreadsheetEntity,
-    "ASSERTION": AssertionEntity,
     "ORGANIZATION": OrganizationEntity,
     "PLATFORM": PlatformEntity,
     "WEAPON_SYSTEM": WeaponSystemEntity,

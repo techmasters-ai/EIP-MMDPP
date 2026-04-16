@@ -86,18 +86,6 @@ def test_system_confidence_excluded_from_non_assertion(pyd_entity_types):
     assert "confidence" not in document_props
 
 
-def test_assertion_domain_confidence_preserved(pyd_entity_types):
-    """ASSERTION declares ``confidence`` as a domain property in YAML
-    (example 0.85). Introspection must emit that exact schema, not the
-    generator's system-field override."""
-    pyd_by_name = {e["name"]: e for e in pyd_entity_types}
-    props = pyd_by_name["ASSERTION"]["properties"]["properties"]
-    assert props["confidence"] == {
-        "type": "number",
-        "description": "Extraction confidence score (0.0 to 1.0)",
-        "example": 0.85,
-    }
-
 
 def test_singular_example_mapping(pyd_entity_types):
     """Pydantic ``examples=[a, b, c]`` maps to YAML ``example: a`` (first only)."""

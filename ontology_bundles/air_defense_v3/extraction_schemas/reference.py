@@ -9,7 +9,6 @@ Key entities (ontology_name):
 - ``SECTION`` — section or heading within the document
 - ``FIGURE`` — figure / diagram / image
 - ``TABLE`` — data table
-- ``ASSERTION`` — source-backed claim
 
 Key relationships: None emitted by the LLM. ``MENTIONED_IN`` edges are
 derived post-merge by ``derive_rules.derive_structural_edges`` (spec §3.8);
@@ -242,48 +241,6 @@ class TableEntity(BaseModel):
     _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
 
 
-class AssertionEntity(BaseModel):
-    """Assertion — narrow extraction view of canonical ASSERTION.
-
-    Identity: ``assertion_text`` (document-scoped). This is a
-    KNOWN ANTI-PATTERN — long-text identity destabilizes dedup. Flagged
-    for Plan 2 cleanup. (See canonical AssertionEntity in entities.py.)
-    """
-    model_config = ConfigDict(
-        extra="ignore",
-        ontology_name="ASSERTION",
-        graph_id_fields=["assertion_text"],
-        identity_scope="document",
-        is_entity=True,
-    )
-
-    assertion_text: str = Field(
-        ...,
-        description="The verbatim or paraphrased claim text",
-        examples=[
-            "Maximum detection range is 300 km against a 1 m^2 target",
-            "Maximum detection range is 300 km against a 1 m^2 target",
-        ],
-    )
-    extraction_method: Optional[str] = Field(
-        default=None,
-        description="Method used to extract the assertion",
-        json_schema_extra={"enum": ["LLM", "NER", "MANUAL", "RULE"]},
-    )
-    review_status: Optional[str] = Field(
-        default=None,
-        description="Current curation review status",
-        json_schema_extra={"enum": ["UNREVIEWED", "APPROVED", "REJECTED"]},
-    )
-    confidence: Optional[float] = Field(
-        default=None,
-        description="Extraction confidence score (0.0 to 1.0)",
-        examples=[0.85],
-    )
-
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
 # ----------------------------------------------------------------------
 # Pass-root container — not an ontology entity (Decision 4a).
 # ----------------------------------------------------------------------
@@ -296,6 +253,5 @@ class ReferencePass(BaseModel):
     sections: List[SectionEntity] = Field(default_factory=list)
     figures: List[FigureEntity] = Field(default_factory=list)
     tables: List[TableEntity] = Field(default_factory=list)
-    assertions: List[AssertionEntity] = Field(default_factory=list)
 
     _dedupe_root_entities = model_validator(mode="before")(_dedupe_entities_by_identity)

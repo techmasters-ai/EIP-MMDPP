@@ -86,20 +86,6 @@ entity_types:
         workbook_name: {type: string, description: "Name of the spreadsheet workbook file", example: "SA-20_MDE_Checklist.xlsx"}
         sheet_name: {type: string, description: "Name of the specific worksheet tab", example: "Radar Parameters"}
 
-  - name: ASSERTION
-    label: "Assertion"
-    identity_fields: [assertion_text]
-    identity_scope: document
-    description: "A source-backed claim extracted from a document"
-    parent: DocumentResource
-    properties:
-      type: object
-      properties:
-        assertion_text: {type: string, description: "The verbatim or paraphrased claim text", example: "Maximum detection range is 300 km against a 1 m^2 target"}
-        confidence: {type: number, description: "Extraction confidence score (0.0 to 1.0)", example: 0.85}
-        extraction_method: {type: string, description: "Method used to extract the assertion", enum: [LLM, NER, MANUAL, RULE]}
-        review_status: {type: string, description: "Current curation review status", enum: [UNREVIEWED, APPROVED, REJECTED]}
-
   # ---------------------------------------------------------------------------
   # Layer 2: Military Equipment (DoDAF backbone)
   # ---------------------------------------------------------------------------
