@@ -22,6 +22,7 @@ Plan task mapping (by contract-test function name):
 - test_descriptions_and_examples_on_extraction_relevant_fields — Task 9c
 - test_pass_root_list_dedup_schema_local                      — Task 9d
 - test_edge_label_targets_are_is_entity_true_or_is_component  — Task 9e
+- test_components_have_no_edge_label_fields                   — Task A0-5
 """
 from __future__ import annotations
 
@@ -493,3 +494,29 @@ def test_edge_label_targets_are_is_entity_true_or_is_component():
         "edge_label fields pointing at targets with no is_entity declared: "
         + ", ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# Task A0-5: components (is_entity=False) cannot carry edge(label=...) fields.
+# ---------------------------------------------------------------------------
+
+
+def test_components_have_no_edge_label_fields():
+    """Per §4.8 + docs:17517 — components cannot carry edge_label fields.
+
+    Keeps the 'no-recurse' walker policy safe; if component→component
+    edges are ever needed, promote to is_entity=True first.
+    """
+    violations: list[str] = []
+    for cls, src in _iter_all_basemodels():
+        cfg = cls.model_config or {}
+        if cfg.get("is_entity") is not False:
+            continue  # entities may carry edges
+        for fname, finfo in cls.model_fields.items():
+            extra = finfo.json_schema_extra or {}
+            if isinstance(extra, dict) and extra.get("edge_label"):
+                violations.append(
+                    f"{src}.{cls.__name__}.{fname} has edge_label "
+                    f"(component→edge not allowed)"
+                )
+    assert not violations, "\n".join(violations)
