@@ -133,13 +133,13 @@
     {"id": 27, "subject": "entities.py Layer 4", "status": "pending", "blockedBy": [24]},
     {"id": 28, "subject": "entities.py Layer 5", "status": "pending", "blockedBy": [24]},
     {"id": 29, "subject": "ALL_ENTITIES registry", "status": "pending", "blockedBy": [24, 25, 26, 27, 28]},
-    {"id": 30, "subject": "introspect.build_entity_types_list", "status": "pending", "blockedBy": [23, 29, 59, 60]},
-    {"id": 31, "subject": "Introspect relationships + validation_matrix", "status": "pending", "blockedBy": [30]},
-    {"id": 61, "subject": "build_ontology_dict canonical-JSON parity", "status": "pending", "blockedBy": [30, 31, 59, 60]},
-    {"id": 32, "subject": "ONTOLOGY_SOURCE flag", "status": "pending", "blockedBy": [61]},
-    {"id": 33, "subject": "Migrate extraction_merge.py", "status": "pending", "blockedBy": [32]},
-    {"id": 34, "subject": "Migrate arcadedb_schema + arcadedb_graph", "status": "pending", "blockedBy": [32]},
-    {"id": 35, "subject": "Migrate pipeline.py", "status": "pending", "blockedBy": [32]},
+    {"id": 30, "subject": "introspect.build_entity_types_list", "status": "completed", "blockedBy": [23, 29, 59, 60]},
+    {"id": 31, "subject": "Introspect relationships + validation_matrix", "status": "completed", "blockedBy": [30]},
+    {"id": 61, "subject": "build_ontology_dict canonical-JSON parity", "status": "completed", "blockedBy": [30, 31, 59, 60]},
+    {"id": 32, "subject": "ONTOLOGY_SOURCE flag", "status": "completed", "blockedBy": [61]},
+    {"id": 33, "subject": "Migrate extraction_merge.py", "status": "completed", "blockedBy": [32]},
+    {"id": 34, "subject": "Migrate arcadedb_schema + arcadedb_graph", "status": "completed", "blockedBy": [32]},
+    {"id": 35, "subject": "Migrate pipeline.py", "status": "completed", "blockedBy": [32]},
     {"id": 36, "subject": "Migrate canonicalization.py", "status": "pending", "blockedBy": [32]},
     {"id": 37, "subject": "Migrate query_profiles.py", "status": "pending", "blockedBy": [32]},
     {"id": 38, "subject": "Migrate dossier_service.py", "status": "pending", "blockedBy": [32]},
@@ -174,5 +174,5 @@
     {"id": 72, "subject": "Phase 8: multi-doc regression", "status": "pending", "blockedBy": [71]},
     {"id": 55, "subject": "Final summary + MEMORY", "status": "pending", "blockedBy": [54, 72]}
   ],
-  "lastUpdated": "2026-04-15T15:00:00Z"
+  "lastUpdated": "2026-04-15T17:30:00Z"
 }
