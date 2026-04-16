@@ -93,6 +93,8 @@ from app.services.extraction_merge import classify_yield_from_counts  # noqa: E4
 from app.services.extraction_merge import build_display_label  # noqa: E402
 from app.services.extraction_merge import YieldStatus  # noqa: E402
 from app.services.extraction_merge import merge_and_resolve  # noqa: E402
+from app.services.extraction_merge import PreMergeWalkSummary  # noqa: E402
+from app.services.extraction_merge import walk_entity_graph  # noqa: E402
 from app.services.ontology_bundles import load_bundle_manifest  # noqa: E402
 from app.services.ontology_templates import load_ontology  # noqa: E402
 from app.db.session import get_graph_store  # noqa: E402
@@ -324,6 +326,48 @@ def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
         session.commit()
 
 
+def _build_pre_merge_walk_summary(
+    pass_result,
+    pass_def,
+    ontology: dict,
+    document_id: str,
+) -> PreMergeWalkSummary:
+    """Build the shared pre-merge carrier for one PassResult (plan Task 34b).
+
+    Typed-edge passes: run walk_entity_graph once over the template_instance
+    with both on_entity and on_edge callbacks. entities gets every emitted
+    entity (nested children included); raw_edge_count counts every edge
+    emission pre-validation.
+
+    relationships_only passes (system_links, Decision 4 exception): entities=[];
+    raw_edge_count=len(template_instance.relationships). The DTO-list length
+    feeds classify_yield the same provisional-edge signal a typed-edge pass
+    would get from walker emissions, so system_links pre-merge HIT/EMPTY
+    classification matches entity-bearing passes.
+    """
+    if getattr(pass_def, "kind", None) == "relationships_only":
+        relationships = getattr(pass_result.template_instance, "relationships", None) or []
+        return PreMergeWalkSummary(entities=[], raw_edge_count=len(relationships))
+
+    entities: list = []
+    edge_count = 0
+
+    def _on_edge(_parent_identity, _label, _child):
+        nonlocal edge_count
+        edge_count += 1
+
+    walk_entity_graph(
+        pass_result.template_instance,
+        on_entity=entities.append,
+        ontology=ontology,
+        document_id=document_id,
+        on_edge=_on_edge,
+        visited_objects=set(),
+        at_pass_root=True,
+    )
+    return PreMergeWalkSummary(entities=entities, raw_edge_count=edge_count)
+
+
 def _run_single_pass(
     *,
     pipeline_run_id,
@@ -438,6 +482,14 @@ def _run_single_pass(
                     f"Required pass {pass_def.name} terminal failure"
                 ) from exc
             return
+
+        # Plan Task 34b: build the single shared pre-merge carrier and
+        # attach it to PassResult. classify_yield and _count_pass_output
+        # (rewritten in Task 35c) consume pass_result.pre_merge_walk —
+        # the walker runs ONCE per PassResult for the whole pre-merge phase.
+        pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+            pass_result, pass_def, ontology, document_id,
+        )
 
         yield_status_val = classify_yield(pass_result, pass_def, ontology)
         # classify_yield returns a YieldStatus enum; normalise to string

@@ -149,7 +149,7 @@
     {"id": 42, "subject": "Flip default ONTOLOGY_SOURCE=pydantic", "status": "completed", "blockedBy": [33, 34, 35, 36, 37, 38, 39, 40, 41]},
     {"id": 62, "subject": "Phase 5 before-metrics", "status": "completed", "blockedBy": [42], "notes": "Option 1 applied: deterministic catalog+prompt bytes captured to /tmp/phase5-before-{catalog,prompts}/<pass>.txt. Live StageRun metrics + merged graph deferred to Task 53 (Phase 7) — DB was empty at kickoff; running extraction twice would duplicate Task 53's expanded E2E at LLM cost."},
     {"id": 79, "subject": "35b: walk_entity_graph + walk_entities_only sibling", "status": "completed", "blockedBy": [62], "notes": "Unified walk_entity_graph in app/services/extraction_merge.py. on_edge=None ⇒ entity-only mode (ontology/document_id optional); on_edge!=None ⇒ full mode emits edges with LogicalIdentity parents. Traversal rules per plan 35b: at_pass_root walks plain fields, entities follow only edge_label fields, components embedded (no recurse/emit). 12 new tests in tests/unit/test_walk_entity_graph.py cover Steps 1a-g + Step 2 + entity-only fallback + full-mode ontology validation + visited-default convenience."},
-    {"id": 82, "subject": "34b: PreMergeWalkSummary (incl. system_links DTO special-case)", "status": "pending", "blockedBy": [79]},
+    {"id": 82, "subject": "34b: PreMergeWalkSummary (incl. system_links DTO special-case)", "status": "completed", "blockedBy": [79], "notes": "PreMergeWalkSummary(entities, raw_edge_count) dataclass in extraction_merge.py. Optional pre_merge_walk field on PassResult (default None). _build_pre_merge_walk_summary(pass_result, pass_def, ontology, document_id) in pipeline.py handles typed-edge (walk_entity_graph) and relationships_only (system_links DTO length) branches. Wired into pass loop at pipeline.py just before classify_yield. Task 81 will rewrite classify_yield + _count_pass_output to consume the summary."
     {"id": 77, "subject": "35a: split walker; scratch-dict dedup; no-mutation + no-worse-label tests", "status": "pending", "blockedBy": [82]},
     {"id": 81, "subject": "35c: counters consume PreMergeWalkSummary (no re-walks)", "status": "pending", "blockedBy": [82]},
     {"id": 63, "subject": "27b: merge refactor (incl. system_links HIT→EMPTY + counts_authoritative regression)", "status": "pending", "blockedBy": [77, 81]},
@@ -174,5 +174,5 @@
     {"id": 72, "subject": "Phase 8: multi-doc regression", "status": "pending", "blockedBy": [71]},
     {"id": 55, "subject": "Final summary + MEMORY", "status": "pending", "blockedBy": [54, 72]}
   ],
-  "lastUpdated": "2026-04-16T14:30:00Z"
+  "lastUpdated": "2026-04-16T15:00:00Z"
 }

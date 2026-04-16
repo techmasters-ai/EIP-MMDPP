@@ -94,6 +94,29 @@ class ExtractionMetadata:
 
 
 @dataclass
+class PreMergeWalkSummary:
+    """Shared pre-merge carrier for entity + edge counts (plan Task 34b).
+
+    The pre-merge path walks each PassResult ONCE via walk_entity_graph
+    with both on_entity and on_edge callbacks hooked up. ``entities`` is
+    the list of every emitted entity (nested children included);
+    ``raw_edge_count`` is the number of edge emissions during the walk
+    (no validation yet — VALIDATION_MATRIX triple-check happens at
+    merge time). Both classify_yield and _count_pass_output consume this
+    pre-built summary; neither re-traverses.
+
+    ``system_links`` DTO special case (Decision 4): entities=[];
+    raw_edge_count=len(pass_result.template_instance.relationships).
+    The DTO list length is the provisional relationships_extracted so
+    classify_yield sees non-zero provisional edges when the LLM emitted
+    candidate SystemLinkRelationships. Task 36's post-merge branch
+    overwrites yield_status authoritatively from per_pass_edge_metrics.
+    """
+    entities: list[Any]
+    raw_edge_count: int
+
+
+@dataclass
 class PassResult:
     """Handoff type between _run_single_pass (producer) and merge_and_resolve (consumer)."""
 
@@ -103,6 +126,12 @@ class PassResult:
     pre_merge_rejections: list[tuple[Any, RelationshipRejectionReason]]
     # Optional: pre-populated by system_links pass for cross-pass ref_id lookup.
     upstream_refs: dict[str, "LogicalIdentity"] | None = None
+    # Populated by the pass loop (plan Task 34b) — single shared pre-merge
+    # traversal; consumed by classify_yield + _count_pass_output without
+    # re-walking. None means the PassResult was built outside the pass
+    # loop (test fixture, or a code path not yet migrated); consumers fall
+    # back to walk_entity_graph in entity-only mode.
+    pre_merge_walk: "PreMergeWalkSummary | None" = None
 
     def iter_entities_of_type(self, entity_type: str) -> Iterable[Any]:
         """Return entity model instances matching the given type.
