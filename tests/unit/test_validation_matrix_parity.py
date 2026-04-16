@@ -62,10 +62,10 @@ def test_validation_matrix_relationship_column_is_enum():
 
 
 def test_validation_matrix_triple_count(yaml_ontology):
-    """Sanity: 127 unique triples (YAML lists 128 with one duplicate)."""
-    assert len(VALIDATION_MATRIX) == 127, (
+    """Sanity: 126 unique triples (YAML lists 127 with one duplicate)."""
+    assert len(VALIDATION_MATRIX) == 126, (
         f"VALIDATION_MATRIX has {len(VALIDATION_MATRIX)} triples; "
-        f"expected 127 unique (YAML lists {len(yaml_ontology['validation_matrix'])} "
+        f"expected 126 unique (YAML lists {len(yaml_ontology['validation_matrix'])} "
         "with one known duplicate RADAR_SYSTEM × INSTALLED_ON × PLATFORM)."
     )
 

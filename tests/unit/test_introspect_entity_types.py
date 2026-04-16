@@ -108,6 +108,7 @@ def test_enum_preserved_in_declared_order(pyd_entity_types):
         "DRAWING",
         "SPECIFICATION",
         "CHECKLIST",
+        "SPREADSHEET",
     ]
 
 

@@ -92,7 +92,7 @@ def test_canonicalizer_dedupes_validation_matrix(yaml_ontology):
         (e["source"], e["relationship"], e["target"]) for e in canon["validation_matrix"]
     ]
     assert len(triples) == len(set(triples))
-    assert len(triples) == 127
+    assert len(triples) == 126
 
 
 def test_canonicalizer_sorts_property_fields(yaml_ontology):

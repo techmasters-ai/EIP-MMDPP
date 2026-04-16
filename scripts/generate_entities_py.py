@@ -22,7 +22,7 @@ YAML_PATH = ROOT / "ontology_bundles" / "air_defense_v3" / "ontology.yaml"
 # Entity → layer map (stable import order; pass roots come last).
 LAYERS = {
     1: [  # reference
-        "DOCUMENT", "SECTION", "FIGURE", "TABLE", "SPREADSHEET",
+        "DOCUMENT", "SECTION", "FIGURE", "TABLE",
     ],
     2: [  # military equipment
         "ORGANIZATION", "PLATFORM", "WEAPON_SYSTEM", "EQUIPMENT_SYSTEM",

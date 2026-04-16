@@ -32,9 +32,11 @@ entity_types:
         document_number: {type: string, description: "Official document identifier or TM number", example: "TM 9-1425-386-12"}
         classification: {type: string, description: "Security classification level", example: "UNCLASSIFIED"}
         publication_date: {type: string, description: "Publication or revision date (YYYY-MM-DD)", example: "2023-06-15"}
-        source_type: {type: string, description: "Category of the source document", enum: [MANUAL, REPORT, BRIEFING, NOTE, SCHEMATIC, DRAWING, SPECIFICATION, CHECKLIST]}
+        source_type: {type: string, description: "Category of the source document", enum: [MANUAL, REPORT, BRIEFING, NOTE, SCHEMATIC, DRAWING, SPECIFICATION, CHECKLIST, SPREADSHEET]}
         issuing_org: {type: string, description: "Organization that published the document", example: "U.S. Army TACOM"}
         language: {type: string, description: "Language of the document (ISO 639-1 code)", example: "en"}
+        workbook_name: {type: string, description: "Name of the spreadsheet workbook file", example: "SA-20_MDE_Checklist.xlsx"}
+        sheet_name: {type: string, description: "Name of the specific worksheet tab", example: "Radar Parameters"}
 
   - name: SECTION
     label: "Document Section"
@@ -75,16 +77,6 @@ entity_types:
         table_id: {type: string, description: "Table number or identifier within the document", example: "Table 4-1"}
         caption: {type: string, description: "Table caption or title", example: "Radar System Frequency Parameters"}
         page: {type: integer, description: "Page number where the table appears", example: 78}
-
-  - name: SPREADSHEET
-    label: "Spreadsheet"
-    description: "A spreadsheet workbook or sheet (MDE checklist, parametric data)"
-    parent: DocumentResource
-    properties:
-      type: object
-      properties:
-        workbook_name: {type: string, description: "Name of the spreadsheet workbook file", example: "SA-20_MDE_Checklist.xlsx"}
-        sheet_name: {type: string, description: "Name of the specific worksheet tab", example: "Radar Parameters"}
 
   # ---------------------------------------------------------------------------
   # Layer 2: Military Equipment (DoDAF backbone)
@@ -1174,7 +1166,6 @@ validation_matrix:
   - {source: ASSERTION, relationship: SUPPORTED_BY, target: SECTION}
   - {source: ASSERTION, relationship: SUPPORTED_BY, target: FIGURE}
   - {source: ASSERTION, relationship: SUPPORTED_BY, target: TABLE}
-  - {source: ASSERTION, relationship: SUPPORTED_BY, target: SPREADSHEET}
   - {source: ASSERTION, relationship: ABOUT, target: EQUIPMENT_SYSTEM}
   - {source: ASSERTION, relationship: ABOUT, target: RADAR_SYSTEM}
   - {source: ASSERTION, relationship: ABOUT, target: MISSILE_SYSTEM}

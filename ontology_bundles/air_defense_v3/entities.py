@@ -71,9 +71,11 @@ class DocumentEntity(BaseModel):
     document_number: Optional[str] = Field(default=None, description="Official document identifier or TM number", examples=['TM 9-1425-386-12'])
     classification: Optional[str] = Field(default=None, description="Security classification level", examples=['UNCLASSIFIED'])
     publication_date: Optional[str] = Field(default=None, description="Publication or revision date (YYYY-MM-DD)", examples=['2023-06-15'])
-    source_type: Optional[str] = Field(default=None, description="Category of the source document", json_schema_extra={"enum": ["MANUAL", "REPORT", "BRIEFING", "NOTE", "SCHEMATIC", "DRAWING", "SPECIFICATION", "CHECKLIST"]})
+    source_type: Optional[str] = Field(default=None, description="Category of the source document", json_schema_extra={"enum": ["MANUAL", "REPORT", "BRIEFING", "NOTE", "SCHEMATIC", "DRAWING", "SPECIFICATION", "CHECKLIST", "SPREADSHEET"]})
     issuing_org: Optional[str] = Field(default=None, description="Organization that published the document", examples=['U.S. Army TACOM'])
     language: Optional[str] = Field(default=None, description="Language of the document (ISO 639-1 code)", examples=['en'])
+    workbook_name: Optional[str] = Field(default=None, description="Name of the spreadsheet workbook file", examples=['SA-20_MDE_Checklist.xlsx'])
+    sheet_name: Optional[str] = Field(default=None, description="Name of the specific worksheet tab", examples=['Radar Parameters'])
     documents: List["DocumentEntity"] = edge(label="DERIVED_FROM", default_factory=list)
     documents: List["DocumentEntity"] = edge(label="SUPERSEDES", default_factory=list)
     organizations: List["OrganizationEntity"] = edge(label="REVIEWED_BY", default_factory=list)
@@ -108,15 +110,6 @@ class TableEntity(BaseModel):
     table_id: str = Field(..., description="Table number or identifier within the document", examples=['Table 4-1', 'Table 4-1'])
     caption: Optional[str] = Field(default=None, description="Table caption or title", examples=['Radar System Frequency Parameters'])
     page: int = Field(..., description="Page number where the table appears", examples=[78, 78])
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
-
-class SpreadsheetEntity(BaseModel):
-    """Spreadsheet — A spreadsheet workbook or sheet (MDE checklist, parametric data)
-    """
-    model_config = ConfigDict(ontology_name="SPREADSHEET", graph_id_fields=[], identity_scope="global", dodaf_parent="DocumentResource", is_entity=True)
-
-    workbook_name: Optional[str] = Field(default=None, description="Name of the spreadsheet workbook file", examples=['SA-20_MDE_Checklist.xlsx'])
-    sheet_name: Optional[str] = Field(default=None, description="Name of the specific worksheet tab", examples=['Radar Parameters'])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 # ----------------------------------------------------------------------
@@ -807,7 +800,6 @@ ALL_ENTITIES: dict[str, type[BaseModel]] = {
     "SECTION": SectionEntity,
     "FIGURE": FigureEntity,
     "TABLE": TableEntity,
-    "SPREADSHEET": SpreadsheetEntity,
     "ORGANIZATION": OrganizationEntity,
     "PLATFORM": PlatformEntity,
     "WEAPON_SYSTEM": WeaponSystemEntity,

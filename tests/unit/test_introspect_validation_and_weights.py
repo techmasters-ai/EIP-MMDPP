@@ -52,8 +52,8 @@ def test_validation_matrix_parity(yaml_ont):
 
 
 def test_validation_matrix_dedup_count():
-    """The frozenset has 127 unique entries (YAML has 128 with 1 dup)."""
-    assert len(build_validation_matrix_list()) == 127
+    """The frozenset has 126 unique entries (YAML has 127 with 1 dup)."""
+    assert len(build_validation_matrix_list()) == 126
 
 
 def test_validation_matrix_sorted_by_triple():

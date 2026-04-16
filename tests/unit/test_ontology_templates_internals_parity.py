@@ -52,7 +52,7 @@ def test_build_entity_type_names_parity(monkeypatch):
         _run_under(monkeypatch, "pydantic", build_entity_type_names)
     )
     assert yaml_names == pyd_names
-    assert len(yaml_names) == 45
+    assert len(yaml_names) == 44
 
 
 def test_build_relationship_type_names_parity(monkeypatch):

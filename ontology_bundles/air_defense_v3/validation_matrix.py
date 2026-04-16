@@ -46,7 +46,6 @@ VALIDATION_MATRIX: frozenset[tuple[str, RelationshipType, str]] = frozenset({
     ("ASSERTION", RelationshipType.SUPPORTED_BY, "DOCUMENT"),
     ("ASSERTION", RelationshipType.SUPPORTED_BY, "FIGURE"),
     ("ASSERTION", RelationshipType.SUPPORTED_BY, "SECTION"),
-    ("ASSERTION", RelationshipType.SUPPORTED_BY, "SPREADSHEET"),
     ("ASSERTION", RelationshipType.SUPPORTED_BY, "TABLE"),
     ("COMPONENT", RelationshipType.MANUFACTURED_BY, "ORGANIZATION"),
     ("COMPONENT", RelationshipType.MENTIONED_IN, "DOCUMENT"),
