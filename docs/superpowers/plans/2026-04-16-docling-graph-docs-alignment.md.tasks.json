@@ -148,7 +148,9 @@
     {
       "id": "A-5",
       "subject": "LLM-style + component contract tests (xfailed)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "051f7cf",
+      "notes": "2 of 3 extraction-schema tests already green; component test skipped pre-Chunk-B."
     },
     {
       "id": "A-6",
@@ -500,5 +502,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T00:50:00.000000+00:00"
+  "lastUpdated": "2026-04-17T01:05:00.000000+00:00"
 }
