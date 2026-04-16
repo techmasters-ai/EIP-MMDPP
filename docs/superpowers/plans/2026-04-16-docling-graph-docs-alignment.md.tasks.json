@@ -161,7 +161,9 @@
     {
       "id": "B-1",
       "subject": "Drop AssertionEntity",
-      "status": "pending"
+      "status": "completed",
+      "commits": ["2498a20", "e38cc52", "7465b54"],
+      "notes": "Implementer + follow-up for generator drift + TODO wording per code review."
     },
     {
       "id": "B-2",
@@ -503,5 +505,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T01:15:00.000000+00:00"
+  "lastUpdated": "2026-04-17T01:45:00.000000+00:00"
 }
