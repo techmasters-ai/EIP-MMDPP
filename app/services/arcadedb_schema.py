@@ -343,3 +343,15 @@ def sync_schema_from_ontology_sync(
     import asyncio
 
     return asyncio.run(sync_schema_from_ontology(client, database, ontology))
+
+
+async def ensure_schema(client: Any, database: str) -> SchemaSyncReport:
+    """Drive ArcadeDB DDL purely from Pydantic introspection (no YAML read).
+
+    Migration entry point (spec §5.2 step 4). Composes
+    ``build_ontology_dict`` with :func:`sync_schema_from_ontology`;
+    consumers no longer load ``ontology.yaml`` to prime the schema.
+    """
+    from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
+
+    return await sync_schema_from_ontology(client, database, build_ontology_dict())
