@@ -51,9 +51,9 @@ The audit examined all 46 canonical entities in `ontology_bundles/air_defense_v3
 | Entity | Current | New `graph_id_fields` | Scope | Notes |
 |---|---|---|---|---|
 | DOCUMENT | `[]` | `["document_number"]` required | global | Ontology-level identity = official document designator (e.g. `"TM 9-1425-386-12"`, `"MIL-STD-1553B"`). **Distinct from the structural `Document` vertex** whose identity is the internal UUID and whose lifecycle stays in `derive_structure_links`. The anchors walker emits ontology DOCUMENT only when `document_number` is extractable from the source (e.g. front-matter designator); otherwise no ontology DOCUMENT is created for that doc — the structural vertex still exists. |
-| SECTION | `["heading","page_start"]` | `["section_number"]` required | document | Positional enumeration from Docling `section_path` walk (e.g. `"1"`, `"1.1"`, `"2.3.4"`). R17 exempted because Docling-derived (see §2.5 rationale). `heading` becomes descriptive property. |
-| FIGURE | `["figure_id","page"]` | `["figure_ref"]` required | document | Docling `self_ref` (e.g. `"#/pictures/3"`). `figure_label: Optional[str]` added as descriptive property for human-readable labels (`"Figure 3-12"` pulled from Docling caption when available). |
-| TABLE | `["table_id","page"]` | `["table_ref"]` required | document | Docling `self_ref` (e.g. `"#/tables/1"`). `table_label: Optional[str]` added as descriptive property. |
+| SECTION | `["heading","page_start"]` | `["section_number"]` required | document | Positional enumeration from Docling `section_path` walk (e.g. `"1"`, `"1.1"`, `"2.3.4"`). R17 exempted because Docling-derived (see §2.5 rationale). **Non-identity properties to add to SectionEntity:** `heading: Optional[str] = None` (descriptive — the tail of path_tuple), `section_path: Optional[str] = None` (joined Docling path for TextChunk joins per §3.4), `document_id: Optional[str] = None` (stamped from walker's `document_uuid` arg for graph-side joins per §3.4). |
+| FIGURE | `["figure_id","page"]` | `["figure_ref"]` required | document | Docling `self_ref` (e.g. `"#/pictures/3"`). **Non-identity properties to add to FigureEntity:** `figure_label: Optional[str] = None` (human-readable "Figure 3-12" from caption parsing), `document_id: Optional[str] = None` (stamped for joins). |
+| TABLE | `["table_id","page"]` | `["table_ref"]` required | document | Docling `self_ref` (e.g. `"#/tables/1"`). **Non-identity properties to add to TableEntity:** `table_label: Optional[str] = None` (descriptive), `document_id: Optional[str] = None` (stamped for joins). |
 | ORGANIZATION | `[]` | `["name"]` required | global | `cage_code` stays as an optional secondary property. |
 | STANDARD | `[]` | `["designation"]` required | global | `"MIL-STD-1553B"`, `"MIL-DTL-31000G"`. |
 | EQUIPMENT_SYSTEM | `[]` | `["name"]` required | global | Named trackable systems. |
@@ -821,7 +821,7 @@ Split existing `tests/unit/test_docs_compliance_contracts.py` (~500 lines) into:
 - `tests/unit/contracts/test_component_contract.py`
 - `tests/unit/contracts/test_extraction_schema_contract.py`
 
-Add 10 new tests (R-rule references link to docs):
+Add 12 new tests (R-rule references link to docs):
 
 | Test | Rule(s) | Assertion |
 |---|---|---|
@@ -857,15 +857,15 @@ Add 10 new tests (R-rule references link to docs):
 | Chunk | Theme | Tasks |
 |---|---|---|
 | A0 | **Prereqs for canonical changes** — 6 explicit tasks below | 6 |
-| A | Prep: 10 new contract tests (added xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs (per §4.6 path) | 6 |
+| A | Prep: 12 new contract tests (added xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs (per §4.6 path) | 6 |
 | B | Canonical `entities.py` rewrite — 2 drops + 15 give-identity + 12 demote + 3 batched touch-ups (see §2.6) | 32 |
 | C | Extraction schemas rewrite + manifest change + reference.py delete | 5 |
-| D | Docling anchor walker + new worker task + fixtures + tests + document_number heuristic | 5 |
+| D | Docling anchor walker + new worker task + fixtures + tests + document_number heuristic + `_to_merged_entity_record` helper (see §8.2) | 6 |
 | E | Consumer updates — derive_rules (ontology bundle path), `finalize_document.REQUIRED_STAGES` adds `derive_document_anchors`, structure_links (no behavior change — SAME_SECTION stays chunk-to-chunk), arcadedb_graph docstring, frontend `GraphExplorer.tsx` + `entityTypes.ts`, extraction_merge `_NAME_LIKE_KEYS`, dossier_service filter lists (audit only), query_profiles filter lists (audit only), canonicalization verification (no-op confirmed), `_classify_extraction_quality` rewrite per §6.8, graph_store count helper if missing per §6.8, update `test_coverage_checker.py`+`test_extraction_schemas.py`+`test_ontology_bundles.py` for 4-pass reality | 11 |
 | F | Test cleanup — 17 parity/schema test deletions + 1 fixture delete + un-xfail 2 contract tests + verify 21/21 contract tests green | 7 |
 | G | Migration — write script, dry-run, execute on 21-doc corpus (accepts 3–6hr runtime including Docling reconversion), produce report, acceptance gate | 4 |
 
-**Total: 6 + 6 + 32 + 5 + 5 + 11 + 7 + 4 = 76 tasks, ~76 commits, ~15–25 days of execution.**
+**Total: 6 + 6 + 32 + 5 + 6 + 11 + 7 + 4 = 77 tasks, ~77 commits, ~15–25 days of execution.**
 
 ### 8.1 Chunk A0 explicit task list
 
@@ -879,6 +879,30 @@ A0 carries six sequential tasks that land before Chunk B begins (reduced from se
 6. Add new `tests/unit/test_arcadedb_schema_introspection.py` — schema-creation coverage driven by Pydantic introspection (replaces the deleted YAML-snapshot-driven `test_arcadedb_schema.py`).
 
 Sequencing: **A0 + A** (parallel-ok) → **B** → **C** → **D**, **E** after B/C/D, **F** after E, **G** last. A0 MUST land before B or canonical demotions break mid-plan (components won't get vertex classes). A0 and A can be worked in parallel if the team has bandwidth since they're independent.
+
+### 8.2 Chunk D task: `_to_merged_entity_record` helper
+
+The §3.3 pseudocode calls `_to_merged_entity_record(model_instance, ontology, document_uuid)` to convert each Pydantic model (DocumentEntity / SectionEntity / FigureEntity / TableEntity) into a `MergedEntityRecord`. This helper does not exist today in `app/services/extraction_merge.py`; it's new code landed as part of Chunk D. Its contract:
+
+**Signature:**
+```python
+def _to_merged_entity_record(
+    model: BaseModel,
+    ontology: dict,
+    document_id: str,
+    pass_origin: str = "document_anchors",
+) -> MergedEntityRecord:
+```
+
+**Behavior:**
+1. Resolve `ontology_name` from `model.model_config["ontology_name"]`.
+2. Build `LogicalIdentity` via `_build_logical_identity(ontology_name, model, ontology, document_id)`.
+3. Assemble `properties` dict from `model.model_dump(mode="json")` EXCLUDING `graph_id_fields` entries (those are in identity, not properties) AND EXCLUDING any `edge(label=...)` fields (those materialize as edges, not properties).
+4. **Stamp `document_id` into `properties`** (so it lands as a vertex property — enables the §3.4 TextChunk join and the §3.3 determinism property "SECTION/FIGURE/TABLE carry `document_id`"). Similarly stamp `section_path` when `model` is a SectionEntity with non-None `section_path`.
+5. Populate `confidence=1.0` (anchors are deterministic), `pass_origins={pass_origin}`, `display_label` via `build_display_label(model, ontology_name)`.
+6. Return the assembled `MergedEntityRecord`.
+
+**Placement:** module-private helper in `app/services/extraction_merge.py` (same module as `MergedEntityRecord`). Tests: `tests/unit/test_to_merged_entity_record.py` covering (a) DocumentEntity with document_number → expected identity + properties, (b) SectionEntity with full path_tuple → identity `section_number`, properties include `section_path` + `document_id`, (c) SectionEntity sentinel (`section_number="0"`) → no section_path property, (d) FigureEntity with figure_label from caption → figure_label in properties, figure_ref in identity.
 
 ## 9. Risks + mitigations
 
