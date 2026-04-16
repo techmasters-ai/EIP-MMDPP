@@ -421,6 +421,33 @@ def _build_logical_identity(
 ) -> LogicalIdentity | None:
     """Construct a LogicalIdentity from an instance + ontology entity def.
     Returns None if the entity_type isn't in the ontology."""
+    # Plan A0-1: content-based identity for is_entity=False components.
+    # Per docs:17235 "All fields are used for deduplication": the identity
+    # tuple is every declared field in declaration order, including None
+    # values, with lists canonicalized to tuples so the frozen dataclass
+    # remains hashable. This branch runs before the ontology lookup because
+    # components are not (and should not be) present in
+    # ontology["entity_types"].
+    cfg = getattr(entity_instance, "model_config", {}) or {}
+    if cfg.get("is_entity") is False:
+        model_fields = getattr(type(entity_instance), "model_fields", {}) or {}
+        field_names = tuple(model_fields.keys())
+        values: list[Any] = []
+        for fname in field_names:
+            raw = getattr(entity_instance, fname, None)
+            if isinstance(raw, list):
+                values.append(tuple(raw))
+            else:
+                values.append(raw)
+        scope = cfg.get("identity_scope", "document")
+        return LogicalIdentity(
+            entity_type=entity_type,
+            identity_field_names=field_names,
+            identity_tuple=tuple(values),
+            scope=scope,
+            document_id=document_id if scope == "document" else None,
+        )
+
     entity_def = next(
         (e for e in ontology.get("entity_types", []) if e["name"] == entity_type),
         None,
