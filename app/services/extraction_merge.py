@@ -770,30 +770,193 @@ def merge_and_resolve(
                     existing.confidence = max(existing.confidence, confidence)
                     existing.pass_origins.add(pass_name)
 
-    # --- Pass 2: resolve relationships ---
+    # --- Pass 2: resolve relationships (plan Task 36) ---
+    #
+    # Two edge-producing paths, run ADDITIVELY per pass, feeding a uniform
+    # per-pass accounting:
+    #   * DTO path: always consumes ``pass_result.relationships`` via
+    #     ``_resolve_relationship`` — handles ``system_links`` in
+    #     production AND any test fixture that puts DTO rels on a
+    #     SimpleNamespace template. Same VALIDATION_MATRIX and
+    #     rejection-reason semantics as before.
+    #   * Walker path: fires when ``template_instance`` is a Pydantic
+    #     ``BaseModel`` (typed-edge templates, post-Phase-5). Each
+    #     ``on_edge`` emission is a raw attempted edge; triple-check +
+    #     endpoint lookup decide accepted vs rejected. Fresh
+    #     ``visited_objects`` set per pass (reviewer finding #1).
+    #
+    # In production the two paths don't overlap because typed-edge
+    # passes carry no DTOs post-Task 64 and system_links has no
+    # walker-reachable edges — so both branches contribute to the same
+    # per-pass counters without double-counting.
     edges: list[MergedEdgeRecord] = []
     rejected_edges: list[tuple[str, Any, RelationshipRejectionReason]] = []
     rejections_by_pass: dict[str, int] = {}
+    per_pass_edge_metrics: dict[str, PerPassEdgeMetrics] = {}
+
+    MAX_REJECTION_SAMPLE = 20
 
     for pass_name, pass_result in pass_results.items():
+        attempted = 0
+        accepted_count = 0
+        rejection_sample: list[dict] = []
+        rejections_by_reason: dict[str, int] = {}
+
+        def _record_rejection(raw_rel: Any, reason: RelationshipRejectionReason):
+            rejected_edges.append((pass_name, raw_rel, reason))
+            rejections_by_pass[pass_name] = rejections_by_pass.get(pass_name, 0) + 1
+            key = reason.value if hasattr(reason, "value") else str(reason)
+            rejections_by_reason[key] = rejections_by_reason.get(key, 0) + 1
+            if len(rejection_sample) < MAX_REJECTION_SAMPLE:
+                rejection_sample.append(_edge_to_rejection_dict(raw_rel, reason))
+
+        # --- DTO path (system_links + legacy test fixtures) ---
         for rel in pass_result.relationships:
+            attempted += 1
             result = _resolve_relationship(
                 rel, pass_name, pass_result,
                 entity_index, ontology, document_id,
             )
             if isinstance(result, MergedEdgeRecord):
                 edges.append(result)
+                accepted_count += 1
             else:
-                rejected_edges.append((pass_name, rel, result))
-                rejections_by_pass[pass_name] = (
-                    rejections_by_pass.get(pass_name, 0) + 1
+                _record_rejection(rel, result)
+
+        # --- Walker path (typed-edge BaseModel templates) ---
+        if isinstance(pass_result.template_instance, BaseModel):
+            raw_edges: list[tuple[LogicalIdentity, str, Any]] = []
+
+            def _collect_edge(parent_identity, label, child):
+                raw_edges.append((parent_identity, label, child))
+
+            walk_entity_graph(
+                pass_result.template_instance,
+                on_entity=lambda _e: None,
+                ontology=ontology,
+                document_id=document_id,
+                on_edge=_collect_edge,
+                visited_objects=set(),
+                at_pass_root=True,
+            )
+
+            for parent_identity, label, child in raw_edges:
+                attempted += 1
+                child_cfg = getattr(child, "model_config", {}) or {}
+                child_type = child_cfg.get("ontology_name")
+                if child_type is None:
+                    _record_rejection(
+                        {"from_type": parent_identity.entity_type,
+                         "rel_type": label, "to_type": None},
+                        RelationshipRejectionReason.INVALID_IDENTITY_PAYLOAD,
+                    )
+                    continue
+                child_identity = _build_logical_identity(
+                    child_type, child, ontology, document_id,
                 )
+                if child_identity is None:
+                    _record_rejection(
+                        {"from_type": parent_identity.entity_type,
+                         "rel_type": label, "to_type": child_type},
+                        RelationshipRejectionReason.INVALID_IDENTITY_PAYLOAD,
+                    )
+                    continue
+                if not _is_valid_triple(
+                    ontology,
+                    parent_identity.entity_type, label, child_type,
+                ):
+                    _record_rejection(
+                        {"from_type": parent_identity.entity_type,
+                         "rel_type": label, "to_type": child_type},
+                        RelationshipRejectionReason.INVALID_TRIPLE,
+                    )
+                    continue
+                if parent_identity not in entity_index:
+                    _record_rejection(
+                        {"from_type": parent_identity.entity_type,
+                         "rel_type": label, "to_type": child_type},
+                        RelationshipRejectionReason.FROM_ENDPOINT_NOT_FOUND,
+                    )
+                    continue
+                if child_identity not in entity_index:
+                    _record_rejection(
+                        {"from_type": parent_identity.entity_type,
+                         "rel_type": label, "to_type": child_type},
+                        RelationshipRejectionReason.TO_ENDPOINT_NOT_FOUND,
+                    )
+                    continue
+
+                raw_conf = getattr(child, "confidence", None)
+                confidence = 0.8 if raw_conf is None else raw_conf
+                edge_record = MergedEdgeRecord(
+                    from_identity=parent_identity,
+                    to_identity=child_identity,
+                    rel_type=label,
+                    confidence=confidence,
+                    pass_origins={pass_name},
+                )
+                edges.append(edge_record)
+                accepted_count += 1
+
+        per_pass_edge_metrics[pass_name] = PerPassEdgeMetrics(
+            attempted=attempted,
+            accepted=accepted_count,
+            rejected=attempted - accepted_count,
+            rejection_sample=rejection_sample,
+            rejections_by_reason=rejections_by_reason,
+        )
+
+    # --- Cross-pass edge reducer (plan Step 2a) ---
+    # Group edges by (from_logical_identity, rel_type, to_logical_identity).
+    # Keep max confidence; union pass_origins across contributing passes.
+    edge_dedup: dict[tuple[LogicalIdentity, str, LogicalIdentity], MergedEdgeRecord] = {}
+    for e in edges:
+        key = (e.from_identity, e.rel_type, e.to_identity)
+        existing = edge_dedup.get(key)
+        if existing is None:
+            edge_dedup[key] = MergedEdgeRecord(
+                from_identity=e.from_identity,
+                to_identity=e.to_identity,
+                rel_type=e.rel_type,
+                confidence=e.confidence,
+                pass_origins=set(e.pass_origins),
+            )
+        else:
+            existing.confidence = max(existing.confidence, e.confidence)
+            existing.pass_origins |= e.pass_origins
 
     return MergedExtraction(
         entities=list(entity_index.values()),
-        edges=edges,
+        edges=list(edge_dedup.values()),
         rejected_edges=rejected_edges,
         rejections_by_pass=rejections_by_pass,
         pipeline_run_id=pipeline_run_id,
         document_id=document_id,
+        per_pass_edge_metrics=per_pass_edge_metrics,
     )
+
+
+def _pass_kind(manifest: Any, pass_name: str) -> str | None:
+    """Helper: return manifest.find_pass(pass_name).kind if available."""
+    if manifest is None:
+        return None
+    try:
+        pass_def = manifest.find_pass(pass_name)
+        return getattr(pass_def, "kind", None)
+    except (KeyError, AttributeError):
+        return None
+
+
+def _edge_to_rejection_dict(raw_rel: Any, reason: RelationshipRejectionReason) -> dict:
+    """Serialize a rejected edge (DTO or walker-derived dict) to the
+    metrics rejection_sample shape."""
+    reason_val = reason.value if hasattr(reason, "value") else str(reason)
+    if isinstance(raw_rel, dict):
+        return {**raw_rel, "reason": reason_val}
+    # DTO-ish object: pull common attributes.
+    return {
+        "rel_type": getattr(raw_rel, "rel_type", None),
+        "from_ref_id": getattr(raw_rel, "from_ref_id", None),
+        "to_ref_id": getattr(raw_rel, "to_ref_id", None),
+        "reason": reason_val,
+    }
