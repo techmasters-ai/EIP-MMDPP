@@ -142,8 +142,9 @@ For the implementation plan's Chunk B, this is the per-entity rewrite task list.
 16. `ForceStructureEntity.graph_id_fields=["name"]` required.
 17. `SubsystemEntity.graph_id_fields=["name"]` required, scope=document.
 
-**Demote batch (12 tasks):**
-18. `SpecificationEntity`: `is_entity=False`.
+**Demote batch (12 tasks):** Each task flips `is_entity=False` AND drops `graph_id_fields` AND flips any previously-required non-identity fields to `Optional[T] = None`. Note: `SpecificationEntity` currently has required `parameter: str` and `value: str`; both become Optional during demotion (docs R19 — content-dedup components accommodate sparse data). Same pattern applies wherever demoted entities had required fields that weren't identity.
+
+18. `SpecificationEntity`: `is_entity=False`; flip `parameter` + `value` to Optional.
 19. `ModulationEntity`: `is_entity=False`.
 20. `RfSignatureEntity`: `is_entity=False`.
 21. `RfEmissionEntity`: `is_entity=False`.
@@ -199,76 +200,119 @@ Outputs:
 - K `TableEntity` records — one per entry in `docling_document.tables`.
 - Edges: `(DOCUMENT)-[:HAS_SECTION]->(SECTION)`, `(DOCUMENT)-[:HAS_FIGURE]->(FIGURE)`, `(DOCUMENT)-[:HAS_TABLE]->(TABLE)`, `(SECTION)-[:CHILD_OF]->(SECTION)`.
 
+#### Design decision: where does `section_path` come from?
+
+Docling's native `ProvenanceItem` (`docling_core.types.doc.ProvenanceItem`) does NOT carry `section_path` — it only has `page_no`, `bbox`, `charspan`. The codebase's `section_path` concept is computed at **conversion time** by `docker/docling/app/converter.py:296–318`, which walks `doc.iterate_items()` and maintains a `section_stack` of `(heading_level, text)` pairs pushed on each `SECTION_HEADER` / `TITLE` item. The resulting `section_path` string (e.g., `"Chapter 3 > Section 3.1"`) is stored on `ingest.document_elements.section_path` (persisted) and on `TextChunk.section_path`.
+
+The anchor walker therefore **replicates the same section-stack logic** when iterating `DoclingDocument.iterate_items()` — mirroring `converter.py:296–318` so anchor generation is self-contained (no DB dependency on `document_elements`, no dependency on converter-internal DTOs).
+
 #### Deterministic algorithm (pseudocode)
 
 ```python
 def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
     """Derive DOCUMENT/SECTION/FIGURE/TABLE entities + edges from a DoclingDocument.
 
-    Input:  the persisted docling_document.json dict (as returned by
+    Input:  the persisted docling_document.json dict (from
             _build_docling_document_json at app/workers/pipeline.py:923).
-    Output: MergedExtraction carrying the entity + edge records.
+    Output: MergedExtraction carrying entity + edge records.
     """
+    from docling_core.types.doc import DoclingDocument, DocItemLabel
+
     doc_entity = DocumentEntity(document_id=document_uuid, ...)
-
-    # --- Sections: dedup + enumerate by document-order first-occurrence --------
-    # Load the DoclingDocument pydantic model and iterate via its first-party API:
-    # DoclingDocument.iterate_items() yields (item, level) for every body descendant
-    # in declared order, recursing via self_ref → resolved $ref pointers.
-    # (See docling_core.types.doc.DoclingDocument; also used by
-    # docker/docling/app/converter.py.)
-
-    from docling_core.types.doc import DoclingDocument
     docling_doc = DoclingDocument.model_validate(docling_doc_json)
 
+    # --- section_path construction (mirrors converter.py:296–318) -------------
+    # Walk items in document order. Maintain a section_stack of (level, text).
+    # For each item encountered, compute its section_path as the tuple of
+    # stack entries BEFORE processing that item (for non-heading items) or
+    # AFTER the push (for heading items — so a heading appears inside its own
+    # section). This matches the chunking contract at converter.py:317.
+
+    HEADING_LABELS = (
+        DocItemLabel.SECTION_HEADER,
+        DocItemLabel.TITLE,
+    )
+
+    section_stack: list[tuple[int, str]] = []
     section_by_path: OrderedDict[tuple[str, ...], SectionEntity] = OrderedDict()
     sibling_counters: dict[tuple[str, ...], int] = defaultdict(int)
 
-    def _section_path_tuple(item) -> tuple[str, ...]:
-        """Extract the section_path from an item's prov, as a tuple.
+    def _register_section(path_tuple: tuple[str, ...]) -> None:
+        """Dedup + positional enumerate a SECTION. No-op if path already seen."""
+        if not path_tuple or path_tuple in section_by_path:
+            return
+        parent_tuple = path_tuple[:-1]
+        sibling_counters[parent_tuple] += 1
+        idx = sibling_counters[parent_tuple]
+        parent_number = (
+            section_by_path[parent_tuple].section_number
+            if parent_tuple in section_by_path
+            else None
+        )
+        section_number = f"{parent_number}.{idx}" if parent_number else str(idx)
+        section_by_path[path_tuple] = SectionEntity(
+            section_number=section_number,
+            heading=path_tuple[-1],
+            ...,
+        )
 
-        DoclingDocument items expose prov: list[ProvenanceItem]. The first prov
-        element's section_path is a list[str] of ancestor heading stems (may be
-        empty for root-level text). Returns () when no prov or no section_path.
+    for item, level in docling_doc.iterate_items():
+        label = getattr(item, "label", None)
+        text = getattr(item, "text", None) or ""
+
+        if label in HEADING_LABELS and text.strip():
+            heading_level = level if level and level > 0 else 1
+            if label == DocItemLabel.TITLE:
+                heading_level = 1
+            # Pop deeper-or-equal stack entries, push this heading.
+            while section_stack and section_stack[-1][0] >= heading_level:
+                section_stack.pop()
+            section_stack.append((heading_level, text.strip()))
+
+        # Current section path AFTER the heading push (so a heading appears
+        # inside its own section). Non-heading items see the stack as-is.
+        path_tuple = tuple(entry[1] for entry in section_stack)
+        _register_section(path_tuple)
+
+    # --- Fallback: document with zero headings ---------------------------------
+    if not section_by_path:
+        fallback_path = ("",)  # sentinel path for the document-body section
+        section_by_path[fallback_path] = SectionEntity(
+            section_number="0",
+            heading=None,
+            ...,
+        )
+
+    # --- Figures: one per picture ref -----------------------------------------
+    def _caption_label(item: dict) -> str | None:
+        """Best-effort extract of a human-readable label like "Figure 3-12" from
+        the picture/table's captions array. Returns the first caption text that
+        starts with "Figure", "Fig.", "Table", or "Tbl." (case-insensitive).
+        None if no such caption found. The full caption text is stored on a
+        separate `caption` property — this helper returns only the short label.
         """
-        prov = getattr(item, "prov", None) or []
-        if not prov:
-            return ()
-        raw_path = getattr(prov[0], "section_path", None) or []
-        return tuple(raw_path)
+        captions = item.get("captions") or []
+        for cap in captions:
+            cap_text = (cap.get("text") or "").strip()
+            if re.match(r"^(figure|fig\.?|table|tbl\.?)\s", cap_text, re.IGNORECASE):
+                # Take just the label prefix (e.g., "Figure 3-12" from longer caption).
+                m = re.match(r"^(figure|fig\.?|table|tbl\.?)\s+[\w.-]+", cap_text, re.IGNORECASE)
+                return m.group(0) if m else cap_text.split(".")[0].strip()
+        return None
 
-    for item, _level in docling_doc.iterate_items():
-        path_tuple = _section_path_tuple(item)
-        if path_tuple and path_tuple not in section_by_path:
-            parent_tuple = path_tuple[:-1]
-            sibling_counters[parent_tuple] += 1
-            idx = sibling_counters[parent_tuple]
-            if parent_tuple and parent_tuple in section_by_path:
-                parent_number = section_by_path[parent_tuple].section_number
-                section_number = f"{parent_number}.{idx}"
-            else:
-                section_number = str(idx)
-            section_by_path[path_tuple] = SectionEntity(
-                section_number=section_number,
-                heading=path_tuple[-1],  # descriptive-only; not identity
-                ...,
-            )
-
-    # --- Figures: one per Docling self_ref --------------------------------------
     figures = [
         FigureEntity(
             figure_ref=item["self_ref"],
-            figure_label=extract_caption_label(item),  # "Figure 3-12" or None
+            figure_label=_caption_label(item),
             ...,
         )
         for item in docling_doc_json.get("pictures", [])
     ]
 
-    # --- Tables: one per Docling self_ref ---------------------------------------
     tables = [
         TableEntity(
             table_ref=item["self_ref"],
-            table_label=extract_caption_label(item),
+            table_label=_caption_label(item),
             ...,
         )
         for item in docling_doc_json.get("tables", [])
@@ -278,15 +322,12 @@ def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
     edges = []
     for section in section_by_path.values():
         edges.append(MergedEdgeRecord(from=doc_entity, to=section, label="HAS_SECTION"))
-    # CHILD_OF: parent is looked up by path tuple directly — no section_number
-    # string parsing, avoiding the roundtrip-ambiguity problem.
+    # CHILD_OF: parent is looked up by path_tuple[:-1] key — no section_number parsing.
     for path_tuple, section in section_by_path.items():
         parent_tuple = path_tuple[:-1]
         if parent_tuple and parent_tuple in section_by_path:
             parent_section = section_by_path[parent_tuple]
-            edges.append(
-                MergedEdgeRecord(from=section, to=parent_section, label="CHILD_OF")
-            )
+            edges.append(MergedEdgeRecord(from=section, to=parent_section, label="CHILD_OF"))
     for fig in figures:
         edges.append(MergedEdgeRecord(from=doc_entity, to=fig, label="HAS_FIGURE"))
     for tbl in tables:
@@ -300,16 +341,20 @@ def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
 
 #### Determinism properties
 
-- `DoclingDocument.iterate_items()` walks body descendants in declared order, resolving `self_ref`/`$ref` pointers. Identical input JSON → identical output order. (Canonical Docling API, used elsewhere in the codebase.)
-- `_section_path_tuple` returns `()` for root-level elements without prov, elements whose prov lacks `section_path`, or empty `section_path` lists. Elements with `()` path never create a SECTION.
-- Dedup key for SECTION: the tuple of strings from `prov[0].section_path`. Two elements sharing that tuple attach to the same SECTION.
-- `section_number` tie-breaking: document-order first-occurrence. If `section_path=["A", "B"]` appears at item index 10 and `section_path=["A", "C"]` appears at index 20, then B gets number "1.1" and C gets "1.2" (assuming A is "1").
-- Parent-child edge resolution: by `path_tuple[:-1]` key lookup on `section_by_path` — no `section_number` string parsing. Deterministic and cheap.
+- `DoclingDocument.iterate_items()` walks body descendants in declared order, resolving `self_ref`/`$ref` pointers. Identical input JSON → identical output order. (Confirmed real Docling API at `docling_core/types/doc/document.py:5387–5396`; used by `docker/docling/app/converter.py:298`.)
+- `section_stack` mirrors `converter.py:302–317` exactly — same pop-depth-equal, push-self rule. Headings go inside their own section (e.g., a `"Chapter 3"` heading has `path_tuple = ("Chapter 3",)`, not `()`).
+- Dedup key for SECTION: the tuple of heading stems (stack entries). Two elements sharing that tuple attach to the same SECTION.
+- `section_number` tie-breaking: document-order first-occurrence. If `("A", "B")` appears at item 10 and `("A", "C")` appears at item 20, then B gets `"1.1"` and C gets `"1.2"` (assuming A is `"1"`).
+- Parent-child edge resolution: by `path_tuple[:-1]` lookup on `section_by_path` — no string parsing.
+- Fallback (§3.4) is wired into the pseudocode: a single post-loop check creates one SECTION with `section_number="0"` when no headings were encountered.
 - `figure_ref` / `table_ref` are Docling's own `self_ref` values — globally unique within a single `DoclingDocument`.
+- `_caption_label` is best-effort. When Docling provides no captions or no number-prefixed captions, the `figure_label` / `table_label` property is `None`. Never blocks identity (identity uses `self_ref`).
 
 ### 3.4 Fallback for weak structure
 
-If `section_path` is completely absent for every element in the DoclingDocument (rare — Docling emits at minimum a body root), emit one `SectionEntity(section_number="0")` representing the whole document body. All TextChunks attach to this anchor. Prevents zero-SECTION docs.
+If the walker encounters no `SECTION_HEADER` / `TITLE` items at all (a pathological case — Docling usually emits at least a title), the post-loop guard in §3.3 emits one `SectionEntity(section_number="0", heading=None)` representing the whole document body. All TextChunks attach to this sentinel anchor during `derive_structure_links`. Prevents zero-SECTION docs.
+
+The fallback also serves as the anchor for items whose section_stack is empty (e.g., text items that appear BEFORE the first heading in a document) — but because the walker's `_register_section` no-ops on the empty tuple, such items simply don't create a pre-heading SECTION; they attach to `section_number="0"` if that fallback fires, or to nothing (the TextChunk has no SECTION parent) otherwise. `derive_structure_links` handles the orphan-TextChunk case by connecting directly to DOCUMENT.
 
 ### 3.5 Write path
 
@@ -613,7 +658,7 @@ Add 10 new tests (R-rule references link to docs):
 | C | Extraction schemas rewrite + manifest change + reference.py delete | 5 |
 | D | Docling anchor walker + new worker task + fixtures + tests | 4 |
 | E | Consumer updates — derive_rules, structure_links, arcadedb_graph, frontend (3 lines), extraction_merge (1 line), dossier_service filter lists, query_profiles filter lists, canonicalization verification | 8 |
-| F | Test cleanup — 15 parity test deletions + 1 in-place edit + 1 fixture delete + un-xfail 2 contract tests + verify 19/19 | 6 |
+| F | Test cleanup — 16 parity test deletions + 1 in-place edit + 1 fixture delete + un-xfail 2 contract tests + verify 19/19 | 6 |
 | G | Migration — write script, dry-run, execute on 21-doc corpus, produce report, acceptance gate | 4 |
 
 **Total: ~65 tasks, ~65 commits, ~12–20 days of execution.**
