@@ -167,6 +167,10 @@ _STATIC_RELATIONSHIP_METADATA: list[dict] = [
     {"name": "HAS_SEEKER", "label": "Has Seeker", "description": "Missile has a terminal guidance seeker", "source_type": "MISSILE_SYSTEM", "target_type": "SEEKER", "cardinality": "one_to_one"},
     {"name": "PROVIDES", "label": "Provides", "description": "System provides a capability (DoDAF DM2)", "source_type": None, "target_type": "CAPABILITY", "cardinality": "many_to_many"},
     {"name": "HAS_TIMELINE", "label": "Has Timeline", "description": "Weapon system has an engagement timeline", "source_type": None, "target_type": "ENGAGEMENT_TIMELINE", "cardinality": "one_to_one"},
+    # TODO(docs-alignment Chunk F): ASSERTION-sourced rows pending removal.
+    # The AssertionEntity class was dropped in B-1 (commit 2498a20); these
+    # rows remain dead but kept for parity with validation_matrix.py until
+    # Chunk F's test cleanup.
     {"name": "SUPPORTED_BY", "label": "Supported By", "description": "Assertion is supported by a document resource", "source_type": "ASSERTION", "target_type": None, "cardinality": "many_to_many"},
     {"name": "MENTIONED_IN", "label": "Mentioned In", "description": "Entity is mentioned in a document", "source_type": None, "target_type": "DOCUMENT", "cardinality": "many_to_many"},
     {"name": "DERIVED_FROM", "label": "Derived From", "description": "Entity or assertion is derived from another source", "source_type": None, "target_type": None, "cardinality": "many_to_many"},

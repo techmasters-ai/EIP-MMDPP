@@ -32,6 +32,10 @@ VALIDATION_MATRIX: frozenset[tuple[str, RelationshipType, str]] = frozenset({
     ("ANTENNA", RelationshipType.PART_OF, "RADAR_SYSTEM"),
     ("ANTENNA", RelationshipType.RADIATES, "RF_EMISSION"),
     ("ASSEMBLY", RelationshipType.PART_OF, "EQUIPMENT_SYSTEM"),
+    # TODO(docs-alignment Chunk F): ASSERTION triples pending removal.
+    # AssertionEntity was dropped in B-1 (commit 2498a20); these entries
+    # remain dead but are kept for parity with relationships.py until
+    # Chunk F's test cleanup.
     ("ASSERTION", RelationshipType.ABOUT, "COMPONENT"),
     ("ASSERTION", RelationshipType.ABOUT, "EQUIPMENT_SYSTEM"),
     ("ASSERTION", RelationshipType.ABOUT, "MISSILE_SYSTEM"),

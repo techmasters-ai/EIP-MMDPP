@@ -22,7 +22,7 @@ YAML_PATH = ROOT / "ontology_bundles" / "air_defense_v3" / "ontology.yaml"
 # Entity → layer map (stable import order; pass roots come last).
 LAYERS = {
     1: [  # reference
-        "DOCUMENT", "SECTION", "FIGURE", "TABLE", "SPREADSHEET", "ASSERTION",
+        "DOCUMENT", "SECTION", "FIGURE", "TABLE", "SPREADSHEET",
     ],
     2: [  # military equipment
         "ORGANIZATION", "PLATFORM", "WEAPON_SYSTEM", "EQUIPMENT_SYSTEM",
@@ -49,9 +49,6 @@ LAYERS = {
 
 # Known empty-identity anti-patterns (flagged in docstrings).
 EMPTY_IDENTITY_ANTIPATTERN = {"PROPULSION_STACK"}
-
-# Assertion anti-pattern: identity is the full text (from reviewer finding #2).
-ASSERTION_IDENTITY_NOTE = {"ASSERTION"}
 
 
 def entity_class_name(ontology_name: str) -> str:
@@ -172,15 +169,6 @@ def build_class_source(et: dict, edge_fields: list[tuple], is_entity: bool) -> s
         )
         docstring_lines.append(
             "    cannot dedup by logical identity. Flagged for Plan 2 cleanup."
-        )
-    if name in ASSERTION_IDENTITY_NOTE:
-        docstring_lines.append("")
-        docstring_lines.append(
-            "    KNOWN ANTI-PATTERN: identity is the full assertion text "
-            "(``graph_id_fields=['assertion_text']``)."
-        )
-        docstring_lines.append(
-            "    Long-text identity destabilizes dedup. Flagged for Plan 2 cleanup."
         )
     docstring_lines.append('    """')
     docstring = "\n".join(docstring_lines)
