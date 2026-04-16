@@ -168,7 +168,9 @@
     {
       "id": "B-2",
       "subject": "Merge SpreadsheetEntity \u2192 DOCUMENT.source_type",
-      "status": "pending"
+      "status": "completed",
+      "commits": ["4ccc8fe", "344f37a"],
+      "notes": "Implementer + follow-up fixing stale 127\u2192126 count comments per code review."
     },
     {
       "id": "B-3",
@@ -505,5 +507,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T01:45:00.000000+00:00"
+  "lastUpdated": "2026-04-17T02:15:00.000000+00:00"
 }
