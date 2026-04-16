@@ -147,8 +147,8 @@
     {"id": 40, "subject": "Migrate ontology_templates internals", "status": "completed", "blockedBy": [32]},
     {"id": 41, "subject": "Migrate main/API/schemas", "status": "completed", "blockedBy": [32]},
     {"id": 42, "subject": "Flip default ONTOLOGY_SOURCE=pydantic", "status": "completed", "blockedBy": [33, 34, 35, 36, 37, 38, 39, 40, 41]},
-    {"id": 62, "subject": "Phase 5 before-metrics", "status": "pending", "blockedBy": [42]},
-    {"id": 79, "subject": "35b: walk_entity_graph + walk_entities_only sibling", "status": "pending", "blockedBy": [62]},
+    {"id": 62, "subject": "Phase 5 before-metrics", "status": "completed", "blockedBy": [42], "notes": "Option 1 applied: deterministic catalog+prompt bytes captured to /tmp/phase5-before-{catalog,prompts}/<pass>.txt. Live StageRun metrics + merged graph deferred to Task 53 (Phase 7) — DB was empty at kickoff; running extraction twice would duplicate Task 53's expanded E2E at LLM cost."},
+    {"id": 79, "subject": "35b: walk_entity_graph + walk_entities_only sibling", "status": "completed", "blockedBy": [62], "notes": "Unified walk_entity_graph in app/services/extraction_merge.py. on_edge=None ⇒ entity-only mode (ontology/document_id optional); on_edge!=None ⇒ full mode emits edges with LogicalIdentity parents. Traversal rules per plan 35b: at_pass_root walks plain fields, entities follow only edge_label fields, components embedded (no recurse/emit). 12 new tests in tests/unit/test_walk_entity_graph.py cover Steps 1a-g + Step 2 + entity-only fallback + full-mode ontology validation + visited-default convenience."},
     {"id": 82, "subject": "34b: PreMergeWalkSummary (incl. system_links DTO special-case)", "status": "pending", "blockedBy": [79]},
     {"id": 77, "subject": "35a: split walker; scratch-dict dedup; no-mutation + no-worse-label tests", "status": "pending", "blockedBy": [82]},
     {"id": 81, "subject": "35c: counters consume PreMergeWalkSummary (no re-walks)", "status": "pending", "blockedBy": [82]},
@@ -174,5 +174,5 @@
     {"id": 72, "subject": "Phase 8: multi-doc regression", "status": "pending", "blockedBy": [71]},
     {"id": 55, "subject": "Final summary + MEMORY", "status": "pending", "blockedBy": [54, 72]}
   ],
-  "lastUpdated": "2026-04-15T18:30:00Z"
+  "lastUpdated": "2026-04-16T14:30:00Z"
 }

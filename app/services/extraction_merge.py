@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Literal
+from typing import Any, Callable, Iterable, Literal
 
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +352,139 @@ def logical_identity_from_dict(
         scope=scope,
         document_id=document_id if scope == "document" else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Unified entity-graph walker (plan Task 35a/35b)
+# ---------------------------------------------------------------------------
+
+
+def walk_entity_graph(
+    node: Any,
+    on_entity: Callable[[Any], None],
+    *,
+    ontology: dict | None = None,
+    document_id: str | None = None,
+    on_edge: Callable[[LogicalIdentity, str, Any], None] | None = None,
+    visited_objects: set[int] | None = None,
+    at_pass_root: bool = True,
+) -> None:
+    """Walk the typed-edge entity graph rooted at ``node``.
+
+    Single unified walker with two modes gated by the ``on_edge`` callback.
+    When ``on_edge is None`` the walker runs in entity-only mode: it emits
+    every reachable entity via ``on_entity`` but skips edge-identity
+    construction, so ``ontology`` / ``document_id`` may be ``None``
+    (``PassResult.iter_entities_of_type`` fallback). When ``on_edge`` is
+    provided both ``ontology`` and ``document_id`` are required — the walker
+    builds ``LogicalIdentity`` for the parent of each emitted edge.
+
+    Traversal rules (graph-only, per docs):
+    - ``at_pass_root=True`` (only the initial pass-root container at top-level):
+      walk plain ``list`` / scalar ``BaseModel`` fields to reach top-level
+      entities. The pass-root container is NOT emitted as an entity.
+      Children are entered with ``at_pass_root=False``.
+    - Entity nodes (``is_entity=True``): emit via ``on_entity``; then follow
+      ONLY fields marked with ``json_schema_extra.edge_label``. Components
+      reached via ``edge_label`` are a contract violation (Task 9e catches
+      this at schema-validation time); runtime guard logs and skips without
+      emitting.
+    - Component nodes (``is_entity=False``) encountered inside the graph
+      (not at pass-root): treat as embedded data. Do NOT recurse, do NOT
+      emit. Value objects live in their parent entity's properties, not as
+      graph endpoints.
+    - Plain nested ``BaseModel`` entity fields without ``edge_label``:
+      embedded data, not graph-relevant. Do NOT recurse.
+    """
+    full_mode = on_edge is not None
+    if full_mode:
+        if ontology is None or document_id is None:
+            raise ValueError(
+                "walk_entity_graph: on_edge requires ontology and document_id "
+                "(full mode builds LogicalIdentity for edge parents)."
+            )
+    if visited_objects is None:
+        visited_objects = set()
+
+    if id(node) in visited_objects:
+        return
+    visited_objects.add(id(node))
+
+    cfg = getattr(node, "model_config", {}) or {}
+
+    node_cls = type(node)
+    model_fields = getattr(node_cls, "model_fields", {}) if isinstance(node, BaseModel) else {}
+
+    if at_pass_root:
+        # Pass-root container: walk plain fields to reach top-level entities.
+        # Do NOT emit as entity. Children are entered with at_pass_root=False.
+        for fname in model_fields:
+            value = getattr(node, fname, None)
+            if value is None:
+                continue
+            items = value if isinstance(value, list) else [value]
+            for child in items:
+                if isinstance(child, BaseModel):
+                    walk_entity_graph(
+                        child,
+                        on_entity,
+                        ontology=ontology,
+                        document_id=document_id,
+                        on_edge=on_edge,
+                        visited_objects=visited_objects,
+                        at_pass_root=False,
+                    )
+        return
+
+    if cfg.get("is_entity") is False:
+        # Component encountered inside the entity graph → embedded data.
+        # Do NOT emit, do NOT recurse.
+        return
+
+    # Entity node — emit, then follow edge_label fields only.
+    on_entity(node)
+
+    parent_identity: LogicalIdentity | None = None
+    if full_mode:
+        entity_type = cfg.get("ontology_name")
+        if entity_type is not None:
+            parent_identity = _build_logical_identity(
+                entity_type, node, ontology or {}, document_id or "",
+            )
+
+    for fname, finfo in model_fields.items():
+        extra = finfo.json_schema_extra or {}
+        edge_label = extra.get("edge_label") if isinstance(extra, dict) else None
+        if not edge_label:
+            continue  # Non-edge field; embedded data or scalar, not graph-relevant.
+        value = getattr(node, fname, None)
+        if value is None:
+            continue
+        items = value if isinstance(value, list) else [value]
+        for child in items:
+            if not isinstance(child, BaseModel):
+                continue
+            child_cfg = getattr(child, "model_config", {}) or {}
+            if child_cfg.get("is_entity") is not True:
+                # Defensive runtime guard — contract test Task 9e forbids
+                # edges targeting non-entity classes at schema-validation time.
+                logger.warning(
+                    "walk_entity_graph: edge_label=%r on %s.%s points at %s "
+                    "which is not is_entity=True; skipping (contract violation)",
+                    edge_label, type(node).__name__, fname, type(child).__name__,
+                )
+                continue
+            if full_mode and on_edge is not None and parent_identity is not None:
+                on_edge(parent_identity, edge_label, child)
+            walk_entity_graph(
+                child,
+                on_entity,
+                ontology=ontology,
+                document_id=document_id,
+                on_edge=on_edge,
+                visited_objects=visited_objects,
+                at_pass_root=False,
+            )
 
 
 def _is_valid_triple(
