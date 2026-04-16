@@ -228,8 +228,19 @@ def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
     """
     from docling_core.types.doc import DoclingDocument, DocItemLabel
 
-    doc_entity = DocumentEntity(document_id=document_uuid, ...)
     docling_doc = DoclingDocument.model_validate(docling_doc_json)
+
+    # --- Ontology DOCUMENT: conditional on extractable document_number --------
+    # Scan the first N items (titles + top-level section headers) for a
+    # MIL-STD / TM-number / similar designator via regex. Returns None when
+    # no official designator is detectable — in which case NO ontology
+    # DOCUMENT is emitted and HAS_* edges below are skipped.
+    document_number = _extract_document_number_from_front_matter(docling_doc)
+    doc_entity = (
+        DocumentEntity(document_number=document_number, ...)
+        if document_number is not None
+        else None
+    )
 
     # --- section_path construction (mirrors converter.py:296–318) -------------
     # Walk items in document order. Maintain a section_stack of (level, text).
@@ -336,21 +347,28 @@ def walk(docling_doc_json: dict, document_uuid: str) -> MergedExtraction:
 
     # --- Edges ------------------------------------------------------------------
     edges = []
-    for section in section_by_path.values():
-        edges.append(MergedEdgeRecord(from=doc_entity, to=section, label="HAS_SECTION"))
-    # CHILD_OF: parent is looked up by path_tuple[:-1] key — no section_number parsing.
+    # HAS_* edges only when ontology DOCUMENT was emitted (doc_entity is not None).
+    if doc_entity is not None:
+        for section in section_by_path.values():
+            edges.append(MergedEdgeRecord(from=doc_entity, to=section, label="HAS_SECTION"))
+        for fig in figures:
+            edges.append(MergedEdgeRecord(from=doc_entity, to=fig, label="HAS_FIGURE"))
+        for tbl in tables:
+            edges.append(MergedEdgeRecord(from=doc_entity, to=tbl, label="HAS_TABLE"))
+    # CHILD_OF: hierarchical section nesting, independent of ontology DOCUMENT presence.
+    # Parent is looked up by path_tuple[:-1] key — no section_number parsing.
     for path_tuple, section in section_by_path.items():
         parent_tuple = path_tuple[:-1]
         if parent_tuple and parent_tuple in section_by_path:
             parent_section = section_by_path[parent_tuple]
             edges.append(MergedEdgeRecord(from=section, to=parent_section, label="CHILD_OF"))
-    for fig in figures:
-        edges.append(MergedEdgeRecord(from=doc_entity, to=fig, label="HAS_FIGURE"))
-    for tbl in tables:
-        edges.append(MergedEdgeRecord(from=doc_entity, to=tbl, label="HAS_TABLE"))
+
+    entities = [*section_by_path.values(), *figures, *tables]
+    if doc_entity is not None:
+        entities.insert(0, doc_entity)
 
     return MergedExtraction(
-        merged_entities=[doc_entity, *section_by_path.values(), *figures, *tables],
+        merged_entities=entities,
         merged_edges=edges,
     )
 ```
@@ -646,10 +664,10 @@ Every test constructing old-identity entities updated to new shape. Parity tests
 - `anomaly` — (SECTION vertex count == 0 OR TextChunk count == 0) AND no domain pass HIT. Signal: processing failure or pathological doc.
 
 Source of truth shifts from "reference pass's StageRun row" to graph counts:
-- SECTION count: `SELECT COUNT(*) FROM SECTION WHERE document_id = :doc_id` (or equivalent for identity-scoped SECTION lookup).
-- TextChunk count: `SELECT COUNT(*) FROM retrieval.text_chunks WHERE document_id = :doc_id`.
+- SECTION count: an ArcadeDB query against the SECTION vertex class filtered by `document_id`. **If `graph_store` doesn't already expose a count helper for arbitrary ontology-name vertex counts per document, Chunk E's `_classify_extraction_quality` task includes adding one** (`graph_store.count_ontology_nodes_sync(entity_type: str, document_id: str) -> int` or similar) — check first via grep; add only if missing.
+- TextChunk count: `SELECT COUNT(*) FROM retrieval.text_chunks WHERE document_id = :doc_id` via the sync session — plain SQL, no new helpers needed.
 
-Both queries already available via `graph_store` and the sync session. The helper becomes:
+The helper becomes:
 
 ```python
 def _classify_extraction_quality(pass_outcomes: dict, section_count: int, text_chunk_count: int) -> str:
@@ -743,7 +761,7 @@ Add 10 new tests (R-rule references link to docs):
 
 | Chunk | Theme | Tasks |
 |---|---|---|
-| A0 | **Prereqs for canonical changes**: walker update (§4.8) to emit components as graph nodes, `arcadedb_schema` vertex classes for 12 component types, 4 new structural edge types (`HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE`/`CHILD_OF`) in `_STRUCTURAL_EDGE_TYPES`, contract test 9e relaxation, new `test_arcadedb_schema_introspection.py` | 7 |
+| A0 | **Prereqs for canonical changes** — 7 explicit tasks below | 7 |
 | A | Prep: 10 new contract tests (added xfailed), `edge()` helper extension, lenient-coercer logging, pipeline-config knobs (per §4.6 path) | 6 |
 | B | Canonical `entities.py` rewrite — 2 drops + 15 give-identity + 12 demote + 3 batched touch-ups (see §2.6) | 32 |
 | C | Extraction schemas rewrite + manifest change + reference.py delete | 5 |
@@ -753,6 +771,18 @@ Add 10 new tests (R-rule references link to docs):
 | G | Migration — write script, dry-run, execute on 21-doc corpus (accepts 3–6hr runtime including Docling reconversion), produce report, acceptance gate | 4 |
 
 **Total: ~76 tasks, ~76 commits, ~15–25 days of execution.**
+
+### 8.1 Chunk A0 explicit task list
+
+A0 carries seven sequential tasks that land before Chunk B begins:
+
+1. Extend `_build_logical_identity` at `app/services/extraction_merge.py:416` with a content-based branch for `is_entity=False` types — returns identity = tuple of non-None scalar property values sorted by field name.
+2. Update the walker at `app/services/extraction_merge.py:564` — remove the unconditional `return` for components; keep embedded semantics for components NOT reached via `edge_label`.
+3. Update the walker at `app/services/extraction_merge.py:593-601` — change the "contract violation" skip into a component-emit path (calls `on_entity` with a component flag).
+4. Add 12 component vertex classes to `app/services/arcadedb_schema.py` — one per demoted canonical type; common-props set omits `id`/`name`/`canonical_name` but keeps `entity_type`/`created_at`/`updated_at`.
+5. Add 4 structural edge types (`HAS_SECTION`/`HAS_FIGURE`/`HAS_TABLE`/`CHILD_OF`) to `_STRUCTURAL_EDGE_TYPES` at `app/services/arcadedb_schema.py:79`.
+6. Relax contract test 9e — rename `test_edge_label_targets_are_is_entity_true` to `test_edge_label_targets_are_is_entity_true_or_is_component`; update the assertion to allow both.
+7. Add new `tests/unit/test_arcadedb_schema_introspection.py` — schema-creation coverage driven by Pydantic introspection (replaces the deleted YAML-snapshot-driven `test_arcadedb_schema.py`).
 
 Sequencing: **A0 + A** (parallel-ok) → **B** → **C** → **D**, **E** after B/C/D, **F** after E, **G** last. A0 MUST land before B or canonical demotions break mid-plan (components won't get vertex classes). A0 and A can be worked in parallel if the team has bandwidth since they're independent.
 
