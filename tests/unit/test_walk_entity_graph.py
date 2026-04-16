@@ -8,7 +8,10 @@ Traversal rules (per plan):
 - at_pass_root=True: walk plain list/scalar BaseModel fields to reach top-level
   entities. Do NOT emit container as entity. Children entered with at_pass_root=False.
 - Entity nodes (is_entity=True): emit via on_entity; follow ONLY fields with edge_label.
-- Component nodes (is_entity=False) inside the graph: do NOT emit, do NOT recurse.
+- Component nodes (is_entity=False) reached via plain (non-edge) fields: do NOT emit,
+  do NOT recurse (embedded data).
+- Component nodes reached via edge_label field: emit as graph node + edge, do NOT
+  recurse (A0-2, spec §4.8 + docs:17500-17509).
 - Plain nested BaseModel entity fields without edge_label: do NOT recurse.
 """
 from __future__ import annotations
@@ -127,8 +130,8 @@ class RadarWithComponent(BaseModel):
 
 
 class RadarWithComponentViaEdge(BaseModel):
-    """Schema bug: edge_label pointing at a component. Contract test 9e forbids
-    this; walker's runtime guard logs and skips."""
+    """Component reached via edge_label: emitted as a first-class graph node
+    with an edge from the parent (A0-2, spec §4.8 step 2 + docs:17500-17509)."""
     model_config = ConfigDict(
         ontology_name="RADAR_WITH_COMP_VIA_EDGE",
         graph_id_fields=["system_name"],
@@ -270,20 +273,21 @@ def test_d_component_nested_via_plain_field_not_recursed():
     assert edges == []
 
 
-def test_e_component_reached_via_edge_label_warns_and_skips(caplog):
-    """(e) Component reached via edge_label field — contract test 9e catches
-    this at schema-validation time. Walker's runtime defense logs and skips
-    without emitting the component as an entity or an edge."""
-    import logging
-    caplog.set_level(logging.WARNING, logger="app.services.extraction_merge")
+def test_e_component_reached_via_edge_label_emitted_as_graph_node():
+    """(e) Component reached via edge_label field — emitted as a first-class
+    graph node (A0-2, spec §4.8 step 2 + docs:17500-17509, e.g. a shared
+    Address node). Walker does NOT recurse into the component (A0-5 contract
+    test forbids components from carrying edge_label fields)."""
     node = RadarWithComponentViaEdge(
         system_name="R1",
         operating_range=RangeComponent(min_km=0.0, max_km=100.0),
     )
     entities, edges = _collect(node, ontology=ONTOLOGY, document_id=DOCUMENT_ID, at_pass_root=False)
-    assert [e.model_config.get("ontology_name") for e in entities] == ["RADAR_WITH_COMP_VIA_EDGE"]
-    assert edges == []  # no edge emitted — target is not is_entity=True
-    assert any("contract violation" in rec.getMessage() for rec in caplog.records)
+    assert [type(e).__name__ for e in entities] == ["RadarWithComponentViaEdge", "RangeComponent"]
+    assert len(edges) == 1
+    parent_identity, label, child = edges[0]
+    assert label == "HAS_RANGE"
+    assert isinstance(child, RangeComponent)
 
 
 def test_f_plain_basemodel_entity_field_no_edge_label_not_recursed():

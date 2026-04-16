@@ -538,9 +538,11 @@ def walk_entity_graph(
       Children are entered with ``at_pass_root=False``.
     - Entity nodes (``is_entity=True``): emit via ``on_entity``; then follow
       ONLY fields marked with ``json_schema_extra.edge_label``. Components
-      reached via ``edge_label`` are a contract violation (Task 9e catches
-      this at schema-validation time); runtime guard logs and skips without
-      emitting.
+      (``is_entity=False``) reached via ``edge_label`` are emitted as
+      first-class graph nodes via ``on_entity`` with an edge from the parent
+      (spec §4.8 step 2 + docs:17500-17509 — e.g. a shared Address node);
+      the walker does NOT recurse into such components (A0-5 contract test
+      forbids components from carrying edge_label fields).
     - Component nodes (``is_entity=False``) encountered inside the graph
       (not at pass-root): treat as embedded data. Do NOT recurse, do NOT
       emit. Value objects live in their parent entity's properties, not as
@@ -618,13 +620,14 @@ def walk_entity_graph(
                 continue
             child_cfg = getattr(child, "model_config", {}) or {}
             if child_cfg.get("is_entity") is not True:
-                # Defensive runtime guard — contract test Task 9e forbids
-                # edges targeting non-entity classes at schema-validation time.
-                logger.warning(
-                    "walk_entity_graph: edge_label=%r on %s.%s points at %s "
-                    "which is not is_entity=True; skipping (contract violation)",
-                    edge_label, type(node).__name__, fname, type(child).__name__,
-                )
+                # Per spec §4.8 + docs:17500-17509: components reached via
+                # edge(label=...) become first-class graph nodes with
+                # content-based identity (A0-1). Do NOT recurse — components
+                # cannot carry edge_label fields (enforced by A0-5 contract
+                # test at schema-validation time).
+                on_entity(child)
+                if full_mode and on_edge is not None and parent_identity is not None:
+                    on_edge(parent_identity, edge_label, child)
                 continue
             if full_mode and on_edge is not None and parent_identity is not None:
                 on_edge(parent_identity, edge_label, child)
