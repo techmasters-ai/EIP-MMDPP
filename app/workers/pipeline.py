@@ -274,6 +274,49 @@ def _serialize_for_audit(merged, manifest) -> dict:
     }
 
 
+_DOMAIN_PASS_NAMES: frozenset[str] = frozenset({
+    "radar_domain", "missile_domain", "other_systems", "system_links",
+})
+
+
+def _classify_extraction_quality(pass_outcomes: dict) -> str:
+    """Three-state extraction-quality aggregate over per-pass outcomes.
+
+    Plan Task 52. Runs AFTER per-pass classify_yield has already moved
+    each StageRun row through its HIT / EMPTY / BRIDGES_ONLY / DEGRADED
+    life cycle (including post-merge updates via
+    _apply_post_merge_yield_updates). Returns one of:
+
+    - ``"ok"``       — at least one domain pass achieved HIT.
+    - ``"degraded"`` — reference pass HIT (document structure
+                       extracted) but every domain pass is non-HIT.
+                       Distinctive signal for "real document, but not a
+                       SAM/radar artefact".
+    - ``"anomaly"``  — no pass achieved HIT. Likely a processing
+                       failure or an entirely off-topic document.
+
+    An empty outcomes dict (no per-pass rows present) returns
+    ``"anomaly"`` as the conservative default.
+    """
+    if not pass_outcomes:
+        return "anomaly"
+
+    def _is_hit(entry: dict) -> bool:
+        return entry.get("yield_status") == "HIT"
+
+    domain_hit = any(
+        _is_hit(v) for k, v in pass_outcomes.items() if k in _DOMAIN_PASS_NAMES
+    )
+    if domain_hit:
+        return "ok"
+
+    reference_hit = _is_hit(pass_outcomes.get("reference") or {})
+    if reference_hit:
+        return "degraded"
+
+    return "anomaly"
+
+
 def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
     """Populates PipelineRun.metrics with the quality-signal blob.
 
@@ -320,6 +363,7 @@ def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
             "pass_degraded_count": pass_degraded_count,
             "overall_relationship_rejection_ratio": overall_rejection_ratio,
             "rejected_relationships_sample": rejected_sample,
+            "extraction_quality": _classify_extraction_quality(pass_outcomes),
             "bundle_legacy": False,
             "bundle_key_display": bundle_key or "",
         }
