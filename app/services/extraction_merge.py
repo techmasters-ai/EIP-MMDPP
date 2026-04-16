@@ -335,7 +335,22 @@ def classify_yield(
     pass_def: Any,
     ontology: dict,
 ) -> YieldStatus:
-    """Convenience wrapper — extracts counts from PassResult and delegates."""
+    """Pre-merge yield classifier (plan Task 35c).
+
+    Counts come from the shared ``PreMergeWalkSummary`` that the pass
+    loop built (Task 34b): entities via ``iter_entities_of_type`` —
+    which consumes ``pre_merge_walk.entities`` through
+    ``_cached_entities`` — and ``extracted_rels`` from
+    ``raw_edge_count`` directly. The walker never runs again here.
+
+    Post-merge ``_apply_post_merge_yield_updates`` is the authoritative
+    source for ``relationships_rejected``; at pre-merge we FORCE the
+    rejected count to 0 so yield classification mirrors raw walker
+    emissions without counting merge-time validation failures that
+    haven't happened yet. Fallback for test-built ``PassResult``s
+    without ``pre_merge_walk``: ``extracted_rels`` falls back to
+    ``len(result.relationships)`` — the legacy DTO-list count.
+    """
     primary_types = getattr(pass_def, "primary_entity_types", []) or []
     bridge_types = getattr(pass_def, "bridge_entity_types", []) or []
 
@@ -345,8 +360,11 @@ def classify_yield(
     bridge = sum(
         len(list(result.iter_entities_of_type(t))) for t in bridge_types
     )
-    extracted_rels = len(result.relationships)
-    rejected_rels = len(result.pre_merge_rejections)
+    if result.pre_merge_walk is not None:
+        extracted_rels = result.pre_merge_walk.raw_edge_count
+    else:
+        extracted_rels = len(result.relationships)
+    rejected_rels = 0  # Forced: post-merge path is authoritative.
 
     return classify_yield_from_counts(
         primary=primary,

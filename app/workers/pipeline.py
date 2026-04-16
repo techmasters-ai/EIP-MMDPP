@@ -1803,7 +1803,25 @@ def _backoff(attempt: int) -> None:
 
 
 def _count_pass_output(pass_result, pass_def, ontology) -> dict:
-    """Count primary/bridge entities and relationships emitted by this pass."""
+    """Pre-merge per-pass counts (plan Task 35c).
+
+    Entity counts come from ``iter_entities_of_type`` — which now reads
+    from ``pre_merge_walk.entities`` (via ``_cached_entities``) when the
+    pass loop built the shared summary (Task 34b), so nested children
+    behind typed-edge fields are included. ``relationships_extracted``
+    is the walker's ``raw_edge_count`` for typed-edge passes or the DTO
+    list length for ``system_links`` — both carried uniformly on
+    ``pre_merge_walk.raw_edge_count``.
+
+    ``relationships_rejected`` is FORCED to 0 at pre-merge.
+    ``_apply_post_merge_yield_updates`` (Task 36) is the single
+    authority for rejected counts — merge-time VALIDATION_MATRIX
+    triple-checks haven't run yet when this row is written.
+
+    Fallback for test-built ``PassResult``s without ``pre_merge_walk``:
+    ``relationships_extracted`` falls back to ``len(relationships)``
+    (legacy DTO-list count) but ``relationships_rejected`` stays 0.
+    """
     primary = sum(
         len(list(pass_result.iter_entities_of_type(t)))
         for t in pass_def.primary_entity_types
@@ -1812,8 +1830,12 @@ def _count_pass_output(pass_result, pass_def, ontology) -> dict:
         len(list(pass_result.iter_entities_of_type(t)))
         for t in pass_def.bridge_entity_types
     ) if hasattr(pass_result, "iter_entities_of_type") else 0
-    extracted_rels = len(getattr(pass_result, "relationships", []) or [])
-    rejected_rels = len(getattr(pass_result, "pre_merge_rejections", []) or [])
+    pmw = getattr(pass_result, "pre_merge_walk", None)
+    if pmw is not None:
+        extracted_rels = pmw.raw_edge_count
+    else:
+        extracted_rels = len(getattr(pass_result, "relationships", []) or [])
+    rejected_rels = 0  # Forced at pre-merge; post-merge is authoritative.
     metadata = getattr(pass_result, "metadata", None)
     return {
         "primary_entities_extracted": primary,
