@@ -6,7 +6,11 @@ Oracle: ontology_bundles.air_defense_v3.introspect.build_entity_types_list
 """
 from unittest.mock import AsyncMock, MagicMock
 
-from app.services.arcadedb_schema import _STRUCTURAL_EDGE_TYPES, ensure_schema
+from app.services.arcadedb_schema import (
+    _STRUCTURAL_EDGE_TYPES,
+    ensure_schema,
+    ensure_schema_sync,
+)
 from ontology_bundles.air_defense_v3.introspect import (
     build_entity_types_list,
     build_relationship_types_list,
@@ -44,4 +48,40 @@ def test_ensure_schema_runs_without_yaml_dependency():
 
     assert client.command.await_count > 0, (
         "ensure_schema should have issued DDL via client.command"
+    )
+
+
+def test_ensure_schema_sync_adapter_runs_outside_event_loop():
+    """ensure_schema_sync lets the migration script call from plain sync code."""
+    client = MagicMock()
+    client.command = AsyncMock()
+
+    report = ensure_schema_sync(client, database="test_db")
+
+    assert client.command.await_count > 0
+    assert report is not None
+
+
+def test_ensure_schema_is_additive_only():
+    """No DROP statements are emitted — destructive ops belong in the migration script."""
+    import asyncio
+    import re
+
+    client = MagicMock()
+    client.command = AsyncMock()
+
+    asyncio.run(ensure_schema(client, database="test_db"))
+
+    # Split each issued script into statements and check the leading verb.
+    drop_stmts: list[str] = []
+    for call in client.command.await_args_list:
+        if not call.args:
+            continue
+        script = str(call.args[-1])
+        for stmt in script.split(";"):
+            leading = stmt.strip()
+            if re.match(r"^DROP\b", leading, re.IGNORECASE):
+                drop_stmts.append(leading)
+    assert not drop_stmts, (
+        "ensure_schema emitted DROP statements: " + " | ".join(drop_stmts)
     )
