@@ -132,28 +132,72 @@ class PassResult:
     # loop (test fixture, or a code path not yet migrated); consumers fall
     # back to walk_entity_graph in entity-only mode.
     pre_merge_walk: "PreMergeWalkSummary | None" = None
+    _walker_entities_cache: list[Any] | None = field(default=None, init=False, repr=False)
+
+    def _cached_entities(self) -> list[Any]:
+        """Return every entity reachable from ``template_instance``, memoized.
+
+        Preference order (plan Task 35a):
+        1. ``pre_merge_walk.entities`` if the pass loop already built the
+           shared pre-merge summary (Task 34b) — guarantees this filter and
+           the pre-merge counters see the same traversal, avoiding
+           count-vs-upstream-ref drift.
+        2. Fresh walk via ``walk_entity_graph`` in entity-only mode
+           (``on_edge=None``) when the template is a Pydantic BaseModel —
+           ontology / document_id are optional in this mode.
+        3. Heuristic fallback for non-Pydantic template stubs
+           (SimpleNamespace in tests): return ``None`` to signal the caller
+           to fall back to the legacy attribute-name lookup.
+        """
+        if self._walker_entities_cache is not None:
+            return self._walker_entities_cache
+        if self.pre_merge_walk is not None:
+            self._walker_entities_cache = list(self.pre_merge_walk.entities)
+            return self._walker_entities_cache
+        if isinstance(self.template_instance, BaseModel):
+            out: list[Any] = []
+            walk_entity_graph(
+                self.template_instance,
+                on_entity=out.append,
+                ontology=None,
+                document_id=None,
+                on_edge=None,
+                visited_objects=set(),
+                at_pass_root=True,
+            )
+            self._walker_entities_cache = out
+            return self._walker_entities_cache
+        # Non-BaseModel template (SimpleNamespace stub) — caller falls back.
+        return None  # type: ignore[return-value]
 
     def iter_entities_of_type(self, entity_type: str) -> Iterable[Any]:
-        """Return entity model instances matching the given type.
+        """Yield entity instances whose ``model_config['ontology_name']``
+        matches ``entity_type`` — recursive via ``walk_entity_graph``.
 
-        Tries multiple attribute name conventions:
-        1. '<lower>_list'  — test-fixture convention (e.g. radar_system_list)
-        2. '<lower>s'      — plural snake_case (e.g. radar_systems)
-        3. '<lower>'       — bare singular fallback
-
-        Returns an empty list if nothing matches.
+        For Pydantic BaseModel templates this walks the typed-edge entity
+        graph (nested children behind ``edge_label`` fields are reached).
+        For non-Pydantic test stubs (SimpleNamespace), falls back to the
+        legacy attribute-name heuristic:
+          1. '<lower>_list'  — test-fixture convention
+          2. '<lower>s'      — plural snake_case
+          3. '<lower>'       — bare singular
         """
+        entities = self._cached_entities()
+        if entities is not None:
+            for e in entities:
+                cfg = getattr(e, "model_config", {}) or {}
+                if cfg.get("ontology_name") == entity_type:
+                    yield e
+            return
+
+        # Fallback path for SimpleNamespace templates.
         lower = entity_type.lower()
-        candidates = (
-            f"{lower}_list",
-            f"{lower}s",
-            lower,
-        )
-        for attr in candidates:
+        for attr in (f"{lower}_list", f"{lower}s", lower):
             val = getattr(self.template_instance, attr, None)
             if val is not None and isinstance(val, list):
-                return val
-        return []
+                for item in val:
+                    yield item
+                return
 
     @property
     def relationships(self) -> list[Any]:

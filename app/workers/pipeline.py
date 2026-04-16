@@ -1906,13 +1906,20 @@ def _extend_upstream_refs(
     """Add ref_id → ref entries to upstream_refs for every primary entity
     produced by this pass so downstream passes can reference them.
 
-    Uses a SINGLE monotonic counter across all primary_entity_types so
-    ids don't collide (previous impl restarted the enumerate() counter per
-    entity type). identity_values is filtered to the ontology's
-    identity_fields only — merge_and_resolve compares refs by identity
-    tuple, so extra keys would fragment identity. display_label is
-    populated via build_display_label so downstream prompts and UIs get
-    a meaningful name.
+    **Merge-preserving scratch-dict dedup (plan Task 35a):** once
+    ``iter_entities_of_type`` yields nested entities, the same logical
+    entity can be reached via multiple graph paths with complementary
+    non-null fields. A detached scratch accumulator keyed on
+    ``(entity_type, ontology-ordered identity tuple)`` unions non-identity
+    fields across duplicates (first-non-null wins) WITHOUT mutating the
+    live Python instances — merge stages later consume those instances.
+    ``display_label`` is built from the merged scratch so prompts and UIs
+    see the richest name even when no single instance had everything.
+
+    Ref ids follow a SINGLE monotonic counter across all
+    primary_entity_types (no per-type restart) and are only allocated
+    AFTER ``_is_valid_upstream_ref`` accepts the ref — so invalid
+    identities don't leave gaps in the ref-id sequence.
     """
     from types import SimpleNamespace
 
@@ -1920,9 +1927,15 @@ def _extend_upstream_refs(
         e["name"]: e for e in ontology.get("entity_types", [])
     }
 
-    counter = len(upstream_refs) + 1
     if not hasattr(pass_result, "iter_entities_of_type"):
         return
+
+    # Phase 1: collect all yielded instances into scratch accumulators
+    # keyed on (entity_type, ontology-ordered identity tuple). Dedup key is
+    # ontology-field order, not dict-iteration order — prevents drift on
+    # key tuples across Python versions / insertion paths.
+    accumulators: dict[tuple, dict] = {}
+    allocation_order: list[tuple] = []
 
     for entity_type in pass_def.primary_entity_types:
         entity_def = ontology_by_type.get(entity_type)
@@ -1940,27 +1953,51 @@ def _extend_upstream_refs(
             identity_values = {
                 k: instance_dict.get(k) for k in identity_fields
             }
-            # Everything non-identity that isn't private goes into
-            # properties so build_display_label can use it as a fallback.
-            properties = {
-                k: v
-                for k, v in instance_dict.items()
-                if not k.startswith("_") and k not in identity_values
-            }
-            display_label = build_display_label(
-                entity_type, identity_values, properties,
-            )
+            identity_tuple = tuple(identity_values[k] for k in identity_fields)
+            key = (entity_type, identity_tuple)
 
-            ref = SimpleNamespace(
-                pass_origin=pass_def.name,
-                entity_type=entity_type,
-                identity_values=identity_values,
-                display_label=display_label,
-            )
-            if not _is_valid_upstream_ref(ref, ontology):
-                continue  # Drop refs with missing/empty identity; see _is_valid_upstream_ref.
-            upstream_refs[f"E{counter:03d}"] = ref
-            counter += 1
+            if key not in accumulators:
+                scratch = {
+                    k: v
+                    for k, v in instance_dict.items()
+                    if not k.startswith("_") and k not in identity_values and v is not None
+                }
+                accumulators[key] = {
+                    "entity_type": entity_type,
+                    "identity_values": identity_values,
+                    "scratch": scratch,
+                }
+                allocation_order.append(key)
+            else:
+                scratch = accumulators[key]["scratch"]
+                for k, v in instance_dict.items():
+                    if k.startswith("_") or k in identity_values or v is None:
+                        continue
+                    if k not in scratch:
+                        scratch[k] = v  # first-non-null wins
+
+    # Phase 2: emit refs in allocation order; ref id counter advances only
+    # after a successful _is_valid_upstream_ref gate, preserving the
+    # no-gaps contract.
+    counter = len(upstream_refs) + 1
+    for key in allocation_order:
+        acc = accumulators[key]
+        entity_type = acc["entity_type"]
+        identity_values = acc["identity_values"]
+        scratch = acc["scratch"]
+        display_label = build_display_label(
+            entity_type, identity_values, scratch,
+        )
+        ref = SimpleNamespace(
+            pass_origin=pass_def.name,
+            entity_type=entity_type,
+            identity_values=identity_values,
+            display_label=display_label,
+        )
+        if not _is_valid_upstream_ref(ref, ontology):
+            continue  # Drop refs with missing/empty identity.
+        upstream_refs[f"E{counter:03d}"] = ref
+        counter += 1
 
 
 def _endpoint_types_for_rel_types(
