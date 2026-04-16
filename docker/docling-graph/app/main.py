@@ -362,12 +362,17 @@ def run_extraction_pass(
     docling_document_json: dict[str, Any],
     template_cls: type,
     upstream_entities: list | None = None,
+    pass_name: str | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
     Mirrors the deleted run_extraction_pipeline() exactly but takes the template
     class directly from the bundle loader instead of resolving it from a dynamic
     definition blob.
+
+    ``pass_name`` is threaded through to :func:`build_pipeline_config` so
+    per-pass quality-gate overrides (spec §4.6) apply — e.g. system_links
+    drops min_instances to 1.
 
     Path B preamble injection: if DOCLING_GRAPH_UPSTREAM_PREAMBLE is enabled and
     upstream_entities is non-empty, the preamble is appended to the document's
@@ -413,7 +418,11 @@ def run_extraction_pass(
         tmp_path = tmp.name
 
     try:
-        config = build_pipeline_config(source=tmp_path, template_class=template_cls)
+        config = build_pipeline_config(
+            source=tmp_path,
+            template_class=template_cls,
+            pass_name=pass_name,
+        )
         context = run_pipeline(config)
         try:
             context._upstream_preamble_applied = preamble_applied
@@ -520,6 +529,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.docling_document_json,
                     template_cls,
                     body.upstream_entities,
+                    body.pass_name,
                 )
             except Exception as exc:
                 logger.exception(

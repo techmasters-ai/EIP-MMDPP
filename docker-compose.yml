@@ -170,6 +170,9 @@ services:
       GRAPH_EXTRACTION_CHUNK_SIZE: ${GRAPH_EXTRACTION_CHUNK_SIZE:-100000}
       GRAPH_EXTRACTION_CHUNK_OVERLAP: ${GRAPH_EXTRACTION_CHUNK_OVERLAP:-2000}
       DOCLING_GRAPH_UPSTREAM_PREAMBLE: ${DOCLING_GRAPH_UPSTREAM_PREAMBLE:-true}
+      # Quality-gate floor (spec §4.6). Per-pass override for system_links=1
+      # is applied inside config_builder.py.
+      DOCLING_GRAPH_QUALITY_MIN_INSTANCES: ${DOCLING_GRAPH_QUALITY_MIN_INSTANCES:-3}
     ports:
       - "${DOCLING_GRAPH_PORT:-8002}:8002"
     # GPU reservation needed for VLM mode (DOCLING_GRAPH_BACKEND=vlm).

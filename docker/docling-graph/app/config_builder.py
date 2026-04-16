@@ -44,7 +44,7 @@ class DoclingGraphSettings(BaseSettings):
 
     # Delta quality
     docling_graph_quality_require_root: bool = True
-    docling_graph_quality_min_instances: int = 1
+    docling_graph_quality_min_instances: int = 3
     docling_graph_quality_max_parent_miss: int = 4
     docling_graph_quality_adaptive_parent: bool = True
 
@@ -78,14 +78,33 @@ class DoclingGraphSettings(BaseSettings):
     docling_graph_backend: str = "llm"
 
 
+# Per-pass overrides for the quality gate. ``system_links`` is the
+# relationships-only pass (Decision 4) — it legitimately produces zero
+# ontology nodes on empty docs, so the default min_instances=3 would
+# wrongly fail the gate. Spec §4.6.
+_QUALITY_MIN_INSTANCES_PER_PASS: dict[str, int] = {
+    "system_links": 1,
+}
+
+
 def build_pipeline_config(
     source: str,
     template_class: Type[BaseModel] | None,
+    pass_name: str | None = None,
 ) -> Any:
-    """Build a PipelineConfig from environment variables."""
+    """Build a PipelineConfig from environment variables.
+
+    ``pass_name`` applies per-pass quality-gate overrides (spec §4.6);
+    see :data:`_QUALITY_MIN_INSTANCES_PER_PASS`. Unknown pass names
+    fall back to the env-var default.
+    """
     from docling_graph import PipelineConfig
 
     settings = DoclingGraphSettings()
+
+    quality_min_instances = settings.docling_graph_quality_min_instances
+    if pass_name in _QUALITY_MIN_INSTANCES_PER_PASS:
+        quality_min_instances = _QUALITY_MIN_INSTANCES_PER_PASS[pass_name]
 
     config_kwargs: dict[str, Any] = {
         "source": source,
@@ -105,7 +124,7 @@ def build_pipeline_config(
         "delta_resolver_fuzzy_threshold": settings.docling_graph_resolver_fuzzy_threshold,
         "delta_resolver_semantic_threshold": settings.docling_graph_resolver_semantic_threshold,
         "delta_quality_require_root": settings.docling_graph_quality_require_root,
-        "delta_quality_min_instances": settings.docling_graph_quality_min_instances,
+        "delta_quality_min_instances": quality_min_instances,
         "delta_quality_max_parent_lookup_miss": settings.docling_graph_quality_max_parent_miss,
         "delta_quality_adaptive_parent_lookup": settings.docling_graph_quality_adaptive_parent,
         "delta_normalizer_validate_paths": settings.docling_graph_normalizer_validate_paths,

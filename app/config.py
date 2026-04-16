@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # Max attempts per extraction pass (spec §6.5). Default 3 means 1 initial
     # call + 2 retries before giving up.
     pass_max_retries: int = 3
+    # Quality-gate floor shared with the docling-graph service. Mirrors
+    # DoclingGraphSettings.docling_graph_quality_min_instances so compose
+    # can propagate a single DOCLING_GRAPH_QUALITY_MIN_INSTANCES env var
+    # to both worker and service. The service applies per-pass overrides
+    # (system_links=1) internally; see docker/docling-graph/app/config_builder.py.
+    docling_graph_quality_min_instances: int = 3
 
     # Docling human-review confidence threshold
     docling_review_confidence_threshold: float = 0.60
