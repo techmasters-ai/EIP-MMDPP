@@ -117,23 +117,16 @@ def test_non_default_bundle_key_falls_through_to_yaml(monkeypatch, tmp_path):
     assert loaded["entity_types"] == []
 
 
-def test_yaml_flag_default_is_yaml(monkeypatch):
-    """When ONTOLOGY_SOURCE is unset, the default is yaml (back-compat)."""
+def test_default_when_env_unset_is_pydantic(monkeypatch):
+    """When ONTOLOGY_SOURCE is unset, the default is pydantic (flipped
+    in Task 42). We assert via ordering: introspection emits entities in
+    ALL_ENTITIES registry order (ORGANIZATION at position ~7), while YAML
+    declared order has ORGANIZATION at ~18."""
     monkeypatch.delenv("ONTOLOGY_SOURCE", raising=False)
     loaded = load_ontology()
-    # YAML load is a deepcopy of the cached bundle; introspection would
-    # return a fresh dict. Either way, canonical parity holds — so the
-    # most reliable non-parity signal is that 'entity_types' comes back
-    # in YAML's declared order (DOCUMENT first), not in introspection's
-    # ALL_ENTITIES order (also DOCUMENT first — coincidentally the
-    # same, so we check a later position where they differ).
-    #
-    # YAML order: ..., PLATFORM, RADAR_SYSTEM, MISSILE_SYSTEM, ..., ORGANIZATION, ...
-    # ALL_ENTITIES order: ..., ASSERTION, ORGANIZATION, PLATFORM, WEAPON_SYSTEM, ...
-    # The position of ORGANIZATION differs: YAML has it ~18, ALL_ENTITIES has it at 7.
     names = [e["name"] for e in loaded["entity_types"]]
     org_index = names.index("ORGANIZATION")
-    assert org_index > 10, (
-        f"ORGANIZATION at index {org_index} suggests introspection order, "
-        "not YAML order — default flag may not be 'yaml'"
+    assert org_index < 10, (
+        f"ORGANIZATION at index {org_index} suggests YAML order, "
+        "not introspection order — default flag may not be 'pydantic'"
     )

@@ -132,13 +132,14 @@ def load_ontology(
     1. If `path` is given, load directly from that file. (YAML only;
        ``ONTOLOGY_SOURCE`` is ignored so explicit-path loads stay
        deterministic.)
-    2. Else if ``ONTOLOGY_SOURCE=pydantic`` AND the resolved bundle is
-       ``air_defense_v3``, return Pydantic introspection output
-       (canonical-JSON-equivalent to the YAML; see
-       ``ontology_bundles.air_defense_v3.introspect``).
+    2. Else if the resolved bundle is ``air_defense_v3`` AND
+       ``ONTOLOGY_SOURCE`` is unset or ``pydantic`` (default), return
+       Pydantic introspection output (canonical-JSON-equivalent to
+       the YAML; see ``ontology_bundles.air_defense_v3.introspect``).
     3. Else if `bundle_key` is given, load that bundle's ontology.yaml.
     4. Else load the system default bundle's ontology.yaml
-       (``air_defense_v3``).
+       (``air_defense_v3``) — explicit ``ONTOLOGY_SOURCE=yaml``
+       escape hatch for rollback / debugging during the transition.
 
     This function never consults the registry/version-pinning store.
     For version-pinned loads, call load_registry_ontology(version_id)
@@ -151,7 +152,7 @@ def load_ontology(
             return yaml.safe_load(f)
     resolved_key = bundle_key or SYSTEM_DEFAULT_BUNDLE_KEY
     if (
-        os.environ.get("ONTOLOGY_SOURCE", "yaml").lower() == "pydantic"
+        os.environ.get("ONTOLOGY_SOURCE", "pydantic").lower() == "pydantic"
         and resolved_key == "air_defense_v3"
     ):
         from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
