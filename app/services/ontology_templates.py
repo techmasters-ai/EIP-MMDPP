@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import logging
+import os
 from pathlib import Path
 from threading import Lock
 import time
@@ -128,9 +129,16 @@ def load_ontology(
     """Load an ontology definition.
 
     Resolution order (exactly one applies):
-    1. If `path` is given, load directly from that file.
-    2. Else if `bundle_key` is given, load that bundle's ontology.yaml.
-    3. Else load the system default bundle's ontology.yaml (air_defense_v3).
+    1. If `path` is given, load directly from that file. (YAML only;
+       ``ONTOLOGY_SOURCE`` is ignored so explicit-path loads stay
+       deterministic.)
+    2. Else if ``ONTOLOGY_SOURCE=pydantic`` AND the resolved bundle is
+       ``air_defense_v3``, return Pydantic introspection output
+       (canonical-JSON-equivalent to the YAML; see
+       ``ontology_bundles.air_defense_v3.introspect``).
+    3. Else if `bundle_key` is given, load that bundle's ontology.yaml.
+    4. Else load the system default bundle's ontology.yaml
+       (``air_defense_v3``).
 
     This function never consults the registry/version-pinning store.
     For version-pinned loads, call load_registry_ontology(version_id)
@@ -142,6 +150,13 @@ def load_ontology(
         with open(path) as f:
             return yaml.safe_load(f)
     resolved_key = bundle_key or SYSTEM_DEFAULT_BUNDLE_KEY
+    if (
+        os.environ.get("ONTOLOGY_SOURCE", "yaml").lower() == "pydantic"
+        and resolved_key == "air_defense_v3"
+    ):
+        from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
+
+        return build_ontology_dict()
     ontology_ref, _ = _ensure_bundle_cached(resolved_key)
     return deepcopy(ontology_ref)
 
