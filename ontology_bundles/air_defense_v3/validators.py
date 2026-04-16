@@ -6,22 +6,44 @@ Spec §3.2. Used by every extraction schema module under
 ontology_bundles/air_defense_v3/extraction_schemas/."""
 from __future__ import annotations
 
+import logging
 import re
 from enum import Enum
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 _INT_RE = re.compile(r"-?\d+")
 _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
+def _log_unrecoverable(fn_name: str, value: Any) -> None:
+    """Warn that ``value`` could not be coerced by ``fn_name`` → None.
+
+    Kept as a single choke-point so the wording stays stable for the
+    A-2 contract test (``"unrecoverable" in message``).
+    """
+    logger.warning(
+        "%s: unrecoverable input %r (type=%s) -> None",
+        fn_name,
+        value,
+        type(value).__name__,
+    )
+
+
 def coerce_optional_int(value: Any) -> int | None:
     """Return an int, or None. Accepts None, int, numeric strings,
     and strings with an embedded int ('page 5 of 10' -> 5). Empty/
-    whitespace strings and unparseable values become None."""
+    whitespace strings and unparseable values become None.
+
+    Logs a WARNING when the input is non-None, non-empty, but
+    unrecoverable (A-2). Empty strings and None are silent (those
+    are normal "field absent" signals, not bad LLM output).
+    """
     if value is None:
         return None
     if isinstance(value, bool):
-        # bool is a subclass of int — reject to avoid surprising True -> 1
+        _log_unrecoverable("coerce_optional_int", value)
         return None
     if isinstance(value, int):
         return value
@@ -31,7 +53,6 @@ def coerce_optional_int(value: Any) -> int | None:
         stripped = value.strip()
         if not stripped:
             return None
-        # Try the whole string first
         try:
             return int(stripped)
         except ValueError:
@@ -41,18 +62,25 @@ def coerce_optional_int(value: Any) -> int | None:
             try:
                 return int(match.group(0))
             except ValueError:
+                _log_unrecoverable("coerce_optional_int", value)
                 return None
+        _log_unrecoverable("coerce_optional_int", value)
         return None
+    _log_unrecoverable("coerce_optional_int", value)
     return None
 
 
 def coerce_optional_float(value: Any) -> float | None:
     """Return a float, or None. Accepts None, int, float, and parseable
-    decimal strings. Unparseable values become None."""
+    decimal strings. Unparseable values become None.
+
+    Logs a WARNING when the input is non-None, non-empty, but
+    unrecoverable (A-2). None and empty strings are silent.
+    """
     if value is None:
         return None
     if isinstance(value, bool):
-        # bool is a subclass of int — reject to avoid surprising True -> 1.0
+        _log_unrecoverable("coerce_optional_float", value)
         return None
     if isinstance(value, (int, float)):
         return float(value)
@@ -68,8 +96,11 @@ def coerce_optional_float(value: Any) -> float | None:
                 try:
                     return float(match.group(0))
                 except ValueError:
+                    _log_unrecoverable("coerce_optional_float", value)
                     return None
+            _log_unrecoverable("coerce_optional_float", value)
             return None
+    _log_unrecoverable("coerce_optional_float", value)
     return None
 
 
@@ -130,9 +161,7 @@ def coerce_optional_confidence(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        # True/False for confidence is meaningless — drop rather than coerce
-        # to 1.0, which would spuriously mark an extraction as maximally
-        # confident.
+        _log_unrecoverable("coerce_optional_confidence", value)
         return None
     if isinstance(value, (int, float)):
         f = float(value)
@@ -145,14 +174,15 @@ def coerce_optional_confidence(value: Any) -> float | None:
             return None
         if stripped in _TEXT_CONFIDENCE:
             return _TEXT_CONFIDENCE[stripped]
-        # Try parsing as a number
         try:
             f = float(stripped)
         except ValueError:
+            _log_unrecoverable("coerce_optional_confidence", value)
             return None
         if f > 1.0:
             return f / 100.0
         return f
+    _log_unrecoverable("coerce_optional_confidence", value)
     return None
 
 
