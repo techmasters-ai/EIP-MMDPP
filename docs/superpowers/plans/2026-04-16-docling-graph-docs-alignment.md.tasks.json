@@ -595,11 +595,11 @@
     {
       "id": "G-2",
       "subject": "Dry-run migration script",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         "G-1"
       ],
-      "notes": "Requires live infrastructure — execute .venv/bin/python scripts/full_purge_and_reingest.py --dry-run in the deployed environment and diff truncate list against spec §5.1."
+      "notes": "Observational (no commit). Executed .venv/bin/python scripts/full_purge_and_reingest.py --dry-run at 2026-04-17T14:20:07Z. Output diffed clean against spec §5.1: 20 truncate targets in FK-safe order, UPDATE on ingest.documents, 6 preserved tables (auth.user_roles, auth.users, ingest.documents, ingest.sources, ingest.watch_dirs, public.alembic_version). All 12 migration steps exercised without destructive I/O."
     },
     {
       "id": "G-3",
@@ -620,5 +620,5 @@
       "notes": "After G-3 produces /tmp/migration-report-*.md, audit against §5.4 gate and commit to docs/migration-reports/2026-04-16-docs-alignment.md."
     }
   ],
-  "lastUpdated": "2026-04-17T23:30:00.000000+00:00"
+  "lastUpdated": "2026-04-17T23:45:00.000000+00:00"
 }
