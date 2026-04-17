@@ -97,11 +97,13 @@ class SectionEntity(BaseModel):
 class FigureEntity(BaseModel):
     """Figure — A figure, diagram, or image within a document
     """
-    model_config = ConfigDict(ontology_name="FIGURE", graph_id_fields=['figure_id', 'page'], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
+    model_config = ConfigDict(ontology_name="FIGURE", graph_id_fields=["figure_ref"], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
 
-    figure_id: str = Field(..., description="Figure number or identifier within the document", examples=['Figure 3-12', 'Figure 3-12'])
+    figure_ref: str = Field(..., description="Document-scoped figure reference (docs:17235 R16-compliant identity)", examples=['Figure 3-12', 'Fig. 4.1', 'Figure A-7'])
+    figure_label: Optional[str] = Field(default=None, description="Human-friendly figure label or short title", examples=['Antenna Feed Assembly'])
+    document_id: Optional[str] = Field(default=None, description="Internal document UUID this figure belongs to")
     caption: Optional[str] = Field(default=None, description="Figure caption text", examples=['Antenna Feed Assembly Exploded View'])
-    page: int = Field(..., description="Page number where the figure appears", examples=[55, 55])
+    page: Optional[int] = Field(default=None, description="Page number where the figure appears", examples=[55])
     figure_type: Optional[str] = Field(default=None, description="Category of the figure", json_schema_extra={"enum": ["BLOCK_DIAGRAM", "SCHEMATIC", "PHOTO", "SPECTRUM_PLOT", "WIRING_DIAGRAM", "FLOWCHART"]})
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 

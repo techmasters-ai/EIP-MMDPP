@@ -58,14 +58,16 @@ entity_types:
 
   - name: FIGURE
     label: "Figure"
-    identity_fields: [figure_id, page]
+    identity_fields: [figure_ref]
     identity_scope: document
     description: "A figure, diagram, or image within a document"
     parent: DocumentResource
     properties:
       type: object
       properties:
-        figure_id: {type: string, description: "Figure number or identifier within the document", example: "Figure 3-12"}
+        figure_ref: {type: string, description: "Document-scoped figure reference (docs:17235 R16-compliant identity)", example: "Figure 3-12"}
+        figure_label: {type: string, description: "Human-friendly figure label or short title", example: "Antenna Feed Assembly"}
+        document_id: {type: string, description: "Internal document UUID this figure belongs to"}
         caption: {type: string, description: "Figure caption text", example: "Antenna Feed Assembly Exploded View"}
         page: {type: integer, description: "Page number where the figure appears", example: 55}
         figure_type: {type: string, description: "Category of the figure", enum: [BLOCK_DIAGRAM, SCHEMATIC, PHOTO, SPECTRUM_PLOT, WIRING_DIAGRAM, FLOWCHART]}

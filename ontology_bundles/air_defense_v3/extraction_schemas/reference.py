@@ -172,30 +172,39 @@ class SectionEntity(BaseModel):
 class FigureEntity(BaseModel):
     """Figure — narrow extraction view of canonical FIGURE.
 
-    Identity: ``figure_id`` + ``page`` (document-scoped).
+    Identity: ``figure_ref`` (document-scoped, docs:17235 R16).
     """
     model_config = ConfigDict(
         extra="ignore",
         ontology_name="FIGURE",
-        graph_id_fields=["figure_id", "page"],
+        graph_id_fields=["figure_ref"],
         identity_scope="document",
         is_entity=True,
     )
 
-    figure_id: str = Field(
+    figure_ref: str = Field(
         ...,
-        description="Figure number or identifier within the document",
-        examples=["Figure 3-12", "Figure 3-12"],
+        description="Document-scoped figure reference (docs:17235 R16-compliant identity)",
+        examples=["Figure 3-12", "Fig. 4.1", "Figure A-7"],
     )
-    page: int = Field(
-        ...,
-        description="Page number where the figure appears",
-        examples=[55, 55],
+    figure_label: Optional[str] = Field(
+        default=None,
+        description="Human-friendly figure label or short title",
+        examples=["Antenna Feed Assembly"],
+    )
+    document_id: Optional[str] = Field(
+        default=None,
+        description="Internal document UUID this figure belongs to",
     )
     caption: Optional[str] = Field(
         default=None,
         description="Figure caption text",
         examples=["Antenna Feed Assembly Exploded View"],
+    )
+    page: Optional[int] = Field(
+        default=None,
+        description="Page number where the figure appears",
+        examples=[55],
     )
     figure_type: Optional[str] = Field(
         default=None,
