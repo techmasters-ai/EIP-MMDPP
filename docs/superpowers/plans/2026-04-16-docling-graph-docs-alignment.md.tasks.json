@@ -59,7 +59,7 @@
       "id": "F",
       "subject": "Test cleanup",
       "tasks": 7,
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         "E"
       ]
@@ -539,42 +539,58 @@
     {
       "id": "F-1",
       "subject": "Delete 3 parity tests (batch 1)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "b454e0e",
+      "notes": "Deleted arcadedb_schema_ontology_source_parity, canonicalization_ontology_source_parity, dossier_service_ontology_source_parity. Suite: 1223 passed."
     },
     {
       "id": "F-2",
       "subject": "Delete 3 parity tests (batch 2)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "c1bdc61",
+      "notes": "Deleted extraction_merge_ontology_source_parity, graph_store_ontology_source_parity, main_api_ontology_source_parity. Suite: 1200 passed."
     },
     {
       "id": "F-3",
       "subject": "Delete 3 parity tests (batch 3)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "9057178",
+      "notes": "Deleted pipeline_ontology_source_parity, query_profiles_ontology_source_parity, ontology_templates_internals_parity. Suite: 1179 passed."
     },
     {
       "id": "F-4",
       "subject": "Delete 2 relationship-parity tests",
-      "status": "pending"
+      "status": "completed",
+      "commit": "78c7d51",
+      "notes": "Deleted test_relationships_parity, test_validation_matrix_parity. Suite: 1169 passed."
     },
     {
       "id": "F-5",
       "subject": "Delete 4 introspect-parity tests",
-      "status": "pending"
+      "status": "completed",
+      "commit": "99d9d85",
+      "notes": "Deleted 4 introspect-parity tests (entity_types, ontology_dict, relationship_types, validation_and_weights). Suite: 1138 passed."
     },
     {
       "id": "F-6",
       "subject": "Delete test_arcadedb_schema + snapshot + ontology_source_flag",
-      "status": "pending"
+      "status": "completed",
+      "commit": "eece85f",
+      "notes": "Deleted test_ontology_source_flag, test_arcadedb_schema, air_defense_v3_snapshot.yaml fixture. Suite: 1116 passed."
     },
     {
       "id": "F-7",
       "subject": "Drop xfail markers, verify 21/21 contract tests green",
-      "status": "pending"
+      "status": "completed",
+      "commit": "7cd0134",
+      "notes": "Dropped all 5 remaining xfail markers. Added examples for GUIDANCE_METHOD.guidance_type + 4 DIEQP/ELNOT fields. Enum-constrained fields exempted from examples requirement in test_descriptions_and_examples_on_extraction_relevant_fields. 21 contract tests green, 0 xfails. Full suite: 1121 passed."
     },
     {
       "id": "G-1",
       "subject": "Write full_purge_and_reingest.py",
-      "status": "pending"
+      "status": "completed",
+      "commit": "2fe0a4f",
+      "notes": "scripts/full_purge_and_reingest.py — 12-step migration driver with --dry-run + --i-understand-this-deletes-derived-data flags. Covers container control, Postgres TRUNCATE, ArcadeDB reset, MinIO empty, Redis FLUSHALL, alembic, enqueue, poll, emit report. 6 unit tests pass (dry-run + safety-flag coverage)."
     },
     {
       "id": "G-2",
@@ -582,7 +598,8 @@
       "status": "pending",
       "blockedBy": [
         "G-1"
-      ]
+      ],
+      "notes": "Requires live infrastructure — execute .venv/bin/python scripts/full_purge_and_reingest.py --dry-run in the deployed environment and diff truncate list against spec §5.1."
     },
     {
       "id": "G-3",
@@ -590,7 +607,8 @@
       "status": "pending",
       "blockedBy": [
         "G-2"
-      ]
+      ],
+      "notes": "Requires live infrastructure — 3-6 hour execution. User-driven step."
     },
     {
       "id": "G-4",
@@ -598,8 +616,9 @@
       "status": "pending",
       "blockedBy": [
         "G-3"
-      ]
+      ],
+      "notes": "After G-3 produces /tmp/migration-report-*.md, audit against §5.4 gate and commit to docs/migration-reports/2026-04-16-docs-alignment.md."
     }
   ],
-  "lastUpdated": "2026-04-17T20:45:00.000000+00:00"
+  "lastUpdated": "2026-04-17T23:30:00.000000+00:00"
 }
