@@ -68,7 +68,7 @@
       "id": "G",
       "subject": "Migration + validation",
       "tasks": 4,
-      "status": "pending",
+      "status": "code-complete; G-3/G-4 deferred per user instruction 2026-04-17",
       "blockedBy": [
         "F"
       ]
@@ -604,21 +604,21 @@
     {
       "id": "G-3",
       "subject": "Real migration run on 21-doc corpus",
-      "status": "pending",
+      "status": "deferred",
       "blockedBy": [
         "G-2"
       ],
-      "notes": "Requires live infrastructure — 3-6 hour execution. User-driven step."
+      "notes": "DEFERRED per user instruction 2026-04-17: corpus re-ingest intentionally skipped for now. Destructive steps 2-6 already ran in the interrupted run (Postgres tables truncated; ArcadeDB schema reset; MinIO eip-derived emptied (479 objects); Redis flushed). 21 pipelines were enqueued and running — stopped mid-flight at approximately 09:53 UTC (19/21 past detect_and_translate, all still PROCESSING, none terminal). Workers are now stopped. To resume: re-run scripts/full_purge_and_reingest.py --i-understand-this-deletes-derived-data (idempotent — wipes partial state and re-enqueues cleanly). The schema-compliance plan's Tasks 54/55 only need 3 targeted stage re-runs (not a full corpus ingest) to verify the Phase 8 shape, so this can stay deferred until the user actually needs populated graph data."
     },
     {
       "id": "G-4",
       "subject": "Acceptance gate + commit migration report",
-      "status": "pending",
+      "status": "deferred",
       "blockedBy": [
         "G-3"
       ],
-      "notes": "After G-3 produces /tmp/migration-report-*.md, audit against §5.4 gate and commit to docs/migration-reports/2026-04-16-docs-alignment.md."
+      "notes": "DEFERRED — waits on a clean G-3 run (no partial state). When G-3 completes cleanly, audit /tmp/migration-report-*.md against spec §5.4 acceptance criteria and commit the report to docs/migration-reports/2026-04-16-docs-alignment.md."
     }
   ],
-  "lastUpdated": "2026-04-17T23:45:00.000000+00:00"
+  "lastUpdated": "2026-04-17T09:54:00.000000+00:00"
 }
