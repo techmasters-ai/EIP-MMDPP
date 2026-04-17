@@ -173,10 +173,6 @@ def test_edge_label_on_entity_to_entity_fields():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2: identity fields gain Field(examples=[...]) during entities.py creation",
-)
 def test_identity_fields_have_examples():
     offenders: list[str] = []
     checked = 0
@@ -364,12 +360,18 @@ def test_every_class_declares_is_entity_explicitly():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 5: extraction-schemas rewrite adds descriptions/examples",
-)
 def test_descriptions_and_examples_on_extraction_relevant_fields():
-    SYSTEM_FIELDS = {"confidence"}
+    """Every extraction-relevant non-system field must carry a description.
+    Edge and domain fields additionally need examples, EXCEPT when the
+    field is enum-constrained (``json_schema_extra['enum']``) — the enum
+    list is self-documenting and having a partial examples list would
+    mislead an LLM as to which values are legal. Identity fields are
+    covered by a separate R16 contract test and are exempt here.
+
+    Also exempt: ``document_id`` — a system-stamped property populated by
+    walker helpers rather than the LLM, and ``confidence`` — system field.
+    """
+    SYSTEM_FIELDS = {"confidence", "document_id"}
     offenders: list[str] = []
     checked = 0
     for cls, src in _iter_all_basemodels():
@@ -381,7 +383,8 @@ def test_descriptions_and_examples_on_extraction_relevant_fields():
             if fname in SYSTEM_FIELDS:
                 continue
             extra = finfo.json_schema_extra or {}
-            is_edge_label = "edge_label" in extra
+            is_edge_label = isinstance(extra, dict) and "edge_label" in extra
+            is_enum = isinstance(extra, dict) and "enum" in extra
             is_identity = fname in id_fields
             is_domain = not (is_edge_label or is_identity)
             in_scope = is_edge_label or is_identity or is_domain
@@ -391,6 +394,8 @@ def test_descriptions_and_examples_on_extraction_relevant_fields():
             if not finfo.description:
                 offenders.append(f"{src}.{cls.__name__}.{fname} (no description)")
             if is_edge_label or is_domain:
+                if is_enum:
+                    continue  # enum values are self-documenting
                 if not (finfo.examples or []):
                     offenders.append(f"{src}.{cls.__name__}.{fname} (no examples)")
     assert checked > 0, (

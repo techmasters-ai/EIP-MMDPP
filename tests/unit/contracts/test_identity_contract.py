@@ -55,7 +55,6 @@ def test_identity_fields_not_named_heading_or_title():
             assert fname not in banned, f"{name}: identity field '{fname}' is a banned name"
 
 
-@pytest.mark.xfail(reason="Chunk B will fix; strict dropped by B-30 (duplicates fixed)")
 def test_identity_examples_are_distinct():
     for name, cls in ALL_ENTITIES.items():
         cfg = getattr(cls, "model_config", {}) or {}
@@ -66,7 +65,6 @@ def test_identity_examples_are_distinct():
                     f"{name}.{fname}: examples contain duplicates"
 
 
-@pytest.mark.xfail(strict=True, reason="Chunk B will fix")
 def test_identity_example_values_populated_for_library_filter():
     for name, cls in ALL_ENTITIES.items():
         cfg = getattr(cls, "model_config", {}) or {}

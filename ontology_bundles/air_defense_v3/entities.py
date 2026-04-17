@@ -375,7 +375,7 @@ class RadarSystemEntity(BaseModel):
     system_name: str = Field(..., description="Common name of the radar system", examples=['Tombstone', 'Clam Shell'])
     nomenclature: Optional[str] = Field(default=None, description="Military AN/ or NATO reporting nomenclature", examples=['AN/MPQ-65'])
     ELNOT: Optional[str] = Field(default=None, description="Electronic Intelligence Notation identifier", examples=['TOMBSTONE'])
-    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code")
+    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code", examples=["DE12345", "DE67890"])
     radar_type: Optional[str] = Field(default=None, description="Functional category of the radar", json_schema_extra={"enum": ["SEARCH", "FIRE_CONTROL", "TRACKING", "WEATHER", "SAR", "GMTI", "MULTI_FUNCTION", "AESA", "PESA", "MPAR"]})
     emitter_function: Optional[str] = Field(default=None, description="Primary emitter function or role", examples=['Surveillance and target acquisition'])
     system_status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
@@ -531,12 +531,12 @@ class MissileSystemEntity(BaseModel):
 
     system_name: str = Field(..., description="Common name of the missile system", examples=['PAC-3 MSE', 'SM-6 Block IA'])
     nomenclature: Optional[str] = Field(default=None, description="Military designation or NATO reporting name", examples=['MIM-104F'])
-    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code")
+    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code", examples=["DE12345", "DE67890"])
     system_status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
     guidance_type: Optional[str] = Field(default=None, description="Primary guidance method used", examples=['Active radar homing'])
     seeker_nomenclature: Optional[str] = Field(default=None, description="Designation of the terminal guidance seeker", examples=['Ka-band active seeker'])
-    seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter")
-    seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker")
+    seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter", examples=["ACTIVE_ARRAY", "PD_SEEKER"])
+    seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker", examples=["DE54321", "DE98765"])
     guidance_method: Optional["GuidanceMethodEntity"] = edge(
         label="HAS_GUIDANCE",
         description="Guidance method used by this missile system.",
@@ -617,7 +617,7 @@ class AirDefenseArtillerySystemEntity(BaseModel):
     model_config = ConfigDict(ontology_name="AIR_DEFENSE_ARTILLERY_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
     system_name: str = Field(..., description="Common name of the AAA system", examples=['ZSU-23-4 Shilka', 'Gepard FlakPanzer'])
-    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code")
+    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code", examples=["DE12345", "DE67890"])
     caliber: Optional[str] = Field(default=None, description="Gun barrel caliber", examples=['23 mm'])
     max_tactical_range: Optional[str] = Field(default=None, description="Maximum tactical engagement range", examples=['2.5 km'])
     max_vertical_range: Optional[str] = Field(default=None, description="Maximum vertical engagement range (ceiling)", examples=['1.5 km'])
@@ -662,7 +662,7 @@ class ElectronicWarfareSystemEntity(BaseModel):
 
     system_name: str = Field(..., description="Common name of the EW system", examples=['AN/ALQ-99', 'AN/ALQ-218'])
     nomenclature: Optional[str] = Field(default=None, description="Military AN/ designation", examples=['AN/ALQ-99'])
-    ELNOT: Optional[str] = Field(default=None, description="Electronic Intelligence Notation identifier")
+    ELNOT: Optional[str] = Field(default=None, description="Electronic Intelligence Notation identifier", examples=["FAN_SONG", "BIG_BIRD"])
     ew_role: Optional[str] = Field(default=None, description="Electronic warfare functional role", json_schema_extra={"enum": ["EA", "ES", "EP", "SIGINT", "ELINT", "COMINT"]})
     coverage: Optional[str] = Field(default=None, description="Frequency or angular coverage range", examples=['64 MHz - 40 GHz'])
     power_output: Optional[str] = Field(default=None, description="Maximum effective radiated power output", examples=['10 kW'])
@@ -1041,7 +1041,7 @@ class GuidanceMethodEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="GUIDANCE_METHOD", graph_id_fields=['guidance_type'], identity_scope="global", dodaf_parent="WeaponEntity", is_entity=True)
 
-    guidance_type: str = Field(..., description="Type of guidance method", json_schema_extra={"enum": ["COMMAND", "SARH", "ARH", "IR", "BEAM_RIDING", "TVM", "GPS_INS", "DUAL_MODE"]})
+    guidance_type: str = Field(..., description="Type of guidance method", examples=['COMMAND', 'SARH'], json_schema_extra={"enum": ["COMMAND", "SARH", "ARH", "IR", "BEAM_RIDING", "TVM", "GPS_INS", "DUAL_MODE"]})
     firing_doctrine: Optional[str] = Field(default=None, description="Firing doctrine (shoot-look-shoot, ripple, etc.)", examples=['Shoot-look-shoot'])
     track_quality: Optional[str] = Field(default=None, description="Required track quality for guidance", examples=['Fire-control quality track required'])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
@@ -1052,8 +1052,8 @@ class SeekerEntity(BaseModel):
     model_config = ConfigDict(ontology_name="SEEKER", graph_id_fields=['seeker_nomenclature'], identity_scope="document", dodaf_parent="WeaponEntity", is_entity=True)
 
     seeker_nomenclature: str = Field(..., description="Designation or nomenclature of the seeker", examples=['Ka-band active seeker', 'Ku-band semi-active seeker'])
-    seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter")
-    seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker")
+    seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter", examples=["ACTIVE_ARRAY", "PD_SEEKER"])
+    seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker", examples=["DE54321", "DE98765"])
     seeker_type: Optional[str] = Field(default=None, description="Guidance technology used by the seeker", json_schema_extra={"enum": ["ACTIVE_RADAR", "SEMI_ACTIVE_RADAR", "IR", "DUAL_MODE", "ARM", "GPS_INS", "COMMAND"]})
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 

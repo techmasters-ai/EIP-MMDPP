@@ -41,7 +41,6 @@ _HEADING_STYLE_RE = re.compile(
 )
 
 
-@pytest.mark.xfail(strict=False, reason="Chunk B/C will fix — XPASS after C-1 removed reference.py; F-7 drops the marker")
 def test_llm_emitted_identity_examples_not_heading_style():
     """R17, docs:18470 — extraction-view identity examples must not look like raw headings."""
     violations: list[str] = []
