@@ -1904,10 +1904,21 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
 
     Pydantic validation errors are terminal — a malformed response won't
     heal on retry (spec §6.5).
+
+    Phase 8 Task 52: any ``provenance`` list in the response is parsed
+    into ``ExtractionProvenance`` rows and attached to PassResult.
+    Malformed rows (missing instance_id / ontology_name / element_uid)
+    are dropped with a WARNING; the pass still succeeds with the rows
+    that DID parse, because losing some mention rows is a quality
+    degradation, not a correctness failure.
     """
     import importlib
     from pydantic import ValidationError
-    from app.services.extraction_merge import PassResult, ExtractionMetadata
+    from app.services.extraction_merge import (
+        ExtractionMetadata,
+        ExtractionProvenance,
+        PassResult,
+    )
 
     full_module_path = f"ontology_bundles.{manifest.bundle_key}.{pass_def.module}"
     try:
@@ -1926,6 +1937,41 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         raise PassTerminal(f"template validation failed: {exc}") from exc
 
     metadata_dict = response_json.get("metadata", {}) or {}
+
+    provenance_rows: list[ExtractionProvenance] = []
+    for raw in response_json.get("provenance") or []:
+        if not isinstance(raw, dict):
+            logger.warning("_parse_pass_response: dropping non-dict provenance row: %r", raw)
+            continue
+        instance_id = raw.get("instance_id")
+        ontology_name = raw.get("ontology_name")
+        element_uid = raw.get("element_uid")
+        if not (isinstance(instance_id, str) and instance_id
+                and isinstance(ontology_name, str) and ontology_name
+                and isinstance(element_uid, str) and element_uid):
+            logger.warning(
+                "_parse_pass_response: dropping provenance row missing required fields: %r",
+                raw,
+            )
+            continue
+        identity_values = raw.get("identity_values") or {}
+        if not isinstance(identity_values, dict):
+            identity_values = {}
+        page = raw.get("page")
+        if page is not None and not isinstance(page, int):
+            page = None
+        chunk_index = raw.get("chunk_index")
+        if chunk_index is not None and not isinstance(chunk_index, int):
+            chunk_index = None
+        provenance_rows.append(ExtractionProvenance(
+            instance_id=instance_id,
+            ontology_name=ontology_name,
+            identity_values=identity_values,
+            element_uid=element_uid,
+            page=page,
+            chunk_index=chunk_index,
+        ))
+
     return PassResult(
         pass_name=pass_def.name,
         template_instance=template_instance,
@@ -1934,6 +1980,7 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             structured_output_mode=metadata_dict.get("structured_output_mode", "strict"),
         ),
         pre_merge_rejections=[],
+        provenance=provenance_rows,
     )
 
 

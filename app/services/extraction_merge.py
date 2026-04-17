@@ -94,6 +94,30 @@ class ExtractionMetadata:
 
 
 @dataclass
+class ExtractionProvenance:
+    """Worker-side mirror of ``docker/docling-graph/app/schemas.py::ExtractionProvenance``.
+
+    Populated by ``_parse_pass_response`` from the docling-graph service
+    response's ``provenance`` list (Phase 8 Task 51 on the service side;
+    Task 52 on the worker side). Each row carries per-extracted-instance
+    provenance linking the entity back to a source DoclingDocument
+    element, used downstream by ``_serialize_for_audit`` to emit
+    ``mentions[]`` that ``derive_structure_links`` converts to
+    ``EXTRACTED_FROM`` chunk-link edges (Phase 8 Task 53).
+
+    Not frozen — ``identity_values`` is an unhashable dict. Aggregation
+    (Task 52a) dedups by ``instance_id`` (string), not by whole-object
+    equality.
+    """
+    instance_id: str
+    ontology_name: str
+    identity_values: dict[str, Any]
+    element_uid: str
+    page: int | None = None
+    chunk_index: int | None = None
+
+
+@dataclass
 class PreMergeWalkSummary:
     """Shared pre-merge carrier for entity + edge counts (plan Task 34b).
 
@@ -132,6 +156,13 @@ class PassResult:
     # loop (test fixture, or a code path not yet migrated); consumers fall
     # back to walk_entity_graph in entity-only mode.
     pre_merge_walk: "PreMergeWalkSummary | None" = None
+    # Phase 8 Task 52: provenance rows parsed from the docling-graph
+    # response's ``provenance`` list. Each row carries
+    # instance_id / ontology_name / identity_values / element_uid and
+    # optional page / chunk_index. Consumed by Task 52a's aggregation
+    # into MergedEntityRecord.provenance and by Task 53's
+    # _serialize_for_audit mentions[] emission.
+    provenance: list["ExtractionProvenance"] = field(default_factory=list)
     _walker_entities_cache: list[Any] | None = field(default=None, init=False, repr=False)
 
     def _cached_entities(self) -> list[Any]:
