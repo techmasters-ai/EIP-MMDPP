@@ -232,13 +232,50 @@ def _build_pass_outcomes_rollup(session, pipeline_run_id) -> dict:
     return rollup
 
 
-def _serialize_for_audit(merged, manifest) -> dict:
+def _serialize_for_audit(
+    merged,
+    manifest,
+    identity_to_rid: dict | None = None,
+    element_uid_to_artifact_id: dict | None = None,
+) -> dict:
     """Build the DocumentGraphExtraction.graph_json audit blob.
 
     Distinguishes primary vs bridge entities using the manifest's
     bridge_entity_types lists (a type is a bridge iff it appears in
     ANY pass's bridge_entity_types).
+
+    Phase 8 Task 53: emits ``nodes[]``, ``mentions[]`` and the
+    ``element_to_artifact`` map alongside the legacy count summaries.
+
+      * ``nodes[]`` — one entry per MergedEntityRecord with
+        ``{name, entity_type, entity_id, rid, artifact_ids}``.
+        ``entity_id`` = ``record.identity.serialize_as_entity_id()``.
+        ``rid`` comes from the ``identity_to_rid`` map (passed by the
+        caller once phase-2 vertex upserts have resolved identities).
+        ``artifact_ids`` derive from walking ``record.provenance``
+        element_uids through ``element_uid_to_artifact_id``; deduped +
+        sorted for determinism; empty list when no provenance resolves.
+
+      * ``mentions[]`` — one entry per ``ExtractionProvenance`` across
+        every merged record with ``{entity_name, entity_type,
+        entity_id, rid, element_uid, page, chunk_index}``.
+        ``derive_structure_links`` reads this to emit EXTRACTED_FROM
+        chunk-link edges without a second entity_id → rid join.
+
+      * ``element_to_artifact`` — the caller's map, persisted so
+        ``derive_structure_links`` can consume it from the snapshot
+        blob instead of re-querying Postgres. Snapshot-consistency:
+        later reads see the state-at-ingestion, not the live DB.
+
+    Backward-compatible default: when callers don't pass
+    ``identity_to_rid`` / ``element_uid_to_artifact_id`` (legacy call
+    sites, test fixtures), the new keys are still emitted but with
+    empty / None entries — the blob shape stays consistent so
+    downstream readers never hit KeyError.
     """
+    identity_to_rid = identity_to_rid or {}
+    element_uid_to_artifact_id = element_uid_to_artifact_id or {}
+
     bridge_types: set[str] = set()
     for pass_def in manifest.passes:
         bridge_types.update(pass_def.bridge_entity_types or [])
@@ -257,12 +294,54 @@ def _serialize_for_audit(merged, manifest) -> dict:
     edges_accepted = len(merged.edges)
     edges_rejected = len(merged.rejected_edges)
 
-    # Rejection reasons summary
     rejection_reasons: dict[str, int] = {}
     for tup in merged.rejected_edges:
         reason = tup[2]
         reason_val = reason.value if hasattr(reason, "value") else str(reason)
         rejection_reasons[reason_val] = rejection_reasons.get(reason_val, 0) + 1
+
+    # --- Phase 8 Task 53: nodes[] + mentions[] ---
+    nodes: list[dict] = []
+    mentions: list[dict] = []
+    for record in merged.entities:
+        entity_id = record.identity.serialize_as_entity_id()
+        rid = identity_to_rid.get(record.identity)
+
+        artifact_id_set: set[str] = set()
+        for prov in record.provenance:
+            aid = element_uid_to_artifact_id.get(prov.element_uid)
+            if aid:
+                artifact_id_set.add(aid)
+        artifact_ids = sorted(artifact_id_set)
+
+        nodes.append({
+            "name": record.display_label,
+            "entity_type": record.identity.entity_type,
+            "entity_id": entity_id,
+            "rid": rid,
+            "artifact_ids": artifact_ids,
+        })
+
+        for prov in record.provenance:
+            mentions.append({
+                "entity_name": record.display_label,
+                "entity_type": record.identity.entity_type,
+                "entity_id": entity_id,
+                "rid": rid,
+                "element_uid": prov.element_uid,
+                "page": prov.page,
+                "chunk_index": prov.chunk_index,
+                "instance_id": prov.instance_id,
+            })
+
+    audit_blob_size_hint = (
+        len(nodes), len(mentions), len(element_uid_to_artifact_id),
+    )
+    logger.info(
+        "audit_blob_size doc_id=%s nodes=%d mentions=%d element_to_artifact=%d",
+        getattr(merged, "document_id", "?"),
+        audit_blob_size_hint[0], audit_blob_size_hint[1], audit_blob_size_hint[2],
+    )
 
     return {
         "primary_entities_total": primary_total,
@@ -271,7 +350,32 @@ def _serialize_for_audit(merged, manifest) -> dict:
         "edges_accepted": edges_accepted,
         "edges_rejected": edges_rejected,
         "rejection_reasons": rejection_reasons,
+        # Phase 8 additions:
+        "nodes": nodes,
+        "mentions": mentions,
+        "element_to_artifact": dict(element_uid_to_artifact_id),
     }
+
+
+def _build_element_uid_to_artifact_id(db, document_id: str) -> dict[str, str]:
+    """Map every DoclingDocument element_uid to its owning artifact_id.
+
+    DocumentElement is the only model that carries both. Used by
+    _serialize_for_audit to derive ``artifact_ids`` on each node from
+    its provenance element_uids, and by derive_structure_links as a
+    fallback when the audit blob is pre-Phase-8 (legacy).
+
+    Index: DocumentElement carries a UniqueConstraint on
+    (document_id, element_uid) — the filter is a B-tree range scan.
+    """
+    from sqlalchemy import select
+    from app.models.ingest import DocumentElement
+
+    rows = db.execute(
+        select(DocumentElement.element_uid, DocumentElement.artifact_id)
+        .where(DocumentElement.document_id == uuid.UUID(document_id))
+    ).all()
+    return {uid: str(aid) for uid, aid in rows if uid and aid}
 
 
 _DOMAIN_PASS_NAMES: frozenset[str] = frozenset({
@@ -1077,13 +1181,18 @@ def _upsert_document_graph_extraction(
     run,
     merged,
     manifest,
+    identity_to_rid: dict | None = None,
+    element_uid_to_artifact_id: dict | None = None,
 ) -> None:
     """Writes the DocumentGraphExtraction snapshot row per spec §5.7.
 
-    graph_json now carries an audit blob (entity/edge counts by type,
-    rejection reasons, primary vs bridge totals) rather than a serialised
-    NetworkX graph. Accepts manifest so _serialize_for_audit can distinguish
-    primary from bridge entities using pass_def.bridge_entity_types lists.
+    graph_json carries the audit blob (per Phase 8 Task 53: counts,
+    rejection reasons, ``nodes[]`` with entity_id/rid/artifact_ids,
+    ``mentions[]`` with element_uid+entity_id, ``element_to_artifact``
+    map). ``identity_to_rid`` + ``element_uid_to_artifact_id`` are
+    passed from the caller — the serializer uses them to stamp rid +
+    artifact_ids on each node/mention. Default None keeps older test
+    call sites working (they get empty-rid/empty-artifact-id blobs).
 
     Upserts: queries by document_id; inserts a new row if none exists,
     otherwise updates the existing row in place.
@@ -1091,7 +1200,9 @@ def _upsert_document_graph_extraction(
     import datetime
     from app.models.ingest import DocumentGraphExtraction
 
-    audit_blob = _serialize_for_audit(merged, manifest)
+    audit_blob = _serialize_for_audit(
+        merged, manifest, identity_to_rid, element_uid_to_artifact_id,
+    )
 
     with get_sync_session() as session:
         existing = (
@@ -4435,12 +4546,34 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
             extraction_profile_version=getattr(manifest, "extraction_profile_version", None),
         )
 
+        # Phase 8 Task 53: build element_uid → artifact_id map once and
+        # persist into the audit blob so derive_structure_links can
+        # read from the snapshot instead of re-querying Postgres
+        # (snapshot-consistency contract: the audit blob is the
+        # ingestion's view-of-the-world).
+        element_uid_to_artifact_id: dict[str, str] = {}
+        try:
+            db_elem = _get_db()
+            try:
+                element_uid_to_artifact_id = _build_element_uid_to_artifact_id(
+                    db_elem, run_document_id,
+                )
+            finally:
+                db_elem.close()
+        except Exception as exc:
+            logger.warning(
+                "derive_ontology_graph: element_uid_to_artifact_id build failed for %s: %s",
+                run_document_id, exc,
+            )
+
         _upsert_document_graph_extraction(
             document_id=run_document_id,
             pipeline_run_id=pipeline_run_id,
             run=run_snapshot,
             merged=merged,
             manifest=manifest,
+            identity_to_rid=identity_to_rid,
+            element_uid_to_artifact_id=element_uid_to_artifact_id,
         )
 
         # Success terminalization

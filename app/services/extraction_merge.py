@@ -81,6 +81,49 @@ class LogicalIdentity:
             d["document_id"] = self.document_id
         return d
 
+    def serialize_as_entity_id(self) -> str:
+        """Canonical stable string for this identity (Phase 8 Task 52b).
+
+        Format: ``v1::{entity_type}::{k1}={v1!r}|{k2}={v2!r}|...[|__doc__={document_id}]``
+
+          * Leading ``v1`` is the format-schema version. Future format
+            changes bump to ``v2`` and coexist with v1-persisted entity_ids
+            during migration. Readers seeing v1 strings under a v2 code
+            base must use a pinned v1 parser — no data surgery required.
+          * Identity fields appear in declared ``identity_field_names``
+            order (matches the canonical tuple order used everywhere else).
+          * Values use ``repr()`` so strings containing ``"::"`` or
+            ``"|"`` round-trip without colliding with the format's
+            delimiters; ints/None/etc. remain unambiguous.
+          * Document-scoped identities append ``__doc__={document_id}``
+            so the same identity tuple in different documents produces
+            distinct entity_ids.
+
+        Used by ``_serialize_for_audit`` (Task 53) for both ``nodes[]``
+        and ``mentions[]``, by ``derive_structure_links`` fallback
+        suppression (Task 53b), and by persisted ``EntityChunkEdge``
+        rows. Single canonical surface — no inline f-strings inventing
+        the format at individual call sites.
+
+        **Write-only contract — do not parse.** This is a stable opaque
+        string for comparison and edge-property persistence. If a
+        consumer needs ``(entity_type, identity_tuple)`` back, it must
+        join against the audit blob's ``nodes[]`` entries (which carry
+        the fields separately). Versioning the format (the ``v1::``
+        prefix) anticipates future format changes; a parser would
+        couple consumers to a specific version and invert the point
+        of the canonical helper.
+        """
+        parts = [
+            f"{k}={v!r}"
+            for k, v in zip(
+                self.identity_field_names, self.identity_tuple, strict=True,
+            )
+        ]
+        if self.scope == "document" and self.document_id is not None:
+            parts.append(f"__doc__={self.document_id}")
+        return f"v1::{self.entity_type}::{'|'.join(parts)}"
+
 
 # ---------------------------------------------------------------------------
 # ExtractionMetadata + PassResult
