@@ -175,77 +175,97 @@
     {
       "id": "B-3",
       "subject": "DOCUMENT identity=document_number",
-      "status": "pending"
+      "status": "completed",
+      "commit": "2e0d184"
     },
     {
       "id": "B-4",
       "subject": "SECTION identity=section_number",
-      "status": "pending"
+      "status": "completed",
+      "commit": "567ccf8"
     },
     {
       "id": "B-5",
       "subject": "FIGURE identity=figure_ref",
-      "status": "pending"
+      "status": "completed",
+      "commit": "f62f078"
     },
     {
       "id": "B-6",
       "subject": "TABLE identity=table_ref",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e0c0c7d"
     },
     {
       "id": "B-7",
       "subject": "ORGANIZATION identity=name",
-      "status": "pending"
+      "status": "completed",
+      "commit": "535af87"
     },
     {
       "id": "B-8",
       "subject": "STANDARD identity=designation",
-      "status": "pending"
+      "status": "completed",
+      "commit": "f91ca8e"
     },
     {
       "id": "B-9",
       "subject": "EQUIPMENT_SYSTEM identity=name",
-      "status": "pending"
+      "status": "completed",
+      "commit": "1db9ae0"
     },
     {
       "id": "B-10",
       "subject": "COMPONENT identity=part_number",
-      "status": "pending"
+      "status": "completed",
+      "commit": "15beb10"
     },
     {
       "id": "B-11",
       "subject": "ASSEMBLY identity=assembly_number",
-      "status": "pending"
+      "status": "completed",
+      "commit": "aafe5c1"
     },
     {
       "id": "B-12",
       "subject": "CAPABILITY identity=capability_name",
-      "status": "pending"
+      "status": "completed",
+      "commit": "6a8183e"
     },
     {
       "id": "B-13",
       "subject": "PROCEDURE identity=name (document)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "8509ab7",
+      "notes": "Bundled with B-14..B-17 in a single commit (identical mechanical shape)."
     },
     {
       "id": "B-14",
       "subject": "FAILURE_MODE identity=name (document)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "8509ab7",
+      "notes": "Bundled with B-13/B-15/B-16/B-17."
     },
     {
       "id": "B-15",
       "subject": "TEST_EVENT identity=name",
-      "status": "pending"
+      "status": "completed",
+      "commit": "8509ab7",
+      "notes": "Bundled with B-13/B-14/B-16/B-17."
     },
     {
       "id": "B-16",
       "subject": "FORCE_STRUCTURE identity=name",
-      "status": "pending"
+      "status": "completed",
+      "commit": "8509ab7",
+      "notes": "Bundled with B-13/B-14/B-15/B-17."
     },
     {
       "id": "B-17",
       "subject": "SUBSYSTEM identity=name (document)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "8509ab7",
+      "notes": "Bundled with B-13/B-14/B-15/B-16."
     },
     {
       "id": "B-18",
@@ -507,5 +527,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T02:15:00.000000+00:00"
+  "lastUpdated": "2026-04-17T03:15:00.000000+00:00"
 }
