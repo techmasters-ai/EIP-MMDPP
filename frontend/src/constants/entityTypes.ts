@@ -20,7 +20,7 @@ export const OPERATIONAL_TYPES = [
 ] as const;
 
 export const REFERENCE_TYPES = [
-  "Organization", "Document", "Assertion",
+  "Organization", "Document",
 ] as const;
 
 /** Map entity type to category string for CSS class. */
