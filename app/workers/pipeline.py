@@ -4541,6 +4541,10 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                         settings.retrieval_weight_same_page,
                     )
 
+        # SAME_SECTION is chunk-to-chunk; SECTION vertices are written by
+        # derive_document_anchors (spec §3.4). Here we only link TextChunks
+        # that share the same `section_path` string — no SECTION-vertex
+        # attachment is produced (that would require a new structural edge).
         # SAME_SECTION links — neighbor-only (prev/next by position) to avoid O(n²)
         section_chunks: dict[str, list] = {}
         for tc in text_chunks:
