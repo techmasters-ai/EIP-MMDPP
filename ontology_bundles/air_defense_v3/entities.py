@@ -749,9 +749,9 @@ class SpecificationEntity(BaseModel):
 class StandardEntity(BaseModel):
     """Standard / Specification Document — Reference standard (MIL-STD, MIL-DTL, etc.)
     """
-    model_config = ConfigDict(ontology_name="STANDARD", graph_id_fields=[], identity_scope="global", dodaf_parent="DocumentResource", is_entity=True)
+    model_config = ConfigDict(ontology_name="STANDARD", graph_id_fields=["designation"], identity_scope="global", dodaf_parent="DocumentResource", is_entity=True)
 
-    designation: Optional[str] = Field(default=None, description="Official standard designation number (e.g. MIL-STD-1553B)", examples=['MIL-STD-1553B'], pattern='^MIL-[A-Z]+-\\d+[A-Z]?')
+    designation: str = Field(..., description="Official standard designation (docs:17235 R16-compliant identity)", examples=['MIL-STD-1553B', 'MIL-DTL-31000G', 'MIL-STD-810H'], pattern='^MIL-[A-Z]+-\\d+[A-Z]?')
     title: Optional[str] = Field(default=None, description="Full title of the standard document", examples=['Digital Time Division Command/Response Multiplex Data Bus'])
     issuing_org: Optional[str] = Field(default=None, description="Organization that published the standard", examples=['Department of Defense'])
     version: Optional[str] = Field(default=None, description="Revision letter or version number", examples=['B'])

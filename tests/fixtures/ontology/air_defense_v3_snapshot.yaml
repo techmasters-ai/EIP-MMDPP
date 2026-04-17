@@ -688,12 +688,14 @@ entity_types:
 
   - name: STANDARD
     label: "Standard / Specification Document"
+    identity_fields: [designation]
+    identity_scope: global
     description: "Reference standard (MIL-STD, MIL-DTL, etc.)"
     parent: DocumentResource
     properties:
       type: object
       properties:
-        designation: {type: string, description: "Official standard designation number (e.g. MIL-STD-1553B)", example: "MIL-STD-1553B", pattern: "^MIL-[A-Z]+-\\d+[A-Z]?"}
+        designation: {type: string, description: "Official standard designation (docs:17235 R16-compliant identity)", example: "MIL-STD-1553B", pattern: "^MIL-[A-Z]+-\\d+[A-Z]?"}
         title: {type: string, description: "Full title of the standard document", example: "Digital Time Division Command/Response Multiplex Data Bus"}
         issuing_org: {type: string, description: "Organization that published the standard", example: "Department of Defense"}
         version: {type: string, description: "Revision letter or version number", example: "B"}
