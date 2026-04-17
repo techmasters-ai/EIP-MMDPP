@@ -110,11 +110,13 @@ class FigureEntity(BaseModel):
 class TableEntity(BaseModel):
     """Table — A data table within a document
     """
-    model_config = ConfigDict(ontology_name="TABLE", graph_id_fields=['table_id', 'page'], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
+    model_config = ConfigDict(ontology_name="TABLE", graph_id_fields=["table_ref"], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
 
-    table_id: str = Field(..., description="Table number or identifier within the document", examples=['Table 4-1', 'Table 4-1'])
+    table_ref: str = Field(..., description="Document-scoped table reference (docs:17235 R16-compliant identity)", examples=['Table 4-1', 'Tbl. 2.3', 'Table A-2'])
+    table_label: Optional[str] = Field(default=None, description="Human-friendly table label or short title", examples=['Frequency Parameters'])
+    document_id: Optional[str] = Field(default=None, description="Internal document UUID this table belongs to")
     caption: Optional[str] = Field(default=None, description="Table caption or title", examples=['Radar System Frequency Parameters'])
-    page: int = Field(..., description="Page number where the table appears", examples=[78, 78])
+    page: Optional[int] = Field(default=None, description="Page number where the table appears", examples=[78])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 # ----------------------------------------------------------------------

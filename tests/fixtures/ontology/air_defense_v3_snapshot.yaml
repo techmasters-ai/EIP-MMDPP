@@ -74,14 +74,16 @@ entity_types:
 
   - name: TABLE
     label: "Table"
-    identity_fields: [table_id, page]
+    identity_fields: [table_ref]
     identity_scope: document
     description: "A data table within a document"
     parent: DocumentResource
     properties:
       type: object
       properties:
-        table_id: {type: string, description: "Table number or identifier within the document", example: "Table 4-1"}
+        table_ref: {type: string, description: "Document-scoped table reference (docs:17235 R16-compliant identity)", example: "Table 4-1"}
+        table_label: {type: string, description: "Human-friendly table label or short title", example: "Frequency Parameters"}
+        document_id: {type: string, description: "Internal document UUID this table belongs to"}
         caption: {type: string, description: "Table caption or title", example: "Radar System Frequency Parameters"}
         page: {type: integer, description: "Page number where the table appears", example: 78}
 

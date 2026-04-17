@@ -228,30 +228,39 @@ class FigureEntity(BaseModel):
 class TableEntity(BaseModel):
     """Table — narrow extraction view of canonical TABLE.
 
-    Identity: ``table_id`` + ``page`` (document-scoped).
+    Identity: ``table_ref`` (document-scoped, docs:17235 R16).
     """
     model_config = ConfigDict(
         extra="ignore",
         ontology_name="TABLE",
-        graph_id_fields=["table_id", "page"],
+        graph_id_fields=["table_ref"],
         identity_scope="document",
         is_entity=True,
     )
 
-    table_id: str = Field(
+    table_ref: str = Field(
         ...,
-        description="Table number or identifier within the document",
-        examples=["Table 4-1", "Table 4-1"],
+        description="Document-scoped table reference (docs:17235 R16-compliant identity)",
+        examples=["Table 4-1", "Tbl. 2.3", "Table A-2"],
     )
-    page: int = Field(
-        ...,
-        description="Page number where the table appears",
-        examples=[78, 78],
+    table_label: Optional[str] = Field(
+        default=None,
+        description="Human-friendly table label or short title",
+        examples=["Frequency Parameters"],
+    )
+    document_id: Optional[str] = Field(
+        default=None,
+        description="Internal document UUID this table belongs to",
     )
     caption: Optional[str] = Field(
         default=None,
         description="Table caption or title",
         examples=["Radar System Frequency Parameters"],
+    )
+    page: Optional[int] = Field(
+        default=None,
+        description="Page number where the table appears",
+        examples=[78],
     )
     confidence: Optional[float] = Field(
         default=None,
