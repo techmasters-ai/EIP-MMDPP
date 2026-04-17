@@ -2023,9 +2023,17 @@ class ArcadeDBGraphStore:
 
         Deleted:
           - Document-scoped extracted entity vertices (SECTION, FIGURE, TABLE,
-            ASSERTION, WAVEFORM, ANTENNA, TRANSMITTER, RECEIVER,
-            SIGNAL_PROCESSING_CHAIN, SEEKER, PROPULSION_STACK, SPECIFICATION —
-            per ontology.yaml identity_scope='document')
+            WAVEFORM, ANTENNA, TRANSMITTER, RECEIVER, SIGNAL_PROCESSING_CHAIN,
+            SEEKER, SPECIFICATION, PROCEDURE, FAILURE_MODE, TEST_EVENT,
+            FORCE_STRUCTURE, SUBSYSTEM, COMPONENT, ASSEMBLY, CAPABILITY, and
+            the is_entity=False components such as MODULATION, RF_SIGNATURE,
+            RF_EMISSION, SCAN_PATTERN, IF_AMPLIFIER, PROPULSION_STACK,
+            MISSILE_PERFORMANCE, MISSILE_PHYSICAL_CHARACTERISTICS,
+            PROPULSION_STAGE, RADAR_PERFORMANCE, ENGAGEMENT_TIMELINE — per
+            model_config identity_scope='document'; ASSERTION was dropped
+            in B-1). The concrete list is sourced at runtime from the
+            active ontology so new/retired entities are picked up without
+            edits here.
           - Domain edges via ``document_ids CONTAINS :doc_id`` — removes this
             doc_id from the list, then prunes edges whose list is now empty.
             (Mirrors _build_delete_document_graph_sql; covers MENTIONED_IN
