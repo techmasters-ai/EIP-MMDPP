@@ -571,7 +571,7 @@ entity_types:
     label: "Propulsion Stack"
     identity_fields: []
     identity_scope: document
-    description: "Complete missile propulsion system (may contain multiple stages)"
+    description: "Complete missile propulsion system (value-object component per spec §4.8)."
     parent: WeaponEntity
     properties:
       type: object

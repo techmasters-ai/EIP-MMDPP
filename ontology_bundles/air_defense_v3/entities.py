@@ -403,7 +403,7 @@ class FrequencyBandEntity(BaseModel):
 class ModulationEntity(BaseModel):
     """Modulation — Intra-pulse or inter-pulse modulation characteristics
     """
-    model_config = ConfigDict(ontology_name="MODULATION", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="MODULATION", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=False)
 
     name: Optional[str] = Field(default=None, description="Name or identifier of the modulation scheme", examples=['LFM Up-Chirp'])
     intra_pulse_modulation: Optional[str] = Field(default=None, description="Type of modulation within each pulse", examples=['Linear FM (up-chirp)'])
@@ -418,7 +418,7 @@ class ModulationEntity(BaseModel):
 class RfSignatureEntity(BaseModel):
     """RF Signature — Composite RF fingerprint for emitter identification
     """
-    model_config = ConfigDict(ontology_name="RF_SIGNATURE", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="RF_SIGNATURE", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=False)
 
     name: Optional[str] = Field(default=None, description="Name or identifier for the RF signature", examples=['Tombstone Track Signature'])
     nominal_RF: Optional[str] = Field(default=None, description="Nominal radio frequency", examples=['9.4 GHz'])
@@ -436,7 +436,7 @@ class RfSignatureEntity(BaseModel):
 class RfEmissionEntity(BaseModel):
     """RF Emission — Observed or catalogued RF emission with power and spectral characteristics
     """
-    model_config = ConfigDict(ontology_name="RF_EMISSION", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="RF_EMISSION", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=False)
 
     name: Optional[str] = Field(default=None, description="Name or identifier of the RF emission", examples=['Tombstone Search Mode'])
     emitter_id: Optional[str] = Field(default=None, description="Unique emitter identifier from ELINT database")
@@ -448,7 +448,6 @@ class RfEmissionEntity(BaseModel):
     polarization: Optional[str] = Field(default=None, description="Polarization of the transmitted signal", examples=['Linear vertical'])
     radome_loss_db: Optional[float] = Field(default=None, description="Signal loss through the radome in dB", examples=[0.5])
     total_system_losses_db: Optional[float] = Field(default=None, description="Total system losses from transmitter to antenna in dB", examples=[3.2])
-    rf_signatures: List["RfSignatureEntity"] = edge(label="HAS_SIGNATURE", default_factory=list)
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class WaveformEntity(BaseModel):
@@ -471,7 +470,7 @@ class WaveformEntity(BaseModel):
 class ScanPatternEntity(BaseModel):
     """Scan Pattern — Antenna scan type and timing
     """
-    model_config = ConfigDict(ontology_name="SCAN_PATTERN", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="SCAN_PATTERN", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=False)
 
     scan_type: Optional[str] = Field(default=None, description="Type of antenna scan pattern", examples=['Conical scan'])
     scan_period_limits: Optional[str] = Field(default=None, description="Scan period range limits (min-max)", examples=['2-6 s'])
@@ -543,11 +542,10 @@ class ReceiverEntity(BaseModel):
 class IfAmplifierEntity(BaseModel):
     """IF Amplifier — Intermediate frequency amplifier stage
     """
-    model_config = ConfigDict(ontology_name="IF_AMPLIFIER", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="IF_AMPLIFIER", graph_id_fields=[], identity_scope="global", dodaf_parent="EMEntity", is_entity=False)
 
     stage_number: Optional[int] = Field(default=None, description="Stage number in the IF amplifier chain", examples=[1])
     bandwidth_3db_mhz: Optional[float] = Field(default=None, description="3 dB bandwidth of the IF stage in MHz", examples=[5.0])
-    receivers: List["ReceiverEntity"] = edge(label="PART_OF", default_factory=list)
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SignalProcessingChainEntity(BaseModel):
@@ -607,7 +605,7 @@ class SeekerEntity(BaseModel):
 class MissilePerformanceEntity(BaseModel):
     """Missile Performance — Missile kinematic and engagement performance envelope
     """
-    model_config = ConfigDict(ontology_name="MISSILE_PERFORMANCE", graph_id_fields=[], identity_scope="global", dodaf_parent="WeaponEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="MISSILE_PERFORMANCE", graph_id_fields=[], identity_scope="global", dodaf_parent="WeaponEntity", is_entity=False)
 
     maximum_range_km: Optional[float] = Field(default=None, description="Maximum engagement range in kilometers", examples=[160])
     minimum_range_km: Optional[float] = Field(default=None, description="Minimum engagement range in kilometers", examples=[3])
@@ -633,7 +631,7 @@ class MissilePerformanceEntity(BaseModel):
 class MissilePhysicalCharacteristicsEntity(BaseModel):
     """Missile Physical Characteristics — Missile body dimensions and mass
     """
-    model_config = ConfigDict(ontology_name="MISSILE_PHYSICAL_CHARACTERISTICS", graph_id_fields=[], identity_scope="global", dodaf_parent="WeaponEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="MISSILE_PHYSICAL_CHARACTERISTICS", graph_id_fields=[], identity_scope="global", dodaf_parent="WeaponEntity", is_entity=False)
 
     body_diameter_m: Optional[float] = Field(default=None, description="Missile body diameter in meters", examples=[0.255])
     overall_length_m: Optional[float] = Field(default=None, description="Overall missile length in meters", examples=[5.2])
@@ -641,22 +639,20 @@ class MissilePhysicalCharacteristicsEntity(BaseModel):
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class PropulsionStackEntity(BaseModel):
-    """Propulsion Stack — Complete missile propulsion system (may contain multiple stages)
+    """Propulsion Stack — Complete missile propulsion system (value-object component per spec §4.8).
 
-    KNOWN ANTI-PATTERN: ``PROPULSION_STACK.graph_id_fields = []``. Every instance is a distinct node;
-    cannot dedup by logical identity. Flagged for Plan 2 cleanup.
+    B-26 resolved the prior graph_id_fields=[] anti-pattern by demoting to
+    is_entity=False — content-based identity replaces instance-per-node.
     """
-    model_config = ConfigDict(ontology_name="PROPULSION_STACK", graph_id_fields=[], identity_scope="document", dodaf_parent="WeaponEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="PROPULSION_STACK", graph_id_fields=[], identity_scope="document", dodaf_parent="WeaponEntity", is_entity=False)
 
     total_burntime_s: Optional[float] = Field(default=None, description="Total burn time across all propulsion stages in seconds", examples=[25])
-    propulsion_stages: List["PropulsionStageEntity"] = edge(label="CONTAINS", default_factory=list)
-    propulsion_stages: List["PropulsionStageEntity"] = edge(label="HAS_STAGE", default_factory=list)
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class PropulsionStageEntity(BaseModel):
     """Propulsion Stage — Individual propulsion stage (ejector, booster, sustainer)
     """
-    model_config = ConfigDict(ontology_name="PROPULSION_STAGE", graph_id_fields=[], identity_scope="global", dodaf_parent="WeaponEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="PROPULSION_STAGE", graph_id_fields=[], identity_scope="global", dodaf_parent="WeaponEntity", is_entity=False)
 
     stage_type: Optional[str] = Field(default=None, description="Type of propulsion stage", json_schema_extra={"enum": ["EJECTOR", "BOOSTER", "SUSTAINER"]})
     burn_time_s: Optional[float] = Field(default=None, description="Burn time of the stage in seconds", examples=[12])
@@ -684,7 +680,7 @@ class CapabilityEntity(BaseModel):
 class RadarPerformanceEntity(BaseModel):
     """Radar Performance — Radar detection, range, and velocity performance envelope
     """
-    model_config = ConfigDict(ontology_name="RADAR_PERFORMANCE", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="RADAR_PERFORMANCE", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=False)
 
     max_detection_range_1sqm_km: Optional[float] = Field(default=None, description="Maximum detection range against a 1 m^2 RCS target in km", examples=[300])
     min_effective_range_km: Optional[float] = Field(default=None, description="Minimum effective detection range in km", examples=[3])
@@ -701,7 +697,7 @@ class RadarPerformanceEntity(BaseModel):
 class EngagementTimelineEntity(BaseModel):
     """Engagement Timeline — Time sequence from detection through engagement
     """
-    model_config = ConfigDict(ontology_name="ENGAGEMENT_TIMELINE", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="ENGAGEMENT_TIMELINE", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=False)
 
     detection_to_designate_time_s: Optional[float] = Field(default=None, description="Time from first detection to target designation in seconds", examples=[4])
     designation_to_launch_time_s: Optional[float] = Field(default=None, description="Time from designation to missile launch in seconds", examples=[8])

@@ -182,15 +182,16 @@ class SeekerEntity(BaseModel):
 class PropulsionStackEntity(BaseModel):
     """Propulsion Stack — narrow view of canonical PROPULSION_STACK.
 
-    KNOWN ANTI-PATTERN: ``graph_id_fields=[]`` (empty). Every instance is
-    a distinct node; cannot dedup by logical identity. Flagged for Plan 2.
+    B-26: value-object component (is_entity=False) per spec §4.8 — the
+    prior graph_id_fields=[] anti-pattern resolves via content-based
+    identity through the walker (A0-1).
     """
     model_config = ConfigDict(
         extra="ignore",
         ontology_name="PROPULSION_STACK",
         graph_id_fields=[],
         identity_scope="document",
-        is_entity=True,
+        is_entity=False,
     )
 
     total_burntime_s: Optional[float] = Field(

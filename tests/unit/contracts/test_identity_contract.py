@@ -14,7 +14,6 @@ from pydantic_core import PydanticUndefined
 from ontology_bundles.air_defense_v3.entities import ALL_ENTITIES
 
 
-@pytest.mark.xfail(strict=True, reason="Chunk B will fix")
 def test_entity_has_identity_or_is_component():
     for name, cls in ALL_ENTITIES.items():
         cfg = getattr(cls, "model_config", {}) or {}
