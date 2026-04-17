@@ -75,3 +75,29 @@ def dg_app_module():
     """Load the docling-graph app module once per test module."""
     _ensure_dg_app_package()
     return sys.modules[_DG_MODULE_NAME]
+
+
+@pytest.fixture(scope="module")
+def dg_schemas():
+    """Load the docling-graph app/schemas.py under the same sys.path
+    swap used for main. Returns the schemas module directly so tests
+    can do ``dg_schemas.ExtractionProvenance(...)``.
+
+    Loaded by reusing main's side-effect import (main imports from
+    app.schemas), which leaves docling-graph's ``app.schemas`` in
+    sys.modules under the ``docling_graph_service_main`` swap's
+    cleanup. We fetch it from main's namespace.
+    """
+    _ensure_dg_app_package()
+    main_mod = sys.modules[_DG_MODULE_NAME]
+    # main.py does `from app.schemas import ExtractPassResponse, ...`
+    # so we expose a shim that re-imports via the service-root path.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "docling_graph_service_schemas",
+        _DG_SERVICE_ROOT / "app" / "schemas.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod

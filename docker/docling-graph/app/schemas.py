@@ -66,6 +66,63 @@ class ExtractPassRequest(BaseModel):
     )
 
 
+class ExtractionProvenance(BaseModel):
+    """Per-extracted-entity-instance provenance link to a source DoclingDocument element.
+
+    Additive payload attached to ExtractPassResponse — does not change
+    ``pass_output``. Consumers that don't read provenance ignore this
+    field.
+
+    ``instance_id`` disambiguates distinct extracted instances that
+    happen to share the same identity tuple (same ``ontology_name`` +
+    ``identity_values``). This matters for:
+      * Same-identity duplicates: two separate extractions with the same
+        identity don't collapse to one provenance bucket.
+      * Empty-identity entities (e.g. PROPULSION_STACK with empty
+        ``graph_id_fields``): every instance is separately trackable
+        even though logical identity is an empty tuple.
+
+    Downstream merge-preserving dedup (worker-side Task 52a) unions
+    provenance by instance_id, not by identity, so information is
+    retained even when identities collapse.
+
+    ``element_uid`` is REQUIRED (plan §8 Task 51 strengthened contract).
+    The downstream ``derive_structure_links`` mention path at
+    ``pipeline.py:4347`` resolves chunks exclusively via ``element_uid``;
+    a provenance row with only ``page`` produces zero mention-based
+    edges AND cannot be used to compute ``artifact_ids`` for fallback.
+    The service drops nodes whose ``element_uid`` cannot be resolved
+    (Task 51 Step 3); they never reach this schema.
+    """
+    instance_id: str = Field(
+        ..., description="Unique id per extracted instance in this response (e.g. UUID)."
+    )
+    ontology_name: str = Field(
+        ..., description="Canonical entity_type name (e.g. RADAR_SYSTEM)."
+    )
+    identity_values: dict[str, Any] = Field(
+        ...,
+        description="Field-name → value for the entity's graph_id_fields (may be empty).",
+    )
+    element_uid: str = Field(
+        ...,
+        description=(
+            "DoclingDocument element where the entity was extracted. "
+            "REQUIRED for chunk-linking; rows without element_uid cannot "
+            "produce mentions and are dropped by the worker before "
+            "provenance aggregation (Task 52)."
+        ),
+    )
+    page: Optional[int] = Field(
+        None,
+        description=(
+            "Observational secondary field. NOT sufficient on its own "
+            "for chunk linking — element_uid is the authoritative handle."
+        ),
+    )
+    chunk_index: Optional[int] = Field(None)
+
+
 class ExtractPassResponse(BaseModel):
     """Response body for POST /extract-pass. Spec §5.9 wire contract.
 
@@ -80,3 +137,23 @@ class ExtractPassResponse(BaseModel):
     metadata: ExtractionMetadata = Field(default_factory=ExtractionMetadata)
     model: str = "unknown"
     provider: str = "docling-graph"
+    provenance: list[ExtractionProvenance] = Field(
+        default_factory=list,
+        description=(
+            "Additive payload: per-extracted-instance provenance links "
+            "to DoclingDocument elements. Empty by default; populated "
+            "by the /extract-pass handler when the service can resolve "
+            "element_uid per node in context.knowledge_graph."
+        ),
+    )
+
+
+# Resolve forward references in the module namespace so the classes
+# remain instantiable when loaded via importlib under a non-standard
+# module name (the docling-graph test conftest loads this file as
+# ``docling_graph_service_schemas`` to sidestep the repo-root ``app/``
+# package). Without this rebuild, ``from __future__ import annotations``
+# leaves ``Any`` / ``Optional`` / ``ExtractionProvenance`` as strings
+# that pydantic cannot resolve in the alt-module namespace.
+ExtractionProvenance.model_rebuild()
+ExtractPassResponse.model_rebuild()
