@@ -65,8 +65,8 @@ def _make_pass(
     rels=None,
     depends_on=None,
     input_mode="document_only",
-    module="extraction_schemas.reference",
-    template_class="ReferencePass",
+    module="extraction_schemas.radar_domain",
+    template_class="RadarDomainPass",
 ):
     return {
         "name": name,

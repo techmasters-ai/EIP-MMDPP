@@ -410,13 +410,15 @@ def test_descriptions_and_examples_on_extraction_relevant_fields():
 def test_pass_root_list_dedup_schema_local():
     """Pass-root list fields of entity classes with non-empty graph_id_fields
     must have a Pydantic model_validator that deduplicates by identity and
-    preserves non-null fields across duplicates."""
-    # Load the five pass-root classes directly — they're the canonical roots.
+    preserves non-null fields across duplicates.
+
+    Post-C-1/C-2: the `reference` pass was deleted; only 4 pass roots
+    remain in the bundle.
+    """
     from ontology_bundles.air_defense_v3.extraction_schemas import (
-        reference, radar_domain, missile_domain, other_systems, system_links,
+        radar_domain, missile_domain, other_systems, system_links,
     )
     pass_roots = [
-        reference.ReferencePass,
         radar_domain.RadarDomainPass,
         missile_domain.MissileDomainPass,
         other_systems.OtherSystemsPass,

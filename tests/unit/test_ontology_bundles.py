@@ -2,15 +2,20 @@
 import pytest
 
 
-def test_load_bundle_manifest_returns_five_passes():
-    """Happy path: parses manifest.yaml into a BundleManifest with 5 passes."""
+def test_load_bundle_manifest_returns_four_passes():
+    """Happy path: parses manifest.yaml into a BundleManifest with 4 passes.
+
+    Post-C-2: the `reference` pass was deleted (replaced by the
+    deterministic Docling anchor walker / derive_document_anchors
+    Celery task in D-3/D-4). Only domain passes + system_links remain.
+    """
     from app.services.ontology_bundles import load_bundle_manifest, BundleManifest
     m = load_bundle_manifest("air_defense_v3")
     assert isinstance(m, BundleManifest)
     assert m.bundle_key == "air_defense_v3"
-    assert len(m.passes) == 5
+    assert len(m.passes) == 4
     assert {p.name for p in m.passes} == {
-        "reference", "radar_domain", "missile_domain", "other_systems", "system_links",
+        "radar_domain", "missile_domain", "other_systems", "system_links",
     }
 
 
@@ -26,8 +31,8 @@ def test_load_bundle_manifest_populates_pass_metadata():
     assert radar.input_mode == "document_only"
     assert "PLATFORM" in radar.bridge_entity_types
     assert "RADAR_SYSTEM" in radar.primary_entity_types
-    # Reference pass must remain required — every doc has structural elements.
-    assert m.find_pass("reference").required is True
+    # system_links must remain required — cross-pass linking is critical.
+    assert m.find_pass("system_links").required is True
 
 
 def test_resolve_bundle_key_precedence_run_wins():
