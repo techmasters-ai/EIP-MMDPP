@@ -5,17 +5,6 @@ ontology_version: "3.0.0"
 extraction_profile_version: "1.0.0"
 
 passes:
-  - name: reference
-    required: true
-    kind: entities
-    input_mode: document_only
-    module: extraction_schemas.reference
-    template_class: ReferencePass
-    primary_entity_types: [SECTION, FIGURE, TABLE]
-    bridge_entity_types: []
-    extracted_relationship_types: []
-    depends_on: []
-
   - name: radar_domain
     # Non-required: mixed-corpus documents (e.g. handwritten notes, non-radar
     # papers) legitimately have no radar content. When the LLM returns empty
