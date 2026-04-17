@@ -279,52 +279,57 @@ _DOMAIN_PASS_NAMES: frozenset[str] = frozenset({
 })
 
 
-def _classify_extraction_quality(pass_outcomes: dict) -> str:
-    """Three-state extraction-quality aggregate over per-pass outcomes.
+def _classify_extraction_quality(
+    pass_outcomes: dict,
+    section_count: int,
+    text_chunk_count: int,
+) -> str:
+    """Three-state extraction-quality aggregate (spec §6.8).
 
-    Plan Task 52. Runs AFTER per-pass classify_yield has already moved
-    each StageRun row through its HIT / EMPTY / BRIDGES_ONLY / DEGRADED
-    life cycle (including post-merge updates via
-    _apply_post_merge_yield_updates). Returns one of:
+    Post-C-1/C-2 rewrite: the LLM `reference` pass was deleted and the
+    deterministic Docling anchor walker (D-3/D-4) now emits SECTION
+    vertices directly. "degraded" is therefore anchored on the *graph*
+    signal (SECTION vertices + TextChunks exist) rather than a
+    pass-level reference HIT.
 
-    - ``"ok"``       — at least one domain pass achieved HIT.
-    - ``"degraded"`` — reference pass HIT (document structure
-                       extracted) but every domain pass is non-HIT.
-                       Distinctive signal for "real document, but not a
-                       SAM/radar artefact".
-    - ``"anomaly"``  — no pass achieved HIT. Likely a processing
-                       failure or an entirely off-topic document.
-
-    An empty outcomes dict (no per-pass rows present) returns
-    ``"anomaly"`` as the conservative default.
+    States:
+      - ``"ok"``       — at least one domain pass (radar / missile /
+                         other_systems / system_links) achieved HIT.
+      - ``"degraded"`` — no domain HIT, but the document produced at
+                         least one SECTION vertex AND at least one
+                         TextChunk. Signals "real document processed
+                         all the way through anchor derivation and
+                         chunking, but nothing matched the SAM/radar
+                         ontology".
+      - ``"anomaly"``  — no domain HIT AND either no SECTION vertices
+                         or no TextChunks. Processing broke somewhere
+                         upstream of the ontology passes, or the
+                         document is entirely unprocessable.
     """
-    if not pass_outcomes:
-        return "anomaly"
-
-    def _is_hit(entry: dict) -> bool:
-        return entry.get("yield_status") == "HIT"
-
     domain_hit = any(
-        _is_hit(v) for k, v in pass_outcomes.items() if k in _DOMAIN_PASS_NAMES
+        v.get("yield_status") == "HIT"
+        for k, v in pass_outcomes.items()
+        if k in _DOMAIN_PASS_NAMES
     )
     if domain_hit:
         return "ok"
-
-    reference_hit = _is_hit(pass_outcomes.get("reference") or {})
-    if reference_hit:
+    if section_count > 0 and text_chunk_count > 0:
         return "degraded"
-
     return "anomaly"
 
 
 def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
     """Populates PipelineRun.metrics with the quality-signal blob.
 
-    Spec §6.6. Queries v_latest_pass_attempts for per-pass outcomes,
-    computes document_extraction_anomaly (all core passes non-HIT),
-    overall_relationship_rejection_ratio, and a rejection sample.
+    Spec §6.6 + §6.8. Queries v_latest_pass_attempts for per-pass
+    outcomes, fetches SECTION vertex count from the graph store and
+    TextChunk count from Postgres for the new degraded/anomaly split,
+    and computes overall_relationship_rejection_ratio + a rejection
+    sample.
     """
+    from sqlalchemy import func, select
     from app.models.ingest import PipelineRun
+    from app.models.retrieval import TextChunk
 
     with get_sync_session() as session:
         run = session.get(PipelineRun, pipeline_run_id)
@@ -357,13 +362,48 @@ def _write_pipeline_run_metrics(pipeline_run_id, merged, manifest) -> None:
 
         bundle_key = getattr(manifest, "bundle_key", None) or getattr(run, "ontology_bundle_key", None)
 
+        # Graph + text_chunk signals for the new degraded/anomaly split.
+        # Fetch the run's document_id (required for document-scoped SECTION
+        # lookup). Errors are swallowed because the classifier must not
+        # block metrics writes; defaults treat the missing signal as zero,
+        # which pushes borderline cases toward "anomaly" conservatively.
+        document_uuid = str(getattr(run, "document_id", "") or "")
+        section_count = 0
+        text_chunk_count = 0
+        if document_uuid:
+            try:
+                graph_store = get_graph_store()
+                section_count = graph_store.count_ontology_nodes_sync(
+                    "SECTION", document_id=document_uuid,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "_write_pipeline_run_metrics: SECTION count failed for %s: %s",
+                    document_uuid, exc,
+                )
+            try:
+                text_chunk_count = session.execute(
+                    select(func.count()).select_from(TextChunk).where(
+                        TextChunk.document_id == uuid.UUID(document_uuid),
+                    )
+                ).scalar_one()
+            except Exception as exc:
+                logger.debug(
+                    "_write_pipeline_run_metrics: TextChunk count failed for %s: %s",
+                    document_uuid, exc,
+                )
+
         run.metrics = {
             "pass_outcomes": pass_outcomes,
             "document_extraction_anomaly": document_extraction_anomaly,
             "pass_degraded_count": pass_degraded_count,
             "overall_relationship_rejection_ratio": overall_rejection_ratio,
             "rejected_relationships_sample": rejected_sample,
-            "extraction_quality": _classify_extraction_quality(pass_outcomes),
+            "extraction_quality": _classify_extraction_quality(
+                pass_outcomes, section_count, text_chunk_count,
+            ),
+            "section_count": section_count,
+            "text_chunk_count": text_chunk_count,
             "bundle_legacy": False,
             "bundle_key_display": bundle_key or "",
         }

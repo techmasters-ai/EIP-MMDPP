@@ -1,15 +1,22 @@
-"""Plan Task 52 — worker-side extraction-quality classifier.
+"""E-9 — worker-side extraction-quality classifier.
 
-Three-state aggregate over per-pass yield_status outcomes:
+Post-docs-alignment rewrite (spec §6.8). The LLM `reference` pass was
+deleted; the deterministic Docling anchor walker (D-3/D-4) emits
+SECTION vertices directly. The classifier now keys "degraded" on the
+graph signal (SECTION + TextChunk counts) instead of a reference-pass
+HIT.
 
-- ``ok``       — at least one domain pass (radar/missile/other/system_links)
-                 achieved HIT.
-- ``degraded`` — reference pass HIT (document structure extracted) but
-                 every domain pass ended non-HIT (EMPTY / BRIDGES_ONLY /
-                 DEGRADED / FAILED / SKIPPED). Signals a real document
-                 that simply didn't match the SAM/radar ontology.
-- ``anomaly``  — no pass achieved HIT at all. Likely an extraction
-                 failure or an entirely off-topic document.
+Three states:
+
+- ``ok``       — at least one domain pass (radar / missile /
+                 other_systems / system_links) achieved HIT.
+- ``degraded`` — no domain HIT, but SECTION vertices and TextChunks
+                 both exist. Real document processed through
+                 derive_document_anchors and chunking, but nothing
+                 matched the SAM/radar ontology.
+- ``anomaly``  — no domain HIT and either no SECTION vertices or no
+                 TextChunks. Upstream processing failure or
+                 unsupported document shape.
 """
 from __future__ import annotations
 
@@ -18,7 +25,7 @@ import pytest
 from app.workers.pipeline import _classify_extraction_quality
 
 
-def _outcome(yield_status: str, execution_status: str = "COMPLETE") -> dict:
+def _outcome(yield_status: str | None, execution_status: str = "COMPLETE") -> dict:
     return {
         "execution_status": execution_status,
         "yield_status": yield_status,
@@ -30,70 +37,88 @@ def _outcome(yield_status: str, execution_status: str = "COMPLETE") -> dict:
 
 
 def test_ok_when_any_domain_pass_hits():
-    """Any domain pass (radar/missile/other_systems/system_links) in HIT
-    state → classification is 'ok' regardless of reference outcome."""
-    assert _classify_extraction_quality({
-        "reference": _outcome("HIT"),
-        "radar_domain": _outcome("HIT"),
-        "missile_domain": _outcome("EMPTY"),
-        "other_systems": _outcome("EMPTY"),
-        "system_links": _outcome("EMPTY"),
-    }) == "ok"
+    """Any domain pass in HIT state → 'ok' regardless of graph signals."""
+    assert _classify_extraction_quality(
+        {
+            "radar_domain": _outcome("HIT"),
+            "missile_domain": _outcome("EMPTY"),
+            "other_systems": _outcome("EMPTY"),
+            "system_links": _outcome("EMPTY"),
+        },
+        section_count=0,
+        text_chunk_count=0,
+    ) == "ok"
 
-    # Reference empty, radar hits — still ok.
-    assert _classify_extraction_quality({
-        "reference": _outcome("EMPTY"),
-        "radar_domain": _outcome("HIT"),
-    }) == "ok"
-
-
-def test_degraded_when_reference_hits_but_domains_empty():
-    """Reference pass HIT (structure extracted) but every domain pass is
-    non-HIT → classification is 'degraded'. This is the distinctive
-    signal that differentiates a real-but-off-topic document from a
-    processing failure."""
-    assert _classify_extraction_quality({
-        "reference": _outcome("HIT"),
-        "radar_domain": _outcome("EMPTY"),
-        "missile_domain": _outcome("BRIDGES_ONLY"),
-        "other_systems": _outcome("EMPTY"),
-        "system_links": _outcome("EMPTY"),
-    }) == "degraded"
-
-    # DEGRADED domain counts as non-HIT — still 'degraded' aggregate.
-    assert _classify_extraction_quality({
-        "reference": _outcome("HIT"),
-        "radar_domain": _outcome("DEGRADED"),
-    }) == "degraded"
-
-    # Failed/Skipped domains also count as non-HIT.
-    assert _classify_extraction_quality({
-        "reference": _outcome("HIT"),
-        "radar_domain": _outcome(None, execution_status="FAILED"),
-        "missile_domain": _outcome(None, execution_status="SKIPPED"),
-    }) == "degraded"
+    # Radar hit dominates even when graph signals are zero.
+    assert _classify_extraction_quality(
+        {"radar_domain": _outcome("HIT")},
+        section_count=0,
+        text_chunk_count=0,
+    ) == "ok"
 
 
-def test_anomaly_when_no_pass_hits():
-    """No pass at HIT at all → 'anomaly'. Reference either failed or
-    didn't find document structure; likely a processing break or an
-    entirely unsupported document format."""
-    assert _classify_extraction_quality({
-        "reference": _outcome("EMPTY"),
-        "radar_domain": _outcome("EMPTY"),
-    }) == "anomaly"
+def test_degraded_when_sections_and_chunks_present_but_no_domain_hit():
+    """Graph signals (SECTION + TextChunk) > 0 AND no domain HIT → 'degraded'."""
+    assert _classify_extraction_quality(
+        {
+            "radar_domain": _outcome("EMPTY"),
+            "missile_domain": _outcome("BRIDGES_ONLY"),
+            "other_systems": _outcome("EMPTY"),
+            "system_links": _outcome("EMPTY"),
+        },
+        section_count=5,
+        text_chunk_count=42,
+    ) == "degraded"
 
-    assert _classify_extraction_quality({
-        "reference": _outcome(None, execution_status="FAILED"),
-    }) == "anomaly"
+    # Minimum positive signal on both counts is enough.
+    assert _classify_extraction_quality(
+        {"radar_domain": _outcome("DEGRADED")},
+        section_count=1,
+        text_chunk_count=1,
+    ) == "degraded"
 
-    # Empty rollup (no rows) → anomaly (conservative default).
-    assert _classify_extraction_quality({}) == "anomaly"
+    # FAILED / SKIPPED domain outcomes don't disqualify degraded status.
+    assert _classify_extraction_quality(
+        {
+            "radar_domain": _outcome(None, execution_status="FAILED"),
+            "missile_domain": _outcome(None, execution_status="SKIPPED"),
+        },
+        section_count=3,
+        text_chunk_count=10,
+    ) == "degraded"
+
+
+def test_anomaly_when_no_domain_hit_and_no_graph_signal():
+    """No domain HIT AND (section_count == 0 OR text_chunk_count == 0) → 'anomaly'."""
+    # Both signals zero.
+    assert _classify_extraction_quality(
+        {"radar_domain": _outcome("EMPTY")},
+        section_count=0,
+        text_chunk_count=0,
+    ) == "anomaly"
+
+    # Only sections present — chunks missing.
+    assert _classify_extraction_quality(
+        {"radar_domain": _outcome("EMPTY")},
+        section_count=5,
+        text_chunk_count=0,
+    ) == "anomaly"
+
+    # Only chunks present — sections missing.
+    assert _classify_extraction_quality(
+        {"radar_domain": _outcome("EMPTY")},
+        section_count=0,
+        text_chunk_count=5,
+    ) == "anomaly"
+
+    # Empty outcomes rollup + zero signals → anomaly.
+    assert _classify_extraction_quality({}, section_count=0, text_chunk_count=0) == "anomaly"
 
 
 def test_classifier_result_included_in_pipeline_run_metrics_blob(monkeypatch):
     """_write_pipeline_run_metrics surfaces the classifier output under
-    metrics['extraction_quality']. Existing signals preserved."""
+    metrics['extraction_quality']. Existing signals preserved; new
+    metrics keys section_count / text_chunk_count are populated."""
     from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
     from app.workers.pipeline import _write_pipeline_run_metrics
@@ -101,22 +126,28 @@ def test_classifier_result_included_in_pipeline_run_metrics_blob(monkeypatch):
     fake_run = MagicMock()
     fake_run.metrics = None
     fake_run.ontology_bundle_key = "air_defense_v3"
+    fake_run.document_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
     session = MagicMock()
     session.__enter__ = MagicMock(return_value=session)
     session.__exit__ = MagicMock(return_value=False)
     session.get.return_value = fake_run
+    # TextChunk count query returns 12.
+    session.execute.return_value.scalar_one.return_value = 12
 
     monkeypatch.setattr(
         "app.workers.pipeline._build_pass_outcomes_rollup",
         lambda *_args, **_kw: {
-            "reference": _outcome("HIT"),
             "radar_domain": _outcome("EMPTY"),
             "missile_domain": _outcome("EMPTY"),
             "other_systems": _outcome("EMPTY"),
             "system_links": _outcome("EMPTY"),
         },
     )
+    # Graph store returns 4 SECTION vertices for the run's document.
+    graph_store = MagicMock()
+    graph_store.count_ontology_nodes_sync = MagicMock(return_value=4)
+    monkeypatch.setattr("app.workers.pipeline.get_graph_store", lambda: graph_store)
 
     merged = SimpleNamespace(edges=[], rejected_edges=[])
     manifest = SimpleNamespace(bundle_key="air_defense_v3")
@@ -124,7 +155,8 @@ def test_classifier_result_included_in_pipeline_run_metrics_blob(monkeypatch):
     with patch("app.workers.pipeline.get_sync_session", return_value=session):
         _write_pipeline_run_metrics("run-1", merged, manifest)
 
+    # 4 SECTIONs + 12 TextChunks → degraded (no domain HIT, positive graph).
     assert fake_run.metrics["extraction_quality"] == "degraded"
-    # Existing keys survive.
+    assert fake_run.metrics["section_count"] == 4
+    assert fake_run.metrics["text_chunk_count"] == 12
     assert "pass_outcomes" in fake_run.metrics
-    assert "document_extraction_anomaly" in fake_run.metrics
