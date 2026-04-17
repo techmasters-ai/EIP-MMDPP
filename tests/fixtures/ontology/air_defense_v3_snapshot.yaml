@@ -667,13 +667,15 @@ entity_types:
 
   - name: ASSEMBLY
     label: "Assembly"
+    identity_fields: [assembly_number]
+    identity_scope: global
     description: "Grouping of components that function together as a unit"
     parent: MilitaryAsset
     properties:
       type: object
       properties:
+        assembly_number: {type: string, description: "Assembly drawing or identification number (docs:17235 R16-compliant identity)", example: "ASM-7891-A"}
         name: {type: string, description: "Name of the assembly unit", example: "Antenna Feed Assembly"}
-        assembly_number: {type: string, description: "Assembly drawing or identification number", example: "ASM-7891-A"}
 
   - name: SPECIFICATION
     label: "Specification"

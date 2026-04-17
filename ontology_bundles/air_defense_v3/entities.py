@@ -726,10 +726,10 @@ class ForceStructureEntity(BaseModel):
 class AssemblyEntity(BaseModel):
     """Assembly — Grouping of components that function together as a unit
     """
-    model_config = ConfigDict(ontology_name="ASSEMBLY", graph_id_fields=[], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
+    model_config = ConfigDict(ontology_name="ASSEMBLY", graph_id_fields=["assembly_number"], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
 
+    assembly_number: str = Field(..., description="Assembly drawing or identification number (docs:17235 R16-compliant identity)", examples=['ASM-7891-A', 'ASM-4201-B', 'ASM-1055-C'])
     name: Optional[str] = Field(default=None, description="Name of the assembly unit", examples=['Antenna Feed Assembly'])
-    assembly_number: Optional[str] = Field(default=None, description="Assembly drawing or identification number", examples=['ASM-7891-A'])
     equipment_systems: List["EquipmentSystemEntity"] = edge(label="PART_OF", default_factory=list)
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
