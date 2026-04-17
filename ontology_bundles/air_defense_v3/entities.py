@@ -206,11 +206,11 @@ class SubsystemEntity(BaseModel):
 class ComponentEntity(BaseModel):
     """Component — Individual physical or logical part within a subsystem or assembly
     """
-    model_config = ConfigDict(ontology_name="COMPONENT", graph_id_fields=[], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
+    model_config = ConfigDict(ontology_name="COMPONENT", graph_id_fields=["part_number"], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
 
+    part_number: str = Field(..., description="Manufacturer-assigned part number (docs:17235 R16-compliant identity)", examples=['PN-12345-A', 'TWT-8090B', 'CCA-0042'], pattern='^[A-Z0-9][A-Z0-9\\-/]{2,20}$')
     name: Optional[str] = Field(default=None, description="Common name of the component", examples=['Traveling Wave Tube'])
     component_type: Optional[str] = Field(default=None, description="Category or class of the component", examples=['Amplifier'])
-    part_number: Optional[str] = Field(default=None, description="Manufacturer-assigned part number (alphanumeric with dashes)", examples=['PN-12345-A'], pattern='^[A-Z0-9][A-Z0-9\\-/]{2,20}$')
     nsn: Optional[str] = Field(default=None, description="National Stock Number in NNNN-NN-NNN-NNNN format", examples=['5961-01-234-5678'], pattern='^\\d{4}-\\d{2}-\\d{3}-\\d{4}$')
     cage_code: Optional[str] = Field(default=None, description="5-character Commercial and Government Entity code identifying the manufacturer", examples=['1ABC3'], pattern='^[A-Z0-9]{5}$')
     manufacturer: Optional[str] = Field(default=None, description="Name of the component manufacturer", examples=['L3Harris Technologies'])
