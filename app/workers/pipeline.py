@@ -4955,38 +4955,55 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             )
         ).scalars().first()
 
-        # Collect all entity-chunk edges, then batch-create in one call
-        edge_tuples: list[tuple[str, str, str]] = []  # (name, type, chunk_id)
+        # Phase 8 Task 53b: collect edges via (entity_id, source_rid) from
+        # the audit blob's mentions[] / nodes[] entries. entity_id is the
+        # canonical LogicalIdentity serialization (Task 52b) so fallback
+        # suppression now distinguishes same-name same-type siblings that
+        # the old name-only set conflated. source_rid is the pre-resolved
+        # entity vertex RID — the batch writer uses it directly instead
+        # of the old name+type LIMIT-1 subquery.
+        #
+        # edge_records carries (entity_name, entity_type, chunk_id,
+        # entity_id, source_rid) tuples — built from both the mentions
+        # path and the fallback path below.
+        edge_records: list[tuple[str, str, str, str | None, str | None]] = []
 
-        # Track which entities got at least one mention via the primary path
-        mentioned_entities: set[str] = set()
-        all_extracted_entities: list[tuple[str, str]] = []
+        # entity_id ↔ (name, type, source_rid) lookup built from nodes[]
+        # so the fallback path can emit the same tuple shape as the
+        # primary path even when no mention row resolved.
+        node_by_entity_id: dict[str, tuple[str, str, str | None]] = {}
+        mentioned_entity_ids: set[str] = set()
 
         if graph_extraction and graph_extraction.graph_json:
-            mentions = graph_extraction.graph_json.get("mentions", [])
-            for mention in mentions:
+            for node in graph_extraction.graph_json.get("nodes", []):
+                eid = node.get("entity_id")
+                if not eid:
+                    continue
+                node_by_entity_id[eid] = (
+                    node.get("name", ""),
+                    node.get("entity_type", "UNKNOWN"),
+                    node.get("rid"),
+                )
+
+            for mention in graph_extraction.graph_json.get("mentions", []):
+                eid = mention.get("entity_id")
                 name = mention.get("entity_name", "")
                 etype = mention.get("entity_type", "UNKNOWN")
                 euid = mention.get("element_uid", "")
+                src_rid = mention.get("rid")
                 for chunk_id in element_uid_chunk_map.get(euid, []):
-                    edge_tuples.append((name, etype, chunk_id))
-                    mentioned_entities.add(name)
+                    edge_records.append((name, etype, chunk_id, eid, src_rid))
+                    if eid:
+                        mentioned_entity_ids.add(eid)
 
-            # Collect all entity names from the extraction for fallback
-            for node in graph_extraction.graph_json.get("nodes", []):
-                n = node.get("name", node.get("id", ""))
-                t = node.get("entity_type", "UNKNOWN")
-                if n:
-                    all_extracted_entities.append((n, t))
-
-        # Fallback: for entities with ZERO mentions from the primary path
-        # (or all entities when no mentions at all), use the artifact-wide
-        # linking. This catches partial misses, not just complete failure.
-        entities_needing_fallback = [
-            (n, t) for n, t in all_extracted_entities if n not in mentioned_entities
+        # Fallback — fan the entity out across its artifact's chunks when
+        # the primary mention path yielded zero links. Keyed by entity_id
+        # so same-name same-type siblings with different identity tuples
+        # are tracked independently (T53b correctness fix).
+        entity_ids_needing_fallback = [
+            eid for eid in node_by_entity_id if eid not in mentioned_entity_ids
         ]
-        if entities_needing_fallback or not mentioned_entities:
-            # Include BOTH text and image chunks in the fallback artifact map
+        if entity_ids_needing_fallback or not mentioned_entity_ids:
             artifact_chunk_map: dict[str, list[str]] = {}
             for tc in text_chunks:
                 artifact_chunk_map.setdefault(str(tc.artifact_id), []).append(str(tc.id))
@@ -5000,6 +5017,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                 )
             ).scalars().all()
 
+            # Legacy fallback: artifact_metadata-derived entities (no
+            # entity_id / source_rid available from that path — writer
+            # falls back to the name+type subquery with a WARNING).
             for artifact in artifacts_with_entities:
                 metadata = artifact.content_metadata or {}
                 chunk_ids = artifact_chunk_map.get(str(artifact.id), [])
@@ -5020,13 +5040,12 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 
                 for (name, etype) in entities_list:
                     for chunk_id in chunk_ids:
-                        edge_tuples.append((name, etype, chunk_id))
+                        edge_records.append((name, etype, chunk_id, None, None))
 
         # Batch-create EXTRACTED_FROM edges in one sqlscript call.
-        # Look up chunk RIDs from both text and image maps.
         from app.services.graph_store import EntityChunkEdge as _ECE
         entity_edge_records: list[_ECE] = []
-        for (ent_name, ent_type, chunk_id) in edge_tuples:
+        for (ent_name, ent_type, chunk_id, entity_id, source_rid) in edge_records:
             chunk_rid = tc_rid_map.get(chunk_id) or ic_rid_map.get(chunk_id)
             if not chunk_rid:
                 continue
@@ -5034,6 +5053,8 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                 entity_name=ent_name,
                 entity_type=ent_type,
                 chunk_rid=chunk_rid,
+                entity_id=entity_id,
+                source_rid=source_rid,
             ))
 
         entity_links = 0

@@ -30,7 +30,6 @@ def _make_graph_store() -> MagicMock:
     gs.create_image_chunk_vertex_sync = MagicMock(return_value="#14:0")
     gs.get_chunk_rid_sync = MagicMock(return_value="#13:1")
     gs.create_structural_edge_sync = MagicMock(return_value="#15:0")
-    gs.create_entity_chunk_edge_sync = MagicMock(return_value=True)
     gs.set_vertex_embedding_sync = MagicMock()
     return gs
 
@@ -249,37 +248,26 @@ class TestDeriveStructureLinks:
 
 
 # ---------------------------------------------------------------------------
-# create_entity_chunk_edge_sync: entity name lookup for EXTRACTED_FROM
+# GraphStore Protocol surface — the plural batch helper and the chunk-rid
+# lookup helper are both load-bearing; the singular per-edge helper was
+# deleted in T53b (no production callers, name+type LIMIT-1 semantics
+# conflated same-name same-type siblings).
 # ---------------------------------------------------------------------------
 
 
-class TestCreateEntityChunkEdgeSync:
-    """Verify the new create_entity_chunk_edge_sync correctly routes through entity lookup."""
-
-    def test_returns_true_when_entity_found(self):
-        """Should return True when the entity exists in the graph."""
-        gs = _make_graph_store()
-        gs.create_entity_chunk_edge_sync.return_value = True
-
-        result = gs.create_entity_chunk_edge_sync("F-16", "PLATFORM", "#13:1")
-
-        assert result is True
-
-    def test_returns_false_when_entity_not_found(self):
-        """Should return False when the entity does not exist (no edge created)."""
-        gs = _make_graph_store()
-        gs.create_entity_chunk_edge_sync.return_value = False
-
-        result = gs.create_entity_chunk_edge_sync("Unknown Entity", "UNKNOWN", "#13:1")
-
-        assert result is False
-
-    def test_entity_chunk_edge_method_exists_on_protocol(self):
-        """create_entity_chunk_edge_sync should be defined in the GraphStore Protocol."""
-        from app.services.graph_store import GraphStore
-        assert hasattr(GraphStore, "create_entity_chunk_edge_sync")
-
+class TestProtocolSurface:
     def test_get_chunk_rid_method_exists_on_protocol(self):
         """get_chunk_rid_sync should be defined in the GraphStore Protocol."""
         from app.services.graph_store import GraphStore
         assert hasattr(GraphStore, "get_chunk_rid_sync")
+
+    def test_singular_create_entity_chunk_edge_deleted_from_protocol(self):
+        """The name+type LIMIT-1 singular helper was removed in T53b —
+        callers must use the batch helper with (entity_id, source_rid)
+        populated for correct same-name same-type disambiguation."""
+        from app.services.graph_store import GraphStore
+        assert not hasattr(GraphStore, "create_entity_chunk_edge_sync")
+
+    def test_batch_helper_exists_on_protocol(self):
+        from app.services.graph_store import GraphStore
+        assert hasattr(GraphStore, "batch_create_entity_chunk_edges_sync")

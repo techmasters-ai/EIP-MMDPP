@@ -105,11 +105,26 @@ class ImageChunkRecord:
 
 @dataclass
 class EntityChunkEdge:
-    """An EXTRACTED_FROM edge from an entity (by name+type) to a chunk RID."""
+    """An EXTRACTED_FROM edge from an entity to a chunk RID.
+
+    Post-Phase-8 Task 53b: the edge resolves the source vertex by
+    direct ``source_rid`` (pre-resolved during node upsert) and persists
+    ``entity_id`` as a first-class property so downstream consumers can
+    map a chunk-link edge back to the specific extracted entity —
+    disambiguating same-name same-type siblings that the old
+    name+type LIMIT-1 subquery silently conflated.
+
+    Backward-compat defaults: ``source_rid=None`` + ``entity_id=None``
+    keeps legacy callers working (they fall through to the name+type
+    subquery path inside the writer, logging the fact so operators can
+    migrate).
+    """
 
     entity_name: str
     entity_type: str
     chunk_rid: str
+    entity_id: str | None = None
+    source_rid: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -603,18 +618,6 @@ class GraphStore(Protocol):
         chunk_type: str = "TextChunk",
     ) -> str | None:
         """Return the ArcadeDB RID for an existing chunk vertex, or None if not found."""
-        ...
-
-    def create_entity_chunk_edge_sync(
-        self,
-        entity_name: str,
-        entity_type: str,
-        chunk_rid: str,
-    ) -> bool:
-        """Create an EXTRACTED_FROM edge from an entity (looked up by name+type) to a chunk RID.
-
-        Returns True if the edge was created, False if the entity was not found.
-        """
         ...
 
     def delete_document_graph_sync(

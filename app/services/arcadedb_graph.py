@@ -1921,24 +1921,57 @@ class ArcadeDBGraphStore:
         self,
         edges: list[EntityChunkEdge],
     ) -> int:
-        """Create EXTRACTED_FROM edges from entities (by name+type) to chunk RIDs in one call.
+        """Create EXTRACTED_FROM edges in a single sqlscript call.
 
-        Each statement uses an inline subquery to resolve the entity, so rows
-        where the entity is missing become no-ops without failing the batch.
+        Post-Phase-8 Task 53b: when ``edge.source_rid`` is populated,
+        uses a direct RID-to-RID CREATE EDGE that attaches to exactly
+        that vertex and persists ``entity_id`` on the edge. When
+        ``source_rid`` is None (legacy callers), falls back to the
+        original name+type LIMIT-1 subquery path so nothing silently
+        breaks during the migration window — a WARNING is logged so
+        the fallback is visible.
+
+        Rows where the subquery resolves to zero vertices become
+        no-ops; the batch stays intact.
         """
         if not edges:
             return 0
         statements: list[str] = []
         params: dict[str, Any] = {}
+        fallback_count = 0
         for i, edge in enumerate(edges):
-            params[f"name_{i}"] = edge.entity_name
-            params[f"etype_{i}"] = edge.entity_type
             params[f"rid_{i}"] = edge.chunk_rid
-            statements.append(
-                f"CREATE EDGE EXTRACTED_FROM "
-                f"FROM (SELECT FROM {edge.entity_type} "
-                f"WHERE name = :name_{i} AND entity_type = :etype_{i} LIMIT 1) "
-                f"TO :rid_{i} SET created_at = sysdate()"
+            if edge.source_rid:
+                # New path — direct RID-to-RID. entity_id persisted on the edge.
+                params[f"src_{i}"] = edge.source_rid
+                params[f"eid_{i}"] = edge.entity_id or ""
+                statements.append(
+                    f"CREATE EDGE EXTRACTED_FROM "
+                    f"FROM :src_{i} TO :rid_{i} "
+                    f"SET entity_id = :eid_{i}, created_at = sysdate()"
+                )
+            else:
+                # Legacy path — name+type subquery. LIMIT 1 means siblings
+                # with the same name+type but different identity tuples may
+                # attach to the wrong vertex; rely on callers to populate
+                # source_rid for correctness.
+                fallback_count += 1
+                params[f"name_{i}"] = edge.entity_name
+                params[f"etype_{i}"] = edge.entity_type
+                statements.append(
+                    f"CREATE EDGE EXTRACTED_FROM "
+                    f"FROM (SELECT FROM {edge.entity_type} "
+                    f"WHERE name = :name_{i} AND entity_type = :etype_{i} LIMIT 1) "
+                    f"TO :rid_{i} SET created_at = sysdate()"
+                )
+        if fallback_count:
+            logger.warning(
+                "batch_create_entity_chunk_edges_sync: %d/%d edges used the "
+                "legacy name+type subquery path (EntityChunkEdge.source_rid "
+                "was None). Same-name-same-type entities may attach to the "
+                "wrong vertex. Callers should populate source_rid from the "
+                "post-merge identity_to_rid map.",
+                fallback_count, len(edges),
             )
         self._client.command_sync(
             self._database, "sqlscript", ";\n".join(statements), params,
@@ -1958,28 +1991,6 @@ class ArcadeDBGraphStore:
             if isinstance(row, dict):
                 return row.get("@rid") or row.get("rid")
         return None
-
-    def create_entity_chunk_edge_sync(
-        self,
-        entity_name: str,
-        entity_type: str,
-        chunk_rid: str,
-    ) -> bool:
-        """Create an EXTRACTED_FROM edge from an entity to a chunk vertex.
-
-        Looks up the entity by name+type, then creates the edge to the chunk
-        identified by its ArcadeDB RID.  Returns True if the edge was created,
-        False if the entity vertex could not be found.
-        """
-        entity = self.resolve_root_entity_sync(entity_name, entity_type)
-        if not entity:
-            return False
-        sql = (
-            f"CREATE EDGE EXTRACTED_FROM FROM {entity.node_id} TO {chunk_rid} "
-            f"SET created_at = sysdate()"
-        )
-        self._client.command_sync(self._database, "sql", sql)
-        return True
 
     def delete_document_graph_sync(
         self,
