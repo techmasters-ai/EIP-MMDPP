@@ -480,8 +480,23 @@ def test_display_label_prefers_system_name_in_identity():
 
 
 def test_display_label_falls_back_to_joined_identity():
-    label = build_display_label("SECTION", {"heading": "Intro", "page_start": 1}, {})
-    assert label == "Intro"  # heading is in NAME_LIKE_KEYS
+    """Post-E-6: `section_number` is the name-like key for SECTION. An
+    identity dict containing non-name-like keys (e.g. 'heading',
+    'page_start') falls through to the joined-identity path."""
+    label = build_display_label(
+        "SECTION", {"heading": "Intro", "page_start": 1}, {}
+    )
+    # Neither 'heading' nor 'page_start' is in _NAME_LIKE_KEYS anymore;
+    # build_display_label joins all truthy identity values.
+    assert label == "Intro / 1"
+
+
+def test_display_label_prefers_section_number_for_section():
+    """Post-E-6: section_number is the preferred identity key for SECTION."""
+    label = build_display_label(
+        "SECTION", {"section_number": "3.2", "heading": "Intro"}, {}
+    )
+    assert label == "3.2"
 
 
 def test_display_label_uses_properties_when_identity_empty():

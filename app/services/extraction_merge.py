@@ -302,7 +302,7 @@ class DerivedEdge:
 # build_display_label (spec §3.9)
 # ---------------------------------------------------------------------------
 
-_NAME_LIKE_KEYS = ("system_name", "name", "title", "heading", "document_id")
+_NAME_LIKE_KEYS = ("system_name", "name", "title", "section_number", "document_id")
 
 
 def build_display_label(
