@@ -20,7 +20,7 @@
       "id": "B",
       "subject": "Canonical entities.py rewrite",
       "tasks": 32,
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         "A0",
         "A"
@@ -368,7 +368,9 @@
     {
       "id": "B-32",
       "subject": "edge() calls gain description+examples",
-      "status": "pending"
+      "status": "completed",
+      "commits": ["184ede3", "bc7af88"],
+      "notes": "Subagent + 3-stage review. 97 entities.py edges + 16 extraction-schema edges (parity contract forced). Follow-up bc7af88 fixed 2 INSTALLED_ON examples caught in code review."
     },
     {
       "id": "C-1",
@@ -555,5 +557,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T04:45:00.000000+00:00"
+  "lastUpdated": "2026-04-17T05:15:00.000000+00:00"
 }
