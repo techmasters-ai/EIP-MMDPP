@@ -191,9 +191,9 @@ class EquipmentSystemEntity(BaseModel):
 class SubsystemEntity(BaseModel):
     """Subsystem — Major functional component within a military system
     """
-    model_config = ConfigDict(ontology_name="SUBSYSTEM", graph_id_fields=[], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
+    model_config = ConfigDict(ontology_name="SUBSYSTEM", graph_id_fields=["name"], identity_scope="document", dodaf_parent="MilitaryAsset", is_entity=True)
 
-    name: Optional[str] = Field(default=None, description="Name of the subsystem", examples=['Guidance Section'])
+    name: str = Field(..., description="Name of the subsystem (document-scoped identity per spec §2.2)", examples=['Guidance Section', 'Signal Processing Unit', 'Antenna Array'])
     subsystem_role: Optional[str] = Field(default=None, description="Functional role within the parent system", examples=['Signal processing and target tracking'])
     part_number: Optional[str] = Field(default=None, description="Subsystem-level part or drawing number", examples=['GS-PAC3-001'])
     equipment_systems: List["EquipmentSystemEntity"] = edge(label="PART_OF", default_factory=list)
@@ -716,9 +716,9 @@ class EngagementTimelineEntity(BaseModel):
 class ForceStructureEntity(BaseModel):
     """Force Structure — Military organizational unit or echelon
     """
-    model_config = ConfigDict(ontology_name="FORCE_STRUCTURE", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="FORCE_STRUCTURE", graph_id_fields=["name"], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
 
-    name: Optional[str] = Field(default=None, description="Name of the force structure unit", examples=['108th Air Defense Artillery Brigade'])
+    name: str = Field(..., description="Name of the force structure unit (docs:17235 R16-compliant identity)", examples=['108th Air Defense Artillery Brigade', '3rd Infantry Division', '94th Army Air and Missile Defense Command'])
     echelon: Optional[str] = Field(default=None, description="Military echelon level", examples=['Brigade'])
     service: Optional[str] = Field(default=None, description="Military service branch", examples=['U.S. Army'])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
@@ -762,9 +762,9 @@ class StandardEntity(BaseModel):
 class ProcedureEntity(BaseModel):
     """Procedure — Maintenance, operational, or test procedure
     """
-    model_config = ConfigDict(ontology_name="PROCEDURE", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="PROCEDURE", graph_id_fields=["name"], identity_scope="document", dodaf_parent="OperationalEntity", is_entity=True)
 
-    name: Optional[str] = Field(default=None, description="Name or title of the procedure", examples=['Radar Antenna Alignment Procedure'])
+    name: str = Field(..., description="Name or title of the procedure (document-scoped identity per spec §2.2)", examples=['Radar Antenna Alignment Procedure', 'Transmitter Module Calibration', 'Boresight Adjustment'])
     type: Optional[str] = Field(default=None, description="Category of procedure", json_schema_extra={"enum": ["MAINTENANCE", "OPERATIONAL", "TEST", "CALIBRATION", "INSPECTION"]})
     periodicity: Optional[str] = Field(default=None, description="How often the procedure must be performed", examples=['Semi-annual'])
     skill_level: Optional[str] = Field(default=None, description="Required maintenance skill level", examples=['20C (Patriot Repairer)'])
@@ -774,9 +774,9 @@ class ProcedureEntity(BaseModel):
 class FailureModeEntity(BaseModel):
     """Failure Mode — Known failure mode with FMECA severity
     """
-    model_config = ConfigDict(ontology_name="FAILURE_MODE", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="FAILURE_MODE", graph_id_fields=["name"], identity_scope="document", dodaf_parent="OperationalEntity", is_entity=True)
 
-    name: Optional[str] = Field(default=None, description="Short name of the failure mode", examples=['TWT Power Degradation'])
+    name: str = Field(..., description="Short name of the failure mode (document-scoped identity per spec §2.2)", examples=['TWT Power Degradation', 'Servo Drift', 'Antenna Bearing Wear'])
     description: Optional[str] = Field(default=None, description="Detailed description of how the failure manifests", examples=['Gradual loss of transmit power due to cathode erosion'])
     fmeca_severity: Optional[int] = Field(default=None, description="MIL-STD-1629 severity category (1=catastrophic, 4=minor)", examples=[2])
     detection_method: Optional[str] = Field(default=None, description="How this failure is detected", examples=['BIT fault code 47, power output below threshold'])
@@ -788,9 +788,9 @@ class FailureModeEntity(BaseModel):
 class TestEventEntity(BaseModel):
     """Test Event — Test or evaluation event with outcomes
     """
-    model_config = ConfigDict(ontology_name="TEST_EVENT", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="TEST_EVENT", graph_id_fields=["name"], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
 
-    name: Optional[str] = Field(default=None, description="Name or designation of the test event", examples=['FET-10 Flight Test'])
+    name: str = Field(..., description="Name or designation of the test event (docs:17235 R16-compliant identity)", examples=['FET-10 Flight Test', 'IOT&E Phase 2', 'LFT&E Arena Test'])
     date: Optional[str] = Field(default=None, description="Date the test was conducted (YYYY-MM-DD)", examples=['2024-03-15'])
     location: Optional[str] = Field(default=None, description="Test range or facility location", examples=['White Sands Missile Range, NM'])
     test_type: Optional[str] = Field(default=None, description="Category of test event", json_schema_extra={"enum": ["DT", "OT", "IOT", "LFT", "DEVELOPMENTAL"]})

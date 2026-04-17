@@ -250,12 +250,14 @@ entity_types:
 
   - name: SUBSYSTEM
     label: "Subsystem"
+    identity_fields: [name]
+    identity_scope: document
     description: "Major functional component within a military system"
     parent: MilitaryAsset
     properties:
       type: object
       properties:
-        name: {type: string, description: "Name of the subsystem", example: "Guidance Section"}
+        name: {type: string, description: "Name of the subsystem (document-scoped identity per spec §2.2)", example: "Guidance Section"}
         subsystem_role: {type: string, description: "Functional role within the parent system", example: "Signal processing and target tracking"}
         part_number: {type: string, description: "Subsystem-level part or drawing number", example: "GS-PAC3-001"}
 
@@ -642,12 +644,14 @@ entity_types:
 
   - name: FORCE_STRUCTURE
     label: "Force Structure"
+    identity_fields: [name]
+    identity_scope: global
     description: "Military organizational unit or echelon"
     parent: OperationalEntity
     properties:
       type: object
       properties:
-        name: {type: string, description: "Name of the force structure unit", example: "108th Air Defense Artillery Brigade"}
+        name: {type: string, description: "Name of the force structure unit (docs:17235 R16-compliant identity)", example: "108th Air Defense Artillery Brigade"}
         echelon: {type: string, description: "Military echelon level", example: "Brigade"}
         service: {type: string, description: "Military service branch", example: "U.S. Army"}
 
@@ -711,36 +715,42 @@ entity_types:
 
   - name: PROCEDURE
     label: "Procedure"
+    identity_fields: [name]
+    identity_scope: document
     description: "Maintenance, operational, or test procedure"
     parent: OperationalEntity
     properties:
       type: object
       properties:
-        name: {type: string, description: "Name or title of the procedure", example: "Radar Antenna Alignment Procedure"}
+        name: {type: string, description: "Name or title of the procedure (document-scoped identity per spec §2.2)", example: "Radar Antenna Alignment Procedure"}
         type: {type: string, description: "Category of procedure", enum: [MAINTENANCE, OPERATIONAL, TEST, CALIBRATION, INSPECTION]}
         periodicity: {type: string, description: "How often the procedure must be performed", example: "Semi-annual"}
         skill_level: {type: string, description: "Required maintenance skill level", example: "20C (Patriot Repairer)"}
 
   - name: FAILURE_MODE
     label: "Failure Mode"
+    identity_fields: [name]
+    identity_scope: document
     description: "Known failure mode with FMECA severity"
     parent: OperationalEntity
     properties:
       type: object
       properties:
-        name: {type: string, description: "Short name of the failure mode", example: "TWT Power Degradation"}
+        name: {type: string, description: "Short name of the failure mode (document-scoped identity per spec §2.2)", example: "TWT Power Degradation"}
         description: {type: string, description: "Detailed description of how the failure manifests", example: "Gradual loss of transmit power due to cathode erosion"}
         fmeca_severity: {type: integer, description: "MIL-STD-1629 severity category (1=catastrophic, 4=minor)", example: 2}
         detection_method: {type: string, description: "How this failure is detected", example: "BIT fault code 47, power output below threshold"}
 
   - name: TEST_EVENT
     label: "Test Event"
+    identity_fields: [name]
+    identity_scope: global
     description: "Test or evaluation event with outcomes"
     parent: OperationalEntity
     properties:
       type: object
       properties:
-        name: {type: string, description: "Name or designation of the test event", example: "FET-10 Flight Test"}
+        name: {type: string, description: "Name or designation of the test event (docs:17235 R16-compliant identity)", example: "FET-10 Flight Test"}
         date: {type: string, description: "Date the test was conducted (YYYY-MM-DD)", example: "2024-03-15"}
         location: {type: string, description: "Test range or facility location", example: "White Sands Missile Range, NM"}
         test_type: {type: string, description: "Category of test event", enum: [DT, OT, IOT, LFT, DEVELOPMENTAL]}
