@@ -4976,6 +4976,7 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
             "purge_document_derivations",
             "derive_text_embeddings",
             "derive_image_embeddings",
+            "derive_document_anchors",
             "derive_ontology_graph",
             "derive_structure_links",
             "derive_canonicalization",

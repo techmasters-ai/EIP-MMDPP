@@ -415,6 +415,7 @@ class TestFinalizeDocument:
             "prepare_document", "detect_and_translate", "derive_document_metadata",
             "derive_picture_descriptions", "purge_document_derivations",
             "derive_text_embeddings", "derive_image_embeddings",
+            "derive_document_anchors",
             "derive_ontology_graph", "derive_structure_links",
             "derive_canonicalization",
         ]
@@ -441,6 +442,7 @@ class TestFinalizeDocument:
             "prepare_document", "derive_document_metadata",
             "derive_picture_descriptions", "purge_document_derivations",
             "derive_text_embeddings", "derive_image_embeddings",
+            "derive_document_anchors",
             "derive_ontology_graph", "derive_structure_links",
             "derive_canonicalization",
         ]
@@ -491,6 +493,7 @@ class TestFinalizeDocument:
             "prepare_document", "derive_document_metadata",
             "derive_picture_descriptions", "purge_document_derivations",
             "derive_text_embeddings", "derive_image_embeddings",
+            "derive_document_anchors",
             "derive_ontology_graph", "derive_structure_links",
             "derive_canonicalization",
         ]
@@ -519,6 +522,7 @@ class TestFinalizeDocument:
             "prepare_document", "detect_and_translate", "derive_document_metadata",
             "derive_picture_descriptions", "purge_document_derivations",
             "derive_text_embeddings", "derive_image_embeddings",
+            "derive_document_anchors",
             "derive_ontology_graph", "derive_structure_links",
             "derive_canonicalization",
         ]
