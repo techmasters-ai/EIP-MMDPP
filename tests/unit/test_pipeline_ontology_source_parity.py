@@ -34,7 +34,7 @@ def ontology(request, monkeypatch):
 def test_is_valid_upstream_ref_valid_section(ontology):
     ref = SimpleNamespace(
         entity_type="SECTION",
-        identity_values={"heading": "Maintenance", "page_start": 5},
+        identity_values={"section_number": "3.2.1"},
     )
     assert _is_valid_upstream_ref(ref, ontology) is True
 
@@ -42,13 +42,14 @@ def test_is_valid_upstream_ref_valid_section(ontology):
 def test_is_valid_upstream_ref_missing_identity_field(ontology):
     ref = SimpleNamespace(
         entity_type="SECTION",
-        identity_values={"heading": "Maintenance"},  # missing page_start
+        identity_values={"heading": "Maintenance"},  # missing section_number
     )
     assert _is_valid_upstream_ref(ref, ontology) is False
 
 
 def test_is_valid_upstream_ref_empty_identity_fields(ontology):
-    """DOCUMENT has graph_id_fields=[] — no anchors → not a valid upstream ref."""
+    """DOCUMENT now has graph_id_fields=[document_number] post-B-3 — a ref
+    without that key is invalid just like any other identity-bearing entity."""
     ref = SimpleNamespace(
         entity_type="DOCUMENT",
         identity_values={"title": "x"},

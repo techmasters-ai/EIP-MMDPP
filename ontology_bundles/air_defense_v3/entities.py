@@ -84,10 +84,13 @@ class DocumentEntity(BaseModel):
 class SectionEntity(BaseModel):
     """Document Section — A section or heading within a document
     """
-    model_config = ConfigDict(ontology_name="SECTION", graph_id_fields=['heading', 'page_start'], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
+    model_config = ConfigDict(ontology_name="SECTION", graph_id_fields=["section_number"], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
 
-    heading: str = Field(..., description="Section heading or title text", examples=['Chapter 3: Maintenance Procedures', 'Chapter 3: Maintenance Procedures'])
-    page_start: int = Field(..., description="Starting page number of the section", examples=[42, 42])
+    section_number: str = Field(..., description="Hierarchical section number within the document (docs:17235 R16-compliant identity)", examples=['3.2.1', '4.1', 'A-7'])
+    heading: Optional[str] = Field(default=None, description="Section heading or title text", examples=['Chapter 3: Maintenance Procedures'])
+    section_path: Optional[str] = Field(default=None, description="Full breadcrumb path to the section", examples=['Chapter 3 > Maintenance > Calibration'])
+    document_id: Optional[str] = Field(default=None, description="Internal document UUID this section belongs to")
+    page_start: Optional[int] = Field(default=None, description="Starting page number of the section", examples=[42])
     page_end: Optional[int] = Field(default=None, description="Ending page number of the section", examples=[67])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 

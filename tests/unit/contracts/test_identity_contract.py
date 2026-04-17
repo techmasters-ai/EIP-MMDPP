@@ -48,7 +48,6 @@ def test_identity_field_examples_are_short():
                     assert "\n" not in s, f"{name}.{fname} example contains newline"
 
 
-@pytest.mark.xfail(strict=True, reason="Chunk B will fix")
 def test_identity_fields_not_named_heading_or_title():
     banned = {"heading", "title", "caption", "description"}
     for name, cls in ALL_ENTITIES.items():

@@ -40,14 +40,14 @@ def ontology(request, monkeypatch):
 
 
 def test_build_logical_identity_section(ontology):
-    """SECTION has identity_fields=[heading, page_start], scope=document.
+    """SECTION has identity_fields=[section_number], scope=document (post-B-4).
     Logical identity extraction must be identical under both sources."""
-    instance = SimpleNamespace(heading="Maintenance", page_start=5)
+    instance = SimpleNamespace(section_number="3.2.1")
     identity = _build_logical_identity("SECTION", instance, ontology, document_id="doc-1")
     assert identity is not None
     assert identity.entity_type == "SECTION"
-    assert identity.identity_field_names == ("heading", "page_start")
-    assert identity.identity_tuple == ("Maintenance", 5)
+    assert identity.identity_field_names == ("section_number",)
+    assert identity.identity_tuple == ("3.2.1",)
     assert identity.scope == "document"
     assert identity.document_id == "doc-1"
 
@@ -71,19 +71,19 @@ def test_build_logical_identity_unknown_type_returns_none(ontology):
 def test_logical_identity_from_dict_section(ontology):
     identity = logical_identity_from_dict(
         "SECTION",
-        {"heading": "Maintenance", "page_start": 5},
+        {"section_number": "3.2.1"},
         ontology,
         document_id="doc-1",
     )
     assert identity is not None
-    assert identity.identity_tuple == ("Maintenance", 5)
+    assert identity.identity_tuple == ("3.2.1",)
 
 
 def test_logical_identity_from_dict_missing_key_returns_none(ontology):
     assert (
         logical_identity_from_dict(
             "SECTION",
-            {"heading": "Maintenance"},  # missing page_start
+            {"heading": "Maintenance"},  # missing section_number
             ontology,
             document_id="doc-1",
         )

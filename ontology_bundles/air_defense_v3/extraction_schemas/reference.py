@@ -118,25 +118,39 @@ def _dedupe_entities_by_identity(cls, values):
 class SectionEntity(BaseModel):
     """Document Section — narrow extraction view of canonical SECTION.
 
-    Identity: ``heading`` + ``page_start`` (document-scoped).
+    Identity: ``section_number`` (document-scoped, docs:17235 R16).
     """
     model_config = ConfigDict(
         extra="ignore",
         ontology_name="SECTION",
-        graph_id_fields=["heading", "page_start"],
+        graph_id_fields=["section_number"],
         identity_scope="document",
         is_entity=True,
     )
 
-    heading: str = Field(
+    section_number: str = Field(
         ...,
-        description="Section heading or title text",
-        examples=["Chapter 3: Maintenance Procedures", "Chapter 3: Maintenance Procedures"],
+        description="Hierarchical section number within the document (docs:17235 R16-compliant identity)",
+        examples=["3.2.1", "4.1", "A-7"],
     )
-    page_start: int = Field(
-        ...,
+    heading: Optional[str] = Field(
+        default=None,
+        description="Section heading or title text",
+        examples=["Chapter 3: Maintenance Procedures"],
+    )
+    section_path: Optional[str] = Field(
+        default=None,
+        description="Full breadcrumb path to the section",
+        examples=["Chapter 3 > Maintenance > Calibration"],
+    )
+    document_id: Optional[str] = Field(
+        default=None,
+        description="Internal document UUID this section belongs to",
+    )
+    page_start: Optional[int] = Field(
+        default=None,
         description="Starting page number of the section",
-        examples=[42, 42],
+        examples=[42],
     )
     page_end: Optional[int] = Field(
         default=None,

@@ -42,14 +42,17 @@ entity_types:
 
   - name: SECTION
     label: "Document Section"
-    identity_fields: [heading, page_start]
+    identity_fields: [section_number]
     identity_scope: document
     description: "A section or heading within a document"
     parent: DocumentResource
     properties:
       type: object
       properties:
+        section_number: {type: string, description: "Hierarchical section number within the document (docs:17235 R16-compliant identity)", example: "3.2.1"}
         heading: {type: string, description: "Section heading or title text", example: "Chapter 3: Maintenance Procedures"}
+        section_path: {type: string, description: "Full breadcrumb path to the section", example: "Chapter 3 > Maintenance > Calibration"}
+        document_id: {type: string, description: "Internal document UUID this section belongs to"}
         page_start: {type: integer, description: "Starting page number of the section", example: 42}
         page_end: {type: integer, description: "Ending page number of the section", example: 67}
 
