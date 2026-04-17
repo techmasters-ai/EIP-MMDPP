@@ -30,7 +30,7 @@
       "id": "C",
       "subject": "Extraction schemas rewrite",
       "tasks": 5,
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         "B"
       ]
@@ -375,27 +375,37 @@
     {
       "id": "C-1",
       "subject": "Delete extraction_schemas/reference.py",
-      "status": "pending"
+      "status": "completed",
+      "commit": "118a197",
+      "notes": "Deleted reference.py (289 lines). Also dropped strict=True on test_llm_emitted_identity_examples_not_heading_style xfail (XPASS after heading-style examples left the codebase). Expected follow-up breakages in test_extraction_schemas.py (collection error), test_coverage_checker.py, and test_docs_compliance_contracts.py::test_pass_root_list_dedup_schema_local — all fixed in Chunk E-11."
     },
     {
       "id": "C-2",
       "subject": "Delete reference pass from manifest.yaml",
-      "status": "pending"
+      "status": "completed",
+      "commit": "b010f14",
+      "notes": "Removed `reference` pass block from manifest.yaml; manifest now declares 4 passes. Verified load_bundle_manifest parses. Follow-up failures in test_ontology_bundles.py (5-pass count) are expected Chunk E-11 scope. Side-benefit: C-1's test_coverage_checker failure now green."
     },
     {
       "id": "C-3",
       "subject": "Rewrite radar_domain.py",
-      "status": "pending"
+      "status": "completed",
+      "commit": "2c23381",
+      "notes": "Promoted dedupe_entities_by_identity into validators.py as shared helper. Removed local copy from radar_domain.py. Tightened generic identity examples per B-30 advisory I-1/I-2 (Antenna/Receiver/Transmitter/SPC name fields + matching edge examples on RadarSystemEntity). R19/demotion/graph_id_fields audits no-ops (Phase 5/6/7 already addressed)."
     },
     {
       "id": "C-4",
       "subject": "Rewrite missile_domain.py + other_systems.py",
-      "status": "pending"
+      "status": "completed",
+      "commits": ["86a3486", "05536fe"],
+      "notes": "Both files consolidate onto the shared dedupe_entities_by_identity helper from validators.py. Fixed 4 INSTALLED_ON platform edge examples (2 per file) using the B-32 bc7af88 precedent. Identity examples already specific in both files — no B-30-style tightening required. R19 audit no-op."
     },
     {
       "id": "C-5",
       "subject": "system_links.py R17 cleanup",
-      "status": "pending"
+      "status": "completed",
+      "commit": "5a997ee",
+      "notes": "Audit-only no-op (empty commit) mirroring B-31 c4894f5 pattern. R17 applies only to identity examples on is_entity=True classes; system_links has only two is_entity=False DTO classes (SystemLinkRelationship, SystemLinksPass). Decision-4 DTO pattern preserved."
     },
     {
       "id": "D-1",
@@ -557,5 +567,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T05:15:00.000000+00:00"
+  "lastUpdated": "2026-04-17T14:30:00.000000+00:00"
 }
