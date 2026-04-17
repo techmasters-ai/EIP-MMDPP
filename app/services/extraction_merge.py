@@ -506,6 +506,77 @@ def logical_identity_from_dict(
     )
 
 
+def _to_merged_entity_record(
+    model: BaseModel,
+    ontology: dict,
+    document_id: str,
+    pass_origin: str = "document_anchors",
+) -> MergedEntityRecord:
+    """Convert a Pydantic entity model → MergedEntityRecord (spec §3.4 + §8.2).
+
+    Used by walker-sourced passes (e.g. the Docling anchor walker, Chunk D)
+    that emit Pydantic models directly instead of going through the
+    PassResult / ontology-lookup path. Identity is derived from the
+    model's ``model_config['graph_id_fields']`` (or, for is_entity=False
+    components, delegated to ``_build_logical_identity`` so the A0-1
+    content-based branch runs). The caller's ``document_id`` is stamped
+    onto ``properties`` so downstream TextChunk joins work regardless of
+    whether the model declares its own ``document_id`` field.
+
+    ``ontology`` is accepted for signature parity with
+    ``_build_logical_identity`` and is only consulted by the component
+    branch; passing ``{}`` is normal for walker-sourced entities.
+    """
+    cfg = getattr(model, "model_config", {}) or {}
+    entity_type = cfg["ontology_name"]
+
+    if cfg.get("is_entity") is False:
+        identity = _build_logical_identity(entity_type, model, ontology, document_id)
+    else:
+        id_fields = tuple(cfg.get("graph_id_fields") or ())
+        scope = cfg.get("identity_scope", "document")
+        identity_tuple = tuple(getattr(model, f, None) for f in id_fields)
+        identity = LogicalIdentity(
+            entity_type=entity_type,
+            identity_field_names=id_fields,
+            identity_tuple=identity_tuple,
+            scope=scope,
+            document_id=document_id if scope == "document" else None,
+        )
+
+    id_field_set = set(cfg.get("graph_id_fields") or ())
+    dumped = model.model_dump(mode="json")
+    properties: dict[str, Any] = {}
+    for fname, value in dumped.items():
+        if fname in id_field_set:
+            continue
+        finfo = type(model).model_fields.get(fname)
+        extra = finfo.json_schema_extra if finfo else None
+        if isinstance(extra, dict) and extra.get("edge_label"):
+            continue
+        properties[fname] = value
+    # Stamp document_id unconditionally: SectionEntity / DocumentEntity etc.
+    # declare document_id as Optional[str]=None, so model_dump yields None
+    # when the caller did not populate it. Walker-sourced passes never
+    # populate document_id on the model itself; the caller's argument is
+    # authoritative.
+    if properties.get("document_id") is None:
+        properties["document_id"] = document_id
+
+    identity_values_dict = dict(
+        zip(identity.identity_field_names, identity.identity_tuple)
+    )
+    display_label = build_display_label(entity_type, identity_values_dict, properties)
+
+    return MergedEntityRecord(
+        identity=identity,
+        properties=properties,
+        confidence=1.0,
+        pass_origins={pass_origin},
+        display_label=display_label,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Unified entity-graph walker (plan Task 35a/35b)
 # ---------------------------------------------------------------------------
