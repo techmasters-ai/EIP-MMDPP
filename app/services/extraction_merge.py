@@ -248,6 +248,13 @@ class MergedEntityRecord:
     confidence: float             # highest confidence across merges
     pass_origins: set[str]        # which passes contributed
     display_label: str            # derived via build_display_label
+    # Phase 8 Task 52a: aggregated provenance rows — one per distinct
+    # (instance_id, element_uid) pair across all passes that produced
+    # this record. Populated by merge_and_resolve after the entity-merge
+    # loop; consumed by _serialize_for_audit (Task 53) to emit mentions[].
+    # Default empty so existing fixtures that construct the record
+    # without this kwarg continue to work.
+    provenance: list["ExtractionProvenance"] = field(default_factory=list)
 
 
 @dataclass
@@ -901,6 +908,49 @@ def merge_and_resolve(
                             existing.properties[k] = v
                     existing.confidence = max(existing.confidence, confidence)
                     existing.pass_origins.add(pass_name)
+
+    # --- Phase 1.5: provenance aggregation (plan Task 52a) ---
+    #
+    # For each pass's ExtractionProvenance rows, resolve the (entity_type,
+    # identity_values) dict to a LogicalIdentity via
+    # logical_identity_from_dict — the same helper upstream-refs uses, so
+    # document_id / scope / key order all stay in lockstep with the
+    # entity-merge path. Rows that can't normalize (missing identity key,
+    # unknown entity type) are dropped with a WARNING distinguishing the
+    # "malformed" reason from the "post-merge-absent" reason for
+    # observability.
+    #
+    # Dedup key is (instance_id, element_uid): a single logical instance
+    # can legitimately reference multiple source elements (different
+    # element_uid rows sharing the same instance_id are retained); pure
+    # echoes with identical pairs collapse.
+    for pass_name, pass_result in pass_results.items():
+        seen_keys: set[tuple[str, str]] = set()
+        for prov in pass_result.provenance:
+            identity = logical_identity_from_dict(
+                prov.ontology_name,
+                prov.identity_values,
+                ontology,
+                document_id,
+            )
+            if identity is None:
+                logger.warning(
+                    "drop malformed provenance instance_id=%s type=%s pass=%s",
+                    prov.instance_id, prov.ontology_name, pass_name,
+                )
+                continue
+            record = entity_index.get(identity)
+            if record is None:
+                logger.warning(
+                    "drop post-merge-absent provenance instance_id=%s type=%s pass=%s",
+                    prov.instance_id, prov.ontology_name, pass_name,
+                )
+                continue
+            key = (prov.instance_id, prov.element_uid)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            record.provenance.append(prov)
 
     # --- Pass 2: resolve relationships (plan Task 36) ---
     #
