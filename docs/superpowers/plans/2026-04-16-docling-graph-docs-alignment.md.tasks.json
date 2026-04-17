@@ -354,7 +354,9 @@
     {
       "id": "B-30",
       "subject": "R16/R17 example cleanup for 17 unchanged entities",
-      "status": "pending"
+      "status": "completed",
+      "commit": "3628c01",
+      "notes": "Subagent + 3-stage review. 16 of 17 entities had duplicates fixed (GuidanceMethodEntity has enum-only field, no examples — tracked separately). Advisories I-1/I-2 (generic 'Main X / Backup X' pairs for Transmitter/Receiver/SPCChain) deferred to C-3 rewrite."
     },
     {
       "id": "B-31",
@@ -551,5 +553,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T04:00:00.000000+00:00"
+  "lastUpdated": "2026-04-17T04:30:00.000000+00:00"
 }
