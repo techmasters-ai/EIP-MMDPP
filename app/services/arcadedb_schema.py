@@ -197,11 +197,26 @@ async def sync_schema_from_ontology(
                 f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {prop_type}"
             )
         props_schema = entity_def.get("properties", {}).get("properties", {})
+        declared_props: set[str] = set()
         for prop_name, prop_def in props_schema.items():
             yaml_type = prop_def.get("type", "string")
             arcade_type = _YAML_TO_ARCADE.get(yaml_type, "STRING")
             entity_ddl.append(
                 f"CREATE PROPERTY {etype}.{prop_name} IF NOT EXISTS {arcade_type}"
+            )
+            declared_props.add(prop_name)
+        # Phase 8 follow-up (Phase 6b upsert-index fix): document-scoped
+        # entities get indexed on a composite that includes document_id.
+        # Some Pydantic entity classes don't declare document_id as a
+        # field (walker stamps it at upsert-time via
+        # _to_merged_entity_record's ``properties.setdefault``), so the
+        # introspected properties_schema lacks it — the subsequent
+        # CREATE INDEX would fail "property does not exist". Declare it
+        # explicitly here for document-scoped types.
+        if entity_def.get("identity_scope", "global") == "document" \
+                and "document_id" not in declared_props:
+            entity_ddl.append(
+                f"CREATE PROPERTY {etype}.document_id IF NOT EXISTS STRING"
             )
     await _run_ddl_batch(client, database, entity_ddl, phase="entity_types", report=report)
     report.types_created += len(entity_types)
