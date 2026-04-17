@@ -168,9 +168,9 @@ class WeaponSystemEntity(BaseModel):
 class EquipmentSystemEntity(BaseModel):
     """Equipment System — Top-level integrated weapon or defense system (generic)
     """
-    model_config = ConfigDict(ontology_name="EQUIPMENT_SYSTEM", graph_id_fields=[], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
+    model_config = ConfigDict(ontology_name="EQUIPMENT_SYSTEM", graph_id_fields=["name"], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    name: Optional[str] = Field(default=None, description="Common name or designation of the system", examples=['Patriot PAC-3'])
+    name: str = Field(..., description="Common name or designation of the system", examples=['Patriot PAC-3', 'THAAD', 'Aegis Combat System'])
     designation: Optional[str] = Field(default=None, description="Military AN/ designation or program designation", examples=['AN/MPQ-65'], pattern='^AN/[A-Z]{3}-\\d+')
     program_office: Optional[str] = Field(default=None, description="Managing program office", examples=['PEO Missiles and Space'])
     status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})

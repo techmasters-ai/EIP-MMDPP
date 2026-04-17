@@ -649,6 +649,8 @@ entity_types:
 
   - name: EQUIPMENT_SYSTEM
     label: "Equipment System"
+    identity_fields: [name]
+    identity_scope: global
     description: "Top-level integrated weapon or defense system (generic)"
     parent: MilitarySystem
     properties:
