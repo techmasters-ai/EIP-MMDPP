@@ -632,7 +632,7 @@ class AirDefenseArtillerySystemEntity(BaseModel):
     platform: Optional["PlatformEntity"] = edge(
         label="INSTALLED_ON",
         description="Platform on which this AAA system is installed.",
-        examples=["ZSU-23-4 Shilka", "Gepard FlakPanzer"],
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
         default=None,
     )
     capabilities: List["CapabilityEntity"] = edge(
@@ -708,7 +708,7 @@ class FireControlSystemEntity(BaseModel):
     platform: Optional["PlatformEntity"] = edge(
         label="INSTALLED_ON",
         description="Platform on which this fire control system is installed.",
-        examples=["AN/MPQ-65 Radar Set", "AN/TPY-2 Radar"],
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
         default=None,
     )
     platforms: List["PlatformEntity"] = edge(
