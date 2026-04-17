@@ -410,17 +410,23 @@
     {
       "id": "D-1",
       "subject": "_to_merged_entity_record helper",
-      "status": "pending"
+      "status": "completed",
+      "commit": "0d2b02b",
+      "notes": "Helper reads identity from model_config['graph_id_fields'] directly (walker uses Pydantic SSoT, not ontology dict). Components delegate to _build_logical_identity A0-1 branch. Document_id stamped unconditionally when None in dumped properties. 5 tests pass. Adapted signature/attribute names from plan draft to match real LogicalIdentity (entity_type/identity_tuple, not ontology_name/identity_values) and real build_display_label (takes 3 args: entity_type/identity_values dict/properties)."
     },
     {
       "id": "D-2",
       "subject": "_extract_document_number_from_front_matter",
-      "status": "pending"
+      "status": "completed",
+      "commit": "40097de",
+      "notes": "Created app/services/docling_anchors.py with _extract_document_number_from_front_matter. Regex matches TM/MIL-STD/MIL-DTL/MIL-HDBK/MIL-PRF/ANSI-IEEE/ISO/DoD designators in first 30 title/section-header items. Returns None when no match. 8 tests pass."
     },
     {
       "id": "D-3",
       "subject": "Anchor walker walk()",
-      "status": "pending",
+      "status": "completed",
+      "commit": "1909898",
+      "notes": "Implemented walk() in app/services/docling_anchors.py. Section-stack mirrors converter.py:296-318 with heading_level sourced from item.level (declared) when present, tree_depth fallback for real-PDF-like docs. DOCUMENT emission conditional on document_number; HAS_SECTION/HAS_FIGURE/HAS_TABLE edges gated accordingly. CHILD_OF always emitted. 9 new tests pass (7 plan scenarios + positive designator + MergedExtraction shape).",
       "blockedBy": [
         "D-1",
         "D-2"
@@ -567,5 +573,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T14:30:00.000000+00:00"
+  "lastUpdated": "2026-04-17T16:00:00.000000+00:00"
 }
