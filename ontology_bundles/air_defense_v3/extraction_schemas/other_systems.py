@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from ..validators import (
     coerce_optional_confidence,
     coerce_optional_text,
+    dedupe_entities_by_identity,
 )
 
 
@@ -45,52 +46,6 @@ def edge(
     if examples is not None:
         field_kwargs["examples"] = examples
     return Field(json_schema_extra=existing_extra, **field_kwargs)
-
-
-def _dedupe_entities_by_identity(cls, values):
-    """Merge-preserving dedup for pass-root entity lists (plan Task 9d)."""
-    if not isinstance(values, dict):
-        return values
-    for fname, finfo in cls.model_fields.items():
-        raw = values.get(fname)
-        if not isinstance(raw, list) or not raw:
-            continue
-        from typing import get_args as _ga
-        def _find_basemodel(ann):
-            if ann is None:
-                return None
-            if isinstance(ann, type) and issubclass(ann, BaseModel):
-                return ann
-            for a in _ga(ann):
-                r = _find_basemodel(a)
-                if r is not None:
-                    return r
-            return None
-        inner_cls = _find_basemodel(getattr(finfo, "annotation", None))
-        if inner_cls is None:
-            continue
-        id_fields = list((inner_cls.model_config or {}).get("graph_id_fields", []) or [])
-        if not id_fields:
-            continue
-        accum: dict[tuple, dict] = {}
-        order: list[tuple] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            key = tuple(item.get(k) for k in id_fields)
-            if key not in accum:
-                accum[key] = dict(item)
-                order.append(key)
-            else:
-                merged = accum[key]
-                for k, v in item.items():
-                    if k in id_fields or v is None:
-                        continue
-                    if k not in merged or merged[k] is None:
-                        merged[k] = v
-        if len(accum) != len(raw):
-            values[fname] = [accum[k] for k in order]
-    return values
 
 
 # ----------------------------------------------------------------------
@@ -170,7 +125,7 @@ class AirDefenseArtillerySystemEntity(BaseModel):
     platform: Optional[PlatformEntity] = edge(
         label="INSTALLED_ON",
         description="Platform on which this AAA system is installed.",
-        examples=["ZSU-23-4 Shilka", "Gepard FlakPanzer"],
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
         default=None,
     )
 
@@ -271,7 +226,7 @@ class FireControlSystemEntity(BaseModel):
     platform: Optional[PlatformEntity] = edge(
         label="INSTALLED_ON",
         description="Platform on which this fire control system is installed.",
-        examples=["AN/MPQ-65 Radar Set", "AN/TPY-2 Radar"],
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
         default=None,
     )
 
@@ -423,4 +378,4 @@ class OtherSystemsPass(BaseModel):
     iads_systems: List[IntegratedAirDefenseSystemEntity] = Field(default_factory=list)
     specifications: List[SpecificationEntity] = Field(default_factory=list)
 
-    _dedupe_root_entities = model_validator(mode="before")(_dedupe_entities_by_identity)
+    _dedupe_root_entities = model_validator(mode="before")(dedupe_entities_by_identity)
