@@ -270,62 +270,86 @@
     {
       "id": "B-18",
       "subject": "SPECIFICATION \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "fce1fb3",
+      "notes": "Standalone commit (had required-field flips + validation-test rewrites)."
     },
     {
       "id": "B-19",
       "subject": "MODULATION \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled in demotion batch B-19..B-29."
     },
     {
       "id": "B-20",
       "subject": "RF_SIGNATURE \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled in demotion batch B-19..B-29."
     },
     {
       "id": "B-21",
       "subject": "RF_EMISSION \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled; edge rf_signatures→HAS_SIGNATURE removed (A0-5)."
     },
     {
       "id": "B-22",
       "subject": "SCAN_PATTERN \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled in demotion batch B-19..B-29."
     },
     {
       "id": "B-23",
       "subject": "IF_AMPLIFIER \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled; edge receivers→PART_OF removed (A0-5). Tolerated orphan."
     },
     {
       "id": "B-24",
       "subject": "MISSILE_PERFORMANCE \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled in demotion batch B-19..B-29."
     },
     {
       "id": "B-25",
       "subject": "MISSILE_PHYSICAL_CHARACTERISTICS \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled. Tolerated orphan (needs MISSILE_SYSTEM parent edge in D/E)."
     },
     {
       "id": "B-26",
       "subject": "PROPULSION_STACK \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled; resolves prior graph_id_fields=[] anti-pattern; propulsion_stages edges removed (A0-5)."
     },
     {
       "id": "B-27",
       "subject": "PROPULSION_STAGE \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled. Tolerated orphan (previously reached via PROPULSION_STACK)."
     },
     {
       "id": "B-28",
       "subject": "RADAR_PERFORMANCE \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled in demotion batch B-19..B-29."
     },
     {
       "id": "B-29",
       "subject": "ENGAGEMENT_TIMELINE \u2192 is_entity=False",
-      "status": "pending"
+      "status": "completed",
+      "commit": "e075651",
+      "notes": "Bundled in demotion batch B-19..B-29."
     },
     {
       "id": "B-30",
@@ -527,5 +551,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T03:15:00.000000+00:00"
+  "lastUpdated": "2026-04-17T04:00:00.000000+00:00"
 }
