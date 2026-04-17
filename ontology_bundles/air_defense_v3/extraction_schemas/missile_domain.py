@@ -159,7 +159,7 @@ class SeekerEntity(BaseModel):
     seeker_nomenclature: str = Field(
         ...,
         description="Designation or nomenclature of the seeker",
-        examples=["Ka-band active seeker", "Ka-band active seeker"],
+        examples=["Ka-band active seeker", "Ku-band semi-active seeker"],
     )
     seeker_type: Optional[str] = Field(
         default=None,
@@ -223,7 +223,7 @@ class PlatformEntity(BaseModel):
     name: str = Field(
         ...,
         description="Common name of the platform",
-        examples=["SA-20 TEL", "SA-20 TEL"],
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
     )
     platform_type: Optional[str] = Field(
         default=None,
@@ -263,7 +263,7 @@ class MissileSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description="Common name of the missile system",
-        examples=["PAC-3 MSE", "PAC-3 MSE"],
+        examples=["PAC-3 MSE", "SM-6 Block IA"],
     )
     nomenclature: Optional[str] = Field(
         default=None,
@@ -301,7 +301,7 @@ class LauncherSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description="Common name of the launcher system",
-        examples=["M903 Launching Station", "M903 Launching Station"],
+        examples=["M903 Launching Station", "M270 MLRS"],
     )
     launcher_type: Optional[str] = Field(
         default=None,

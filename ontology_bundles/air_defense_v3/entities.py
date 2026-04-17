@@ -140,7 +140,7 @@ class PlatformEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="PLATFORM", graph_id_fields=['name'], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
 
-    name: str = Field(..., description="Common name of the platform", examples=['SA-20 TEL', 'SA-20 TEL'])
+    name: str = Field(..., description="Common name of the platform", examples=['SA-20 TEL', 'Patriot PAC-3 ICC'])
     platform_designation: Optional[str] = Field(default=None, description="Military designation of the platform", examples=['5P85SE'])
     platform_type: Optional[str] = Field(default=None, description="Category of the platform", json_schema_extra={"enum": ["AIRCRAFT", "SHIP", "GROUND_VEHICLE", "FIXED_SITE", "SPACE", "MOBILE_LAUNCHER", "AIR_DEFENSE_BATTERY"]})
     country: Optional[str] = Field(default=None, description="Country of origin or primary operator", examples=['Russia'])
@@ -156,7 +156,7 @@ class WeaponSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="WEAPON_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the weapon system", examples=['Phalanx CIWS', 'Phalanx CIWS'])
+    system_name: str = Field(..., description="Common name of the weapon system", examples=['Phalanx CIWS', 'Bofors 40 mm L/70'])
     nomenclature: Optional[str] = Field(default=None, description="Military designation", examples=['Mk 15'])
     weapon_type: Optional[str] = Field(default=None, description="Category of weapon system", examples=['Close-In Weapon System'])
     subsystems: List["SubsystemEntity"] = edge(label="CONTAINS", default_factory=list)
@@ -227,7 +227,7 @@ class RadarSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="RADAR_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the radar system", examples=['Tombstone', 'Tombstone'])
+    system_name: str = Field(..., description="Common name of the radar system", examples=['Tombstone', 'Clam Shell'])
     nomenclature: Optional[str] = Field(default=None, description="Military AN/ or NATO reporting nomenclature", examples=['AN/MPQ-65'])
     ELNOT: Optional[str] = Field(default=None, description="Electronic Intelligence Notation identifier", examples=['TOMBSTONE'])
     DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code")
@@ -279,7 +279,7 @@ class MissileSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="MISSILE_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the missile system", examples=['PAC-3 MSE', 'PAC-3 MSE'])
+    system_name: str = Field(..., description="Common name of the missile system", examples=['PAC-3 MSE', 'SM-6 Block IA'])
     nomenclature: Optional[str] = Field(default=None, description="Military designation or NATO reporting name", examples=['MIM-104F'])
     DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code")
     system_status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
@@ -306,7 +306,7 @@ class AirDefenseArtillerySystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="AIR_DEFENSE_ARTILLERY_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the AAA system", examples=['ZSU-23-4 Shilka', 'ZSU-23-4 Shilka'])
+    system_name: str = Field(..., description="Common name of the AAA system", examples=['ZSU-23-4 Shilka', 'Gepard FlakPanzer'])
     DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code")
     caliber: Optional[str] = Field(default=None, description="Gun barrel caliber", examples=['23 mm'])
     max_tactical_range: Optional[str] = Field(default=None, description="Maximum tactical engagement range", examples=['2.5 km'])
@@ -330,7 +330,7 @@ class ElectronicWarfareSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="ELECTRONIC_WARFARE_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the EW system", examples=['AN/ALQ-99', 'AN/ALQ-99'])
+    system_name: str = Field(..., description="Common name of the EW system", examples=['AN/ALQ-99', 'AN/ALQ-218'])
     nomenclature: Optional[str] = Field(default=None, description="Military AN/ designation", examples=['AN/ALQ-99'])
     ELNOT: Optional[str] = Field(default=None, description="Electronic Intelligence Notation identifier")
     ew_role: Optional[str] = Field(default=None, description="Electronic warfare functional role", json_schema_extra={"enum": ["EA", "ES", "EP", "SIGINT", "ELINT", "COMINT"]})
@@ -347,7 +347,7 @@ class FireControlSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="FIRE_CONTROL_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the fire control system", examples=['AN/MPQ-65 Radar Set', 'AN/MPQ-65 Radar Set'])
+    system_name: str = Field(..., description="Common name of the fire control system", examples=['AN/MPQ-65 Radar Set', 'AN/TPY-2 Radar'])
     nomenclature: Optional[str] = Field(default=None, description="Military AN/ designation", examples=['AN/MPQ-65'])
     missile_systems: List["MissileSystemEntity"] = edge(label="GUIDES", default_factory=list)
     platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
@@ -360,7 +360,7 @@ class IntegratedAirDefenseSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="INTEGRATED_AIR_DEFENSE_SYSTEM", graph_id_fields=['name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    name: str = Field(..., description="Common or NATO reporting name of the IADS", examples=['S-400 Triumf', 'S-400 Triumf'])
+    name: str = Field(..., description="Common or NATO reporting name of the IADS", examples=['S-400 Triumf', 'Patriot PAC-3'])
     status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED"]})
     doctrine: Optional[str] = Field(default=None, description="Employment doctrine or concept of operations", examples=['Layered defense with multi-range engagement'])
     radar_systems: List["RadarSystemEntity"] = edge(label="CONTAINS", default_factory=list)
@@ -376,7 +376,7 @@ class LauncherSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="LAUNCHER_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the launcher system", examples=['M903 Launching Station', 'M903 Launching Station'])
+    system_name: str = Field(..., description="Common name of the launcher system", examples=['M903 Launching Station', 'M270 MLRS'])
     launcher_type: Optional[str] = Field(default=None, description="Category of launcher mechanism", examples=['Vertical cold-launch canister'])
     capacity: Optional[int] = Field(default=None, description="Number of missiles the launcher can hold", examples=[16])
     missile_systems: List["MissileSystemEntity"] = edge(label="LAUNCHES", default_factory=list)
@@ -393,7 +393,7 @@ class FrequencyBandEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="FREQUENCY_BAND", graph_id_fields=['band_name'], identity_scope="global", dodaf_parent="EMEntity", is_entity=True)
 
-    band_name: str = Field(..., description="Common name of the frequency band", examples=['X-band', 'X-band'])
+    band_name: str = Field(..., description="Common name of the frequency band", examples=['X-band', 'S-band'])
     designation: Optional[str] = Field(default=None, description="IEEE or NATO band letter designation", json_schema_extra={"enum": ["HF", "VHF", "UHF", "L", "S", "C", "X", "Ku", "K", "Ka", "V", "W", "mm"]})
     freq_min_mhz: Optional[float] = Field(default=None, description="Lower frequency limit of the band in MHz", examples=[8000])
     freq_max_mhz: Optional[float] = Field(default=None, description="Upper frequency limit of the band in MHz", examples=[12000])
@@ -455,7 +455,7 @@ class WaveformEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="WAVEFORM", graph_id_fields=['waveform_name'], identity_scope="document", dodaf_parent="EMEntity", is_entity=True)
 
-    waveform_name: str = Field(..., description="Name of the waveform mode", examples=['Search Mode 1', 'Search Mode 1'])
+    waveform_name: str = Field(..., description="Name of the waveform mode", examples=['Search Mode 1', 'Track Mode 3'])
     waveform_family: Optional[str] = Field(default=None, description="Family or class of the waveform", json_schema_extra={"enum": ["PULSE_DOPPLER", "FMCW", "CW", "LFM_CHIRP", "PHASE_CODED", "BURST", "PULSE"]})
     nominal_pulse_duration_us: Optional[float] = Field(default=None, description="Nominal pulse duration in microseconds", examples=[10.0])
     pulse_duration_limits: Optional[str] = Field(default=None, description="Pulse duration range limits (min-max) in microseconds", examples=['1-100 us'])
@@ -485,7 +485,7 @@ class AntennaEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="ANTENNA", graph_id_fields=['name'], identity_scope="document", dodaf_parent="EMEntity", is_entity=True)
 
-    name: str = Field(..., description="Name or designation of the antenna", examples=['Main Array Antenna', 'Main Array Antenna'])
+    name: str = Field(..., description="Name or designation of the antenna", examples=['Main Array Antenna', 'IFF Antenna'])
     antenna_type: Optional[str] = Field(default=None, description="Physical type of antenna", json_schema_extra={"enum": ["PHASED_ARRAY", "DISH", "DIPOLE", "HORN", "PATCH", "YAGI", "CONFORMAL", "SLOTTED_ARRAY", "ESA"]})
     tx_polarization: Optional[str] = Field(default=None, description="Transmit polarization", examples=['Linear vertical'])
     rx_polarization: Optional[str] = Field(default=None, description="Receive polarization", examples=['Linear vertical'])
@@ -512,7 +512,7 @@ class TransmitterEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="TRANSMITTER", graph_id_fields=['name'], identity_scope="document", dodaf_parent="EMEntity", is_entity=True)
 
-    name: str = Field(..., description="Name or designation of the transmitter", examples=['Main Transmitter Unit', 'Main Transmitter Unit'])
+    name: str = Field(..., description="Name or designation of the transmitter", examples=['Main Transmitter Unit', 'Backup Transmitter Unit'])
     peak_power_ERP_kw: Optional[float] = Field(default=None, description="Peak effective radiated power in kilowatts", examples=[1200])
     peak_power_at_transmitter_kw: Optional[float] = Field(default=None, description="Peak power at the transmitter output in kilowatts", examples=[150])
     duty_cycle: Optional[float] = Field(default=None, description="Transmitter duty cycle (0.0 to 1.0)", examples=[0.05])
@@ -527,7 +527,7 @@ class ReceiverEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="RECEIVER", graph_id_fields=['name'], identity_scope="document", dodaf_parent="EMEntity", is_entity=True)
 
-    name: str = Field(..., description="Name or designation of the receiver", examples=['Main Receiver Unit', 'Main Receiver Unit'])
+    name: str = Field(..., description="Name or designation of the receiver", examples=['Main Receiver Unit', 'Auxiliary Receiver Unit'])
     radome_loss_db: Optional[float] = Field(default=None, description="Signal loss through the radome in dB", examples=[0.5])
     clutter_improvement_factor_db: Optional[float] = Field(default=None, description="Improvement factor for clutter rejection in dB", examples=[30])
     noise_figure_db: Optional[float] = Field(default=None, description="Receiver noise figure in dB", examples=[3.5])
@@ -553,7 +553,7 @@ class SignalProcessingChainEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="SIGNAL_PROCESSING_CHAIN", graph_id_fields=['name'], identity_scope="document", dodaf_parent="EMEntity", is_entity=True)
 
-    name: str = Field(..., description="Name of the signal processing chain", examples=['Main Processing Chain', 'Main Processing Chain'])
+    name: str = Field(..., description="Name of the signal processing chain", examples=['Main Processing Chain', 'MTI Filter Chain'])
     matched_filter_detection_loss_db: Optional[float] = Field(default=None, description="Loss relative to ideal matched filter detection in dB", examples=[1.5])
     STC: Optional[str] = Field(default=None, description="Sensitivity Time Control configuration", examples=['Range-dependent, 20 dB dynamic range'])
     pulse_compression_ratio: Optional[float] = Field(default=None, description="Ratio of uncompressed to compressed pulse width", examples=[100])
@@ -596,7 +596,7 @@ class SeekerEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="SEEKER", graph_id_fields=['seeker_nomenclature'], identity_scope="document", dodaf_parent="WeaponEntity", is_entity=True)
 
-    seeker_nomenclature: str = Field(..., description="Designation or nomenclature of the seeker", examples=['Ka-band active seeker', 'Ka-band active seeker'])
+    seeker_nomenclature: str = Field(..., description="Designation or nomenclature of the seeker", examples=['Ka-band active seeker', 'Ku-band semi-active seeker'])
     seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter")
     seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker")
     seeker_type: Optional[str] = Field(default=None, description="Guidance technology used by the seeker", json_schema_extra={"enum": ["ACTIVE_RADAR", "SEMI_ACTIVE_RADAR", "IR", "DUAL_MODE", "ARM", "GPS_INS", "COMMAND"]})

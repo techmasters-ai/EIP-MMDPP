@@ -129,7 +129,7 @@ class AntennaEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name or designation of the antenna",
-        examples=["Main Array Antenna", "Main Array Antenna"],
+        examples=["Main Array Antenna", "IFF Antenna"],
     )
     antenna_type: Optional[str] = Field(
         default=None,
@@ -174,7 +174,7 @@ class ReceiverEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name or designation of the receiver",
-        examples=["Main Receiver Unit", "Main Receiver Unit"],
+        examples=["Main Receiver Unit", "Auxiliary Receiver Unit"],
     )
     noise_figure_db: Optional[float] = Field(
         default=None, description="Receiver noise figure in dB", examples=[3.5],
@@ -209,7 +209,7 @@ class TransmitterEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name or designation of the transmitter",
-        examples=["Main Transmitter Unit", "Main Transmitter Unit"],
+        examples=["Main Transmitter Unit", "Backup Transmitter Unit"],
     )
     peak_power_at_transmitter_kw: Optional[float] = Field(
         default=None,
@@ -252,7 +252,7 @@ class SPCEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name of the signal processing chain",
-        examples=["Main Processing Chain", "Main Processing Chain"],
+        examples=["Main Processing Chain", "MTI Filter Chain"],
     )
     matched_filter_detection_loss_db: Optional[float] = Field(
         default=None,
@@ -288,7 +288,7 @@ class FrequencyBandEntity(BaseModel):
     band_name: str = Field(
         ...,
         description="Common name of the frequency band",
-        examples=["X-band", "X-band"],
+        examples=["X-band", "S-band"],
     )
     designation: Optional[str] = Field(
         default=None,
@@ -333,7 +333,7 @@ class WaveformEntity(BaseModel):
     waveform_name: str = Field(
         ...,
         description="Name of the waveform mode",
-        examples=["Search Mode 1", "Search Mode 1"],
+        examples=["Search Mode 1", "Track Mode 3"],
     )
     waveform_family: Optional[str] = Field(
         default=None,
@@ -384,7 +384,7 @@ class PlatformEntity(BaseModel):
     name: str = Field(
         ...,
         description="Common name of the platform",
-        examples=["SA-20 TEL", "SA-20 TEL"],
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
     )
     platform_type: Optional[str] = Field(
         default=None,
@@ -424,7 +424,7 @@ class RadarSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description="Common name of the radar system",
-        examples=["Tombstone", "Tombstone"],
+        examples=["Tombstone", "Clam Shell"],
     )
     nomenclature: Optional[str] = Field(
         default=None,

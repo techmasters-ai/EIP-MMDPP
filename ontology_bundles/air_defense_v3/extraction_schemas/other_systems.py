@@ -110,7 +110,7 @@ class PlatformEntity(BaseModel):
     name: str = Field(
         ...,
         description="Common name of the platform",
-        examples=["SA-20 TEL", "SA-20 TEL"],
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
     )
     platform_type: Optional[str] = Field(
         default=None,
@@ -149,7 +149,7 @@ class AirDefenseArtillerySystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description="Common name of the AAA system",
-        examples=["ZSU-23-4 Shilka", "ZSU-23-4 Shilka"],
+        examples=["ZSU-23-4 Shilka", "Gepard FlakPanzer"],
     )
     caliber: Optional[str] = Field(
         default=None,
@@ -197,7 +197,7 @@ class ElectronicWarfareSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description="Common name of the EW system",
-        examples=["AN/ALQ-99", "AN/ALQ-99"],
+        examples=["AN/ALQ-99", "AN/ALQ-218"],
     )
     nomenclature: Optional[str] = Field(
         default=None,
@@ -250,7 +250,7 @@ class FireControlSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description="Common name of the fire control system",
-        examples=["AN/MPQ-65 Radar Set", "AN/MPQ-65 Radar Set"],
+        examples=["AN/MPQ-65 Radar Set", "AN/TPY-2 Radar"],
     )
     nomenclature: Optional[str] = Field(
         default=None,
@@ -283,7 +283,7 @@ class WeaponSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description="Common name of the weapon system",
-        examples=["S-400 Triumf", "S-400 Triumf"],
+        examples=["S-400 Triumf", "Phalanx CIWS"],
     )
     nomenclature: Optional[str] = Field(
         default=None,
@@ -319,7 +319,7 @@ class IntegratedAirDefenseSystemEntity(BaseModel):
     name: str = Field(
         ...,
         description="Common or NATO reporting name of the IADS",
-        examples=["S-400 Triumf", "S-400 Triumf"],
+        examples=["S-400 Triumf", "Patriot PAC-3"],
     )
     status: Optional[str] = Field(
         default=None,
