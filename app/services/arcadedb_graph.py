@@ -2188,6 +2188,35 @@ class ArcadeDBGraphStore:
         )
         return executed
 
+    def count_ontology_nodes_sync(
+        self,
+        entity_type: str,
+        document_id: str | None = None,
+    ) -> int:
+        """Count ontology vertices of ``entity_type``, optionally scoped
+        to a single ``document_id``. Missing vertex classes return 0 so
+        callers need not pre-check existence.
+        """
+        if document_id:
+            sql = (
+                f"SELECT count(*) AS count FROM {entity_type} "
+                "WHERE document_id = :doc_id"
+            )
+            params = {"doc_id": document_id}
+        else:
+            sql = f"SELECT count(*) AS count FROM {entity_type}"
+            params = {}
+        try:
+            rows = self._client.query_sync(self._database, "sql", sql, params)
+        except Exception as exc:
+            logger.debug(
+                "count_ontology_nodes_sync: %s returned error (class may "
+                "not exist yet): %s",
+                entity_type, exc,
+            )
+            return 0
+        return _count(rows)
+
     def ensure_ready_sync(self) -> None:
         """Synchronous ensure_ready with time-based caching."""
         from app.config import get_settings as _gs

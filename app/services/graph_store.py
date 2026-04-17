@@ -662,6 +662,18 @@ class GraphStore(Protocol):
         """
         ...
 
+    def count_ontology_nodes_sync(
+        self,
+        entity_type: str,
+        document_id: str | None = None,
+    ) -> int:
+        """Count ontology vertices of ``entity_type``, optionally scoped to
+        a single ``document_id`` (for document-scoped identities). Returns
+        the raw SELECT COUNT(*) from the vertex class; missing classes
+        return 0.
+        """
+        ...
+
     def ensure_ready_sync(self) -> None:
         """Synchronous variant of :meth:`ensure_ready`."""
         ...

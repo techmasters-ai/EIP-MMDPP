@@ -808,3 +808,52 @@ class TestAdditionalOperations:
 
         assert results == []
         client.query.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Test: count_ontology_nodes_sync (E-10)
+# ---------------------------------------------------------------------------
+
+class TestCountOntologyNodesSync:
+    def test_unscoped_returns_total_count(self):
+        """No document_id → plain COUNT over the entity class."""
+        client = _make_client(query_sync_result=[{"count": 7}])
+        store = _graph(client)
+
+        result = store.count_ontology_nodes_sync("SECTION")
+
+        assert result == 7
+        client.query_sync.assert_called_once()
+        _db, _lang, sql, params = client.query_sync.call_args.args
+        assert "count(*)" in sql.lower()
+        assert "SECTION" in sql
+        assert "document_id" not in sql
+        assert params == {}
+
+    def test_scoped_uses_document_id_filter(self):
+        """document_id scope → WHERE clause with parameter binding."""
+        client = _make_client(query_sync_result=[{"count": 3}])
+        store = _graph(client)
+
+        result = store.count_ontology_nodes_sync("SECTION", document_id="doc-1")
+
+        assert result == 3
+        _db, _lang, sql, params = client.query_sync.call_args.args
+        assert "where" in sql.lower()
+        assert "document_id" in sql
+        assert params == {"doc_id": "doc-1"}
+
+    def test_missing_class_returns_zero(self):
+        """A class that doesn't exist yet (query raises) → 0, no propagation."""
+        client = _make_client()
+        client.query_sync = MagicMock(side_effect=RuntimeError("class MISSING not found"))
+        store = _graph(client)
+
+        assert store.count_ontology_nodes_sync("MISSING") == 0
+
+    def test_empty_result_returns_zero(self):
+        """Empty result from ArcadeDB → 0."""
+        client = _make_client(query_sync_result=[])
+        store = _graph(client)
+
+        assert store.count_ontology_nodes_sync("FIGURE") == 0
