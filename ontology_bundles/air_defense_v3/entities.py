@@ -126,9 +126,9 @@ class TableEntity(BaseModel):
 class OrganizationEntity(BaseModel):
     """Organization — Contractor, program office, military branch, or government agency
     """
-    model_config = ConfigDict(ontology_name="ORGANIZATION", graph_id_fields=[], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
+    model_config = ConfigDict(ontology_name="ORGANIZATION", graph_id_fields=["name"], identity_scope="global", dodaf_parent="MilitaryAsset", is_entity=True)
 
-    name: Optional[str] = Field(default=None, description="Full name of the organization", examples=['Raytheon Missiles & Defense'])
+    name: str = Field(..., description="Full name of the organization", examples=['Raytheon Missiles & Defense', 'Lockheed Martin', 'U.S. Army TACOM'])
     org_type: Optional[str] = Field(default=None, description="Category of organization", json_schema_extra={"enum": ["PRIME_CONTRACTOR", "SUBCONTRACTOR", "PROGRAM_OFFICE", "MILITARY_BRANCH", "GOVERNMENT_AGENCY"]})
     cage_code: Optional[str] = Field(default=None, description="5-character CAGE code for the organization", examples=['58064'], pattern='^[A-Z0-9]{5}$')
     country: Optional[str] = Field(default=None, description="Country where the organization is headquartered", examples=['United States'])

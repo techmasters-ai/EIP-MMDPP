@@ -277,6 +277,8 @@ entity_types:
 
   - name: ORGANIZATION
     label: "Organization"
+    identity_fields: [name]
+    identity_scope: global
     description: "Contractor, program office, military branch, or government agency"
     parent: MilitaryAsset
     properties:
