@@ -39,7 +39,7 @@
       "id": "D",
       "subject": "Docling anchor walker + worker task",
       "tasks": 6,
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         "C"
       ]
@@ -48,7 +48,7 @@
       "id": "E",
       "subject": "Consumer updates",
       "tasks": 11,
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         "B",
         "C",
@@ -435,7 +435,9 @@
     {
       "id": "D-4",
       "subject": "derive_document_anchors Celery task",
-      "status": "pending",
+      "status": "completed",
+      "commit": "889d9e1",
+      "notes": "Added derive_document_anchors Celery task. Inserted into both start_ingest_pipeline and reingest_graph_only chains (between derive_image_embeddings and derive_ontology_graph). Route registered in celery_app.py → `graph` queue. Uses upsert_nodes_batch_sync + create_structural_edge_sync (NOT upsert_relationships_batch_sync). StageRun metrics include section/figure/table counts, document_ontology_emitted, fallback_fired, edge_count. 3 tests pass.",
       "blockedBy": [
         "D-3"
       ]
@@ -443,12 +445,16 @@
     {
       "id": "D-5",
       "subject": "DoclingDocument fixtures",
-      "status": "pending"
+      "status": "completed",
+      "commit": "5f50701",
+      "notes": "Created 4 synthetic DoclingDocument fixtures in tests/fixtures/docling_anchors/ (sa2_minimal, empty_structure, with_figures_tables, with_document_number). Each is a json.dumps(sort_keys=True) of a DoclingDocument built via add_title/add_heading/add_picture/add_table. 4 fixture-loading tests added. All 21 walker tests green."
     },
     {
       "id": "D-6",
       "subject": "Real-doc smoke test",
-      "status": "pending",
+      "status": "completed",
+      "commit": "31a7ffe",
+      "notes": "tests/integration/test_docling_anchors_smoke.py — parametrized integration smoke that loads each tests/fixtures/real_docs/*.json and runs walk(). Skips cleanly when fixtures absent (current default). Will activate after Chunk G's live-migration produces real DoclingDocument outputs.",
       "blockedBy": [
         "D-4"
       ]
@@ -456,57 +462,79 @@
     {
       "id": "E-1",
       "subject": "derive_rules identity lookups",
-      "status": "pending"
+      "status": "completed",
+      "commit": "224c014",
+      "notes": "Audit-only no-op (empty commit, B-31/C-5/E-8 pattern). derive_structural_edges already uses entity.identity + identity_to_rid parameterization — no hardcoded SECTION/FIGURE/TABLE identity fields remained."
     },
     {
       "id": "E-2",
       "subject": "derive_structure_links SAME_SECTION comment",
-      "status": "pending"
+      "status": "completed",
+      "commit": "c73c4b9",
+      "notes": "Added inline comment noting SAME_SECTION is chunk-to-chunk; SECTION vertices written by derive_document_anchors (D-4). No behavior change."
     },
     {
       "id": "E-3",
       "subject": "finalize_document REQUIRED_STAGES",
-      "status": "pending"
+      "status": "completed",
+      "commit": "03510d1",
+      "notes": "Added \"derive_document_anchors\" to REQUIRED_STAGES. Updated the 2 tests whose required lists enumerate all-complete (failure/missing/stuck variants left alone — their lists intentionally omit a specific stage)."
     },
     {
       "id": "E-4",
       "subject": "arcadedb_graph docstring refresh",
-      "status": "pending"
+      "status": "completed",
+      "commit": "bc908de",
+      "notes": "Refreshed delete_extraction_layer_graph_sync docstring — dropped ASSERTION from illustrative list (B-1 deleted) and emphasized that the concrete list is sourced at runtime from the loaded ontology."
     },
     {
       "id": "E-5",
       "subject": "Frontend GraphExplorer + entityTypes",
-      "status": "pending"
+      "status": "completed",
+      "commit": "20a7d11",
+      "notes": "Removed ASSERTION from GraphExplorer DEFAULT_ENTITY_TYPES and entityTypes.ts REFERENCE_TYPES. SPECIFICATION and demoted components retained (still renderable)."
     },
     {
       "id": "E-6",
       "subject": "_NAME_LIKE_KEYS uses section_number",
-      "status": "pending"
+      "status": "completed",
+      "commit": "c2ad378",
+      "notes": "Swapped \"heading\" → \"section_number\" in _NAME_LIKE_KEYS tuple. Rewrote test_display_label_falls_back_to_joined_identity and added test_display_label_prefers_section_number_for_section."
     },
     {
       "id": "E-7",
       "subject": "Dossier filter-list coverage test",
-      "status": "pending"
+      "status": "completed",
+      "commit": "810e12a",
+      "notes": "Audit confirmed all 12 demoted ontology_names already present in dossier_service.py filter lists (RF_ENTITY_TYPES + PERFORMANCE_ENTITY_TYPES). New parametrized @pytest.mark.integration test calls count_ontology_nodes_sync per demoted name; skips when graph unreachable/empty (all 12 skip on current branch)."
     },
     {
       "id": "E-8",
       "subject": "canonicalization verification (no-op)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "57ae030",
+      "notes": "Audit-only no-op (empty commit). canonicalization.py is fully generic via entity_type parameter; zero hardcoded refs to any demoted ontology_name or ASSERTION."
     },
     {
       "id": "E-9",
       "subject": "_classify_extraction_quality rewrite",
-      "status": "pending"
+      "status": "completed",
+      "commit": "f0fc931",
+      "notes": "Spec §6.8 new signature (pass_outcomes, section_count, text_chunk_count). \"degraded\" now keys on graph signals (SECTION + TextChunk counts) instead of reference-pass HIT. _write_pipeline_run_metrics fetches section_count via count_ontology_nodes_sync + text_chunk_count via SQL COUNT(*). Metrics blob gains section_count / text_chunk_count keys. 4 tests rewritten."
     },
     {
       "id": "E-10",
       "subject": "graph_store.count_ontology_nodes_sync (if missing)",
-      "status": "pending"
+      "status": "completed",
+      "commit": "44470aa",
+      "notes": "Added count_ontology_nodes_sync to GraphStore Protocol + ArcadeDB impl. Missing classes return 0 gracefully. 4 unit tests cover unscoped/scoped/missing-class/empty-result."
     },
     {
       "id": "E-11",
       "subject": "Update reference-assuming tests",
-      "status": "pending"
+      "status": "completed",
+      "commit": "37a9a42",
+      "notes": "Cleared the 3 stale failures + 1 collection error from C-1/C-2. Updated test_coverage_checker helper default, trimmed PASS_MODULES in test_extraction_schemas, rewrote test_load_bundle_manifest_returns_*_passes (5 → 4), dropped ReferencePass from test_pass_root_list_dedup_schema_local. Full suite 1232 passed, 0 failures."
     },
     {
       "id": "F-1",
@@ -573,5 +601,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T16:00:00.000000+00:00"
+  "lastUpdated": "2026-04-17T20:45:00.000000+00:00"
 }
