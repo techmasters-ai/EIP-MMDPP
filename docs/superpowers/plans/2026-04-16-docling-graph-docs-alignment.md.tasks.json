@@ -361,7 +361,9 @@
     {
       "id": "B-31",
       "subject": "Flip remaining required non-identity fields to Optional",
-      "status": "pending"
+      "status": "completed",
+      "commit": "c4894f5",
+      "notes": "Audit-only no-op: Phase 5/6/7 already closed R19 for all 44 canonical + 26 extraction-view classes. Empty commit documents the finding."
     },
     {
       "id": "B-32",
@@ -553,5 +555,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-04-17T04:30:00.000000+00:00"
+  "lastUpdated": "2026-04-17T04:45:00.000000+00:00"
 }
