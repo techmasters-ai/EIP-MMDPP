@@ -50,6 +50,7 @@ celery_app.conf.update(
         "app.workers.pipeline.purge_document_derivations": {"queue": "ingest"},
         "app.workers.pipeline.derive_text_chunks_and_embeddings": {"queue": "embed"},
         "app.workers.pipeline.derive_image_embeddings": {"queue": "embed"},
+        "app.workers.pipeline.derive_document_anchors": {"queue": "graph"},
         "app.workers.pipeline.derive_ontology_graph": {"queue": "graph_extract"},
         "app.workers.pipeline.derive_structure_links": {"queue": "graph"},
         "app.workers.pipeline.collect_derivations": {"queue": "ingest"},

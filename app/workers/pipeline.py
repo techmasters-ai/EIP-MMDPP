@@ -1527,6 +1527,7 @@ def start_ingest_pipeline(
         derive_picture_descriptions.si(document_id, run_id),
         derive_text_chunks_and_embeddings.si(document_id, run_id),
         derive_image_embeddings.si(document_id, run_id),
+        derive_document_anchors.si(document_id, run_id),
         derive_ontology_graph.si(document_id, run_id),
         collect_derivations.si(document_id, run_id),
         derive_structure_links.si(document_id, run_id),
@@ -1663,6 +1664,7 @@ def reingest_graph_only(doc_id, request) -> dict:
     # Same 3-stage chain the legacy reingest route used to build inline,
     # but now with the newly-created run_id.
     result = celery_chain(
+        derive_document_anchors.si(doc_id_str, run_id),
         derive_ontology_graph.si(doc_id_str, run_id),
         derive_structure_links.si(doc_id_str, run_id),
         finalize_document.si(doc_id_str, run_id),
@@ -4053,6 +4055,172 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
             return {"stage": "derive_image_embeddings", "status": "failed", "error": str(exc)}
         logger.info("derive_image_embeddings: retrying %s (attempt %d/%d)", document_id, self.request.retries + 1, self.max_retries)
         raise self.retry(exc=exc)
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# derive_document_anchors (D-4) — deterministic DOCUMENT/SECTION/FIGURE/
+# TABLE emission via the Docling anchor walker (spec §3.3). Runs between
+# derive_image_embeddings and derive_ontology_graph.
+# ---------------------------------------------------------------------------
+
+@celery_app.task(
+    bind=True, max_retries=1, default_retry_delay=30, queue="graph",
+    soft_time_limit=settings.finalize_soft_time_limit,
+    time_limit=settings.finalize_time_limit,
+)
+def derive_document_anchors(self, document_id: str, run_id: str | None = None) -> dict:
+    """Emit ontology DOCUMENT / SECTION / FIGURE / TABLE vertices and
+    their structural edges (HAS_SECTION / HAS_FIGURE / HAS_TABLE /
+    CHILD_OF) from the persisted DoclingDocument.
+
+    Writes go through ``upsert_nodes_batch_sync`` for vertices and
+    ``create_structural_edge_sync`` for edges — NOT the ontology
+    relationship path. Spec §3.1–§3.5 and §5.6 Phase 2/3.
+    """
+    # Import walker lazily — docling_anchors imports heavyweight
+    # ontology_bundles.air_defense_v3.entities at module load time.
+    from app.services import docling_anchors as _docling_anchors
+    from app.services.graph_store import NodeRecord, ProvenanceMetadata
+
+    logger.info(
+        "derive_document_anchors: document_id=%s run_id=%s",
+        document_id, run_id,
+    )
+    _update_document_status(
+        document_id, STATUS_PROCESSING, stage="derive_document_anchors",
+    )
+
+    db = _get_db()
+    try:
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
+        if run_id:
+            _update_stage_run(
+                db, run_id, "derive_document_anchors", "RUNNING",
+                attempt=self.request.retries + 1,
+            )
+            db.commit()
+
+        doc_json = _build_docling_document_json(document_id)
+
+        # Ontology dict is a no-op for walker-sourced passes (model_config
+        # carries graph_id_fields). We still load + pass it through so the
+        # component-branch inside _build_logical_identity stays compatible
+        # if a future component entity enters the anchor set.
+        try:
+            from app.services.ontology_bundles import load_ontology
+            ontology = load_ontology()
+        except Exception:
+            ontology = {}
+
+        merged = _docling_anchors.walk(doc_json, document_id, run_id, ontology)
+
+        # --- Vertex upserts ------------------------------------------------
+        node_records = [
+            NodeRecord(
+                entity_type=e.identity.entity_type,
+                identity_fields=e.identity.as_upsert_identity_dict(),
+                name=e.display_label,
+                properties=e.properties,
+                extraction_confidence=e.confidence,
+            )
+            for e in merged.entities
+        ]
+        provenance = ProvenanceMetadata(
+            document_id=document_id,
+            pipeline_run_id=run_id,
+        )
+        graph_store = get_graph_store()
+        rids = graph_store.upsert_nodes_batch_sync(node_records, provenance)
+
+        # --- Identity → RID bridge ----------------------------------------
+        identity_to_rid = dict(zip(
+            (e.identity for e in merged.entities), rids, strict=True,
+        ))
+
+        # --- Structural edges ---------------------------------------------
+        for edge in merged.edges:
+            from_rid = identity_to_rid[edge.from_identity]
+            to_rid = identity_to_rid[edge.to_identity]
+            graph_store.create_structural_edge_sync(
+                from_rid, to_rid, edge.rel_type,
+            )
+
+        # --- Metrics ------------------------------------------------------
+        section_count = sum(
+            1 for e in merged.entities if e.identity.entity_type == "SECTION"
+        )
+        figure_count = sum(
+            1 for e in merged.entities if e.identity.entity_type == "FIGURE"
+        )
+        table_count = sum(
+            1 for e in merged.entities if e.identity.entity_type == "TABLE"
+        )
+        document_ontology_emitted = any(
+            e.identity.entity_type == "DOCUMENT" for e in merged.entities
+        )
+        fallback_fired = any(
+            e.identity.entity_type == "SECTION"
+            and e.identity.identity_tuple == ("0",)
+            for e in merged.entities
+        )
+        metrics = {
+            "section_count": section_count,
+            "figure_count": figure_count,
+            "table_count": table_count,
+            "document_ontology_emitted": document_ontology_emitted,
+            "fallback_fired": fallback_fired,
+            "edge_count": len(merged.edges),
+        }
+
+        if run_id:
+            _update_stage_run(
+                db, run_id, "derive_document_anchors", "COMPLETE",
+                attempt=self.request.retries + 1, metrics=metrics,
+            )
+            db.commit()
+
+        logger.info(
+            "derive_document_anchors: document_id=%s sections=%d figures=%d "
+            "tables=%d document_emitted=%s edges=%d",
+            document_id, section_count, figure_count, table_count,
+            document_ontology_emitted, len(merged.edges),
+        )
+
+        return {"stage": "derive_document_anchors", "status": "ok", **metrics}
+
+    except CeleryRetry:
+        raise
+    except SoftTimeLimitExceeded:
+        logger.warning(
+            "derive_document_anchors: soft time limit for %s", document_id,
+        )
+        db.rollback()
+        if run_id:
+            _update_stage_run(
+                db, run_id, "derive_document_anchors", "FAILED",
+                attempt=self.request.retries + 1,
+                error="soft time limit exceeded",
+            )
+            db.commit()
+        return {
+            "stage": "derive_document_anchors", "status": "failed",
+            "error": "soft time limit exceeded",
+        }
+    except Exception as exc:
+        logger.error(
+            "derive_document_anchors failed for %s: %s", document_id, exc,
+        )
+        db.rollback()
+        if run_id:
+            _update_stage_run(
+                db, run_id, "derive_document_anchors", "FAILED",
+                attempt=self.request.retries + 1, error=str(exc),
+            )
+            db.commit()
+        raise
     finally:
         db.close()
 
