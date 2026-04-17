@@ -674,9 +674,9 @@ class PropulsionStageEntity(BaseModel):
 class CapabilityEntity(BaseModel):
     """Capability — Operational effect or function achievable by a system (DoDAF DM2)
     """
-    model_config = ConfigDict(ontology_name="CAPABILITY", graph_id_fields=[], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="CAPABILITY", graph_id_fields=["capability_name"], identity_scope="global", dodaf_parent="OperationalEntity", is_entity=True)
 
-    capability_name: Optional[str] = Field(default=None, description="Name of the functional capability", examples=['Terminal Phase Guidance'])
+    capability_name: str = Field(..., description="Name of the functional capability (docs:17235 R16-compliant identity)", examples=['Terminal Phase Guidance', 'Initial Target Acquisition', 'Mid-Course Tracking'])
     capability_class: Optional[str] = Field(default=None, description="Capability domain or class", json_schema_extra={"enum": ["DETECTION", "TRACKING", "DESIGNATION", "ENGAGEMENT", "FIRE_CONTROL", "AIR_DEFENSE", "ELECTRONIC_ATTACK", "ELECTRONIC_SUPPORT", "SURVEILLANCE", "COMMUNICATIONS"]})
     trl: Optional[int] = Field(default=None, description="Technology Readiness Level on a scale of 1-9", examples=[7])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})

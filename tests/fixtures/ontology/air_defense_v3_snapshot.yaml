@@ -595,12 +595,14 @@ entity_types:
   # ---------------------------------------------------------------------------
   - name: CAPABILITY
     label: "Capability"
+    identity_fields: [capability_name]
+    identity_scope: global
     description: "Operational effect or function achievable by a system (DoDAF DM2)"
     parent: OperationalEntity
     properties:
       type: object
       properties:
-        capability_name: {type: string, description: "Name of the functional capability", example: "Terminal Phase Guidance"}
+        capability_name: {type: string, description: "Name of the functional capability (docs:17235 R16-compliant identity)", example: "Terminal Phase Guidance"}
         capability_class: {type: string, description: "Capability domain or class", enum: [DETECTION, TRACKING, DESIGNATION, ENGAGEMENT, FIRE_CONTROL, AIR_DEFENSE, ELECTRONIC_ATTACK, ELECTRONIC_SUPPORT, SURVEILLANCE, COMMUNICATIONS]}
         trl: {type: integer, description: "Technology Readiness Level on a scale of 1-9", example: 7}
 
