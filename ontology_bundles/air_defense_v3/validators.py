@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 import re
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, get_args
+
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +218,62 @@ def _normalize_enum(enum_cls: type[Enum], v: Any) -> str | None:
     canonical = {m.value.upper(): m.value for m in enum_cls}
     normalized = stripped.upper().replace(" ", "_")
     return canonical.get(normalized)
+
+
+def _find_basemodel(ann: Any) -> type[BaseModel] | None:
+    """Return the innermost BaseModel subclass in a type annotation, or None."""
+    if ann is None:
+        return None
+    if isinstance(ann, type) and issubclass(ann, BaseModel):
+        return ann
+    for a in get_args(ann):
+        r = _find_basemodel(a)
+        if r is not None:
+            return r
+    return None
+
+
+def dedupe_entities_by_identity(cls: type, values: Any) -> Any:
+    """Merge-preserving dedup validator for pass-root entity lists.
+
+    For each list field whose inner class carries non-empty
+    ``graph_id_fields``, collapse duplicates by identity tuple and union
+    non-null non-identity scalar fields (first-non-null wins). Intended
+    as a pass-root ``@model_validator(mode="before")`` across every
+    extraction schema module; consolidated here to keep the behavior
+    identical (plan task C-3 / C-4).
+    """
+    if not isinstance(values, dict):
+        return values
+    for fname, finfo in cls.model_fields.items():
+        raw = values.get(fname)
+        if not isinstance(raw, list) or not raw:
+            continue
+        inner_cls = _find_basemodel(getattr(finfo, "annotation", None))
+        if inner_cls is None:
+            continue
+        id_fields = list((inner_cls.model_config or {}).get("graph_id_fields", []) or [])
+        if not id_fields:
+            continue
+        accum: dict[tuple, dict] = {}
+        order: list[tuple] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = tuple(item.get(k) for k in id_fields)
+            if key not in accum:
+                accum[key] = dict(item)
+                order.append(key)
+            else:
+                merged = accum[key]
+                for k, v in item.items():
+                    if k in id_fields or v is None:
+                        continue
+                    if k not in merged or merged[k] is None:
+                        merged[k] = v
+        if len(accum) != len(raw):
+            values[fname] = [accum[k] for k in order]
+    return values
 
 
 def normalize_enum(allowed: set[str]) -> Callable[[Any], str | None]:

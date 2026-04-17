@@ -37,6 +37,7 @@ from ..validators import (
     coerce_optional_float,
     coerce_optional_confidence,
     coerce_optional_text,
+    dedupe_entities_by_identity,
 )
 
 
@@ -61,57 +62,6 @@ def edge(
     return Field(json_schema_extra=existing_extra, **field_kwargs)
 
 
-def _dedupe_entities_by_identity(cls, values):
-    """Merge-preserving dedup for pass-root entity lists (plan Task 9d).
-
-    For each entity list whose inner class carries non-empty
-    ``graph_id_fields``, collapse duplicates by identity tuple and union
-    non-null non-identity scalar fields (first-non-null wins).
-    """
-    if not isinstance(values, dict):
-        return values
-    for fname, finfo in cls.model_fields.items():
-        raw = values.get(fname)
-        if not isinstance(raw, list) or not raw:
-            continue
-        from typing import get_args as _ga
-        def _find_basemodel(ann):
-            if ann is None:
-                return None
-            if isinstance(ann, type) and issubclass(ann, BaseModel):
-                return ann
-            for a in _ga(ann):
-                r = _find_basemodel(a)
-                if r is not None:
-                    return r
-            return None
-        inner_cls = _find_basemodel(getattr(finfo, "annotation", None))
-        if inner_cls is None:
-            continue
-        id_fields = list((inner_cls.model_config or {}).get("graph_id_fields", []) or [])
-        if not id_fields:
-            continue
-        accum: dict[tuple, dict] = {}
-        order: list[tuple] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            key = tuple(item.get(k) for k in id_fields)
-            if key not in accum:
-                accum[key] = dict(item)
-                order.append(key)
-            else:
-                merged = accum[key]
-                for k, v in item.items():
-                    if k in id_fields or v is None:
-                        continue
-                    if k not in merged or merged[k] is None:
-                        merged[k] = v
-        if len(accum) != len(raw):
-            values[fname] = [accum[k] for k in order]
-    return values
-
-
 # ----------------------------------------------------------------------
 # Entities (narrow extraction views — subset of canonical entities.py)
 # ----------------------------------------------------------------------
@@ -129,7 +79,7 @@ class AntennaEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name or designation of the antenna",
-        examples=["Main Array Antenna", "IFF Antenna"],
+        examples=["Tombstone Main Array", "AN/MPQ-65 Search Antenna"],
     )
     antenna_type: Optional[str] = Field(
         default=None,
@@ -174,7 +124,7 @@ class ReceiverEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name or designation of the receiver",
-        examples=["Main Receiver Unit", "Auxiliary Receiver Unit"],
+        examples=["AN/MPQ-65 Digital Receiver", "Tombstone Doppler Receiver"],
     )
     noise_figure_db: Optional[float] = Field(
         default=None, description="Receiver noise figure in dB", examples=[3.5],
@@ -209,7 +159,7 @@ class TransmitterEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name or designation of the transmitter",
-        examples=["Main Transmitter Unit", "Backup Transmitter Unit"],
+        examples=["AN/MPQ-65 TWT Transmitter", "Tombstone Klystron Transmitter"],
     )
     peak_power_at_transmitter_kw: Optional[float] = Field(
         default=None,
@@ -252,7 +202,7 @@ class SPCEntity(BaseModel):
     name: str = Field(
         ...,
         description="Name of the signal processing chain",
-        examples=["Main Processing Chain", "MTI Filter Chain"],
+        examples=["AN/MPQ-65 MTI Processor", "Doppler Filter Bank A"],
     )
     matched_filter_detection_loss_db: Optional[float] = Field(
         default=None,
@@ -454,25 +404,25 @@ class RadarSystemEntity(BaseModel):
     antennas: List[AntennaEntity] = edge(
         label="HAS_ANTENNA",
         description="Antennas that are part of this radar system.",
-        examples=[["Main Array Antenna", "IFF Antenna"], ["Search Antenna"]],
+        examples=[["Tombstone Main Array", "AN/MPQ-65 Search Antenna"], ["Clam Shell Phased Array"]],
         default_factory=list,
     )
     receivers: List[ReceiverEntity] = edge(
         label="HAS_RECEIVER",
         description="Receiver subsystems that are part of this radar system.",
-        examples=[["Main Receiver Unit", "Auxiliary Receiver Unit"], ["Digital Receiver"]],
+        examples=[["AN/MPQ-65 Digital Receiver", "Tombstone Doppler Receiver"], ["Clam Shell Track Receiver"]],
         default_factory=list,
     )
     transmitters: List[TransmitterEntity] = edge(
         label="HAS_TRANSMITTER",
         description="Transmitter subsystems that are part of this radar system.",
-        examples=[["Main Transmitter Unit"], ["Backup Transmitter Unit"]],
+        examples=[["AN/MPQ-65 TWT Transmitter"], ["Tombstone Klystron Transmitter"]],
         default_factory=list,
     )
     signal_processing_chains: List[SPCEntity] = edge(
         label="HAS_PROCESSING_CHAIN",
         description="Signal processing chains associated with this radar system.",
-        examples=[["Main Processing Chain", "MTI Filter Chain"], ["Doppler Filter Chain"]],
+        examples=[["AN/MPQ-65 MTI Processor", "Doppler Filter Bank A"], ["Clam Shell Track Processor"]],
         default_factory=list,
     )
     frequency_bands: List[FrequencyBandEntity] = edge(
@@ -567,4 +517,4 @@ class RadarDomainPass(BaseModel):
     radar_systems: List[RadarSystemEntity] = Field(default_factory=list)
     specifications: List[SpecificationEntity] = Field(default_factory=list)
 
-    _dedupe_root_entities = model_validator(mode="before")(_dedupe_entities_by_identity)
+    _dedupe_root_entities = model_validator(mode="before")(dedupe_entities_by_identity)
