@@ -150,9 +150,22 @@ def truncate_postgres(dry_run: bool) -> None:
 
 
 def reset_arcadedb(dry_run: bool) -> None:
-    """Step 4 — drop + recreate ArcadeDB schema via ensure_schema_sync."""
+    """Step 4 — drop + recreate the ArcadeDB database, then ensure_schema_sync.
+
+    Dropping the whole database (not just truncating classes) is the only
+    reliable way to clear stale indexes from prior schema versions —
+    truncate preserves class definitions and their indexes, so an old
+    ``(name, entity_type) UNIQUE`` survives across schema migrations and
+    later collides with post-B-3/B-4/B-5/B-6 same-name-across-docs upserts
+    (SECTION heading='Unclassified' in two different docs → UNIQUE
+    violation on the legacy index). Drop+create guarantees a clean slate.
+    """
     if dry_run:
-        logger.info("[dry-run] would truncate every vertex/edge class + re-run ensure_schema_sync")
+        logger.info(
+            "[dry-run] would DROP and CREATE DATABASE, then re-run ensure_schema_sync "
+            "(full index reset — eliminates stale (name, entity_type) UNIQUE "
+            "constraints carried over from earlier identity schemes).",
+        )
         return
 
     from app.services.arcadedb_client import ArcadeDBClient
@@ -166,30 +179,33 @@ def reset_arcadedb(dry_run: bool) -> None:
         password=settings.arcadedb_password,
     )
     try:
-        # Best-effort: fetch class list, truncate each. Missing classes OK.
-        try:
-            schema_rows = client.query_sync(
-                settings.arcadedb_database, "sql", "SELECT FROM schema:types",
-            )
-            class_names = [r.get("name") for r in schema_rows if r.get("name")]
-        except Exception as exc:
-            logger.warning("could not list ArcadeDB classes: %s", exc)
-            class_names = []
-        for name in class_names:
-            if name in ("V", "E") or name.startswith("_"):
-                continue
-            try:
-                client.command_sync(
-                    settings.arcadedb_database, "sql",
-                    f"TRUNCATE TYPE `{name}`",
+        # Use the server endpoint (not the database endpoint) for
+        # drop/create, since the database doesn't exist during CREATE
+        # and the auth session targets the server-level resource.
+        import httpx
+        server_url = f"{settings.arcadedb_url.rstrip('/')}/api/v1/server"
+        auth = (settings.arcadedb_user, settings.arcadedb_password)
+        db = settings.arcadedb_database
+        with httpx.Client(timeout=60.0) as http:
+            # Drop (ignore if not present)
+            resp = http.post(server_url, json={"command": f"drop database {db}"}, auth=auth)
+            if resp.status_code >= 400:
+                logger.warning(
+                    "arcadedb drop database: HTTP %d body=%s (continuing — may not exist yet)",
+                    resp.status_code, (resp.text or "")[:200],
                 )
-                logger.info("truncated ArcadeDB class %s", name)
-            except Exception as exc:
-                logger.warning("truncate %s failed: %s", name, exc)
+            else:
+                logger.info("ArcadeDB database dropped: %s", db)
+            # Create fresh
+            resp = http.post(server_url, json={"command": f"create database {db}"}, auth=auth)
+            resp.raise_for_status()
+            logger.info("ArcadeDB database created: %s", db)
+
         report = ensure_schema_sync(client, settings.arcadedb_database)
         logger.info(
-            "ArcadeDB schema re-ensured — types_created=%d properties_added=%d errors=%d",
-            report.types_created, report.properties_added, len(report.errors),
+            "ArcadeDB schema ensured on fresh DB — types_created=%d properties_added=%d indexes_created=%d errors=%d",
+            report.types_created, report.properties_added,
+            report.indexes_created, len(report.errors),
         )
     finally:
         client.close_sync()

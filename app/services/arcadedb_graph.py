@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from app.services.arcadedb_client import ArcadeDBClient
+from app.services.arcadedb_schema import _safe_type_name
 from app.services.graph_store import (
     EntityChunkEdge,
     GraphEntityResult,
@@ -110,6 +111,11 @@ def _build_upsert_node_script(
 
     Each row gets parameter keys suffixed with ``_{i}`` so they don't collide
     across statements. Returns (script, params).
+
+    Vertex class names are routed through ``_safe_type_name`` so ArcadeDB
+    reserved words (``TABLE`` → ``TABLE_REF``) resolve to the class
+    actually created in the schema. Without this, an UPSERT against
+    ``TABLE`` would either fail parsing or hit the wrong class.
     """
     statements: list[str] = []
     params: dict[str, Any] = {}
@@ -140,7 +146,8 @@ def _build_upsert_node_script(
         where_clause = " AND ".join(where_parts)
 
         sql = (
-            f"UPDATE {record.entity_type} SET {set_clause}, updated_at = sysdate() "
+            f"UPDATE {_safe_type_name(record.entity_type)} SET {set_clause}, "
+            f"updated_at = sysdate() "
             f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type_{i}"
         )
         statements.append(sql)
@@ -192,8 +199,8 @@ def _build_upsert_relationship_script(
 
         sql = (
             f"CREATE EDGE {record.rel_type} "
-            f"FROM (SELECT FROM {record.from_type} WHERE {' AND '.join(from_where_parts)}) "
-            f"TO (SELECT FROM {record.to_type} WHERE {' AND '.join(to_where_parts)}) "
+            f"FROM (SELECT FROM {_safe_type_name(record.from_type)} WHERE {' AND '.join(from_where_parts)}) "
+            f"TO (SELECT FROM {_safe_type_name(record.to_type)} WHERE {' AND '.join(to_where_parts)}) "
             f"SET extraction_confidence = :{conf_key}, "
             f"document_ids = {doc_ids_expr}, "
             f"created_at = sysdate(), updated_at = sysdate(){extra}"
@@ -608,7 +615,7 @@ class ArcadeDBGraphStore:
         set_clause = _build_set(set_fields)
 
         sql = (
-            f"UPDATE {record.entity_type} SET {set_clause}, "
+            f"UPDATE {_safe_type_name(record.entity_type)} SET {set_clause}, "
             f"updated_at = sysdate() "
             f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type"
         )
@@ -1730,7 +1737,7 @@ class ArcadeDBGraphStore:
         set_clause = _build_set(set_fields)
 
         sql = (
-            f"UPDATE {record.entity_type} SET {set_clause}, "
+            f"UPDATE {_safe_type_name(record.entity_type)} SET {set_clause}, "
             f"updated_at = sysdate() "
             f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type"
         )

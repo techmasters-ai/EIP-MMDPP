@@ -20,6 +20,27 @@ class ArcadeDBError(Exception):
         super().__init__(message)
 
 
+def _raise_for_status_with_body(resp, context: str) -> None:
+    """``resp.raise_for_status()`` that logs the response body on 4xx/5xx.
+
+    ArcadeDB returns the actual SQL / schema / type error as plain text
+    (or a small JSON blob) in the response body. Vanilla
+    ``raise_for_status`` drops that — the caller only sees
+    ``httpx.HTTPStatusError: Server error '500 Internal Server Error'``
+    which is useless for root-cause. Logging ``resp.text`` before the
+    raise preserves the diagnostic signal for log-grepping without
+    changing any call-site semantics (the same ``HTTPStatusError`` still
+    propagates).
+    """
+    if resp.status_code >= 400:
+        body_snippet = (resp.text or "")[:2000]
+        logger.error(
+            "arcadedb HTTP %d at %s — body: %s",
+            resp.status_code, context, body_snippet,
+        )
+    resp.raise_for_status()
+
+
 class ArcadeDBClient:
     """Async/sync HTTP client for ArcadeDB server."""
 
@@ -157,7 +178,7 @@ class ArcadeDBClient:
                 headers=self._auth_headers(),
             )
         elapsed = time.monotonic() - t0
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp, f"query {database} lang={language} cmd={command[:120]!r}")
         if elapsed > self._get_slow_threshold():
             logger.warning("Slow query (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])
@@ -189,7 +210,7 @@ class ArcadeDBClient:
                 headers=self._auth_headers(),
             )
         elapsed = time.monotonic() - t0
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp, f"command {database} lang={language} cmd={command[:120]!r}")
         if elapsed > self._get_slow_threshold():
             logger.warning("Slow command (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])
@@ -272,7 +293,7 @@ class ArcadeDBClient:
                 headers=self._auth_headers(),
             )
         elapsed = time.monotonic() - t0
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp, f"query_sync {database} lang={language} cmd={command[:120]!r}")
         if elapsed > self._get_slow_threshold():
             logger.warning("Slow query_sync (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])
@@ -304,7 +325,7 @@ class ArcadeDBClient:
                 headers=self._auth_headers(),
             )
         elapsed = time.monotonic() - t0
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp, f"command_sync {database} lang={language} cmd={command[:120]!r}")
         if elapsed > self._get_slow_threshold():
             logger.warning("Slow command_sync (%.2fs): %s", elapsed, command[:200])
         return resp.json().get("result", [])

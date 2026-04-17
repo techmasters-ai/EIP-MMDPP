@@ -286,12 +286,34 @@ async def sync_schema_from_ontology(
 
     # --- Phase 6b: composite UNIQUE indexes for UPSERT on entity types ---
     # ArcadeDB UPSERT requires a UNIQUE index on the WHERE fields.
-    # Without this, UPDATE...UPSERT WHERE name=:name AND entity_type=:entity_type
+    # Without this, UPDATE...UPSERT WHERE {identity_fields} AND entity_type=:entity_type
     # fails with "Upsert must involve an index to retrieve the records."
-    upsert_ddl = [
-        f"CREATE INDEX IF NOT EXISTS ON {_safe_type_name(e['name'])} (name, entity_type) UNIQUE"
-        for e in ontology.get("entity_types", [])
-    ]
+    #
+    # Post-docs-alignment (B-3..B-6): identity fields are ontology-driven
+    # (section_number for SECTION, figure_ref for FIGURE, table_ref for TABLE,
+    # document_number for DOCUMENT, system_name for RADAR_SYSTEM, etc.) NOT
+    # a universal ``(name, entity_type)`` anymore. The index must mirror the
+    # upsert WHERE clause exactly:
+    #   * document-scoped entities include ``document_id`` in the composite
+    #     (LogicalIdentity.as_upsert_identity_dict appends it).
+    #   * ``entity_type`` closes the composite since the SQL filters on it.
+    #   * Components (identity_fields=[]) have nothing indexable for UPSERT
+    #     and are skipped — they don't go through upsert_nodes_batch_sync,
+    #     they're embedded via the A0-1 walker.
+    upsert_ddl: list[str] = []
+    for e in ontology.get("entity_types", []):
+        id_fields: list[str] = list(e.get("identity_fields") or [])
+        if not id_fields:
+            continue  # component-class — no upsert path, no index needed
+        scope = e.get("identity_scope", "document")
+        fields = list(id_fields)
+        if scope == "document" and "document_id" not in fields:
+            fields.append("document_id")
+        fields.append("entity_type")
+        upsert_ddl.append(
+            f"CREATE INDEX IF NOT EXISTS ON {_safe_type_name(e['name'])} "
+            f"({', '.join(fields)}) UNIQUE"
+        )
     await _run_ddl_batch(client, database, upsert_ddl, phase="upsert_indexes", report=report)
     report.indexes_created += len(upsert_ddl)
 
