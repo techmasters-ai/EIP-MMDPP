@@ -1,0 +1,36 @@
+{
+  "body": {
+    "children": [],
+    "content_layer": "body",
+    "label": "unspecified",
+    "meta": null,
+    "name": "_root_",
+    "parent": null,
+    "self_ref": "#/body"
+  },
+  "form_items": [],
+  "furniture": {
+    "children": [],
+    "content_layer": "furniture",
+    "label": "unspecified",
+    "meta": null,
+    "name": "_root_",
+    "parent": null,
+    "self_ref": "#/furniture"
+  },
+  "groups": [],
+  "key_value_items": [],
+  "name": "empty_structure",
+  "origin": {
+    "binary_hash": 0,
+    "filename": "synthetic.pdf",
+    "mimetype": "application/pdf",
+    "uri": null
+  },
+  "pages": {},
+  "pictures": [],
+  "schema_name": "DoclingDocument",
+  "tables": [],
+  "texts": [],
+  "version": "1.10.0"
+}

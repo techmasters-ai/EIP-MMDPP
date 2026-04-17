@@ -299,3 +299,56 @@ def test_walker_returns_merged_extraction_shape():
     # Every emitted entity carries pass_origins={'document_anchors'}
     for e in merged.entities:
         assert e.pass_origins == {"document_anchors"}
+
+
+# ---------------------------------------------------------------------------
+# D-5 — fixture JSON files in tests/fixtures/docling_anchors/
+# ---------------------------------------------------------------------------
+
+import json as _json
+from pathlib import Path as _Path
+
+_FIXTURE_DIR = _Path(__file__).resolve().parent.parent / "fixtures" / "docling_anchors"
+
+
+def _load(name: str) -> dict:
+    return _json.loads((_FIXTURE_DIR / name).read_text())
+
+
+def test_fixture_sa2_minimal_produces_4_sections():
+    """Fixture: title + 3 headings at mixed levels. Walker emits 4 SECTIONs
+    (Title → Chapter 1 [sibling], Chapter 2 [sibling], Section 2.1 [child])."""
+    merged = walk(_load("sa2_minimal.json"), DOC_UUID, RUN_ID, ontology={})
+    nums = _collect_section_numbers(merged)
+    # TITLE is level 1; Chapter 1 is level 1 (pops title); Chapter 2 level 1
+    # (pops Chapter 1); Section 2.1 level 2 (child of Chapter 2).
+    # Expected: "1", "2", "3", "3.1".
+    assert set(nums) == {"1", "2", "3", "3.1"}, f"got {sorted(nums)}"
+
+
+def test_fixture_empty_structure_emits_fallback():
+    merged = walk(_load("empty_structure.json"), DOC_UUID, RUN_ID, ontology={})
+    nums = _collect_section_numbers(merged)
+    assert nums == ["0"]
+
+
+def test_fixture_with_figures_tables_counts_match():
+    fixture = _load("with_figures_tables.json")
+    merged = walk(fixture, DOC_UUID, RUN_ID, ontology={})
+    figures = [e for e in merged.entities if e.identity.entity_type == "FIGURE"]
+    tables = [e for e in merged.entities if e.identity.entity_type == "TABLE"]
+    assert len(figures) == len(fixture.get("pictures", []))
+    assert len(tables) == len(fixture.get("tables", []))
+
+
+def test_fixture_with_document_number_emits_document_entity():
+    merged = walk(_load("with_document_number.json"), DOC_UUID, RUN_ID, ontology={})
+    docs = [e for e in merged.entities if e.identity.entity_type == "DOCUMENT"]
+    assert len(docs) == 1
+    assert docs[0].identity.identity_tuple == ("MIL-STD-1553B",)
+    # HAS_SECTION edges emitted (one per SECTION).
+    section_count = sum(
+        1 for e in merged.entities if e.identity.entity_type == "SECTION"
+    )
+    has_sections = [e for e in merged.edges if e.rel_type == "HAS_SECTION"]
+    assert len(has_sections) == section_count
