@@ -271,12 +271,30 @@ class MissileSystemEntity(BaseModel):
         examples=["MIM-104F"],
     )
 
-    guidance_method: Optional[GuidanceMethodEntity] = edge(label="HAS_GUIDANCE", default=None)
-    seeker: Optional[SeekerEntity] = edge(label="HAS_SEEKER", default=None)
-    propulsion_stacks: List[PropulsionStackEntity] = edge(
-        label="HAS_PROPULSION", default_factory=list,
+    guidance_method: Optional[GuidanceMethodEntity] = edge(
+        label="HAS_GUIDANCE",
+        description="Guidance method used by this missile system.",
+        examples=["Active radar homing", "Command guidance"],
+        default=None,
     )
-    platform: Optional[PlatformEntity] = edge(label="INSTALLED_ON", default=None)
+    seeker: Optional[SeekerEntity] = edge(
+        label="HAS_SEEKER",
+        description="Terminal guidance seeker head used by this missile system.",
+        examples=["Ka-band active seeker", "Ku-band semi-active seeker"],
+        default=None,
+    )
+    propulsion_stacks: List[PropulsionStackEntity] = edge(
+        label="HAS_PROPULSION",
+        description="Propulsion stacks that provide thrust for this missile system.",
+        examples=[["total_burntime_s=25"], ["total_burntime_s=18"]],
+        default_factory=list,
+    )
+    platform: Optional[PlatformEntity] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this missile system is installed.",
+        examples=["M903 Launching Station", "SA-20 TEL"],
+        default=None,
+    )
 
     confidence: Optional[float] = Field(
         default=None,
@@ -315,9 +333,17 @@ class LauncherSystemEntity(BaseModel):
     )
 
     missile_systems: List[MissileSystemEntity] = edge(
-        label="LAUNCHES", default_factory=list,
+        label="LAUNCHES",
+        description="Missile systems that this launcher is capable of launching.",
+        examples=[["PAC-3 MSE", "SM-6 Block IA"], ["THAAD Interceptor"]],
+        default_factory=list,
     )
-    platform: Optional[PlatformEntity] = edge(label="INSTALLED_ON", default=None)
+    platform: Optional[PlatformEntity] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this launcher system is installed.",
+        examples=["M903 Launching Station", "SA-20 TEL"],
+        default=None,
+    )
 
     confidence: Optional[float] = Field(
         default=None,

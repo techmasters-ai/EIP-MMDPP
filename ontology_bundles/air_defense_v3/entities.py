@@ -76,9 +76,24 @@ class DocumentEntity(BaseModel):
     language: Optional[str] = Field(default=None, description="Language of the document (ISO 639-1 code)", examples=['en'])
     workbook_name: Optional[str] = Field(default=None, description="Name of the spreadsheet workbook file", examples=['SA-20_MDE_Checklist.xlsx'])
     sheet_name: Optional[str] = Field(default=None, description="Name of the specific worksheet tab", examples=['Radar Parameters'])
-    documents: List["DocumentEntity"] = edge(label="DERIVED_FROM", default_factory=list)
-    documents: List["DocumentEntity"] = edge(label="SUPERSEDES", default_factory=list)
-    organizations: List["OrganizationEntity"] = edge(label="REVIEWED_BY", default_factory=list)
+    documents: List["DocumentEntity"] = edge(
+        label="DERIVED_FROM",
+        description="Source documents from which this document is derived or referenced.",
+        examples=[["TM 9-1425-386-12", "MIL-STD-1553B"], ["MIL-DTL-31000G"]],
+        default_factory=list,
+    )
+    documents: List["DocumentEntity"] = edge(
+        label="SUPERSEDES",
+        description="Older documents that this document supersedes or replaces.",
+        examples=[["TM 9-1425-386-10"], ["MIL-STD-1553A"]],
+        default_factory=list,
+    )
+    organizations: List["OrganizationEntity"] = edge(
+        label="REVIEWED_BY",
+        description="Organizations that reviewed or approved this document.",
+        examples=[["Raytheon Missiles & Defense", "U.S. Army TACOM"], ["Department of Defense"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SectionEntity(BaseModel):
@@ -146,9 +161,24 @@ class PlatformEntity(BaseModel):
     country: Optional[str] = Field(default=None, description="Country of origin or primary operator", examples=['Russia'])
     service_branch: Optional[str] = Field(default=None, description="Military branch operating the platform", examples=['Russian Aerospace Forces'])
     platform_status: Optional[str] = Field(default=None, description="Current lifecycle status of the platform", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
-    organizations: List["OrganizationEntity"] = edge(label="OPERATED_BY", default_factory=list)
-    organizations: List["OrganizationEntity"] = edge(label="MANUFACTURED_BY", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="INSTANCE_OF", default_factory=list)
+    organizations: List["OrganizationEntity"] = edge(
+        label="OPERATED_BY",
+        description="Organizations that operate or crew this platform.",
+        examples=[["U.S. Army", "NATO Integrated Air Defense Command"], ["Russian Aerospace Forces"]],
+        default_factory=list,
+    )
+    organizations: List["OrganizationEntity"] = edge(
+        label="MANUFACTURED_BY",
+        description="Organizations that manufactured or produced this platform.",
+        examples=[["Almaz-Antey"], ["Lockheed Martin", "Boeing"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="INSTANCE_OF",
+        description="Platform archetypes or class definitions that this platform is an instance of.",
+        examples=[["SA-20 TEL"], ["Patriot PAC-3 ICC"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class WeaponSystemEntity(BaseModel):
@@ -159,10 +189,30 @@ class WeaponSystemEntity(BaseModel):
     system_name: str = Field(..., description="Common name of the weapon system", examples=['Phalanx CIWS', 'Bofors 40 mm L/70'])
     nomenclature: Optional[str] = Field(default=None, description="Military designation", examples=['Mk 15'])
     weapon_type: Optional[str] = Field(default=None, description="Category of weapon system", examples=['Close-In Weapon System'])
-    subsystems: List["SubsystemEntity"] = edge(label="CONTAINS", default_factory=list)
-    subsystems: List["SubsystemEntity"] = edge(label="HAS_SUBSYSTEM", default_factory=list)
-    components: List["ComponentEntity"] = edge(label="HAS_COMPONENT", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="ENGAGES", default_factory=list)
+    subsystems: List["SubsystemEntity"] = edge(
+        label="CONTAINS",
+        description="Subsystems contained within this weapon system.",
+        examples=[["Guidance Section", "Signal Processing Unit"], ["Antenna Array"]],
+        default_factory=list,
+    )
+    subsystems: List["SubsystemEntity"] = edge(
+        label="HAS_SUBSYSTEM",
+        description="Major functional subsystems that make up this weapon system.",
+        examples=[["Guidance Section", "Propulsion Assembly"], ["Fire Control Unit"]],
+        default_factory=list,
+    )
+    components: List["ComponentEntity"] = edge(
+        label="HAS_COMPONENT",
+        description="Physical components that comprise this weapon system.",
+        examples=[["PN-12345-A", "TWT-8090B"], ["CCA-0042"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="ENGAGES",
+        description="Platforms or target types that this weapon system can engage.",
+        examples=[["SA-20 TEL", "Patriot PAC-3 ICC"], ["MiG-29"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class EquipmentSystemEntity(BaseModel):
@@ -176,16 +226,66 @@ class EquipmentSystemEntity(BaseModel):
     status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
     prime_contractor: Optional[str] = Field(default=None, description="Lead contractor organization", examples=['Lockheed Martin'])
     service_branch: Optional[str] = Field(default=None, description="Military branch operating the system", examples=['U.S. Army'])
-    components: List["ComponentEntity"] = edge(label="CONTAINS", default_factory=list)
-    subsystems: List["SubsystemEntity"] = edge(label="HAS_SUBSYSTEM", default_factory=list)
-    components: List["ComponentEntity"] = edge(label="HAS_COMPONENT", default_factory=list)
-    capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
-    organizations: List["OrganizationEntity"] = edge(label="MANUFACTURED_BY", default_factory=list)
-    equipment_systems: List["EquipmentSystemEntity"] = edge(label="INSTANCE_OF", default_factory=list)
-    equipment_systems: List["EquipmentSystemEntity"] = edge(label="ALIAS_OF", default_factory=list)
-    standards: List["StandardEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
-    specifications: List["SpecificationEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
-    test_events: List["TestEventEntity"] = edge(label="TESTED_IN", default_factory=list)
+    components: List["ComponentEntity"] = edge(
+        label="CONTAINS",
+        description="Components physically contained within this equipment system.",
+        examples=[["PN-12345-A", "TWT-8090B"], ["CCA-0042"]],
+        default_factory=list,
+    )
+    subsystems: List["SubsystemEntity"] = edge(
+        label="HAS_SUBSYSTEM",
+        description="Major functional subsystems that comprise this equipment system.",
+        examples=[["Guidance Section", "Signal Processing Unit"], ["Antenna Array"]],
+        default_factory=list,
+    )
+    components: List["ComponentEntity"] = edge(
+        label="HAS_COMPONENT",
+        description="Physical components that are part of this equipment system.",
+        examples=[["PN-12345-A"], ["TWT-8090B", "CCA-0042"]],
+        default_factory=list,
+    )
+    capabilities: List["CapabilityEntity"] = edge(
+        label="PROVIDES",
+        description="Operational capabilities that this equipment system provides.",
+        examples=[["Terminal Phase Guidance", "Initial Target Acquisition"], ["Mid-Course Tracking"]],
+        default_factory=list,
+    )
+    organizations: List["OrganizationEntity"] = edge(
+        label="MANUFACTURED_BY",
+        description="Organizations that manufactured or produced this equipment system.",
+        examples=[["Raytheon Missiles & Defense"], ["Lockheed Martin", "Northrop Grumman"]],
+        default_factory=list,
+    )
+    equipment_systems: List["EquipmentSystemEntity"] = edge(
+        label="INSTANCE_OF",
+        description="Equipment system class or archetype that this system is an instance of.",
+        examples=[["Patriot PAC-3"], ["THAAD"]],
+        default_factory=list,
+    )
+    equipment_systems: List["EquipmentSystemEntity"] = edge(
+        label="ALIAS_OF",
+        description="Alternative names or designations referring to the same equipment system.",
+        examples=[["Aegis Combat System"], ["AN/MPQ-65 Radar Set"]],
+        default_factory=list,
+    )
+    standards: List["StandardEntity"] = edge(
+        label="SPECIFIED_BY",
+        description="Military standards that specify requirements for this equipment system.",
+        examples=[["MIL-STD-1553B", "MIL-DTL-31000G"], ["MIL-STD-810H"]],
+        default_factory=list,
+    )
+    specifications: List["SpecificationEntity"] = edge(
+        label="SPECIFIED_BY",
+        description="Performance specifications that define requirements for this equipment system.",
+        examples=[["max_range=150 km"], ["operating_temperature=-40 to +55 C"]],
+        default_factory=list,
+    )
+    test_events: List["TestEventEntity"] = edge(
+        label="TESTED_IN",
+        description="Test or evaluation events in which this equipment system was tested.",
+        examples=[["FET-10 Flight Test", "IOT&E Phase 2"], ["LFT&E Arena Test"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SubsystemEntity(BaseModel):
@@ -196,11 +296,36 @@ class SubsystemEntity(BaseModel):
     name: str = Field(..., description="Name of the subsystem (document-scoped identity per spec §2.2)", examples=['Guidance Section', 'Signal Processing Unit', 'Antenna Array'])
     subsystem_role: Optional[str] = Field(default=None, description="Functional role within the parent system", examples=['Signal processing and target tracking'])
     part_number: Optional[str] = Field(default=None, description="Subsystem-level part or drawing number", examples=['GS-PAC3-001'])
-    equipment_systems: List["EquipmentSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    components: List["ComponentEntity"] = edge(label="HAS_COMPONENT", default_factory=list)
-    radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    missile_systems: List["MissileSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
+    equipment_systems: List["EquipmentSystemEntity"] = edge(
+        label="PART_OF",
+        description="Equipment systems that this subsystem is part of.",
+        examples=[["Patriot PAC-3", "THAAD"], ["Aegis Combat System"]],
+        default_factory=list,
+    )
+    components: List["ComponentEntity"] = edge(
+        label="HAS_COMPONENT",
+        description="Physical components that are part of this subsystem.",
+        examples=[["PN-12345-A", "TWT-8090B"], ["CCA-0042"]],
+        default_factory=list,
+    )
+    radar_systems: List["RadarSystemEntity"] = edge(
+        label="PART_OF",
+        description="Radar systems that this subsystem is part of.",
+        examples=[["Tombstone", "Clam Shell"], ["AN/MPQ-65"]],
+        default_factory=list,
+    )
+    missile_systems: List["MissileSystemEntity"] = edge(
+        label="PART_OF",
+        description="Missile systems that this subsystem is part of.",
+        examples=[["PAC-3 MSE", "SM-6 Block IA"], ["MIM-104F"]],
+        default_factory=list,
+    )
+    capabilities: List["CapabilityEntity"] = edge(
+        label="PROVIDES",
+        description="Operational capabilities that this subsystem provides.",
+        examples=[["Terminal Phase Guidance", "Initial Target Acquisition"], ["Mid-Course Tracking"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ComponentEntity(BaseModel):
@@ -216,10 +341,30 @@ class ComponentEntity(BaseModel):
     manufacturer: Optional[str] = Field(default=None, description="Name of the component manufacturer", examples=['L3Harris Technologies'])
     material: Optional[str] = Field(default=None, description="Primary material composition of the component", examples=['Aluminum 7075-T6'])
     weight_kg: Optional[float] = Field(default=None, description="Weight of the component in kilograms", examples=[2.5])
-    subsystems: List["SubsystemEntity"] = edge(label="PART_OF", default_factory=list)
-    organizations: List["OrganizationEntity"] = edge(label="MANUFACTURED_BY", default_factory=list)
-    standards: List["StandardEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
-    test_events: List["TestEventEntity"] = edge(label="TESTED_IN", default_factory=list)
+    subsystems: List["SubsystemEntity"] = edge(
+        label="PART_OF",
+        description="Subsystems or assemblies that this component is part of.",
+        examples=[["Guidance Section", "Signal Processing Unit"], ["Antenna Array"]],
+        default_factory=list,
+    )
+    organizations: List["OrganizationEntity"] = edge(
+        label="MANUFACTURED_BY",
+        description="Organizations that manufactured or produced this component.",
+        examples=[["L3Harris Technologies"], ["Raytheon Missiles & Defense", "Northrop Grumman"]],
+        default_factory=list,
+    )
+    standards: List["StandardEntity"] = edge(
+        label="SPECIFIED_BY",
+        description="Military standards that specify requirements for this component.",
+        examples=[["MIL-STD-1553B", "MIL-DTL-31000G"], ["MIL-STD-810H"]],
+        default_factory=list,
+    )
+    test_events: List["TestEventEntity"] = edge(
+        label="TESTED_IN",
+        description="Test or evaluation events in which this component was tested.",
+        examples=[["FET-10 Flight Test"], ["IOT&E Phase 2", "LFT&E Arena Test"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class RadarSystemEntity(BaseModel):
@@ -251,27 +396,132 @@ class RadarSystemEntity(BaseModel):
     scan_period: Optional[str] = Field(default=None, description="Time for one complete scan cycle", examples=['6 s'])
     detection_to_designate_time: Optional[str] = Field(default=None, description="Time from detection to target designation", examples=['4 s'])
     designation_to_launch_time: Optional[str] = Field(default=None, description="Time from designation to missile launch", examples=['8 s'])
-    platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
-    waveforms: List["WaveformEntity"] = edge(label="USES_WAVEFORM", default_factory=list)
-    rf_emissions: List["RfEmissionEntity"] = edge(label="EMITS", default_factory=list)
-    antennas: List["AntennaEntity"] = edge(label="HAS_ANTENNA", default_factory=list)
-    receivers: List["ReceiverEntity"] = edge(label="HAS_RECEIVER", default_factory=list)
-    transmitters: List["TransmitterEntity"] = edge(label="HAS_TRANSMITTER", default_factory=list)
-    scan_patterns: List["ScanPatternEntity"] = edge(label="HAS_SCAN", default_factory=list)
-    signal_processing_chains: List["SignalProcessingChainEntity"] = edge(label="HAS_PROCESSING_CHAIN", default_factory=list)
-    radar_performances: List["RadarPerformanceEntity"] = edge(label="HAS_PERFORMANCE", default_factory=list)
-    frequency_bands: List["FrequencyBandEntity"] = edge(label="OPERATES_IN_BAND", default_factory=list)
-    capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
-    rf_signatures: List["RfSignatureEntity"] = edge(label="HAS_SIGNATURE", default_factory=list)
-    engagement_timelines: List["EngagementTimelineEntity"] = edge(label="HAS_TIMELINE", default_factory=list)
-    equipment_systems: List["EquipmentSystemEntity"] = edge(label="IS_A", default_factory=list)
-    radar_systems: List["RadarSystemEntity"] = edge(label="ALIAS_OF", default_factory=list)
-    specifications: List["SpecificationEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
-    test_events: List["TestEventEntity"] = edge(label="TESTED_IN", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="TRACKS", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="DETECTS", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="DESIGNATES", default_factory=list)
-    missile_systems: List["MissileSystemEntity"] = edge(label="SUPPORTS_ENGAGEMENT_OF", default_factory=list)
+    platform: Optional["PlatformEntity"] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this radar system is installed.",
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
+        default=None,
+    )
+    waveforms: List["WaveformEntity"] = edge(
+        label="USES_WAVEFORM",
+        description="Waveforms used by this radar system for transmission.",
+        examples=[["Search Mode 1", "Track Mode 3"], ["Burst Mode 2"]],
+        default_factory=list,
+    )
+    rf_emissions: List["RfEmissionEntity"] = edge(
+        label="EMITS",
+        description="RF emissions generated by this radar system.",
+        examples=[["Tombstone Search Mode"], ["Clam Shell Track Mode"]],
+        default_factory=list,
+    )
+    antennas: List["AntennaEntity"] = edge(
+        label="HAS_ANTENNA",
+        description="Antennas that are part of this radar system.",
+        examples=[["Main Array Antenna", "IFF Antenna"], ["Search Antenna"]],
+        default_factory=list,
+    )
+    receivers: List["ReceiverEntity"] = edge(
+        label="HAS_RECEIVER",
+        description="Receiver subsystems that are part of this radar system.",
+        examples=[["Main Receiver Unit", "Auxiliary Receiver Unit"], ["Digital Receiver"]],
+        default_factory=list,
+    )
+    transmitters: List["TransmitterEntity"] = edge(
+        label="HAS_TRANSMITTER",
+        description="Transmitter subsystems that are part of this radar system.",
+        examples=[["Main Transmitter Unit"], ["Backup Transmitter Unit"]],
+        default_factory=list,
+    )
+    scan_patterns: List["ScanPatternEntity"] = edge(
+        label="HAS_SCAN",
+        description="Antenna scan patterns used by this radar system.",
+        examples=[["Conical scan"], ["Raster scan", "Sector scan"]],
+        default_factory=list,
+    )
+    signal_processing_chains: List["SignalProcessingChainEntity"] = edge(
+        label="HAS_PROCESSING_CHAIN",
+        description="Signal processing chains associated with this radar system.",
+        examples=[["Main Processing Chain", "MTI Filter Chain"], ["Doppler Filter Chain"]],
+        default_factory=list,
+    )
+    radar_performances: List["RadarPerformanceEntity"] = edge(
+        label="HAS_PERFORMANCE",
+        description="Performance characteristics envelope for this radar system.",
+        examples=[["max_detection_range_1sqm_km=300"], ["max_unambiguous_range_km=400"]],
+        default_factory=list,
+    )
+    frequency_bands: List["FrequencyBandEntity"] = edge(
+        label="OPERATES_IN_BAND",
+        description="Frequency bands in which this radar system operates.",
+        examples=[["X-band", "S-band"], ["Ku-band"]],
+        default_factory=list,
+    )
+    capabilities: List["CapabilityEntity"] = edge(
+        label="PROVIDES",
+        description="Operational capabilities provided by this radar system.",
+        examples=[["Terminal Phase Guidance", "Initial Target Acquisition"], ["Mid-Course Tracking"]],
+        default_factory=list,
+    )
+    rf_signatures: List["RfSignatureEntity"] = edge(
+        label="HAS_SIGNATURE",
+        description="RF signatures associated with this radar system for ELINT identification.",
+        examples=[["Tombstone Track Signature"], ["Clam Shell Search Signature"]],
+        default_factory=list,
+    )
+    engagement_timelines: List["EngagementTimelineEntity"] = edge(
+        label="HAS_TIMELINE",
+        description="Engagement timelines associated with this radar system.",
+        examples=[["detection_to_designate_time_s=4"], ["designation_to_launch_time_s=8"]],
+        default_factory=list,
+    )
+    equipment_systems: List["EquipmentSystemEntity"] = edge(
+        label="IS_A",
+        description="Equipment system categories or types that this radar system is a member of.",
+        examples=[["Patriot PAC-3", "THAAD"], ["Aegis Combat System"]],
+        default_factory=list,
+    )
+    radar_systems: List["RadarSystemEntity"] = edge(
+        label="ALIAS_OF",
+        description="Alternative names or designations for this radar system.",
+        examples=[["AN/MPQ-65 Radar Set"], ["Tombstone"]],
+        default_factory=list,
+    )
+    specifications: List["SpecificationEntity"] = edge(
+        label="SPECIFIED_BY",
+        description="Performance specifications that define requirements for this radar system.",
+        examples=[["max_range=300 km"], ["operating_temperature=-40 to +55 C"]],
+        default_factory=list,
+    )
+    test_events: List["TestEventEntity"] = edge(
+        label="TESTED_IN",
+        description="Test or evaluation events in which this radar system was tested.",
+        examples=[["FET-10 Flight Test", "IOT&E Phase 2"], ["LFT&E Arena Test"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="TRACKS",
+        description="Platforms or target types that this radar system tracks.",
+        examples=[["SA-20 TEL"], ["MiG-29", "Ballistic Missile"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="DETECTS",
+        description="Platforms or target types that this radar system detects.",
+        examples=[["MiG-29", "Cruise Missile"], ["Ballistic Missile"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="DESIGNATES",
+        description="Platforms or targets that this radar system designates for engagement.",
+        examples=[["SA-20 TEL", "MiG-29"], ["Ballistic Missile"]],
+        default_factory=list,
+    )
+    missile_systems: List["MissileSystemEntity"] = edge(
+        label="SUPPORTS_ENGAGEMENT_OF",
+        description="Missile systems whose engagement this radar system supports.",
+        examples=[["PAC-3 MSE", "SM-6 Block IA"], ["THAAD Interceptor"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class MissileSystemEntity(BaseModel):
@@ -287,18 +537,78 @@ class MissileSystemEntity(BaseModel):
     seeker_nomenclature: Optional[str] = Field(default=None, description="Designation of the terminal guidance seeker", examples=['Ka-band active seeker'])
     seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter")
     seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker")
-    guidance_method: Optional["GuidanceMethodEntity"] = edge(label="HAS_GUIDANCE", default=None)
-    seeker: Optional["SeekerEntity"] = edge(label="HAS_SEEKER", default=None)
-    propulsion_stacks: List["PropulsionStackEntity"] = edge(label="HAS_PROPULSION", default_factory=list)
-    missile_performances: List["MissilePerformanceEntity"] = edge(label="HAS_PERFORMANCE", default_factory=list)
-    platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
-    capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="DEFENDS", default_factory=list)
-    weapon_systems: List["WeaponSystemEntity"] = edge(label="IS_A", default_factory=list)
-    missile_systems: List["MissileSystemEntity"] = edge(label="ALIAS_OF", default_factory=list)
-    specifications: List["SpecificationEntity"] = edge(label="SPECIFIED_BY", default_factory=list)
-    test_events: List["TestEventEntity"] = edge(label="TESTED_IN", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="ENGAGES", default_factory=list)
+    guidance_method: Optional["GuidanceMethodEntity"] = edge(
+        label="HAS_GUIDANCE",
+        description="Guidance method used by this missile system.",
+        examples=["Active radar homing", "Command guidance"],
+        default=None,
+    )
+    seeker: Optional["SeekerEntity"] = edge(
+        label="HAS_SEEKER",
+        description="Terminal guidance seeker head used by this missile system.",
+        examples=["Ka-band active seeker", "Ku-band semi-active seeker"],
+        default=None,
+    )
+    propulsion_stacks: List["PropulsionStackEntity"] = edge(
+        label="HAS_PROPULSION",
+        description="Propulsion stacks that provide thrust for this missile system.",
+        examples=[["total_burntime_s=25"], ["total_burntime_s=18"]],
+        default_factory=list,
+    )
+    missile_performances: List["MissilePerformanceEntity"] = edge(
+        label="HAS_PERFORMANCE",
+        description="Performance characteristics envelope for this missile system.",
+        examples=[["maximum_range_km=160"], ["maximum_altitude_km=25"]],
+        default_factory=list,
+    )
+    platform: Optional["PlatformEntity"] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this missile system is installed.",
+        examples=["M903 Launching Station", "SA-20 TEL"],
+        default=None,
+    )
+    capabilities: List["CapabilityEntity"] = edge(
+        label="PROVIDES",
+        description="Operational capabilities provided by this missile system.",
+        examples=[["Terminal Phase Guidance", "Initial Target Acquisition"], ["Mid-Course Tracking"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="DEFENDS",
+        description="Platforms or areas that this missile system defends.",
+        examples=[["Patriot PAC-3 ICC", "Mobile Radar Site"], ["Forward Operating Base"]],
+        default_factory=list,
+    )
+    weapon_systems: List["WeaponSystemEntity"] = edge(
+        label="IS_A",
+        description="Weapon system categories that this missile system is a member of.",
+        examples=[["Phalanx CIWS"], ["Bofors 40 mm L/70"]],
+        default_factory=list,
+    )
+    missile_systems: List["MissileSystemEntity"] = edge(
+        label="ALIAS_OF",
+        description="Alternative names or designations for this missile system.",
+        examples=[["PAC-3 MSE"], ["MIM-104F"]],
+        default_factory=list,
+    )
+    specifications: List["SpecificationEntity"] = edge(
+        label="SPECIFIED_BY",
+        description="Performance specifications that define requirements for this missile system.",
+        examples=[["max_range=160 km"], ["maximum_altitude=25 km"]],
+        default_factory=list,
+    )
+    test_events: List["TestEventEntity"] = edge(
+        label="TESTED_IN",
+        description="Test or evaluation events in which this missile system was tested.",
+        examples=[["FET-10 Flight Test", "IOT&E Phase 2"], ["LFT&E Arena Test"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="ENGAGES",
+        description="Platforms or target types that this missile system can engage.",
+        examples=[["MiG-29", "Cruise Missile"], ["Ballistic Missile"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class AirDefenseArtillerySystemEntity(BaseModel):
@@ -319,10 +629,30 @@ class AirDefenseArtillerySystemEntity(BaseModel):
     track_delay: Optional[str] = Field(default=None, description="Time from acquisition to stable track", examples=['1.5 s'])
     muzzle_velocity: Optional[str] = Field(default=None, description="Projectile muzzle velocity", examples=['970 m/s'])
     maximum_rate_of_fire: Optional[str] = Field(default=None, description="Maximum cyclic rate of fire", examples=['3400 rounds/min'])
-    platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
-    capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
-    weapon_systems: List["WeaponSystemEntity"] = edge(label="IS_A", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="ENGAGES", default_factory=list)
+    platform: Optional["PlatformEntity"] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this AAA system is installed.",
+        examples=["ZSU-23-4 Shilka", "Gepard FlakPanzer"],
+        default=None,
+    )
+    capabilities: List["CapabilityEntity"] = edge(
+        label="PROVIDES",
+        description="Operational capabilities provided by this AAA system.",
+        examples=[["Air Defense", "Short-Range Engagement"], ["Anti-Aircraft Coverage"]],
+        default_factory=list,
+    )
+    weapon_systems: List["WeaponSystemEntity"] = edge(
+        label="IS_A",
+        description="Weapon system categories that this AAA system is a member of.",
+        examples=[["Phalanx CIWS"], ["Bofors 40 mm L/70"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="ENGAGES",
+        description="Platforms or target types that this AAA system can engage.",
+        examples=[["MiG-29", "Cruise Missile"], ["Helicopter"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ElectronicWarfareSystemEntity(BaseModel):
@@ -336,10 +666,30 @@ class ElectronicWarfareSystemEntity(BaseModel):
     ew_role: Optional[str] = Field(default=None, description="Electronic warfare functional role", json_schema_extra={"enum": ["EA", "ES", "EP", "SIGINT", "ELINT", "COMINT"]})
     coverage: Optional[str] = Field(default=None, description="Frequency or angular coverage range", examples=['64 MHz - 40 GHz'])
     power_output: Optional[str] = Field(default=None, description="Maximum effective radiated power output", examples=['10 kW'])
-    platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
-    frequency_bands: List["FrequencyBandEntity"] = edge(label="OPERATES_IN_BAND", default_factory=list)
-    capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
-    rf_emissions: List["RfEmissionEntity"] = edge(label="DETECTS", default_factory=list)
+    platform: Optional["PlatformEntity"] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this EW system is installed.",
+        examples=["EA-18G Growler", "F-16CJ Block 50"],
+        default=None,
+    )
+    frequency_bands: List["FrequencyBandEntity"] = edge(
+        label="OPERATES_IN_BAND",
+        description="Frequency bands in which this EW system operates.",
+        examples=[["X-band", "S-band"], ["Ku-band", "Ka-band"]],
+        default_factory=list,
+    )
+    capabilities: List["CapabilityEntity"] = edge(
+        label="PROVIDES",
+        description="Operational capabilities provided by this EW system.",
+        examples=[["Electronic Attack", "Electronic Support"], ["SIGINT Collection"]],
+        default_factory=list,
+    )
+    rf_emissions: List["RfEmissionEntity"] = edge(
+        label="DETECTS",
+        description="RF emissions that this EW system can detect.",
+        examples=[["Tombstone Search Mode"], ["Clam Shell Track Mode"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class FireControlSystemEntity(BaseModel):
@@ -349,10 +699,30 @@ class FireControlSystemEntity(BaseModel):
 
     system_name: str = Field(..., description="Common name of the fire control system", examples=['AN/MPQ-65 Radar Set', 'AN/TPY-2 Radar'])
     nomenclature: Optional[str] = Field(default=None, description="Military AN/ designation", examples=['AN/MPQ-65'])
-    missile_systems: List["MissileSystemEntity"] = edge(label="GUIDES", default_factory=list)
-    platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
-    platforms: List["PlatformEntity"] = edge(label="TRACKS", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="DESIGNATES", default_factory=list)
+    missile_systems: List["MissileSystemEntity"] = edge(
+        label="GUIDES",
+        description="Missile systems that this fire control system guides to target.",
+        examples=[["PAC-3 MSE", "SM-6 Block IA"], ["THAAD Interceptor"]],
+        default_factory=list,
+    )
+    platform: Optional["PlatformEntity"] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this fire control system is installed.",
+        examples=["AN/MPQ-65 Radar Set", "AN/TPY-2 Radar"],
+        default=None,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="TRACKS",
+        description="Platforms or targets that this fire control system tracks.",
+        examples=[["MiG-29", "Ballistic Missile"], ["Cruise Missile"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="DESIGNATES",
+        description="Platforms or targets that this fire control system designates for engagement.",
+        examples=[["SA-20 TEL", "MiG-29"], ["Ballistic Missile"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class IntegratedAirDefenseSystemEntity(BaseModel):
@@ -363,12 +733,42 @@ class IntegratedAirDefenseSystemEntity(BaseModel):
     name: str = Field(..., description="Common or NATO reporting name of the IADS", examples=['S-400 Triumf', 'Patriot PAC-3'])
     status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED"]})
     doctrine: Optional[str] = Field(default=None, description="Employment doctrine or concept of operations", examples=['Layered defense with multi-range engagement'])
-    radar_systems: List["RadarSystemEntity"] = edge(label="CONTAINS", default_factory=list)
-    missile_systems: List["MissileSystemEntity"] = edge(label="CONTAINS", default_factory=list)
-    air_defense_artillery_systems: List["AirDefenseArtillerySystemEntity"] = edge(label="CONTAINS", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="DEPLOYED_ON", default_factory=list)
-    capabilities: List["CapabilityEntity"] = edge(label="PROVIDES", default_factory=list)
-    platforms: List["PlatformEntity"] = edge(label="SUPPORTS_ENGAGEMENT_OF", default_factory=list)
+    radar_systems: List["RadarSystemEntity"] = edge(
+        label="CONTAINS",
+        description="Radar systems contained within this integrated air defense system.",
+        examples=[["Tombstone", "Clam Shell"], ["AN/MPQ-65"]],
+        default_factory=list,
+    )
+    missile_systems: List["MissileSystemEntity"] = edge(
+        label="CONTAINS",
+        description="Missile systems contained within this integrated air defense system.",
+        examples=[["PAC-3 MSE", "SM-6 Block IA"], ["THAAD Interceptor"]],
+        default_factory=list,
+    )
+    air_defense_artillery_systems: List["AirDefenseArtillerySystemEntity"] = edge(
+        label="CONTAINS",
+        description="AAA systems contained within this integrated air defense system.",
+        examples=[["ZSU-23-4 Shilka", "Gepard FlakPanzer"], ["S-60 57mm"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="DEPLOYED_ON",
+        description="Platforms on which this IADS is deployed.",
+        examples=[["SA-20 TEL", "Patriot PAC-3 ICC"], ["Mobile Radar Site"]],
+        default_factory=list,
+    )
+    capabilities: List["CapabilityEntity"] = edge(
+        label="PROVIDES",
+        description="Operational capabilities provided by this integrated air defense system.",
+        examples=[["Air Defense", "Layered Engagement"], ["Area Defense"]],
+        default_factory=list,
+    )
+    platforms: List["PlatformEntity"] = edge(
+        label="SUPPORTS_ENGAGEMENT_OF",
+        description="Platforms or target types that this IADS supports engagement of.",
+        examples=[["MiG-29", "Ballistic Missile"], ["Cruise Missile"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class LauncherSystemEntity(BaseModel):
@@ -379,8 +779,18 @@ class LauncherSystemEntity(BaseModel):
     system_name: str = Field(..., description="Common name of the launcher system", examples=['M903 Launching Station', 'M270 MLRS'])
     launcher_type: Optional[str] = Field(default=None, description="Category of launcher mechanism", examples=['Vertical cold-launch canister'])
     capacity: Optional[int] = Field(default=None, description="Number of missiles the launcher can hold", examples=[16])
-    missile_systems: List["MissileSystemEntity"] = edge(label="LAUNCHES", default_factory=list)
-    platform: Optional["PlatformEntity"] = edge(label="INSTALLED_ON", default=None)
+    missile_systems: List["MissileSystemEntity"] = edge(
+        label="LAUNCHES",
+        description="Missile systems that this launcher is capable of launching.",
+        examples=[["PAC-3 MSE", "SM-6 Block IA"], ["THAAD Interceptor"]],
+        default_factory=list,
+    )
+    platform: Optional["PlatformEntity"] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this launcher system is installed.",
+        examples=["M903 Launching Station", "SA-20 TEL"],
+        default=None,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 
@@ -463,8 +873,18 @@ class WaveformEntity(BaseModel):
     PRI_limits: Optional[str] = Field(default=None, description="PRI range limits (min-max) in microseconds", examples=['200-1000 us'])
     PRF_limits: Optional[str] = Field(default=None, description="PRF range limits (min-max) in Hz", examples=['1000-5000 Hz'])
     duty_cycle: Optional[float] = Field(default=None, description="Waveform duty cycle ratio (0.0 to 1.0)", examples=[0.02])
-    modulations: List["ModulationEntity"] = edge(label="USES_MODULATION", default_factory=list)
-    rf_signatures: List["RfSignatureEntity"] = edge(label="HAS_SIGNATURE", default_factory=list)
+    modulations: List["ModulationEntity"] = edge(
+        label="USES_MODULATION",
+        description="Modulation schemes used by this waveform.",
+        examples=[["LFM Up-Chirp"], ["Stagger 4-position", "Phase Code"]],
+        default_factory=list,
+    )
+    rf_signatures: List["RfSignatureEntity"] = edge(
+        label="HAS_SIGNATURE",
+        description="RF signatures associated with this waveform for ELINT identification.",
+        examples=[["Tombstone Track Signature"], ["Clam Shell Search Signature"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ScanPatternEntity(BaseModel):
@@ -503,8 +923,18 @@ class AntennaEntity(BaseModel):
     max_elevation_deg: Optional[float] = Field(default=None, description="Maximum elevation angle in degrees", examples=[90])
     first_sidelobe_level_az_db: Optional[float] = Field(default=None, description="First azimuth sidelobe level relative to main beam in dB", examples=[-25])
     first_sidelobe_level_el_db: Optional[float] = Field(default=None, description="First elevation sidelobe level relative to main beam in dB", examples=[-25])
-    radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    rf_emissions: List["RfEmissionEntity"] = edge(label="RADIATES", default_factory=list)
+    radar_systems: List["RadarSystemEntity"] = edge(
+        label="PART_OF",
+        description="Radar systems that this antenna is part of.",
+        examples=[["Tombstone", "Clam Shell"], ["AN/MPQ-65"]],
+        default_factory=list,
+    )
+    rf_emissions: List["RfEmissionEntity"] = edge(
+        label="RADIATES",
+        description="RF emissions that this antenna radiates.",
+        examples=[["Tombstone Search Mode"], ["Clam Shell Track Mode"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class TransmitterEntity(BaseModel):
@@ -519,7 +949,12 @@ class TransmitterEntity(BaseModel):
     tx_line_loss_db: Optional[float] = Field(default=None, description="Transmit feed line loss in dB", examples=[1.5])
     other_system_losses_db: Optional[float] = Field(default=None, description="Other system losses (filters, switches) in dB", examples=[0.5])
     total_system_losses_db: Optional[float] = Field(default=None, description="Total system losses from transmitter to antenna in dB", examples=[2.0])
-    radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
+    radar_systems: List["RadarSystemEntity"] = edge(
+        label="PART_OF",
+        description="Radar systems that this transmitter is part of.",
+        examples=[["Tombstone", "Clam Shell"], ["AN/MPQ-65"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ReceiverEntity(BaseModel):
@@ -535,8 +970,18 @@ class ReceiverEntity(BaseModel):
     receive_line_loss_db: Optional[float] = Field(default=None, description="Receive feed line loss in dB", examples=[1.0])
     peak_power_noise_bandwidth_mhz: Optional[float] = Field(default=None, description="Noise bandwidth for peak power measurement in MHz", examples=[2.0])
     average_power_noise_bandwidth_mhz: Optional[float] = Field(default=None, description="Noise bandwidth for average power measurement in MHz", examples=[0.5])
-    radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    rf_emissions: List["RfEmissionEntity"] = edge(label="RECEIVES", default_factory=list)
+    radar_systems: List["RadarSystemEntity"] = edge(
+        label="PART_OF",
+        description="Radar systems that this receiver is part of.",
+        examples=[["Tombstone", "Clam Shell"], ["AN/MPQ-65"]],
+        default_factory=list,
+    )
+    rf_emissions: List["RfEmissionEntity"] = edge(
+        label="RECEIVES",
+        description="RF emissions that this receiver processes as incoming signals.",
+        examples=[["Tombstone Search Mode"], ["Clam Shell Track Mode"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class IfAmplifierEntity(BaseModel):
@@ -572,8 +1017,18 @@ class SignalProcessingChainEntity(BaseModel):
     minimum_snr_required_db: Optional[float] = Field(default=None, description="Minimum signal-to-noise ratio required for detection in dB", examples=[13])
     MTI_improvement_factor_db: Optional[float] = Field(default=None, description="Moving Target Indication improvement factor in dB", examples=[30])
     drop_track_threshold_improvement_db: Optional[float] = Field(default=None, description="Additional SNR margin for maintaining track in dB", examples=[3])
-    radar_systems: List["RadarSystemEntity"] = edge(label="PART_OF", default_factory=list)
-    rf_emissions: List["RfEmissionEntity"] = edge(label="PROCESSES", default_factory=list)
+    radar_systems: List["RadarSystemEntity"] = edge(
+        label="PART_OF",
+        description="Radar systems that this signal processing chain is part of.",
+        examples=[["Tombstone", "Clam Shell"], ["AN/MPQ-65"]],
+        default_factory=list,
+    )
+    rf_emissions: List["RfEmissionEntity"] = edge(
+        label="PROCESSES",
+        description="RF emissions that this signal processing chain processes.",
+        examples=[["Tombstone Search Mode"], ["Clam Shell Track Mode"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 
@@ -726,7 +1181,12 @@ class AssemblyEntity(BaseModel):
 
     assembly_number: str = Field(..., description="Assembly drawing or identification number (docs:17235 R16-compliant identity)", examples=['ASM-7891-A', 'ASM-4201-B', 'ASM-1055-C'])
     name: Optional[str] = Field(default=None, description="Name of the assembly unit", examples=['Antenna Feed Assembly'])
-    equipment_systems: List["EquipmentSystemEntity"] = edge(label="PART_OF", default_factory=list)
+    equipment_systems: List["EquipmentSystemEntity"] = edge(
+        label="PART_OF",
+        description="Equipment systems that this assembly is part of.",
+        examples=[["Patriot PAC-3", "THAAD"], ["Aegis Combat System"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SpecificationEntity(BaseModel):
@@ -751,7 +1211,12 @@ class StandardEntity(BaseModel):
     issuing_org: Optional[str] = Field(default=None, description="Organization that published the standard", examples=['Department of Defense'])
     version: Optional[str] = Field(default=None, description="Revision letter or version number", examples=['B'])
     supersedes: Optional[str] = Field(default=None, description="Designation of the standard this one replaces", examples=['MIL-STD-1553A'])
-    standards: List["StandardEntity"] = edge(label="SUPERSEDES", default_factory=list)
+    standards: List["StandardEntity"] = edge(
+        label="SUPERSEDES",
+        description="Older standards that this standard supersedes or replaces.",
+        examples=[["MIL-STD-1553A"], ["MIL-DTL-31000F"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class ProcedureEntity(BaseModel):
@@ -763,7 +1228,12 @@ class ProcedureEntity(BaseModel):
     type: Optional[str] = Field(default=None, description="Category of procedure", json_schema_extra={"enum": ["MAINTENANCE", "OPERATIONAL", "TEST", "CALIBRATION", "INSPECTION"]})
     periodicity: Optional[str] = Field(default=None, description="How often the procedure must be performed", examples=['Semi-annual'])
     skill_level: Optional[str] = Field(default=None, description="Required maintenance skill level", examples=['20C (Patriot Repairer)'])
-    organizations: List["OrganizationEntity"] = edge(label="OPERATED_BY", default_factory=list)
+    organizations: List["OrganizationEntity"] = edge(
+        label="OPERATED_BY",
+        description="Organizations that operate or execute this procedure.",
+        examples=[["U.S. Army TACOM", "Raytheon Missiles & Defense"], ["PEO Missiles and Space"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class FailureModeEntity(BaseModel):
@@ -775,9 +1245,24 @@ class FailureModeEntity(BaseModel):
     description: Optional[str] = Field(default=None, description="Detailed description of how the failure manifests", examples=['Gradual loss of transmit power due to cathode erosion'])
     fmeca_severity: Optional[int] = Field(default=None, description="MIL-STD-1629 severity category (1=catastrophic, 4=minor)", examples=[2])
     detection_method: Optional[str] = Field(default=None, description="How this failure is detected", examples=['BIT fault code 47, power output below threshold'])
-    components: List["ComponentEntity"] = edge(label="AFFECTS", default_factory=list)
-    subsystems: List["SubsystemEntity"] = edge(label="AFFECTS", default_factory=list)
-    equipment_systems: List["EquipmentSystemEntity"] = edge(label="AFFECTS", default_factory=list)
+    components: List["ComponentEntity"] = edge(
+        label="AFFECTS",
+        description="Components that this failure mode affects.",
+        examples=[["PN-12345-A", "TWT-8090B"], ["CCA-0042"]],
+        default_factory=list,
+    )
+    subsystems: List["SubsystemEntity"] = edge(
+        label="AFFECTS",
+        description="Subsystems that this failure mode affects.",
+        examples=[["Guidance Section", "Signal Processing Unit"], ["Antenna Array"]],
+        default_factory=list,
+    )
+    equipment_systems: List["EquipmentSystemEntity"] = edge(
+        label="AFFECTS",
+        description="Equipment systems that this failure mode affects.",
+        examples=[["Patriot PAC-3", "THAAD"], ["Aegis Combat System"]],
+        default_factory=list,
+    )
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class TestEventEntity(BaseModel):

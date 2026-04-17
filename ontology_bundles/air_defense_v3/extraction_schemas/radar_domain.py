@@ -451,13 +451,48 @@ class RadarSystemEntity(BaseModel):
     )
 
     # Typed edges to sub-components (HAS_*) and host platform (INSTALLED_ON).
-    antennas: List[AntennaEntity] = edge(label="HAS_ANTENNA", default_factory=list)
-    receivers: List[ReceiverEntity] = edge(label="HAS_RECEIVER", default_factory=list)
-    transmitters: List[TransmitterEntity] = edge(label="HAS_TRANSMITTER", default_factory=list)
-    signal_processing_chains: List[SPCEntity] = edge(label="HAS_PROCESSING_CHAIN", default_factory=list)
-    frequency_bands: List[FrequencyBandEntity] = edge(label="OPERATES_IN_BAND", default_factory=list)
-    waveforms: List[WaveformEntity] = edge(label="USES_WAVEFORM", default_factory=list)
-    platform: Optional[PlatformEntity] = edge(label="INSTALLED_ON", default=None)
+    antennas: List[AntennaEntity] = edge(
+        label="HAS_ANTENNA",
+        description="Antennas that are part of this radar system.",
+        examples=[["Main Array Antenna", "IFF Antenna"], ["Search Antenna"]],
+        default_factory=list,
+    )
+    receivers: List[ReceiverEntity] = edge(
+        label="HAS_RECEIVER",
+        description="Receiver subsystems that are part of this radar system.",
+        examples=[["Main Receiver Unit", "Auxiliary Receiver Unit"], ["Digital Receiver"]],
+        default_factory=list,
+    )
+    transmitters: List[TransmitterEntity] = edge(
+        label="HAS_TRANSMITTER",
+        description="Transmitter subsystems that are part of this radar system.",
+        examples=[["Main Transmitter Unit"], ["Backup Transmitter Unit"]],
+        default_factory=list,
+    )
+    signal_processing_chains: List[SPCEntity] = edge(
+        label="HAS_PROCESSING_CHAIN",
+        description="Signal processing chains associated with this radar system.",
+        examples=[["Main Processing Chain", "MTI Filter Chain"], ["Doppler Filter Chain"]],
+        default_factory=list,
+    )
+    frequency_bands: List[FrequencyBandEntity] = edge(
+        label="OPERATES_IN_BAND",
+        description="Frequency bands in which this radar system operates.",
+        examples=[["X-band", "S-band"], ["Ku-band"]],
+        default_factory=list,
+    )
+    waveforms: List[WaveformEntity] = edge(
+        label="USES_WAVEFORM",
+        description="Waveforms used by this radar system for transmission.",
+        examples=[["Search Mode 1", "Track Mode 3"], ["Burst Mode 2"]],
+        default_factory=list,
+    )
+    platform: Optional[PlatformEntity] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this radar system is installed.",
+        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
+        default=None,
+    )
 
     confidence: Optional[float] = Field(
         default=None,

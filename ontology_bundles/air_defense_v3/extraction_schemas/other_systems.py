@@ -167,7 +167,12 @@ class AirDefenseArtillerySystemEntity(BaseModel):
         examples=["3400 rounds/min"],
     )
 
-    platform: Optional[PlatformEntity] = edge(label="INSTALLED_ON", default=None)
+    platform: Optional[PlatformEntity] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this AAA system is installed.",
+        examples=["ZSU-23-4 Shilka", "Gepard FlakPanzer"],
+        default=None,
+    )
 
     confidence: Optional[float] = Field(
         default=None,
@@ -222,7 +227,12 @@ class ElectronicWarfareSystemEntity(BaseModel):
         examples=["10 kW"],
     )
 
-    platform: Optional[PlatformEntity] = edge(label="INSTALLED_ON", default=None)
+    platform: Optional[PlatformEntity] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this EW system is installed.",
+        examples=["EA-18G Growler", "F-16CJ Block 50"],
+        default=None,
+    )
 
     confidence: Optional[float] = Field(
         default=None,
@@ -258,7 +268,12 @@ class FireControlSystemEntity(BaseModel):
         examples=["AN/MPQ-65"],
     )
 
-    platform: Optional[PlatformEntity] = edge(label="INSTALLED_ON", default=None)
+    platform: Optional[PlatformEntity] = edge(
+        label="INSTALLED_ON",
+        description="Platform on which this fire control system is installed.",
+        examples=["AN/MPQ-65 Radar Set", "AN/TPY-2 Radar"],
+        default=None,
+    )
 
     confidence: Optional[float] = Field(
         default=None,
