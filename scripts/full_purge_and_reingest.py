@@ -161,8 +161,8 @@ def reset_arcadedb(dry_run: bool) -> None:
 
     settings = get_settings()
     client = ArcadeDBClient(
-        base_url=settings.arcadedb_base_url,
-        username=settings.arcadedb_username,
+        base_url=settings.arcadedb_url,
+        username=settings.arcadedb_user,
         password=settings.arcadedb_password,
     )
     try:
@@ -240,7 +240,17 @@ def apply_migrations(dry_run: bool) -> None:
     if dry_run:
         logger.info("[dry-run] would run `alembic upgrade head`")
         return
-    subprocess.run(["alembic", "upgrade", "head"], check=True)
+    # Prefer the venv's alembic binary (sys.executable's sibling), falling
+    # back to a module invocation so the migration doesn't depend on the
+    # host PATH.
+    alembic_bin = Path(sys.executable).parent / "alembic"
+    if alembic_bin.exists():
+        subprocess.run([str(alembic_bin), "upgrade", "head"], check=True)
+    else:
+        subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            check=True,
+        )
     logger.info("alembic migrations applied")
 
 
@@ -336,7 +346,7 @@ def poll_until_complete(
             rows = conn.execute(
                 text(
                     "SELECT id::text, pipeline_status FROM ingest.documents "
-                    "WHERE id = ANY(:ids)"
+                    "WHERE id = ANY(CAST(:ids AS uuid[]))"
                 ),
                 {"ids": document_ids},
             ).all()
