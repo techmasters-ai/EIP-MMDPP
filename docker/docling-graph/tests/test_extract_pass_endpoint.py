@@ -50,7 +50,7 @@ def _mock_run_pipeline_return(preamble_applied: bool = False):
 def test_extract_pass_unknown_bundle_key_returns_404(client):
     resp = client.post("/extract-pass", json={
         "bundle_key": "does_not_exist",
-        "pass_name": "reference",
+        "pass_name": "radar_domain",
         "docling_document_json": {"name": "test"},
     })
     assert resp.status_code == 404
@@ -73,7 +73,7 @@ def test_extract_pass_document_only_with_upstream_entities_returns_400(client):
     """document_only pass with unexpected upstream_entities → 400"""
     resp = client.post("/extract-pass", json={
         "bundle_key": "air_defense_v3",
-        "pass_name": "reference",  # input_mode == document_only
+        "pass_name": "radar_domain",  # input_mode == document_only
         "docling_document_json": {"name": "test"},
         "upstream_entities": [
             {"ref_id": "E01", "entity_type": "RADAR_SYSTEM", "identity_values": {}},
@@ -114,13 +114,13 @@ def test_extract_pass_valid_document_only_returns_200(client):
         mock_run.return_value = _mock_run_pipeline_return()
         resp = client.post("/extract-pass", json={
             "bundle_key": "air_defense_v3",
-            "pass_name": "reference",
+            "pass_name": "radar_domain",
             "docling_document_json": {"name": "test"},
         })
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["bundle_key"] == "air_defense_v3"
-    assert body["pass_name"] == "reference"
+    assert body["pass_name"] == "radar_domain"
     assert "pass_output" in body
 
 
@@ -168,7 +168,7 @@ def test_metadata_reports_zero_refs_for_document_only(client):
         mock_run.return_value = _mock_run_pipeline_return()
         resp = client.post("/extract-pass", json={
             "bundle_key": "air_defense_v3",
-            "pass_name": "reference",
+            "pass_name": "radar_domain",
             "docling_document_json": {"name": "test"},
         })
     assert resp.status_code == 200, resp.text
@@ -187,7 +187,7 @@ def test_extract_pass_logs_end_even_on_extraction_failure(client, caplog):
         mock_run.side_effect = RuntimeError("simulated extraction failure")
         resp = client.post("/extract-pass", json={
             "bundle_key": "air_defense_v3",
-            "pass_name": "reference",
+            "pass_name": "radar_domain",
             "docling_document_json": {"name": "test"},
         })
     assert resp.status_code == 500
@@ -394,7 +394,7 @@ def test_preamble_applied_flag_false_for_document_only(client):
         mock_run.return_value = _mock_run_pipeline_return(preamble_applied=False)
         resp = client.post("/extract-pass", json={
             "bundle_key": "air_defense_v3",
-            "pass_name": "reference",
+            "pass_name": "radar_domain",
             "docling_document_json": {"name": "test"},
         })
     assert resp.status_code == 200, resp.text

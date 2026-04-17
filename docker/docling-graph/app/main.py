@@ -276,8 +276,10 @@ _apply_litellm_client_patches()
 
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app.config_builder import build_pipeline_config
+from app.provenance import build_provenance_from_context
 from app.schemas import (
     ExtractionMetadata,
+    ExtractionProvenance,
     HealthResponse,
     ExtractPassRequest,
     ExtractPassResponse,
@@ -564,6 +566,21 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             import networkx as nx
             pass_output = {"graph": nx.node_link_data(graph, edges="links")}
 
+        # Phase 8 Task 51: per-entity-instance provenance payload. Nodes
+        # whose element_uid cannot be resolved are dropped with WARNING
+        # inside the helper — the response only carries chunk-linkable
+        # rows.
+        try:
+            provenance_rows = build_provenance_from_context(
+                context, ExtractionProvenance,
+            )
+        except Exception as exc:
+            logger.warning(
+                "extract-pass: provenance builder failed for document_id=%s bundle=%s pass=%s: %s",
+                body.document_id, body.bundle_key, body.pass_name, exc,
+            )
+            provenance_rows = []
+
         return ExtractPassResponse(
             bundle_key=body.bundle_key,
             pass_name=body.pass_name,
@@ -571,6 +588,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             metadata=metadata,
             model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
             provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
+            provenance=provenance_rows,
         )
     finally:
         logger.info(
