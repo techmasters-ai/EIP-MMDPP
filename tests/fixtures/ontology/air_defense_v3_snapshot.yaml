@@ -685,9 +685,9 @@ entity_types:
 
   - name: SPECIFICATION
     label: "Specification"
-    identity_fields: [parameter, value]
+    identity_fields: []
     identity_scope: document
-    description: "Measurable performance characteristic"
+    description: "Measurable performance characteristic (value-object component per spec §4.8)"
     parent: OperationalEntity
     properties:
       type: object

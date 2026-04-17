@@ -40,24 +40,21 @@ class TestSpecificationEntityCoercion:
         s = spec_cls(parameter="frequency", value=2.4, unit="GHz")
         assert s.value == "2.4"
 
-    def test_value_empty_string_rejected(self, spec_cls):
-        """Phase 5 docs-compliance: identity fields (parameter, value) are
-        REQUIRED. The coerce_optional_text pre-validator normalises empty
-        strings to None; required str then rejects — this is the desired
-        contract for identity stability (partial identity fragments dedup)."""
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            spec_cls(parameter="range", value="", unit="km")
+    def test_value_empty_string_coerces_to_none(self, spec_cls):
+        """B-18: SPECIFICATION is now a value-object component (is_entity=False).
+        All fields are Optional; coerce_optional_text normalises empty
+        strings to None. Content-based identity (A0-1) dedupes the
+        resulting (None, None)-ish records."""
+        s = spec_cls(parameter="range", value="", unit="km")
+        assert s.value is None
 
-    def test_value_whitespace_rejected(self, spec_cls):
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            spec_cls(parameter="range", value="   ", unit="km")
+    def test_value_whitespace_coerces_to_none(self, spec_cls):
+        s = spec_cls(parameter="range", value="   ", unit="km")
+        assert s.value is None
 
-    def test_value_none_rejected(self, spec_cls):
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            spec_cls(parameter="range", value=None, unit="km")
+    def test_value_none_accepted(self, spec_cls):
+        s = spec_cls(parameter="range", value=None, unit="km")
+        assert s.value is None
 
     def test_parameter_accepts_int_and_normalizes(self, spec_cls):
         # LLM has been seen to emit numeric "parameter" values when the
@@ -73,19 +70,15 @@ class TestSpecificationEntityCoercion:
         s = spec_cls(parameter="range", value="  150 km  ", unit=None)
         assert s.value == "150 km"
 
-    def test_nested_dict_value_rejected(self, spec_cls):
-        """Nested dicts coerce to None (via coerce_optional_text); with
-        identity now required, None → ValidationError. Guards against
-        unstable identity strings like "{'amount': 150}" ever reaching
-        the merge layer."""
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            spec_cls(parameter="range", value={"amount": 150}, unit="km")
+    def test_nested_dict_value_coerces_to_none(self, spec_cls):
+        """Nested dicts coerce to None (via coerce_optional_text). B-18:
+        now Optional; content-based identity dedupes — no ValidationError."""
+        s = spec_cls(parameter="range", value={"amount": 150}, unit="km")
+        assert s.value is None
 
-    def test_list_value_rejected(self, spec_cls):
-        from pydantic import ValidationError
-        with pytest.raises(ValidationError):
-            spec_cls(parameter="range", value=[150, 200], unit="km")
+    def test_list_value_coerces_to_none(self, spec_cls):
+        s = spec_cls(parameter="range", value=[150, 200], unit="km")
+        assert s.value is None
 
 
 @pytest.mark.parametrize("spec_cls", SPEC_CLASSES)

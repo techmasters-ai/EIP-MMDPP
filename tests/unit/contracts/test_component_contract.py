@@ -13,7 +13,6 @@ from pydantic import BaseModel
 from ontology_bundles.air_defense_v3.entities import ALL_ENTITIES
 
 
-@pytest.mark.xfail(strict=True, reason="Chunk B will fix")
 def test_component_fields_attached_via_edge_helper():
     components = {
         name: cls

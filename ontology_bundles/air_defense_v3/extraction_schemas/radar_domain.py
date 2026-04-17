@@ -472,28 +472,28 @@ class RadarSystemEntity(BaseModel):
 class SpecificationEntity(BaseModel):
     """Specification — narrow extraction view of canonical SPECIFICATION.
 
-    Identity: ``parameter`` + ``value`` (document-scoped). Identity fields
-    are required per plan docs-compliance; the coerce_optional_text
-    pre-validator still normalises numeric payloads to strings (LLMs emit
-    numeric parameter/value for table-row extractions).
+    Value-object component (is_entity=False) per spec §4.8 — content-based
+    identity via the walker (A0-1); all fields optional per R19. The
+    coerce_optional_text pre-validator still normalises numeric payloads
+    to strings (LLMs emit numeric parameter/value for table-row extractions).
     """
     model_config = ConfigDict(
         extra="ignore",
         ontology_name="SPECIFICATION",
-        graph_id_fields=["parameter", "value"],
+        graph_id_fields=[],
         identity_scope="document",
-        is_entity=True,
+        is_entity=False,
     )
 
-    parameter: str = Field(
-        ...,
+    parameter: Optional[str] = Field(
+        default=None,
         description="Name of the measured parameter (e.g. max_range, operating_temperature)",
-        examples=["max_range", "max_range"],
+        examples=["max_range"],
     )
-    value: str = Field(
-        ...,
+    value: Optional[str] = Field(
+        default=None,
         description="Numeric value or range of the measurement",
-        examples=["150", "150"],
+        examples=["150"],
     )
     unit: Optional[str] = Field(
         default=None,

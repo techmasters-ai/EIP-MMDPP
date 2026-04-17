@@ -734,16 +734,15 @@ class AssemblyEntity(BaseModel):
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class SpecificationEntity(BaseModel):
-    """Specification — Measurable performance characteristic
+    """Specification — Measurable performance characteristic (value-object component per spec §4.8)
     """
-    model_config = ConfigDict(ontology_name="SPECIFICATION", graph_id_fields=['parameter', 'value'], identity_scope="document", dodaf_parent="OperationalEntity", is_entity=True)
+    model_config = ConfigDict(ontology_name="SPECIFICATION", graph_id_fields=[], identity_scope="document", dodaf_parent="OperationalEntity", is_entity=False)
 
-    parameter: str = Field(..., description="Name of the measured parameter (e.g. max_range, operating_temperature)", examples=['max_range', 'max_range'])
-    value: str = Field(..., description="Numeric value or range of the measurement", examples=['150', '150'])
+    parameter: Optional[str] = Field(default=None, description="Name of the measured parameter (e.g. max_range, operating_temperature)", examples=['max_range'])
+    value: Optional[str] = Field(default=None, description="Numeric value or range of the measurement", examples=['150'])
     unit: Optional[str] = Field(default=None, description="Unit of measurement (SI or military standard)", examples=['km'])
     condition: Optional[str] = Field(default=None, description="Operating conditions under which the spec applies", examples=['sea level, standard atmosphere'])
     source_document: Optional[str] = Field(default=None, description="Document where this specification is defined", examples=['TM 9-1425-386-12'])
-    specifications: List["SpecificationEntity"] = edge(label="SUPERSEDES", default_factory=list)
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class StandardEntity(BaseModel):
