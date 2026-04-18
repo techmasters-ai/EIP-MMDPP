@@ -354,7 +354,9 @@ class SpecificationEntity(BaseModel):
 
 
 # ----------------------------------------------------------------------
-# Pass-root container — is_entity=False (Decision 4a).
+# Pass-root — is_entity=True per docling-graph-docs.md (root models are
+# entities). See radar_domain.py for the full rationale and registry
+# behavior.
 # Intra-pass MissileRelationship DTO removed in Task 64 (plan Task 37);
 # typed edges on MissileSystemEntity and LauncherSystemEntity replace it.
 # ----------------------------------------------------------------------
@@ -362,11 +364,35 @@ class SpecificationEntity(BaseModel):
 class MissileDomainPass(BaseModel):
     """Missile-domain pass root. Guidance / seeker / propulsion / platform
     are reached via typed edges on MissileSystemEntity; launcher_systems
-    stay at pass root. Specifications at pass root as bridge entity."""
-    model_config = ConfigDict(extra="ignore", is_entity=False)
+    stay at pass root. Specifications at pass root as bridge entity.
 
-    missile_systems: List[MissileSystemEntity] = Field(default_factory=list)
-    launcher_systems: List[LauncherSystemEntity] = Field(default_factory=list)
-    specifications: List[SpecificationEntity] = Field(default_factory=list)
+    is_entity=True per docling-graph-docs.md §Template Basics → Root
+    Document Model (line 18859). See radar_domain.py for full rationale
+    (registry hashing, walker pass-root branch, GraphConverter descent).
+    """
+    model_config = ConfigDict(
+        extra="ignore",
+        is_entity=True,
+        graph_id_fields=[],
+    )
+
+    missile_systems: List[MissileSystemEntity] = edge(
+        label="CONTAINS",
+        description="Missile systems extracted from this document by this pass.",
+        examples=[["SA-20", "SA-10"], ["PAC-3"]],
+        default_factory=list,
+    )
+    launcher_systems: List[LauncherSystemEntity] = edge(
+        label="CONTAINS",
+        description="Launcher systems extracted from this document by this pass.",
+        examples=[["5P85TE2 TEL"], ["M901 TEL"]],
+        default_factory=list,
+    )
+    specifications: List[SpecificationEntity] = edge(
+        label="CONTAINS",
+        description="Specification components extracted from this document by this pass.",
+        examples=[[{"parameter": "max_range", "value": "150", "unit": "km"}], [{"parameter": "speed", "value": "Mach 5", "unit": None}]],
+        default_factory=list,
+    )
 
     _dedupe_root_entities = model_validator(mode="before")(dedupe_entities_by_identity)

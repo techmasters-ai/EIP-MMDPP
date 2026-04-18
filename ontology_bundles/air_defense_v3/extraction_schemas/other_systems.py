@@ -360,7 +360,8 @@ class SpecificationEntity(BaseModel):
 
 
 # ----------------------------------------------------------------------
-# Pass-root container — is_entity=False (Decision 4a).
+# Pass-root — is_entity=True per docling-graph-docs.md (root models are
+# entities). See radar_domain.py for the full rationale.
 # Intra-pass OtherSystemsRelationship DTO removed in Task 64 (plan Task 37);
 # typed INSTALLED_ON edges on entity classes replace it.
 # ----------------------------------------------------------------------
@@ -368,14 +369,52 @@ class SpecificationEntity(BaseModel):
 class OtherSystemsPass(BaseModel):
     """Other-systems pass root. Each system carries a typed
     INSTALLED_ON edge to its host PLATFORM when known; SPECIFICATION
-    linking is handled post-merge. IADS is a top-level system-of-systems."""
-    model_config = ConfigDict(extra="ignore", is_entity=False)
+    linking is handled post-merge. IADS is a top-level system-of-systems.
 
-    ada_systems: List[AirDefenseArtillerySystemEntity] = Field(default_factory=list)
-    ew_systems: List[ElectronicWarfareSystemEntity] = Field(default_factory=list)
-    fire_control_systems: List[FireControlSystemEntity] = Field(default_factory=list)
-    weapon_systems: List[WeaponSystemEntity] = Field(default_factory=list)
-    iads_systems: List[IntegratedAirDefenseSystemEntity] = Field(default_factory=list)
-    specifications: List[SpecificationEntity] = Field(default_factory=list)
+    is_entity=True per docling-graph-docs.md §Template Basics → Root
+    Document Model (line 18859). See radar_domain.py for full rationale.
+    """
+    model_config = ConfigDict(
+        extra="ignore",
+        is_entity=True,
+        graph_id_fields=[],
+    )
+
+    ada_systems: List[AirDefenseArtillerySystemEntity] = edge(
+        label="CONTAINS",
+        description="Air-defense artillery systems extracted from this document by this pass.",
+        examples=[["ZSU-23-4 Shilka"], ["2K22 Tunguska"]],
+        default_factory=list,
+    )
+    ew_systems: List[ElectronicWarfareSystemEntity] = edge(
+        label="CONTAINS",
+        description="Electronic-warfare systems extracted from this document by this pass.",
+        examples=[["Krasukha-4"], ["AN/ALQ-99"]],
+        default_factory=list,
+    )
+    fire_control_systems: List[FireControlSystemEntity] = edge(
+        label="CONTAINS",
+        description="Fire-control systems extracted from this document by this pass.",
+        examples=[["Aegis"], ["9S32 Grill Pan"]],
+        default_factory=list,
+    )
+    weapon_systems: List[WeaponSystemEntity] = edge(
+        label="CONTAINS",
+        description="Weapon systems extracted from this document by this pass.",
+        examples=[["Phalanx CIWS"], ["RIM-116 RAM"]],
+        default_factory=list,
+    )
+    iads_systems: List[IntegratedAirDefenseSystemEntity] = edge(
+        label="CONTAINS",
+        description="Integrated air-defense systems extracted from this document by this pass.",
+        examples=[["Russian IADS"], ["NATO NATINADS"]],
+        default_factory=list,
+    )
+    specifications: List[SpecificationEntity] = edge(
+        label="CONTAINS",
+        description="Specification components extracted from this document by this pass.",
+        examples=[[{"parameter": "range", "value": "50", "unit": "km"}], [{"parameter": "caliber", "value": "23", "unit": "mm"}]],
+        default_factory=list,
+    )
 
     _dedupe_root_entities = model_validator(mode="before")(dedupe_entities_by_identity)

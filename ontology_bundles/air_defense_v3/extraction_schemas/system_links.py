@@ -106,7 +106,20 @@ class SystemLinksPass(BaseModel):
     collection fields' sub-check in the manifest self-consistency section
     of §2 checker rules. Decision 4: ``relationships`` uses a plain
     ``Field`` (not ``edge()``) because its items are DTOs, not entities.
-    """
-    model_config = ConfigDict(extra="ignore", is_entity=False)
 
-    relationships: List[SystemLinkRelationship] = Field(default_factory=list)
+    is_entity=True per docling-graph-docs.md §Template Basics → Root
+    Document Model (line 18859). See radar_domain.py for full rationale.
+    graph_id_fields=[] because the DTO-emitting pass-root has no natural
+    identity; the walker skips it at at_pass_root=True.
+    """
+    model_config = ConfigDict(
+        extra="ignore",
+        is_entity=True,
+        graph_id_fields=[],
+    )
+
+    relationships: List[SystemLinkRelationship] = Field(
+        default_factory=list,
+        description="Cross-pass relationship DTOs emitted by this pass; each carries from_ref_id/to_ref_id that the merge layer resolves against PassResult.upstream_refs.",
+        examples=[[{"rel_type": "CUES", "from_ref_id": "E001", "to_ref_id": "E002"}], [{"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E003", "to_ref_id": "E004"}]],
+    )

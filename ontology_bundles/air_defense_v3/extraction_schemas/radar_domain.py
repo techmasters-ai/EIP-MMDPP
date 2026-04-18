@@ -499,7 +499,13 @@ class SpecificationEntity(BaseModel):
 
 
 # ----------------------------------------------------------------------
-# Pass-root container — is_entity=False (Decision 4a).
+# Pass-root — is_entity=True per docling-graph-docs.md §Template Basics
+# ("Root Document Model") and per the graph_converter requirement that
+# top-level models walked by pydantic_list_to_graph be entities.
+# Without graph_id_fields, node_id_registry hashes the class name into
+# a stable synthetic ID, which is safe here because each /extract-pass
+# call instantiates exactly one RadarDomainPass and uses a fresh
+# registry (NodeIDRegistry per PipelineContext).
 # Intra-pass RadarRelationship DTO removed in Task 64 (plan Task 37);
 # typed edges on RadarSystemEntity replace it. SystemLinkRelationship in
 # system_links.py remains the only surviving DTO (Decision 4).
@@ -511,10 +517,33 @@ class RadarDomainPass(BaseModel):
     platforms) are reached via typed edges on ``RadarSystemEntity``, not
     pass-root lists. ``specifications`` remains at pass root as it is a
     bridge entity not owned by any single radar.
-    """
-    model_config = ConfigDict(extra="ignore", is_entity=False)
 
-    radar_systems: List[RadarSystemEntity] = Field(default_factory=list)
-    specifications: List[SpecificationEntity] = Field(default_factory=list)
+    is_entity=True per docling-graph-docs.md §Template Basics → Root
+    Document Model (line 18859). graph_id_fields=[] because the pass-root
+    is a synthetic container with no natural identity — the registry
+    hashes the class name into a stable per-extraction node ID, and the
+    worker's walker (walk_entity_graph, at_pass_root=True branch) skips
+    emitting the pass-root as an entity. Entity-list fields use edge()
+    so docling-graph's GraphConverter walks into them (the converter
+    returns early when the root is is_entity=False).
+    """
+    model_config = ConfigDict(
+        extra="ignore",
+        is_entity=True,
+        graph_id_fields=[],
+    )
+
+    radar_systems: List[RadarSystemEntity] = edge(
+        label="CONTAINS",
+        description="Radar systems extracted from this document by this pass.",
+        examples=[["Tombstone", "Clam Shell"], ["AN/MPQ-65"]],
+        default_factory=list,
+    )
+    specifications: List[SpecificationEntity] = edge(
+        label="CONTAINS",
+        description="Specification components extracted from this document by this pass.",
+        examples=[[{"parameter": "max_range", "value": "150", "unit": "km"}], [{"parameter": "peak_power", "value": "150", "unit": "kW"}]],
+        default_factory=list,
+    )
 
     _dedupe_root_entities = model_validator(mode="before")(dedupe_entities_by_identity)
