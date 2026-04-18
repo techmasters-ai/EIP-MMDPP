@@ -12,6 +12,7 @@ HAS_PROVENANCE edges per entity. See spec §3.8 + §5.6 Phase 2.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -20,6 +21,8 @@ from typing import Any
 # duplication. Re-export so existing callers that import from this module
 # continue to work without changes.
 from app.services.extraction_merge import ChunkForDerivation, DerivedEdge
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["ChunkForDerivation", "DerivedEdge", "normalize_name", "derive_structural_edges"]
 
@@ -54,15 +57,24 @@ def derive_structural_edges(
 
     for entity in merged.entities:
         from_rid = identity_to_rid.get(entity.identity)
-        if from_rid is None:
-            # Shouldn't normally happen — every merged entity was upserted
-            # before this function runs. Skip defensively.
+        # Truthy-check: _extract_rids pads missing RIDs with "" (empty string),
+        # not None — so `is None` lets empty strings through and we'd emit
+        # `CREATE EDGE MENTIONED_IN FROM  TO #...` which ArcadeDB rejects as
+        # a SQL parse error. Skip both None and empty.
+        if not from_rid:
+            logger.warning(
+                "derive_structural_edges: skipping entity %s (identity=%s) — "
+                "no upsert RID available (upsert likely returned an empty row)",
+                getattr(entity, "display_label", None), entity.identity,
+            )
             continue
         canonical = normalize_name(entity.display_label)
         if not canonical:
             continue
         for chunk in chunks:
             if canonical in chunk.text_normalized:
+                if not chunk.rid:
+                    continue
                 edges.append(
                     DerivedEdge(
                         from_id=from_rid,

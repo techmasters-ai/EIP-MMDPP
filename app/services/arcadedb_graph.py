@@ -2083,12 +2083,14 @@ class ArcadeDBGraphStore:
         except Exception:
             ontology = {}
 
+        # Route through _safe_type_name so reserved words (e.g. TABLE → TABLE_REF)
+        # match the actual class names created in arcadedb_schema.py.
         document_scoped_entity_classes = [
-            e["name"] for e in ontology.get("entity_types", [])
+            _safe_type_name(e["name"]) for e in ontology.get("entity_types", [])
             if e.get("identity_scope") == "document"
         ]
         domain_edge_classes = [
-            r["name"] for r in ontology.get("relationship_types", [])
+            _safe_type_name(r["name"]) for r in ontology.get("relationship_types", [])
         ]
 
         executed = 0
