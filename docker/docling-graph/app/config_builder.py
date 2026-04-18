@@ -66,7 +66,13 @@ class DoclingGraphSettings(BaseSettings):
     docling_graph_structured_output: bool = True
     docling_graph_structured_sparse_check: bool = True
 
-    # LLM overrides
+    # LLM overrides.
+    # Temperature=0.1 (library default) — tried temperature=0 per Ollama
+    # structured-outputs guidance but it caused llama3.3:70b to deterministically
+    # emit empty {"nodes":[],"relationships":[]} for our 40-path DeltaGraph
+    # schema (Handwritten_Text.pdf extractions at 0.1 succeeded; all extractions
+    # at 0.0 returned empty JSON). A small amount of variance is needed for the
+    # model to explore valid completions under the structured-output constraint.
     docling_graph_llm_temperature: float = 0.1
     docling_graph_llm_max_tokens: int | None = 64000
     docling_graph_llm_timeout: int = 10800

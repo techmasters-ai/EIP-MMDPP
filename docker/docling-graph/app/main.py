@@ -274,6 +274,19 @@ def _apply_litellm_client_patches():
 
 _apply_litellm_client_patches()
 
+# Prose-friendly catalog-prompt rewrites. See docstring in prompt_overrides.py
+# for why this monkey-patch is justified: the library's build_catalog_prompt_block
+# appends "Emit only when this batch contains the table/structure... otherwise
+# omit." for any entity path with identity_example_values. On prose-heavy docs
+# (radar/missile manuals, operator guides) llama3.3:70b interprets it literally
+# and returns {"nodes":[], "relationships":[]}, which then trips the DeltaExtraction
+# quality gate (path_counts={}, empty_output). Evidence gathered pre-install: 9+
+# consecutive radar_domain/missile_domain/other_systems FAILED runs with that exact
+# signature; system_links (DTO-only, no catalog gate) succeeded in parallel.
+from app.prompt_overrides import install as _install_prompt_overrides
+
+_install_prompt_overrides()
+
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app.config_builder import build_pipeline_config
 from app.provenance import build_provenance_from_context
@@ -426,6 +439,16 @@ def run_extraction_pass(
             pass_name=pass_name,
         )
         context = run_pipeline(config)
+
+        # docling-graph's stages don't set ``context.template_instance``
+        # — they populate ``extracted_models``. Promote the single
+        # extracted pass-root to ``template_instance`` so the response
+        # builder serializes the populated Pydantic object (not the
+        # node_link_data fallback).
+        extracted = getattr(context, "extracted_models", None)
+        if isinstance(extracted, list) and extracted:
+            context.template_instance = extracted[0]
+
         try:
             context._upstream_preamble_applied = preamble_applied
         except AttributeError:
