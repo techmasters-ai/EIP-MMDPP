@@ -1,10 +1,61 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-08
+**Last updated:** 2026-04-17
 
 ---
 
 ## Open Items
+
+### Infrastructure / Worker Queue Isolation (Deferred)
+
+**#28. Isolate `scan_watch_directories` from pipeline worker queue**
+**Status:** Deferred. Post-migration engineering work, separate PR.
+**Files:** `app/workers/celery_app.py`, `docker-compose.yml`, `scripts/full_purge_and_reingest.py`
+
+**Observed failure mode (2026-04-17 corpus re-ingest):**
+During the docs-alignment migration run, the beat-driven
+`scan_watch_directories` poller (every 30s → 120 tasks/hour) piled up
+77+ unprocessed tasks in the `ingest` queue while pipeline workers
+were blocked for hours on long-running `derive_ontology_graph` tasks
+(LLM passes at 20–60 min each on llama3.3:70b thinking=high). With
+`worker_prefetch_multiplier=1` and FIFO queue consumption, chain
+continuations (`collect_derivations`, `derive_structure_links`,
+`derive_canonicalization`, `finalize_document`) sat behind the
+watcher backlog and appeared — incorrectly — as a chain break. The
+chain WAS firing; continuations were just deep in the queue.
+
+**What needs to be done:**
+1. Add a dedicated `watcher` queue. Route
+   `app.workers.watcher.scan_watch_directories` to it in
+   `celery_app.py::task_routes`.
+2. Update `docker-compose.yml` worker subscriptions so the primary
+   pipeline worker does NOT consume from `watcher`. Either start a
+   separate, low-priority watcher worker OR accept that watch-dir
+   polling pauses during heavy ingest runs.
+3. Update `scripts/full_purge_and_reingest.py` so the migration
+   driver `docker compose stop beat` after step 2 (containers stop)
+   and restarts beat only at the end of step 8 — during the ingest
+   run, no new scan_watch_directories tasks should be generated at
+   all.
+4. Optional: add a ceiling on beat-generated tasks (drop-if-queue-
+   depth-already-contains-same-task pattern) so intermittent worker
+   restarts can't accumulate unbounded backlog.
+
+**Why this matters:**
+Without isolation, any long-running pipeline task starves every
+downstream chain continuation by queue position, even when the
+chain callback fires correctly. The symptom looks identical to a
+chain break, which sent debugging off the rails for an hour during
+the 2026-04-17 run. Proper queue isolation eliminates this failure
+mode entirely.
+
+**Acceptance:**
+- `scan_watch_directories` tasks do not appear in the `ingest` queue.
+- Migration script stops beat for the duration of a re-ingest.
+- A load test with both stages running doesn't starve pipeline
+  continuations regardless of queue depth.
+
+---
 
 ### Feature Additions (Deferred)
 
