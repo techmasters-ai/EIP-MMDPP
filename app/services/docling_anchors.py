@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict, defaultdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from docling_core.types.doc import DocItemLabel, DoclingDocument, PictureItem, TableItem, TextItem
 
@@ -87,6 +87,16 @@ _HEADING_LABELS = (
     DocItemLabel.SECTION_HEADER,
     DocItemLabel.TITLE,
 )
+
+# Labels considered body text for NEAR_TEXT neighbor emission (§4.3).
+# Allow-list is safer than exclude-list: it rejects page furniture
+# (PAGE_HEADER/PAGE_FOOTER), footnotes, formulas, and references that
+# would otherwise fill the ±2 window with noise on technical manuals.
+_NEAR_TEXT_LABELS = frozenset({
+    DocItemLabel.TEXT,
+    DocItemLabel.PARAGRAPH,
+    DocItemLabel.LIST_ITEM,
+})
 
 
 _CAPTION_PREFIX_RE = re.compile(
@@ -227,12 +237,13 @@ def _classify_image_role(pic, docling_doc, *, label: str | None) -> str:
 
 
 def _is_valid_near_text(item, captions_linked: set[str]) -> bool:
-    """Accept body-text items only: not section headers, titles, or
-    captions already linked to pictures/tables. Design §4.3."""
+    """Accept body-text items only (TEXT / PARAGRAPH / LIST_ITEM), and
+    exclude any whose self_ref is in captions_linked (already owned by
+    another picture/table as a caption). Design §4.3."""
     if not isinstance(item, TextItem):
         return False
     label = getattr(item, "label", None)
-    if label in (DocItemLabel.SECTION_HEADER, DocItemLabel.TITLE, DocItemLabel.CAPTION):
+    if label not in _NEAR_TEXT_LABELS:
         return False
     if getattr(item, "self_ref", None) in captions_linked:
         return False
@@ -284,8 +295,10 @@ def walk(
           branches inside ``_build_logical_identity``.
     Returns:
       MergedExtraction with ``entities`` (DOCUMENT? + N SECTION + M FIGURE
-      + K TABLE) and ``edges`` (HAS_* when DOCUMENT emitted, plus CHILD_OF
-      for hierarchical SECTION nesting).
+      + L IMAGE + K TABLE + P TEXT_BLOCK) and ``edges`` (HAS_SECTION /
+      HAS_FIGURE / HAS_TABLE when DOCUMENT emitted, CHILD_OF for
+      hierarchical SECTION nesting, NEAR_TEXT from each FIGURE/IMAGE to
+      its up-to-4 reading-order text-block neighbors).
     """
     docling_doc = DoclingDocument.model_validate(docling_doc_json)
 
@@ -424,7 +437,7 @@ def walk(
 
     # §4.3 — lazy TEXT_BLOCK emission + NEAR_TEXT edge pairs.
     text_blocks_by_ref: dict[str, TextBlockEntity] = {}
-    near_text_pairs: list[tuple] = []  # (parent_entity, text_block_entity)
+    near_text_pairs: list[tuple[Any, TextBlockEntity]] = []  # (parent_entity, text_block_entity)
 
     # pic_entities is parallel to docling_doc.pictures (§3c) — zip is safe.
     for pic, entity in zip(docling_doc.pictures, pic_entities, strict=True):
@@ -438,8 +451,7 @@ def walk(
             tb = text_blocks_by_ref.get(self_ref)
             if tb is None:
                 text = (getattr(text_item, "text", None) or "")[:500]
-                label = getattr(text_item, "label", None)
-                label_value = label.value if hasattr(label, "value") else (label if isinstance(label, str) else None)
+                label_value = getattr(getattr(text_item, "label", None), "value", None)
                 prov_page = _first_prov_page(text_item)
                 tb = TextBlockEntity(
                     text_ref=self_ref,

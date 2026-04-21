@@ -631,3 +631,28 @@ def test_walker_near_text_dedup_across_pictures():
     # Both edges point FROM different parents.
     from_refs = {e.from_identity for e in edges_to_shared}
     assert len(from_refs) == 2
+
+
+# ---------------------------------------------------------------------------
+# 3d follow-up — allow-list body text (Fix 1)
+# ---------------------------------------------------------------------------
+
+def test_is_valid_near_text_rejects_page_furniture():
+    """Running headers/footers, footnotes, formulas, and references are
+    NOT valid neighbor candidates even though they're TextItem instances."""
+    from app.services.docling_anchors import _is_valid_near_text
+    from docling_core.types.doc import DoclingDocument, DocItemLabel
+    doc = DoclingDocument(name="page_furniture")
+    # Build a dict of label → TextItem for each label under test.
+    cases = []
+    for lbl in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER,
+                DocItemLabel.FOOTNOTE):
+        # add_text may or may not accept every enum directly; using the
+        # string .value is the tolerant form.
+        item = doc.add_text(label=lbl.value, text=f"noise-{lbl.value}")
+        cases.append((lbl, item))
+    captions_linked: set[str] = set()
+    for lbl, item in cases:
+        assert _is_valid_near_text(item, captions_linked) is False, (
+            f"page furniture label {lbl} must be rejected"
+        )
