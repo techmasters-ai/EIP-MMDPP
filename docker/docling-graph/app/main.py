@@ -274,19 +274,6 @@ def _apply_litellm_client_patches():
 
 _apply_litellm_client_patches()
 
-# Prose-friendly catalog-prompt rewrites. See docstring in prompt_overrides.py
-# for why this monkey-patch is justified: the library's build_catalog_prompt_block
-# appends "Emit only when this batch contains the table/structure... otherwise
-# omit." for any entity path with identity_example_values. On prose-heavy docs
-# (radar/missile manuals, operator guides) llama3.3:70b interprets it literally
-# and returns {"nodes":[], "relationships":[]}, which then trips the DeltaExtraction
-# quality gate (path_counts={}, empty_output). Evidence gathered pre-install: 9+
-# consecutive radar_domain/missile_domain/other_systems FAILED runs with that exact
-# signature; system_links (DTO-only, no catalog gate) succeeded in parallel.
-from app.prompt_overrides import install as _install_prompt_overrides
-
-_install_prompt_overrides()
-
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app.config_builder import build_pipeline_config
 from app.provenance import build_provenance_from_context
@@ -394,6 +381,7 @@ def run_extraction_pass(
     texts array and prepended to body.children so that export_to_markdown()
     includes it at the top of the document body for all three extraction contracts.
     """
+    import shutil
     import tempfile
     from docling_graph import run_pipeline
 
@@ -432,11 +420,16 @@ def run_extraction_pass(
         json.dump(docling_document_json, tmp, ensure_ascii=False, default=str)
         tmp_path = tmp.name
 
+    # Per-call debug dir; read back delta_trace.json afterwards and stash
+    # on context so extract_pass can surface it as response.diagnostics.
+    debug_dir = tempfile.mkdtemp(prefix="docgraph-debug-")
+
     try:
         config = build_pipeline_config(
             source=tmp_path,
             template_class=template_cls,
             pass_name=pass_name,
+            debug_dir=debug_dir,
         )
         context = run_pipeline(config)
 
@@ -453,9 +446,31 @@ def run_extraction_pass(
             context._upstream_preamble_applied = preamble_applied
         except AttributeError:
             pass
+
+        # Read library-level trace (batch_errors, quality_gate, identity_filter,
+        # path_counts, merge_stats, diagnostics) for response surfacing.
+        trace: dict | None = None
+        for candidate in (
+            os.path.join(debug_dir, "debug", "delta_trace.json"),
+            os.path.join(debug_dir, "delta_trace.json"),
+            os.path.join(debug_dir, "debug", "trace_data.json"),
+        ):
+            if os.path.exists(candidate):
+                try:
+                    with open(candidate, encoding="utf-8") as f:
+                        trace = json.load(f)
+                    break
+                except Exception as exc:
+                    logger.warning("Failed to load debug trace %s: %s", candidate, exc)
+        if trace is not None:
+            try:
+                context._delta_trace = trace
+            except AttributeError:
+                pass
         return context
     finally:
         os.unlink(tmp_path)
+        shutil.rmtree(debug_dir, ignore_errors=True)
 
 
 def _should_run_validation_pass() -> bool:
@@ -612,6 +627,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
             provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
             provenance=provenance_rows,
+            diagnostics=getattr(context, "_delta_trace", None),
         )
     finally:
         logger.info(

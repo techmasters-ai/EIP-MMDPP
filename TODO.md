@@ -1,6 +1,6 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-17
+**Last updated:** 2026-04-18
 
 ---
 
@@ -88,6 +88,36 @@ mode entirely.
 - Configurable via env var (regex remains the default)
 - LLM mode produces more complete EXTRACTED_FROM edges
 - Latency is bounded via batching
+
+---
+
+**#29. Route image-heavy / handwritten docs through VLM backend + one-to-one**
+**Status:** Deferred. Future optimization; not a fix for the current migration. Revisit after the `llama3.1:8b` + `batch=1024` + `gleaning=2` LLM baseline stabilizes.
+**Files:** `app/workers/pipeline.py` (`_derive_ontology_graph_bundle_passes`), `docker/docling-graph/app/main.py` (per-request backend dispatch), `app/models/ingest.py` (optional `backend_hint` column)
+
+**Observation (2026-04-18):**
+The docs-sanctioned pattern for image-heavy / handwritten / form-style documents is `backend="vlm"` + `processing_mode="one-to-one"` + `numind/NuExtract-2.0-8B` — see `docling-graph-docs.md` §Extraction Backends ("VLM Backend Criteria") and §The Extraction Process ("Choose the Right Backend"). Four docs in the current corpus fit that profile:
+- `cw_radar.jpg`
+- `Fan_Song_Radar.jpeg`
+- `chinese_handwritten_notes.pdf`
+- `chinese_handwritten_notes_2.pdf`
+
+On the current LLM-only path these docs either run the ontology pass on very sparse markdown (low recall) or fail the quality gate entirely (empty LLM output).
+
+**What needs to be done:**
+1. Add a per-document `backend_hint` at ingest (heuristic: `mime_type in image/*` OR `page_count==1 and ocr_text_ratio<X` → `"vlm"`, else `"llm"`).
+2. Extend `/extract-pass` (or add `/extract-pass-vlm`) so the worker can request the VLM backend per call without changing the global service config.
+3. Pull `numind/NuExtract-2.0-8B` on the Ollama host (or run via vLLM/local GPU runtime supported by docling-graph's `VlmBackend`).
+4. Make the worker send the raw source bytes (not DoclingDocument JSON) for VLM passes, since VLM reads images directly.
+5. Add `backend.cleanup()` call in the docling-graph service handler so VLM GPU memory is freed between requests (per docs best-practices note).
+
+**Why this matters:**
+Keeps prose extraction on the fast LLM+delta path while giving the image/handwritten minority of the corpus the docs-aligned VLM treatment. Without this, these docs consistently produce sparse or empty ontology output regardless of how well the LLM side is tuned.
+
+**Acceptance:**
+- `cw_radar.jpg` and `Fan_Song_Radar.jpeg` produce non-empty ontology entities end-to-end.
+- The two `chinese_handwritten_notes*.pdf` docs either extract real entities or are explicitly marked "no-extract" (e.g. by a hint that says "image-only, no target domain content").
+- No regression on the LLM/delta path for prose PDFs.
 
 ---
 

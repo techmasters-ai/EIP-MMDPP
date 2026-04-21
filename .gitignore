@@ -78,6 +78,14 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Notebook test corpus — large binary test assets stay local; commit only
+# the .ipynb files and the MDE .xlsx checklists the schemas are aligned to.
+notebooks/*.pdf
+notebooks/*.jpg
+notebooks/*.jpeg
+notebooks/*.png
+notebooks/*.txt
+
 # IPython
 profile_default/
 ipython_config.py

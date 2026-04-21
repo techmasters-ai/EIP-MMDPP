@@ -1,0 +1,84 @@
+# docker-compose.jupyter.yml
+#
+# Standalone sidecar that runs a JupyterLab server against the main stack's
+# network so notebooks can import app.* and reach postgres/redis/minio/
+# arcadedb/docling/docling-graph by service name.
+#
+# Usage:
+#   1. Start the main stack first:
+#        docker compose up -d
+#   2. Start this sidecar:
+#        docker compose -f docker-compose.jupyter.yml up -d --build
+#   3. Browse:
+#        http://localhost:${JUPYTER_PORT:-8888}/lab
+#   4. Open notebooks/ingest_walkthrough.ipynb
+#
+# The service joins the main stack's default network as an external network,
+# so DNS resolution for postgres, redis, minio, arcadedb, docling and
+# docling-graph works exactly like it does for the worker.
+
+services:
+  jupyter:
+    container_name: eip-mmdpp-jupyter
+    build:
+      context: .
+      dockerfile: docker/jupyter/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Match the worker's runtime env so every import resolves identically.
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-eip}:${POSTGRES_PASSWORD:-eip_secret}@postgres:5432/${POSTGRES_DB:-eip}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      MINIO_ENDPOINT: minio:9000
+      # GPU visibility for the nvidia-container-runtime.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # Expose the host GPU(s) via the nvidia runtime. Override JUPYTER_GPU_COUNT
+    # in .env to pin to a specific count (e.g. "1"); default is all GPUs.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${JUPYTER_GPU_COUNT:-all}
+              capabilities: [gpu]
+    volumes:
+      # Mount source so notebook edits + app edits are live (no rebuild).
+      - ./app:/app/app
+      - ./ontology:/app/ontology
+      - ./ontology_bundles:/app/ontology_bundles
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+      - ./scripts:/app/scripts
+      - ./notebooks:/app/notebooks
+      - ./pyproject.toml:/app/pyproject.toml
+      # FIPS workaround: the host kernel has CONFIG_CRYPTO_FIPS=y, so the
+      # container inherits /proc/sys/crypto/fips_enabled=1. The container's
+      # stock OpenSSL isn't FIPS-certified, so any library that initializes
+      # OpenSSL crypto (e.g. OpenCV via docling_ibm_models.TableFormer)
+      # aborts with "FATAL FIPS SELFTEST FAILURE" at import time. Shadow
+      # the procfs flag with a zero file so OpenSSL skips FIPS mode entirely.
+      - ./docker/jupyter/fips_off:/proc/sys/crypto/fips_enabled:ro
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    working_dir: /app/notebooks
+    networks:
+      - default
+    extra_hosts:
+      # The worker reaches a host-resident Ollama via host-gateway; mirror
+      # that here so any notebook cell that triggers LLM calls behaves the
+      # same way as the worker.
+      - "ollama:host-gateway"
+
+networks:
+  default:
+    # Join the main stack's network instead of creating a new one.
+    # Compose names the default network "<project>_default" — since the
+    # main compose project is "eip-mmdpp", the network is "eip-mmdpp_default".
+    name: eip-mmdpp_default
+    external: true

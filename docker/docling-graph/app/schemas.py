@@ -146,6 +146,17 @@ class ExtractPassResponse(BaseModel):
             "element_uid per node in context.knowledge_graph."
         ),
     )
+    diagnostics: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Library-level delta extraction trace: batch_errors, "
+            "quality_gate verdict, identity_filter stats, path_counts, "
+            "merge_stats, property_sparsity, etc. Populated when the "
+            "service enables debug=True on PipelineConfig. Exact shape "
+            "is the library's trace dict — see docling_graph orchestrator "
+            "trace() for schema."
+        ),
+    )
 
 
 # Resolve forward references in the module namespace so the classes

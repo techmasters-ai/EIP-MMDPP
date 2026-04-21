@@ -1,26 +1,19 @@
-"""Missile domain pass: missile systems, launcher, guidance, and seekers.
+"""Missile domain pass — flat, checklist-aligned schema.
 
-Narrow extraction views of canonical missile-chain entities.
+Scope aligned to the `(U) MISSILE MDE Checklist.xlsx` deliverable: every
+extracted field corresponds 1:1 to a Data Element on that checklist.
+Subcomponent classes (GuidanceMethodEntity, SeekerEntity,
+PropulsionStackEntity, LauncherSystemEntity, PlatformEntity) are
+intentionally removed — the checklist treats all parameters (including
+booster / sustainer / ejector propulsion stages) as flat properties of
+a single MISSILE_SYSTEM instance. Canonical entities.py retains the
+broader taxonomy for other bundles / future expansion.
 
-Key entities (ontology_name):
-- ``MISSILE_SYSTEM`` — guided missile weapon
-- ``LAUNCHER_SYSTEM`` — launcher platform (TEL, VLS, etc.)
-- ``GUIDANCE_METHOD`` — guidance scheme (command, SARH, ARH, IR, …)
-- ``SEEKER`` — terminal guidance seeker head
-- ``PROPULSION_STACK`` — full propulsion subsystem
-- ``PLATFORM`` — host platform
-- ``SPECIFICATION`` — measurable parameter/value/unit
+Key entity (ontology_name):
+- ``MISSILE_SYSTEM`` — flattened to carry all checklist fields.
 
-Key relationships (docs-valid RelationshipType labels):
-- ``MISSILE_SYSTEM HAS_GUIDANCE GUIDANCE_METHOD``
-- ``MISSILE_SYSTEM HAS_SEEKER SEEKER``
-- ``MISSILE_SYSTEM HAS_PROPULSION PROPULSION_STACK``
-- ``MISSILE_SYSTEM INSTALLED_ON PLATFORM``
-- ``LAUNCHER_SYSTEM LAUNCHES MISSILE_SYSTEM``
-- ``LAUNCHER_SYSTEM INSTALLED_ON PLATFORM``
-
-Plan v32 Task 47 (Phase 5 docs-compliance rewrite + typed-edge migration).
-Intra-pass ``MissileRelationship`` DTO retained until Task 64 deletes it.
+Tier 1 prose-mention rules are preserved on the pass-root list +
+identity field.
 """
 from __future__ import annotations
 
@@ -29,10 +22,9 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..validators import (
-    coerce_optional_int,
     coerce_optional_float,
+    coerce_optional_int,
     coerce_optional_confidence,
-    coerce_optional_text,
     dedupe_entities_by_identity,
 )
 
@@ -44,11 +36,6 @@ def edge(
     examples: list | None = None,
     **field_kwargs: Any,
 ) -> Any:
-    """Helper: declare a typed entity-to-entity edge field.
-
-    Per docs "Template Basics → Edge Helper Function → Required Definition":
-    this function must be defined identically in every template.
-    """
     existing_extra = field_kwargs.pop("json_schema_extra", None) or {}
     existing_extra["edge_label"] = label
     if description is not None:
@@ -59,153 +46,15 @@ def edge(
 
 
 # ----------------------------------------------------------------------
-# Entities
+# Missile system entity — flat, checklist-driven fields.
 # ----------------------------------------------------------------------
 
-class GuidanceMethodEntity(BaseModel):
-    """Guidance Method — narrow view of canonical GUIDANCE_METHOD."""
-    model_config = ConfigDict(
-        extra="ignore",
-        ontology_name="GUIDANCE_METHOD",
-        graph_id_fields=["guidance_type"],
-        identity_scope="global",
-        is_entity=True,
-    )
-
-    guidance_type: str = Field(
-        ...,
-        description="Type of guidance method",
-        examples=["COMMAND", "SARH"],
-        json_schema_extra={
-            "enum": ["COMMAND", "SARH", "ARH", "IR", "BEAM_RIDING",
-                     "TVM", "GPS_INS", "DUAL_MODE"],
-        },
-    )
-    firing_doctrine: Optional[str] = Field(
-        default=None,
-        description="Firing doctrine (shoot-look-shoot, ripple, etc.)",
-        examples=["Shoot-look-shoot"],
-    )
-    track_quality: Optional[str] = Field(
-        default=None,
-        description="Required track quality for guidance",
-        examples=["Fire-control quality track required"],
-    )
-    confidence: Optional[float] = Field(
-        default=None,
-        description="Extraction confidence for this instance, 0–1.",
-        ge=0.0, le=1.0,
-        json_schema_extra={"system_field": True},
-    )
-
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
-class SeekerEntity(BaseModel):
-    """Seeker — narrow view of canonical SEEKER."""
-    model_config = ConfigDict(
-        extra="ignore",
-        ontology_name="SEEKER",
-        graph_id_fields=["seeker_nomenclature"],
-        identity_scope="document",
-        is_entity=True,
-    )
-
-    seeker_nomenclature: str = Field(
-        ...,
-        description="Designation or nomenclature of the seeker",
-        examples=["Ka-band active seeker", "Ku-band semi-active seeker"],
-    )
-    seeker_type: Optional[str] = Field(
-        default=None,
-        description="Guidance technology used by the seeker",
-        json_schema_extra={
-            "enum": ["ACTIVE_RADAR", "SEMI_ACTIVE_RADAR", "IR", "DUAL_MODE",
-                     "ARM", "GPS_INS", "COMMAND"],
-        },
-    )
-    confidence: Optional[float] = Field(
-        default=None,
-        description="Extraction confidence for this instance, 0–1.",
-        ge=0.0, le=1.0,
-        json_schema_extra={"system_field": True},
-    )
-
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
-class PropulsionStackEntity(BaseModel):
-    """Propulsion Stack — narrow view of canonical PROPULSION_STACK.
-
-    B-26: value-object component (is_entity=False) per spec §4.8 — the
-    prior graph_id_fields=[] anti-pattern resolves via content-based
-    identity through the walker (A0-1).
-    """
-    model_config = ConfigDict(
-        extra="ignore",
-        ontology_name="PROPULSION_STACK",
-        graph_id_fields=[],
-        identity_scope="document",
-        is_entity=False,
-    )
-
-    total_burntime_s: Optional[float] = Field(
-        default=None,
-        description="Total burn time across all propulsion stages in seconds",
-        examples=[25],
-    )
-    confidence: Optional[float] = Field(
-        default=None,
-        description="Extraction confidence for this instance, 0–1.",
-        ge=0.0, le=1.0,
-        json_schema_extra={"system_field": True},
-    )
-
-    _v_total_burntime_s = field_validator("total_burntime_s", mode="before")(coerce_optional_float)
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
-class PlatformEntity(BaseModel):
-    """Platform — narrow view of canonical PLATFORM."""
-    model_config = ConfigDict(
-        extra="ignore",
-        ontology_name="PLATFORM",
-        graph_id_fields=["name"],
-        identity_scope="global",
-        is_entity=True,
-    )
-
-    name: str = Field(
-        ...,
-        description="Common name of the platform",
-        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
-    )
-    platform_type: Optional[str] = Field(
-        default=None,
-        description="Category of the platform",
-        json_schema_extra={
-            "enum": ["AIRCRAFT", "SHIP", "GROUND_VEHICLE", "FIXED_SITE",
-                     "SPACE", "MOBILE_LAUNCHER", "AIR_DEFENSE_BATTERY"],
-        },
-    )
-    service_branch: Optional[str] = Field(
-        default=None,
-        description="Military branch operating the platform",
-        examples=["Russian Aerospace Forces"],
-    )
-    confidence: Optional[float] = Field(
-        default=None,
-        description="Extraction confidence for this instance, 0–1.",
-        ge=0.0, le=1.0,
-        json_schema_extra={"system_field": True},
-    )
-
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
 class MissileSystemEntity(BaseModel):
-    """Missile System — narrow view of canonical MISSILE_SYSTEM with
-    typed edges to guidance, seeker, propulsion, and host platform.
+    """Missile system — flat extraction view aligned to the MISSILE MDE Checklist.
+
+    Every field below maps to a Data Element on that checklist. Numeric
+    fields carry their unit in the field name (e.g. ``max_intercept_km``)
+    so the extractor does not need to canonicalize units separately.
     """
     model_config = ConfigDict(
         extra="ignore",
@@ -215,160 +64,225 @@ class MissileSystemEntity(BaseModel):
         is_entity=True,
     )
 
+    # Identity / Production Information
     system_name: str = Field(
         ...,
-        description="Common name of the missile system",
-        examples=["PAC-3 MSE", "SM-6 Block IA"],
+        description=(
+            "Canonical designation of the missile system. "
+            "Accept canonical proper-noun identifiers from prose when "
+            "unambiguous (e.g. 'SA-2', 'SA-20', 'PAC-3 MSE', '9M96'). "
+            "Reject descriptive phrases ('the missile', 'the interceptor') "
+            "and generic noun phrases."
+        ),
+        examples=["SA-2", "SA-20", "PAC-3 MSE", "SM-6 Block IA", "9M96"],
     )
     nomenclature: Optional[str] = Field(
         default=None,
-        description="Military designation or NATO reporting name",
+        description="Military designation or NATO reporting name.",
         examples=["MIM-104F"],
     )
 
-    guidance_method: Optional[GuidanceMethodEntity] = edge(
-        label="HAS_GUIDANCE",
-        description="Guidance method used by this missile system.",
-        examples=["Active radar homing", "Command guidance"],
+    dieqp: Optional[str] = Field(
         default=None,
+        description="Digital Intelligence Equipment Parameters (DIEQP) identifier.",
     )
-    seeker: Optional[SeekerEntity] = edge(
-        label="HAS_SEEKER",
-        description="Terminal guidance seeker head used by this missile system.",
-        examples=["Ka-band active seeker", "Ku-band semi-active seeker"],
+    name: Optional[str] = Field(
         default=None,
+        description="Formal NAME field from the MDE checklist, "
+                    "distinct from the common ``system_name``.",
     )
-    propulsion_stacks: List[PropulsionStackEntity] = edge(
-        label="HAS_PROPULSION",
-        description="Propulsion stacks that provide thrust for this missile system.",
-        examples=[["total_burntime_s=25"], ["total_burntime_s=18"]],
-        default_factory=list,
-    )
-    platform: Optional[PlatformEntity] = edge(
-        label="INSTALLED_ON",
-        description="Platform on which this missile system is installed.",
-        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
+    emitter_function: Optional[str] = Field(
         default=None,
+        description="Emitter function from the MDE checklist.",
+    )
+    system_status: Optional[str] = Field(
+        default=None,
+        description="Lifecycle status (e.g. OPERATIONAL, DEVELOPMENTAL, RETIRED).",
+    )
+    asrd: Optional[str] = Field(
+        default=None,
+        description="ASRD identifier from the MDE checklist.",
+    )
+    responsible_agency: Optional[str] = Field(
+        default=None,
+        description="Agency responsible for the MDE record (e.g. 'IWC').",
+        examples=["IWC"],
+    )
+    review_cycle: Optional[str] = Field(
+        default=None,
+        description="Review cycle cadence for the MDE record.",
+    )
+    next_review_date: Optional[str] = Field(
+        default=None,
+        description="Next scheduled review date for the MDE record.",
     )
 
+    # Range / Guidance
+    min_intercept_km: Optional[float] = Field(
+        default=None,
+        description="Minimum intercept range in kilometers.",
+    )
+    max_intercept_km: Optional[float] = Field(
+        default=None,
+        description="Maximum intercept range in kilometers.",
+    )
+    min_altitude_km: Optional[float] = Field(
+        default=None,
+        description="Minimum engagement altitude in kilometers.",
+    )
+    max_altitude_km: Optional[float] = Field(
+        default=None,
+        description="Maximum engagement altitude in kilometers.",
+    )
+    max_launch_angle_deg: Optional[float] = Field(
+        default=None,
+        description="Maximum launch angle in degrees.",
+    )
+    guidance_type: Optional[str] = Field(
+        default=None,
+        description="Guidance type / system (e.g. SARH, Active Radar, "
+                    "Command, IR, Beam-riding, TVM, GPS/INS, Dual-mode).",
+        examples=["SARH", "Active Radar", "Command"],
+    )
+    seeker_type: Optional[str] = Field(
+        default=None,
+        description="Seeker type (e.g. ACTIVE_RADAR, SEMI_ACTIVE_RADAR, "
+                    "IR, DUAL_MODE, ARM, GPS_INS, COMMAND).",
+        examples=["ACTIVE_RADAR", "IR"],
+    )
+
+    # Physical Characteristics
+    missile_photo: Optional[bool] = Field(
+        default=None,
+        description="Whether a missile photograph is included in the record (Y/N).",
+    )
+    body_length_m: Optional[float] = Field(
+        default=None,
+        description="Missile body length in meters.",
+    )
+    body_diameter_m: Optional[float] = Field(
+        default=None,
+        description="Missile body diameter in meters.",
+    )
+    total_mass_kg: Optional[float] = Field(
+        default=None,
+        description="Total missile mass in kilograms "
+                    "(checklist unit column shows 'deg' in row 20 which is a source typo).",
+    )
+
+    # Performance Characteristics
+    average_speed_mps: Optional[float] = Field(
+        default=None,
+        description="Average flight speed in meters per second.",
+    )
+    max_speed_mps: Optional[float] = Field(
+        default=None,
+        description="Maximum flight speed in meters per second.",
+    )
+    max_flyout_time_sec: Optional[float] = Field(
+        default=None,
+        description="Maximum flyout time in seconds.",
+    )
+    flight_time_sec: Optional[float] = Field(
+        default=None,
+        description="Typical flight time in seconds.",
+    )
+    coast_time_sec: Optional[float] = Field(
+        default=None,
+        description="Coast (unpowered) time in seconds.",
+    )
+    intra_salvo_time_sec: Optional[float] = Field(
+        default=None,
+        description="Intra-salvo time between launches, in seconds "
+                    "(checklist labels this 'Intra-Solvo Time').",
+    )
+
+    # Propulsion
+    total_burn_time_sec: Optional[float] = Field(
+        default=None,
+        description="Total burn time across all propulsion stages, in seconds.",
+    )
+    ejector_time_sec: Optional[float] = Field(
+        default=None,
+        description="Ejector stage duration in seconds.",
+    )
+    ejector_thrust: Optional[str] = Field(
+        default=None,
+        description="Ejector thrust (free-text; checklist leaves unit column blank).",
+    )
+    ejector_mass_kg: Optional[float] = Field(
+        default=None,
+        description="Ejector mass in kilograms.",
+    )
+    booster_time_sec: Optional[float] = Field(
+        default=None,
+        description="Booster stage duration in seconds.",
+    )
+    booster_thrust: Optional[str] = Field(
+        default=None,
+        description="Booster thrust (free-text; checklist leaves unit column blank).",
+    )
+    booster_mass_kg: Optional[float] = Field(
+        default=None,
+        description="Booster mass in kilograms.",
+    )
+    sustain_time_sec: Optional[float] = Field(
+        default=None,
+        description="Sustainer stage duration in seconds.",
+    )
+    sustain_thrust: Optional[str] = Field(
+        default=None,
+        description="Sustainer thrust (free-text; checklist leaves unit column blank).",
+    )
+    sustain_mass_kg: Optional[float] = Field(
+        default=None,
+        description="Sustainer mass in kilograms.",
+    )
+
+    # System
     confidence: Optional[float] = Field(
         default=None,
-        description="Extraction confidence for this instance, 0–1.",
+        description="Extraction confidence for this instance, 0-1.",
         ge=0.0, le=1.0,
         json_schema_extra={"system_field": True},
     )
 
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
-class LauncherSystemEntity(BaseModel):
-    """Launcher System — narrow view of canonical LAUNCHER_SYSTEM."""
-    model_config = ConfigDict(
-        extra="ignore",
-        ontology_name="LAUNCHER_SYSTEM",
-        graph_id_fields=["system_name"],
-        identity_scope="global",
-        is_entity=True,
-    )
-
-    system_name: str = Field(
-        ...,
-        description="Common name of the launcher system",
-        examples=["M903 Launching Station", "M270 MLRS"],
-    )
-    launcher_type: Optional[str] = Field(
-        default=None,
-        description="Category of launcher mechanism",
-        examples=["Vertical cold-launch canister"],
-    )
-    capacity: Optional[int] = Field(
-        default=None,
-        description="Number of missiles the launcher can hold",
-        examples=[16],
-    )
-
-    missile_systems: List[MissileSystemEntity] = edge(
-        label="LAUNCHES",
-        description="Missile systems that this launcher is capable of launching.",
-        examples=[["PAC-3 MSE", "SM-6 Block IA"], ["THAAD Interceptor"]],
-        default_factory=list,
-    )
-    platform: Optional[PlatformEntity] = edge(
-        label="INSTALLED_ON",
-        description="Platform on which this launcher system is installed.",
-        examples=["SA-20 TEL", "Patriot PAC-3 ICC"],
-        default=None,
-    )
-
-    confidence: Optional[float] = Field(
-        default=None,
-        description="Extraction confidence for this instance, 0–1.",
-        ge=0.0, le=1.0,
-        json_schema_extra={"system_field": True},
-    )
-
-    _v_capacity = field_validator("capacity", mode="before")(coerce_optional_int)
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
-
-
-class SpecificationEntity(BaseModel):
-    """Specification — narrow view of canonical SPECIFICATION.
-
-    Value-object component (is_entity=False) per spec §4.8 — content-based
-    identity via the walker (A0-1); all fields optional per R19.
-    """
-    model_config = ConfigDict(
-        extra="ignore",
-        ontology_name="SPECIFICATION",
-        graph_id_fields=[],
-        identity_scope="document",
-        is_entity=False,
-    )
-
-    parameter: Optional[str] = Field(
-        default=None,
-        description="Name of the measured parameter (e.g. max_range, operating_temperature)",
-        examples=["max_range"],
-    )
-    value: Optional[str] = Field(
-        default=None,
-        description="Numeric value or range of the measurement",
-        examples=["150"],
-    )
-    unit: Optional[str] = Field(
-        default=None,
-        description="Unit of measurement (SI or military standard)",
-        examples=["km"],
-    )
-    confidence: Optional[float] = Field(
-        default=None,
-        description="Extraction confidence for this instance, 0–1.",
-        ge=0.0, le=1.0,
-        json_schema_extra={"system_field": True},
-    )
-
-    _v_parameter = field_validator("parameter", mode="before")(coerce_optional_text)
-    _v_value = field_validator("value", mode="before")(coerce_optional_text)
-    _v_unit = field_validator("unit", mode="before")(coerce_optional_text)
-    _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
+    _v_min_intercept_km      = field_validator("min_intercept_km",     mode="before")(coerce_optional_float)
+    _v_max_intercept_km      = field_validator("max_intercept_km",     mode="before")(coerce_optional_float)
+    _v_min_altitude_km       = field_validator("min_altitude_km",      mode="before")(coerce_optional_float)
+    _v_max_altitude_km       = field_validator("max_altitude_km",      mode="before")(coerce_optional_float)
+    _v_max_launch_angle_deg  = field_validator("max_launch_angle_deg", mode="before")(coerce_optional_float)
+    _v_body_length_m         = field_validator("body_length_m",        mode="before")(coerce_optional_float)
+    _v_body_diameter_m       = field_validator("body_diameter_m",      mode="before")(coerce_optional_float)
+    _v_total_mass_kg         = field_validator("total_mass_kg",        mode="before")(coerce_optional_float)
+    _v_average_speed_mps     = field_validator("average_speed_mps",    mode="before")(coerce_optional_float)
+    _v_max_speed_mps         = field_validator("max_speed_mps",        mode="before")(coerce_optional_float)
+    _v_max_flyout_time_sec   = field_validator("max_flyout_time_sec",  mode="before")(coerce_optional_float)
+    _v_flight_time_sec       = field_validator("flight_time_sec",      mode="before")(coerce_optional_float)
+    _v_coast_time_sec        = field_validator("coast_time_sec",       mode="before")(coerce_optional_float)
+    _v_intra_salvo_time_sec  = field_validator("intra_salvo_time_sec", mode="before")(coerce_optional_float)
+    _v_total_burn_time_sec   = field_validator("total_burn_time_sec",  mode="before")(coerce_optional_float)
+    _v_ejector_time_sec      = field_validator("ejector_time_sec",     mode="before")(coerce_optional_float)
+    _v_ejector_mass_kg       = field_validator("ejector_mass_kg",      mode="before")(coerce_optional_float)
+    _v_booster_time_sec      = field_validator("booster_time_sec",     mode="before")(coerce_optional_float)
+    _v_booster_mass_kg       = field_validator("booster_mass_kg",      mode="before")(coerce_optional_float)
+    _v_sustain_time_sec      = field_validator("sustain_time_sec",     mode="before")(coerce_optional_float)
+    _v_sustain_mass_kg       = field_validator("sustain_mass_kg",      mode="before")(coerce_optional_float)
+    _v_confidence            = field_validator("confidence",           mode="before")(coerce_optional_confidence)
 
 
 # ----------------------------------------------------------------------
-# Pass-root — is_entity=True per docling-graph-docs.md (root models are
-# entities). See radar_domain.py for the full rationale and registry
-# behavior.
-# Intra-pass MissileRelationship DTO removed in Task 64 (plan Task 37);
-# typed edges on MissileSystemEntity and LauncherSystemEntity replace it.
+# Pass root
 # ----------------------------------------------------------------------
 
 class MissileDomainPass(BaseModel):
-    """Missile-domain pass root. Guidance / seeker / propulsion / platform
-    are reached via typed edges on MissileSystemEntity; launcher_systems
-    stay at pass root. Specifications at pass root as bridge entity.
+    """Missile-domain pass root. Emits only ``MISSILE_SYSTEM`` entities
+    with flat, checklist-aligned properties. No nested subcomponent
+    entities and no typed HAS_* / LAUNCHES edges.
 
-    is_entity=True per docling-graph-docs.md §Template Basics → Root
-    Document Model (line 18859). See radar_domain.py for full rationale
-    (registry hashing, walker pass-root branch, GraphConverter descent).
+    is_entity=True per docling-graph-docs.md Template Basics -> Root
+    Document Model. graph_id_fields=[] because the pass-root is a
+    synthetic container.
     """
     model_config = ConfigDict(
         extra="ignore",
@@ -378,20 +292,19 @@ class MissileDomainPass(BaseModel):
 
     missile_systems: List[MissileSystemEntity] = edge(
         label="CONTAINS",
-        description="Missile systems extracted from this document by this pass.",
-        examples=[["SA-20", "SA-10"], ["PAC-3"]],
-        default_factory=list,
-    )
-    launcher_systems: List[LauncherSystemEntity] = edge(
-        label="CONTAINS",
-        description="Launcher systems extracted from this document by this pass.",
-        examples=[["5P85TE2 TEL"], ["M901 TEL"]],
-        default_factory=list,
-    )
-    specifications: List[SpecificationEntity] = edge(
-        label="CONTAINS",
-        description="Specification components extracted from this document by this pass.",
-        examples=[[{"parameter": "max_range", "value": "150", "unit": "km"}], [{"parameter": "speed", "value": "Mach 5", "unit": None}]],
+        description=(
+            "Top-level missile systems extracted from this document. "
+            "Emit when the batch contains EITHER (a) a defining structure "
+            "(table, caption, labeled list, captioned figure) that "
+            "identifies the system, OR (b) an explicit named mention in "
+            "prose using the system's canonical designation (e.g. 'SA-2', "
+            "'SA-20', 'PAC-3 MSE', '9M96'). Do NOT emit from unnamed "
+            "descriptions ('the missile', 'the interceptor'). For "
+            "mention-only evidence, emit identity plus directly stated "
+            "properties; do not infer attachments not explicit in this "
+            "batch."
+        ),
+        examples=[["SA-2", "SA-20"], ["PAC-3 MSE", "SM-6 Block IA"]],
         default_factory=list,
     )
 
