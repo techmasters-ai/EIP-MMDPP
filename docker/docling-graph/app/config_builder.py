@@ -87,7 +87,13 @@ class DoclingGraphSettings(BaseSettings):
     # at 0.0 returned empty JSON). A small amount of variance is needed for the
     # model to explore valid completions under the structured-output constraint.
     docling_graph_llm_temperature: float = 0.1
-    docling_graph_llm_max_tokens: int | None = 64000
+    # 4000 fits within llama3.1:8b's 4092-token output ceiling and within
+    # llama3.3:70b's similar ~4k limit; both are our supported LLM defaults.
+    # Previously 64000 for gpt-oss:120b; flipping the model default without
+    # this tracked downward caused ConfigurationError at extractor init.
+    # Override via DOCLING_GRAPH_LLM_MAX_TOKENS for models with higher
+    # per-call output ceilings (e.g. gpt-oss:120b can handle 64000+).
+    docling_graph_llm_max_tokens: int | None = 4000
     docling_graph_llm_timeout: int = 10800
     ollama_llm_base_url: str = "http://ollama:11434"
     docling_graph_llm_context_limit: int | None = None
