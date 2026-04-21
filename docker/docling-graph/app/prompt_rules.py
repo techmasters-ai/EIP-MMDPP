@@ -71,7 +71,7 @@ def install() -> None:
         delta_init.get_delta_batch_prompt = wrapped
 
     _INSTALLED = True
-    logger.info(
+    logger.warning(
         "prompt_rules: installed delta system-prompt rewrite "
         "(%d chars) across prompts + orchestrator + runtime modules.",
         len(DELTA_SYSTEM_PROMPT),
