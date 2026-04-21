@@ -4313,7 +4313,17 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
         except Exception:
             ontology = {}
 
-        merged = _docling_anchors.walk(doc_json, document_id, run_id, ontology)
+        # §4.4 — propagate Document SQL row's storage_key into the walker
+        # so DocumentEntity.storage_key lands on the graph without a
+        # downstream SQL join.
+        from app.models.ingest import Document
+        document_row = db.query(Document).filter(Document.id == document_id).first()
+        source_storage_key = getattr(document_row, "storage_key", None) if document_row is not None else None
+
+        merged = _docling_anchors.walk(
+            doc_json, document_id, run_id, ontology,
+            source_storage_key=source_storage_key,
+        )
 
         # --- Vertex upserts ------------------------------------------------
         node_records = [
