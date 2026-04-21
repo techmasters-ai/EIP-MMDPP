@@ -21,7 +21,7 @@ class RelationshipType(str, Enum):
     """Every relationship type declared in ``ontology.yaml``.
 
     ``str`` subclass so Pydantic coerces string inputs via value-match.
-    Members are alphabetical for stable diff review. 50 members total.
+    Members are alphabetical for stable diff review. 56 members total.
     """
 
     ABOUT = "ABOUT"

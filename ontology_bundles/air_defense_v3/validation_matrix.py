@@ -12,7 +12,7 @@ candidate-relationship scoring.
 
 YAML bug flagged: ontology.yaml validation_matrix lists
 ``(RADAR_SYSTEM, INSTALLED_ON, PLATFORM)`` twice. A frozenset naturally
-collapses the duplicate to 126 unique triples.
+collapses the duplicate to 136 unique triples.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from .relationships import RelationshipType
 
 # ---------------------------------------------------------------------------
 # VALIDATION_MATRIX — every valid (source, rel, target) triple.
-# 126 unique triples (YAML has one duplicate; frozenset deduplicates).
+# 136 unique triples (YAML has one duplicate; frozenset deduplicates).
 # ---------------------------------------------------------------------------
 
 VALIDATION_MATRIX: frozenset[tuple[str, RelationshipType, str]] = frozenset({
