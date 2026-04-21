@@ -280,6 +280,8 @@ def walk(
     document_uuid: str,
     pipeline_run_id: str,
     ontology: dict,
+    *,
+    source_storage_key: str | None = None,
 ) -> MergedExtraction:
     """Emit ontology DOCUMENT / SECTION / FIGURE / TABLE entities + edges
     derived from a DoclingDocument. Spec §3.3.
@@ -305,7 +307,10 @@ def walk(
     # --- Conditional ontology DOCUMENT -------------------------------------
     document_number = _extract_document_number_from_front_matter(docling_doc)
     doc_entity: DocumentEntity | None = (
-        DocumentEntity(document_number=document_number)
+        DocumentEntity(
+            document_number=document_number,
+            storage_key=source_storage_key,
+        )
         if document_number is not None
         else None
     )

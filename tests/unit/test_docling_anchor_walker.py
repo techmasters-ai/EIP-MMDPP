@@ -742,3 +742,37 @@ def test_walker_document_has_image_edge_when_designator_present():
         and e.from_identity.entity_type == "DOCUMENT"
     ]
     assert len(doc_has_image) == 1
+
+
+# ---------------------------------------------------------------------------
+# 3g — source_storage_key kwarg + DocumentEntity population
+# ---------------------------------------------------------------------------
+
+def test_walker_populates_document_storage_key_when_kwarg_passed():
+    """source_storage_key kwarg populates DocumentEntity.storage_key."""
+    from docling_core.types.doc import DoclingDocument
+    doc = DoclingDocument(name="doc_storage_key")
+    doc.add_title(text="TM 9-1234-567 User Manual")
+
+    merged = walk(
+        doc.model_dump(),
+        "doc-1",
+        "run-1",
+        {},
+        source_storage_key="documents/abc.pdf",
+    )
+    docs = [e for e in merged.entities if e.identity.entity_type == "DOCUMENT"]
+    assert len(docs) == 1
+    assert docs[0].properties.get("storage_key") == "documents/abc.pdf"
+
+
+def test_walker_document_storage_key_null_when_kwarg_absent():
+    """No kwarg → DocumentEntity.storage_key is None."""
+    from docling_core.types.doc import DoclingDocument
+    doc = DoclingDocument(name="doc_no_storage_key")
+    doc.add_title(text="TM 9-1234-567 User Manual")
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    docs = [e for e in merged.entities if e.identity.entity_type == "DOCUMENT"]
+    assert len(docs) == 1
+    assert docs[0].properties.get("storage_key") is None
