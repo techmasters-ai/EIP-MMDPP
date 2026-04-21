@@ -274,6 +274,17 @@ def _apply_litellm_client_patches():
 
 _apply_litellm_client_patches()
 
+# Delta system-prompt rewrite. Replaces Rules 2-4 in get_delta_batch_prompt
+# so the LLM accepts BOTH structure-backed evidence AND explicit named
+# mentions in prose, while still rejecting section titles + unnamed
+# descriptions. See docker/docling-graph/app/prompt_rules.py and
+# ontology_bundles/_shared/prompt_rules.py for the rule text and rationale.
+# Section-title slippage is handled by the library's own post-extraction
+# filter_entity_nodes_by_identity (delta_identity_filter_enabled=True).
+from app.prompt_rules import install as _install_prompt_rules
+
+_install_prompt_rules()
+
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app.config_builder import build_pipeline_config
 from app.provenance import build_provenance_from_context
