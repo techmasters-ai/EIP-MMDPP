@@ -60,6 +60,9 @@ def edge(
 # ----------------------------------------------------------------------
 # Layer 1
 # ----------------------------------------------------------------------
+# confidence default convention: LLM-extracted entities default to None
+# (the LLM may omit the field); anchor-walker-extracted entities (IMAGE,
+# TEXT_BLOCK) hard-set 1.0 because extraction is deterministic.
 
 class DocumentEntity(BaseModel):
     """Source Document — Technical manual, specification, report, drawing, or other source artifact
