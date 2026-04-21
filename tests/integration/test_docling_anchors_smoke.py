@@ -60,17 +60,20 @@ def test_walk_real_docling_doc_produces_sections(fixture_path: Path):
     ]
     assert sections, f"walker emitted no SECTIONs for {fixture_path.name}"
 
-    # Non-zero figure count when fixture carries pictures.
+    # Non-zero figure/image count when fixture carries pictures.
     fixture_pictures = docling_json.get("pictures") or []
     figures = [
         e for e in merged.entities if e.identity.entity_type == "FIGURE"
     ]
+    images = [
+        e for e in merged.entities if e.identity.entity_type == "IMAGE"
+    ]
     if fixture_pictures:
-        assert figures, (
+        assert figures or images, (
             f"{fixture_path.name} has {len(fixture_pictures)} pictures but "
-            "walker emitted 0 FIGUREs"
+            "walker emitted 0 FIGUREs + 0 IMAGEs"
         )
-    assert len(figures) == len(fixture_pictures)
+    assert len(figures) + len(images) == len(fixture_pictures)
 
     fixture_tables = docling_json.get("tables") or []
     tables = [

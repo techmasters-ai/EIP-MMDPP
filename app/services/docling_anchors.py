@@ -1,8 +1,9 @@
 """Docling anchor walker — deterministic document structure emission.
 
 Replaces the LLM reference pass (deleted in C-1) for SECTION / FIGURE /
-TABLE / DOCUMENT entities. Structure is derived from the DoclingDocument
-tree, not the LLM, per docs R-rules and spec §3.3.
+TABLE / IMAGE / TEXT_BLOCK / DOCUMENT entities. Structure is derived
+from the DoclingDocument tree, not the LLM, per docs R-rules and spec
+§3.3.
 
 This module exposes:
   * ``_extract_document_number_from_front_matter`` — scans the first
@@ -134,6 +135,17 @@ def _resolve_caption_text(cap, docling_doc) -> str | None:
         return getattr(obj, "text", None)
     except (AttributeError, IndexError, KeyError, TypeError):
         return None
+
+
+def _full_caption(item, docling_doc) -> str | None:
+    """Return the full first-caption text for a picture/table, resolving
+    RefItem → TextItem via _resolve_caption_text. None if no caption."""
+    captions = getattr(item, "captions", None) or []
+    for cap in captions:
+        text = _resolve_caption_text(cap, docling_doc)
+        if text:
+            return text
+    return None
 
 
 def _caption_label(item, docling_doc=None) -> str | None:
@@ -407,6 +419,8 @@ def walk(
             entity = FigureEntity(
                 figure_ref=pic.self_ref,
                 figure_label=label,
+                page=_first_prov_page(pic),
+                caption=_full_caption(pic, docling_doc),
                 storage_key=None,
             )
             figures.append(entity)
@@ -414,7 +428,7 @@ def walk(
             entity = ImageEntity(
                 image_ref=pic.self_ref,
                 page=_first_prov_page(pic),
-                caption=label,  # may be None or a non-"Figure" caption
+                caption=_full_caption(pic, docling_doc),
                 storage_key=None,
                 bbox=_first_prov_bbox(pic),
                 image_role=_classify_image_role(pic, docling_doc, label=label),

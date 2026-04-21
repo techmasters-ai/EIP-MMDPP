@@ -443,6 +443,8 @@ def test_walker_captioned_figure_stays_figure():
     figures = [e for e in merged.entities if e.identity.entity_type == "FIGURE"]
     assert len(figures) == 1
     assert figures[0].properties.get("figure_label") == "Figure 3-12"
+    assert figures[0].properties.get("page") == 1
+    assert figures[0].properties.get("caption") == "Figure 3-12 Antenna Feed Assembly"
 
 
 def test_walker_uncaptioned_picture_becomes_image():
@@ -462,6 +464,9 @@ def test_walker_uncaptioned_picture_becomes_image():
     assert images[0].properties.get("storage_key") is None
     # Not on page 1, not top-half, so falls through to INLINE_IMAGE.
     assert images[0].properties.get("image_role") == "INLINE_IMAGE"
+    assert set(images[0].properties.keys()) >= {
+        "page", "caption", "storage_key", "bbox", "image_role"
+    }, f"missing IMAGE property keys: {set(images[0].properties.keys())}"
 
 
 def test_walker_interleaved_captioned_and_uncaptioned():
