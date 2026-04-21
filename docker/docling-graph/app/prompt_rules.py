@@ -27,7 +27,15 @@ _INSTALLED = False
 
 
 def install() -> None:
-    """Wrap ``get_delta_batch_prompt`` to return our system prompt. Idempotent."""
+    """Wrap ``get_delta_batch_prompt`` to return our system prompt. Idempotent.
+
+    ``get_delta_batch_prompt`` is imported by other modules via
+    ``from .prompts import get_delta_batch_prompt``, which captures a local
+    reference to the original function at import time. Replacing
+    ``prompts.get_delta_batch_prompt`` alone does not rebind those local
+    references, so the orchestrator keeps calling the unwrapped function.
+    Patch every module that holds a local binding.
+    """
     global _INSTALLED
     if _INSTALLED:
         return
@@ -45,11 +53,26 @@ def install() -> None:
         return result
 
     wrapped.__wrapped__ = original  # type: ignore[attr-defined]
+
+    # 1. Module where the function is defined.
     prompts.get_delta_batch_prompt = wrapped
+
+    # 2. Every other module that did `from .prompts import get_delta_batch_prompt`.
+    #    Static import of the orchestrator ensures its local binding exists when
+    #    we patch it. If upstream refactors rename or relocate the import, this
+    #    list needs to follow.
+    from docling_graph.core.extractors.contracts.delta import orchestrator
+    orchestrator.get_delta_batch_prompt = wrapped
+    from docling_graph.core.extractors.contracts.delta import runtime
+    if hasattr(runtime, "get_delta_batch_prompt"):
+        runtime.get_delta_batch_prompt = wrapped
+    from docling_graph.core.extractors.contracts.delta import __init__ as delta_init  # type: ignore[attr-defined]
+    if hasattr(delta_init, "get_delta_batch_prompt"):
+        delta_init.get_delta_batch_prompt = wrapped
 
     _INSTALLED = True
     logger.info(
         "prompt_rules: installed delta system-prompt rewrite "
-        "(%d chars) — Rules 2/3/4 allow mention-level extraction.",
+        "(%d chars) across prompts + orchestrator + runtime modules.",
         len(DELTA_SYSTEM_PROMPT),
     )
