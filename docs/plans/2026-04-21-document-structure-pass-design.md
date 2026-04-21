@@ -120,16 +120,20 @@ Review flagged that the SECTION fallback path (`section_number="#/texts/237"`) c
 
 ### Additions to `ontology_bundles/air_defense_v3/relationships.py`
 
-Add two members to `RelationshipType`:
+Add three members to `RelationshipType`:
 
 ```python
+CHILD_OF  = "CHILD_OF"    # missing today — walker emits as raw string at docling_anchors.py:295
 HAS_IMAGE = "HAS_IMAGE"
 NEAR_TEXT = "NEAR_TEXT"
 ```
 
+`CHILD_OF` is in use by the walker today (`rel_type="CHILD_OF"` raw string) but absent from the enum, which is why `RelationshipType.CHILD_OF` would `AttributeError` at import if we added the validation_matrix triple below without adding the enum member first. This is the same lockstep bug-fix pattern as the missing validation_matrix triples.
+
 Add corresponding descriptor dicts to the `RELATIONSHIPS` list (matching the HAS_FIGURE / HAS_TABLE style):
 
 ```python
+{"name": "CHILD_OF",  "label": "Child Of",  "description": "Hierarchical containment (e.g. sub-section within parent section)", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
 {"name": "HAS_IMAGE", "label": "Has Image", "description": "Document or section contains an uncaptioned image or embedded picture", "source_type": None, "target_type": "IMAGE", "cardinality": "one_to_many"},
 {"name": "NEAR_TEXT", "label": "Near Text", "description": "Figure or image appears near a text block in reading order", "source_type": None, "target_type": "TEXT_BLOCK", "cardinality": "one_to_many"},
 ```
@@ -274,16 +278,29 @@ for pic, fig_or_img_entity in zip(docling_doc.pictures, figures + images):
 
 Same is **not** applied to tables in this change — scope creep avoided. TABLE near-text can be a follow-on.
 
-### 4.4 `storage_key` resolution
+### 4.4 `storage_key` resolution — two distinct sources
 
-New helper `_resolve_picture_storage_key(pic)`: look up the docling Document's stored asset map (if present) and return the MinIO key. If the walker doesn't have access to the MinIO key map — and it doesn't today; that's populated in the API / worker — then this returns `None` and the field stays null. Plumbing the asset map into the walker signature is a separate small task:
+**DocumentEntity.storage_key** — trivial. The `Document` SQL row already has a `storage_key` column (`app/models/ingest.py:58-59`) for the source file in MinIO. Pass it into `walk()` as a simple kwarg:
 
-- Add `storage_keys: dict[str, str] | None = None` kwarg to `walk()` (self_ref → MinIO key).
-- Populate it at call-site `pipeline.py:4316` from the `Document` SQL row's asset_map / attachments table.
-- Pass through to the new `_resolve_picture_storage_key(pic, storage_keys)`.
-- Same kwarg populates DocumentEntity.storage_key and FigureEntity.storage_key (and the new IMAGE.storage_key).
+```python
+def walk(
+    docling_doc_json: dict,
+    document_uuid: str,
+    pipeline_run_id: str,
+    ontology: dict,
+    *,
+    source_storage_key: str | None = None,   # NEW — populates DocumentEntity.storage_key
+    picture_storage_keys: dict[str, str] | None = None,  # NEW — self_ref → MinIO key, deferred
+) -> MergedExtraction:
+```
 
-If the asset_map isn't readily available (check existing code during implementation), storage_key stays null and we re-address it in a follow-on. Not blocking.
+Call-site at `pipeline.py:4316` reads the Document row (already in scope from `derive_document_anchors`) and passes `source_storage_key=document.storage_key`.
+
+**FigureEntity.storage_key / ImageEntity.storage_key** — deferred. Per-picture MinIO keys live on the `Artifact` table (`app/models/ingest.py:117`), not on `Document`. But `Artifact` is keyed by `document_id + bounding_box + page_number`, not by `doc.pictures[i].self_ref` — there's no direct lookup. Building the `self_ref → MinIO key` map requires either:
+- (a) adding a `self_ref: str` column to `Artifact` and populating it at artifact-creation time, or
+- (b) building a fuzzy matcher on bounding_box + page, which is fragile.
+
+**Decision for this change:** DocumentEntity.storage_key lands; FigureEntity.storage_key + ImageEntity.storage_key fields are defined on the models (so the schema is future-compatible) but left `None` at emission time. Path (a) is a separate small change that can follow — it needs a DB migration + artifact-creation patch, which is scope creep here. The `picture_storage_keys` kwarg in the walker signature stays in for forward compatibility but receives `None` in v1 of the implementation.
 
 ### 4.5 Edge additions
 
