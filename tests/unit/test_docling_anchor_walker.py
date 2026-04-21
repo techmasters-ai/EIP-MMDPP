@@ -201,12 +201,20 @@ def test_walker_sibling_sections_get_sequential_numbers():
 
 
 def test_walker_figure_count_and_ref():
-    """Scenario 4: Figure count matches docling_document.pictures; figure_ref=self_ref."""
+    """Scenario 4: Uncaptioned pictures emit IMAGE entities; figure_ref=self_ref.
+
+    Updated in 3c: pictures without a 'Figure N' caption become ImageEntity
+    (not FigureEntity). The identity field for IMAGE is image_ref=self_ref,
+    so the ref set must still cover all pictures in the document.
+    """
     doc = _build_doc(titles=["Manual"], picture_count=3)
     merged = walk(doc.model_dump(), DOC_UUID, RUN_ID, ontology={})
+    # Uncaptioned → IMAGE, not FIGURE.
     figures = [e for e in merged.entities if e.identity.entity_type == "FIGURE"]
-    assert len(figures) == 3
-    refs = {e.identity.identity_tuple[0] for e in figures}
+    images = [e for e in merged.entities if e.identity.entity_type == "IMAGE"]
+    assert len(figures) == 0, "uncaptioned pictures must not emit FIGURE entities"
+    assert len(images) == 3
+    refs = {e.identity.identity_tuple[0] for e in images}
     assert refs == {p.self_ref for p in doc.pictures}
 
 
@@ -262,7 +270,12 @@ def test_walker_skips_has_edges_when_no_document_number():
 
 
 def test_walker_emits_document_and_has_edges_when_designator_present():
-    """Positive case for scenario 7: designator present → DOCUMENT + HAS_* edges emitted."""
+    """Positive case for scenario 7: designator present → DOCUMENT + HAS_* edges emitted.
+
+    Updated in 3c: uncaptioned pictures are IMAGE entities, not FIGURE, so
+    HAS_FIGURE edges are 0 for uncaptioned pictures. HAS_IMAGE edges are
+    deferred to 3d/3e scope and are not emitted here.
+    """
     doc = _build_doc(
         titles=["TM 9-1425-386-12 Operator Manual"],
         headings=[("Chapter 1", 1)],
@@ -275,8 +288,7 @@ def test_walker_emits_document_and_has_edges_when_designator_present():
     assert doc_entities[0].identity.identity_tuple == ("TM 9-1425-386-12",)
     # TITLE and Chapter 1 are both effective-level-1 headings, so the TITLE
     # is popped when Chapter 1 is pushed. That yields 2 top-level SECTION
-    # vertices — one HAS_SECTION edge per section, plus one HAS_FIGURE per
-    # picture and one HAS_TABLE per table.
+    # vertices — one HAS_SECTION edge per section.
     rel_counts = {}
     for e in merged.edges:
         rel_counts[e.rel_type] = rel_counts.get(e.rel_type, 0) + 1
@@ -284,8 +296,12 @@ def test_walker_emits_document_and_has_edges_when_designator_present():
         1 for e in merged.entities if e.identity.entity_type == "SECTION"
     )
     assert rel_counts.get("HAS_SECTION") == section_count
-    assert rel_counts.get("HAS_FIGURE") == 2
+    # Uncaptioned pictures → IMAGE entities; HAS_FIGURE=0, HAS_IMAGE deferred to 3d/3e.
+    assert rel_counts.get("HAS_FIGURE", 0) == 0
     assert rel_counts.get("HAS_TABLE") == 1
+    # Confirm the 2 uncaptioned pictures became IMAGE entities.
+    images = [e for e in merged.entities if e.identity.entity_type == "IMAGE"]
+    assert len(images) == 2
 
 
 def test_walker_returns_merged_extraction_shape():
@@ -333,11 +349,16 @@ def test_fixture_empty_structure_emits_fallback():
 
 
 def test_fixture_with_figures_tables_counts_match():
+    """Updated in 3c: fixture pictures have no 'Figure N' captions, so they
+    emit IMAGE entities rather than FIGURE entities. Total picture-derived
+    entities (FIGURE + IMAGE) must equal the fixture's pictures list length."""
     fixture = _load("with_figures_tables.json")
     merged = walk(fixture, DOC_UUID, RUN_ID, ontology={})
     figures = [e for e in merged.entities if e.identity.entity_type == "FIGURE"]
+    images = [e for e in merged.entities if e.identity.entity_type == "IMAGE"]
     tables = [e for e in merged.entities if e.identity.entity_type == "TABLE"]
-    assert len(figures) == len(fixture.get("pictures", []))
+    # All picture-derived entities (FIGURE or IMAGE) should cover every picture.
+    assert len(figures) + len(images) == len(fixture.get("pictures", []))
     assert len(tables) == len(fixture.get("tables", []))
 
 
@@ -390,3 +411,74 @@ def test_walker_pre_heading_picture_lazy_seeds_root_section():
 
     sections = _sections_by_number(merged)
     assert "0" in sections, "root fallback SECTION(section_number='0') missing"
+
+
+# ---------------------------------------------------------------------------
+# 3c — FIGURE vs IMAGE split based on caption prefix
+# ---------------------------------------------------------------------------
+
+def test_walker_captioned_figure_stays_figure():
+    """Regression: a picture whose caption starts with 'Figure N' still
+    emits a FigureEntity with the caption label."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="captioned")
+    doc.add_heading("Section 1", level=1)
+    pic = doc.add_picture(
+        image=None,
+        prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)),
+    )
+    cap = doc.add_text(label="caption", text="Figure 3-12 Antenna Feed Assembly")
+    pic.captions.append(cap.get_ref())
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    figures = [e for e in merged.entities if e.identity.entity_type == "FIGURE"]
+    assert len(figures) == 1
+    assert figures[0].properties.get("figure_label") == "Figure 3-12"
+
+
+def test_walker_uncaptioned_picture_becomes_image():
+    """A picture with no Figure-N caption emits an ImageEntity."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="uncaptioned")
+    doc.add_heading("Section 1", level=1)
+    doc.add_picture(
+        image=None,
+        prov=ProvenanceItem(page_no=2, bbox=BoundingBox(l=50, t=50, r=150, b=150), charspan=(0, 0)),
+    )
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    images = [e for e in merged.entities if e.identity.entity_type == "IMAGE"]
+    assert len(images) == 1
+    assert images[0].identity.identity_tuple == ("#/pictures/0",)
+    assert images[0].properties.get("storage_key") is None
+    # Not on page 1, not top-half, so falls through to INLINE_IMAGE.
+    assert images[0].properties.get("image_role") == "INLINE_IMAGE"
+
+
+def test_walker_interleaved_captioned_and_uncaptioned():
+    """Captioned FIGURE + uncaptioned IMAGE + captioned FIGURE interleaved
+    in doc order. pic_entities must preserve doc order (§4.3 fix)."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="interleaved")
+    doc.add_heading("Section 1", level=1)
+
+    pic1 = doc.add_picture(image=None, prov=ProvenanceItem(page_no=2, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    cap1 = doc.add_text(label="caption", text="Figure 1 Thing")
+    pic1.captions.append(cap1.get_ref())
+
+    doc.add_picture(image=None, prov=ProvenanceItem(page_no=2, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+
+    pic3 = doc.add_picture(image=None, prov=ProvenanceItem(page_no=2, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    cap3 = doc.add_text(label="caption", text="Figure 2 Other")
+    pic3.captions.append(cap3.get_ref())
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    figures = [e for e in merged.entities if e.identity.entity_type == "FIGURE"]
+    images  = [e for e in merged.entities if e.identity.entity_type == "IMAGE"]
+    assert len(figures) == 2
+    assert len(images) == 1
+    fig_labels = {e.properties.get("figure_label") for e in figures}
+    assert fig_labels == {"Figure 1", "Figure 2"}
+    # The uncaptioned picture is #/pictures/1 (middle of three).
+    assert images[0].identity.identity_tuple == ("#/pictures/1",)

@@ -28,6 +28,7 @@ from app.services.extraction_merge import (
 from ontology_bundles.air_defense_v3.entities import (
     DocumentEntity,
     FigureEntity,
+    ImageEntity,
     SectionEntity,
     TableEntity,
 )
@@ -97,7 +98,33 @@ _CAPTION_LABEL_RE = re.compile(
 )
 
 
-def _caption_label(item) -> str | None:
+def _resolve_caption_text(cap, docling_doc) -> str | None:
+    """Return the caption text string from either an inline TextItem
+    (has ``.text``) or a RefItem (has ``.cref`` pointing into the doc body).
+
+    RefItem resolution walks the ``#/section/index`` path on the validated
+    DoclingDocument. Defensive — returns None on any resolution failure.
+    """
+    text = getattr(cap, "text", None)
+    if text:
+        return text
+    cref = getattr(cap, "cref", None)
+    if not cref or docling_doc is None:
+        return None
+    try:
+        parts = cref.lstrip("#/").split("/")
+        obj = docling_doc
+        for part in parts:
+            if part.isdigit():
+                obj = obj[int(part)]
+            else:
+                obj = getattr(obj, part)
+        return getattr(obj, "text", None)
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return None
+
+
+def _caption_label(item, docling_doc=None) -> str | None:
     """Best-effort short caption label for a picture/table item.
 
     Scans the item's captions list for the first text starting with a
@@ -105,11 +132,17 @@ def _caption_label(item) -> str | None:
     identifier substring (e.g., "Figure 3-12" from a longer caption).
     Returns None if no prefixed caption exists. Identity does not depend
     on this — it uses ``self_ref``.
+
+    ``docling_doc`` (a validated DoclingDocument) is used to resolve
+    RefItem captions (``cref`` pointers) which are the standard form after
+    a model_dump / model_validate round-trip. Pass None to skip resolution
+    (backward-compat for callers that only have the item).
     """
     captions = getattr(item, "captions", None) or []
     for cap in captions:
-        # Captions may be RefItem (with $ref) or TextItem (with text).
-        text = getattr(cap, "text", None)
+        # Captions are RefItem (cref pointer) after round-trip, or
+        # TextItem (text attribute) on live objects.
+        text = _resolve_caption_text(cap, docling_doc)
         if not text:
             continue
         text = text.strip()
@@ -119,6 +152,42 @@ def _caption_label(item) -> str | None:
                 return m.group(0)
             return text.split(".")[0].strip()
     return None
+
+
+def _classify_image_role(pic, docling_doc) -> str:
+    """Heuristic role assignment (design §4.2). Returns HEADER_LOGO,
+    INLINE_IMAGE, or UNCAPTIONED_FIGURE.
+
+    Geometry lookup: docling_doc.pages[page_no].size.width/height. When
+    page info is missing (defensive), skip rule 1 and fall through.
+    """
+    label = _caption_label(pic, docling_doc)
+    page_no = None
+    try:
+        prov = getattr(pic, "prov", None)
+        if prov:
+            page_no = prov[0].page_no
+    except (AttributeError, IndexError):
+        pass
+
+    if page_no is not None and page_no in getattr(docling_doc, "pages", {}):
+        page = docling_doc.pages[page_no]
+        page_width = page.size.width
+        page_height = page.size.height
+        page_area = page_width * page_height
+        try:
+            bbox = pic.prov[0].bbox
+            if page_no == 1 and bbox.t < page_height / 2:
+                pic_area = (bbox.r - bbox.l) * (bbox.b - bbox.t)
+                if page_area > 0 and pic_area / page_area < 0.10:
+                    return "HEADER_LOGO"
+        except (AttributeError, IndexError):
+            pass
+
+    # Rule 2 — caption present but no "Figure N" prefix already classifies as UNCAPTIONED_FIGURE.
+    if label:
+        return "UNCAPTIONED_FIGURE"
+    return "INLINE_IMAGE"
 
 
 def _build_section_path_string(path_tuple: tuple[str, ...]) -> str | None:
@@ -242,21 +311,36 @@ def walk(
     if not section_by_path:
         _ensure_root_section()
 
-    # --- FIGURE + TABLE entities -------------------------------------------
+    # --- FIGURE + IMAGE + TABLE entities -------------------------------------------
     figures: list[FigureEntity] = []
+    images:  list[ImageEntity]  = []
+    pic_entities: list = []   # parallel to docling_doc.pictures for §4.3 zip safety
+
     for pic in docling_doc.pictures:
-        figures.append(
-            FigureEntity(
+        label = _caption_label(pic, docling_doc)
+        if label and label.lower().startswith(("figure", "fig")):
+            entity = FigureEntity(
                 figure_ref=pic.self_ref,
-                figure_label=_caption_label(pic),
+                figure_label=label,
+                storage_key=None,
             )
-        )
+            figures.append(entity)
+        else:
+            entity = ImageEntity(
+                image_ref=pic.self_ref,
+                caption=label,  # may be None or a non-"Figure" caption
+                storage_key=None,
+                image_role=_classify_image_role(pic, docling_doc),
+            )
+            images.append(entity)
+        pic_entities.append(entity)
+
     tables: list[TableEntity] = []
     for tbl in docling_doc.tables:
         tables.append(
             TableEntity(
                 table_ref=tbl.self_ref,
-                table_label=_caption_label(tbl),
+                table_label=_caption_label(tbl, docling_doc),
             )
         )
 
@@ -330,6 +414,7 @@ def walk(
         entity_models.append(doc_entity)
     entity_models.extend(section_by_path.values())
     entity_models.extend(figures)
+    entity_models.extend(images)       # NEW — uncaptioned pictures as IMAGE entities
     entity_models.extend(tables)
     merged_entities = [
         _to_merged_entity_record(m, ontology, document_uuid)
