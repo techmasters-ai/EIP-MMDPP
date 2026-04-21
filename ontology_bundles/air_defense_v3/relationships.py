@@ -28,6 +28,7 @@ class RelationshipType(str, Enum):
     AFFECTS = "AFFECTS"
     ALIAS_OF = "ALIAS_OF"
     ASSOCIATED_WITH = "ASSOCIATED_WITH"
+    CHILD_OF = "CHILD_OF"
     CONTAINS = "CONTAINS"
     CUES = "CUES"
     DEFENDS = "DEFENDS"
@@ -40,15 +41,19 @@ class RelationshipType(str, Enum):
     GUIDES = "GUIDES"
     HAS_ANTENNA = "HAS_ANTENNA"
     HAS_COMPONENT = "HAS_COMPONENT"
+    HAS_FIGURE = "HAS_FIGURE"
     HAS_GUIDANCE = "HAS_GUIDANCE"
+    HAS_IMAGE = "HAS_IMAGE"
     HAS_PERFORMANCE = "HAS_PERFORMANCE"
     HAS_PROCESSING_CHAIN = "HAS_PROCESSING_CHAIN"
     HAS_PROPULSION = "HAS_PROPULSION"
     HAS_RECEIVER = "HAS_RECEIVER"
     HAS_SCAN = "HAS_SCAN"
+    HAS_SECTION = "HAS_SECTION"
     HAS_SEEKER = "HAS_SEEKER"
     HAS_SIGNATURE = "HAS_SIGNATURE"
     HAS_STAGE = "HAS_STAGE"
+    HAS_TABLE = "HAS_TABLE"
     HAS_SUBSYSTEM = "HAS_SUBSYSTEM"
     HAS_TIMELINE = "HAS_TIMELINE"
     HAS_TRANSMITTER = "HAS_TRANSMITTER"
@@ -58,6 +63,7 @@ class RelationshipType(str, Enum):
     LAUNCHES = "LAUNCHES"
     MANUFACTURED_BY = "MANUFACTURED_BY"
     MENTIONED_IN = "MENTIONED_IN"
+    NEAR_TEXT = "NEAR_TEXT"
     OPERATED_BY = "OPERATED_BY"
     OPERATES_IN_BAND = "OPERATES_IN_BAND"
     PART_OF = "PART_OF"
@@ -180,6 +186,12 @@ _STATIC_RELATIONSHIP_METADATA: list[dict] = [
     {"name": "AFFECTS", "label": "Affects", "description": "A failure mode affects a component or subsystem", "source_type": "FAILURE_MODE", "target_type": None, "cardinality": "many_to_many"},
     {"name": "SUPERSEDES", "label": "Supersedes", "description": "A newer document or standard supersedes an older one", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
     {"name": "TESTED_IN", "label": "Tested In", "description": "A system was tested in a test event", "source_type": None, "target_type": "TEST_EVENT", "cardinality": "many_to_many"},
+    {"name": "HAS_SECTION", "label": "Has Section", "description": "Document or parent contains a section", "source_type": None, "target_type": "SECTION", "cardinality": "one_to_many"},
+    {"name": "HAS_FIGURE",  "label": "Has Figure",  "description": "Document or section contains a captioned figure", "source_type": None, "target_type": "FIGURE", "cardinality": "one_to_many"},
+    {"name": "HAS_TABLE",   "label": "Has Table",   "description": "Document or section contains a table", "source_type": None, "target_type": "TABLE", "cardinality": "one_to_many"},
+    {"name": "CHILD_OF",    "label": "Child Of",    "description": "Hierarchical containment (e.g. sub-section within parent section)", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
+    {"name": "HAS_IMAGE",   "label": "Has Image",   "description": "Document or section contains an uncaptioned image or embedded picture", "source_type": None, "target_type": "IMAGE", "cardinality": "one_to_many"},
+    {"name": "NEAR_TEXT",   "label": "Near Text",   "description": "Figure or image appears near a text block in reading order", "source_type": None, "target_type": "TEXT_BLOCK", "cardinality": "one_to_many"},
 ]
 
 
