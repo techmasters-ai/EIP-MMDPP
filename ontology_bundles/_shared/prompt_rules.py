@@ -69,7 +69,22 @@ DELTA_SYSTEM_PROMPT: str = (
     "do not infer nested children or unstated relationships.\n"
 
     "5. Canonicalize: trim whitespace, stable casing, numeric/date in machine form. "
-    "Valid JSON only; no markdown or batch metadata in node content."
+    "Valid JSON only; no markdown or batch metadata in node content.\n"
+
+    "6. Entity-type discipline. Emit each entity under the ONE catalog path "
+    "that matches what the entity IS, not what it is associated with. "
+    "A weapon system (e.g. 'SA-2', 'Patriot', 'S-400') is a missile/weapon "
+    "entity; the radars serving it keep their own distinct names "
+    "(e.g. 'Fan Song', 'Spoon Rest', 'Flap Lid', 'Grave Stone'). Do NOT "
+    "re-emit a weapon-system name under a radar path just because a radar "
+    "is associated with it, and do not re-emit a radar name under a "
+    "weapon path. "
+    "Targets, platforms, or aircraft mentioned as engaged / shot down "
+    "(e.g. 'U-2', 'SR-71', 'RF-4C', 'B-52') are NOT missile entities and "
+    "NOT radar entities — omit them from those paths even when named in "
+    "prose. Only emit an entity when the text describes the entity's own "
+    "role matching the catalog path's semantics (a radar entity must be "
+    "a radar; a missile entity must be a missile / weapon system)."
 )
 
 

@@ -68,11 +68,15 @@ class MissileSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the missile system. "
-            "Accept canonical proper-noun identifiers from prose when "
-            "unambiguous (e.g. 'SA-2', 'SA-20', 'PAC-3 MSE', '9M96'). "
-            "Reject descriptive phrases ('the missile', 'the interceptor') "
-            "and generic noun phrases."
+            "Canonical designation of the MISSILE / WEAPON SYSTEM itself. "
+            "Accept canonical proper-noun weapon identifiers from prose "
+            "when unambiguous (e.g. 'SA-2', 'SA-20', 'PAC-3 MSE', '9M96'). "
+            "Do NOT put a radar name here — 'Fan Song', 'Spoon Rest', "
+            "'Flap Lid' are radars, not missiles. "
+            "Do NOT put target / platform / aircraft names here — "
+            "'U-2', 'SR-71', 'RF-4C', 'B-52' are aircraft that might be "
+            "engaged by a missile, but they are NOT missile systems. "
+            "Reject descriptive phrases ('the missile', 'the interceptor')."
         ),
         examples=["SA-2", "SA-20", "PAC-3 MSE", "SM-6 Block IA", "9M96"],
     )

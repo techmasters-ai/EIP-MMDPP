@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -435,6 +437,7 @@ def run_extraction_pass(
 
         ctx = _EmptySourceContext()
         ctx._upstream_preamble_applied = False  # no chance to apply — source was empty
+        ctx._chunk_to_self_refs = None  # no doc, nothing to map
         ctx._delta_trace = {
             "empty_source": True,
             "reason": "docling_document_has_no_extractable_content",
@@ -442,6 +445,7 @@ def run_extraction_pass(
             "texts": 0,
             "pictures": 0,
             "tables": 0,
+            "library_log": "",
             "suggestion": (
                 "Upstream Docling conversion produced an empty body. Image-only "
                 "inputs that the PDF pipeline didn't decompose are the typical "
@@ -498,7 +502,70 @@ def run_extraction_pass(
             pass_name=pass_name,
             debug_dir=debug_dir,
         )
-        context = run_pipeline(config)
+
+        # Capture the library's print() + logging output to stdout/stderr during
+        # run_pipeline so the response can surface the exact fallback chain
+        # ([DeltaExtraction] → "Warning: ...produced no JSON" → "falling back
+        # to direct" → "LiteLLMClient returned empty or all-null JSON" → etc.)
+        # to the notebook and worker. A Tee keeps the original streams flowing
+        # to the container logs so uvicorn's log aggregation doesn't go dark.
+        library_log_buf = io.StringIO()
+
+        class _Tee:
+            def __init__(self, *streams):
+                self._streams = streams
+            def write(self, data):
+                for s in self._streams:
+                    try:
+                        s.write(data)
+                    except Exception:
+                        pass
+                return len(data) if isinstance(data, str) else 0
+            def flush(self):
+                for s in self._streams:
+                    try:
+                        s.flush()
+                    except Exception:
+                        pass
+
+        original_stdout, original_stderr = sys.stdout, sys.stderr
+        sys.stdout = _Tee(original_stdout, library_log_buf)
+        sys.stderr = _Tee(original_stderr, library_log_buf)
+        pipeline_error: Exception | None = None
+        try:
+            context = run_pipeline(config)
+        except Exception as exc:
+            # Library raised PipelineError (or anything else). Build a stub
+            # context so the service returns a clean 200 with diagnostics
+            # instead of a 500 that tanks the worker's retry loop. The
+            # notebook + worker see why the library bailed via the captured
+            # log + pipeline_error marker in _delta_trace.
+            pipeline_error = exc
+            logger.warning(
+                "run_pipeline raised %s: %s — returning stub context with "
+                "diagnostic marker so the pass doesn't hard-fail.",
+                type(exc).__name__, exc,
+            )
+            import networkx as _nx
+
+            class _PipelineFailureContext:
+                template_instance = None
+                extracted_models: list = []
+                knowledge_graph = _nx.DiGraph()
+                docling_document = None
+
+                class _Meta:
+                    node_count = 0
+                    edge_count = 0
+                    node_types: dict = {}
+                    edge_types: dict = {}
+
+                graph_metadata = _Meta()
+
+            context = _PipelineFailureContext()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
 
         # docling-graph's stages don't set ``context.template_instance``
         # — they populate ``extracted_models``. Promote the single
@@ -511,6 +578,21 @@ def run_extraction_pass(
 
         try:
             context._upstream_preamble_applied = preamble_applied
+        except AttributeError:
+            pass
+
+        # Build chunk_index → [doc_item.self_ref, ...] mapping so the
+        # provenance resolver can turn chunk indexes (the only location
+        # identity the delta-IR normalizer attaches) into real
+        # DoclingDocument self_refs. Runs HybridChunker again on the doc —
+        # the embedding model is already warm so this is milliseconds.
+        # Kept best-effort: on chunker failure we log and continue with
+        # None, which drops provenance rows cleanly rather than crashing.
+        chunk_to_self_refs = _build_chunk_to_self_refs_map(
+            getattr(context, "docling_document", None)
+        )
+        try:
+            context._chunk_to_self_refs = chunk_to_self_refs
         except AttributeError:
             pass
 
@@ -529,15 +611,60 @@ def run_extraction_pass(
                     break
                 except Exception as exc:
                     logger.warning("Failed to load debug trace %s: %s", candidate, exc)
-        if trace is not None:
-            try:
-                context._delta_trace = trace
-            except AttributeError:
-                pass
+        if trace is None:
+            trace = {}
+
+        trace["library_log"] = library_log_buf.getvalue()
+        if pipeline_error is not None:
+            trace["pipeline_error"] = {
+                "type": type(pipeline_error).__name__,
+                "message": str(pipeline_error),
+            }
+        try:
+            context._delta_trace = trace
+        except AttributeError:
+            pass
         return context
     finally:
         os.unlink(tmp_path)
         shutil.rmtree(debug_dir, ignore_errors=True)
+
+
+def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]] | None:
+    """Re-chunk ``docling_document`` with HybridChunker and return a
+    ``{chunk_index: [doc_item.self_ref, ...]}`` mapping.
+
+    The library throws away chunk metadata after delta extraction, so we
+    can't read it off ``context``. A re-run of the chunker is cheap
+    because the sentence-transformers model is already loaded. Returns
+    ``None`` when:
+      - docling_document is missing/None
+      - the chunker raises (logged at WARNING, never propagated)
+    """
+    if docling_document is None:
+        return None
+    try:
+        from docling.chunking import HybridChunker
+    except ImportError as exc:
+        logger.warning("HybridChunker import failed; provenance self_refs unavailable: %s", exc)
+        return None
+
+    try:
+        chunker = HybridChunker()
+        out: dict[int, list[str]] = {}
+        for i, chunk in enumerate(chunker.chunk(dl_doc=docling_document)):
+            meta = getattr(chunk, "meta", None)
+            doc_items = getattr(meta, "doc_items", None) if meta is not None else None
+            refs = []
+            for item in doc_items or []:
+                ref = getattr(item, "self_ref", None)
+                if isinstance(ref, str) and ref:
+                    refs.append(ref)
+            out[i] = refs
+        return out
+    except Exception as exc:
+        logger.warning("Re-chunking for provenance self_refs failed: %s", exc)
+        return None
 
 
 def _should_run_validation_pass() -> bool:
@@ -678,6 +805,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         try:
             provenance_rows = build_provenance_from_context(
                 context, ExtractionProvenance,
+                chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
             )
         except Exception as exc:
             logger.warning(

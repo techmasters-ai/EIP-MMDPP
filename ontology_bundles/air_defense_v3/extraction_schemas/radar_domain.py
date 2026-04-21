@@ -76,13 +76,18 @@ class RadarSystemEntity(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the radar system. "
-            "Accept canonical proper-noun identifiers from prose when "
-            "unambiguous (e.g. 'SA-2', 'Tombstone', 'AN/MPQ-65', "
-            "'Fan Song'). Reject descriptive phrases ('the radar', 'the "
-            "acquisition radar') and generic noun phrases."
+            "Canonical designation of the RADAR itself. "
+            "Accept canonical proper-noun radar names from prose when "
+            "unambiguous (e.g. 'Fan Song', 'Spoon Rest', 'Tombstone', "
+            "'Flap Lid', 'AN/MPQ-65'). "
+            "Do NOT put a weapon-system designation here — 'SA-2', "
+            "'Patriot', 'S-400' are missile/weapon systems, not radars. "
+            "If the text says 'the SA-2 radar', emit the radar's own "
+            "name ('Fan Song') if stated, otherwise omit. "
+            "Reject descriptive phrases ('the radar', 'the acquisition "
+            "radar') and target/platform names (U-2, SR-71)."
         ),
-        examples=["Tombstone", "Fan Song", "AN/MPQ-65", "Clam Shell", "SA-2 radar"],
+        examples=["Fan Song", "Spoon Rest", "Tombstone", "AN/MPQ-65", "Flap Lid"],
     )
     nomenclature: Optional[str] = Field(
         default=None,
