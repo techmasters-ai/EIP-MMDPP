@@ -504,3 +504,72 @@ def test_walker_header_logo_heuristic():
     assert images[0].properties.get("image_role") == "HEADER_LOGO"
     assert images[0].properties.get("page") == 1
     assert images[0].properties.get("bbox") is not None
+
+
+# ---------------------------------------------------------------------------
+# 3d — _neighbors + _is_valid_near_text helpers
+# ---------------------------------------------------------------------------
+
+def test_neighbors_window_skips_non_text_items():
+    """_neighbors returns up to N valid text items before + after target
+    in reading order, skipping section headers, titles, captions of
+    pictures/tables, and other pictures/tables. Design §4.3."""
+    from app.services.docling_anchors import _neighbors, _is_valid_near_text
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    # Build a doc with interleaved text and non-text items in reading order:
+    #  [0] text "para-1"
+    #  [1] section_header "Section 1"
+    #  [2] text "para-2"
+    #  [3] picture (target)
+    #  [4] text "caption-text" (but we'll mark its self_ref as a caption)
+    #  [5] text "para-3"
+    #  [6] picture (other)
+    #  [7] text "para-4"
+    # Expected neighbors of target (index 3), window=2:
+    #   before: [para-2, para-1]  ← scanned backwards, skip section header
+    #   after:  [para-3, para-4]  ← skip other picture + the caption we register
+    doc = DoclingDocument(name="neighbors_doc")
+    t0 = doc.add_text(label="text", text="para-1")
+    doc.add_heading("Section 1", level=1)
+    t2 = doc.add_text(label="text", text="para-2")
+    p3 = doc.add_picture(image=None, prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    t4 = doc.add_text(label="caption", text="caption-text")
+    p3.captions.append(t4.get_ref())
+    t5 = doc.add_text(label="text", text="para-3")
+    doc.add_picture(image=None, prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    t7 = doc.add_text(label="text", text="para-4")
+
+    items = [item for item, _depth in doc.iterate_items()]
+    # Find target index of the first picture.
+    target_idx = next(i for i, item in enumerate(items) if item.self_ref == p3.self_ref)
+    captions_linked = {t4.self_ref}
+    neighbors = _neighbors(target_idx, items, captions_linked, window=2)
+    texts = [getattr(n, "text", None) for n in neighbors]
+    assert texts == ["para-1", "para-2", "para-3", "para-4"]
+
+
+def test_is_valid_near_text_excludes_expected_labels():
+    """_is_valid_near_text rejects section headers, titles, captions, and
+    text items whose self_ref is in captions_linked."""
+    from app.services.docling_anchors import _is_valid_near_text
+    from docling_core.types.doc import DoclingDocument, DocItemLabel
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="valid_near_text_doc")
+    body = doc.add_text(label="text", text="body")
+    doc.add_heading("Header", level=1)  # adds a section_header item
+    caption = doc.add_text(label="caption", text="Figure 1 cap")
+    pic = doc.add_picture(image=None, prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=10, b=10), charspan=(0, 0)))
+    pic.captions.append(caption.get_ref())
+
+    items = [item for item, _depth in doc.iterate_items()]
+    captions_linked = {caption.self_ref}
+    # body is valid
+    assert _is_valid_near_text(body, captions_linked) is True
+    # section_header: find it in items
+    header = next(i for i in items if getattr(i, "label", None) == DocItemLabel.SECTION_HEADER)
+    assert _is_valid_near_text(header, captions_linked) is False
+    # caption text (linked to pic) should be False
+    assert _is_valid_near_text(caption, captions_linked) is False
+    # picture itself (not a TextItem) should be False
+    assert _is_valid_near_text(pic, captions_linked) is False

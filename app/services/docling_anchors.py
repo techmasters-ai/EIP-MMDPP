@@ -17,7 +17,7 @@ import re
 from collections import OrderedDict, defaultdict
 from typing import TYPE_CHECKING
 
-from docling_core.types.doc import DocItemLabel, DoclingDocument, PictureItem, TableItem
+from docling_core.types.doc import DocItemLabel, DoclingDocument, PictureItem, TableItem, TextItem
 
 from app.services.extraction_merge import (
     MergedEdgeRecord,
@@ -223,6 +223,37 @@ def _classify_image_role(pic, docling_doc, *, label: str | None) -> str:
     if label:
         return "UNCAPTIONED_FIGURE"
     return "INLINE_IMAGE"
+
+
+def _is_valid_near_text(item, captions_linked: set[str]) -> bool:
+    """Accept body-text items only: not section headers, titles, or
+    captions already linked to pictures/tables. Design §4.3."""
+    if not isinstance(item, TextItem):
+        return False
+    label = getattr(item, "label", None)
+    if label in (DocItemLabel.SECTION_HEADER, DocItemLabel.TITLE, DocItemLabel.CAPTION):
+        return False
+    if getattr(item, "self_ref", None) in captions_linked:
+        return False
+    return True
+
+
+def _neighbors(target_order: int, items: list, captions_linked: set[str], window: int = 2) -> list:
+    """Return up to ``window`` valid-near-text items before + ``window``
+    after target_order, in reading order. Design §4.3."""
+    before: list = []
+    i = target_order - 1
+    while i >= 0 and len(before) < window:
+        if _is_valid_near_text(items[i], captions_linked):
+            before.append(items[i])
+        i -= 1
+    after: list = []
+    j = target_order + 1
+    while j < len(items) and len(after) < window:
+        if _is_valid_near_text(items[j], captions_linked):
+            after.append(items[j])
+        j += 1
+    return list(reversed(before)) + after
 
 
 def _build_section_path_string(path_tuple: tuple[str, ...]) -> str | None:
