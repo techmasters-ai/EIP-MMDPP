@@ -130,7 +130,7 @@ def stubs(monkeypatch):
     # Walker — return our fixture; pytest captures the exact call.
     walk_calls: list[tuple] = []
 
-    def fake_walk(docling_doc_json, document_uuid, pipeline_run_id, ontology):
+    def fake_walk(docling_doc_json, document_uuid, pipeline_run_id, ontology, **kwargs):
         walk_calls.append((docling_doc_json, document_uuid, pipeline_run_id, ontology))
         return _merged_fixture(document_uuid, pipeline_run_id)
 
@@ -186,6 +186,8 @@ def test_derive_document_anchors_wires_upserts_and_structural_edges(stubs):
     assert complete_metrics["figure_count"] == 0
     assert complete_metrics["table_count"] == 0
     assert complete_metrics["document_ontology_emitted"] is True
+    assert complete_metrics["image_count"] == 0
+    assert complete_metrics["text_block_count"] == 0
 
     # Return payload carries the same metrics.
     assert result["stage"] == "derive_document_anchors"
@@ -217,7 +219,7 @@ def test_derive_document_anchors_skips_edges_when_no_document_emitted(stubs, mon
     task still upserts SECTION/FIGURE/TABLE but the edges list may be
     empty — structural-edge call count matches edges length."""
 
-    def walk_no_doc(docling_doc_json, document_uuid, pipeline_run_id, ontology):
+    def walk_no_doc(docling_doc_json, document_uuid, pipeline_run_id, ontology, **kwargs):
         sec_identity = LogicalIdentity(
             entity_type="SECTION",
             identity_field_names=("section_number",),

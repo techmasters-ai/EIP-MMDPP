@@ -1,0 +1,11 @@
+{
+  "planPath": "docs/plans/2026-04-21-document-structure-pass-plan.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Relationships + validation_matrix — 6 enum members, 6 descriptors, 10 triples", "status": "completed"},
+    {"id": 2, "subject": "Task 2: Schemas — ImageEntity + TextBlockEntity + storage_key fields + ALL_ENTITIES registration", "status": "completed"},
+    {"id": 3, "subject": "Task 3: Walker extension in docling_anchors.walk() (substeps 3a–3h)", "status": "completed", "blockedBy": [1, 2]},
+    {"id": 5, "subject": "Task 5: Tests + VERIFICATION_CHECKLIST.md (substeps 5a–5c)", "status": "completed", "blockedBy": [3]},
+    {"id": 6, "subject": "Task 6: Update both notebooks (substeps 6a–6b)", "status": "completed", "blockedBy": [5]}
+  ],
+  "lastUpdated": "2026-04-21T19:45:00-05:00"
+}

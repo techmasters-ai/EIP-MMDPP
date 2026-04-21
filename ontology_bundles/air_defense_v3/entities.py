@@ -60,6 +60,9 @@ def edge(
 # ----------------------------------------------------------------------
 # Layer 1
 # ----------------------------------------------------------------------
+# confidence default convention: LLM-extracted entities default to None
+# (the LLM may omit the field); anchor-walker-extracted entities (IMAGE,
+# TEXT_BLOCK) hard-set 1.0 because extraction is deterministic.
 
 class DocumentEntity(BaseModel):
     """Source Document — Technical manual, specification, report, drawing, or other source artifact
@@ -71,6 +74,7 @@ class DocumentEntity(BaseModel):
     document_id: Optional[str] = Field(default=None, description="Internal system-assigned document identifier")
     classification: Optional[str] = Field(default=None, description="Security classification level", examples=['UNCLASSIFIED'])
     publication_date: Optional[str] = Field(default=None, description="Publication or revision date (YYYY-MM-DD)", examples=['2023-06-15'])
+    storage_key: Optional[str] = Field(default=None, description="MinIO object key for the source file in the documents bucket")
     source_type: Optional[str] = Field(default=None, description="Category of the source document", json_schema_extra={"enum": ["MANUAL", "REPORT", "BRIEFING", "NOTE", "SCHEMATIC", "DRAWING", "SPECIFICATION", "CHECKLIST", "SPREADSHEET"]})
     issuing_org: Optional[str] = Field(default=None, description="Organization that published the document", examples=['U.S. Army TACOM'])
     language: Optional[str] = Field(default=None, description="Language of the document (ISO 639-1 code)", examples=['en'])
@@ -120,6 +124,7 @@ class FigureEntity(BaseModel):
     caption: Optional[str] = Field(default=None, description="Figure caption text", examples=['Antenna Feed Assembly Exploded View'])
     page: Optional[int] = Field(default=None, description="Page number where the figure appears", examples=[55])
     figure_type: Optional[str] = Field(default=None, description="Category of the figure", json_schema_extra={"enum": ["BLOCK_DIAGRAM", "SCHEMATIC", "PHOTO", "SPECTRUM_PLOT", "WIRING_DIAGRAM", "FLOWCHART"]})
+    storage_key: Optional[str] = Field(default=None, description="MinIO object key for the figure image. Always null in the initial change; populated once Artifact.self_ref plumbing lands.")
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class TableEntity(BaseModel):
@@ -133,6 +138,42 @@ class TableEntity(BaseModel):
     caption: Optional[str] = Field(default=None, description="Table caption or title", examples=['Radar System Frequency Parameters'])
     page: Optional[int] = Field(default=None, description="Page number where the table appears", examples=[78])
     confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
+
+class ImageEntity(BaseModel):
+    """Image — An uncaptioned picture or embedded image within a document.
+
+    Distinguished from FigureEntity by the absence of a "Figure N"-style
+    caption: embedded logos, inline diagrams without labels, decorative
+    photos. See docs/plans/2026-04-21-document-structure-pass-design.md §2.
+    """
+    model_config = ConfigDict(ontology_name="IMAGE", graph_id_fields=["image_ref"], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
+
+    image_ref: str = Field(..., description="Document-scoped self_ref of the picture (docs:17235 R16-compliant identity)", examples=["#/pictures/7", "#/pictures/12"])
+    document_id: Optional[str] = Field(default=None, description="Internal document UUID this image belongs to")
+    page: Optional[int] = Field(default=None, description="Page number where the image appears", examples=[1, 3])
+    caption: Optional[str] = Field(default=None, description="Caption text when present, else None", examples=["Installation overview"])
+    mime_type: Optional[str] = Field(default=None, description="MIME type of the backing image asset", examples=["image/png", "image/jpeg"])
+    storage_key: Optional[str] = Field(default=None, description="MinIO object key for the picture bytes. Always null in the initial change; populated once Artifact.self_ref plumbing lands.")
+    bbox: Optional[dict] = Field(default=None, description="Bounding box dict {l, t, r, b, page, coord_origin} from Docling provenance")
+    image_role: Optional[str] = Field(default=None, description="Role heuristic derived from page position + caption", json_schema_extra={"enum": ["HEADER_LOGO", "INLINE_IMAGE", "UNCAPTIONED_FIGURE"]})
+    confidence: Optional[float] = Field(default=1.0, description="Extraction confidence, 0–1. Anchor walker always emits 1.0.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
+
+
+class TextBlockEntity(BaseModel):
+    """TextBlock — A body-text paragraph emitted as neighbor context for FIGURE/IMAGE.
+
+    Lazily emitted by the anchor walker: a TEXT_BLOCK only appears when at
+    least one IMAGE or FIGURE declared it as a NEAR_TEXT neighbor. See
+    docs/plans/2026-04-21-document-structure-pass-design.md §4.3.
+    """
+    model_config = ConfigDict(ontology_name="TEXT_BLOCK", graph_id_fields=["text_ref"], identity_scope="document", dodaf_parent="DocumentResource", is_entity=True)
+
+    text_ref: str = Field(..., description="Document-scoped self_ref of the text item (docs:17235 R16-compliant identity)", examples=["#/texts/42", "#/texts/237"])
+    document_id: Optional[str] = Field(default=None, description="Internal document UUID this text block belongs to")
+    text: Optional[str] = Field(default=None, description="Rendered text content, truncated to 500 characters")
+    label: Optional[str] = Field(default=None, description="Docling label (TEXT, PARAGRAPH, LIST_ITEM)", examples=["TEXT", "PARAGRAPH", "LIST_ITEM"])
+    page: Optional[int] = Field(default=None, description="Page number where the text appears", examples=[3])
+    confidence: Optional[float] = Field(default=1.0, description="Extraction confidence, 0–1. Anchor walker always emits 1.0.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 # ----------------------------------------------------------------------
 # Layer 2
@@ -1287,6 +1328,8 @@ ALL_ENTITIES: dict[str, type[BaseModel]] = {
     "SECTION": SectionEntity,
     "FIGURE": FigureEntity,
     "TABLE": TableEntity,
+    "IMAGE": ImageEntity,          # NEW
+    "TEXT_BLOCK": TextBlockEntity, # NEW
     "ORGANIZATION": OrganizationEntity,
     "PLATFORM": PlatformEntity,
     "WEAPON_SYSTEM": WeaponSystemEntity,

@@ -9,47 +9,36 @@ passes:
     # Non-required: mixed-corpus documents (e.g. handwritten notes, non-radar
     # papers) legitimately have no radar content. When the LLM returns empty
     # output for this pass, that's a true negative, not a pipeline failure.
+    #
+    # Flat checklist-aligned schema (RADAR MDE Checklist): only RADAR_SYSTEM is
+    # emitted; all antenna / RF / modulation / parametric fields are properties
+    # on that single entity. Kind is ``entities`` not ``entities_and_relationships``
+    # because the schema has no typed HAS_* edges.
     required: false
-    kind: entities_and_relationships
+    kind: entities
     input_mode: document_only
     module: extraction_schemas.radar_domain
     template_class: RadarDomainPass
-    primary_entity_types:
-      [RADAR_SYSTEM, ANTENNA, RECEIVER, TRANSMITTER, SIGNAL_PROCESSING_CHAIN,
-       FREQUENCY_BAND, WAVEFORM]
-    bridge_entity_types: [PLATFORM, SPECIFICATION]
-    extracted_relationship_types:
-      [INSTALLED_ON, HAS_ANTENNA, HAS_RECEIVER, HAS_TRANSMITTER,
-       HAS_PROCESSING_CHAIN, OPERATES_IN_BAND, USES_WAVEFORM, SPECIFIED_BY]
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
     depends_on: []
 
   - name: missile_domain
     # Non-required: a radar-only or non-missile document shouldn't fail the
     # pipeline just because there's nothing to extract for this domain.
+    #
+    # Flat checklist-aligned schema (MISSILE MDE Checklist): only MISSILE_SYSTEM
+    # is emitted; guidance / seeker / propulsion stages are flat properties on
+    # that single entity. No typed edges.
     required: false
-    kind: entities_and_relationships
+    kind: entities
     input_mode: document_only
     module: extraction_schemas.missile_domain
     template_class: MissileDomainPass
-    primary_entity_types:
-      [MISSILE_SYSTEM, LAUNCHER_SYSTEM, GUIDANCE_METHOD, SEEKER, PROPULSION_STACK]
-    bridge_entity_types: [PLATFORM, SPECIFICATION]
-    extracted_relationship_types:
-      [INSTALLED_ON, HAS_GUIDANCE, HAS_SEEKER, HAS_PROPULSION, LAUNCHES, SPECIFIED_BY]
-    depends_on: []
-
-  - name: other_systems
-    # Non-required: not every doc has AD artillery / EW / fire-control content.
-    required: false
-    kind: entities_and_relationships
-    input_mode: document_only
-    module: extraction_schemas.other_systems
-    template_class: OtherSystemsPass
-    primary_entity_types:
-      [AIR_DEFENSE_ARTILLERY_SYSTEM, ELECTRONIC_WARFARE_SYSTEM,
-       FIRE_CONTROL_SYSTEM, WEAPON_SYSTEM, INTEGRATED_AIR_DEFENSE_SYSTEM]
-    bridge_entity_types: [PLATFORM, SPECIFICATION]
-    extracted_relationship_types: [INSTALLED_ON, SPECIFIED_BY]
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
     depends_on: []
 
   - name: system_links
@@ -61,7 +50,7 @@ passes:
     primary_entity_types: []
     bridge_entity_types: []
     extracted_relationship_types: [ASSOCIATED_WITH, CUES]
-    depends_on: [radar_domain, missile_domain, other_systems]
+    depends_on: [radar_domain, missile_domain]
     skip_if_no_upstream_endpoints: true
     skip_justification: >
       When none of the upstream domain passes produce any linkable system

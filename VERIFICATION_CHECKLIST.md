@@ -265,6 +265,15 @@ This section documents the full logical flow inside `derive_ontology_graph` when
 | ArcadeDB schema sync from active ontology | Schema drifts from ontology definition | API startup, registry activation, active registry PUT — schema sync runs with correct ontology | 3.0 |
 | Schema sync is additive only | Schema sync removes types that still have data | Remove entity type from ontology, re-sync; type remains in ArcadeDB (data preserved) | 3.0 |
 
+### Document-structure anchors (2026-04-21)
+
+- [ ] New entity types: IMAGE, TEXT_BLOCK (in addition to existing DOCUMENT/SECTION/FIGURE/TABLE)
+- [ ] New relationships: HAS_IMAGE (DOCUMENT→IMAGE, SECTION→IMAGE), NEAR_TEXT (FIGURE/IMAGE → TEXT_BLOCK)
+- [ ] SECTION-level attribution: SECTION→FIGURE, SECTION→TABLE, SECTION→IMAGE HAS_* edges present
+- [ ] DocumentEntity.storage_key populated from Document SQL row
+- [ ] FigureEntity.storage_key + ImageEntity.storage_key are schema fields but emission is null until Artifact.self_ref migration lands (tracked separately)
+- [ ] Re-ingestion (or one-shot migration) required for legacy documents whose uncaptioned pictures are currently FIGUREs — they re-classify to IMAGE on re-ingest
+
 ---
 
 ## 3. RETRIEVAL & SEARCH
@@ -418,6 +427,29 @@ This section documents the full logical flow inside `derive_ontology_graph` when
 | URL fallback to OLLAMA_BASE_URL | Specialized URL left blank breaks all LLM calls | Leave `OLLAMA_LLM_BASE_URL` blank; `get_ollama_llm_url()` returns `OLLAMA_BASE_URL` | 3.1 |
 | Docling-Graph inherits LLM URL via docker-compose cascade | Docling-Graph uses wrong Ollama instance | `OLLAMA_LLM_BASE_URL` set; docker-compose passes it to docling-graph container as `OLLAMA_BASE_URL` | 3.1 |
 | All LLM consumers use correct getter | Some consumers hardcode `ollama_base_url` instead of role-specific getter | `embedding.py` uses `get_ollama_embedding_url()`, `document_analysis.py:58` uses `get_ollama_llm_url()`, `document_analysis.py:202` uses `get_ollama_vlm_url()` | 3.1 |
+
+---
+
+## 11. NOTEBOOKS
+
+Both notebooks use **dynamic introspection** — they iterate `load_ontology()` / `ontology_bundles.air_defense_v3.entities.ALL_ENTITIES` / `RelationshipType` enum members rather than hardcoded type lists. No cell modifications are required when entity types or relationship types are added to the ontology.
+
+| Notebook | Status | Notes |
+|---|---|---|
+| `notebooks/ingest_walkthrough.ipynb` | Dynamic — no hardcoded type lists | Reload from disk in JupyterLab + restart kernel after pulling new entity/rel types; stale executed outputs are cleared on cells that changed |
+| `notebooks/raw_libraries_walkthrough.ipynb` | Dynamic — no hardcoded type lists; no inline walker replica | Re-run to pick up new walker output; §10 documents what's out-of-scope vs. the full pipeline |
+
+### Task 6 additions (2026-04-21)
+
+- [x] `ingest_walkthrough.ipynb` — stale outputs from cell `edadcd2a` (ontology summary) cleared; outputs showed 44 entity types / 50 relationship types from a pre-IMAGE/TEXT_BLOCK run.
+- [x] `ingest_walkthrough.ipynb` — §8 "Anchor walker" markdown cell + `derive_document_anchors.apply()` cell added at the end; shows SECTION / FIGURE / TABLE / IMAGE / TEXT_BLOCK counts and HAS_IMAGE / NEAR_TEXT edge counts for the current document.
+- [x] `raw_libraries_walkthrough.ipynb` — no code changes required (dynamic introspection, no inline walker replica).
+
+### After ontology schema changes
+
+1. Reload both notebooks from disk in JupyterLab (`File → Reload Notebook from Disk`).
+2. Restart the kernel.
+3. Run all cells top-to-bottom; the ontology summary cell in `ingest_walkthrough` will reflect the current counts automatically.
 
 ---
 

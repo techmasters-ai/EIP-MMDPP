@@ -12,11 +12,17 @@ Node-attribute conventions checked (first match wins):
   1. Direct ``element_uid`` attribute on the node data dict.
   2. Nested ``provenance.element_uid`` — some extractor contracts
      attach provenance as a sub-dict.
-  3. ``chunk_indexes[0]`` on the node's provenance dict, mapped back
-     through ``context.docling_document.texts[idx].self_ref``. This
-     is the fallback for the delta-IR normalizer path, which stores
-     chunk indexes instead of element uids (see
+  3. ``chunk_indexes[0]`` on the node's provenance dict, mapped to
+     the first ``doc_item.self_ref`` of that chunk via the
+     ``chunk_to_self_refs`` mapping built by ``main.py`` before
+     calling this function. This is the fallback for the delta-IR
+     normalizer path, which stores chunk indexes instead of element
+     uids (see
      ``docling_graph/core/extractors/contracts/delta/ir_normalizer.py``).
+     The previous implementation indexed into ``docling_document.texts``
+     with a chunk index, which is a type mismatch (chunks group
+     multiple doc_items; the two index spaces are unrelated) and was
+     the reason production passes returned empty provenance lists.
 
 Entity-typed nodes are identified via ``node.get("label")`` or
 ``node.get("node_type")``; nodes without one of the entity sentinel
@@ -48,11 +54,23 @@ def _is_entity_label(label: Any) -> bool:
 
 def _resolve_element_uid(
     node_data: dict[str, Any],
-    docling_document: Any,
+    chunk_to_self_refs: dict[int, list[str]] | None,
 ) -> str | None:
     """Return the element_uid for a knowledge-graph node, or None if
-    none can be resolved. Checks direct attribute → nested provenance
-    → chunk_indexes-to-text-self_ref fallback."""
+    none can be resolved.
+
+    Resolution order:
+      1. Direct ``element_uid`` attribute on the node dict.
+      2. Nested ``provenance.element_uid``.
+      3. ``provenance.chunk_indexes[0]`` → first ``doc_item.self_ref``
+         of that chunk, via ``chunk_to_self_refs`` (built by main.py
+         after run_pipeline via the service's own HybridChunker pass).
+
+    ``chunk_to_self_refs`` may be ``None`` when the caller couldn't
+    build the mapping (e.g. chunker init failed). In that case step 3
+    is skipped and the node falls through to the drop-with-warning
+    branch.
+    """
     # 1. Direct attribute
     direct = node_data.get("element_uid")
     if isinstance(direct, str) and direct:
@@ -65,35 +83,16 @@ def _resolve_element_uid(
         if isinstance(nested, str) and nested:
             return nested
 
-        # 3. chunk_indexes → texts[idx].self_ref
-        chunk_indexes = prov.get("chunk_indexes")
-        if isinstance(chunk_indexes, list) and chunk_indexes:
-            first = chunk_indexes[0]
-            texts = _get_docling_texts(docling_document)
-            if texts is not None and isinstance(first, int) and 0 <= first < len(texts):
-                text_item = texts[first]
-                self_ref = (
-                    text_item.get("self_ref")
-                    if isinstance(text_item, dict)
-                    else getattr(text_item, "self_ref", None)
-                )
-                if isinstance(self_ref, str) and self_ref:
-                    return self_ref
+        # 3. chunk_indexes → chunk_to_self_refs[idx][0]
+        if chunk_to_self_refs:
+            chunk_indexes = prov.get("chunk_indexes")
+            if isinstance(chunk_indexes, list) and chunk_indexes:
+                first = chunk_indexes[0]
+                if isinstance(first, int):
+                    refs = chunk_to_self_refs.get(first)
+                    if refs:
+                        return refs[0]
 
-    return None
-
-
-def _get_docling_texts(docling_document: Any) -> list[Any] | None:
-    """Return the ``texts`` array from a DoclingDocument-shaped object,
-    whether it's a dict or a Pydantic model. None when not resolvable."""
-    if docling_document is None:
-        return None
-    if isinstance(docling_document, dict):
-        val = docling_document.get("texts")
-        return val if isinstance(val, list) else None
-    texts = getattr(docling_document, "texts", None)
-    if isinstance(texts, list):
-        return texts
     return None
 
 
@@ -146,6 +145,7 @@ def _resolve_chunk_index(node_data: dict[str, Any]) -> int | None:
 def build_provenance_from_context(
     context: Any,
     provenance_cls: type,
+    chunk_to_self_refs: dict[int, list[str]] | None = None,
 ) -> list[Any]:
     """Walk ``context.knowledge_graph`` and return a list of
     ``ExtractionProvenance`` instances, one per entity-typed node whose
@@ -156,6 +156,13 @@ def build_provenance_from_context(
     (the repo-root ``app.schemas`` package shadows the service's
     ``app.schemas`` when the test suite runs from repo root).
 
+    ``chunk_to_self_refs`` maps ``chunk_index → [doc_item.self_ref, ...]``
+    and is built by the caller (``main.py``) by re-running the chunker
+    on the DoclingDocument after extraction succeeds. ``_resolve_element_uid``
+    uses the first self_ref of the chunk referenced by
+    ``provenance.chunk_indexes[0]``. Pass ``None`` to disable step 3 and
+    fall through to drop-with-warning.
+
     Dropped node classes:
       * Nodes without an entity-looking ``label`` / ``node_type``.
       * Nodes where ``element_uid`` cannot be resolved via any strategy
@@ -164,9 +171,6 @@ def build_provenance_from_context(
     graph = getattr(context, "knowledge_graph", None)
     if graph is None:
         return []
-    docling_document = getattr(context, "docling_document", None)
-    if docling_document is None:
-        docling_document = getattr(context, "normalized_source", None)
 
     out: list[Any] = []
     for node_id, data in graph.nodes(data=True):
@@ -174,7 +178,7 @@ def build_provenance_from_context(
         if not _is_entity_label(label):
             continue
 
-        element_uid = _resolve_element_uid(data, docling_document)
+        element_uid = _resolve_element_uid(data, chunk_to_self_refs)
         if element_uid is None:
             logger.warning(
                 "build_provenance: dropping node %s (label=%s) — no resolvable element_uid",

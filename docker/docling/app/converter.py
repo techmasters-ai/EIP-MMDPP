@@ -235,6 +235,24 @@ def convert_document(file_bytes: bytes, filename: str) -> ConvertResponse:
 
         doc = result.document
 
+        # --- Empty-image fallback -------------------------------------
+        # For image-only inputs (JPEG/PNG) whose content Docling's PDF
+        # pipeline couldn't decompose — schematics, diagrams with OCR-
+        # resistant labels — the resulting DoclingDocument has
+        # body.children / texts / pictures / tables all empty. Downstream
+        # extraction then fails with "markdown is empty". Inject a
+        # synthetic picture pointing at the source image so the document
+        # has *something* to anchor on (image gets embedded via open_clip,
+        # appears as a DocumentElement row). Text / entity extraction
+        # will still be near-zero for these inputs — that's expected.
+        if _is_image_input(filename) and _is_empty_docling_document(doc):
+            _inject_synthetic_picture(doc, file_bytes)
+            logger.info(
+                "Empty DoclingDocument for image %s; injected synthetic picture "
+                "entry so downstream has a DocumentElement to anchor on.",
+                filename,
+            )
+
         elements = _extract_elements(doc)
         markdown = doc.export_to_markdown()
         from app.cleanup import clean_markdown
@@ -448,3 +466,59 @@ def _count_pages(doc) -> int:
         return len(doc.pages)
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Empty-image fallback helpers
+# ---------------------------------------------------------------------------
+
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
+
+
+def _is_image_input(filename: str) -> bool:
+    """Return True if the filename has an image-like extension."""
+    return Path(filename).suffix.lower() in _IMAGE_EXTENSIONS
+
+
+def _is_empty_docling_document(doc) -> bool:
+    """True when Docling produced a DoclingDocument with no extractable content.
+
+    Happens for image-only inputs the PDF pipeline couldn't decompose (no
+    detected text layout, no embedded picture items). The document has
+    page metadata but body.children + texts + pictures + tables are all
+    empty.
+    """
+    try:
+        body_children = len(getattr(getattr(doc, "body", None), "children", []) or [])
+        return (
+            body_children == 0
+            and len(getattr(doc, "texts", []) or []) == 0
+            and len(getattr(doc, "pictures", []) or []) == 0
+            and len(getattr(doc, "tables", []) or []) == 0
+        )
+    except Exception:
+        return False
+
+
+def _inject_synthetic_picture(doc, file_bytes: bytes) -> None:
+    """Add one synthetic PictureItem referencing the source image bytes.
+
+    Uses DoclingDocument.add_picture() so the item is linked into body.children
+    correctly (not just appended to pictures[]). The image bytes are embedded
+    via ImageRef so downstream consumers can read them.
+    """
+    try:
+        from PIL import Image
+        from docling_core.types.doc import ImageRef, ProvenanceItem, BoundingBox
+
+        img = Image.open(io.BytesIO(file_bytes))
+        img_ref = ImageRef.from_pil(image=img, dpi=72)
+
+        # Minimal provenance — page 1, full-image bounding box. Downstream
+        # mention-linking won't use this, but the library expects prov on items.
+        bbox = BoundingBox(l=0, t=0, r=img.width, b=img.height)
+        prov = ProvenanceItem(page_no=1, bbox=bbox, charspan=(0, 0))
+
+        doc.add_picture(image=img_ref, prov=prov)
+    except Exception as exc:
+        logger.warning("Synthetic picture injection failed: %s", exc)

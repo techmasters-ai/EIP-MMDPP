@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -274,18 +276,16 @@ def _apply_litellm_client_patches():
 
 _apply_litellm_client_patches()
 
-# Prose-friendly catalog-prompt rewrites. See docstring in prompt_overrides.py
-# for why this monkey-patch is justified: the library's build_catalog_prompt_block
-# appends "Emit only when this batch contains the table/structure... otherwise
-# omit." for any entity path with identity_example_values. On prose-heavy docs
-# (radar/missile manuals, operator guides) llama3.3:70b interprets it literally
-# and returns {"nodes":[], "relationships":[]}, which then trips the DeltaExtraction
-# quality gate (path_counts={}, empty_output). Evidence gathered pre-install: 9+
-# consecutive radar_domain/missile_domain/other_systems FAILED runs with that exact
-# signature; system_links (DTO-only, no catalog gate) succeeded in parallel.
-from app.prompt_overrides import install as _install_prompt_overrides
+# Delta system-prompt rewrite. Replaces Rules 2-4 in get_delta_batch_prompt
+# so the LLM accepts BOTH structure-backed evidence AND explicit named
+# mentions in prose, while still rejecting section titles + unnamed
+# descriptions. See docker/docling-graph/app/prompt_rules.py and
+# ontology_bundles/_shared/prompt_rules.py for the rule text and rationale.
+# Section-title slippage is handled by the library's own post-extraction
+# filter_entity_nodes_by_identity (delta_identity_filter_enabled=True).
+from app.prompt_rules import install as _install_prompt_rules
 
-_install_prompt_overrides()
+_install_prompt_rules()
 
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app.config_builder import build_pipeline_config
@@ -394,8 +394,67 @@ def run_extraction_pass(
     texts array and prepended to body.children so that export_to_markdown()
     includes it at the top of the document body for all three extraction contracts.
     """
+    import shutil
     import tempfile
     from docling_graph import run_pipeline
+
+    # --- Empty-source short-circuit --------------------------------------
+    # If the DoclingDocument has no body content AND no registered items
+    # (texts / pictures / tables), the library's LlmBackend fails fast with
+    # "Markdown is empty for DoclingDocument. Cannot proceed." and bubbles a
+    # 500. That thrashes the worker's retry loop for true-negative cases
+    # (image-only inputs Docling didn't decompose — see the Docling service's
+    # synthetic-picture fallback). Return a clean empty response instead.
+    def _is_empty(doc: dict) -> bool:
+        body_children = (doc.get("body") or {}).get("children") or []
+        return (
+            not body_children
+            and not doc.get("texts")
+            and not doc.get("pictures")
+            and not doc.get("tables")
+        )
+
+    if _is_empty(docling_document_json):
+        logger.warning(
+            "extract-pass short-circuit: DoclingDocument has no extractable content "
+            "(body.children/texts/pictures/tables all empty). Returning empty pass_output "
+            "with diagnostic marker instead of calling run_pipeline."
+        )
+        import networkx as _nx
+
+        class _EmptySourceContext:
+            template_instance = None
+            extracted_models: list = []
+            knowledge_graph = _nx.DiGraph()
+
+            class _Meta:
+                node_count = 0
+                edge_count = 0
+                node_types: dict = {}
+                edge_types: dict = {}
+
+            graph_metadata = _Meta()
+
+        ctx = _EmptySourceContext()
+        ctx._upstream_preamble_applied = False  # no chance to apply — source was empty
+        ctx._chunk_to_self_refs = None  # no doc, nothing to map
+        ctx._delta_trace = {
+            "empty_source": True,
+            "reason": "docling_document_has_no_extractable_content",
+            "body_children": 0,
+            "texts": 0,
+            "pictures": 0,
+            "tables": 0,
+            "library_log": "",
+            "suggestion": (
+                "Upstream Docling conversion produced an empty body. Image-only "
+                "inputs that the PDF pipeline didn't decompose are the typical "
+                "cause; see docker/docling/app/converter.py synthetic-picture "
+                "fallback and TODO #29 for VLM routing."
+            ),
+        }
+        return ctx
+    # ----------------------------------------------------------------------
 
     # --- Path B injection -------------------------------------------------
     preamble = _render_upstream_entities_preamble(upstream_entities)
@@ -432,13 +491,81 @@ def run_extraction_pass(
         json.dump(docling_document_json, tmp, ensure_ascii=False, default=str)
         tmp_path = tmp.name
 
+    # Per-call debug dir; read back delta_trace.json afterwards and stash
+    # on context so extract_pass can surface it as response.diagnostics.
+    debug_dir = tempfile.mkdtemp(prefix="docgraph-debug-")
+
     try:
         config = build_pipeline_config(
             source=tmp_path,
             template_class=template_cls,
             pass_name=pass_name,
+            debug_dir=debug_dir,
         )
-        context = run_pipeline(config)
+
+        # Capture the library's print() + logging output to stdout/stderr during
+        # run_pipeline so the response can surface the exact fallback chain
+        # ([DeltaExtraction] → "Warning: ...produced no JSON" → "falling back
+        # to direct" → "LiteLLMClient returned empty or all-null JSON" → etc.)
+        # to the notebook and worker. A Tee keeps the original streams flowing
+        # to the container logs so uvicorn's log aggregation doesn't go dark.
+        library_log_buf = io.StringIO()
+
+        class _Tee:
+            def __init__(self, *streams):
+                self._streams = streams
+            def write(self, data):
+                for s in self._streams:
+                    try:
+                        s.write(data)
+                    except Exception:
+                        pass
+                return len(data) if isinstance(data, str) else 0
+            def flush(self):
+                for s in self._streams:
+                    try:
+                        s.flush()
+                    except Exception:
+                        pass
+
+        original_stdout, original_stderr = sys.stdout, sys.stderr
+        sys.stdout = _Tee(original_stdout, library_log_buf)
+        sys.stderr = _Tee(original_stderr, library_log_buf)
+        pipeline_error: Exception | None = None
+        try:
+            context = run_pipeline(config)
+        except Exception as exc:
+            # Library raised PipelineError (or anything else). Build a stub
+            # context so the service returns a clean 200 with diagnostics
+            # instead of a 500 that tanks the worker's retry loop. The
+            # notebook + worker see why the library bailed via the captured
+            # log + pipeline_error marker in _delta_trace.
+            pipeline_error = exc
+            logger.warning(
+                "run_pipeline raised %s: %s — returning stub context with "
+                "diagnostic marker so the pass doesn't hard-fail.",
+                type(exc).__name__, exc,
+            )
+            import networkx as _nx
+
+            class _PipelineFailureContext:
+                template_instance = None
+                extracted_models: list = []
+                knowledge_graph = _nx.DiGraph()
+                docling_document = None
+
+                class _Meta:
+                    node_count = 0
+                    edge_count = 0
+                    node_types: dict = {}
+                    edge_types: dict = {}
+
+                graph_metadata = _Meta()
+
+            context = _PipelineFailureContext()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
 
         # docling-graph's stages don't set ``context.template_instance``
         # — they populate ``extracted_models``. Promote the single
@@ -453,9 +580,91 @@ def run_extraction_pass(
             context._upstream_preamble_applied = preamble_applied
         except AttributeError:
             pass
+
+        # Build chunk_index → [doc_item.self_ref, ...] mapping so the
+        # provenance resolver can turn chunk indexes (the only location
+        # identity the delta-IR normalizer attaches) into real
+        # DoclingDocument self_refs. Runs HybridChunker again on the doc —
+        # the embedding model is already warm so this is milliseconds.
+        # Kept best-effort: on chunker failure we log and continue with
+        # None, which drops provenance rows cleanly rather than crashing.
+        chunk_to_self_refs = _build_chunk_to_self_refs_map(
+            getattr(context, "docling_document", None)
+        )
+        try:
+            context._chunk_to_self_refs = chunk_to_self_refs
+        except AttributeError:
+            pass
+
+        # Read library-level trace (batch_errors, quality_gate, identity_filter,
+        # path_counts, merge_stats, diagnostics) for response surfacing.
+        trace: dict | None = None
+        for candidate in (
+            os.path.join(debug_dir, "debug", "delta_trace.json"),
+            os.path.join(debug_dir, "delta_trace.json"),
+            os.path.join(debug_dir, "debug", "trace_data.json"),
+        ):
+            if os.path.exists(candidate):
+                try:
+                    with open(candidate, encoding="utf-8") as f:
+                        trace = json.load(f)
+                    break
+                except Exception as exc:
+                    logger.warning("Failed to load debug trace %s: %s", candidate, exc)
+        if trace is None:
+            trace = {}
+
+        trace["library_log"] = library_log_buf.getvalue()
+        if pipeline_error is not None:
+            trace["pipeline_error"] = {
+                "type": type(pipeline_error).__name__,
+                "message": str(pipeline_error),
+            }
+        try:
+            context._delta_trace = trace
+        except AttributeError:
+            pass
         return context
     finally:
         os.unlink(tmp_path)
+        shutil.rmtree(debug_dir, ignore_errors=True)
+
+
+def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]] | None:
+    """Re-chunk ``docling_document`` with HybridChunker and return a
+    ``{chunk_index: [doc_item.self_ref, ...]}`` mapping.
+
+    The library throws away chunk metadata after delta extraction, so we
+    can't read it off ``context``. A re-run of the chunker is cheap
+    because the sentence-transformers model is already loaded. Returns
+    ``None`` when:
+      - docling_document is missing/None
+      - the chunker raises (logged at WARNING, never propagated)
+    """
+    if docling_document is None:
+        return None
+    try:
+        from docling.chunking import HybridChunker
+    except ImportError as exc:
+        logger.warning("HybridChunker import failed; provenance self_refs unavailable: %s", exc)
+        return None
+
+    try:
+        chunker = HybridChunker()
+        out: dict[int, list[str]] = {}
+        for i, chunk in enumerate(chunker.chunk(dl_doc=docling_document)):
+            meta = getattr(chunk, "meta", None)
+            doc_items = getattr(meta, "doc_items", None) if meta is not None else None
+            refs = []
+            for item in doc_items or []:
+                ref = getattr(item, "self_ref", None)
+                if isinstance(ref, str) and ref:
+                    refs.append(ref)
+            out[i] = refs
+        return out
+    except Exception as exc:
+        logger.warning("Re-chunking for provenance self_refs failed: %s", exc)
+        return None
 
 
 def _should_run_validation_pass() -> bool:
@@ -596,6 +805,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         try:
             provenance_rows = build_provenance_from_context(
                 context, ExtractionProvenance,
+                chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
             )
         except Exception as exc:
             logger.warning(
@@ -612,6 +822,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
             provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
             provenance=provenance_rows,
+            diagnostics=getattr(context, "_delta_trace", None),
         )
     finally:
         logger.info(

@@ -23,16 +23,24 @@ class DoclingGraphSettings(BaseSettings):
         extra="ignore",
     )
 
-    # LLM provider and model
+    # LLM provider and model.
+    # llama3.3:70b — larger-context local model, better recall than llama3.1:8b
+    # The original default (granite3-dense:8b) isn't referenced in the docs;
+    # the env-override value (llama3.3:70b) was stalling Ollama's constrained
+    # decoder on our 14KB json_schema — 70B models are more prone to
+    # indefinite spins on strict structured output than 8B-class models.
     docling_graph_llm_provider: str = "ollama"
-    docling_graph_llm_model: str = "granite3-dense:8b"
+    docling_graph_llm_model: str = "llama3.3:70b"
     docling_graph_extraction_contract: str = "delta"
     docling_graph_processing_mode: str = "many-to-one"
 
     # Chunking
     docling_graph_use_chunking: bool = True
     docling_graph_chunk_max_tokens: int = 512
-    docling_graph_llm_batch_token_size: int = 2048
+    # Library default per docs §Extraction Backends → Provider-Specific Batching:
+    # "Ollama/Local: Variable performance → conservative batching." 1024 is the
+    # upstream default; our previous 2048 was aggressive for Ollama.
+    docling_graph_llm_batch_token_size: int = 1024
     docling_graph_parallel_workers: int = 2
     docling_graph_batch_split_max_retries: int = 1
 
@@ -58,9 +66,14 @@ class DoclingGraphSettings(BaseSettings):
     docling_graph_identity_filter_enabled: bool = True
     docling_graph_identity_filter_strict: bool = False
 
-    # Gleaning
+    # Gleaning.
+    # gleaning_max_passes=2 asks the LLM "what did you miss?" once after the
+    # primary extraction. Recovers entities/relationships that the first pass
+    # skipped (common on prose-heavy pages) without re-chunking or loosening
+    # the structured-output schema. Applies to delta + direct contracts per
+    # docling-graph-docs.md §Gleaning (not staged).
     docling_graph_gleaning_enabled: bool = True
-    docling_graph_gleaning_max_passes: int = 1
+    docling_graph_gleaning_max_passes: int = 2
 
     # Structured output
     docling_graph_structured_output: bool = True
@@ -74,11 +87,19 @@ class DoclingGraphSettings(BaseSettings):
     # at 0.0 returned empty JSON). A small amount of variance is needed for the
     # model to explore valid completions under the structured-output constraint.
     docling_graph_llm_temperature: float = 0.1
-    docling_graph_llm_max_tokens: int | None = 64000
+    # 32000 fits llama3.3:70b's output ceiling. Drop to 4000 for
+    # llama3.1:8b (4092 cap) or raise to 64000+ for gpt-oss:120b via
+    # the DOCLING_GRAPH_LLM_MAX_TOKENS env var.
+    docling_graph_llm_max_tokens: int | None = 32000
     docling_graph_llm_timeout: int = 10800
     ollama_llm_base_url: str = "http://ollama:11434"
-    docling_graph_llm_context_limit: int | None = None
-    docling_graph_llm_max_output_tokens: int | None = None
+    # For models missing from LiteLLM's metadata registry (e.g. ollama/llama3.3:70b)
+    # the library's resolve_effective_model_config falls back to
+    # _DEFAULT_MAX_OUTPUT_TOKENS=4092, then refuses any max_tokens above that.
+    # We override explicitly so max_tokens=32000 is accepted. 131072 matches
+    # llama3.3:70b's full context length (input + output combined).
+    docling_graph_llm_context_limit: int | None = 131072
+    docling_graph_llm_max_output_tokens: int | None = 32000
 
     # Backend: "llm" or "vlm"
     docling_graph_backend: str = "llm"
@@ -97,12 +118,19 @@ def build_pipeline_config(
     source: str,
     template_class: Type[BaseModel] | None,
     pass_name: str | None = None,
+    debug_dir: str | None = None,
 ) -> Any:
     """Build a PipelineConfig from environment variables.
 
     ``pass_name`` applies per-pass quality-gate overrides (spec §4.6);
     see :data:`_QUALITY_MIN_INSTANCES_PER_PASS`. Unknown pass names
     fall back to the env-var default.
+
+    ``debug_dir`` opts into the library's debug trace: when set, the
+    library writes ``<debug_dir>/debug/delta_trace.json`` containing the
+    batch_errors, quality_gate verdict, identity_filter stats, etc. The
+    extract_pass handler reads that file back and surfaces it in the
+    response's ``diagnostics`` field.
     """
     from docling_graph import PipelineConfig
 
@@ -162,5 +190,9 @@ def build_pipeline_config(
 
     if template_class is not None:
         config_kwargs["template"] = template_class
+
+    if debug_dir is not None:
+        config_kwargs["debug"] = True
+        config_kwargs["output_dir"] = debug_dir
 
     return PipelineConfig(**config_kwargs)

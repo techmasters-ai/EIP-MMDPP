@@ -89,7 +89,7 @@ WORKER_CONTAINERS = [
 ]
 
 POLL_INTERVAL_SECONDS = 30
-DEFAULT_POLL_TIMEOUT_SECONDS = 6 * 60 * 60  # 6 hours
+DEFAULT_POLL_TIMEOUT_SECONDS = 10 * 60 * 60  # 10 hours
 
 
 # --- Logging ----------------------------------------------------------------
