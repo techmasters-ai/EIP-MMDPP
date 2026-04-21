@@ -265,6 +265,15 @@ This section documents the full logical flow inside `derive_ontology_graph` when
 | ArcadeDB schema sync from active ontology | Schema drifts from ontology definition | API startup, registry activation, active registry PUT — schema sync runs with correct ontology | 3.0 |
 | Schema sync is additive only | Schema sync removes types that still have data | Remove entity type from ontology, re-sync; type remains in ArcadeDB (data preserved) | 3.0 |
 
+### Document-structure anchors (2026-04-21)
+
+- [ ] New entity types: IMAGE, TEXT_BLOCK (in addition to existing DOCUMENT/SECTION/FIGURE/TABLE)
+- [ ] New relationships: HAS_IMAGE (DOCUMENT→IMAGE, SECTION→IMAGE), NEAR_TEXT (FIGURE/IMAGE → TEXT_BLOCK)
+- [ ] SECTION-level attribution: SECTION→FIGURE, SECTION→TABLE, SECTION→IMAGE HAS_* edges present
+- [ ] DocumentEntity.storage_key populated from Document SQL row
+- [ ] FigureEntity.storage_key + ImageEntity.storage_key are schema fields but emission is null until Artifact.self_ref migration lands (tracked separately)
+- [ ] Re-ingestion (or one-shot migration) required for legacy documents whose uncaptioned pictures are currently FIGUREs — they re-classify to IMAGE on re-ingest
+
 ---
 
 ## 3. RETRIEVAL & SEARCH
