@@ -31,6 +31,7 @@ from ontology_bundles.air_defense_v3.entities import (
     ImageEntity,
     SectionEntity,
     TableEntity,
+    TextBlockEntity,
 )
 
 if TYPE_CHECKING:
@@ -412,6 +413,43 @@ def walk(
             )
         )
 
+    # §4.3 — captions_linked: self_refs already owned by pictures/tables as captions.
+    captions_linked: set[str] = set()
+    for item in list(docling_doc.pictures) + list(docling_doc.tables):
+        caps = getattr(item, "captions", None) or []
+        for cap in caps:
+            ref = getattr(cap, "cref", None)
+            if isinstance(ref, str):
+                captions_linked.add(ref)
+
+    # §4.3 — lazy TEXT_BLOCK emission + NEAR_TEXT edge pairs.
+    text_blocks_by_ref: dict[str, TextBlockEntity] = {}
+    near_text_pairs: list[tuple] = []  # (parent_entity, text_block_entity)
+
+    # pic_entities is parallel to docling_doc.pictures (§3c) — zip is safe.
+    for pic, entity in zip(docling_doc.pictures, pic_entities, strict=True):
+        order_index = pic_to_order_index.get(pic.self_ref)
+        if order_index is None:
+            continue
+        for text_item in _neighbors(order_index, all_items_in_order, captions_linked):
+            self_ref = getattr(text_item, "self_ref", None)
+            if not isinstance(self_ref, str):
+                continue
+            tb = text_blocks_by_ref.get(self_ref)
+            if tb is None:
+                text = (getattr(text_item, "text", None) or "")[:500]
+                label = getattr(text_item, "label", None)
+                label_value = label.value if hasattr(label, "value") else (label if isinstance(label, str) else None)
+                prov_page = _first_prov_page(text_item)
+                tb = TextBlockEntity(
+                    text_ref=self_ref,
+                    text=text,
+                    label=label_value,
+                    page=prov_page,
+                )
+                text_blocks_by_ref[self_ref] = tb
+            near_text_pairs.append((entity, tb))
+
     # --- Edges -------------------------------------------------------------
     edges: list[MergedEdgeRecord] = []
 
@@ -476,14 +514,25 @@ def walk(
             pass_origins={"document_anchors"},
         ))
 
+    # §4.3 — NEAR_TEXT edges. pic_entities iteration above populated near_text_pairs.
+    for parent_entity, tb in near_text_pairs:
+        edges.append(MergedEdgeRecord(
+            from_identity=_identity(parent_entity),
+            to_identity=_identity(tb),
+            rel_type="NEAR_TEXT",
+            confidence=1.0,
+            pass_origins={"document_anchors"},
+        ))
+
     # --- MergedEntityRecord construction -----------------------------------
     entity_models: list = []
     if doc_entity is not None:
         entity_models.append(doc_entity)
     entity_models.extend(section_by_path.values())
     entity_models.extend(figures)
-    entity_models.extend(images)       # NEW — uncaptioned pictures as IMAGE entities
+    entity_models.extend(images)       # uncaptioned pictures as IMAGE entities
     entity_models.extend(tables)
+    entity_models.extend(text_blocks_by_ref.values())   # §4.3 — lazy TEXT_BLOCK neighbors
     merged_entities = [
         _to_merged_entity_record(m, ontology, document_uuid)
         for m in entity_models

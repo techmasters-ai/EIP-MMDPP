@@ -573,3 +573,61 @@ def test_is_valid_near_text_excludes_expected_labels():
     assert _is_valid_near_text(caption, captions_linked) is False
     # picture itself (not a TextItem) should be False
     assert _is_valid_near_text(pic, captions_linked) is False
+
+
+# ---------------------------------------------------------------------------
+# 3e — lazy TEXT_BLOCK emission + NEAR_TEXT edges
+# ---------------------------------------------------------------------------
+
+def test_walker_emits_text_block_entities_as_figure_neighbors():
+    """Each FIGURE gets up to 4 TextBlockEntity children via NEAR_TEXT."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="fig_neighbors")
+    doc.add_heading("Section 1", level=1)
+    doc.add_text(label="text", text="body before 1")
+    doc.add_text(label="text", text="body before 2")
+    pic = doc.add_picture(image=None, prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    cap = doc.add_text(label="caption", text="Figure 1 Thing")
+    pic.captions.append(cap.get_ref())
+    doc.add_text(label="text", text="body after 1")
+    doc.add_text(label="text", text="body after 2")
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    tbs = [e for e in merged.entities if e.identity.entity_type == "TEXT_BLOCK"]
+    # 4 neighbors — 2 before + 2 after (caption itself excluded because it's
+    # in captions_linked).
+    assert len(tbs) == 4
+    near_text_edges = [e for e in merged.edges if e.rel_type == "NEAR_TEXT"]
+    assert len(near_text_edges) == 4
+    # Every NEAR_TEXT edge points at a TEXT_BLOCK target.
+    assert all(e.to_identity.entity_type == "TEXT_BLOCK" for e in near_text_edges)
+    # From-identity is the FIGURE.
+    fig_identity = next(e.identity for e in merged.entities if e.identity.entity_type == "FIGURE")
+    assert all(e.from_identity == fig_identity for e in near_text_edges)
+
+
+def test_walker_near_text_dedup_across_pictures():
+    """A text block shared between two pictures → one TextBlockEntity,
+    two NEAR_TEXT edges (to different parents)."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="near_text_dedup")
+    doc.add_heading("Section 1", level=1)
+    # Two pictures very close together with one shared text block in between.
+    doc.add_text(label="text", text="body A")  # before pic1
+    doc.add_picture(image=None, prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    shared = doc.add_text(label="text", text="SHARED text between pics")
+    doc.add_picture(image=None, prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    doc.add_text(label="text", text="body B")  # after pic2
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    tbs = [e for e in merged.entities if e.identity.entity_type == "TEXT_BLOCK"]
+    shared_tbs = [t for t in tbs if t.identity.identity_tuple == (shared.self_ref,)]
+    assert len(shared_tbs) == 1, f"expected 1 TextBlockEntity with ref {shared.self_ref}, got {len(shared_tbs)}"
+    edges_to_shared = [e for e in merged.edges
+                       if e.rel_type == "NEAR_TEXT" and e.to_identity == shared_tbs[0].identity]
+    assert len(edges_to_shared) == 2, f"expected 2 NEAR_TEXT edges to shared text block, got {len(edges_to_shared)}"
+    # Both edges point FROM different parents.
+    from_refs = {e.from_identity for e in edges_to_shared}
+    assert len(from_refs) == 2
