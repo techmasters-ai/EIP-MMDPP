@@ -526,6 +526,8 @@ def walk(
                 pass_origins={"document_anchors"},
             ))
 
+    # --- end DOCUMENT-sourced edges; SECTION-sourced edges below (unconditional) ---
+
     # §4.5 — SECTION → FIGURE/TABLE/IMAGE attribution via pic_to_section /
     # tbl_to_section lookups built in §4.1. Unconditional on DOCUMENT.
     for pic, entity in zip(docling_doc.pictures, pic_entities, strict=True):

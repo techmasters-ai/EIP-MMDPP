@@ -4318,7 +4318,7 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
         # downstream SQL join.
         from app.models.ingest import Document
         document_row = db.query(Document).filter(Document.id == document_id).first()
-        source_storage_key = getattr(document_row, "storage_key", None) if document_row is not None else None
+        source_storage_key = document_row.storage_key if document_row is not None else None
 
         merged = _docling_anchors.walk(
             doc_json, document_id, run_id, ontology,
@@ -4366,6 +4366,12 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
         table_count = sum(
             1 for e in merged.entities if e.identity.entity_type == "TABLE"
         )
+        image_count = sum(
+            1 for e in merged.entities if e.identity.entity_type == "IMAGE"
+        )
+        text_block_count = sum(
+            1 for e in merged.entities if e.identity.entity_type == "TEXT_BLOCK"
+        )
         document_ontology_emitted = any(
             e.identity.entity_type == "DOCUMENT" for e in merged.entities
         )
@@ -4378,6 +4384,8 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
             "section_count": section_count,
             "figure_count": figure_count,
             "table_count": table_count,
+            "image_count": image_count,
+            "text_block_count": text_block_count,
             "document_ontology_emitted": document_ontology_emitted,
             "fallback_fired": fallback_fired,
             "edge_count": len(merged.edges),
@@ -4392,9 +4400,9 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
 
         logger.info(
             "derive_document_anchors: document_id=%s sections=%d figures=%d "
-            "tables=%d document_emitted=%s edges=%d",
+            "tables=%d images=%d text_blocks=%d document_emitted=%s edges=%d",
             document_id, section_count, figure_count, table_count,
-            document_ontology_emitted, len(merged.edges),
+            image_count, text_block_count, document_ontology_emitted, len(merged.edges),
         )
 
         return {"stage": "derive_document_anchors", "status": "ok", **metrics}
