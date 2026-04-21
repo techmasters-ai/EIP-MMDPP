@@ -4349,9 +4349,27 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
         ))
 
         # --- Structural edges ---------------------------------------------
+        # Guard against empty RIDs. _extract_rids pads missing upsert
+        # results with "" (arcadedb_graph.py:287-300) so a silent upsert
+        # failure on one entity would otherwise produce a malformed
+        # CREATE EDGE ... FROM {rid} TO  SET ... that ArcadeDB rejects
+        # with 500 and kills the whole task. Skip the bad edge with a
+        # warning instead so the rest of the document still lands; the
+        # underlying identity corruption (usually empty self_ref from a
+        # malformed DoclingDocument) surfaces in the log.
+        edges_skipped_empty_rid = 0
         for edge in merged.edges:
             from_rid = identity_to_rid[edge.from_identity]
             to_rid = identity_to_rid[edge.to_identity]
+            if not from_rid or not to_rid:
+                edges_skipped_empty_rid += 1
+                logger.warning(
+                    "derive_document_anchors: skipping %s edge with empty "
+                    "RID (from=%r to=%r). Source identity=%s target identity=%s.",
+                    edge.rel_type, from_rid, to_rid,
+                    edge.from_identity, edge.to_identity,
+                )
+                continue
             graph_store.create_structural_edge_sync(
                 from_rid, to_rid, edge.rel_type,
             )
@@ -4389,6 +4407,7 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
             "document_ontology_emitted": document_ontology_emitted,
             "fallback_fired": fallback_fired,
             "edge_count": len(merged.edges),
+            "edges_skipped_empty_rid": edges_skipped_empty_rid,
         }
 
         if run_id:
