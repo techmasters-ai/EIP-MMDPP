@@ -17,7 +17,7 @@ import re
 from collections import OrderedDict, defaultdict
 from typing import TYPE_CHECKING
 
-from docling_core.types.doc import DocItemLabel, DoclingDocument
+from docling_core.types.doc import DocItemLabel, DoclingDocument, PictureItem, TableItem
 
 from app.services.extraction_merge import (
     MergedEdgeRecord,
@@ -200,7 +200,6 @@ def walk(
     tbl_to_order_index: dict[str, int] = {}
     all_items_in_order: list = []
 
-    from docling_core.types.doc import PictureItem, TableItem
     for order_index, (item, tree_depth) in enumerate(docling_doc.iterate_items()):
         all_items_in_order.append(item)
         label = getattr(item, "label", None)
