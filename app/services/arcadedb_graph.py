@@ -32,6 +32,23 @@ _READY_MAX_RETRIES = 5
 _READY_BACKOFF_BASE = 0.5  # seconds
 
 
+class UpsertMissingRIDError(RuntimeError):
+    """Raised when ``upsert_nodes_batch_sync`` completes the sqlscript but
+    one or more records produce no ``@rid`` in the result.
+
+    This is a genuine server-side failure (e.g. the UPSERT's INSERT branch
+    hit a schema constraint we didn't anticipate, or the response was
+    truncated). It's distinct from the caller-side "malformed identity"
+    case, which is caught earlier by entry-validation and raises
+    ``ValueError`` instead. Surfacing the @rid gap as an exception at the
+    upsert boundary — rather than silently padding with ``""`` — prevents
+    downstream edge creation from f-stringing the blank into a
+    syntactically invalid CREATE EDGE statement (see the historical
+    fix at pipeline.py:4352-4374 that guarded the edge loop after this
+    class of bug kept reaching production).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1764,14 +1781,74 @@ class ArcadeDBGraphStore:
         records: list[NodeRecord],
         provenance: ProvenanceMetadata | None = None,
     ) -> list[str]:
-        """Upsert a batch of nodes in one sqlscript call. Returns their RIDs."""
+        """Upsert a batch of nodes in one sqlscript call. Returns their RIDs.
+
+        Raises:
+            ValueError: if any record's ``identity_fields`` contains a
+                ``None`` or empty-string value. Catches malformed identity
+                at the ingestion boundary (where the fix is obvious) rather
+                than letting it propagate into ArcadeDB which returns a
+                blank ``@rid`` that then corrupts downstream CREATE EDGE
+                statements.
+            UpsertMissingRIDError: if the sqlscript completes but one or
+                more records have no ``@rid`` in the result. Distinct from
+                the caller-side "malformed identity" case caught above —
+                this fires for genuine server-side failures (schema drift,
+                truncated response, etc.) that used to be silently masked
+                by ``_extract_rids`` padding with ``""``.
+        """
         if not records:
             return []
+
+        # --- Entry validation: reject records with malformed identity ---
+        # None or empty-string values in identity_fields break the UPSERT's
+        # WHERE clause — the MATCH misses every row so the INSERT branch
+        # fires but may return no @rid, or inserts with a useless
+        # zero-identity that will never be looked up again. Refuse at the
+        # boundary with a message that points at the offending record.
+        for i, rec in enumerate(records):
+            bad = [
+                k for k, v in rec.identity_fields.items()
+                if v is None or (isinstance(v, str) and not v)
+            ]
+            if bad:
+                raise ValueError(
+                    f"upsert_nodes_batch_sync: record index {i} "
+                    f"(entity_type={rec.entity_type!r}, name={rec.name!r}) "
+                    f"has empty / None identity field(s) {bad}. Full "
+                    f"identity_fields={rec.identity_fields!r}. Reject at "
+                    f"upsert boundary instead of corrupting the graph."
+                )
+
         script, params = _build_upsert_node_script(records)
         result = self._client.command_sync(
             self._database, "sqlscript", script, params,
         )
         rids = _extract_rids(result, len(records))
+
+        # --- Server-side sanity: every record must come back with a @rid ---
+        # After entry validation, any still-blank RID is a genuine server
+        # issue. Raise loud instead of letting "" propagate — downstream
+        # edge emission would turn the blank into invalid SQL.
+        missing = [
+            i for i, rid in enumerate(rids) if not rid
+        ]
+        if missing:
+            missing_detail = [
+                {
+                    "index": i,
+                    "entity_type": records[i].entity_type,
+                    "name": records[i].name,
+                    "identity_fields": records[i].identity_fields,
+                }
+                for i in missing
+            ]
+            raise UpsertMissingRIDError(
+                f"upsert_nodes_batch_sync: {len(missing)}/{len(records)} "
+                f"records returned no @rid despite valid identity input. "
+                f"Missing: {missing_detail}"
+            )
+
         if provenance:
             self._create_provenance_edges_batch_sync(rids, provenance)
         return rids

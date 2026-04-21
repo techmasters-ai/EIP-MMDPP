@@ -857,3 +857,80 @@ class TestCountOntologyNodesSync:
         store = _graph(client)
 
         assert store.count_ontology_nodes_sync("FIGURE") == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: upsert_nodes_batch_sync validates identity + surfaces server-side gaps
+# ---------------------------------------------------------------------------
+
+class TestUpsertNodesBatchSyncIdentityValidation:
+    """Catches the class of bug where malformed identity silently produced
+    an empty @rid that later corrupted CREATE EDGE SQL (see b0e6f30).
+    """
+
+    def test_valid_batch_returns_all_rids(self):
+        """Happy path — every record has a proper identity; every returned
+        RID is a non-empty string."""
+        client = _make_client(
+            command_sync_result=[{"@rid": "#1:0"}, {"@rid": "#1:1"}],
+        )
+        store = _graph(client)
+        batch = [
+            _node_record(identity_fields={"system_name": "A", "document_id": "d"}),
+            _node_record(identity_fields={"system_name": "B", "document_id": "d"}),
+        ]
+        rids = store.upsert_nodes_batch_sync(batch)
+        assert rids == ["#1:0", "#1:1"]
+
+    def test_empty_string_identity_raises_valueerror(self):
+        """Record whose identity_fields contains an empty string must raise
+        ValueError at entry — no ArcadeDB call at all."""
+        client = _make_client()
+        store = _graph(client)
+        batch = [
+            _node_record(identity_fields={"system_name": "GOOD", "document_id": "d"}),
+            _node_record(identity_fields={"image_ref": "", "document_id": "d"},
+                         entity_type="IMAGE", name="bad-image"),
+        ]
+        with pytest.raises(ValueError, match="index 1"):
+            store.upsert_nodes_batch_sync(batch)
+        client.command_sync.assert_not_called()
+
+    def test_none_identity_raises_valueerror(self):
+        """Record whose identity_fields contains None must raise ValueError."""
+        client = _make_client()
+        store = _graph(client)
+        batch = [
+            _node_record(identity_fields={"image_ref": None, "document_id": "d"},
+                         entity_type="IMAGE", name="none-id-image"),
+        ]
+        with pytest.raises(ValueError, match="image_ref"):
+            store.upsert_nodes_batch_sync(batch)
+        client.command_sync.assert_not_called()
+
+    def test_missing_rid_after_valid_input_raises_upsert_missing_rid_error(self):
+        """If ArcadeDB's sqlscript returns fewer rows than records
+        (server-side failure after entry validation passed), raise
+        UpsertMissingRIDError naming the missing indices — do NOT silently
+        pad with ''."""
+        from app.services.arcadedb_graph import UpsertMissingRIDError
+        # Build client directly: _make_client's `or` check treats an
+        # empty list as falsy and substitutes a default, which is exactly
+        # the state we're trying to simulate against.
+        client = MagicMock()
+        client.command_sync = MagicMock(return_value=[])
+        client.query_sync = MagicMock(return_value=[])
+        store = _graph(client)
+        batch = [
+            _node_record(identity_fields={"system_name": "X", "document_id": "d"}),
+        ]
+        with pytest.raises(UpsertMissingRIDError, match="1/1 records"):
+            store.upsert_nodes_batch_sync(batch)
+
+    def test_empty_batch_returns_empty_list(self):
+        """Edge case: empty batch is a no-op that returns [] without
+        calling ArcadeDB."""
+        client = _make_client()
+        store = _graph(client)
+        assert store.upsert_nodes_batch_sync([]) == []
+        client.command_sync.assert_not_called()
