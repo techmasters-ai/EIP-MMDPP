@@ -396,6 +396,62 @@ def run_extraction_pass(
     import tempfile
     from docling_graph import run_pipeline
 
+    # --- Empty-source short-circuit --------------------------------------
+    # If the DoclingDocument has no body content AND no registered items
+    # (texts / pictures / tables), the library's LlmBackend fails fast with
+    # "Markdown is empty for DoclingDocument. Cannot proceed." and bubbles a
+    # 500. That thrashes the worker's retry loop for true-negative cases
+    # (image-only inputs Docling didn't decompose — see the Docling service's
+    # synthetic-picture fallback). Return a clean empty response instead.
+    def _is_empty(doc: dict) -> bool:
+        body_children = (doc.get("body") or {}).get("children") or []
+        return (
+            not body_children
+            and not doc.get("texts")
+            and not doc.get("pictures")
+            and not doc.get("tables")
+        )
+
+    if _is_empty(docling_document_json):
+        logger.warning(
+            "extract-pass short-circuit: DoclingDocument has no extractable content "
+            "(body.children/texts/pictures/tables all empty). Returning empty pass_output "
+            "with diagnostic marker instead of calling run_pipeline."
+        )
+        import networkx as _nx
+
+        class _EmptySourceContext:
+            template_instance = None
+            extracted_models: list = []
+            knowledge_graph = _nx.DiGraph()
+
+            class _Meta:
+                node_count = 0
+                edge_count = 0
+                node_types: dict = {}
+                edge_types: dict = {}
+
+            graph_metadata = _Meta()
+
+        ctx = _EmptySourceContext()
+        ctx._upstream_preamble_applied = False  # no chance to apply — source was empty
+        ctx._delta_trace = {
+            "empty_source": True,
+            "reason": "docling_document_has_no_extractable_content",
+            "body_children": 0,
+            "texts": 0,
+            "pictures": 0,
+            "tables": 0,
+            "suggestion": (
+                "Upstream Docling conversion produced an empty body. Image-only "
+                "inputs that the PDF pipeline didn't decompose are the typical "
+                "cause; see docker/docling/app/converter.py synthetic-picture "
+                "fallback and TODO #29 for VLM routing."
+            ),
+        }
+        return ctx
+    # ----------------------------------------------------------------------
+
     # --- Path B injection -------------------------------------------------
     preamble = _render_upstream_entities_preamble(upstream_entities)
     preamble_applied = False
