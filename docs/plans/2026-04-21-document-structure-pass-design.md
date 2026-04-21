@@ -41,7 +41,7 @@ What the current walker **does not do** (gaps this design closes):
 3. Records any surrounding-text context for figures / tables / images — downstream retrieval has no graph path from an image to the paragraphs that reference it.
 4. Populates `storage_key` on DOCUMENT or FIGURE, so downstream graph→MinIO retrieval requires a SQL join.
 
-Additionally, the review surfaced an ontology-consistency gap: **neither the `RelationshipType` enum nor `VALIDATION_MATRIX` currently carries HAS_SECTION / HAS_FIGURE / HAS_TABLE / CHILD_OF**, even though the walker emits them. This is *not* causing runtime drops — `derive_document_anchors` at `pipeline.py:4316-4347` writes anchor edges directly via `create_structural_edge_sync` and does **not** consult the ontology relationship-validation path (pipeline.py:4277-4278 docstring says so explicitly). So the existing system works today because it skips validation, not because the matrix is right. We still add the missing enum members + matrix triples in this change so that ontology introspection, parity tests, query profiles, and any future consumer that *does* read the matrix agree with reality. This is ontology hygiene, not a runtime bug fix.
+Additionally, the review surfaced an ontology-consistency gap: **neither the `RelationshipType` enum nor `VALIDATION_MATRIX` currently carries HAS_SECTION / HAS_FIGURE / HAS_TABLE / CHILD_OF**, even though the walker emits them. This is *not* causing runtime drops — `derive_document_anchors` at `pipeline.py:4316-4347` writes anchor edges directly via `create_structural_edge_sync` and does **not** consult the ontology relationship-validation path (pipeline.py:4277-4278 docstring says so explicitly). So the existing system works today because it skips validation, not because the matrix is right. We still add the missing enum members + matrix triples in this change so that ontology introspection, `app/services/query_profiles.py` (which reads `validation_matrix` into its profile), and any future consumer that *does* read the matrix agree with reality. This is ontology hygiene, not a runtime bug fix. (The old `test_relationships_parity.py` / `test_validation_matrix_parity.py` tests were deleted in commit `78c7d51` — no parity layer to keep in sync anymore.)
 
 ## Goal
 
@@ -300,8 +300,8 @@ for pic in docling_doc.pictures:
 
 `_classify_image_role(pic, docling_doc)` heuristics (page geometry comes from `docling_doc.pages[page_no].size`, which is `docling_core.types.doc.Size(width, height)` in pixels or points depending on the source; Docling normalizes this to the page's native coordinate system):
 - `page_no = _first_prov_page(pic); bbox = _first_prov_bbox(pic)`
-- Compute `page_area = pages[page_no].size.width * pages[page_no].size.height` if the page exists in `docling_doc.pages`.
-- Rule 1 — `page_no == 1` AND `bbox.t < page_area.height / 2` AND `(bbox.r - bbox.l) * (bbox.b - bbox.t) / page_area < 0.10` → `HEADER_LOGO`.
+- If `page_no` exists in `docling_doc.pages`: `page_width = docling_doc.pages[page_no].size.width; page_height = docling_doc.pages[page_no].size.height; page_area = page_width * page_height`.
+- Rule 1 — `page_no == 1` AND `bbox.t < page_height / 2` AND `(bbox.r - bbox.l) * (bbox.b - bbox.t) / page_area < 0.10` → `HEADER_LOGO`.
 - Rule 2 — has any caption text but caption doesn't start with "Figure" / "Fig" → `UNCAPTIONED_FIGURE`.
 - Rule 3 — otherwise → `INLINE_IMAGE`.
 
@@ -450,7 +450,7 @@ Walker is deterministic. Error surface is limited to parser edge cases.
 | Zero pictures / zero tables | Walker emits DOCUMENT (if designator found) + SECTIONs. No FIGUREs, IMAGEs, or TEXT_BLOCKs. Unchanged existing behavior, extended here. |
 | Picture with no `self_ref` | Log WARNING, skip. Shouldn't happen in Docling output; defensive. |
 | Picture's reading-order neighbors are all section headers / other pictures | Zero TextBlockEntity children for that picture. NEAR_TEXT edges simply not emitted. |
-| `storage_keys` kwarg not provided | `storage_key` null on every entity. |
+| `source_storage_key` kwarg not provided | `DocumentEntity.storage_key` null. (FIGURE / IMAGE.storage_key is always null in this change regardless.) |
 | Picture emitted BEFORE any section header (document has headings later) | **Lazy-seed a synthetic section_number="0"** on first pre-heading anchored-content encounter. Existing fallback at `docling_anchors.py:210-216` only fires when the document has *zero* headings total — not when the first heading appears later. Without lazy seeding, `section_by_path.get(())` returns None and the proposed SECTION→* attribution silently drops the edge. See §4.2a for the code change. |
 | Pydantic validation of any emitted model fails | The walker raises — caught by the Celery task wrapper at `pipeline.py:4316` and routed to FAILED stage_run. Indicates a walker bug, not a runtime condition. |
 
@@ -524,7 +524,7 @@ Per memory `feedback_post_code_workflow.md`:
 |---|---|
 | `ontology_bundles/air_defense_v3/entities.py` | Add `ImageEntity`, `TextBlockEntity`. Register both in `ALL_ENTITIES` at line 1285-1330 (required — not optional; `model_rebuild()` + introspection loops depend on it). Add `storage_key: Optional[str] = None` to `DocumentEntity` + `FigureEntity`. |
 | `ontology_bundles/air_defense_v3/relationships.py` | Add **six** enum members (HAS_SECTION, HAS_FIGURE, HAS_TABLE, CHILD_OF, HAS_IMAGE, NEAR_TEXT) and matching descriptors to `_STATIC_RELATIONSHIP_METADATA` at line 128. `RELATIONSHIP_METADATA` (line 208) is derived automatically. |
-| `ontology_bundles/air_defense_v3/validation_matrix.py` | Add 10 triples (see §3). Not runtime-load-bearing for anchor edges today (they go direct via `create_structural_edge_sync`), but required for ontology consistency + parity tests + any query-profile consumer. |
+| `ontology_bundles/air_defense_v3/validation_matrix.py` | Add 10 triples (see §3). Not runtime-load-bearing for anchor edges today (they go direct via `create_structural_edge_sync`), but required for ontology consistency + `query_profiles.py` + any future consumer that reads the matrix. |
 | `app/services/docling_anchors.py` | §4 walker extensions: lazy-seed synthetic root section when pre-heading anchored content appears; split FIGURE vs IMAGE; attribute pictures/tables to enclosing section; lazily emit TEXT_BLOCK neighbors; NEAR_TEXT edges; `source_storage_key` kwarg populates DocumentEntity.storage_key. No `picture_storage_keys` kwarg — deferred. |
 | `app/workers/pipeline.py:4316` | Pass `source_storage_key=document.storage_key` from the Document SQL row. |
 | `tests/unit/test_docling_anchor_walker.py` | Extend with §7 unit tests for IMAGE / TEXT_BLOCK / NEAR_TEXT / section attribution / lazy-seed / interleaved-picture regression. |
@@ -532,9 +532,9 @@ Per memory `feedback_post_code_workflow.md`:
 | `tests/fixtures/docling_anchors/*.json` | Reuse existing four fixtures where possible. Add one new fixture if needed for interleaved captioned/uncaptioned pictures or pre-heading anchored content. |
 | `VERIFICATION_CHECKLIST.md` | New entity + relationship entries, migration note. |
 
-## 9. What v2.2 drops vs v1
+## 9. What v2.3 drops vs v1
 
-| v1 (invalid) | v2.2 (this doc) |
+| v1 (invalid) | v2.3 (this doc) |
 |---|---|
 | New `/extract-structure` endpoint on docling-graph | None — existing walker |
 | New manifest field `extraction_method: structural` | None |
