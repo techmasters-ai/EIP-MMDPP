@@ -430,6 +430,29 @@ This section documents the full logical flow inside `derive_ontology_graph` when
 
 ---
 
+## 11. NOTEBOOKS
+
+Both notebooks use **dynamic introspection** — they iterate `load_ontology()` / `ontology_bundles.air_defense_v3.entities.ALL_ENTITIES` / `RelationshipType` enum members rather than hardcoded type lists. No cell modifications are required when entity types or relationship types are added to the ontology.
+
+| Notebook | Status | Notes |
+|---|---|---|
+| `notebooks/ingest_walkthrough.ipynb` | Dynamic — no hardcoded type lists | Reload from disk in JupyterLab + restart kernel after pulling new entity/rel types; stale executed outputs are cleared on cells that changed |
+| `notebooks/raw_libraries_walkthrough.ipynb` | Dynamic — no hardcoded type lists; no inline walker replica | Re-run to pick up new walker output; §10 documents what's out-of-scope vs. the full pipeline |
+
+### Task 6 additions (2026-04-21)
+
+- [x] `ingest_walkthrough.ipynb` — stale outputs from cell `edadcd2a` (ontology summary) cleared; outputs showed 44 entity types / 50 relationship types from a pre-IMAGE/TEXT_BLOCK run.
+- [x] `ingest_walkthrough.ipynb` — §8 "Anchor walker" markdown cell + `derive_document_anchors.apply()` cell added at the end; shows SECTION / FIGURE / TABLE / IMAGE / TEXT_BLOCK counts and HAS_IMAGE / NEAR_TEXT edge counts for the current document.
+- [x] `raw_libraries_walkthrough.ipynb` — no code changes required (dynamic introspection, no inline walker replica).
+
+### After ontology schema changes
+
+1. Reload both notebooks from disk in JupyterLab (`File → Reload Notebook from Disk`).
+2. Restart the kernel.
+3. Run all cells top-to-bottom; the ontology summary cell in `ingest_walkthrough` will reflect the current counts automatically.
+
+---
+
 ## KNOWN FRAGILE FEATURES (Historically Broken)
 
 These features have broken before and should be tested carefully after any change:
