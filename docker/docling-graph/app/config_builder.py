@@ -24,13 +24,13 @@ class DoclingGraphSettings(BaseSettings):
     )
 
     # LLM provider and model.
-    # llama3.1:8b per docs §Extraction Backends → Ollama canonical example.
+    # llama3.3:70b — larger-context local model, better recall than llama3.1:8b
     # The original default (granite3-dense:8b) isn't referenced in the docs;
     # the env-override value (llama3.3:70b) was stalling Ollama's constrained
     # decoder on our 14KB json_schema — 70B models are more prone to
     # indefinite spins on strict structured output than 8B-class models.
     docling_graph_llm_provider: str = "ollama"
-    docling_graph_llm_model: str = "llama3.1:8b"
+    docling_graph_llm_model: str = "llama3.3:70b"
     docling_graph_extraction_contract: str = "delta"
     docling_graph_processing_mode: str = "many-to-one"
 
@@ -87,13 +87,10 @@ class DoclingGraphSettings(BaseSettings):
     # at 0.0 returned empty JSON). A small amount of variance is needed for the
     # model to explore valid completions under the structured-output constraint.
     docling_graph_llm_temperature: float = 0.1
-    # 4000 fits within llama3.1:8b's 4092-token output ceiling and within
-    # llama3.3:70b's similar ~4k limit; both are our supported LLM defaults.
-    # Previously 64000 for gpt-oss:120b; flipping the model default without
-    # this tracked downward caused ConfigurationError at extractor init.
-    # Override via DOCLING_GRAPH_LLM_MAX_TOKENS for models with higher
-    # per-call output ceilings (e.g. gpt-oss:120b can handle 64000+).
-    docling_graph_llm_max_tokens: int | None = 4000
+    # 32000 fits llama3.3:70b's output ceiling. Drop to 4000 for
+    # llama3.1:8b (4092 cap) or raise to 64000+ for gpt-oss:120b via
+    # the DOCLING_GRAPH_LLM_MAX_TOKENS env var.
+    docling_graph_llm_max_tokens: int | None = 32000
     docling_graph_llm_timeout: int = 10800
     ollama_llm_base_url: str = "http://ollama:11434"
     docling_graph_llm_context_limit: int | None = None

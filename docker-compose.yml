@@ -152,9 +152,9 @@ services:
       # config_builder.py reads DOCLING_GRAPH_* prefixed env vars via pydantic-settings
       DOCLING_GRAPH_LLM_PROVIDER: ${DOCLING_GRAPH_LLM_PROVIDER:-ollama}
       DOCLING_GRAPH_LLM_MODEL: ${DOCLING_GRAPH_LLM_MODEL:-gpt-oss:120b}
-      # 4000 fits llama3.1:8b (4092) and llama3.3:70b (~4000). Raise to
-      # 64000+ when switching the LLM back to gpt-oss:120b or similar.
-      DOCLING_GRAPH_LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4000}
+      # 32000 fits llama3.3:70b. Drop to 4000 for llama3.1:8b (4092 cap)
+      # or raise to 64000+ for gpt-oss:120b.
+      DOCLING_GRAPH_LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-32000}
       DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-10800}
       # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
       DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
