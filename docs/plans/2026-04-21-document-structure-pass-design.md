@@ -1,11 +1,24 @@
-# Document Structure Extraction — Design (v2, scope-corrected)
+# Document Structure Extraction — Design (v2.2)
 
 **Date:** 2026-04-21
 **Branch target:** `feat/pydantic-ontology-ssot` (or follow-on feature branch)
 **Bundle:** `air_defense_v3`
-**Task IDs:** #1 (architecture), #2 (schemas), #3 (walker), #4 (TextBlockEntity + NEAR_TEXT), #5 (tests) — retargeted per this rewrite.
+**Task IDs:** #1 (relationships + matrix), #2 (schemas), #3 (walker), #5 (tests), #6 (notebooks).
 
-## Scope correction (why v2 exists)
+## Revision history
+
+- **v1** — proposed a new LLM-backed pass. Invalidated: `app/services/docling_anchors.py` already does structural extraction.
+- **v2** — rescoped to "extend docling_anchors". Blockers: CHILD_OF missing from enum; storage_key per-picture plumbing underspecified.
+- **v2.1** — added CHILD_OF enum requirement + split storage_key story.
+- **v2.2 (this version)** — review caught five more issues:
+  1. HAS_SECTION / HAS_FIGURE / HAS_TABLE are *also* missing from the enum (not just CHILD_OF).
+  2. Metadata list is `_STATIC_RELATIONSHIP_METADATA` + derived `RELATIONSHIP_METADATA`, not "RELATIONSHIPS list".
+  3. Pre-heading picture fallback is broken today (only fires when doc has zero headings) — needs lazy-seed of synthetic root section.
+  4. walk() signature change was self-contradictory — v2.1 said "unchanged" then added two kwargs. Scope narrowed to one kwarg (`source_storage_key`).
+  5. ALL_ENTITIES registry update is required, not optional.
+  6. validation_matrix additions are ontology-consistency, not a runtime unblock (anchor edges skip the matrix today via `create_structural_edge_sync`).
+
+## Scope correction (why this isn't a new pass)
 
 The v1 of this design proposed a **new** extraction pass for document structure. An independent spec review caught that this duplicates existing infrastructure: `app/services/docling_anchors.py` already walks the DoclingDocument and emits DOCUMENT / SECTION / FIGURE / TABLE entities deterministically, wired into the Celery pipeline at `app/workers/pipeline.py:1681, 1818, 4261-4316` as the `derive_document_anchors` task. The existing walker's docstring says "Replaces the LLM reference pass (deleted in C-1)" — the B-decision from our conversation was already made and shipped.
 
@@ -27,7 +40,7 @@ What the current walker **does not do** (gaps this design closes):
 3. Records any surrounding-text context for figures / tables / images — downstream retrieval has no graph path from an image to the paragraphs that reference it.
 4. Populates `storage_key` on DOCUMENT or FIGURE, so downstream graph→MinIO retrieval requires a SQL join.
 
-Additionally, the review surfaced an existing issue the walker depends on: **`validation_matrix.py` does not contain HAS_SECTION, HAS_FIGURE, HAS_TABLE, or CHILD_OF triples**, even though the walker emits them. This is either a silent bug (edges rejected as INVALID_TRIPLE) or there's an anchor-edges-bypass path. Either way, the triples need to be present in lockstep with any new relationship additions in this change, so we fix it here.
+Additionally, the review surfaced an ontology-consistency gap: **neither the `RelationshipType` enum nor `VALIDATION_MATRIX` currently carries HAS_SECTION / HAS_FIGURE / HAS_TABLE / CHILD_OF**, even though the walker emits them. This is *not* causing runtime drops — `derive_document_anchors` at `pipeline.py:4316-4347` writes anchor edges directly via `create_structural_edge_sync` and does **not** consult the ontology relationship-validation path (pipeline.py:4277-4278 docstring says so explicitly). So the existing system works today because it skips validation, not because the matrix is right. We still add the missing enum members + matrix triples in this change so that ontology introspection, parity tests, query profiles, and any future consumer that *does* read the matrix agree with reality. This is ontology hygiene, not a runtime bug fix.
 
 ## Goal
 
@@ -50,7 +63,7 @@ Out of scope (follow-on change, not this one):
 
 **Everything runs inside the existing `derive_document_anchors` Celery task.** No new endpoint on docling-graph, no new manifest pass, no worker routing changes. The carrier is `app/services/docling_anchors.py::walk()`, which is called once per document at pipeline.py:4316 and returns a `MergedExtraction` that the merger consumes.
 
-We extend `walk()` with additional emission branches and new edge records. The function signature is unchanged.
+We extend `walk()` with additional emission branches and new edge records. The signature gains **one** new keyword argument: `source_storage_key: str | None = None` (see §4.4). No per-picture storage plumbing in this change.
 
 **Why not a new endpoint / pass**: the structural extraction is already fully deterministic, already wired, already runs on every document. Adding a parallel path would duplicate work and race the existing one. The review was right; v1 was wrong.
 
@@ -110,32 +123,53 @@ class TextBlockEntity(BaseModel):
 
 Review flagged that the SECTION fallback path (`section_number="#/texts/237"`) could look like a TEXT_BLOCK ref. In this walker, SECTION `section_number` is **synthetic** (auto-incrementing "1", "1.1"), not heading-derived, so the collision case doesn't arise. Even if it did, `LogicalIdentity` is keyed on `entity_type` first — SECTION and TEXT_BLOCK entities with equal string identities would still be distinct graph vertices. No change needed.
 
+### ALL_ENTITIES registry update (required, not optional)
+
+`ontology_bundles/air_defense_v3/entities.py:1285-1330` has an `ALL_ENTITIES: dict[str, type[BaseModel]]` registry keyed by `ontology_name`. Lines 1333-1334 then loop `for _cls in ALL_ENTITIES.values(): _cls.model_rebuild()` to resolve Pydantic forward references. Introspection consumers (ontology-introspect scripts, the bundle loader, schema-emission code) all read this registry.
+
+**Required additions** (unconditional — the spec earlier hedged with "if present"; the file makes it unambiguous):
+
+```python
+ALL_ENTITIES: dict[str, type[BaseModel]] = {
+    ...
+    "IMAGE": ImageEntity,
+    "TEXT_BLOCK": TextBlockEntity,
+    ...
+}
+```
+
+Both new entity classes must appear there, or `model_rebuild()` won't run for them and any parity / introspection test that enumerates the registry will miss them.
+
 ### What does NOT change
 
 - `ontology_bundles/air_defense_v3/extraction_schemas/` — no new file. This work is not a new LLM pass.
 - `manifest.yaml` — unchanged. No new pass entry, no `extraction_method` flag.
-- The existing `SectionEntity`, `FigureEntity`, `TableEntity`, `DocumentEntity` shapes — apart from the two new `storage_key` fields above.
+- The existing `SectionEntity`, `FigureEntity`, `TableEntity`, `DocumentEntity` shapes — apart from the new `storage_key` field on DocumentEntity + FigureEntity (§2).
 
 ## 3. Relationships and validation matrix
 
 ### Additions to `ontology_bundles/air_defense_v3/relationships.py`
 
-Add three members to `RelationshipType`:
+Add **six** members to `RelationshipType` (`ontology_bundles/air_defense_v3/relationships.py:20-76`). The v2.1 spec under-counted: the walker emits HAS_SECTION, HAS_FIGURE, HAS_TABLE, and CHILD_OF as raw strings today, and *none* of the four is in the enum. Adding the new IMAGE / TEXT_BLOCK relations without also adding the anchor relations means the `RelationshipType.HAS_SECTION` (etc.) references in the new VALIDATION_MATRIX triples would `AttributeError` at import.
 
 ```python
-CHILD_OF  = "CHILD_OF"    # missing today — walker emits as raw string at docling_anchors.py:295
-HAS_IMAGE = "HAS_IMAGE"
-NEAR_TEXT = "NEAR_TEXT"
+HAS_SECTION = "HAS_SECTION"   # missing today — walker emits as raw string
+HAS_FIGURE  = "HAS_FIGURE"    # missing today — walker emits as raw string
+HAS_TABLE   = "HAS_TABLE"     # missing today — walker emits as raw string
+CHILD_OF    = "CHILD_OF"      # missing today — walker emits as raw string at docling_anchors.py:295
+HAS_IMAGE   = "HAS_IMAGE"     # new in this change
+NEAR_TEXT   = "NEAR_TEXT"     # new in this change
 ```
 
-`CHILD_OF` is in use by the walker today (`rel_type="CHILD_OF"` raw string) but absent from the enum, which is why `RelationshipType.CHILD_OF` would `AttributeError` at import if we added the validation_matrix triple below without adding the enum member first. This is the same lockstep bug-fix pattern as the missing validation_matrix triples.
-
-Add corresponding descriptor dicts to the `RELATIONSHIPS` list (matching the HAS_FIGURE / HAS_TABLE style):
+Add matching descriptor dicts to **`_STATIC_RELATIONSHIP_METADATA`** at `relationships.py:128` (not "RELATIONSHIPS list" — that name was wrong in v2.1). The metadata surfaces built from `_STATIC_RELATIONSHIP_METADATA` are `RelationshipMetadata` (class, line 82) and `RELATIONSHIP_METADATA` (dict, line 208, derived from the static list at build time). Adding descriptor dicts to `_STATIC_RELATIONSHIP_METADATA` automatically propagates to `RELATIONSHIP_METADATA`.
 
 ```python
-{"name": "CHILD_OF",  "label": "Child Of",  "description": "Hierarchical containment (e.g. sub-section within parent section)", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
-{"name": "HAS_IMAGE", "label": "Has Image", "description": "Document or section contains an uncaptioned image or embedded picture", "source_type": None, "target_type": "IMAGE", "cardinality": "one_to_many"},
-{"name": "NEAR_TEXT", "label": "Near Text", "description": "Figure or image appears near a text block in reading order", "source_type": None, "target_type": "TEXT_BLOCK", "cardinality": "one_to_many"},
+{"name": "HAS_SECTION","label": "Has Section","description": "Document or parent contains a section", "source_type": None, "target_type": "SECTION", "cardinality": "one_to_many"},
+{"name": "HAS_FIGURE", "label": "Has Figure", "description": "Document or section contains a captioned figure", "source_type": None, "target_type": "FIGURE", "cardinality": "one_to_many"},
+{"name": "HAS_TABLE",  "label": "Has Table",  "description": "Document or section contains a table", "source_type": None, "target_type": "TABLE", "cardinality": "one_to_many"},
+{"name": "CHILD_OF",   "label": "Child Of",   "description": "Hierarchical containment (e.g. sub-section within parent section)", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
+{"name": "HAS_IMAGE",  "label": "Has Image",  "description": "Document or section contains an uncaptioned image or embedded picture", "source_type": None, "target_type": "IMAGE", "cardinality": "one_to_many"},
+{"name": "NEAR_TEXT",  "label": "Near Text",  "description": "Figure or image appears near a text block in reading order", "source_type": None, "target_type": "TEXT_BLOCK", "cardinality": "one_to_many"},
 ```
 
 ### Additions to `ontology_bundles/air_defense_v3/validation_matrix.py`
@@ -192,6 +226,32 @@ for order_index, (item, tree_depth) in enumerate(docling_doc.iterate_items()):
 ```
 
 Lookup `section_by_path[pic_to_section[pic.self_ref]]` to get the enclosing `SectionEntity`. Empty tuple (picture appeared before any heading) falls back to the synthetic section_number="0" SectionEntity already created at line 212.
+
+### 4.1a Lazy-seed synthetic root section for pre-heading anchored content
+
+The existing fallback at `docling_anchors.py:210-216` only creates the synthetic `section_number="0"` SectionEntity when the document has *zero* headings. In a document that has headings later, a picture/table appearing before the first heading leaves `path_tuple = ()` and `section_by_path.get(())` returns `None` — the proposed SECTION→FIGURE/TABLE/IMAGE edges would be silently dropped.
+
+Fix: during the section-stack tracking in §4.1, when a picture or table is encountered with an empty `section_stack`, lazily seed the synthetic root SectionEntity once:
+
+```python
+def _ensure_root_section() -> None:
+    """Seed the synthetic section_number='0' SectionEntity if we see
+    anchored content before any real heading. Idempotent."""
+    if () not in section_by_path:
+        section_by_path[()] = SectionEntity(
+            section_number="0",
+            heading=None,
+            section_path=None,
+        )
+
+for order_index, (item, tree_depth) in enumerate(docling_doc.iterate_items()):
+    # ... existing section_stack logic ...
+    if isinstance(item, (PictureItem, TableItem)) and not section_stack:
+        _ensure_root_section()
+    # ... record pic_to_section / tbl_to_section as before ...
+```
+
+The existing all-headings-absent fallback at lines 210-216 can then either stay as-is (redundant but harmless) or be deleted since `_ensure_root_section` will cover that case when the first picture/table is seen. Prefer deletion to keep the walker lean. Include that deletion in the task description.
 
 ### 4.2 Split pictures into FIGURE vs IMAGE
 
@@ -278,9 +338,9 @@ for pic, fig_or_img_entity in zip(docling_doc.pictures, figures + images):
 
 Same is **not** applied to tables in this change — scope creep avoided. TABLE near-text can be a follow-on.
 
-### 4.4 `storage_key` resolution — two distinct sources
+### 4.4 `storage_key` — DocumentEntity only in this change
 
-**DocumentEntity.storage_key** — trivial. The `Document` SQL row already has a `storage_key` column (`app/models/ingest.py:58-59`) for the source file in MinIO. Pass it into `walk()` as a simple kwarg:
+**DocumentEntity.storage_key** — trivial. The `Document` SQL row already has a `storage_key` column (`app/models/ingest.py:58-59`) for the source file in MinIO. Add one kwarg to `walk()`:
 
 ```python
 def walk(
@@ -290,17 +350,14 @@ def walk(
     ontology: dict,
     *,
     source_storage_key: str | None = None,   # NEW — populates DocumentEntity.storage_key
-    picture_storage_keys: dict[str, str] | None = None,  # NEW — self_ref → MinIO key, deferred
 ) -> MergedExtraction:
 ```
 
 Call-site at `pipeline.py:4316` reads the Document row (already in scope from `derive_document_anchors`) and passes `source_storage_key=document.storage_key`.
 
-**FigureEntity.storage_key / ImageEntity.storage_key** — deferred. Per-picture MinIO keys live on the `Artifact` table (`app/models/ingest.py:117`), not on `Document`. But `Artifact` is keyed by `document_id + bounding_box + page_number`, not by `doc.pictures[i].self_ref` — there's no direct lookup. Building the `self_ref → MinIO key` map requires either:
-- (a) adding a `self_ref: str` column to `Artifact` and populating it at artifact-creation time, or
-- (b) building a fuzzy matcher on bounding_box + page, which is fragile.
+**FigureEntity.storage_key / ImageEntity.storage_key — fields defined, emission deferred.** Per-picture MinIO keys live on the `Artifact` table (`app/models/ingest.py:117`), keyed by `document_id + bounding_box + page_number` — no `self_ref` column. Building a `self_ref → MinIO key` map requires either a DB migration (add `Artifact.self_ref`, populate at artifact-creation) or a fragile bbox fuzzy match. That's scope creep for this change.
 
-**Decision for this change:** DocumentEntity.storage_key lands; FigureEntity.storage_key + ImageEntity.storage_key fields are defined on the models (so the schema is future-compatible) but left `None` at emission time. Path (a) is a separate small change that can follow — it needs a DB migration + artifact-creation patch, which is scope creep here. The `picture_storage_keys` kwarg in the walker signature stays in for forward compatibility but receives `None` in v1 of the implementation.
+**Decision:** FigureEntity.storage_key + ImageEntity.storage_key fields stay on the models (schema is forward-compatible) but are always populated `None` in this change. No `picture_storage_keys` kwarg on `walk()`, no asset-map plumbing, no tests for picture storage resolution. Follow-on change adds `Artifact.self_ref` + the kwarg + its tests together.
 
 ### 4.5 Edge additions
 
@@ -371,7 +428,7 @@ Walker is deterministic. Error surface is limited to parser edge cases.
 | Picture with no `self_ref` | Log WARNING, skip. Shouldn't happen in Docling output; defensive. |
 | Picture's reading-order neighbors are all section headers / other pictures | Zero TextBlockEntity children for that picture. NEAR_TEXT edges simply not emitted. |
 | `storage_keys` kwarg not provided | `storage_key` null on every entity. |
-| Picture emitted BEFORE any section header | Attributed to the synthetic section_number="0" SectionEntity (existing fallback at line 212). |
+| Picture emitted BEFORE any section header (document has headings later) | **Lazy-seed a synthetic section_number="0"** on first pre-heading anchored-content encounter. Existing fallback at `docling_anchors.py:210-216` only fires when the document has *zero* headings total — not when the first heading appears later. Without lazy seeding, `section_by_path.get(())` returns None and the proposed SECTION→* attribution silently drops the edge. See §4.2a for the code change. |
 | Pydantic validation of any emitted model fails | The walker raises — caught by the Celery task wrapper at `pipeline.py:4316` and routed to FAILED stage_run. Indicates a walker bug, not a runtime condition. |
 
 No new diagnostic keys — `MergedExtraction` has no diagnostics dict; the Celery task writes execution stats via `stage_run`. If walker instrumentation becomes valuable later, that's a separate concern.
@@ -409,7 +466,7 @@ Extend existing walker tests in `tests/services/test_docling_anchors.py` (verify
 - `test_near_text_window_image` — same for ImageEntity.
 - `test_near_text_dedup` — same text block neighbor to two pictures → one TextBlockEntity, two NEAR_TEXT edges.
 - `test_near_text_no_valid_neighbors` — figure surrounded only by other figures / headers → zero NEAR_TEXT edges, no crash.
-- `test_storage_key_from_asset_map` — when `storage_keys` kwarg passed, figure/image `storage_key` populated; when absent, null.
+- `test_document_storage_key_from_kwarg` — when `source_storage_key` kwarg passed, DocumentEntity.storage_key populated; when absent, null. (FIGURE/IMAGE.storage_key always null in this change — no picture-level plumbing.)
 
 ### Parity tests
 
@@ -436,20 +493,20 @@ Per memory `feedback_post_code_workflow.md`:
 
 | File | Change |
 |---|---|
-| `ontology_bundles/air_defense_v3/entities.py` | Add `ImageEntity`, `TextBlockEntity`. Add `storage_key: Optional[str] = None` to `DocumentEntity` + `FigureEntity`. |
-| `ontology_bundles/air_defense_v3/relationships.py` | Add `HAS_IMAGE`, `NEAR_TEXT` enum members + descriptors. |
-| `ontology_bundles/air_defense_v3/validation_matrix.py` | Add 10 triples (see §3). |
-| `app/services/docling_anchors.py` | §4 walker extensions: split FIGURE vs IMAGE; attribute pictures/tables to enclosing section; lazily emit TEXT_BLOCK neighbors; NEAR_TEXT edges; storage_key plumbing. |
-| `app/workers/pipeline.py:4316` | Pass `storage_keys=<asset_map>` kwarg into `walk()` if the asset map is available at call-site. |
+| `ontology_bundles/air_defense_v3/entities.py` | Add `ImageEntity`, `TextBlockEntity`. Register both in `ALL_ENTITIES` at line 1285-1330 (required — not optional; `model_rebuild()` + introspection loops depend on it). Add `storage_key: Optional[str] = None` to `DocumentEntity` + `FigureEntity`. |
+| `ontology_bundles/air_defense_v3/relationships.py` | Add **six** enum members (HAS_SECTION, HAS_FIGURE, HAS_TABLE, CHILD_OF, HAS_IMAGE, NEAR_TEXT) and matching descriptors to `_STATIC_RELATIONSHIP_METADATA` at line 128. `RELATIONSHIP_METADATA` (line 208) is derived automatically. |
+| `ontology_bundles/air_defense_v3/validation_matrix.py` | Add 10 triples (see §3). Not runtime-load-bearing for anchor edges today (they go direct via `create_structural_edge_sync`), but required for ontology consistency + parity tests + any query-profile consumer. |
+| `app/services/docling_anchors.py` | §4 walker extensions: lazy-seed synthetic root section when pre-heading anchored content appears; split FIGURE vs IMAGE; attribute pictures/tables to enclosing section; lazily emit TEXT_BLOCK neighbors; NEAR_TEXT edges; `source_storage_key` kwarg populates DocumentEntity.storage_key. No `picture_storage_keys` kwarg — deferred. |
+| `app/workers/pipeline.py:4316` | Pass `source_storage_key=document.storage_key` from the Document SQL row. |
 | `tests/services/test_docling_anchors.py` | All §7 unit tests. |
 | `tests/unit/test_relationships_parity.py` | Pick up HAS_IMAGE + NEAR_TEXT. |
 | `tests/unit/test_validation_matrix_parity.py` | Pick up the 10 new triples. |
 | `tests/integration/test_anchor_walker_on_real_document.py` | New — E2E against S-75 Dvina.pdf fixture. |
 | `VERIFICATION_CHECKLIST.md` | New entity + relationship entries, migration note. |
 
-## 9. What v2 drops vs v1
+## 9. What v2.2 drops vs v1
 
-| v1 (invalid) | v2 (this doc) |
+| v1 (invalid) | v2.2 (this doc) |
 |---|---|
 | New `/extract-structure` endpoint on docling-graph | None — existing walker |
 | New manifest field `extraction_method: structural` | None |
