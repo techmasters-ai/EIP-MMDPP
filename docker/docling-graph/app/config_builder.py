@@ -93,8 +93,13 @@ class DoclingGraphSettings(BaseSettings):
     docling_graph_llm_max_tokens: int | None = 32000
     docling_graph_llm_timeout: int = 10800
     ollama_llm_base_url: str = "http://ollama:11434"
-    docling_graph_llm_context_limit: int | None = None
-    docling_graph_llm_max_output_tokens: int | None = None
+    # For models missing from LiteLLM's metadata registry (e.g. ollama/llama3.3:70b)
+    # the library's resolve_effective_model_config falls back to
+    # _DEFAULT_MAX_OUTPUT_TOKENS=4092, then refuses any max_tokens above that.
+    # We override explicitly so max_tokens=32000 is accepted. 131072 matches
+    # llama3.3:70b's full context length (input + output combined).
+    docling_graph_llm_context_limit: int | None = 131072
+    docling_graph_llm_max_output_tokens: int | None = 32000
 
     # Backend: "llm" or "vlm"
     docling_graph_backend: str = "llm"

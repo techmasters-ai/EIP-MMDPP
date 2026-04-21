@@ -155,6 +155,10 @@ services:
       # 32000 fits llama3.3:70b. Drop to 4000 for llama3.1:8b (4092 cap)
       # or raise to 64000+ for gpt-oss:120b.
       DOCLING_GRAPH_LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-32000}
+      # Override LiteLLM's 4092-token fallback for ollama/* models not in its
+      # registry (llama3.3:70b). Must be >= DOCLING_GRAPH_LLM_MAX_TOKENS.
+      DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS: ${DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS:-32000}
+      DOCLING_GRAPH_LLM_CONTEXT_LIMIT: ${DOCLING_GRAPH_LLM_CONTEXT_LIMIT:-131072}
       DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-10800}
       # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
       DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
