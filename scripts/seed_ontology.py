@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Idempotent ontology seeder.
 
-Loads entity types and relationship types from the canonical ontology
-(ontology_bundles/air_defense_v3/ontology.yaml) into the ontology
-schema. Safe to run multiple times (upsert by name).
+Loads entity types and relationship types from the canonical air_defense_v3
+bundle (produced by Pydantic introspection — see
+``ontology_bundles/air_defense_v3/introspect.py``) into the Postgres
+``ontology.*`` schema. Safe to run multiple times (upsert by name).
+
+Historical note: this script previously read
+``ontology_bundles/air_defense_v3/ontology.yaml`` directly. That file was
+deleted in plan Task 51 (commit history: post-Phase-5 docs-compliance) —
+the canonical source is now the Pydantic classes in ``entities.py`` plus
+``relationships.py`` / ``validation_matrix.py``, aggregated via
+``build_ontology_dict()`` and exposed through ``load_ontology(bundle_key=...)``.
 """
 
 import os
@@ -14,7 +22,6 @@ from pathlib import Path
 # Ensure app is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import yaml
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
@@ -23,10 +30,11 @@ from app.models.base import Base
 from app.models.governance import Feedback, Patch  # noqa (register models)
 from app.models.ingest import Source  # noqa
 from app.models.retrieval import Chunk  # noqa
+from app.services.ontology_templates import load_ontology
 
 settings = get_settings()
 
-ONTOLOGY_FILE = Path(__file__).parent.parent / "ontology_bundles" / "air_defense_v3" / "ontology.yaml"
+BUNDLE_KEY = "air_defense_v3"
 
 
 def seed(session: Session) -> None:
@@ -37,8 +45,9 @@ def seed(session: Session) -> None:
     # We use raw SQL inserts for the ontology tables since they're in
     # the 'ontology' schema and not registered as ORM models in this script.
 
-    with open(ONTOLOGY_FILE) as f:
-        data = yaml.safe_load(f)
+    # load_ontology(bundle_key="air_defense_v3") returns the Pydantic
+    # introspection output — same dict shape as the legacy YAML load.
+    data = load_ontology(bundle_key=BUNDLE_KEY)
 
     version_number = data["version"]
 
