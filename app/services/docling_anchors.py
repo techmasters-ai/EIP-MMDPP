@@ -511,6 +511,43 @@ def walk(
                 confidence=1.0,
                 pass_origins={"document_anchors"},
             ))
+        # §4.5 — DOCUMENT → IMAGE (same pattern as HAS_SECTION/FIGURE/TABLE).
+        for img in images:
+            edges.append(MergedEdgeRecord(
+                from_identity=doc_identity,
+                to_identity=_identity(img),
+                rel_type="HAS_IMAGE",
+                confidence=1.0,
+                pass_origins={"document_anchors"},
+            ))
+
+    # §4.5 — SECTION → FIGURE/TABLE/IMAGE attribution via pic_to_section /
+    # tbl_to_section lookups built in §4.1. Unconditional on DOCUMENT.
+    for pic, entity in zip(docling_doc.pictures, pic_entities, strict=True):
+        section_key = pic_to_section.get(pic.self_ref, ())
+        section = section_by_path.get(section_key)
+        if section is None:
+            continue
+        rel = "HAS_FIGURE" if isinstance(entity, FigureEntity) else "HAS_IMAGE"
+        edges.append(MergedEdgeRecord(
+            from_identity=_identity(section),
+            to_identity=_identity(entity),
+            rel_type=rel,
+            confidence=1.0,
+            pass_origins={"document_anchors"},
+        ))
+    for tbl, table_entity in zip(docling_doc.tables, tables, strict=True):
+        section_key = tbl_to_section.get(tbl.self_ref, ())
+        section = section_by_path.get(section_key)
+        if section is None:
+            continue
+        edges.append(MergedEdgeRecord(
+            from_identity=_identity(section),
+            to_identity=_identity(table_entity),
+            rel_type="HAS_TABLE",
+            confidence=1.0,
+            pass_origins={"document_anchors"},
+        ))
 
     # CHILD_OF edges — hierarchical, independent of ontology DOCUMENT.
     for path_tuple, section in section_by_path.items():

@@ -250,7 +250,12 @@ def test_walker_child_of_edges():
 
 
 def test_walker_skips_has_edges_when_no_document_number():
-    """Scenario 7: No document_number extractable → no DOCUMENT entity → no HAS_* edges."""
+    """Scenario 7: No document_number extractable → no DOCUMENT entity → no
+    DOCUMENT-sourced HAS_* edges.
+
+    Updated in 3f: SECTION→TABLE/IMAGE are emitted unconditionally (§4.5),
+    so the check is narrowed to edges FROM DOCUMENT only.
+    """
     doc = _build_doc(
         titles=["Some Manual"],  # no designator
         headings=[("Chapter 1", 1)],
@@ -261,20 +266,23 @@ def test_walker_skips_has_edges_when_no_document_number():
     # DOCUMENT entity absent
     doc_entities = [e for e in merged.entities if e.identity.entity_type == "DOCUMENT"]
     assert doc_entities == []
-    # HAS_SECTION / HAS_FIGURE / HAS_TABLE edges absent
-    has_edges = [
+    # No DOCUMENT-level HAS_* edges (HAS_SECTION / HAS_FIGURE / HAS_TABLE / HAS_IMAGE
+    # from DOCUMENT). SECTION→TABLE/IMAGE edges are still emitted — see §4.5.
+    doc_has_edges = [
         e for e in merged.edges
-        if e.rel_type in ("HAS_SECTION", "HAS_FIGURE", "HAS_TABLE")
+        if e.rel_type.startswith("HAS_")
+        and e.from_identity.entity_type == "DOCUMENT"
     ]
-    assert has_edges == []
+    assert doc_has_edges == []
 
 
 def test_walker_emits_document_and_has_edges_when_designator_present():
     """Positive case for scenario 7: designator present → DOCUMENT + HAS_* edges emitted.
 
     Updated in 3c: uncaptioned pictures are IMAGE entities, not FIGURE, so
-    HAS_FIGURE edges are 0 for uncaptioned pictures. HAS_IMAGE edges are
-    deferred to 3d/3e scope and are not emitted here.
+    HAS_FIGURE edges are 0 for uncaptioned pictures.
+    Updated in 3f: SECTION→TABLE/IMAGE edges added (§4.5), so HAS_TABLE and
+    HAS_IMAGE totals now include both DOCUMENT-level and SECTION-level edges.
     """
     doc = _build_doc(
         titles=["TM 9-1425-386-12 Operator Manual"],
@@ -296,9 +304,10 @@ def test_walker_emits_document_and_has_edges_when_designator_present():
         1 for e in merged.entities if e.identity.entity_type == "SECTION"
     )
     assert rel_counts.get("HAS_SECTION") == section_count
-    # Uncaptioned pictures → IMAGE entities; HAS_FIGURE=0, HAS_IMAGE deferred to 3d/3e.
+    # Uncaptioned pictures → IMAGE entities; HAS_FIGURE=0.
     assert rel_counts.get("HAS_FIGURE", 0) == 0
-    assert rel_counts.get("HAS_TABLE") == 1
+    # DOCUMENT→TABLE (1) + SECTION→TABLE (1) = 2.
+    assert rel_counts.get("HAS_TABLE") == 2
     # Confirm the 2 uncaptioned pictures became IMAGE entities.
     images = [e for e in merged.entities if e.identity.entity_type == "IMAGE"]
     assert len(images) == 2
@@ -656,3 +665,80 @@ def test_is_valid_near_text_rejects_page_furniture():
         assert _is_valid_near_text(item, captions_linked) is False, (
             f"page furniture label {lbl} must be rejected"
         )
+
+
+# ---------------------------------------------------------------------------
+# 3f — SECTION→FIGURE/TABLE/IMAGE + DOCUMENT→IMAGE edges
+# ---------------------------------------------------------------------------
+
+def test_walker_section_has_figure_edge():
+    """Captioned figure inside Section 1 → SECTION→FIGURE HAS_FIGURE edge."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="section_has_figure")
+    doc.add_heading("Section 1", level=1)
+    pic = doc.add_picture(image=None, prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+    cap = doc.add_text(label="caption", text="Figure 1 Thing")
+    pic.captions.append(cap.get_ref())
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    section_has_figure = [
+        e for e in merged.edges
+        if e.rel_type == "HAS_FIGURE"
+        and e.from_identity.entity_type == "SECTION"
+    ]
+    assert len(section_has_figure) == 1, \
+        f"expected 1 SECTION→FIGURE edge, got {len(section_has_figure)}"
+
+
+def test_walker_section_has_table_edge():
+    """Table inside Section 1 → SECTION→TABLE HAS_TABLE edge."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import TableData, TableCell
+    doc = DoclingDocument(name="section_has_table")
+    doc.add_heading("Section 1", level=1)
+    doc.add_table(data=TableData(num_rows=1, num_cols=1, grid=[[TableCell(text="x", start_row_offset_idx=0, end_row_offset_idx=1, start_col_offset_idx=0, end_col_offset_idx=1)]]))
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    section_has_table = [
+        e for e in merged.edges
+        if e.rel_type == "HAS_TABLE"
+        and e.from_identity.entity_type == "SECTION"
+    ]
+    assert len(section_has_table) == 1
+
+
+def test_walker_section_has_image_edge():
+    """Uncaptioned picture inside Section 1 → SECTION→IMAGE HAS_IMAGE edge."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="section_has_image")
+    doc.add_heading("Section 1", level=1)
+    doc.add_picture(image=None, prov=ProvenanceItem(page_no=2, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    section_has_image = [
+        e for e in merged.edges
+        if e.rel_type == "HAS_IMAGE"
+        and e.from_identity.entity_type == "SECTION"
+    ]
+    assert len(section_has_image) == 1
+
+
+def test_walker_document_has_image_edge_when_designator_present():
+    """When DOCUMENT is emitted (designator found) AND at least one IMAGE
+    exists, DOCUMENT→IMAGE HAS_IMAGE edge is emitted."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="doc_has_image")
+    doc.add_title(text="TM 9-1234-567 User Manual")
+    doc.add_heading("Section 1", level=1)
+    doc.add_picture(image=None, prov=ProvenanceItem(page_no=2, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)))
+
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    doc_has_image = [
+        e for e in merged.edges
+        if e.rel_type == "HAS_IMAGE"
+        and e.from_identity.entity_type == "DOCUMENT"
+    ]
+    assert len(doc_has_image) == 1
