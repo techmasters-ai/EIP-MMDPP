@@ -112,7 +112,8 @@ def _resolve_caption_text(cap, docling_doc) -> str | None:
     if not cref or docling_doc is None:
         return None
     try:
-        parts = cref.lstrip("#/").split("/")
+        path = cref.removeprefix("#/") if cref.startswith("#/") else cref
+        parts = path.split("/")
         obj = docling_doc
         for part in parts:
             if part.isdigit():
@@ -154,14 +155,48 @@ def _caption_label(item, docling_doc=None) -> str | None:
     return None
 
 
-def _classify_image_role(pic, docling_doc) -> str:
+def _first_prov_page(item) -> int | None:
+    """Return prov[0].page_no if available, else None."""
+    try:
+        prov = getattr(item, "prov", None)
+        if prov:
+            return prov[0].page_no
+    except (AttributeError, IndexError):
+        pass
+    return None
+
+
+def _first_prov_bbox(item) -> dict | None:
+    """Return prov[0].bbox as a dict {l, t, r, b, page, coord_origin} if
+    available, else None. Used for ImageEntity.bbox persistence."""
+    try:
+        prov = getattr(item, "prov", None)
+        if not prov:
+            return None
+        bbox = prov[0].bbox
+        coord_origin = getattr(bbox, "coord_origin", None)
+        return {
+            "l": bbox.l,
+            "t": bbox.t,
+            "r": bbox.r,
+            "b": bbox.b,
+            "page": prov[0].page_no,
+            "coord_origin": coord_origin.value if coord_origin is not None else None,
+        }
+    except (AttributeError, IndexError):
+        return None
+
+
+def _classify_image_role(pic, docling_doc, *, label: str | None) -> str:
     """Heuristic role assignment (design §4.2). Returns HEADER_LOGO,
     INLINE_IMAGE, or UNCAPTIONED_FIGURE.
+
+    ``label`` is the pre-computed _caption_label result (may be None).
+    Accepting it as a kwarg avoids re-running caption resolution.
 
     Geometry lookup: docling_doc.pages[page_no].size.width/height. When
     page info is missing (defensive), skip rule 1 and fall through.
     """
-    label = _caption_label(pic, docling_doc)
     page_no = None
     try:
         prov = getattr(pic, "prov", None)
@@ -328,9 +363,11 @@ def walk(
         else:
             entity = ImageEntity(
                 image_ref=pic.self_ref,
+                page=_first_prov_page(pic),
                 caption=label,  # may be None or a non-"Figure" caption
                 storage_key=None,
-                image_role=_classify_image_role(pic, docling_doc),
+                bbox=_first_prov_bbox(pic),
+                image_role=_classify_image_role(pic, docling_doc, label=label),
             )
             images.append(entity)
         pic_entities.append(entity)

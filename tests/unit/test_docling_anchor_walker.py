@@ -482,3 +482,25 @@ def test_walker_interleaved_captioned_and_uncaptioned():
     assert fig_labels == {"Figure 1", "Figure 2"}
     # The uncaptioned picture is #/pictures/1 (middle of three).
     assert images[0].identity.identity_tuple == ("#/pictures/1",)
+
+
+def test_walker_header_logo_heuristic():
+    """Page-1 small-top-bbox picture → image_role=HEADER_LOGO. Design §4.2."""
+    from docling_core.types.doc import DoclingDocument, PageItem
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox, Size
+    doc = DoclingDocument(name="header_logo_doc")
+    # Seed a Size so _classify_image_role can compute page_area.
+    doc.pages[1] = PageItem(size=Size(width=1000.0, height=1000.0), page_no=1)
+    doc.add_heading("Section 1", level=1)
+    # Small top-half bbox on page 1: area = 50 * 50 = 2500; page_area = 1_000_000;
+    # ratio = 0.0025 < 0.10 → HEADER_LOGO.
+    doc.add_picture(
+        image=None,
+        prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=50, b=50), charspan=(0, 0)),
+    )
+    merged = walk(doc.model_dump(), "doc-1", "run-1", {})
+    images = [e for e in merged.entities if e.identity.entity_type == "IMAGE"]
+    assert len(images) == 1
+    assert images[0].properties.get("image_role") == "HEADER_LOGO"
+    assert images[0].properties.get("page") == 1
+    assert images[0].properties.get("bbox") is not None
