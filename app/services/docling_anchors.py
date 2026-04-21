@@ -193,7 +193,16 @@ def walk(
                 section_path=None,
             )
 
-    for item, tree_depth in docling_doc.iterate_items():
+    # §4.1 — per-picture/table section-stack + reading-order capture.
+    pic_to_section:     dict[str, tuple[str, ...]] = {}
+    tbl_to_section:     dict[str, tuple[str, ...]] = {}
+    pic_to_order_index: dict[str, int] = {}
+    tbl_to_order_index: dict[str, int] = {}
+    all_items_in_order: list = []
+
+    from docling_core.types.doc import PictureItem, TableItem
+    for order_index, (item, tree_depth) in enumerate(docling_doc.iterate_items()):
+        all_items_in_order.append(item)
         label = getattr(item, "label", None)
         text = getattr(item, "text", None) or ""
         if label in _HEADING_LABELS and text.strip():
@@ -218,6 +227,17 @@ def walk(
             section_stack.append((heading_level, text.strip()))
         path_tuple = tuple(entry[1] for entry in section_stack)
         _register_section(path_tuple)
+
+        if isinstance(item, (PictureItem, TableItem)):
+            if not section_stack:
+                _ensure_root_section()
+            key = tuple(entry[1] for entry in section_stack)
+            if isinstance(item, PictureItem):
+                pic_to_section[item.self_ref] = key
+                pic_to_order_index[item.self_ref] = order_index
+            else:
+                tbl_to_section[item.self_ref] = key
+                tbl_to_order_index[item.self_ref] = order_index
 
     # End-of-traversal fallback — covers zero-headings AND zero-anchored-content.
     if not section_by_path:

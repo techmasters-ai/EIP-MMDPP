@@ -367,3 +367,26 @@ def test_walker_zero_headings_zero_pictures_still_emits_root_section():
     merged = walk(doc.model_dump(mode="json"), "doc-1", "run-1", ontology={})
     numbers = _collect_section_numbers(merged)
     assert numbers == ["0"], f"expected ['0'], got {numbers}"
+
+
+# ---------------------------------------------------------------------------
+# 3b — per-picture/table section tracking + pre-heading lazy seed
+# ---------------------------------------------------------------------------
+
+def test_walker_pre_heading_picture_lazy_seeds_root_section():
+    """A picture appearing before the first heading (in a doc that HAS
+    headings later) must attach to the synthetic section_number='0'.
+    Without lazy-seeding, section_by_path.get(()) returns None and the
+    SECTION→IMAGE edge is silently dropped. Design §4.1a."""
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.types.doc.document import ProvenanceItem, BoundingBox
+    doc = DoclingDocument(name="pre_heading_pic")
+    doc.add_picture(
+        image=None,
+        prov=ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=100, b=100), charspan=(0, 0)),
+    )
+    doc.add_heading("Section 1", level=1)
+    merged = walk(doc.model_dump(mode="json"), "doc-1", "run-1", ontology={})
+
+    sections = _sections_by_number(merged)
+    assert "0" in sections, "root fallback SECTION(section_number='0') missing"
