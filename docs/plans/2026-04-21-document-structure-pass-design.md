@@ -1,4 +1,4 @@
-# Document Structure Extraction — Design (v2.2)
+# Document Structure Extraction — Design (v2.3)
 
 **Date:** 2026-04-21
 **Branch target:** `feat/pydantic-ontology-ssot` (or follow-on feature branch)
@@ -8,15 +8,16 @@
 ## Revision history
 
 - **v1** — proposed a new LLM-backed pass. Invalidated: `app/services/docling_anchors.py` already does structural extraction.
-- **v2** — rescoped to "extend docling_anchors". Blockers: CHILD_OF missing from enum; storage_key per-picture plumbing underspecified.
-- **v2.1** — added CHILD_OF enum requirement + split storage_key story.
-- **v2.2 (this version)** — review caught five more issues:
-  1. HAS_SECTION / HAS_FIGURE / HAS_TABLE are *also* missing from the enum (not just CHILD_OF).
-  2. Metadata list is `_STATIC_RELATIONSHIP_METADATA` + derived `RELATIONSHIP_METADATA`, not "RELATIONSHIPS list".
-  3. Pre-heading picture fallback is broken today (only fires when doc has zero headings) — needs lazy-seed of synthetic root section.
-  4. walk() signature change was self-contradictory — v2.1 said "unchanged" then added two kwargs. Scope narrowed to one kwarg (`source_storage_key`).
-  5. ALL_ENTITIES registry update is required, not optional.
-  6. validation_matrix additions are ontology-consistency, not a runtime unblock (anchor edges skip the matrix today via `create_structural_edge_sync`).
+- **v2** — rescoped to "extend docling_anchors".
+- **v2.1** — CHILD_OF enum requirement + split storage_key story.
+- **v2.2** — six scope corrections (enum gap wider than CHILD_OF; correct metadata-surface name; lazy-seed for pre-heading anchored content; drop the contradicted `picture_storage_keys` kwarg; mandatory ALL_ENTITIES registration; validation_matrix is ontology hygiene not runtime unblock).
+- **v2.3 (this version)** — six more issues from user review:
+  1. Storage-key code sketch still references a `_resolve_picture_storage_key(pic)` helper and populates FIGURE/IMAGE `storage_key` — stale. §4.2 now always passes `storage_key=None` on FIGURE and IMAGE. Goal narrowed to DocumentEntity-only.
+  2. Deleting the existing zero-heading fallback regresses documents with zero headings AND zero pictures/tables. §4.1a now keeps the fallback as an **explicit end-of-traversal** `_ensure_root_section()` call instead of deleting it.
+  3. `zip(docling_doc.pictures, figures + images)` in §4.3 mis-aligns when captioned and uncaptioned pictures are interleaved. Replaced with a parallel `pic_entities` list aligned with `docling_doc.pictures` order.
+  4. §4.1 data structures were described as `dict[int, ...]` in prose but keyed by `item.self_ref` in code. Types + prose fixed to `dict[str, ...]`.
+  5. HEADER_LOGO heuristic needed a page-geometry source. §4.2 now specifies `docling_doc.pages[page_no].size.width/height`.
+  6. Parity tests (`test_relationships_parity.py`, `test_validation_matrix_parity.py`) were *deleted* in commit 78c7d51 (F-4 cleanup). Spec no longer claims to update them. Correct existing test file is `tests/unit/test_docling_anchor_walker.py`; correct fixtures dir is `tests/fixtures/docling_anchors/`; integration smoke test already at `tests/integration/test_docling_anchors_smoke.py`.
 
 ## Scope correction (why this isn't a new pass)
 
@@ -50,7 +51,7 @@ Extend `docling_anchors.py` so that every extracted document has:
 - **NEAR_TEXT** edges from IMAGE and FIGURE to their surrounding TEXT_BLOCKs.
 - **HAS_IMAGE** edges from DOCUMENT to IMAGE, following the existing HAS_SECTION / HAS_FIGURE / HAS_TABLE pattern.
 - **Section-level attribution**: HAS_FIGURE, HAS_TABLE, HAS_IMAGE edges from the enclosing SECTION to the FIGURE / TABLE / IMAGE, in addition to the existing DOCUMENT→* edges.
-- **`storage_key`** populated on DOCUMENT (source file MinIO key) and FIGURE / IMAGE (picture bytes MinIO key, when available).
+- **`storage_key`** populated on DOCUMENT only in this change (source file MinIO key from the Document SQL row). FIGURE and IMAGE have the schema field available but always null at emission — per-picture MinIO plumbing needs an `Artifact.self_ref` DB migration that is out of scope here.
 
 Plus: add the missing HAS_SECTION / HAS_FIGURE / HAS_TABLE / CHILD_OF triples to `validation_matrix.py` alongside the new HAS_IMAGE / NEAR_TEXT triples.
 
@@ -197,7 +198,7 @@ Adds to `VALIDATION_MATRIX`:
 ("IMAGE",    RelationshipType.NEAR_TEXT,   "TEXT_BLOCK"),
 ```
 
-Both parity tests need to be updated in the same commit: `tests/unit/test_relationships_parity.py` and `tests/unit/test_validation_matrix_parity.py`. `CHILD_OF` itself: verify the enum member exists (the walker uses it today; the grep output suggests it does, but confirm in `relationships.py` and add if missing).
+No parity-test update needed: `tests/unit/test_relationships_parity.py` and `tests/unit/test_validation_matrix_parity.py` were deleted in commit `78c7d51` (F-4 cleanup) along with their frozen ontology.yaml snapshot. The Python ontology files are the sole source of truth today.
 
 ## 4. Walker changes — `docling_anchors.py`
 
@@ -207,13 +208,13 @@ All walker changes live in `app/services/docling_anchors.py::walk()`. The existi
 
 Currently, pictures and tables are emitted in two passes **after** the `iterate_items()` loop at line 184 has finished, so there is no surviving link between a picture/table and its enclosing section at emission time.
 
-**Change:** during `iterate_items()`, track the current section_stack alongside each picture/table encountered. Build two dicts keyed by picture/table index:
+**Change:** during `iterate_items()`, track the current section_stack alongside each picture/table encountered. Build four dicts keyed by **self_ref** (string):
 
 ```python
-pic_to_section: dict[int, tuple[str, ...]] = {}
-tbl_to_section: dict[int, tuple[str, ...]] = {}
-pic_to_order_index: dict[int, int] = {}   # reading-order index for NEAR_TEXT lookup
-tbl_to_order_index: dict[int, int] = {}
+pic_to_section:      dict[str, tuple[str, ...]] = {}
+tbl_to_section:      dict[str, tuple[str, ...]] = {}
+pic_to_order_index:  dict[str, int] = {}
+tbl_to_order_index:  dict[str, int] = {}
 
 for order_index, (item, tree_depth) in enumerate(docling_doc.iterate_items()):
     # ... existing section_stack logic ...
@@ -225,7 +226,7 @@ for order_index, (item, tree_depth) in enumerate(docling_doc.iterate_items()):
         tbl_to_order_index[item.self_ref] = order_index
 ```
 
-Lookup `section_by_path[pic_to_section[pic.self_ref]]` to get the enclosing `SectionEntity`. Empty tuple (picture appeared before any heading) falls back to the synthetic section_number="0" SectionEntity already created at line 212.
+Lookup `section_by_path[pic_to_section[pic.self_ref]]` to get the enclosing `SectionEntity`. Empty tuple (picture appeared before any heading) is handled by §4.1a's lazy-seed.
 
 ### 4.1a Lazy-seed synthetic root section for pre-heading anchored content
 
@@ -251,7 +252,16 @@ for order_index, (item, tree_depth) in enumerate(docling_doc.iterate_items()):
     # ... record pic_to_section / tbl_to_section as before ...
 ```
 
-The existing all-headings-absent fallback at lines 210-216 can then either stay as-is (redundant but harmless) or be deleted since `_ensure_root_section` will cover that case when the first picture/table is seen. Prefer deletion to keep the walker lean. Include that deletion in the task description.
+**Do not delete the existing zero-headings fallback** at lines 210-216 outright — that would regress headingless documents with zero pictures/tables (no iteration branch would fire `_ensure_root_section`). Instead, rewrite that fallback as an explicit call after the traversal finishes:
+
+```python
+# End of iterate_items() loop. Covers: zero headings AND zero anchored
+# content (documents of pure body text) → still get one SectionEntity.
+if not section_by_path:
+    _ensure_root_section()
+```
+
+That's equivalent in behavior to the current fallback, but uses the same helper so there's only one code path for the synthetic root section.
 
 ### 4.2 Split pictures into FIGURE vs IMAGE
 
@@ -259,33 +269,43 @@ Replace the loop at lines 220-226:
 
 ```python
 figures: list[FigureEntity] = []
-images: list[ImageEntity] = []
+images:  list[ImageEntity]  = []
+pic_entities: list[Any] = []     # parallel to docling_doc.pictures — used in §4.3 for NEAR_TEXT
+
 for pic in docling_doc.pictures:
     label = _caption_label(pic)   # returns "Figure 3-12" or None
-    storage_key = _resolve_picture_storage_key(pic)  # new helper, see 4.4
+    # storage_key always None on picture-derived entities this change;
+    # per-picture plumbing deferred pending Artifact.self_ref migration (§4.4).
     if label and label.lower().startswith(("figure", "fig")):
-        figures.append(FigureEntity(
+        entity = FigureEntity(
             figure_ref=pic.self_ref,
             figure_label=label,
             page=_first_prov_page(pic),
             caption=_full_caption(pic),
-            storage_key=storage_key,
-        ))
+            storage_key=None,
+        )
+        figures.append(entity)
     else:
-        images.append(ImageEntity(
+        entity = ImageEntity(
             image_ref=pic.self_ref,
             page=_first_prov_page(pic),
             caption=_full_caption(pic),
-            storage_key=storage_key,
+            storage_key=None,
             bbox=_first_prov_bbox(pic),
-            image_role=_classify_image_role(pic),
-        ))
+            image_role=_classify_image_role(pic, docling_doc),
+        )
+        images.append(entity)
+    pic_entities.append(entity)
 ```
 
-`_classify_image_role` heuristics:
-- `page == 1` and bbox top-half + area < 10% page area → `HEADER_LOGO`
-- Has caption but non-Figure/non-Fig prefix → `UNCAPTIONED_FIGURE`
-- Otherwise → `INLINE_IMAGE`
+`_classify_image_role(pic, docling_doc)` heuristics (page geometry comes from `docling_doc.pages[page_no].size`, which is `docling_core.types.doc.Size(width, height)` in pixels or points depending on the source; Docling normalizes this to the page's native coordinate system):
+- `page_no = _first_prov_page(pic); bbox = _first_prov_bbox(pic)`
+- Compute `page_area = pages[page_no].size.width * pages[page_no].size.height` if the page exists in `docling_doc.pages`.
+- Rule 1 — `page_no == 1` AND `bbox.t < page_area.height / 2` AND `(bbox.r - bbox.l) * (bbox.b - bbox.t) / page_area < 0.10` → `HEADER_LOGO`.
+- Rule 2 — has any caption text but caption doesn't start with "Figure" / "Fig" → `UNCAPTIONED_FIGURE`.
+- Rule 3 — otherwise → `INLINE_IMAGE`.
+
+When `page_no` is None or absent from `docling_doc.pages` (defensive — shouldn't happen on well-formed Docling output), skip Rule 1 and fall through to Rule 2 or 3. Keeps the classifier deterministic without requiring page geometry.
 
 ### 4.3 Lazy TEXT_BLOCK emission + NEAR_TEXT edges
 
@@ -331,9 +351,12 @@ def _attach_neighbors(parent_entity, picture_or_table_item):
             text_blocks_by_ref[text_item.self_ref] = tb
         near_text_edges.append((parent_entity, tb))
 
-for pic, fig_or_img_entity in zip(docling_doc.pictures, figures + images):
-    # ... pair up the right entity with its picture ...
-    _attach_neighbors(fig_or_img_entity, pic)
+# pic_entities is built 1:1 with docling_doc.pictures in §4.2, so zip is safe
+# here — captioned FIGURE and uncaptioned IMAGE entities stay in document order.
+# Do NOT use `figures + images` — that reorders entities relative to document
+# order and landed neighbors on the wrong picture when caption types interleaved.
+for pic, entity in zip(docling_doc.pictures, pic_entities, strict=True):
+    _attach_neighbors(entity, pic)
 ```
 
 Same is **not** applied to tables in this change — scope creep avoided. TABLE near-text can be a follow-on.
@@ -451,7 +474,11 @@ The design **does not** require picking one now — implementation can land with
 
 ## 7. Testing
 
-Extend existing walker tests in `tests/services/test_docling_anchors.py` (verify the file exists; else create). Additions:
+Extend the existing walker tests at `tests/unit/test_docling_anchor_walker.py` (singular "anchor"; verified present). The fixtures directory `tests/fixtures/docling_anchors/` already holds four reusable DoclingDocument JSONs — `empty_structure.json`, `sa2_minimal.json`, `with_document_number.json`, `with_figures_tables.json`. Add new fixtures only where an existing one doesn't cover the case (e.g. a doc with interleaved captioned/uncaptioned pictures for §4.3 regression, and a doc with a pre-heading picture for §4.1a).
+
+**Note on parity tests:** the prior revisions referenced `tests/unit/test_relationships_parity.py` and `tests/unit/test_validation_matrix_parity.py`. Those were **deleted** in commit `78c7d51 (test(cleanup): delete 2 relationship-parity tests (F-4))` alongside the ontology.yaml snapshot they compared against. No parity layer to update; the Python ontology files are the sole source of truth now. Stale `.pyc` entries in `__pycache__` are incidental.
+
+Additions:
 
 ### Unit tests
 
@@ -468,14 +495,16 @@ Extend existing walker tests in `tests/services/test_docling_anchors.py` (verify
 - `test_near_text_no_valid_neighbors` — figure surrounded only by other figures / headers → zero NEAR_TEXT edges, no crash.
 - `test_document_storage_key_from_kwarg` — when `source_storage_key` kwarg passed, DocumentEntity.storage_key populated; when absent, null. (FIGURE/IMAGE.storage_key always null in this change — no picture-level plumbing.)
 
-### Parity tests
-
-- `tests/unit/test_relationships_parity.py` updated for HAS_IMAGE + NEAR_TEXT.
-- `tests/unit/test_validation_matrix_parity.py` updated for the 10 new triples.
-
 ### Integration test
 
-- `tests/integration/test_anchor_walker_on_real_document.py` — run `walk()` on the committed `S-75 Dvina.pdf` DoclingDocument JSON and assert: ≥1 DOCUMENT, ≥3 SECTIONs, ≥1 captioned FIGURE, ≥1 uncaptioned IMAGE, ≥1 TABLE, ≥3 TEXT_BLOCKs, SECTION→FIGURE edges present, FIGURE/IMAGE→TEXT_BLOCK NEAR_TEXT present.
+Extend the existing `tests/integration/test_docling_anchors_smoke.py` (verified present) rather than introducing a parallel file. Add assertions against a committed DoclingDocument JSON that carries at least one captioned figure, one uncaptioned picture, and one table:
+
+- ≥1 DOCUMENT, ≥3 SECTIONs, ≥1 captioned FIGURE, ≥1 uncaptioned IMAGE, ≥1 TABLE, ≥3 TEXT_BLOCKs
+- SECTION→FIGURE HAS_FIGURE, SECTION→IMAGE HAS_IMAGE, SECTION→TABLE HAS_TABLE edges present
+- FIGURE/IMAGE → TEXT_BLOCK NEAR_TEXT edges present
+- Pre-heading picture attached to the synthetic root SECTION (§4.1a regression check)
+
+Fixture: use `tests/fixtures/docling_anchors/with_figures_tables.json` if it covers these cases; otherwise add a new fixture file alongside the existing four.
 
 ### End-to-end
 
@@ -498,10 +527,9 @@ Per memory `feedback_post_code_workflow.md`:
 | `ontology_bundles/air_defense_v3/validation_matrix.py` | Add 10 triples (see §3). Not runtime-load-bearing for anchor edges today (they go direct via `create_structural_edge_sync`), but required for ontology consistency + parity tests + any query-profile consumer. |
 | `app/services/docling_anchors.py` | §4 walker extensions: lazy-seed synthetic root section when pre-heading anchored content appears; split FIGURE vs IMAGE; attribute pictures/tables to enclosing section; lazily emit TEXT_BLOCK neighbors; NEAR_TEXT edges; `source_storage_key` kwarg populates DocumentEntity.storage_key. No `picture_storage_keys` kwarg — deferred. |
 | `app/workers/pipeline.py:4316` | Pass `source_storage_key=document.storage_key` from the Document SQL row. |
-| `tests/services/test_docling_anchors.py` | All §7 unit tests. |
-| `tests/unit/test_relationships_parity.py` | Pick up HAS_IMAGE + NEAR_TEXT. |
-| `tests/unit/test_validation_matrix_parity.py` | Pick up the 10 new triples. |
-| `tests/integration/test_anchor_walker_on_real_document.py` | New — E2E against S-75 Dvina.pdf fixture. |
+| `tests/unit/test_docling_anchor_walker.py` | Extend with §7 unit tests for IMAGE / TEXT_BLOCK / NEAR_TEXT / section attribution / lazy-seed / interleaved-picture regression. |
+| `tests/integration/test_docling_anchors_smoke.py` | Extend with §7 integration assertions. |
+| `tests/fixtures/docling_anchors/*.json` | Reuse existing four fixtures where possible. Add one new fixture if needed for interleaved captioned/uncaptioned pictures or pre-heading anchored content. |
 | `VERIFICATION_CHECKLIST.md` | New entity + relationship entries, migration note. |
 
 ## 9. What v2.2 drops vs v1
