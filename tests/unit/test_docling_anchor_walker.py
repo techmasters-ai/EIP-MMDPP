@@ -352,3 +352,18 @@ def test_fixture_with_document_number_emits_document_entity():
     )
     has_sections = [e for e in merged.edges if e.rel_type == "HAS_SECTION"]
     assert len(has_sections) == section_count
+
+
+# ---------------------------------------------------------------------------
+# 3a — _ensure_root_section helper + end-of-traversal fallback
+# ---------------------------------------------------------------------------
+
+def test_walker_zero_headings_zero_pictures_still_emits_root_section():
+    """End-of-traversal fallback — covers headingless docs with nothing
+    anchored either. Must still produce SECTION(section_number="0").
+    Adaption: _build_doc has no 'texts' kwarg; a no-heading/no-picture doc
+    is equivalent — _build_doc() with no args produces that fixture."""
+    doc = _build_doc()  # no titles, no headings, no pictures, no tables
+    merged = walk(doc.model_dump(mode="json"), "doc-1", "run-1", ontology={})
+    numbers = _collect_section_numbers(merged)
+    assert numbers == ["0"], f"expected ['0'], got {numbers}"

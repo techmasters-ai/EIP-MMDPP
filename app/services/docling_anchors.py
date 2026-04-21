@@ -181,6 +181,18 @@ def walk(
             section_path=_build_section_path_string(path_tuple),
         )
 
+    def _ensure_root_section() -> None:
+        """Insert synthetic section_number='0' SectionEntity at
+        section_by_path[()] if not already present. Idempotent. Single
+        code path for both 'zero-headings doc' and 'picture before first
+        heading' cases (design §4.1a)."""
+        if () not in section_by_path:
+            section_by_path[()] = SectionEntity(
+                section_number="0",
+                heading=None,
+                section_path=None,
+            )
+
     for item, tree_depth in docling_doc.iterate_items():
         label = getattr(item, "label", None)
         text = getattr(item, "text", None) or ""
@@ -207,13 +219,9 @@ def walk(
         path_tuple = tuple(entry[1] for entry in section_stack)
         _register_section(path_tuple)
 
-    # --- Fallback for zero-headings docs -----------------------------------
+    # End-of-traversal fallback — covers zero-headings AND zero-anchored-content.
     if not section_by_path:
-        section_by_path[("",)] = SectionEntity(
-            section_number="0",
-            heading=None,
-            section_path=None,
-        )
+        _ensure_root_section()
 
     # --- FIGURE + TABLE entities -------------------------------------------
     figures: list[FigureEntity] = []
