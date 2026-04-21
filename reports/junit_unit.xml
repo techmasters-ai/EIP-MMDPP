@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="12" failures="0" skipped="6" tests="18" time="1.098" timestamp="2026-04-21T12:38:15.245607-05:00" hostname="sn4622127985"><testcase classname="" name="tests.unit.test_classify_extraction_quality" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_classify_extraction_quality.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_classify_extraction_quality.py:25: in &lt;module&gt;
+    from app.workers.pipeline import _classify_extraction_quality
+app/workers/pipeline.py:36: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_counters_consume_pre_merge_walk" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_counters_consume_pre_merge_walk.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_counters_consume_pre_merge_walk.py:24: in &lt;module&gt;
+    import app.workers.pipeline as pipeline
+app/workers/pipeline.py:36: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_counts_authoritative_lifecycle" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_counts_authoritative_lifecycle.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_counts_authoritative_lifecycle.py:27: in &lt;module&gt;
+    from app.workers.pipeline import _apply_post_merge_yield_updates
+app/workers/pipeline.py:36: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_derive_document_anchors" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_derive_document_anchors.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_derive_document_anchors.py:19: in &lt;module&gt;
+    from app.services.docling_anchors import walk
+app/services/docling_anchors.py:20: in &lt;module&gt;
+    from docling_core.types.doc import DocItemLabel, DoclingDocument
+E   ModuleNotFoundError: No module named 'docling_core'</error></testcase><testcase classname="" name="tests.unit.test_docling_anchor_walker" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_docling_anchor_walker.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_docling_anchor_walker.py:21: in &lt;module&gt;
+    from docling_core.types.doc import DoclingDocument
+E   ModuleNotFoundError: No module named 'docling_core'</error></testcase><testcase classname="" name="tests.unit.test_docling_graph_client" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_docling_graph_client.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_docling_graph_client.py:5: in &lt;module&gt;
+    from app.services.docling_graph_service import (
+app/services/docling_graph_service.py:14: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_extraction_schemas" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_extraction_schemas.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_extraction_schemas.py:7: in &lt;module&gt;
+    from ontology_bundles.air_defense_v3.extraction_schemas import (
+E   ImportError: cannot import name 'other_systems' from 'ontology_bundles.air_defense_v3.extraction_schemas' (/home/josh/development/EIP-MMDPP/ontology_bundles/air_defense_v3/extraction_schemas/__init__.py)</error></testcase><testcase classname="" name="tests.unit.test_graph_write_tracker" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_graph_write_tracker.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_graph_write_tracker.py:8: in &lt;module&gt;
+    from app.workers.pipeline import GraphWriteTracker
+app/workers/pipeline.py:36: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_iter_entities_walker_and_upstream_dedup" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_iter_entities_walker_and_upstream_dedup.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_iter_entities_walker_and_upstream_dedup.py:23: in &lt;module&gt;
+    from app.workers.pipeline import _extend_upstream_refs
+app/workers/pipeline.py:36: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_pipeline_upstream_refs" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_pipeline_upstream_refs.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_pipeline_upstream_refs.py:10: in &lt;module&gt;
+    from app.workers.pipeline import _extend_upstream_refs
+app/workers/pipeline.py:36: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_provenance_linkage" time="0.000"><skipped message="collection skipped">('/home/josh/development/EIP-MMDPP/tests/unit/test_provenance_linkage.py', 12, 'Skipped: celery not installed')</skipped></testcase><testcase classname="" name="tests.unit.test_query_coverage" time="0.000"><skipped message="collection skipped">('/home/josh/development/EIP-MMDPP/tests/unit/test_query_coverage.py', 20, 'Skipped: asyncpg not installed')</skipped></testcase><testcase classname="" name="tests.unit.test_retrieval_pipeline" time="0.000"><skipped message="collection skipped">('/home/josh/development/EIP-MMDPP/tests/unit/test_retrieval_pipeline.py', 11, 'Skipped: asyncpg not installed')</skipped></testcase><testcase classname="" name="tests.unit.test_run_id_passing" time="0.000"><skipped message="collection skipped">('/home/josh/development/EIP-MMDPP/tests/unit/test_run_id_passing.py', 11, 'Skipped: celery not installed')</skipped></testcase><testcase classname="" name="tests.unit.test_serialize_for_audit_phase8" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_serialize_for_audit_phase8.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_serialize_for_audit_phase8.py:24: in &lt;module&gt;
+    from app.workers.pipeline import _serialize_for_audit
+app/workers/pipeline.py:36: in &lt;module&gt;
+    import redis as redis_lib
+E   ModuleNotFoundError: No module named 'redis'</error></testcase><testcase classname="" name="tests.unit.test_specification_entity_validation" time="0.000"><error message="collection failure">ImportError while importing test module '/home/josh/development/EIP-MMDPP/tests/unit/test_specification_entity_validation.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+tests/unit/test_specification_entity_validation.py:16: in &lt;module&gt;
+    from ontology_bundles.air_defense_v3.extraction_schemas.radar_domain import (
+E   ImportError: cannot import name 'SpecificationEntity' from 'ontology_bundles.air_defense_v3.extraction_schemas.radar_domain' (/home/josh/development/EIP-MMDPP/ontology_bundles/air_defense_v3/extraction_schemas/radar_domain.py)</error></testcase><testcase classname="" name="tests.unit.test_storage" time="0.000"><skipped message="collection skipped">('/home/josh/development/EIP-MMDPP/tests/unit/test_storage.py', 11, 'Skipped: boto3 not installed')</skipped></testcase><testcase classname="" name="tests.unit.test_watcher" time="0.000"><skipped message="collection skipped">('/home/josh/development/EIP-MMDPP/tests/unit/test_watcher.py', 12, 'Skipped: celery not installed')</skipped></testcase></testsuite></testsuites>
