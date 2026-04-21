@@ -102,7 +102,7 @@ def test_interleaved_pictures_preserve_figure_vs_image_classification():
     # Each of the 3 pictures should have NEAR_TEXT edges to surrounding paragraphs.
     near_text_edges = [e for e in merged.edges if e.rel_type == "NEAR_TEXT"]
     # At least 2 neighbors per picture; exact count depends on window.
-    assert len(near_text_edges) >= 3
+    assert len(near_text_edges) >= 6
 
 
 def test_smoke_emits_image_and_text_block_entities():
@@ -118,7 +118,10 @@ def test_smoke_emits_image_and_text_block_entities():
     merged = walk(doc_json, "doc-smoke", "run-1", {}, source_storage_key="test/key.pdf")
 
     entity_types = {e.identity.entity_type for e in merged.entities}
-    # SECTION is always present.
+    # DOCUMENT is absent: with_figures_tables.json's title has no MIL-STD /
+    # TM / ISO-style designator, so _extract_document_number_from_front_matter
+    # returns None and no DocumentEntity is emitted. SECTION is always emitted
+    # either from headings or (here) the synthetic root section.
     assert "SECTION" in entity_types
     # At least one of FIGURE or IMAGE must exist since the fixture has pictures.
     assert entity_types & {"FIGURE", "IMAGE"}
