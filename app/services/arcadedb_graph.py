@@ -225,17 +225,59 @@ def _build_upsert_relationship_script(
 
         doc_ids_expr = f"[:{doc_id_param_key}]" if doc_id_param_key else "[]"
 
-        # Bind each CREATE EDGE to a LET variable so the trailing RETURN
-        # collects one row per input record. Plain ";"-joined sqlscripts
-        # drop every result except the last statement's — see the manual
-        # p. 275 and the _build_upsert_node_script companion fix.
+        # Find-or-create pattern. Plain CREATE EDGE would produce
+        # duplicate parallel edges on re-ingest (Doc B extracts the same
+        # Fan Song → SA-2 pairing that Doc A already created, and
+        # CREATE EDGE has no built-in uniqueness constraint against
+        # (@out, rel, @in)). We resolve endpoint RIDs first, then check
+        # for an existing edge between them; if found we UPDATE — adding
+        # this document's id to document_ids when it's not already present
+        # — otherwise we CREATE with the initial document_ids list.
+        #
+        # ArcadeDB sqlscript IF/ELSE is scope-flat, so each branch must
+        # bind v{i} to a result vector of the same shape ([{@rid: ...}])
+        # for the trailing RETURN to aggregate correctly. See manual
+        # p. 275 (multi-statement sqlscript) + the _build_upsert_node_script
+        # companion fix.
+        rtype = _safe_type_name(record.rel_type)
+        safe_from = _safe_type_name(record.from_type)
+        safe_to = _safe_type_name(record.to_type)
+        from_clause = " AND ".join(from_where_parts)
+        to_clause = " AND ".join(to_where_parts)
+
+        if doc_id_param_key:
+            # Union doc_id only when the edge exists AND doc_id is not
+            # already in the list, preventing duplicate entries on
+            # repeat ingest of the same doc.
+            update_sql = (
+                f"  UPDATE {rtype} "
+                f"SET document_ids = document_ids || [:{doc_id_param_key}], "
+                f"updated_at = sysdate(){extra} "
+                f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid "
+                f"AND NOT (document_ids CONTAINS :{doc_id_param_key})"
+            )
+        else:
+            update_sql = (
+                f"  UPDATE {rtype} SET updated_at = sysdate(){extra} "
+                f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid"
+            )
+
         sql = (
-            f"LET v{i} = CREATE EDGE {record.rel_type} "
-            f"FROM (SELECT FROM {_safe_type_name(record.from_type)} WHERE {' AND '.join(from_where_parts)}) "
-            f"TO (SELECT FROM {_safe_type_name(record.to_type)} WHERE {' AND '.join(to_where_parts)}) "
+            f"LET src_{i} = SELECT FROM {safe_from} WHERE {from_clause};\n"
+            f"LET dst_{i} = SELECT FROM {safe_to} WHERE {to_clause};\n"
+            f"LET existing_{i} = SELECT @rid FROM {rtype} "
+            f"WHERE @out = $src_{i}[0].@rid AND @in = $dst_{i}[0].@rid;\n"
+            f"IF ($existing_{i}.size() = 0) {{\n"
+            f"  LET v{i} = CREATE EDGE {rtype} "
+            f"FROM $src_{i}[0] TO $dst_{i}[0] "
             f"SET extraction_confidence = :{conf_key}, "
             f"document_ids = {doc_ids_expr}, "
-            f"created_at = sysdate(), updated_at = sysdate(){extra}"
+            f"created_at = sysdate(), updated_at = sysdate(){extra} "
+            f"RETURN @rid;\n"
+            f"}} ELSE {{\n"
+            f"{update_sql};\n"
+            f"  LET v{i} = $existing_{i};\n"
+            f"}}"
         )
         statements.append(sql)
 

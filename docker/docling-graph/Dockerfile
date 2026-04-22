@@ -84,6 +84,7 @@ ENV PYTHONPATH=/app
 ARG CACHE_BUST
 COPY docker/docling-graph/requirements.txt .
 RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so pip install --no-cache-dir --upgrade -r requirements.txt \
+    && LD_PRELOAD=/usr/local/lib/libfips_bypass.so python -m spacy download en_core_web_md \
     && rm -f /usr/local/lib/libfips_bypass.so
 
 COPY docker/docling-graph/app /app/app

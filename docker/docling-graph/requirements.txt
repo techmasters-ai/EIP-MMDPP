@@ -8,3 +8,12 @@ networkx>=3.0
 pyyaml>=6.0
 httpx>=0.27.0
 pytest>=7.0.0
+# spaCy + medium English model (≈40MB) for the semantic entity-resolver
+# inside docling-graph's delta extraction contract. Without it the library's
+# _semantic_similarity falls through to a lowercase-split Jaccard which is
+# effectively noise for near-duplicate entity names. We install the model at
+# build time (see Dockerfile) and monkey-patch resolvers._semantic_similarity
+# at service startup (app/resolver_patch.py) to use spacy.load() instead of
+# spacy.blank() — the library hardcodes the blank variant which never has
+# vectors, so installing spacy alone doesn't enable semantic matching.
+spacy>=3.7.0
