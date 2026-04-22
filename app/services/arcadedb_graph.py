@@ -162,14 +162,25 @@ def _build_upsert_node_script(
         set_clause = ", ".join(set_parts)
         where_clause = " AND ".join(where_parts)
 
+        # ArcadeDB sqlscript returns only the LAST statement's result from
+        # a plain ";"-joined batch (manual, "SQL Script" section, p. 275).
+        # To collect per-statement @rid values we must bind each UPSERT to
+        # a LET variable and append a RETURN [$v0,$v1,...] at the end —
+        # otherwise 17/18 records silently come back with no @rid and the
+        # caller has no way to wire edges to them. See the historical
+        # incident that introduced UpsertMissingRIDError for context.
         sql = (
-            f"UPDATE {_safe_type_name(record.entity_type)} SET {set_clause}, "
-            f"updated_at = sysdate() "
+            f"LET v{i} = UPDATE {_safe_type_name(record.entity_type)} "
+            f"SET {set_clause}, updated_at = sysdate() "
             f"UPSERT RETURN AFTER @rid WHERE {where_clause} AND entity_type = :entity_type_{i}"
         )
         statements.append(sql)
 
-    return ";\n".join(statements), params
+    # Collect every LET-bound value in a single RETURN so the HTTP response
+    # carries one result row per input record (each wrapped in "value": [{@rid}]).
+    return_clause = "RETURN [" + ", ".join(f"$v{i}" for i in range(len(records))) + "]"
+    script = ";\n".join(statements) + ";\n" + return_clause
+    return script, params
 
 
 def _build_upsert_relationship_script(
@@ -214,8 +225,12 @@ def _build_upsert_relationship_script(
 
         doc_ids_expr = f"[:{doc_id_param_key}]" if doc_id_param_key else "[]"
 
+        # Bind each CREATE EDGE to a LET variable so the trailing RETURN
+        # collects one row per input record. Plain ";"-joined sqlscripts
+        # drop every result except the last statement's — see the manual
+        # p. 275 and the _build_upsert_node_script companion fix.
         sql = (
-            f"CREATE EDGE {record.rel_type} "
+            f"LET v{i} = CREATE EDGE {record.rel_type} "
             f"FROM (SELECT FROM {_safe_type_name(record.from_type)} WHERE {' AND '.join(from_where_parts)}) "
             f"TO (SELECT FROM {_safe_type_name(record.to_type)} WHERE {' AND '.join(to_where_parts)}) "
             f"SET extraction_confidence = :{conf_key}, "
@@ -224,7 +239,9 @@ def _build_upsert_relationship_script(
         )
         statements.append(sql)
 
-    return ";\n".join(statements), params
+    return_clause = "RETURN [" + ", ".join(f"$v{i}" for i in range(len(records))) + "]"
+    script = ";\n".join(statements) + ";\n" + return_clause
+    return script, params
 
 
 def _build_text_chunk_sql(
@@ -304,6 +321,18 @@ def _build_image_chunk_sql(
 def _extract_rids(result: list, expected: int) -> list[str]:
     """Extract a list of RIDs from a sqlscript result, padding to *expected* length.
 
+    Handles two response shapes:
+
+      1. ``LET vN = ... ; RETURN [$v0, $v1, ...]`` (the multi-statement
+         pattern used by ``_build_upsert_node_script`` +
+         ``_build_upsert_relationship_script``) → each row in ``result``
+         looks like ``{"value": [{"@rid": "#4:13", ...}]}``. We unwrap the
+         ``value`` list and read the first element's ``@rid``.
+
+      2. Direct ``[{"@rid": "#4:13"}]`` rows — single-statement callers
+         that still go through ``_extract_rids`` without the LET/RETURN
+         wrapping.
+
     ArcadeDB's sqlscript endpoint returns a flat list of result rows, one per
     statement. This helper maps them back to the input order, filling missing
     entries with empty strings so callers always get a same-length list.
@@ -312,8 +341,19 @@ def _extract_rids(result: list, expected: int) -> list[str]:
     if not isinstance(result, list):
         return rids
     for i, row in enumerate(result[:expected]):
-        if isinstance(row, dict):
-            rids[i] = str(row.get("@rid", ""))
+        if not isinstance(row, dict):
+            continue
+        # Shape 1 — LET/RETURN pattern: {"value": [{"@rid": "..."}]}.
+        value = row.get("value")
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            rid = value[0].get("@rid")
+            if rid:
+                rids[i] = str(rid)
+                continue
+        # Shape 2 — direct @rid on the row (legacy single-statement path).
+        rid = row.get("@rid")
+        if rid:
+            rids[i] = str(rid)
     return rids
 
 

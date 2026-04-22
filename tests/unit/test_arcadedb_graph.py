@@ -934,3 +934,47 @@ class TestUpsertNodesBatchSyncIdentityValidation:
         store = _graph(client)
         assert store.upsert_nodes_batch_sync([]) == []
         client.command_sync.assert_not_called()
+
+    def test_multi_statement_result_shape_unwraps_value_list(self):
+        """ArcadeDB's sqlscript LET + RETURN pattern returns rows shaped
+        [{"value": [{"@rid": "..."}]}, ...] — _extract_rids must unwrap
+        the "value" list, not treat the outer dict as the row itself.
+        Regression test for the multi-statement sqlscript fix."""
+        client = _make_client(
+            command_sync_result=[
+                {"value": [{"@rid": "#4:10"}]},
+                {"value": [{"@rid": "#4:11"}]},
+            ],
+        )
+        store = _graph(client)
+        batch = [
+            _node_record(identity_fields={"system_name": "A", "document_id": "d"}),
+            _node_record(identity_fields={"system_name": "B", "document_id": "d"}),
+        ]
+        rids = store.upsert_nodes_batch_sync(batch)
+        assert rids == ["#4:10", "#4:11"]
+
+    def test_script_uses_LET_RETURN_pattern(self):
+        """The sqlscript sent to ArcadeDB must prefix each UPSERT with
+        LET and end with RETURN [$v0, $v1, ...]. Plain ';'-joined
+        batches silently drop every statement's result except the last —
+        caught empirically against a live ArcadeDB instance and
+        documented in the ArcadeDB Manual p. 275."""
+        client = _make_client(
+            command_sync_result=[
+                {"value": [{"@rid": "#4:10"}]},
+                {"value": [{"@rid": "#4:11"}]},
+            ],
+        )
+        store = _graph(client)
+        batch = [
+            _node_record(identity_fields={"system_name": "A", "document_id": "d"}),
+            _node_record(identity_fields={"system_name": "B", "document_id": "d"}),
+        ]
+        store.upsert_nodes_batch_sync(batch)
+
+        # The script is the 3rd positional arg to command_sync(db, lang, cmd, params).
+        sent_script = client.command_sync.call_args.args[2]
+        assert "LET v0 = UPDATE" in sent_script
+        assert "LET v1 = UPDATE" in sent_script
+        assert "RETURN [$v0, $v1]" in sent_script
