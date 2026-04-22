@@ -2610,6 +2610,50 @@ class ArcadeDBGraphStore:
             self._database, "sql", sql, {"doc_id": document_id},
         )
 
+    def get_document_vertices_sync(
+        self,
+        document_id: str,
+    ) -> list[dict]:
+        """Return every vertex owned by this document.
+
+        Enumerates vertex classes via ``schema:types WHERE type='vertex'``,
+        then issues a per-class SELECT with ``WHERE document_id = :doc_id``.
+        Classes without a ``document_id`` property (e.g. Alias) raise on
+        the predicate and are silently skipped — the union still returns
+        matching rows from every class that does.
+
+        Display label is coalesced across ``name`` / ``title`` /
+        ``chunk_id`` / ``document_id`` so downstream renderers don't need
+        per-type logic.
+        """
+        vertex_types_rows = self._client.query_sync(
+            self._database, "sql",
+            "SELECT name FROM schema:types WHERE type = 'vertex'",
+        )
+        vertex_types = [r.get("name") for r in vertex_types_rows if r.get("name")]
+
+        all_rows: list[dict] = []
+        for vtype in vertex_types:
+            sql = (
+                f"SELECT "
+                f"  @type AS `@type`, @rid AS `@rid`, "
+                f"  COALESCE(name, title, chunk_id, document_id) AS _label, "
+                f"  entity_type, name, title, chunk_id, document_id, page "
+                f"FROM {vtype} "
+                f"WHERE document_id = :doc_id"
+            )
+            try:
+                rows = self._client.query_sync(
+                    self._database, "sql", sql, {"doc_id": document_id},
+                )
+            except Exception as exc:
+                logger.debug(
+                    "get_document_vertices_sync: skipped %s (%s)", vtype, exc,
+                )
+                continue
+            all_rows.extend(rows)
+        return all_rows
+
     def get_document_edges_sync(
         self,
         document_id: str,
@@ -2637,7 +2681,11 @@ class ArcadeDBGraphStore:
         for etype in edge_types:
             sql = (
                 f"SELECT @type AS `@type`, @rid AS `@rid`, "
-                f"  @out.name AS _from_label, @in.name AS _to_label, "
+                # Endpoints: coalesce naming fields across vertex classes so
+                # TextChunk/ImageChunk (chunk_id), SECTION (name = section
+                # uid), and entities (name) all render with something.
+                f"  COALESCE(@out.name, @out.title, @out.chunk_id, @out.document_id) AS _from_label, "
+                f"  COALESCE(@in.name, @in.title, @in.chunk_id, @in.document_id) AS _to_label, "
                 f"  rel_type, document_id, document_ids, "
                 f"  extraction_confidence "
                 f"FROM {etype} "

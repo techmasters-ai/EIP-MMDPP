@@ -711,6 +711,23 @@ class GraphStore(Protocol):
         """
         ...
 
+    def get_document_vertices_sync(
+        self,
+        document_id: str,
+    ) -> list[dict]:
+        """Return every vertex this document owns — entity, chunk, anchor,
+        the Document vertex itself.
+
+        Enumerates vertex types from ``schema:types`` and fans out a per-
+        class SELECT filtered by ``document_id``. Covers vertices stored
+        with ``document_id`` as a scalar property (Document, TextChunk,
+        ImageChunk, scoped entities) and all anchor-walker / ontology
+        node types that carry it. Rows include ``@type`` / ``@rid`` plus a
+        display label coalesced across the most common naming fields so
+        the notebook renderer doesn't need per-type logic.
+        """
+        ...
+
     def get_document_edges_sync(
         self,
         document_id: str,

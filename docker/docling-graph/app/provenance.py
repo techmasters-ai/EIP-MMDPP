@@ -180,11 +180,28 @@ def build_provenance_from_context(
 
         element_uid = _resolve_element_uid(data, chunk_to_self_refs)
         if element_uid is None:
-            logger.warning(
-                "build_provenance: dropping node %s (label=%s) — no resolvable element_uid",
-                node_id, label,
-            )
-            continue
+            # Fallback: when the library's "direct" / salvage paths fire
+            # (missing_root_instance → empty_output → legacy prompt-schema
+            # retry), graph nodes lose their element_uid / chunk_indexes /
+            # self_ref attributes. Drop-with-warning in that case produces
+            # an empty provenance list, which cascades: no mentions[] →
+            # no EXTRACTED_FROM edges → get_document_entities_sync returns
+            # 0 via traversal. Anchor entities to the FIRST chunk's first
+            # self_ref as a coarse but deterministic fallback. Good enough
+            # to seed an EXTRACTED_FROM edge; downstream consumers treat
+            # mentions as weak evidence already.
+            if chunk_to_self_refs:
+                first_chunk_refs = chunk_to_self_refs.get(0) or next(
+                    iter(chunk_to_self_refs.values()), None
+                )
+                if first_chunk_refs:
+                    element_uid = first_chunk_refs[0]
+            if element_uid is None:
+                logger.warning(
+                    "build_provenance: dropping node %s (label=%s) — no resolvable element_uid",
+                    node_id, label,
+                )
+                continue
 
         identity_values = _resolve_identity_values(data, ontology_name=label)
         # Per-instance id: explicit one if the library provides it, else
