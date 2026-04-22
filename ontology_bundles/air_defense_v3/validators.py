@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 
 _INT_RE = re.compile(r"-?\d+")
 _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_WS_RE = re.compile(r"\s+")
+_NULL_TEXT_SENTINELS = frozenset({
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "unknown",
+    "unspecified",
+    "not stated",
+    "not specified",
+    "not provided",
+})
 
 
 def _log_unrecoverable(fn_name: str, value: Any) -> None:
@@ -131,9 +143,81 @@ def coerce_optional_text(value: Any) -> str | None:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        stripped = value.strip()
+        stripped = _WS_RE.sub(" ", value).strip()
+        if stripped.casefold().rstrip(".") in _NULL_TEXT_SENTINELS:
+            return None
         return stripped if stripped else None
     return None
+
+
+def canonicalize_identity_text(value: Any) -> str | None:
+    """Return a normalized identity string, or None when unusable."""
+    if not isinstance(value, str):
+        return None
+    stripped = _WS_RE.sub(" ", value).strip()
+    if not stripped:
+        return None
+    if stripped.casefold().rstrip(".") in _NULL_TEXT_SENTINELS:
+        return None
+    return stripped
+
+
+def sanitize_entity_list(
+    cls: type,
+    values: Any,
+    *,
+    list_field: str,
+    identity_field: str,
+    optional_text_fields: set[str],
+    forbidden_identities: set[str],
+) -> Any:
+    """Normalize pass-root entity items before Pydantic validates them."""
+    if not isinstance(values, dict):
+        return values
+    raw = values.get(list_field)
+    if not isinstance(raw, list) or not raw:
+        return values
+
+    forbidden = {name.upper() for name in forbidden_identities}
+    cleaned_items: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            logger.warning(
+                "sanitize_entity_list(%s): dropped non-dict item from %s",
+                cls.__name__,
+                list_field,
+            )
+            continue
+        cleaned = dict(item)
+        for field_name in optional_text_fields:
+            if field_name in cleaned:
+                cleaned[field_name] = coerce_optional_text(cleaned.get(field_name))
+
+        identity = canonicalize_identity_text(cleaned.get(identity_field))
+        if identity is None:
+            logger.warning(
+                "sanitize_entity_list(%s): dropped item with invalid %s in %s: %r",
+                cls.__name__,
+                identity_field,
+                list_field,
+                cleaned.get(identity_field),
+            )
+            continue
+        if identity.upper() in forbidden:
+            logger.warning(
+                "sanitize_entity_list(%s): dropped forbidden %s=%r from %s",
+                cls.__name__,
+                identity_field,
+                identity,
+                list_field,
+            )
+            continue
+
+        cleaned[identity_field] = identity
+        cleaned_items.append(cleaned)
+
+    values[list_field] = cleaned_items
+    return values
 
 
 # Text-confidence mappings used when the LLM returns "high"/"medium"/"low"

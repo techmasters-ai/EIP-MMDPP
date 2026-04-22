@@ -109,7 +109,31 @@ DELTA_SYSTEM_PROMPT: str = (
     "guides, emit ASSOCIATED_WITH (or CUES when the text emphasizes "
     "target-handoff). Silence is only correct when the document contains "
     "no narrative link between the named systems. Do NOT invent edges "
-    "between systems the document does not jointly describe."
+    "between systems the document does not jointly describe.\n"
+
+    "8. Evidence-scope discipline. Extract ONLY from the current batch's "
+    "direct document content. The DOCUMENT CONTEXT block and prior-batch "
+    "context exist only to keep names stable across batches; they do NOT by "
+    "themselves justify emitting an entity, property, or relationship in "
+    "this batch.\n"
+
+    "9. Treat preprocessing scaffolding, analyst summaries, and website / "
+    "viewer chrome as NON-EVIDENCE unless they directly quote the document. "
+    "Non-evidence examples include blocks labeled Classification, Why This "
+    "Category, General Description, OCR wrappers, Category-Specific Details, "
+    "Extracted Technical Takeaways, Uncertainty, Analyst Notes, provenance / "
+    "source-identification notes, page counters, navigation arrows, download "
+    "buttons, related-links sections, gallery-return links, footer text, and "
+    "recommendations such as 'next analytical step'. These may mention system "
+    "names from other pages or analyst context; do NOT extract from them "
+    "unless the same entity/property is directly evidenced in quoted verbatim "
+    "document text or a defining structure in this batch.\n"
+
+    "10. Conservative default. If a mention could plausibly be a missile, "
+    "radar, aircraft, photo subject, provenance marker, generic explainer, "
+    "or off-page summary, prefer omission over guessing. Empty output for a "
+    "domain pass is correct when the batch lacks direct evidence for an "
+    "entity of that domain."
 )
 
 

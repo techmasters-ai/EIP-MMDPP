@@ -122,6 +122,11 @@ class TestCoerceOptionalText:
     def test_string_passes_through_stripped(self):
         assert coerce_optional_text("  hello  ") == "hello"
 
+    def test_null_like_strings_return_none(self):
+        assert coerce_optional_text("None") is None
+        assert coerce_optional_text(" n/a ") is None
+        assert coerce_optional_text("Unknown.") is None
+
     def test_int_becomes_string(self):
         # Primary fix: the LLM emits integers for SpecificationEntity.value
         # and Pydantic rejects them with "Input should be a valid string".
