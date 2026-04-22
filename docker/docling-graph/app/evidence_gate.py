@@ -59,6 +59,26 @@ _STATUS_EXPLICIT_PATTERNS = {
         r"\bEXPORTED TO\b",
     ),
 }
+_GUIDANCE_TYPE_PATTERNS = {
+    "COMMAND": (r"\bCOMMAND GUIDANCE\b", r"\bCOMMAND-GUIDED\b"),
+    "BEAM_RIDING": (r"\bBEAM RIDING\b", r"\bBEAM-RIDING\b"),
+    "SARH": (r"\bSEMI-ACTIVE RADAR HOMING\b",),
+    "ARH": (r"\bACTIVE RADAR HOMING\b",),
+    "IR": (r"\bINFRARED HOMING\b", r"\bIR GUIDANCE\b"),
+    "TVM": (r"\bTRACK-VIA-MISSILE\b",),
+    "GPS_INS": (r"\bGPS/INS\b", r"\bGPS INS\b", r"\bINERTIAL NAVIGATION\b"),
+    "DUAL_MODE": (r"\bDUAL-MODE\b", r"\bDUAL MODE\b"),
+}
+_SEEKER_TYPE_PATTERNS = {
+    "ACTIVE_RADAR": (r"\bACTIVE RADAR SEEKER\b", r"\bACTIVE RADAR HOMING\b"),
+    "SEMI_ACTIVE_RADAR": (r"\bSEMI-ACTIVE RADAR\b",),
+    "PASSIVE_RADAR": (r"\bPASSIVE RADAR\b",),
+    "IR": (r"\bINFRARED SEEKER\b", r"\bIR SEEKER\b"),
+    "DUAL_MODE": (r"\bDUAL-MODE SEEKER\b", r"\bDUAL MODE SEEKER\b"),
+    "ARM": (r"\bANTI-RADIATION\b",),
+    "GPS_INS": (r"\bGPS/INS\b", r"\bGPS INS\b"),
+    "COMMAND": (r"\bCOMMAND GUIDANCE\b", r"\bNO ONBOARD SEEKER\b"),
+}
 
 
 def normalize_evidence_text(value: str) -> str:
@@ -403,6 +423,113 @@ def _extract_museum_display_range_notes(evidence_text: str) -> dict[str, float]:
     return out
 
 
+def _value_is_quoted_in_text(value: Any, evidence_text: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = normalize_evidence_text(value)
+    if not normalized or not evidence_text:
+        return False
+    return normalized in evidence_text
+
+
+def _enum_is_explicit(enum_value: Any, evidence_text: str, patterns_by_value: dict[str, tuple[str, ...]]) -> bool:
+    if not isinstance(enum_value, str):
+        return False
+    normalized = normalize_evidence_text(enum_value)
+    patterns = patterns_by_value.get(normalized, ())
+    if not patterns:
+        return False
+    return any(re.search(pattern, evidence_text) for pattern in patterns)
+
+
+def _mechanically_supported_missile_fields(evidence_text: str) -> dict[str, float]:
+    supported = _extract_museum_display_range_notes(evidence_text)
+    weight_match = re.search(r"WEIGHT:\s*(?P<weight>[\d,]+(?:\.\d+)?)\s*LBS?\.?\b", evidence_text)
+    if weight_match:
+        supported["total_mass_kg"] = round(float(weight_match.group("weight").replace(",", "")) / 2.205, 1)
+    return supported
+
+
+def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: str) -> list[str]:
+    cleared: list[str] = []
+    supported_numeric = _mechanically_supported_missile_fields(evidence_text)
+
+    # String properties must either appear verbatim in the source text or
+    # be expressed by an explicit guidance/seeker phrase. Otherwise they
+    # are unsupported and must be null.
+    exact_text_fields = (
+        "nomenclature",
+        "name",
+        "dieqp",
+        "emitter_function",
+        "asrd",
+        "responsible_agency",
+        "review_cycle",
+        "next_review_date",
+        "ejector_thrust",
+        "booster_thrust",
+        "sustain_thrust",
+    )
+    for field_name in exact_text_fields:
+        if item.get(field_name) is not None and not _value_is_quoted_in_text(item.get(field_name), evidence_text):
+            item[field_name] = None
+            cleared.append(field_name)
+
+    if item.get("guidance_type") is not None and not _enum_is_explicit(item.get("guidance_type"), evidence_text, _GUIDANCE_TYPE_PATTERNS):
+        item["guidance_type"] = None
+        cleared.append("guidance_type")
+
+    if item.get("seeker_type") is not None and not _enum_is_explicit(item.get("seeker_type"), evidence_text, _SEEKER_TYPE_PATTERNS):
+        item["seeker_type"] = None
+        cleared.append("seeker_type")
+
+    # These fields require explicit dedicated measurements in the source.
+    # If the source does not provide the exact measurement type, leave null.
+    strict_null_fields = (
+        "body_length_m",
+        "body_diameter_m",
+        "average_speed_mps",
+        "max_speed_mps",
+        "max_flyout_time_sec",
+        "flight_time_sec",
+        "coast_time_sec",
+        "intra_salvo_time_sec",
+        "total_burn_time_sec",
+        "ejector_time_sec",
+        "ejector_mass_kg",
+        "booster_time_sec",
+        "booster_mass_kg",
+        "sustain_time_sec",
+        "sustain_mass_kg",
+        "confidence",
+    )
+    for field_name in strict_null_fields:
+        if item.get(field_name) is not None:
+            item[field_name] = None
+            cleared.append(field_name)
+
+    # Numeric fields that can be supported only via a narrow mechanical
+    # conversion from explicit source text.
+    for field_name in ("min_intercept_km", "max_intercept_km", "max_altitude_km", "total_mass_kg"):
+        if field_name in supported_numeric:
+            item[field_name] = supported_numeric[field_name]
+        elif item.get(field_name) is not None:
+            item[field_name] = None
+            cleared.append(field_name)
+
+    if item.get("min_altitude_km") is not None:
+        item["min_altitude_km"] = None
+        cleared.append("min_altitude_km")
+    if item.get("max_launch_angle_deg") is not None:
+        item["max_launch_angle_deg"] = None
+        cleared.append("max_launch_angle_deg")
+    if item.get("missile_photo") is not None:
+        item["missile_photo"] = None
+        cleared.append("missile_photo")
+
+    return cleared
+
+
 def _postprocess_air_defense_missiles(
     pass_output: dict[str, Any],
     evidence_text: str,
@@ -412,10 +539,11 @@ def _postprocess_air_defense_missiles(
     if not isinstance(missile_rows, list):
         return updated, {}
 
-    parsed_notes = _extract_museum_display_range_notes(evidence_text)
+    parsed_notes = _mechanically_supported_missile_fields(evidence_text)
     stats: dict[str, Any] = {
         "status_cleared": [],
         "range_overrides": {},
+        "unsupported_properties_cleared": {},
     }
     cleaned_rows: list[Any] = []
 
@@ -426,6 +554,7 @@ def _postprocess_air_defense_missiles(
             cleaned_rows.append(row)
             continue
         item = dict(row)
+        original_item = dict(item)
         system_name = item.get("system_name")
 
         if item.get("system_status") and not _status_is_explicit_for_entity(
@@ -436,9 +565,13 @@ def _postprocess_air_defense_missiles(
             stats["status_cleared"].append(str(system_name or ""))
             item["system_status"] = None
 
+        cleared_fields = _clear_unsupported_missile_properties(item, evidence_text)
+        if cleared_fields:
+            stats["unsupported_properties_cleared"][str(system_name or "")] = sorted(set(cleared_fields))
+
         if apply_note_overrides and parsed_notes:
             for field_name, corrected_value in parsed_notes.items():
-                if item.get(field_name) != corrected_value:
+                if original_item.get(field_name) != corrected_value:
                     stats["range_overrides"][field_name] = corrected_value
                 item[field_name] = corrected_value
         cleaned_rows.append(item)
@@ -448,6 +581,8 @@ def _postprocess_air_defense_missiles(
         stats.pop("status_cleared")
     if not stats["range_overrides"]:
         stats.pop("range_overrides")
+    if not stats["unsupported_properties_cleared"]:
+        stats.pop("unsupported_properties_cleared")
     return updated, stats
 
 

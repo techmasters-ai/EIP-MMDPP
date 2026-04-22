@@ -148,6 +148,67 @@ def test_apply_bundle_postprocessing_rewrites_air_defense_fields_from_evidence()
     assert missile_stats["status_cleared"] == ["SA-2"]
 
 
+def test_missile_postprocess_clears_recurring_sa2_hallucinated_properties():
+    evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
+        """
+        Developed in the mid-1950s, the V-750 Dvina was the first effective Soviet surface-to-air missile.
+        The missile was better known by the NATO designation SA-2 Guideline.
+        TECHNICAL NOTES:
+        Range: Minimum 5 miles; maximum effective range about 19 miles; maximum slant range 27 miles
+        Ceiling: Up to 60,000 ft.
+        Speed: Mach 3.5
+        Weight: 4,850 lbs.
+        """
+    )
+
+    missile_output, missile_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "missile_domain",
+        {
+            "missile_systems": [
+                {
+                    "system_name": "SA-2",
+                    "nomenclature": "V-750 Dvina",
+                    "guidance_type": "COMMAND",
+                    "body_length_m": 7.5,
+                    "body_diameter_m": 0.5,
+                    "total_mass_kg": 2320.0,
+                    "average_speed_mps": 1052.0,
+                    "max_speed_mps": 1052.0,
+                    "confidence": 0.9,
+                }
+            ]
+        },
+        evidence_text,
+    )
+
+    missile = missile_output["missile_systems"][0]
+    assert missile["nomenclature"] == "V-750 Dvina"
+    assert missile["guidance_type"] is None
+    assert missile["body_length_m"] is None
+    assert missile["body_diameter_m"] is None
+    assert missile["total_mass_kg"] == 2199.5
+    assert missile["average_speed_mps"] is None
+    assert missile["max_speed_mps"] is None
+    assert missile["confidence"] is None
+    assert missile_stats["unsupported_properties_cleared"] == {
+        "SA-2": [
+            "average_speed_mps",
+            "body_diameter_m",
+            "body_length_m",
+            "confidence",
+            "guidance_type",
+            "max_speed_mps",
+        ]
+    }
+    assert missile_stats["range_overrides"] == {
+        "min_intercept_km": 8.0,
+        "max_intercept_km": 30.6,
+        "max_altitude_km": 18.3,
+        "total_mass_kg": 2199.5,
+    }
+
+
 def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence():
     evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
         """
