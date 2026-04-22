@@ -186,6 +186,23 @@ def summarize_pass_output(
 
         model_config = item_cls.model_config or {}
         if not model_config.get("is_entity"):
+            # docling-graph-docs § "Template Basics → Edge Helper"
+            # prescribes typed `edge(label=...)` fields for graph
+            # relationships. The cross-pass-linking DTO pattern
+            # (SystemLinkRelationship, with rel_type / from_ref_id /
+            # to_ref_id on a plain Field) is a documented exception —
+            # see ontology_bundles/air_defense_v3/extraction_schemas/
+            # system_links.py module docstring for the rationale.
+            # Count each DTO row with a non-empty rel_type so metadata
+            # reflects derived relationships instead of reporting 0
+            # edges for the whole system_links pass.
+            if "rel_type" in item_cls.model_fields:
+                for raw in raw_items:
+                    rel_type = raw.get("rel_type") if isinstance(raw, dict) else getattr(raw, "rel_type", None)
+                    if not isinstance(rel_type, str) or not rel_type:
+                        continue
+                    edge_count += 1
+                    edge_types[rel_type] = edge_types.get(rel_type, 0) + 1
             continue
 
         node_types[item_cls.__name__] = len(raw_items)

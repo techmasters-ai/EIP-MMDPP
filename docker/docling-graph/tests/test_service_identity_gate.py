@@ -71,6 +71,30 @@ def test_summarize_pass_output_matches_filtered_entity_counts():
     assert summary["path_counts"] == {"": 1, "missile_systems[]": 1}
 
 
+def test_summarize_pass_output_counts_system_links_dto_relationships():
+    """SystemLinkRelationship is is_entity=False and uses plain Field (not
+    edge()), so the entity-path counter ignores it. The DTO-path counter
+    must still tally each row's rel_type into edge_count / edge_types,
+    otherwise metadata under-reports system_links output as 0 edges."""
+    summary = _EVIDENCE_GATE.summarize_pass_output(
+        {
+            "relationships": [
+                {"rel_type": "CUES", "from_ref_id": "E001", "to_ref_id": "E002", "confidence": 0.9},
+                {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E002", "to_ref_id": "E003", "confidence": 0.95},
+                {"rel_type": "", "from_ref_id": "E003", "to_ref_id": "E004"},
+                {"from_ref_id": "E004", "to_ref_id": "E005"},
+            ]
+        },
+        SystemLinksPass,
+    )
+
+    assert summary["node_count"] == 1  # just the pass root
+    assert summary["edge_count"] == 2  # two rows with non-empty rel_type
+    assert summary["node_types"] == {"SystemLinksPass": 1}
+    assert summary["edge_types"] == {"CUES": 1, "ASSOCIATED_WITH": 1}
+    assert summary["path_counts"] == {"": 1, "relationships[]": 4}
+
+
 def test_apply_bundle_postprocessing_rewrites_air_defense_fields_from_evidence():
     evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
         """
