@@ -914,7 +914,12 @@ class ArcadeDBGraphStore:
         records: list[RelationshipRecord],
         provenance: ProvenanceMetadata | None = None,
     ) -> list[str]:
-        """Create multiple relationships in one sqlscript call. Returns their RIDs."""
+        """Create multiple relationships, one sqlscript per edge.
+
+        Mirrors upsert_relationships_batch_sync's per-edge loop — see
+        that docstring for the ArcadeDB sqlscript batching regression
+        that forced this structure.
+        """
         if not records:
             return []
         valid_records = [
@@ -923,11 +928,14 @@ class ArcadeDBGraphStore:
         ]
         if not valid_records:
             return []
-        script, params = _build_upsert_relationship_script(valid_records, provenance)
-        result = await self._client.command(
-            self._database, "sqlscript", script, params,
-        )
-        return _extract_rids(result, len(valid_records))
+        rids: list[str] = []
+        for rec in valid_records:
+            script, params = _build_upsert_relationship_script([rec], provenance)
+            result = await self._client.command(
+                self._database, "sqlscript", script, params,
+            )
+            rids.extend(_extract_rids(result, 1))
+        return rids
 
     async def create_structural_edge(
         self,
@@ -1992,7 +2000,38 @@ class ArcadeDBGraphStore:
         records: list[RelationshipRecord],
         provenance: ProvenanceMetadata | None = None,
     ) -> list[str]:
-        """Create a batch of relationships in one sqlscript call. Returns their RIDs."""
+        """Create a batch of relationships. Returns their RIDs.
+
+        Issues one sqlscript per edge rather than batching them into a
+        single multi-block script.
+
+        Why: ArcadeDB Manual p.275 ("Conditional execution") documents
+        ONLY the bare IF form::
+
+            IF(<condition>){
+              <statement>; [<statement>;]*
+            }
+
+        ``ELSE`` is not in the documented grammar. Our
+        ``_build_upsert_relationship_script`` emits IF/ELSE for the
+        find-or-create pattern, which worked for single-edge scripts
+        but failed silently when two IF/ELSE blocks were stacked in
+        one sqlscript: only the first IF-branch fires, subsequent
+        IF-branch CREATE EDGE statements no-op, and the trailing
+        ``RETURN [$v0, $v1, ...]`` collapses to ``[{value: None}]``.
+        The ELSE branch (UPDATE document_ids on an already-existing
+        edge) doesn't trip the regression, which is why re-ingests of
+        the same document saw the edges while first-ingest of a
+        second relationship silently dropped it.
+
+        Per-edge sqlscripts sidestep the batch regression while
+        keeping the find-or-create semantics (needed for cross-doc
+        document_ids union). Each sqlscript is still atomic per the
+        manual's "all-or-nothing" guarantee. Cost: N HTTP round-trips
+        instead of 1. Typical per-doc edge counts are small (1-10),
+        so latency impact is negligible compared to the correctness
+        cost of silently losing edges.
+        """
         if not records:
             return []
         valid_records = [
@@ -2001,11 +2040,14 @@ class ArcadeDBGraphStore:
         ]
         if not valid_records:
             return []
-        script, params = _build_upsert_relationship_script(valid_records, provenance)
-        result = self._client.command_sync(
-            self._database, "sqlscript", script, params,
-        )
-        return _extract_rids(result, len(valid_records))
+        rids: list[str] = []
+        for rec in valid_records:
+            script, params = _build_upsert_relationship_script([rec], provenance)
+            result = self._client.command_sync(
+                self._database, "sqlscript", script, params,
+            )
+            rids.extend(_extract_rids(result, 1))
+        return rids
 
     def create_structural_edge_sync(
         self,
