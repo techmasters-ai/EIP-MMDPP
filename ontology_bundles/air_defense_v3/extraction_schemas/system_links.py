@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..relationships import RelationshipType
 from ..validators import (
@@ -182,3 +182,15 @@ class SystemLinksPass(BaseModel):
             [{"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E003", "to_ref_id": "E004"}],
         ],
     )
+
+    @model_validator(mode="after")
+    def _drop_incomplete_relationships(self) -> "SystemLinksPass":
+        cleaned: list[SystemLinkRelationship] = []
+        for rel in self.relationships:
+            if not rel.rel_type or not rel.from_ref_id or not rel.to_ref_id:
+                continue
+            if rel.from_ref_id == rel.to_ref_id:
+                continue
+            cleaned.append(rel)
+        self.relationships = cleaned
+        return self

@@ -9,3 +9,5 @@ def test_delta_system_prompt_scopes_context_and_metadata_as_non_evidence():
     assert "Analyst Notes" in DELTA_SYSTEM_PROMPT
     assert "next analytical step" in DELTA_SYSTEM_PROMPT
     assert "Empty output for a domain pass is correct" in DELTA_SYSTEM_PROMPT
+    assert "schema guidance" in DELTA_SYSTEM_PROMPT
+    assert "examples are NEVER evidence" in DELTA_SYSTEM_PROMPT
