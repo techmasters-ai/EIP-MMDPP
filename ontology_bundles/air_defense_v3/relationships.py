@@ -159,7 +159,7 @@ _STATIC_RELATIONSHIP_METADATA: list[dict] = [
     {"name": "HAS_ANTENNA", "label": "Has Antenna", "description": "Radar has an antenna", "source_type": "RADAR_SYSTEM", "target_type": "ANTENNA", "cardinality": "one_to_many"},
     {"name": "HAS_PROCESSING_CHAIN", "label": "Has Processing Chain", "description": "Radar has a signal processing chain", "source_type": "RADAR_SYSTEM", "target_type": "SIGNAL_PROCESSING_CHAIN", "cardinality": "one_to_one"},
     {"name": "HAS_PERFORMANCE", "label": "Has Performance", "description": "System has performance characteristics", "source_type": None, "target_type": None, "cardinality": "one_to_one"},
-    {"name": "CUES", "label": "Cues", "description": "Radar cues a missile system for engagement", "source_type": "RADAR_SYSTEM", "target_type": "MISSILE_SYSTEM", "cardinality": "many_to_many"},
+    {"name": "CUES", "label": "Cues", "description": "Directional handoff of target data. Valid shapes: (a) search radar cues fire-control / guidance radar (RADAR_SYSTEM → RADAR_SYSTEM), (b) radar cues missile system for engagement (RADAR_SYSTEM → MISSILE_SYSTEM).", "source_type": "RADAR_SYSTEM", "target_type": None, "cardinality": "many_to_many"},
     {"name": "GUIDES", "label": "Guides", "description": "System guides a missile to target", "source_type": None, "target_type": "MISSILE_SYSTEM", "cardinality": "many_to_many"},
     {"name": "TRACKS", "label": "Tracks", "description": "System tracks a target", "source_type": None, "target_type": None, "cardinality": "many_to_many"},
     {"name": "ENGAGES", "label": "Engages", "description": "System engages a target", "source_type": None, "target_type": None, "cardinality": "many_to_many"},

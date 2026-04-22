@@ -119,6 +119,12 @@ VALIDATION_MATRIX: frozenset[tuple[str, RelationshipType, str]] = frozenset({
     ("RADAR_SYSTEM", RelationshipType.ASSOCIATED_WITH, "ELECTRONIC_WARFARE_SYSTEM"),
     ("RADAR_SYSTEM", RelationshipType.ASSOCIATED_WITH, "MISSILE_SYSTEM"),
     ("RADAR_SYSTEM", RelationshipType.CUES, "MISSILE_SYSTEM"),
+    # Search radar hands off to fire-control / guidance radar. Documented
+    # kill-chain pattern, e.g. Spoon Rest CUES Fan Song before Fan Song
+    # guides the SA-2. system_links.py prompt examples rely on this
+    # triple; without it the merge layer rejects the edge with
+    # invalid_triple and the kill-chain loses its first hop.
+    ("RADAR_SYSTEM", RelationshipType.CUES, "RADAR_SYSTEM"),
     ("RADAR_SYSTEM", RelationshipType.DESIGNATES, "PLATFORM"),
     ("RADAR_SYSTEM", RelationshipType.DETECTS, "PLATFORM"),
     ("RADAR_SYSTEM", RelationshipType.EMITS, "RF_EMISSION"),
