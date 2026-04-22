@@ -4307,8 +4307,13 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
         # carries graph_id_fields). We still load + pass it through so the
         # component-branch inside _build_logical_identity stays compatible
         # if a future component entity enters the anchor set.
+        # NOTE: load_ontology lives in ontology_templates, not ontology_bundles.
+        # The previous try/except-Exception swallowed the ImportError from the
+        # wrong import path and silently fell back to {} for every doc — dormant
+        # because the walker doesn't actually need ontology fields today, but
+        # real enough that future component entities would misbehave.
         try:
-            from app.services.ontology_bundles import load_ontology
+            from app.services.ontology_templates import load_ontology
             ontology = load_ontology()
         except Exception:
             ontology = {}
