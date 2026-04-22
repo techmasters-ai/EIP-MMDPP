@@ -873,7 +873,58 @@ def _apply_post_merge_yield_updates(pipeline_run_id, merged, manifest) -> None:
         session.commit()
 
 
-def _import_graph_phase_nodes(merged, ontology, document_id, tracker):
+def _build_provenance_envelope(
+    document_id: str,
+    pipeline_run_id: str | None,
+    entities,
+    db_session,
+) -> "ProvenanceMetadata":  # noqa: F821 — forward ref resolved at call time
+    """Assemble a fully-populated ProvenanceMetadata for a graph-write batch.
+
+    Unions ``page`` values across every ``ExtractionProvenance`` row hanging
+    off the batch's MergedEntityRecord instances, and fetches Document
+    ``created_at`` + ``document_metadata['date_of_information']`` once so the
+    envelope's ``upload_datetime`` + ``document_datetime`` land on the
+    written records instead of staying null. See arcadedb_schema.py for the
+    columns these feed.
+    """
+    from app.models.ingest import Document
+    from app.services.graph_store import ProvenanceMetadata
+
+    pages = sorted({
+        p.page
+        for rec in entities
+        for p in (rec.provenance or [])
+        if p.page is not None
+    })
+
+    upload_dt: str | None = None
+    document_dt: str | None = None
+    try:
+        doc_uuid = uuid.UUID(str(document_id))
+    except ValueError:
+        doc_uuid = None
+    if doc_uuid is not None:
+        doc_row = db_session.query(Document).filter(Document.id == doc_uuid).first()
+        if doc_row is not None:
+            if doc_row.created_at is not None:
+                upload_dt = doc_row.created_at.isoformat()
+            meta = doc_row.document_metadata or {}
+            if isinstance(meta, dict):
+                raw_dt = meta.get("date_of_information")
+                if isinstance(raw_dt, str) and raw_dt and raw_dt.lower() != "unknown":
+                    document_dt = raw_dt
+
+    return ProvenanceMetadata(
+        document_id=str(document_id),
+        page_numbers=pages,
+        upload_datetime=upload_dt,
+        document_datetime=document_dt,
+        pipeline_run_id=pipeline_run_id,
+    )
+
+
+def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance):
     """Spec §5.6 phase 2 — node upsert.
 
     Builds the full NodeRecord list in pure Python FIRST so that any
@@ -884,7 +935,7 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker):
 
     Task 4.4.
     """
-    from app.services.graph_store import NodeRecord, ProvenanceMetadata
+    from app.services.graph_store import NodeRecord
 
     # Build all records in pure Python first. If this raises, tracker
     # stays False and the rollback gate correctly skips.
@@ -903,11 +954,6 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker):
         for e in merged.entities
     ]
 
-    provenance = ProvenanceMetadata(
-        document_id=document_id,
-        pipeline_run_id=merged.pipeline_run_id,
-    )
-
     tracker.mark()
     graph_store = get_graph_store()
     node_rids: list[str] = graph_store.upsert_nodes_batch_sync(node_records, provenance)
@@ -922,7 +968,7 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker):
     return identity_to_rid
 
 
-def _import_graph_phase_domain_edges(merged, ontology, tracker) -> None:
+def _import_graph_phase_domain_edges(merged, ontology, tracker, provenance) -> None:
     """Spec §5.6 phase 3 — domain edge upsert (identity-based).
 
     Builds RelationshipRecord list in pure Python, calls tracker.mark()
@@ -932,7 +978,7 @@ def _import_graph_phase_domain_edges(merged, ontology, tracker) -> None:
 
     Task 4.4.
     """
-    from app.services.graph_store import RelationshipRecord, ProvenanceMetadata
+    from app.services.graph_store import RelationshipRecord
 
     rel_records = [
         RelationshipRecord(
@@ -945,11 +991,6 @@ def _import_graph_phase_domain_edges(merged, ontology, tracker) -> None:
         )
         for e in merged.edges
     ]
-
-    provenance = ProvenanceMetadata(
-        document_id=merged.document_id,
-        pipeline_run_id=merged.pipeline_run_id,
-    )
 
     tracker.mark()  # idempotent — phase 2 likely already marked
     graph_store = get_graph_store()
@@ -4341,9 +4382,8 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
             )
             for e in merged.entities
         ]
-        provenance = ProvenanceMetadata(
-            document_id=document_id,
-            pipeline_run_id=run_id,
+        provenance = _build_provenance_envelope(
+            document_id, run_id, merged.entities, db,
         )
         graph_store = get_graph_store()
         rids = graph_store.upsert_nodes_batch_sync(node_records, provenance)
@@ -4561,10 +4601,13 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
         _apply_post_merge_yield_updates(pipeline_run_id, merged, manifest)
         _write_pipeline_run_metrics(pipeline_run_id, merged, manifest)
 
-        identity_to_rid = _import_graph_phase_nodes(
-            merged, ontology, run_document_id, tracker,
+        provenance_envelope = _build_provenance_envelope(
+            run_document_id, str(pipeline_run_id), merged.entities, db,
         )
-        _import_graph_phase_domain_edges(merged, ontology, tracker)
+        identity_to_rid = _import_graph_phase_nodes(
+            merged, ontology, run_document_id, tracker, provenance_envelope,
+        )
+        _import_graph_phase_domain_edges(merged, ontology, tracker, provenance_envelope)
 
         # Ensure the structural Document vertex exists before phase 4 references
         # it. The chain creates this vertex in `derive_structure_links` which

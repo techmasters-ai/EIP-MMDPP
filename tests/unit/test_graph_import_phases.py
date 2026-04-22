@@ -62,6 +62,17 @@ def _fake_merged(entities=None, edges=None):
     )
 
 
+def _fake_provenance(document_id="doc-1", pipeline_run_id="run-1"):
+    """Minimal ProvenanceMetadata. Phase helpers now receive it from the
+    caller (derive_ontology_graph builds it once via
+    _build_provenance_envelope and passes it into both phase helpers)."""
+    from app.services.graph_store import ProvenanceMetadata
+    return ProvenanceMetadata(
+        document_id=document_id,
+        pipeline_run_id=pipeline_run_id,
+    )
+
+
 # --- Phase 2: node upsert ---------------------------------------------------
 
 class TestPhaseNodes:
@@ -82,7 +93,7 @@ class TestPhaseNodes:
 
         with patch("app.workers.pipeline.get_graph_store", return_value=mock_store):
             identity_to_rid = _import_graph_phase_nodes(
-                merged, ontology, "doc-1", tracker,
+                merged, ontology, "doc-1", tracker, _fake_provenance(),
             )
 
         # Tracker was flipped
@@ -111,14 +122,19 @@ class TestPhaseNodes:
         with patch("app.workers.pipeline.get_graph_store", return_value=mock_store), \
              patch("app.workers.pipeline.build_display_label", side_effect=ValueError("bad label")):
             with pytest.raises(ValueError):
-                _import_graph_phase_nodes(merged, ontology, "doc-1", tracker)
+                _import_graph_phase_nodes(merged, ontology, "doc-1", tracker, _fake_provenance())
 
         assert tracker.any_mutation_attempted is False
         assert mock_store.upsert_nodes_batch_sync.call_count == 0
 
-    def test_passes_pipeline_run_id_in_provenance(self):
-        """ProvenanceMetadata includes the new pipeline_run_id field from Task 3.3."""
+    def test_passes_provenance_through_to_store(self):
+        """Phase 2 forwards the caller-supplied ProvenanceMetadata unchanged
+        to upsert_nodes_batch_sync. Callers build it once via
+        _build_provenance_envelope and share it with phase 3 so both
+        writes see the same page_numbers / upload_datetime /
+        document_datetime / pipeline_run_id."""
         from app.workers.pipeline import _import_graph_phase_nodes, GraphWriteTracker
+        from app.services.graph_store import ProvenanceMetadata
 
         merged = _fake_merged()
         tracker = GraphWriteTracker()
@@ -127,12 +143,18 @@ class TestPhaseNodes:
         mock_store = MagicMock()
         mock_store.upsert_nodes_batch_sync.return_value = ["#10:1"]
 
+        provenance = ProvenanceMetadata(
+            document_id="doc-1",
+            page_numbers=[1, 2],
+            upload_datetime="2026-01-01T00:00:00Z",
+            document_datetime="1965-07-01",
+            pipeline_run_id="run-1",
+        )
         with patch("app.workers.pipeline.get_graph_store", return_value=mock_store):
-            _import_graph_phase_nodes(merged, ontology, "doc-1", tracker)
+            _import_graph_phase_nodes(merged, ontology, "doc-1", tracker, provenance)
 
-        provenance = mock_store.upsert_nodes_batch_sync.call_args.args[1]
-        assert provenance.document_id == "doc-1"
-        assert provenance.pipeline_run_id == "run-1"
+        forwarded = mock_store.upsert_nodes_batch_sync.call_args.args[1]
+        assert forwarded is provenance
 
 
 # --- Phase 3: domain edges --------------------------------------------------
@@ -149,7 +171,7 @@ class TestPhaseDomainEdges:
 
         mock_store = MagicMock()
         with patch("app.workers.pipeline.get_graph_store", return_value=mock_store):
-            _import_graph_phase_domain_edges(merged, {}, tracker)
+            _import_graph_phase_domain_edges(merged, {}, tracker, _fake_provenance())
 
         # Tracker still True (idempotent), one call to upsert_relationships_batch_sync
         assert tracker.any_mutation_attempted is True
@@ -167,7 +189,7 @@ class TestPhaseDomainEdges:
 
         mock_store = MagicMock()
         with patch("app.workers.pipeline.get_graph_store", return_value=mock_store):
-            _import_graph_phase_domain_edges(merged, {}, tracker)
+            _import_graph_phase_domain_edges(merged, {}, tracker, _fake_provenance())
 
         assert tracker.any_mutation_attempted is True
 
@@ -181,7 +203,7 @@ class TestPhaseDomainEdges:
 
         mock_store = MagicMock()
         with patch("app.workers.pipeline.get_graph_store", return_value=mock_store):
-            _import_graph_phase_domain_edges(merged, {}, tracker)
+            _import_graph_phase_domain_edges(merged, {}, tracker, _fake_provenance())
 
         # Called with empty list
         assert mock_store.upsert_relationships_batch_sync.call_count == 1

@@ -265,7 +265,7 @@ class TestDeriveOntologyGraphBundlePasses:
         mock_merge.return_value = merged
 
         # _import_graph_phase_nodes marks the tracker, then _import_graph_phase_domain_edges raises
-        def _nodes_with_mark(merged, ontology, document_id, tracker):
+        def _nodes_with_mark(merged, ontology, document_id, tracker, provenance):
             tracker.mark()  # simulate the phase marking before failing
             return {}
 
