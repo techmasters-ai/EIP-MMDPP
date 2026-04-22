@@ -69,22 +69,56 @@ class SystemLinkRelationship(BaseModel):
 
     rel_type: Optional[str] = Field(
         default=None,
-        description="Cross-pass relationship type; must be a valid RelationshipType value",
+        description=(
+            "Cross-pass relationship type. Must be one of the allowed "
+            "RelationshipType enum values declared in the manifest's "
+            "`extracted_relationship_types` for this pass. For "
+            "air_defense_v3 the allowed set is: "
+            "ASSOCIATED_WITH = generic pairing (e.g. a fire-control "
+            "radar paired with the weapon it guides); "
+            "CUES = directional handoff (e.g. a search radar cues a "
+            "fire-control radar or a missile system, passing target "
+            "location and velocity). "
+            "Emit ASSOCIATED_WITH when the text describes a persistent "
+            "pairing without explicit handoff. Emit CUES when the text "
+            "describes one system passing target data to another."
+        ),
         examples=["ASSOCIATED_WITH", "CUES"],
     )
     from_ref_id: Optional[str] = Field(
         default=None,
-        description="Upstream ref id of the edge source (e.g. 'E001')",
-        examples=["E001"],
+        description=(
+            "Upstream ref id of the edge source — a short token like "
+            "'E001', 'E002' that refers to an entity previously emitted "
+            "by an earlier pass (radar_domain, missile_domain). The "
+            "catalog of available ref ids is provided in the prompt's "
+            "'Upstream entities:' preamble. Emit only ref ids that "
+            "appear in that list — the merge layer rejects unknown ids."
+        ),
+        examples=["E001", "E002"],
     )
     to_ref_id: Optional[str] = Field(
         default=None,
-        description="Upstream ref id of the edge target (e.g. 'E002')",
-        examples=["E002"],
+        description=(
+            "Upstream ref id of the edge target — same format as "
+            "from_ref_id. The merge layer resolves (from_ref_id, "
+            "to_ref_id) pairs against PassResult.upstream_refs to build "
+            "MergedEdgeRecord with real LogicalIdentity endpoints. "
+            "from_ref_id and to_ref_id must be different refs — "
+            "self-loops are rejected."
+        ),
+        examples=["E002", "E003"],
     )
     confidence: Optional[float] = Field(
         default=None,
-        description="Extraction confidence for this relationship, 0–1.",
+        description=(
+            "Extraction confidence for this cross-system relationship, "
+            "0-1. Use 0.9-1.0 when the text explicitly names both "
+            "endpoints together in a kill-chain or pairing statement; "
+            "0.5-0.8 when the relationship is inferred from adjacent "
+            "mentions; <0.5 only for speculative links. System-populated "
+            "— leave null if unsure."
+        ),
         ge=0.0, le=1.0,
         json_schema_extra={"system_field": True},
     )
@@ -120,6 +154,31 @@ class SystemLinksPass(BaseModel):
 
     relationships: List[SystemLinkRelationship] = Field(
         default_factory=list,
-        description="Cross-pass relationship DTOs emitted by this pass; each carries from_ref_id/to_ref_id that the merge layer resolves against PassResult.upstream_refs.",
-        examples=[[{"rel_type": "CUES", "from_ref_id": "E001", "to_ref_id": "E002"}], [{"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E003", "to_ref_id": "E004"}]],
+        description=(
+            "Cross-pass relationship DTOs emitted by this pass. Each carries "
+            "from_ref_id / to_ref_id that the merge layer resolves against "
+            "PassResult.upstream_refs. "
+            "EMIT when the document describes multiple named systems as part "
+            "of one engagement kill-chain. Typical patterns: "
+            "(a) early-warning / search radar → fire-control radar → weapon "
+            "system (e.g. 'Spoon Rest detected at long range and handed off "
+            "to Fan Song, which guided the SA-2 missile'). That narrative "
+            "yields TWO edges: Spoon Rest CUES Fan Song (search→track "
+            "handoff), and Fan Song ASSOCIATED_WITH SA-2 (radar-weapon "
+            "pairing). "
+            "(b) fire-control radar → missile. Emit ASSOCIATED_WITH when the "
+            "text explicitly pairs them. "
+            "(c) search radar → missile (skipping a fire-control radar). "
+            "Emit CUES when text emphasizes target handoff. "
+            "DO NOT invent edges between systems the document does not "
+            "jointly describe. Empty list is only correct when upstream refs "
+            "share no narrative context in the document."
+        ),
+        examples=[
+            [
+                {"rel_type": "CUES", "from_ref_id": "E001", "to_ref_id": "E002"},
+                {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E002", "to_ref_id": "E003"},
+            ],
+            [{"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E003", "to_ref_id": "E004"}],
+        ],
     )
