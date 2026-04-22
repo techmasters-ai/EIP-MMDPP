@@ -1,2 +1,8 @@
 docling>=2.76.0
 docling-core>=2.67.1
+# ASR backend for InputFormat.AUDIO. Transformers pipeline uses the
+# stock openai/whisper-* checkpoints off HuggingFace; ffmpeg handles
+# the decode path. `openai-whisper` provides the reference native
+# Whisper implementation that docling's InlineAsrNativeWhisperOptions
+# dispatches into.
+openai-whisper>=20231117

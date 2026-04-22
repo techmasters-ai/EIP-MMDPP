@@ -76,6 +76,7 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
     python3.11 python3.11-venv python3.11-dev python3-pip \
     curl libgl1 libglib2.0-0 poppler-utils ninja-build \
+    ffmpeg \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
@@ -108,6 +109,15 @@ RUN pip install --no-cache-dir --upgrade -r requirements.txt
 # and every subsequent OCR request in the container's lifetime. Baking the
 # models into the image makes cold starts deterministic.
 RUN python3 -c "import easyocr; easyocr.Reader(['en'], gpu=False, verbose=False)"
+
+# Pre-download the Whisper ASR model used by InputFormat.AUDIO. The
+# native whisper library ships its own model registry (separate from
+# HuggingFace); `whisper.load_model('base')` pulls ~140MB from OpenAI's
+# CDN into ~/.cache/whisper (container runs as root → /root/.cache/whisper).
+# Bake it into the image so first-use conversion doesn't stall on the
+# download. Docling's ASR pipeline calls whisper.load_model() without
+# download_root, so the bake location must match the library's default.
+RUN python3 -c "import whisper; whisper.load_model('base')"
 
 # Allow online model downloads at runtime — TableFormer and CodeFormulaV2
 # models are downloaded on first use by the pipeline. Remove

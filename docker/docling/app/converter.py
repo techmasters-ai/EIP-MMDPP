@@ -95,11 +95,17 @@ def init_converter() -> None:
         ExcelFormatOption,
         HTMLFormatOption,
         MarkdownFormatOption,
+        AudioFormatOption,
     )
     from docling.pipeline.simple_pipeline import SimplePipeline
+    from docling.pipeline.asr_pipeline import AsrPipeline, AsrPipelineOptions
+    from docling.datamodel.pipeline_options_asr_model import (
+        InlineAsrNativeWhisperOptions,
+    )
 
     logger.info(
         "Loading Docling converter: PdfPipeline + dlparse_v4, device=%s, "
+        "ASR=openai/whisper-base, "
         "formats: PDF, IMAGE, DOCX, PPTX, XLSX, HTML, MD, ASCIIDOC, CSV, "
         "XML_USPTO, XML_JATS, XML_XBRL, METS_GBS, JSON_DOCLING, AUDIO, VTT, LATEX",
         DEVICE,
@@ -107,14 +113,30 @@ def init_converter() -> None:
 
     pdf_pipeline_options = _build_pdf_pipeline_options(generate_picture_images=True)
 
+    # ASR pipeline for InputFormat.AUDIO. Uses the native Whisper
+    # implementation with the `base` checkpoint (74MB, baked into the
+    # image at build time). Note: Docling's InlineAsrNativeWhisperOptions
+    # declares `repo_id` with HF-style examples ("openai/whisper-base")
+    # but the native whisper library's load_model accepts ONLY its
+    # short-name set (tiny, base, small, medium, large, large-v3,
+    # turbo). Use the short name here or the loader raises RuntimeError.
+    # Swap for `small` / `medium` / `large-v3` to trade off accuracy
+    # for latency/VRAM. torch_dtype="float16" activates on CUDA for
+    # ~2× throughput.
+    asr_pipeline_options = AsrPipelineOptions(
+        asr_options=InlineAsrNativeWhisperOptions(
+            repo_id="base",
+            language="en",
+            torch_dtype="float16",
+        )
+    )
+
     # Enable every InputFormat the installed Docling library exposes.
     # Explicit format_options below tune the core office + image + PDF
-    # pipelines. The remaining formats (XML_USPTO / XML_JATS / XML_XBRL /
-    # METS_GBS / JSON_DOCLING / AUDIO / VTT / LATEX / ASCIIDOC / CSV /
-    # .txt via MD fallback) fall through to Docling's default backend
-    # for each format — each one initializes cleanly in this container;
-    # AUDIO in particular needs an ASR model at conversion time and
-    # will error clearly if none is configured. See
+    # pipelines plus the ASR pipeline for AUDIO. The remaining formats
+    # (XML_USPTO / XML_JATS / XML_XBRL / METS_GBS / JSON_DOCLING / VTT /
+    # LATEX / ASCIIDOC / CSV / .txt via MD fallback) fall through to
+    # Docling's default backend for each format. See
     # `docling.datamodel.base_models.InputFormat` for the authoritative
     # enum and the library's backend registry for per-format options.
     _converter = DocumentConverter(
@@ -145,6 +167,10 @@ def init_converter() -> None:
             InputFormat.XLSX: ExcelFormatOption(pipeline_cls=SimplePipeline),
             InputFormat.HTML: HTMLFormatOption(pipeline_cls=SimplePipeline),
             InputFormat.MD: MarkdownFormatOption(pipeline_cls=SimplePipeline),
+            InputFormat.AUDIO: AudioFormatOption(
+                pipeline_cls=AsrPipeline,
+                pipeline_options=asr_pipeline_options,
+            ),
         },
     )
     _model_loaded = True
