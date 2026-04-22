@@ -176,3 +176,28 @@ def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence():
         {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E001", "to_ref_id": "E003", "confidence": 0.95},
     ]
     assert stats["derived_relationships"] == pass_output["relationships"]
+
+
+def test_status_is_not_inferred_from_operation_or_in_use_language():
+    evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
+        """
+        The Soviets began exporting it to many countries worldwide in 1960,
+        with many remaining in use into the 21st century.
+        North Vietnam began receiving SA-2s shortly after the start of
+        Operation Rolling Thunder in the spring of 1965.
+        """
+    )
+
+    missile_output, missile_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "missile_domain",
+        {
+            "missile_systems": [
+                {"system_name": "SA-2", "system_status": "OPERATIONAL"}
+            ]
+        },
+        evidence_text,
+    )
+
+    assert missile_output["missile_systems"][0]["system_status"] is None
+    assert missile_stats["status_cleared"] == ["SA-2"]

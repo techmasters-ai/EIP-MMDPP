@@ -15,6 +15,50 @@ _STATUS_ALIASES = {
     "UPGRADED": ("UPGRADED",),
     "EXPORTED": ("EXPORTED",),
 }
+_STATUS_EXPLICIT_PATTERNS = {
+    "OPERATIONAL": (
+        r"\bSTATUS\s*:\s*OPERATIONAL\b",
+        r"\bIS OPERATIONAL\b",
+        r"\bWAS OPERATIONAL\b",
+        r"\bWERE OPERATIONAL\b",
+        r"\bREMAINS OPERATIONAL\b",
+        r"\bREMAINED OPERATIONAL\b",
+        r"\bBECAME OPERATIONAL\b",
+        r"\bENTERED OPERATIONAL SERVICE\b",
+        r"\bIN OPERATIONAL SERVICE\b",
+        r"\bACHIEVED OPERATIONAL STATUS\b",
+    ),
+    "DEVELOPMENTAL": (
+        r"\bSTATUS\s*:\s*DEVELOPMENTAL\b",
+        r"\bIS DEVELOPMENTAL\b",
+        r"\bWAS DEVELOPMENTAL\b",
+        r"\bIN DEVELOPMENT\b",
+        r"\bUNDER DEVELOPMENT\b",
+        r"\bDEVELOPMENTAL STATUS\b",
+    ),
+    "RETIRED": (
+        r"\bSTATUS\s*:\s*RETIRED\b",
+        r"\bIS RETIRED\b",
+        r"\bWAS RETIRED\b",
+        r"\bWERE RETIRED\b",
+        r"\bRETIRED FROM SERVICE\b",
+        r"\bWITHDRAWN FROM SERVICE\b",
+        r"\bNO LONGER IN SERVICE\b",
+    ),
+    "UPGRADED": (
+        r"\bSTATUS\s*:\s*UPGRADED\b",
+        r"\bIS UPGRADED\b",
+        r"\bWAS UPGRADED\b",
+        r"\bUPGRADED VERSION\b",
+        r"\bUPGRADED VARIANT\b",
+    ),
+    "EXPORTED": (
+        r"\bSTATUS\s*:\s*EXPORTED\b",
+        r"\bIS EXPORTED\b",
+        r"\bWAS EXPORTED\b",
+        r"\bEXPORTED TO\b",
+    ),
+}
 
 
 def normalize_evidence_text(value: str) -> str:
@@ -241,13 +285,28 @@ def apply_bundle_postprocessing(
     return pass_output, {}
 
 
-def _status_is_explicit(status_value: Any, evidence_text: str) -> bool:
-    if not isinstance(status_value, str):
+def _status_is_explicit_for_entity(status_value: Any, identity_value: Any, evidence_text: str) -> bool:
+    if not isinstance(status_value, str) or not isinstance(identity_value, str):
         return False
-    aliases = _STATUS_ALIASES.get(normalize_evidence_text(status_value), ())
-    if not aliases:
+    normalized_status = normalize_evidence_text(status_value)
+    patterns = _STATUS_EXPLICIT_PATTERNS.get(normalized_status, ())
+    if not patterns:
         return False
-    return any(alias in evidence_text for alias in aliases)
+    normalized_identity = normalize_evidence_text(identity_value)
+    if not normalized_identity or not evidence_text:
+        return False
+
+    # Require the named entity and the explicit lifecycle-status phrase
+    # to occur in the same local statement. This prevents false positives
+    # from unrelated words elsewhere on the page such as "Operation
+    # Rolling Thunder" or generic narrative text like "remained in use".
+    for match in re.finditer(re.escape(normalized_identity), evidence_text):
+        start = max(0, match.start() - 120)
+        end = min(len(evidence_text), match.end() + 120)
+        context = evidence_text[start:end]
+        if any(re.search(pattern, context) for pattern in patterns):
+            return True
+    return False
 
 
 def _entity_in_context(identity: str, evidence_text: str, markers: tuple[str, ...], window: int = 160) -> bool:
@@ -308,7 +367,11 @@ def _postprocess_air_defense_radars(
                     stats["emitter_function_overrides"][system_name] = "SEARCH"
                 item["emitter_function"] = "SEARCH"
 
-        if item.get("system_status") and not _status_is_explicit(item.get("system_status"), evidence_text):
+        if item.get("system_status") and not _status_is_explicit_for_entity(
+            item.get("system_status"),
+            system_name,
+            evidence_text,
+        ):
             stats["status_cleared"].append(str(system_name or ""))
             item["system_status"] = None
         cleaned_rows.append(item)
@@ -365,7 +428,11 @@ def _postprocess_air_defense_missiles(
         item = dict(row)
         system_name = item.get("system_name")
 
-        if item.get("system_status") and not _status_is_explicit(item.get("system_status"), evidence_text):
+        if item.get("system_status") and not _status_is_explicit_for_entity(
+            item.get("system_status"),
+            system_name,
+            evidence_text,
+        ):
             stats["status_cleared"].append(str(system_name or ""))
             item["system_status"] = None
 
