@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from ontology_bundles._shared.prompt_rules import DELTA_SYSTEM_PROMPT
+from ontology_bundles._shared.prompt_rules import select_delta_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def install() -> None:
         # Replace ONLY the system string. Library user prompt structure is
         # unchanged.
         if isinstance(result, dict) and "system" in result:
-            result["system"] = DELTA_SYSTEM_PROMPT
+            result["system"] = select_delta_system_prompt(*args, **kwargs)
         return result
 
     wrapped.__wrapped__ = original  # type: ignore[attr-defined]
@@ -73,6 +73,5 @@ def install() -> None:
     _INSTALLED = True
     logger.warning(
         "prompt_rules: installed delta system-prompt rewrite "
-        "(%d chars) across prompts + orchestrator + runtime modules.",
-        len(DELTA_SYSTEM_PROMPT),
+        "(shared + relationships-only variants) across prompts + orchestrator + runtime modules.",
     )

@@ -35,6 +35,11 @@ ever re-authors Rules 2-4 to be mention-friendly, delete this module.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any, get_args, get_origin
+
+from pydantic import BaseModel
+
 DELTA_SYSTEM_PROMPT: str = """You are a high-precision graph extraction engine for **radar and missile-domain graph construction**. Return **ONLY valid JSON** with exactly two top-level keys: "nodes" and "relationships".
 
 ## Output Contract
@@ -312,4 +317,80 @@ Before returning JSON, ensure:
 * output is strict valid JSON and nothing else"""
 
 
-__all__ = ["DELTA_SYSTEM_PROMPT"]
+RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT: str = DELTA_SYSTEM_PROMPT + """
+
+## Relationships-Only Template Rule
+
+When the current template is a **relationships-only** pass:
+
+* you must still emit the required root pass node at path `""`
+* emit that root node in top-level `"nodes"` with `ids: {}`, `parent: null`, and flat `properties`
+* emit each `relationships[]` record as a node in top-level `"nodes"`, not in top-level `"relationships"`
+* for each `relationships[]` node, put `rel_type`, `from_ref_id`, `to_ref_id`, and `confidence` in `properties`
+* attach each `relationships[]` node to the root via `parent: {"path": "", "ids": {}}`
+* use only upstream ref ids explicitly listed in the prompt
+* unless the catalog explicitly defines graph edges, leave the top-level `"relationships"` array empty
+* if the current batch explicitly describes upstream systems together and the schema path `relationships[]` exists, do not omit the root node and do not return an empty `"nodes"` list
+"""
+
+
+def _find_model_class(annotation: Any) -> type[BaseModel] | None:
+    origin = get_origin(annotation)
+    if origin is None:
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return annotation
+        return None
+    for arg in get_args(annotation):
+        nested = _find_model_class(arg)
+        if nested is not None:
+            return nested
+    return None
+
+
+def _is_relationships_only_template(template_cls: Any) -> bool:
+    if not isinstance(template_cls, type) or not issubclass(template_cls, BaseModel):
+        return False
+
+    rel_field = template_cls.model_fields.get("relationships")
+    if rel_field is None:
+        return False
+
+    item_cls = _find_model_class(getattr(rel_field, "annotation", None))
+    if item_cls is None:
+        return False
+
+    item_config = item_cls.model_config or {}
+    if item_config.get("is_entity", True):
+        return False
+
+    return all(name in item_cls.model_fields for name in ("rel_type", "from_ref_id", "to_ref_id"))
+
+
+def _contains_relationships_only_template(value: Any) -> bool:
+    if _is_relationships_only_template(value):
+        return True
+
+    if isinstance(value, str):
+        return value in {"system_links", "SystemLinksPass"}
+
+    if isinstance(value, Mapping):
+        return any(_contains_relationships_only_template(v) for v in value.values())
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return any(_contains_relationships_only_template(v) for v in value)
+
+    return False
+
+
+def select_delta_system_prompt(*args: Any, **kwargs: Any) -> str:
+    """Pick the shared system prompt variant for the active pass/template."""
+    if _contains_relationships_only_template(kwargs) or _contains_relationships_only_template(args):
+        return RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT
+    return DELTA_SYSTEM_PROMPT
+
+
+__all__ = [
+    "DELTA_SYSTEM_PROMPT",
+    "RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT",
+    "select_delta_system_prompt",
+]
