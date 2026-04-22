@@ -100,12 +100,23 @@ def init_converter() -> None:
 
     logger.info(
         "Loading Docling converter: PdfPipeline + dlparse_v4, device=%s, "
-        "formats: PDF, IMAGE, DOCX, PPTX, XLSX, HTML, MD, ASCIIDOC, CSV",
+        "formats: PDF, IMAGE, DOCX, PPTX, XLSX, HTML, MD, ASCIIDOC, CSV, "
+        "XML_USPTO, XML_JATS, XML_XBRL, METS_GBS, JSON_DOCLING, AUDIO, VTT, LATEX",
         DEVICE,
     )
 
     pdf_pipeline_options = _build_pdf_pipeline_options(generate_picture_images=True)
 
+    # Enable every InputFormat the installed Docling library exposes.
+    # Explicit format_options below tune the core office + image + PDF
+    # pipelines. The remaining formats (XML_USPTO / XML_JATS / XML_XBRL /
+    # METS_GBS / JSON_DOCLING / AUDIO / VTT / LATEX / ASCIIDOC / CSV /
+    # .txt via MD fallback) fall through to Docling's default backend
+    # for each format — each one initializes cleanly in this container;
+    # AUDIO in particular needs an ASR model at conversion time and
+    # will error clearly if none is configured. See
+    # `docling.datamodel.base_models.InputFormat` for the authoritative
+    # enum and the library's backend registry for per-format options.
     _converter = DocumentConverter(
         allowed_formats=[
             InputFormat.PDF,
@@ -117,6 +128,14 @@ def init_converter() -> None:
             InputFormat.MD,
             InputFormat.ASCIIDOC,
             InputFormat.CSV,
+            InputFormat.XML_USPTO,
+            InputFormat.XML_JATS,
+            InputFormat.XML_XBRL,
+            InputFormat.METS_GBS,
+            InputFormat.JSON_DOCLING,
+            InputFormat.AUDIO,
+            InputFormat.VTT,
+            InputFormat.LATEX,
         ],
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_pipeline_options),

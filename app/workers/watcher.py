@@ -72,8 +72,24 @@ def _scan_directory(db, watch_dir) -> None:
         if not file_path.is_file():
             continue
 
-        # Check against file patterns (fnmatch)
-        patterns = watch_dir.file_patterns or ["*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"]
+        # Check against file patterns (fnmatch). Fallback mirrors the full
+        # surface of Docling's allowed_formats (docker/docling/app/
+        # converter.py) so the hard-coded fallback doesn't silently
+        # exclude formats the backend would happily convert.
+        patterns = watch_dir.file_patterns or [
+            "*.pdf",
+            "*.docx", "*.pptx", "*.xlsx",
+            "*.html", "*.htm",
+            "*.md", "*.markdown", "*.txt",
+            "*.adoc", "*.asciidoc",
+            "*.csv",
+            "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp",
+            "*.tiff", "*.tif", "*.webp",
+            "*.xml",
+            "*.mp3", "*.wav", "*.m4a", "*.flac", "*.ogg",
+            "*.vtt",
+            "*.tex",
+        ]
         if not any(fnmatch.fnmatch(file_path.name, pattern) for pattern in patterns):
             continue
 

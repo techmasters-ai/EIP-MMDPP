@@ -125,7 +125,23 @@ class WatchDirCreate(APIModel):
     path: str = Field(..., min_length=1)
     poll_interval_seconds: int = Field(default=30, ge=5, le=3600)
     file_patterns: list[str] = Field(
-        default=["*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"]
+        default=[
+            # Mirrors the full surface of Docling's allowed_formats
+            # (docker/docling/app/converter.py). Override per watch-dir
+            # to narrow.
+            "*.pdf",
+            "*.docx", "*.pptx", "*.xlsx",
+            "*.html", "*.htm",
+            "*.md", "*.markdown", "*.txt",
+            "*.adoc", "*.asciidoc",
+            "*.csv",
+            "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp",
+            "*.tiff", "*.tif", "*.webp",
+            "*.xml",
+            "*.mp3", "*.wav", "*.m4a", "*.flac", "*.ogg",
+            "*.vtt",
+            "*.tex",
+        ]
     )
 
 

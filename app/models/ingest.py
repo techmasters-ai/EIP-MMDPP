@@ -159,7 +159,24 @@ class WatchDir(Base, TimestampMixin):
     file_patterns: Mapped[list] = mapped_column(
         ARRAY(String),
         nullable=False,
-        default=["*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"],
+        default=[
+            # Default pattern set mirrors the full surface of Docling's
+            # allowed_formats in docker/docling/app/converter.py. Override
+            # on a per-watch-dir basis if a site should only ingest a
+            # narrower subset.
+            "*.pdf",
+            "*.docx", "*.pptx", "*.xlsx",
+            "*.html", "*.htm",
+            "*.md", "*.markdown", "*.txt",
+            "*.adoc", "*.asciidoc",
+            "*.csv",
+            "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp",
+            "*.tiff", "*.tif", "*.webp",
+            "*.xml",
+            "*.mp3", "*.wav", "*.m4a", "*.flac", "*.ogg",
+            "*.vtt",
+            "*.tex",
+        ],
     )
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
 
