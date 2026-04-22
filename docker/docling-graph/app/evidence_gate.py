@@ -8,6 +8,13 @@ from pydantic import BaseModel
 _EVIDENCE_WS_RE = re.compile(r"\s+")
 _EVIDENCE_BOUNDARY_CLASS = r"A-Z0-9"
 _EVIDENCE_STRING_KEYS = frozenset({"text", "orig", "content", "caption"})
+_STATUS_ALIASES = {
+    "OPERATIONAL": ("OPERATIONAL",),
+    "DEVELOPMENTAL": ("DEVELOPMENTAL",),
+    "RETIRED": ("RETIRED",),
+    "UPGRADED": ("UPGRADED",),
+    "EXPORTED": ("EXPORTED",),
+}
 
 
 def normalize_evidence_text(value: str) -> str:
@@ -196,3 +203,238 @@ def summarize_pass_output(
         "edge_types": edge_types,
         "path_counts": path_counts,
     }
+
+
+def apply_bundle_postprocessing(
+    bundle_key: str,
+    pass_name: str,
+    pass_output: dict[str, Any],
+    evidence_text: str,
+    upstream_entities: list[Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if bundle_key != "air_defense_v3" or not isinstance(pass_output, dict):
+        return pass_output, {}
+
+    if pass_name == "radar_domain":
+        return _postprocess_air_defense_radars(pass_output, evidence_text)
+    if pass_name == "missile_domain":
+        return _postprocess_air_defense_missiles(pass_output, evidence_text)
+    if pass_name == "system_links":
+        return _postprocess_air_defense_system_links(pass_output, evidence_text, upstream_entities)
+    return pass_output, {}
+
+
+def _status_is_explicit(status_value: Any, evidence_text: str) -> bool:
+    if not isinstance(status_value, str):
+        return False
+    aliases = _STATUS_ALIASES.get(normalize_evidence_text(status_value), ())
+    if not aliases:
+        return False
+    return any(alias in evidence_text for alias in aliases)
+
+
+def _entity_in_context(identity: str, evidence_text: str, markers: tuple[str, ...], window: int = 160) -> bool:
+    normalized_identity = normalize_evidence_text(identity)
+    if not normalized_identity or not evidence_text:
+        return False
+    for match in re.finditer(re.escape(normalized_identity), evidence_text):
+        start = max(0, match.start() - window)
+        end = min(len(evidence_text), match.end() + window)
+        context = evidence_text[start:end]
+        if any(marker in context for marker in markers):
+            return True
+    return False
+
+
+def _postprocess_air_defense_radars(
+    pass_output: dict[str, Any],
+    evidence_text: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    updated = dict(pass_output)
+    radar_rows = updated.get("radar_systems")
+    if not isinstance(radar_rows, list):
+        return updated, {}
+
+    stats: dict[str, Any] = {
+        "status_cleared": [],
+        "emitter_function_overrides": {},
+    }
+    cleaned_rows: list[Any] = []
+
+    for row in radar_rows:
+        if not isinstance(row, dict):
+            cleaned_rows.append(row)
+            continue
+        item = dict(row)
+        system_name = item.get("system_name")
+        if isinstance(system_name, str):
+            normalized_name = normalize_evidence_text(system_name)
+            if f"{normalized_name} GUIDANCE RADAR" in evidence_text:
+                if item.get("emitter_function") != "FIRE_CONTROL":
+                    stats["emitter_function_overrides"][system_name] = "FIRE_CONTROL"
+                item["emitter_function"] = "FIRE_CONTROL"
+            elif f"{normalized_name} ACQUISITION RADAR" in evidence_text:
+                if item.get("emitter_function") != "SEARCH":
+                    stats["emitter_function_overrides"][system_name] = "SEARCH"
+                item["emitter_function"] = "SEARCH"
+            elif _entity_in_context(
+                system_name,
+                evidence_text,
+                ("MISSILE GUIDANCE", "GUIDED UP TO", "GUIDED AGAINST ONE TARGET"),
+                window=80,
+            ):
+                if item.get("emitter_function") != "FIRE_CONTROL":
+                    stats["emitter_function_overrides"][system_name] = "FIRE_CONTROL"
+                item["emitter_function"] = "FIRE_CONTROL"
+            elif _entity_in_context(system_name, evidence_text, ("DETECTED INCOMING AIRCRAFT",), window=80):
+                if item.get("emitter_function") != "SEARCH":
+                    stats["emitter_function_overrides"][system_name] = "SEARCH"
+                item["emitter_function"] = "SEARCH"
+
+        if item.get("system_status") and not _status_is_explicit(item.get("system_status"), evidence_text):
+            stats["status_cleared"].append(str(system_name or ""))
+            item["system_status"] = None
+        cleaned_rows.append(item)
+
+    updated["radar_systems"] = cleaned_rows
+    if not stats["status_cleared"]:
+        stats.pop("status_cleared")
+    if not stats["emitter_function_overrides"]:
+        stats.pop("emitter_function_overrides")
+    return updated, stats
+
+
+def _extract_museum_display_range_notes(evidence_text: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    if not evidence_text:
+        return out
+    range_match = re.search(
+        r"RANGE:\s*MINIMUM\s+(?P<min>\d+(?:\.\d+)?)\s+MILES;\s*"
+        r"MAXIMUM EFFECTIVE RANGE(?: ABOUT)?\s+(?P<max>\d+(?:\.\d+)?)\s+MILES"
+        r"(?:;\s*MAXIMUM SLANT RANGE\s+(?P<slant>\d+(?:\.\d+)?)\s+MILES)?",
+        evidence_text,
+    )
+    if range_match:
+        out["min_intercept_km"] = round(float(range_match.group("min")) * 1.60934, 1)
+        out["max_intercept_km"] = round(float(range_match.group("max")) * 1.60934, 1)
+    ceiling_match = re.search(r"CEILING:\s*UP TO\s+(?P<ceiling>[\d,]+)\s*FT", evidence_text)
+    if ceiling_match:
+        out["max_altitude_km"] = round(float(ceiling_match.group("ceiling").replace(",", "")) * 0.0003048, 1)
+    return out
+
+
+def _postprocess_air_defense_missiles(
+    pass_output: dict[str, Any],
+    evidence_text: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    updated = dict(pass_output)
+    missile_rows = updated.get("missile_systems")
+    if not isinstance(missile_rows, list):
+        return updated, {}
+
+    parsed_notes = _extract_museum_display_range_notes(evidence_text)
+    stats: dict[str, Any] = {
+        "status_cleared": [],
+        "range_overrides": {},
+    }
+    cleaned_rows: list[Any] = []
+
+    apply_note_overrides = "TECHNICAL NOTES:" in evidence_text and len(missile_rows) == 1
+
+    for row in missile_rows:
+        if not isinstance(row, dict):
+            cleaned_rows.append(row)
+            continue
+        item = dict(row)
+        system_name = item.get("system_name")
+
+        if item.get("system_status") and not _status_is_explicit(item.get("system_status"), evidence_text):
+            stats["status_cleared"].append(str(system_name or ""))
+            item["system_status"] = None
+
+        if apply_note_overrides and parsed_notes:
+            for field_name, corrected_value in parsed_notes.items():
+                if item.get(field_name) != corrected_value:
+                    stats["range_overrides"][field_name] = corrected_value
+                item[field_name] = corrected_value
+        cleaned_rows.append(item)
+
+    updated["missile_systems"] = cleaned_rows
+    if not stats["status_cleared"]:
+        stats.pop("status_cleared")
+    if not stats["range_overrides"]:
+        stats.pop("range_overrides")
+    return updated, stats
+
+
+def _build_upstream_name_map(upstream_entities: list[Any] | None) -> dict[str, str]:
+    if not upstream_entities:
+        return {}
+    out: dict[str, str] = {}
+    for entity in upstream_entities:
+        ref_id = getattr(entity, "ref_id", None)
+        if not ref_id:
+            continue
+        identity_values = getattr(entity, "identity_values", None) or {}
+        system_name = identity_values.get("system_name")
+        if isinstance(system_name, str):
+            out[normalize_evidence_text(system_name)] = ref_id
+            continue
+        display_label = getattr(entity, "display_label", None)
+        if isinstance(display_label, str) and display_label.strip():
+            out[normalize_evidence_text(display_label)] = ref_id
+    return out
+
+
+def _postprocess_air_defense_system_links(
+    pass_output: dict[str, Any],
+    evidence_text: str,
+    upstream_entities: list[Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    updated = dict(pass_output)
+    relationships = updated.get("relationships")
+    if not isinstance(relationships, list):
+        return updated, {}
+    if relationships:
+        return updated, {}
+
+    name_to_ref = _build_upstream_name_map(upstream_entities)
+    derived: list[dict[str, Any]] = []
+
+    spoon_rest_ref = name_to_ref.get("SPOON REST")
+    fan_song_ref = name_to_ref.get("FAN SONG")
+    sa2_ref = name_to_ref.get("SA-2")
+
+    if (
+        spoon_rest_ref
+        and fan_song_ref
+        and "SPOON REST ACQUISITION RADAR" in evidence_text
+        and "FAN SONG GUIDANCE RADAR" in evidence_text
+    ):
+        derived.append(
+            {
+                "rel_type": "CUES",
+                "from_ref_id": spoon_rest_ref,
+                "to_ref_id": fan_song_ref,
+                "confidence": 0.95,
+            }
+        )
+
+    if (
+        fan_song_ref
+        and sa2_ref
+        and _entity_in_context("FAN SONG", evidence_text, ("MISSILE GUIDANCE", "GUIDED UP TO THREE SA-2S", "GUIDED UP TO THREE SA-2S AGAINST ONE TARGET"))
+    ):
+        derived.append(
+            {
+                "rel_type": "ASSOCIATED_WITH",
+                "from_ref_id": fan_song_ref,
+                "to_ref_id": sa2_ref,
+                "confidence": 0.95,
+            }
+        )
+
+    updated["relationships"] = derived
+    if not derived:
+        return updated, {}
+    return updated, {"derived_relationships": derived}

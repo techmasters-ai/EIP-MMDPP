@@ -319,6 +319,7 @@ _install_resolver_patch()
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app.config_builder import build_pipeline_config
 from app.evidence_gate import (
+    apply_bundle_postprocessing as _apply_bundle_postprocessing,
     collect_batch_evidence_text as _collect_batch_evidence_text,
     filter_pass_output_by_batch_text as _filter_pass_output_by_batch_text,
     filter_provenance_rows_by_allowed_identities as _filter_provenance_rows_by_allowed_identities,
@@ -856,6 +857,13 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             evidence_text,
         )
         pass_output = filtered_pass_output
+        pass_output, postprocess_stats = _apply_bundle_postprocessing(
+            body.bundle_key,
+            body.pass_name,
+            pass_output,
+            evidence_text,
+            body.upstream_entities,
+        )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
         metadata.node_count = filtered_counts["node_count"]
         metadata.edge_count = filtered_counts["edge_count"]
@@ -873,6 +881,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             "dropped_entity_examples": {},
         }
         diagnostics["service_identity_gate"]["evidence_text_nonempty"] = bool(evidence_text)
+        diagnostics["service_postprocess"] = postprocess_stats or {}
         diagnostics["service_post_filter_counts"] = filtered_counts
         if "path_counts" in diagnostics:
             diagnostics["raw_path_counts"] = diagnostics.get("path_counts", {})

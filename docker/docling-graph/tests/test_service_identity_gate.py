@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 from ontology_bundles.air_defense_v3.extraction_schemas.missile_domain import MissileDomainPass
 from ontology_bundles.air_defense_v3.extraction_schemas.system_links import SystemLinksPass
@@ -68,3 +69,86 @@ def test_summarize_pass_output_matches_filtered_entity_counts():
     assert summary["node_types"] == {"MissileDomainPass": 1, "MissileSystemEntity": 1}
     assert summary["edge_types"] == {"CONTAINS": 1}
     assert summary["path_counts"] == {"": 1, "missile_systems[]": 1}
+
+
+def test_apply_bundle_postprocessing_rewrites_air_defense_fields_from_evidence():
+    evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
+        """
+        The Spoon Rest radar detected incoming aircraft at long range.
+        The Fan Song guidance radar performed two functions: target acquisition and missile guidance.
+        TECHNICAL NOTES:
+        Range: Minimum 5 miles; maximum effective range about 19 miles; maximum slant range 27 miles
+        Ceiling: Up to 60,000 ft.
+        """
+    )
+
+    radar_output, radar_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "radar_domain",
+        {
+            "radar_systems": [
+                {"system_name": "Fan Song", "emitter_function": "TRACKING", "system_status": "OPERATIONAL"},
+                {"system_name": "Spoon Rest", "emitter_function": None, "system_status": "OPERATIONAL"},
+            ]
+        },
+        evidence_text,
+    )
+    missile_output, missile_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "missile_domain",
+        {
+            "missile_systems": [
+                {"system_name": "SA-2", "min_intercept_km": 5.0, "max_intercept_km": 19.0, "system_status": "OPERATIONAL"}
+            ]
+        },
+        evidence_text,
+    )
+
+    assert radar_output["radar_systems"][0]["emitter_function"] == "FIRE_CONTROL"
+    assert radar_output["radar_systems"][1]["emitter_function"] == "SEARCH"
+    assert radar_output["radar_systems"][0]["system_status"] is None
+    assert radar_output["radar_systems"][1]["system_status"] is None
+    assert radar_stats["emitter_function_overrides"] == {"Fan Song": "FIRE_CONTROL", "Spoon Rest": "SEARCH"}
+    assert radar_stats["status_cleared"] == ["Fan Song", "Spoon Rest"]
+
+    missile = missile_output["missile_systems"][0]
+    assert missile["min_intercept_km"] == 8.0
+    assert missile["max_intercept_km"] == 30.6
+    assert missile["max_altitude_km"] == 18.3
+    assert missile["system_status"] is None
+    assert missile_stats["range_overrides"] == {
+        "min_intercept_km": 8.0,
+        "max_intercept_km": 30.6,
+        "max_altitude_km": 18.3,
+    }
+    assert missile_stats["status_cleared"] == ["SA-2"]
+
+
+def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence():
+    evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
+        """
+        A typical SA-2 site in North Vietnam had six missiles on launchers,
+        a Spoon Rest acquisition radar, and a Fan Song guidance radar.
+        The Fan Song guidance radar performed two functions: target acquisition and missile guidance.
+        After launch, it guided up to three SA-2s against one target.
+        """
+    )
+    upstream_entities = [
+        SimpleNamespace(ref_id="E001", identity_values={"system_name": "Fan Song"}, display_label=None),
+        SimpleNamespace(ref_id="E002", identity_values={"system_name": "Spoon Rest"}, display_label=None),
+        SimpleNamespace(ref_id="E003", identity_values={"system_name": "SA-2"}, display_label=None),
+    ]
+
+    pass_output, stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "system_links",
+        {"relationships": []},
+        evidence_text,
+        upstream_entities,
+    )
+
+    assert pass_output["relationships"] == [
+        {"rel_type": "CUES", "from_ref_id": "E002", "to_ref_id": "E001", "confidence": 0.95},
+        {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E001", "to_ref_id": "E003", "confidence": 0.95},
+    ]
+    assert stats["derived_relationships"] == pass_output["relationships"]
