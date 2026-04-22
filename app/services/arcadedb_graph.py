@@ -2616,23 +2616,38 @@ class ArcadeDBGraphStore:
     ) -> list[dict]:
         """Return every vertex owned by this document.
 
-        Enumerates vertex classes via ``schema:types WHERE type='vertex'``,
-        then issues a per-class SELECT with ``WHERE document_id = :doc_id``.
-        Classes without a ``document_id`` property (e.g. Alias) raise on
-        the predicate and are silently skipped — the union still returns
-        matching rows from every class that does.
+        Two passes, unioned + deduplicated by ``@rid``:
+
+        1. Enumerate vertex classes via ``schema:types WHERE
+           type='vertex'`` and SELECT rows where ``document_id = :doc_id``.
+           Covers Document, TextChunk, ImageChunk, anchor entities, and
+           any document-scoped domain entities.
+        2. Expand endpoints of every document-scoped edge (same filter
+           as ``get_document_edges_sync``). Picks up global-scope
+           entities (RADAR_SYSTEM / MISSILE_SYSTEM / etc.) that don't
+           store ``document_id`` on the vertex itself but are edge
+           endpoints for this doc.
 
         Display label is coalesced across ``name`` / ``title`` /
-        ``chunk_id`` / ``document_id`` so downstream renderers don't need
-        per-type logic.
+        ``chunk_id`` / ``document_id``.
         """
+        all_rows: list[dict] = []
+        seen_rids: set[str] = set()
+
+        def _add(rows: list[dict]) -> None:
+            for row in rows:
+                rid = row.get("@rid")
+                if not rid or rid in seen_rids:
+                    continue
+                seen_rids.add(rid)
+                all_rows.append(row)
+
+        # Pass 1 — per-class SELECT filtered by document_id.
         vertex_types_rows = self._client.query_sync(
             self._database, "sql",
             "SELECT name FROM schema:types WHERE type = 'vertex'",
         )
         vertex_types = [r.get("name") for r in vertex_types_rows if r.get("name")]
-
-        all_rows: list[dict] = []
         for vtype in vertex_types:
             sql = (
                 f"SELECT "
@@ -2651,7 +2666,51 @@ class ArcadeDBGraphStore:
                     "get_document_vertices_sync: skipped %s (%s)", vtype, exc,
                 )
                 continue
-            all_rows.extend(rows)
+            _add(rows)
+
+        # Pass 2 — collect distinct endpoint RIDs from document-scoped
+        # edges, then fetch those vertices. This is how global-scope
+        # entities (identity_scope='global' ontology entities) show up
+        # here: they don't store document_id as a property, but their
+        # edges do, so we reach them via the edge filter.
+        edge_types_rows = self._client.query_sync(
+            self._database, "sql",
+            "SELECT name FROM schema:types WHERE type = 'edge'",
+        )
+        edge_types = [r.get("name") for r in edge_types_rows if r.get("name")]
+        endpoint_rids: set[str] = set()
+        for etype in edge_types:
+            sql = (
+                f"SELECT @out AS out_rid, @in AS in_rid "
+                f"FROM {etype} "
+                f"WHERE document_id = :doc_id "
+                f"   OR document_ids CONTAINS :doc_id"
+            )
+            try:
+                rows = self._client.query_sync(
+                    self._database, "sql", sql, {"doc_id": document_id},
+                )
+            except Exception:
+                continue
+            for row in rows:
+                for rid_key in ("out_rid", "in_rid"):
+                    rid = row.get(rid_key)
+                    if rid and rid not in seen_rids:
+                        endpoint_rids.add(rid)
+
+        for rid in endpoint_rids:
+            try:
+                rows = self._client.query_sync(
+                    self._database, "sql",
+                    f"SELECT @type AS `@type`, @rid AS `@rid`, "
+                    f"COALESCE(name, title, chunk_id, document_id) AS _label, "
+                    f"entity_type, name, title, chunk_id, document_id, page "
+                    f"FROM {rid}",
+                )
+            except Exception:
+                continue
+            _add(rows)
+
         return all_rows
 
     def get_document_edges_sync(
