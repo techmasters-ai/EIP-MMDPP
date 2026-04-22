@@ -157,7 +157,9 @@ class MissileSystemEntity(BaseModel):
             "OPERATIONAL (currently deployed), DEVELOPMENTAL (prototype "
             "or pre-IOC), RETIRED (withdrawn from service), UPGRADED "
             "(modified variant superseding a base model), EXPORTED "
-            "(sold to foreign operators only)."
+            "(sold to foreign operators only). Emit only when the "
+            "document explicitly states the status; do not infer it "
+            "from historical or descriptive text."
         ),
         examples=["OPERATIONAL", "RETIRED", "DEVELOPMENTAL"],
     )
@@ -207,8 +209,9 @@ class MissileSystemEntity(BaseModel):
             "kilometers. Below this range the missile's safety arm, "
             "initialization sequence, or terminal-guidance lock-on cannot "
             "complete in time. Typical SAMs: 2-10 km minimum. If source "
-            "gives the value in meters or nautical miles, convert to km "
-            "(1 nm = 1.852 km)."
+            "gives the value in miles, nautical miles, feet, or meters, "
+            "convert to km before emitting. Do not copy the raw source "
+            "number when the source unit is not already kilometers."
         ),
         examples=[2.0, 5.0],
     )
@@ -217,8 +220,11 @@ class MissileSystemEntity(BaseModel):
         description=(
             "Maximum effective intercept / engagement range, in "
             "kilometers. The outer edge of the missile's engagement "
-            "envelope against an assumed target profile. SA-2 baseline: "
-            "~35 km; modern long-range SAMs (S-400, THAAD): 200-400 km."
+            "envelope against an assumed target profile. Use the "
+            "document's effective range value here. Do NOT use slant "
+            "range, ferry range, or maximum kinematic distance unless the "
+            "document explicitly says those are the effective engagement "
+            "range. Convert source units to km."
         ),
         examples=[35.0, 400.0],
     )
@@ -228,7 +234,9 @@ class MissileSystemEntity(BaseModel):
             "Minimum engagement altitude, in kilometers. Below this "
             "altitude the missile cannot acquire or intercept. Legacy "
             "SAMs (SA-2) have ~1 km minimum; modern systems reach "
-            "sea-skimming altitudes (<0.05 km)."
+            "sea-skimming altitudes (<0.05 km). Only populate when the "
+            "document explicitly states a minimum altitude / floor; do "
+            "not infer from generic system knowledge."
         ),
         examples=[0.05, 1.0],
     )
@@ -238,7 +246,8 @@ class MissileSystemEntity(BaseModel):
             "Maximum engagement altitude (ceiling), in kilometers. "
             "The top of the missile's engagement envelope. Classical "
             "high-altitude SAMs (SA-2 / S-75): ~25 km. Exo-atmospheric "
-            "interceptors (SM-3, GBI): >100 km."
+            "interceptors (SM-3, GBI): >100 km. If the source gives "
+            "ceiling in feet or meters, convert to km."
         ),
         examples=[18.0, 35.0, 180.0],
     )

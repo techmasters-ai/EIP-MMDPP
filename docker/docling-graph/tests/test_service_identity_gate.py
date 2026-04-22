@@ -55,3 +55,16 @@ def test_system_links_schema_drops_incomplete_relationship_rows():
     assert model.relationships[0].rel_type == "CUES"
     assert model.relationships[0].from_ref_id == "E001"
     assert model.relationships[0].to_ref_id == "E002"
+
+
+def test_summarize_pass_output_matches_filtered_entity_counts():
+    summary = _EVIDENCE_GATE.summarize_pass_output(
+        {"missile_systems": [{"system_name": "SA-2"}]},
+        MissileDomainPass,
+    )
+
+    assert summary["node_count"] == 2
+    assert summary["edge_count"] == 1
+    assert summary["node_types"] == {"MissileDomainPass": 1, "MissileSystemEntity": 1}
+    assert summary["edge_types"] == {"CONTAINS": 1}
+    assert summary["path_counts"] == {"": 1, "missile_systems[]": 1}

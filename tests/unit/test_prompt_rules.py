@@ -11,3 +11,6 @@ def test_delta_system_prompt_scopes_context_and_metadata_as_non_evidence():
     assert "Empty output for a domain pass is correct" in DELTA_SYSTEM_PROMPT
     assert "schema guidance" in DELTA_SYSTEM_PROMPT
     assert "examples are NEVER evidence" in DELTA_SYSTEM_PROMPT
+    assert "slant range into effective-intercept range" in DELTA_SYSTEM_PROMPT
+    assert "missile-command radar is FIRE_CONTROL" in DELTA_SYSTEM_PROMPT
+    assert "return an empty relationship list" in DELTA_SYSTEM_PROMPT

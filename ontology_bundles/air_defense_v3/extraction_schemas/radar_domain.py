@@ -168,11 +168,13 @@ class RadarSystemEntity(BaseModel):
             "Enum values and their meanings: "
             "SEARCH = early-warning / acquisition radar that detects "
             "targets at long range; "
-            "TRACKING = mid-course radar that maintains target track after "
-            "acquisition; "
+            "TRACKING = radar that maintains target track after "
+            "acquisition but does not provide the terminal weapon-guidance "
+            "function; "
             "FIRE_CONTROL = terminal-guidance radar that provides the "
             "tracking signal used by the weapon system's seeker or "
-            "command-guidance link; "
+            "command-guidance link. Guidance / illumination radars such as "
+            "Fan Song belong here; "
             "MULTI_FUNCTION = a single radar that performs multiple roles "
             "(phased-array designs like AN/SPY-1 are typical examples); "
             "HEIGHT_FINDER = dedicated elevation-measurement radar paired "
@@ -188,7 +190,10 @@ class RadarSystemEntity(BaseModel):
             "source. Typical values: OPERATIONAL (currently deployed), "
             "DEVELOPMENTAL (prototype or pre-IOC), RETIRED (withdrawn "
             "from service), UPGRADED (modified variant superseding the "
-            "base model), EXPORTED (sold to foreign operators only)."
+            "base model), EXPORTED (sold to foreign operators only). "
+            "Emit only when the document explicitly states the status; do "
+            "not infer OPERATIONAL from historical narrative or from the "
+            "fact that the radar appears in a museum display."
         ),
         examples=["OPERATIONAL", "RETIRED", "DEVELOPMENTAL"],
     )

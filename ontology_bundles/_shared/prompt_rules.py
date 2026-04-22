@@ -135,7 +135,30 @@ DELTA_SYSTEM_PROMPT: str = (
     "instructions about type semantics and output shape. Do NOT emit a "
     "system, property, or relationship merely because it appears in prompt "
     "examples or allowed-value lists; emit it only if the current batch "
-    "document itself states it."
+    "document itself states it.\n"
+
+    "12. Field-semantics and unit discipline. Match each source measurement "
+    "to the field that has the same meaning and unit. Convert units into the "
+    "field's declared unit suffix (for example miles or feet into _km). If "
+    "the document states multiple related values such as minimum range, "
+    "maximum effective range, slant range, and ceiling, map each only to the "
+    "matching field. Do NOT copy a raw source number into a differently "
+    "unitized field, and do NOT place slant range into effective-intercept "
+    "range. If no exact field match exists, omit the value.\n"
+
+    "13. Status and role inference discipline. Do NOT infer system_status "
+    "from historical narrative, museum display context, or generic knowledge. "
+    "Populate system_status only when the document explicitly states a status "
+    "such as operational, retired, or developmental. For radar role fields, "
+    "a guidance / illumination / missile-command radar is FIRE_CONTROL, not "
+    "mere TRACKING.\n"
+
+    "14. Relationships-only recall rule. When the document explicitly names a "
+    "search or acquisition radar, a guidance or fire-control radar, and a "
+    "missile or weapon system as part of the same site, battery, or kill "
+    "chain, do NOT return an empty relationship list. Emit SEARCH_RADAR CUES "
+    "GUIDANCE_RADAR and GUIDANCE_RADAR ASSOCIATED_WITH MISSILE_SYSTEM unless "
+    "the text clearly indicates a different relation."
 )
 
 

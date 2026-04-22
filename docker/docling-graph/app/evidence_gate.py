@@ -154,3 +154,45 @@ def filter_provenance_rows_by_allowed_identities(
         if key in allowed:
             filtered_rows.append(row)
     return filtered_rows
+
+
+def summarize_pass_output(
+    pass_output: dict[str, Any],
+    template_cls: type[BaseModel],
+) -> dict[str, Any]:
+    """Compute response-facing counts from the filtered pass_output."""
+    node_count = 1
+    edge_count = 0
+    node_types: dict[str, int] = {template_cls.__name__: 1}
+    edge_types: dict[str, int] = {}
+    path_counts: dict[str, int] = {"": 1}
+
+    for field_name, field_info in template_cls.model_fields.items():
+        raw_items = pass_output.get(field_name)
+        if not isinstance(raw_items, list):
+            continue
+        item_cls = _find_model_class(getattr(field_info, "annotation", None))
+        path_key = f"{field_name}[]"
+        path_counts[path_key] = len(raw_items)
+        if item_cls is None:
+            continue
+
+        model_config = item_cls.model_config or {}
+        if not model_config.get("is_entity"):
+            continue
+
+        node_types[item_cls.__name__] = len(raw_items)
+        node_count += len(raw_items)
+
+        edge_label = ((field_info.json_schema_extra or {}) if hasattr(field_info, "json_schema_extra") else {}).get("edge_label")
+        if edge_label:
+            edge_count += len(raw_items)
+            edge_types[edge_label] = edge_types.get(edge_label, 0) + len(raw_items)
+
+    return {
+        "node_count": node_count,
+        "edge_count": edge_count,
+        "node_types": node_types,
+        "edge_types": edge_types,
+        "path_counts": path_counts,
+    }

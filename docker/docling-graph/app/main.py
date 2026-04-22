@@ -322,6 +322,7 @@ from app.evidence_gate import (
     collect_batch_evidence_text as _collect_batch_evidence_text,
     filter_pass_output_by_batch_text as _filter_pass_output_by_batch_text,
     filter_provenance_rows_by_allowed_identities as _filter_provenance_rows_by_allowed_identities,
+    summarize_pass_output as _summarize_pass_output,
 )
 from app.provenance import build_provenance_from_context
 from app.schemas import (
@@ -855,15 +856,28 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             evidence_text,
         )
         pass_output = filtered_pass_output
+        filtered_counts = _summarize_pass_output(pass_output, template_cls)
+        metadata.node_count = filtered_counts["node_count"]
+        metadata.edge_count = filtered_counts["edge_count"]
+        metadata.node_types = filtered_counts["node_types"]
+        metadata.edge_types = filtered_counts["edge_types"]
+        node_count_for_log = metadata.node_count
+        edge_count_for_log = metadata.edge_count
         provenance_rows = _filter_provenance_rows_by_allowed_identities(
             provenance_rows,
             allowed_identities,
         )
-        if service_filter_stats:
-            diagnostics = getattr(context, "_delta_trace", None) or {}
-            diagnostics["service_identity_gate"] = service_filter_stats
-            diagnostics["service_identity_gate"]["evidence_text_nonempty"] = bool(evidence_text)
-            context._delta_trace = diagnostics
+        diagnostics = getattr(context, "_delta_trace", None) or {}
+        diagnostics["service_identity_gate"] = service_filter_stats or {
+            "dropped_entities_by_field": {},
+            "dropped_entity_examples": {},
+        }
+        diagnostics["service_identity_gate"]["evidence_text_nonempty"] = bool(evidence_text)
+        diagnostics["service_post_filter_counts"] = filtered_counts
+        if "path_counts" in diagnostics:
+            diagnostics["raw_path_counts"] = diagnostics.get("path_counts", {})
+        diagnostics["path_counts"] = filtered_counts["path_counts"]
+        context._delta_trace = diagnostics
 
         return ExtractPassResponse(
             bundle_key=body.bundle_key,
