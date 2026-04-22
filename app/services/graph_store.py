@@ -704,6 +704,22 @@ class GraphStore(Protocol):
         """
         ...
 
+    def get_document_edges_sync(
+        self,
+        document_id: str,
+    ) -> list[dict]:
+        """Return all edges carrying this document's id in their provenance.
+
+        Structural edges (HAS_SECTION / HAS_FIGURE / NEAR_TEXT / CONTAINS_*
+        etc.) store a single ``document_id`` property; domain edges
+        (ASSOCIATED_WITH / CUES / EXTRACTED_FROM etc.) store
+        ``document_ids`` as a LIST that unions every document that
+        asserted the same triple. The query covers both cases.
+        Returns raw dicts with at least ``@type`` / ``rel_type`` and the
+        endpoint names (``_from_label``, ``_to_label``) for display.
+        """
+        ...
+
     def close_sync(self) -> None:
         """Release any held resources (connections, thread pools, etc.)."""
         ...

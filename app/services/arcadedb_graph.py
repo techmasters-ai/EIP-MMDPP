@@ -2567,6 +2567,52 @@ class ArcadeDBGraphStore:
             self._database, "sql", sql, {"doc_id": document_id},
         )
 
+    def get_document_edges_sync(
+        self,
+        document_id: str,
+    ) -> list[dict]:
+        """Return all edges whose provenance includes this document.
+
+        ArcadeDB keeps each edge type as its own top-level class (not as
+        a subclass of a shared `E`), so `SELECT FROM E` raises
+        SchemaException. Enumerate edge classes from `schema:types`,
+        then pull rows from each one that reference this document.
+
+        Structural edges carry `document_id` (scalar). Domain edges
+        carry `document_ids` (LIST unioned across documents — see
+        `_build_upsert_relationship_script`). Per-type queries cover
+        both shapes — an unknown-property predicate on one branch is
+        simply false, not an error.
+        """
+        edge_types_rows = self._client.query_sync(
+            self._database, "sql",
+            "SELECT name FROM schema:types WHERE type = 'edge'",
+        )
+        edge_types = [r.get("name") for r in edge_types_rows if r.get("name")]
+
+        all_rows: list[dict] = []
+        for etype in edge_types:
+            sql = (
+                f"SELECT @type AS `@type`, @rid AS `@rid`, "
+                f"  @out.name AS _from_label, @in.name AS _to_label, "
+                f"  rel_type, document_id, document_ids, "
+                f"  extraction_confidence "
+                f"FROM {etype} "
+                f"WHERE document_id = :doc_id "
+                f"   OR document_ids CONTAINS :doc_id"
+            )
+            try:
+                rows = self._client.query_sync(
+                    self._database, "sql", sql, {"doc_id": document_id},
+                )
+            except Exception as exc:
+                logger.debug(
+                    "get_document_edges_sync: skipped %s (%s)", etype, exc,
+                )
+                continue
+            all_rows.extend(rows)
+        return all_rows
+
     def close_sync(self) -> None:
         """Release any held resources."""
         self._client.close_sync()
