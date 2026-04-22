@@ -4417,6 +4417,12 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
                 continue
             graph_store.create_structural_edge_sync(
                 from_rid, to_rid, edge.rel_type,
+                properties={
+                    "document_id": str(document_id),
+                    "pipeline_run_id": str(run_id) if run_id is not None else None,
+                    "extraction_confidence": edge.confidence,
+                    "source": "docling_anchors",
+                },
             )
 
         # --- Metrics ------------------------------------------------------
@@ -4914,6 +4920,17 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             properties=doc_node_props,
         ))
 
+        # Provenance envelope re-used across every structural edge below so
+        # get_document_edges_sync (which filters on the edge's document_id
+        # property) can reach them. Without this each CONTAINS_TEXT /
+        # CONTAINS_IMAGE / SAME_PAGE row lands with document_id=None and
+        # becomes invisible to per-document queries.
+        _edge_props = {
+            "document_id": str(document_id),
+            "pipeline_run_id": str(run_id) if run_id is not None else None,
+            "source": "derive_structure_links",
+        }
+
         # Connect existing TextChunk/ImageChunk vertices (created in embedding stages) to Document
         # Use get_chunk_rid_sync to look up already-created vertices — do NOT re-create them
         tc_rid_map: dict[str, str] = {}
@@ -4921,7 +4938,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             tc_rid = graph_store.get_chunk_rid_sync(str(tc.id), "TextChunk")
             if tc_rid:
                 tc_rid_map[str(tc.id)] = tc_rid
-                graph_store.create_structural_edge_sync(doc_rid, tc_rid, "CONTAINS_TEXT")
+                graph_store.create_structural_edge_sync(
+                    doc_rid, tc_rid, "CONTAINS_TEXT", properties=_edge_props,
+                )
             else:
                 logger.warning("derive_structure_links: TextChunk vertex not found for chunk %s", tc.id)
 
@@ -4930,7 +4949,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             ic_rid = graph_store.get_chunk_rid_sync(str(ic.id), "ImageChunk")
             if ic_rid:
                 ic_rid_map[str(ic.id)] = ic_rid
-                graph_store.create_structural_edge_sync(doc_rid, ic_rid, "CONTAINS_IMAGE")
+                graph_store.create_structural_edge_sync(
+                    doc_rid, ic_rid, "CONTAINS_IMAGE", properties=_edge_props,
+                )
             else:
                 logger.warning("derive_structure_links: ImageChunk vertex not found for chunk %s", ic.id)
 
@@ -4946,7 +4967,9 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                         continue
                     # SAME_PAGE edges between text and image chunks using resolved RIDs
                     try:
-                        graph_store.create_structural_edge_sync(tc_rid, ic_rid, "SAME_PAGE")
+                        graph_store.create_structural_edge_sync(
+                            tc_rid, ic_rid, "SAME_PAGE", properties=_edge_props,
+                        )
                     except Exception:
                         pass  # Best-effort for cross-chunk edges
 
@@ -4954,14 +4977,18 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
         # SAME_ARTIFACT) with weight properties, mirroring the Postgres
         # chunk_links. These enable ArcadeDB-native retrieval expansion.
         structural_edge_sql = []
-        structural_params: dict[str, Any] = {}
+        structural_params: dict[str, Any] = {
+            "_doc_id": str(document_id),
+            "_pipeline_run_id": str(run_id) if run_id is not None else None,
+        }
         edge_idx = 0
 
         def _add_structural_edge(from_rid: str, to_rid: str, link_type: str, weight: float) -> None:
             nonlocal edge_idx
             structural_edge_sql.append(
                 f"CREATE EDGE {link_type} FROM {from_rid} TO {to_rid} "
-                f"SET weight = :w_{edge_idx}, created_at = sysdate()"
+                f"SET weight = :w_{edge_idx}, document_id = :_doc_id, "
+                f"pipeline_run_id = :_pipeline_run_id, created_at = sysdate()"
             )
             structural_params[f"w_{edge_idx}"] = weight
             edge_idx += 1
@@ -5147,6 +5174,8 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
             try:
                 entity_links = graph_store.batch_create_entity_chunk_edges_sync(
                     entity_edge_records,
+                    document_id=str(document_id),
+                    pipeline_run_id=str(run_id) if run_id is not None else None,
                 )
             except Exception as exc:
                 logger.warning(

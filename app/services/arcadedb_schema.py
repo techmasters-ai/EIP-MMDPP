@@ -108,6 +108,7 @@ _COMMON_ENTITY_PROPS = [
 # Common properties on ontology relationship edge types
 _COMMON_EDGE_PROPS = [
     ("document_ids", "LIST"),
+    ("pipeline_run_id", "STRING"),
     ("extraction_confidence", "DOUBLE"),
     ("created_at", "DATETIME"),
     ("updated_at", "DATETIME"),
@@ -116,6 +117,7 @@ _COMMON_EDGE_PROPS = [
 # Common properties on structural edge types
 _STRUCTURAL_EDGE_PROPS = [
     ("document_id", "STRING"),
+    ("pipeline_run_id", "STRING"),
     ("extraction_confidence", "DOUBLE"),
     ("created_at", "DATETIME"),
     ("page_numbers", "LIST"),

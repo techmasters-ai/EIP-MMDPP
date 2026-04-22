@@ -604,8 +604,15 @@ class GraphStore(Protocol):
     def batch_create_entity_chunk_edges_sync(
         self,
         edges: list[EntityChunkEdge],
+        document_id: str | None = None,
+        pipeline_run_id: str | None = None,
     ) -> int:
         """Create EXTRACTED_FROM edges from entities (by name+type) to chunk RIDs in a single batched call.
+
+        ``document_id`` / ``pipeline_run_id`` are persisted on every edge so
+        per-document edge queries (``get_document_edges_sync``) can reach
+        these rows. Both default to ``None`` for backward compatibility;
+        callers that know them should pass them.
 
         Returns the number of edges attempted (not necessarily created — entities
         that cannot be resolved silently result in no-op sub-statements).

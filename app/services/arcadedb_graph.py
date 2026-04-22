@@ -733,11 +733,17 @@ class ArcadeDBGraphStore:
         sql = (
             f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
-            "SET page_numbers = :page_numbers, created_at = sysdate()"
+            "SET document_id = :document_id, pipeline_run_id = :pipeline_run_id, "
+            "page_numbers = :page_numbers, "
+            "upload_datetime = :upload_datetime, document_datetime = :document_datetime, "
+            "created_at = sysdate()"
         )
         params = {
             "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
             "page_numbers": provenance.page_numbers,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
         }
         await self._client.command(self._database, "sql", sql, params)
 
@@ -770,13 +776,21 @@ class ArcadeDBGraphStore:
         statements: list[str] = []
         params: dict[str, Any] = {
             "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
             "page_numbers": provenance.page_numbers,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
         }
         for rid in targets:
             statements.append(
                 f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
-                f"SET page_numbers = :page_numbers, created_at = sysdate()"
+                f"SET document_id = :document_id, "
+                f"pipeline_run_id = :pipeline_run_id, "
+                f"page_numbers = :page_numbers, "
+                f"upload_datetime = :upload_datetime, "
+                f"document_datetime = :document_datetime, "
+                f"created_at = sysdate()"
             )
         await self._client.command(
             self._database, "sqlscript", ";\n".join(statements), params,
@@ -1850,11 +1864,17 @@ class ArcadeDBGraphStore:
         sql = (
             f"CREATE EDGE HAS_PROVENANCE FROM {node_rid} "
             "TO (SELECT FROM Document WHERE document_id = :document_id) "
-            "SET page_numbers = :page_numbers, created_at = sysdate()"
+            "SET document_id = :document_id, pipeline_run_id = :pipeline_run_id, "
+            "page_numbers = :page_numbers, "
+            "upload_datetime = :upload_datetime, document_datetime = :document_datetime, "
+            "created_at = sysdate()"
         )
         params = {
             "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
             "page_numbers": provenance.page_numbers,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
         }
         self._client.command_sync(self._database, "sql", sql, params)
 
@@ -1947,13 +1967,21 @@ class ArcadeDBGraphStore:
         statements: list[str] = []
         params: dict[str, Any] = {
             "document_id": provenance.document_id,
+            "pipeline_run_id": provenance.pipeline_run_id,
             "page_numbers": provenance.page_numbers,
+            "upload_datetime": provenance.upload_datetime,
+            "document_datetime": provenance.document_datetime,
         }
         for rid in targets:
             statements.append(
                 f"CREATE EDGE HAS_PROVENANCE FROM {rid} "
                 f"TO (SELECT FROM Document WHERE document_id = :document_id) "
-                f"SET page_numbers = :page_numbers, created_at = sysdate()"
+                f"SET document_id = :document_id, "
+                f"pipeline_run_id = :pipeline_run_id, "
+                f"page_numbers = :page_numbers, "
+                f"upload_datetime = :upload_datetime, "
+                f"document_datetime = :document_datetime, "
+                f"created_at = sysdate()"
             )
         self._client.command_sync(
             self._database, "sqlscript", ";\n".join(statements), params,
@@ -2086,6 +2114,8 @@ class ArcadeDBGraphStore:
     def batch_create_entity_chunk_edges_sync(
         self,
         edges: list[EntityChunkEdge],
+        document_id: str | None = None,
+        pipeline_run_id: str | None = None,
     ) -> int:
         """Create EXTRACTED_FROM edges in a single sqlscript call.
 
@@ -2097,6 +2127,12 @@ class ArcadeDBGraphStore:
         breaks during the migration window — a WARNING is logged so
         the fallback is visible.
 
+        When ``document_id`` / ``pipeline_run_id`` are supplied they're
+        persisted on every emitted edge so ``get_document_edges_sync``
+        can return these rows. Both default to ``None`` only for
+        backward compatibility; ``derive_structure_links`` always
+        passes them.
+
         Rows where the subquery resolves to zero vertices become
         no-ops; the batch stays intact.
         """
@@ -2104,6 +2140,13 @@ class ArcadeDBGraphStore:
             return 0
         statements: list[str] = []
         params: dict[str, Any] = {}
+        doc_set = ""
+        if document_id is not None:
+            params["_doc_id"] = document_id
+            doc_set += ", document_id = :_doc_id"
+        if pipeline_run_id is not None:
+            params["_pipeline_run_id"] = pipeline_run_id
+            doc_set += ", pipeline_run_id = :_pipeline_run_id"
         fallback_count = 0
         for i, edge in enumerate(edges):
             params[f"rid_{i}"] = edge.chunk_rid
@@ -2114,7 +2157,7 @@ class ArcadeDBGraphStore:
                 statements.append(
                     f"CREATE EDGE EXTRACTED_FROM "
                     f"FROM :src_{i} TO :rid_{i} "
-                    f"SET entity_id = :eid_{i}, created_at = sysdate()"
+                    f"SET entity_id = :eid_{i}, created_at = sysdate(){doc_set}"
                 )
             else:
                 # Legacy path — name+type subquery. LIMIT 1 means siblings
@@ -2128,7 +2171,7 @@ class ArcadeDBGraphStore:
                     f"CREATE EDGE EXTRACTED_FROM "
                     f"FROM (SELECT FROM {edge.entity_type} "
                     f"WHERE name = :name_{i} AND entity_type = :etype_{i} LIMIT 1) "
-                    f"TO :rid_{i} SET created_at = sysdate()"
+                    f"TO :rid_{i} SET created_at = sysdate(){doc_set}"
                 )
         if fallback_count:
             logger.warning(
