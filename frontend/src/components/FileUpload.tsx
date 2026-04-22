@@ -377,7 +377,7 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
             ? "Click to select a directory, or drag & drop files here"
             : "Click to select files, or drag & drop here"}
         </div>
-        <div className="drop-zone-sub">PDF, DOCX, PPTX, XLSX, HTML, Markdown, CSV, TXT, PNG, JPG, TIFF, BMP, GIF, WebP</div>
+        <div className="drop-zone-sub">PDF, Office (DOCX/PPTX/XLSX), HTML, Markdown, AsciiDoc, LaTeX, CSV, TXT, Images (PNG/JPG/GIF/BMP/TIFF/WebP), XML, JSON (Docling), Audio (MP3/WAV/M4A/FLAC/OGG), VTT</div>
 
         <input
           ref={fileInputRef}
@@ -387,7 +387,9 @@ export function FileUpload({ entries, setEntries, selectedSourceId, setSelectedS
           webkitdirectory={directoryMode ? "" : undefined}
           style={{ display: "none" }}
           onChange={onFileInput}
-          accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.html,.htm,.md,.csv,.txt,.png,.jpg,.jpeg,.tiff,.tif,.bmp,.gif,.webp"
+          // Mirrors docker/docling/app/converter.py allowed_formats. Keep in
+          // sync when adding formats backend-side.
+          accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.html,.htm,.md,.markdown,.adoc,.asciidoc,.tex,.csv,.txt,.png,.jpg,.jpeg,.tiff,.tif,.bmp,.gif,.webp,.xml,.json,.mp3,.wav,.m4a,.flac,.ogg,.vtt"
         />
       </div>
 

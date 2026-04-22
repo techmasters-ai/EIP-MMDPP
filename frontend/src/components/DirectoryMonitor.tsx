@@ -24,7 +24,10 @@ export function DirectoryMonitor() {
   const [formPath, setFormPath] = useState("");
   const [formSourceId, setFormSourceId] = useState("");
   const [formInterval, setFormInterval] = useState("30");
-  const [formPatterns, setFormPatterns] = useState("*.pdf,*.docx,*.doc,*.pptx,*.ppt,*.xlsx,*.xls,*.html,*.htm,*.md,*.csv,*.txt,*.png,*.jpg,*.jpeg,*.tiff,*.tif,*.bmp,*.gif,*.webp");
+  // Default glob mirrors docker/docling/app/converter.py allowed_formats
+  // + the watcher fallback in app/workers/watcher.py. Keep in sync when
+  // adding formats backend-side.
+  const [formPatterns, setFormPatterns] = useState("*.pdf,*.docx,*.doc,*.pptx,*.ppt,*.xlsx,*.xls,*.html,*.htm,*.md,*.markdown,*.adoc,*.asciidoc,*.tex,*.csv,*.txt,*.png,*.jpg,*.jpeg,*.tiff,*.tif,*.bmp,*.gif,*.webp,*.xml,*.mp3,*.wav,*.m4a,*.flac,*.ogg,*.vtt");
   const [submitting, setSubmitting] = useState(false);
 
   const refresh = useCallback(async () => {
