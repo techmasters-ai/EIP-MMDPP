@@ -268,13 +268,13 @@ class MissileSystemEntity(BaseModel):
             "Primary guidance method used to drive the missile to intercept. "
             "Enum values and meanings: "
             "COMMAND = ground station computes aim and uplinks guidance "
-            "(SA-2, early SA-3); "
+            "from an external control unit; "
             "BEAM_RIDING = missile rides the radar beam to target; "
             "SARH = semi-active radar homing (missile homes on target-"
             "illuminated RF energy; target illumination from a separate "
-            "radar — common for Patriot PAC-2, SM-2); "
+            "radar); "
             "ARH = active radar homing (missile carries its own seeker "
-            "radar — modern: PAC-3, AMRAAM, Meteor); "
+            "radar); "
             "IR = passive infrared homing; "
             "TVM = track-via-missile (missile relays target data back to "
             "ground, hybrid command + SARH); "
@@ -283,7 +283,6 @@ class MissileSystemEntity(BaseModel):
             "DUAL_MODE = combines two modes (e.g. IR + radar). "
             "Many modern missiles combine phases: MID_COURSE + TERMINAL."
         ),
-        examples=["COMMAND", "SARH", "ARH", "TVM"],
     )
     seeker_type: Optional[str] = Field(
         default=None,
@@ -292,18 +291,16 @@ class MissileSystemEntity(BaseModel):
             "ACTIVE_RADAR = onboard radar illuminator + receiver (PAC-3, "
             "AMRAAM); "
             "SEMI_ACTIVE_RADAR = receives target echoes from a separate "
-            "illuminating radar (SM-2, early Patriot); "
+            "illuminating radar; "
             "PASSIVE_RADAR = detects target's own RF emissions (anti-"
             "radiation missiles); "
-            "IR = infrared / thermal (Stinger, AIM-9 Sidewinder, IR-guided "
-            "MANPADS); "
-            "DUAL_MODE = IR + radar (SM-6 dual-mode); "
-            "ARM = anti-radiation homing (HARM, KH-31P); "
+            "IR = infrared / thermal guidance; "
+            "DUAL_MODE = IR + radar; "
+            "ARM = anti-radiation homing; "
             "GPS_INS = navigation-based (no terminal seeker); "
             "COMMAND = no onboard seeker, ground-uplink guidance only "
-            "(SA-2)."
+            "from an external control unit."
         ),
-        examples=["ACTIVE_RADAR", "SEMI_ACTIVE_RADAR", "IR"],
     )
 
     # Physical Characteristics
@@ -321,33 +318,27 @@ class MissileSystemEntity(BaseModel):
         description=(
             "Overall missile body length in meters, nose-tip to tail "
             "(booster included if permanently attached). Typical SAM "
-            "ranges: short-range MANPADS 1.5 m; medium SAMs (Hawk, SA-6) "
-            "5-6 m; long-range SAMs (SA-2, Patriot) 7-11 m. If source "
+            "ranges vary by class. If source "
             "gives feet, multiply by 0.3048."
         ),
-        examples=[7.5, 5.2, 1.5],
     )
     body_diameter_m: Optional[float] = Field(
         default=None,
         description=(
             "Missile body diameter (airframe cross-section) in meters. "
-            "Typical SAM diameters: MANPADS 0.07 m; medium SAMs 0.2-0.4 "
-            "m; long-range SAMs 0.5-0.7 m. If source gives inches, "
+            "If source gives inches, "
             "multiply by 0.0254; if centimeters, divide by 100."
         ),
-        examples=[0.5, 0.2, 0.07],
     )
     total_mass_kg: Optional[float] = Field(
         default=None,
         description=(
             "Total missile launch mass in kilograms (all stages + "
-            "warhead + fuel). Typical: MANPADS 10-20 kg; medium SAMs "
-            "200-700 kg; long-range SAMs 1500-3000 kg. If source gives "
+            "warhead + fuel). If source gives "
             "pounds, divide by 2.205. "
             "Note: the MDE checklist unit column shows 'deg' in row 20 — "
             "that's a source typo; this field is mass in kg."
         ),
-        examples=[2320.0, 700.0, 15.0],
     )
 
     # Performance Characteristics
@@ -355,20 +346,17 @@ class MissileSystemEntity(BaseModel):
         default=None,
         description=(
             "Average in-flight speed in meters per second (averaged over "
-            "powered + coast phases). Typical SAM averages: 500-1500 "
-            "m/s (Mach 1.5-4.5). If source gives Mach, multiply by ~340 "
+            "powered + coast phases). If source gives Mach, multiply by ~340 "
             "(sea-level Mach ≈ 340 m/s). If km/h, divide by 3.6."
         ),
-        examples=[500.0, 1000.0],
     )
     max_speed_mps: Optional[float] = Field(
         default=None,
         description=(
             "Peak in-flight speed in meters per second (typically reached "
-            "at end of boost phase). Long-range SAMs can exceed 2000 m/s "
-            "(Mach 6+). Same unit-conversion rules as average_speed_mps."
+            "at end of boost phase). Same unit-conversion rules as "
+            "average_speed_mps."
         ),
-        examples=[1000.0, 2500.0],
     )
     max_flyout_time_sec: Optional[float] = Field(
         default=None,
@@ -510,11 +498,8 @@ class MissileSystemEntity(BaseModel):
         default=None,
         description=(
             "Overall extraction confidence for this missile instance, "
-            "0-1. Combines identity certainty + parametric confidence. "
-            "Use 0.9-1.0 when identity is from a table/figure caption and "
-            "parameters are explicit; 0.5-0.8 for prose mentions with "
-            "partial parameters; <0.5 for inferred / reconstructed values. "
-            "System-populated — leave null if unsure."
+            "0-1. System-populated field. Leave null unless the document "
+            "itself explicitly provides a confidence value."
         ),
         ge=0.0, le=1.0,
         json_schema_extra={"system_field": True},

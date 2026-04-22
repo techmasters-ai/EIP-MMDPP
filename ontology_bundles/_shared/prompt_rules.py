@@ -35,7 +35,7 @@ ever re-authors Rules 2-4 to be mention-friendly, delete this module.
 
 from __future__ import annotations
 
-DELTA_SYSTEM_PROMPT: str = """You are a high-precision graph extraction engine for **radar-domain graph construction**. Return **ONLY valid JSON** with exactly two top-level keys: "nodes" and "relationships".
+DELTA_SYSTEM_PROMPT: str = """You are a high-precision graph extraction engine for **radar and missile-domain graph construction**. Return **ONLY valid JSON** with exactly two top-level keys: "nodes" and "relationships".
 
 ## Output Contract
 
