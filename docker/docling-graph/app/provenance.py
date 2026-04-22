@@ -34,9 +34,104 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, get_args, get_origin
+
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+def _find_model_class(annotation: Any) -> type[BaseModel] | None:
+    """Return the first BaseModel subclass reached through the annotation
+    (unwraps Optional / List / etc.)."""
+    origin = get_origin(annotation)
+    if origin is None:
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return annotation
+        return None
+    for arg in get_args(annotation):
+        nested = _find_model_class(arg)
+        if nested is not None:
+            return nested
+    return None
+
+
+def synthesize_provenance_from_pass_output(
+    pass_output: dict[str, Any],
+    template_cls: type[BaseModel],
+    chunk_to_self_refs: dict[int, list[str]] | None,
+    provenance_cls: type,
+) -> list[Any]:
+    """Emit one ExtractionProvenance row per entity in ``pass_output``.
+
+    Used as a fallback when ``build_provenance_from_context`` returns [].
+    The library's salvage path (missing_root_instance → empty_output →
+    legacy prompt-schema retry → direct mode) populates the knowledge
+    graph with nodes but drops the element-tracking attributes
+    (chunk_indexes / self_ref / element_uid), so the pass response ends
+    up carrying entities with no provenance rows — downstream mentions
+    are empty, EXTRACTED_FROM never fires, entities aren't reachable
+    from the Document vertex.
+
+    This synthesizer walks ``template_cls.model_fields`` to find
+    is_entity=True list fields, and emits a minimal
+    ``ExtractionProvenance`` per entry:
+
+    * ``instance_id`` — a fresh UUID (entity identity dedup is
+      downstream's job)
+    * ``ontology_name`` — item_cls ``model_config.ontology_name`` if
+      set, else the class name
+    * ``identity_values`` — copied from identity_fields of the item
+    * ``element_uid`` — first self_ref from chunk 0 (via
+      chunk_to_self_refs) if available, else empty
+    * ``page`` / ``chunk_index`` — None / 0
+
+    Coarse but deterministic. Enough to seed MENTIONED_IN /
+    EXTRACTED_FROM edges so the entity reaches chunk provenance.
+    """
+    if not isinstance(pass_output, dict):
+        return []
+
+    if chunk_to_self_refs:
+        first_refs = chunk_to_self_refs.get(0) or next(
+            iter(chunk_to_self_refs.values()), None
+        )
+        first_element_uid = first_refs[0] if first_refs else ""
+    else:
+        first_element_uid = ""
+
+    out: list[Any] = []
+    for field_name, field_info in template_cls.model_fields.items():
+        items = pass_output.get(field_name)
+        if not isinstance(items, list) or not items:
+            continue
+        item_cls = _find_model_class(getattr(field_info, "annotation", None))
+        if item_cls is None:
+            continue
+        model_config = item_cls.model_config or {}
+        if not model_config.get("is_entity"):
+            continue
+
+        ontology_name = str(model_config.get("ontology_name") or item_cls.__name__)
+        id_fields = tuple(model_config.get("graph_id_fields", []) or [])
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            identity_values = {
+                f: item.get(f) for f in id_fields if item.get(f) is not None
+            }
+            out.append(
+                provenance_cls(
+                    instance_id=str(uuid.uuid4()),
+                    ontology_name=ontology_name,
+                    identity_values=identity_values,
+                    element_uid=first_element_uid,
+                    page=None,
+                    chunk_index=0 if chunk_to_self_refs else None,
+                )
+            )
+    return out
 
 
 def _is_entity_label(label: Any) -> bool:

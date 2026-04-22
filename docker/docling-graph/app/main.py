@@ -325,7 +325,10 @@ from app.evidence_gate import (
     filter_provenance_rows_by_allowed_identities as _filter_provenance_rows_by_allowed_identities,
     summarize_pass_output as _summarize_pass_output,
 )
-from app.provenance import build_provenance_from_context
+from app.provenance import (
+    build_provenance_from_context,
+    synthesize_provenance_from_pass_output,
+)
 from app.schemas import (
     ExtractionMetadata,
     ExtractionProvenance,
@@ -849,6 +852,26 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 body.document_id, body.bundle_key, body.pass_name, exc,
             )
             provenance_rows = []
+
+        # Fallback: when the library's salvage path (missing_root_instance
+        # / empty_output → legacy prompt-schema retry → direct mode) drops
+        # chunk-tracking attributes from the knowledge_graph, the primary
+        # path returns []. Synthesize one row per pass_output entity so
+        # downstream MENTIONED_IN / EXTRACTED_FROM edges can still fire.
+        if not provenance_rows:
+            provenance_rows = synthesize_provenance_from_pass_output(
+                pass_output,
+                template_cls,
+                chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
+                provenance_cls=ExtractionProvenance,
+            )
+            if provenance_rows:
+                logger.info(
+                    "extract-pass: synthesized %d provenance rows from "
+                    "pass_output for document_id=%s bundle=%s pass=%s "
+                    "(library knowledge_graph path yielded none)",
+                    len(provenance_rows), body.document_id, body.bundle_key, body.pass_name,
+                )
 
         evidence_text = _collect_batch_evidence_text(body.docling_document_json)
         filtered_pass_output, service_filter_stats, allowed_identities = _filter_pass_output_by_batch_text(
