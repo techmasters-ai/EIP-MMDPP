@@ -1356,6 +1356,77 @@ def _cleanup_stale_runs(sender, **kwargs):
         db.close()
 
 
+def _sweep_stale_runs() -> int:
+    """Mark stage_runs stuck at RUNNING beyond the configured threshold as FAILED.
+
+    Returns the number of rows swept. Intended to be called from a periodic
+    Celery-beat task — complements `_cleanup_stale_runs` (which only runs on
+    worker startup) by catching mid-session orphans on long-lived workers.
+    """
+    from sqlalchemy import text
+
+    threshold = settings.stale_stage_run_threshold_seconds
+    db = _get_db()
+    try:
+        stale = db.execute(
+            text(
+                """
+                SELECT id, pipeline_run_id
+                FROM ingest.stage_runs
+                WHERE status = 'RUNNING'
+                  AND started_at < NOW() - make_interval(secs => :threshold)
+                """
+            ),
+            {"threshold": threshold},
+        ).fetchall()
+
+        if not stale:
+            return 0
+
+        sr_ids = [row[0] for row in stale]
+        pr_ids = list({row[1] for row in stale})
+
+        db.execute(
+            text(
+                """
+                UPDATE ingest.stage_runs
+                SET status = 'FAILED',
+                    finished_at = NOW(),
+                    error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                WHERE id = ANY(:ids)
+                """
+            ),
+            {"ids": sr_ids},
+        )
+
+        db.execute(
+            text(
+                """
+                UPDATE ingest.pipeline_runs
+                SET status = 'FAILED',
+                    finished_at = COALESCE(finished_at, NOW()),
+                    error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                WHERE id = ANY(:ids) AND status = 'PROCESSING'
+                """
+            ),
+            {"ids": pr_ids},
+        )
+
+        db.commit()
+        logger.warning(
+            "periodic_stale_run_sweep: marked %d stale stage_runs FAILED "
+            "(threshold=%ds, pipeline_runs affected=%d)",
+            len(sr_ids), threshold, len(pr_ids),
+        )
+        return len(sr_ids)
+    except Exception:
+        logger.exception("_sweep_stale_runs: rollback due to error")
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
 def _dedupe_extracted_elements(chunks: list) -> tuple[list, int]:
     """Remove exact duplicate extracted elements conservatively.
 
@@ -3473,7 +3544,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
         pictures_updated = 0
 
         if describable:
-            max_workers = min(3, len(describable))
+            max_workers = min(settings.picture_desc_concurrency, len(describable))
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
                     pool.submit(_describe_single_image, b64, prompt, model, timeout, settings): idx
