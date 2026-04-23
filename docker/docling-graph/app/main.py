@@ -123,12 +123,25 @@ def _patched_build_request(
         request["response_format"] = {"type": "json_schema", "json_schema": normalized}
         if is_ollama:
             # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope.
-            # Guard: if schema is very large (>50 properties), use simple json mode
-            # to avoid degenerate constrained decoding with huge schemas.
+            # Three gates, checked in order:
+            #   1. DOCLING_GRAPH_FORCE_JSON_MODE — kill switch for mid-size
+            #      models (<=30B) that fail constrained grammar. When set,
+            #      always use loose `format="json"`. gemma4:26b in particular
+            #      truncates string values mid-generation under the grammar,
+            #      producing unterminated-string JSON parse errors.
+            #   2. Schema size > threshold — large schemas degrade
+            #      constrained decoding, also fall through to loose json.
+            #   3. Otherwise send the raw schema.
             from app.config import settings as _service_settings
             schema_str = json.dumps(schema_dict)
             threshold = _service_settings.structured_output_threshold_chars
-            if len(schema_str) > threshold:
+            if _service_settings.force_json_mode:
+                _logger.info(
+                    "DOCLING_GRAPH_FORCE_JSON_MODE=true; using format='json' "
+                    "for %s (schema %d chars)", model_name, len(schema_str),
+                )
+                request["format"] = "json"
+            elif len(schema_str) > threshold:
                 _logger.info("Schema too large for Ollama format= (%d chars), using format='json'", len(schema_str))
                 request["format"] = "json"
             else:

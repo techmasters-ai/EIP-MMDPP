@@ -15,10 +15,25 @@ from ontology_bundles._shared.limits import DEFAULT_STRUCTURED_OUTPUT_THRESHOLD_
 
 
 class ServiceSettings(BaseSettings):
-    """PR 1 scope: only structured_output_threshold_chars.
-    Do NOT add more keys in this PR — other scattered config stays in place."""
+    """Docling-graph service runtime settings (DOCLING_GRAPH_* env prefix)."""
 
+    # Char budget for the raw JSON Schema string. Schemas exceeding this
+    # fall through to loose `format="json"` on Ollama rather than the
+    # constrained grammar, because large schemas degrade constrained-
+    # decoding quality.
     structured_output_threshold_chars: int = DEFAULT_STRUCTURED_OUTPUT_THRESHOLD_CHARS
+
+    # Kill switch for Ollama schema-grammar constrained decoding. When
+    # true, every extraction request uses `format="json"` regardless of
+    # schema size. Set this for mid-size models (<=30B) that fail on the
+    # constraint — gemma4:26b in particular truncates string values
+    # mid-generation because it can't predict tokens consistent with
+    # the grammar, producing unterminated-string JSON parse errors.
+    # Pydantic still validates the loose JSON against the template
+    # downstream via evidence_gate + apply_bundle_postprocessing, so
+    # loose mode doesn't relax schema validation — it only relaxes
+    # Ollama's token-level constraint.
+    force_json_mode: bool = False
 
     class Config:
         env_prefix = "DOCLING_GRAPH_"

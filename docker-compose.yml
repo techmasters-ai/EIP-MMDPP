@@ -169,6 +169,12 @@ services:
       OLLAMA_API_BASE: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
       DOCLING_GRAPH_LLM_THINK: ${DOCLING_GRAPH_LLM_THINK:-false}   # extraction think; use true|false for most models, low|medium|high only for gpt-oss
+      # Kill switch for Ollama schema-grammar constrained decoding.
+      # Set true for mid-size models (<=30B) that produce unterminated
+      # strings under format=<schema> (e.g. gemma4:26b). Loose
+      # format="json" replaces the constraint; Pydantic validates
+      # downstream so schema enforcement is preserved.
+      DOCLING_GRAPH_FORCE_JSON_MODE: ${DOCLING_GRAPH_FORCE_JSON_MODE:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       HF_TOKEN: ${HF_TOKEN:-}
