@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+from ontology_bundles.air_defense_v3.extraction_schemas.radar_domain import RadarDomainPass
 from ontology_bundles.air_defense_v3.extraction_schemas.missile_domain import MissileDomainPass
 from ontology_bundles.air_defense_v3.extraction_schemas.system_links import SystemLinksPass
 
@@ -69,6 +70,19 @@ def test_summarize_pass_output_matches_filtered_entity_counts():
     assert summary["node_types"] == {"MissileDomainPass": 1, "MissileSystemEntity": 1}
     assert summary["edge_types"] == {"CONTAINS": 1}
     assert summary["path_counts"] == {"": 1, "missile_systems[]": 1}
+
+
+def test_summarize_pass_output_matches_filtered_radar_counts():
+    summary = _EVIDENCE_GATE.summarize_pass_output(
+        {"radar_systems": [{"system_name": "Fan Song"}, {"system_name": "Spoon Rest"}]},
+        RadarDomainPass,
+    )
+
+    assert summary["node_count"] == 3
+    assert summary["edge_count"] == 2
+    assert summary["node_types"] == {"RadarDomainPass": 1, "RadarSystemEntity": 2}
+    assert summary["edge_types"] == {"CONTAINS": 2}
+    assert summary["path_counts"] == {"": 1, "radar_systems[]": 2}
 
 
 def test_summarize_pass_output_counts_system_links_dto_relationships():
@@ -146,6 +160,108 @@ def test_apply_bundle_postprocessing_rewrites_air_defense_fields_from_evidence()
         "max_altitude_km": 18.3,
     }
     assert missile_stats["status_cleared"] == ["SA-2"]
+
+
+def test_radar_postprocess_clears_unsupported_specs_and_recovers_spoon_rest():
+    evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
+        """
+        RSNA-75/SNR-75 Fan Song Engagement Radar
+        The Fan Song is the engagement radar for the S-75/SA-2 family of SAMs.
+        The SNR-75 family of radars employ a complex antenna arrangement.
+
+        S-75M Battery Components
+        SNR-75 PV Cabin / Fan Song 1 Radar head van
+        P-12M/P-18 Spoon Rest 1 Acquisition Radar
+
+        NITEL P-18-2/P-18M Spoon Rest D/E Acquisition Radar
+        """
+    )
+
+    radar_output, radar_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "radar_domain",
+        {
+            "radar_systems": [
+                {
+                    "system_name": "Fan Song",
+                    "nomenclature": "SNR-75",
+                    "emitter_function": "FIRE_CONTROL",
+                    "system_status": "OPERATIONAL",
+                    "responsible_agency": "IWC",
+                    "review_cycle": "annual",
+                    "next_review_date": "2026-06-30",
+                    "erp_dbw": 72.0,
+                    "tx_peak_power_kw": 150.0,
+                    "gain_dbi": 38.0,
+                    "antenna_dim_az_m": 4.5,
+                    "antenna_dim_el_m": 2.5,
+                    "beamwidth_az_deg": 1.5,
+                    "beamwidth_el_deg": 15.0,
+                    "spoiled": False,
+                    "coverage_limits_el_deg": 45.0,
+                    "nominal_rf_mhz": 3000.0,
+                    "nominal_pri_usec": 1000.0,
+                    "nominal_pd_usec": 0.5,
+                    "scan_type": "ELECTRONIC",
+                    "scan_period_sec": 4.0,
+                    "intra_pulse_mop": "LFM_CHIRP",
+                    "frequency_excursion_mhz": 10.0,
+                    "inter_pulse": "CONSTANT_PRI",
+                    "pulses_per_dwell": 16,
+                    "confidence": 0.9,
+                }
+            ]
+        },
+        evidence_text,
+    )
+
+    rows = {row["system_name"]: row for row in radar_output["radar_systems"]}
+    assert set(rows) == {"Fan Song", "Spoon Rest"}
+
+    fan_song = rows["Fan Song"]
+    assert fan_song["nomenclature"] == "SNR-75"
+    assert fan_song["emitter_function"] == "FIRE_CONTROL"
+    assert fan_song["system_status"] is None
+    assert fan_song["responsible_agency"] is None
+    assert fan_song["review_cycle"] is None
+    assert fan_song["next_review_date"] is None
+    assert fan_song["erp_dbw"] is None
+    assert fan_song["tx_peak_power_kw"] is None
+    assert fan_song["gain_dbi"] is None
+    assert fan_song["scan_type"] is None
+    assert fan_song["confidence"] is None
+
+    spoon_rest = rows["Spoon Rest"]
+    assert spoon_rest["system_name"] == "Spoon Rest"
+    assert spoon_rest["emitter_function"] == "SEARCH"
+    assert spoon_rest["nomenclature"] == "P-18-2/P-18M"
+
+    assert radar_stats["status_cleared"] == ["Fan Song"]
+    assert radar_stats["recalled_radars"] == ["Spoon Rest"]
+    assert radar_stats["unsupported_properties_cleared"]["Fan Song"] == [
+        "antenna_dim_az_m",
+        "antenna_dim_el_m",
+        "beamwidth_az_deg",
+        "beamwidth_el_deg",
+        "confidence",
+        "coverage_limits_el_deg",
+        "erp_dbw",
+        "frequency_excursion_mhz",
+        "gain_dbi",
+        "inter_pulse",
+        "intra_pulse_mop",
+        "next_review_date",
+        "nominal_pd_usec",
+        "nominal_pri_usec",
+        "nominal_rf_mhz",
+        "pulses_per_dwell",
+        "responsible_agency",
+        "review_cycle",
+        "scan_period_sec",
+        "scan_type",
+        "spoiled",
+        "tx_peak_power_kw",
+    ]
 
 
 def test_missile_postprocess_clears_recurring_sa2_hallucinated_properties():

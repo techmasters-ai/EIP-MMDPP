@@ -79,6 +79,24 @@ _SEEKER_TYPE_PATTERNS = {
     "GPS_INS": (r"\bGPS/INS\b", r"\bGPS INS\b"),
     "COMMAND": (r"\bCOMMAND GUIDANCE\b", r"\bNO ONBOARD SEEKER\b"),
 }
+_RADAR_RECALL_PATTERNS = {
+    "Fan Song": (
+        r"\bFAN SONG\b",
+    ),
+    "Spoon Rest": (
+        r"\bSPOON REST\b",
+    ),
+}
+_RADAR_NOMENCLATURE_PATTERNS = {
+    "Fan Song": (
+        (r"\bSNR-75\b", "SNR-75"),
+        (r"\bRSNA-75\b", "RSNA-75"),
+    ),
+    "Spoon Rest": (
+        (r"\bP-18-2/P-18M\b", "P-18-2/P-18M"),
+        (r"\bP-12M/P-18\b", "P-12M/P-18"),
+    ),
+}
 
 
 def normalize_evidence_text(value: str) -> str:
@@ -342,6 +360,119 @@ def _entity_in_context(identity: str, evidence_text: str, markers: tuple[str, ..
     return False
 
 
+def _infer_radar_emitter_function(system_name: Any, evidence_text: str) -> str | None:
+    if not isinstance(system_name, str):
+        return None
+    normalized_name = normalize_evidence_text(system_name)
+    if f"{normalized_name} GUIDANCE RADAR" in evidence_text:
+        return "FIRE_CONTROL"
+    if f"{normalized_name} ENGAGEMENT RADAR" in evidence_text:
+        return "FIRE_CONTROL"
+    if f"{normalized_name} ACQUISITION RADAR" in evidence_text:
+        return "SEARCH"
+    if _entity_in_context(system_name, evidence_text, ("ENGAGEMENT RADAR",), window=80):
+        return "FIRE_CONTROL"
+    if _entity_in_context(system_name, evidence_text, ("ACQUISITION RADAR", "SEARCH RADAR"), window=80):
+        return "SEARCH"
+    if _entity_in_context(
+        system_name,
+        evidence_text,
+        ("MISSILE GUIDANCE", "GUIDED UP TO", "GUIDED AGAINST ONE TARGET"),
+        window=80,
+    ):
+        return "FIRE_CONTROL"
+    if _entity_in_context(system_name, evidence_text, ("DETECTED INCOMING AIRCRAFT",), window=80):
+        return "SEARCH"
+    return None
+
+
+def _find_explicit_radar_nomenclature(system_name: Any, evidence_text: str) -> str | None:
+    if not isinstance(system_name, str):
+        return None
+    for pattern, value in _RADAR_NOMENCLATURE_PATTERNS.get(system_name, ()):
+        if re.search(pattern, evidence_text):
+            return value
+    return None
+
+
+def _clear_unsupported_radar_properties(item: dict[str, Any], evidence_text: str) -> list[str]:
+    cleared: list[str] = []
+
+    exact_text_fields = (
+        "nomenclature",
+        "elnot",
+        "dieqp",
+        "asrd",
+        "responsible_agency",
+        "review_cycle",
+        "next_review_date",
+        "dwell_time",
+        "scan_type",
+        "intra_pulse_mop",
+        "inter_pulse",
+    )
+    for field_name in exact_text_fields:
+        if item.get(field_name) is not None and not _value_is_quoted_in_text(item.get(field_name), evidence_text):
+            item[field_name] = None
+            cleared.append(field_name)
+
+    strict_null_fields = (
+        "erp_dbw",
+        "tx_peak_power_kw",
+        "gain_dbi",
+        "antenna_photo",
+        "antenna_dim_az_m",
+        "antenna_dim_el_m",
+        "beamwidth_az_deg",
+        "beamwidth_el_deg",
+        "spoiled",
+        "coverage_limits_el_deg",
+        "nominal_rf_mhz",
+        "nominal_pri_usec",
+        "nominal_pd_usec",
+        "scan_period_sec",
+        "frequency_excursion_mhz",
+        "num_bits_in_code",
+        "pulses_per_dwell",
+        "confidence",
+    )
+    for field_name in strict_null_fields:
+        if item.get(field_name) is not None:
+            item[field_name] = None
+            cleared.append(field_name)
+
+    return cleared
+
+
+def _recover_explicit_radars(
+    radar_rows: list[Any],
+    evidence_text: str,
+) -> tuple[list[Any], list[str]]:
+    recovered_rows = list(radar_rows)
+    recovered_names: list[str] = []
+    existing = {
+        normalize_evidence_text(row.get("system_name"))
+        for row in radar_rows
+        if isinstance(row, dict) and isinstance(row.get("system_name"), str)
+    }
+
+    for system_name, patterns in _RADAR_RECALL_PATTERNS.items():
+        normalized_name = normalize_evidence_text(system_name)
+        if normalized_name in existing:
+            continue
+        if not any(re.search(pattern, evidence_text) for pattern in patterns):
+            continue
+        recovered: dict[str, Any] = {"system_name": system_name}
+        nomenclature = _find_explicit_radar_nomenclature(system_name, evidence_text)
+        if nomenclature is not None:
+            recovered["nomenclature"] = nomenclature
+        recovered_rows.append(recovered)
+        recovered_names.append(system_name)
+        existing.add(normalized_name)
+
+    return recovered_rows, recovered_names
+
+
 def _postprocess_air_defense_radars(
     pass_output: dict[str, Any],
     evidence_text: str,
@@ -351,9 +482,12 @@ def _postprocess_air_defense_radars(
     if not isinstance(radar_rows, list):
         return updated, {}
 
+    radar_rows, recovered_names = _recover_explicit_radars(radar_rows, evidence_text)
     stats: dict[str, Any] = {
         "status_cleared": [],
         "emitter_function_overrides": {},
+        "recalled_radars": recovered_names,
+        "unsupported_properties_cleared": {},
     }
     cleaned_rows: list[Any] = []
 
@@ -363,29 +497,13 @@ def _postprocess_air_defense_radars(
             continue
         item = dict(row)
         system_name = item.get("system_name")
-        if isinstance(system_name, str):
-            normalized_name = normalize_evidence_text(system_name)
-            if f"{normalized_name} GUIDANCE RADAR" in evidence_text:
-                if item.get("emitter_function") != "FIRE_CONTROL":
-                    stats["emitter_function_overrides"][system_name] = "FIRE_CONTROL"
-                item["emitter_function"] = "FIRE_CONTROL"
-            elif f"{normalized_name} ACQUISITION RADAR" in evidence_text:
-                if item.get("emitter_function") != "SEARCH":
-                    stats["emitter_function_overrides"][system_name] = "SEARCH"
-                item["emitter_function"] = "SEARCH"
-            elif _entity_in_context(
-                system_name,
-                evidence_text,
-                ("MISSILE GUIDANCE", "GUIDED UP TO", "GUIDED AGAINST ONE TARGET"),
-                window=80,
-            ):
-                if item.get("emitter_function") != "FIRE_CONTROL":
-                    stats["emitter_function_overrides"][system_name] = "FIRE_CONTROL"
-                item["emitter_function"] = "FIRE_CONTROL"
-            elif _entity_in_context(system_name, evidence_text, ("DETECTED INCOMING AIRCRAFT",), window=80):
-                if item.get("emitter_function") != "SEARCH":
-                    stats["emitter_function_overrides"][system_name] = "SEARCH"
-                item["emitter_function"] = "SEARCH"
+        inferred_emitter = _infer_radar_emitter_function(system_name, evidence_text)
+        if inferred_emitter is not None:
+            if item.get("emitter_function") != inferred_emitter:
+                stats["emitter_function_overrides"][str(system_name or "")] = inferred_emitter
+            item["emitter_function"] = inferred_emitter
+        elif item.get("emitter_function") is not None and not _value_is_quoted_in_text(item.get("emitter_function"), evidence_text):
+            item["emitter_function"] = None
 
         if item.get("system_status") and not _status_is_explicit_for_entity(
             item.get("system_status"),
@@ -394,6 +512,14 @@ def _postprocess_air_defense_radars(
         ):
             stats["status_cleared"].append(str(system_name or ""))
             item["system_status"] = None
+
+        explicit_nomenclature = _find_explicit_radar_nomenclature(system_name, evidence_text)
+        if explicit_nomenclature is not None:
+            item["nomenclature"] = explicit_nomenclature
+
+        cleared_fields = _clear_unsupported_radar_properties(item, evidence_text)
+        if cleared_fields:
+            stats["unsupported_properties_cleared"][str(system_name or "")] = sorted(set(cleared_fields))
         cleaned_rows.append(item)
 
     updated["radar_systems"] = cleaned_rows
@@ -401,6 +527,10 @@ def _postprocess_air_defense_radars(
         stats.pop("status_cleared")
     if not stats["emitter_function_overrides"]:
         stats.pop("emitter_function_overrides")
+    if not stats["recalled_radars"]:
+        stats.pop("recalled_radars")
+    if not stats["unsupported_properties_cleared"]:
+        stats.pop("unsupported_properties_cleared")
     return updated, stats
 
 
