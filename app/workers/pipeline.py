@@ -2600,6 +2600,7 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30,
                  soft_time_limit=settings.prepare_soft_time_limit,
                  time_limit=settings.prepare_time_limit)
+@guard_stage_run("prepare_document")
 def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     """Validate + detect + Docling convert + persist document_elements.
 

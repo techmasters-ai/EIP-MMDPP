@@ -110,3 +110,16 @@ class TestGuardStageRun:
         with patch("app.workers.pipeline._get_db", side_effect=RuntimeError("db dead")):
             with pytest.raises(ValueError, match="original"):
                 task(self._fake_task_self(), "doc-1", run_id="run-1")
+
+
+class TestPrepareDocumentGuarded:
+    def test_prepare_document_has_guard_wrapper(self):
+        """prepare_document is wrapped — the function has the guard's __wrapped__ attr."""
+        from app.workers.pipeline import prepare_document
+
+        # guard_stage_run uses functools.wraps, so the underlying function is
+        # preserved via __wrapped__. The presence of this attribute is the
+        # observable signal that the decorator is applied.
+        assert hasattr(prepare_document.run, "__wrapped__"), (
+            "prepare_document is not wrapped by guard_stage_run"
+        )
