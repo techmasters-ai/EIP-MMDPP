@@ -1952,6 +1952,59 @@ def reingest_graph_only(doc_id, request) -> dict:
     }
 
 
+import functools
+
+
+def guard_stage_run(stage_name: str):
+    """Wrap a pipeline task so uncaught exceptions mark the stage_run FAILED.
+
+    CeleryRetry and SoftTimeLimitExceeded are passed through untouched — those
+    are Celery's own control-flow exceptions and the task's existing except
+    branches handle them. Any other exception triggers a defensive FAILED
+    status write (scoped to the current run_id, if any) and a full traceback
+    log, then re-raises so Celery's retry / failure machinery still runs.
+
+    This is a narrow safety net for the silent-orphan case observed on
+    2026-04-23: a task marked RUNNING, then died in a way that left no log
+    entry and no status update. The sweeper catches such orphans eventually;
+    this decorator catches them immediately.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(self, document_id, run_id=None, *args, **kwargs):
+            try:
+                return fn(self, document_id, run_id, *args, **kwargs)
+            except (CeleryRetry, SoftTimeLimitExceeded):
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "guard_stage_run: %s raised unhandled exception "
+                    "(document_id=%s run_id=%s)",
+                    stage_name, document_id, run_id,
+                )
+                if run_id:
+                    try:
+                        db = _get_db()
+                        try:
+                            _update_stage_run(
+                                db, run_id, stage_name, "FAILED",
+                                attempt=self.request.retries + 1,
+                                error=f"unhandled exception: {exc!r}",
+                            )
+                            db.commit()
+                        finally:
+                            db.close()
+                    except Exception:
+                        logger.exception(
+                            "guard_stage_run: FAILED-status write also failed "
+                            "for run_id=%s stage=%s",
+                            run_id, stage_name,
+                        )
+                raise
+        return wrapper
+    return decorator
+
+
 def _update_stage_run(
     db, pipeline_run_id: str, stage_name: str, status: str,
     attempt: int = 1, metrics: dict | None = None, error: str | None = None,
