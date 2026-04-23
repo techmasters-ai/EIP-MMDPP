@@ -418,11 +418,18 @@ class TestSyncVariants:
         assert "name_0" in script and "name_1" in script
         assert result == ["#10:0", "#10:1"]
 
-    def test_upsert_relationships_batch_sync_single_call(self):
-        """Relationship batch should issue one sqlscript call with per-row params."""
+    def test_upsert_relationships_batch_sync_one_script_per_edge(self):
+        """Relationship batch issues one sqlscript per edge (N round-trips).
+
+        ArcadeDB Manual p.275 documents only IF (no ELSE); stacking
+        IF/ELSE blocks in a single script silently drops edges that need
+        the IF branch after the first one. See
+        _build_upsert_relationship_script docstring for the full
+        rationale. Per-edge scripts keep find-or-create semantics intact.
+        """
         from app.services.graph_store import RelationshipRecord
         client = _make_client(
-            command_sync_result=[{"@rid": "#20:0"}, {"@rid": "#20:1"}],
+            command_sync_result=[{"@rid": "#20:0"}],
         )
         store = _graph(client)
         records = [
@@ -442,20 +449,23 @@ class TestSyncVariants:
             ),
         ]
 
-        result = store.upsert_relationships_batch_sync(records)
+        store.upsert_relationships_batch_sync(records)
 
-        assert client.command_sync.call_count == 1
-        language = client.command_sync.call_args.args[1]
-        script = client.command_sync.call_args.args[2]
-        params = client.command_sync.call_args.args[3]
-        assert language == "sqlscript"
-        assert script.count("CREATE EDGE USES") == 2
-        # Prefixed, row-suffixed params to avoid collisions across statements
-        assert params["f_name_0"] == "APG-77"
-        assert params["f_name_1"] == "APG-63"
-        assert params["t_name_0"] == "AIM-120"
-        assert params["t_name_1"] == "AIM-9"
-        assert result == ["#20:0", "#20:1"]
+        # One sqlscript call per edge — not one batch.
+        assert client.command_sync.call_count == 2
+        languages = [c.args[1] for c in client.command_sync.call_args_list]
+        scripts = [c.args[2] for c in client.command_sync.call_args_list]
+        params_list = [c.args[3] for c in client.command_sync.call_args_list]
+        assert languages == ["sqlscript", "sqlscript"]
+        # Each per-edge script contains exactly one CREATE EDGE.
+        assert scripts[0].count("CREATE EDGE USES") == 1
+        assert scripts[1].count("CREATE EDGE USES") == 1
+        # Params carry the single edge's identity (no cross-row suffix needed
+        # since each script handles one record).
+        assert params_list[0]["f_name_0"] == "APG-77"
+        assert params_list[0]["t_name_0"] == "AIM-120"
+        assert params_list[1]["f_name_0"] == "APG-63"
+        assert params_list[1]["t_name_0"] == "AIM-9"
 
     def test_create_text_chunks_batch_sync_folds_embedding(self):
         """Batch chunk create should fold the embedding into CREATE VERTEX."""

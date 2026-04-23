@@ -551,8 +551,20 @@ def _build_delete_document_graph_sql(
         ontology = {}
 
     rel_types = [r["name"] for r in ontology.get("relationship_types", [])]
-    entity_types = [
+    # Orphan reap targets only global-scope entities (RADAR_SYSTEM /
+    # MISSILE_SYSTEM / PLATFORM / ...). Document-scoped entities (SECTION
+    # / FIGURE / TABLE / IMAGE / TEXT_BLOCK) have no EXTRACTED_FROM edges
+    # by design — their graph-edges are HAS_IMAGE / CHILD_OF / NEAR_TEXT /
+    # HAS_SECTION — so an unconditional orphan query would delete every
+    # anchor-walker vertex across EVERY document whenever any single
+    # document is purged. The explicit delete_vertex_sqls at the top of
+    # this builder already wipe document-scoped anchors for THIS doc via
+    # document_id filters; global entities are the only class that needs
+    # the post-purge "is this still referenced by any remaining doc?"
+    # check.
+    global_entity_types = [
         _safe_type_name(e["name"]) for e in ontology.get("entity_types", [])
+        if e.get("identity_scope", "global") != "document"
     ]
 
     edge_cleanup_sqls = [
@@ -567,12 +579,12 @@ def _build_delete_document_graph_sql(
         for rtype in rel_types
     ]
 
-    # --- orphan entity cleanup (no EXTRACTED_FROM edges remaining) ---
+    # --- orphan entity cleanup (global entities with no remaining refs) ---
     orphan_sqls = [
         f"DELETE VERTEX FROM {etype} "
         f"WHERE out('EXTRACTED_FROM').size() = 0 "
         f"AND in('EXTRACTED_FROM').size() = 0"
-        for etype in entity_types
+        for etype in global_entity_types
     ]
 
     return {
