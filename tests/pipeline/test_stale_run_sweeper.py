@@ -72,3 +72,15 @@ class TestSweepStaleRuns:
 
         assert swept == 0
         assert db.rollback.called
+
+
+class TestPeriodicStaleRunSweepTask:
+    def test_task_calls_sweep_and_returns_count(self):
+        """periodic_stale_run_sweep delegates to _sweep_stale_runs and returns its result."""
+        from app.workers.pipeline import periodic_stale_run_sweep
+
+        with patch("app.workers.pipeline._sweep_stale_runs", return_value=3) as mock_sweep:
+            result = periodic_stale_run_sweep.apply().get()
+
+        mock_sweep.assert_called_once()
+        assert result == 3

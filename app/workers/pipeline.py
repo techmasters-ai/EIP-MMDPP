@@ -1427,6 +1427,18 @@ def _sweep_stale_runs() -> int:
         db.close()
 
 
+@celery_app.task(bind=True)
+def periodic_stale_run_sweep(self) -> int:
+    """Beat-scheduled wrapper around _sweep_stale_runs.
+
+    Scheduled in `app/workers/celery_app.py::beat_schedule`. Runs on any worker
+    that consumes the `celery` queue. Safe to run concurrently — the UPDATE
+    statements are idempotent and scoped to RUNNING rows older than the
+    threshold.
+    """
+    return _sweep_stale_runs()
+
+
 def _dedupe_extracted_elements(chunks: list) -> tuple[list, int]:
     """Remove exact duplicate extracted elements conservatively.
 

@@ -80,6 +80,10 @@ celery_app.conf.update(
             "kwargs": {"mode": "incremental"},
             "options": {"queue": "graph"},
         },
+        "periodic-stale-run-sweep": {
+            "task": "app.workers.pipeline.periodic_stale_run_sweep",
+            "schedule": timedelta(minutes=10),
+        },
     },
 )
 
