@@ -255,10 +255,18 @@ class Settings(BaseSettings):
     picture_desc_retry_delay: int = 30
     picture_desc_soft_time_limit: int = 3600
     picture_desc_time_limit: int = 3660
+    # Max concurrent VLM calls per document during derive_picture_descriptions.
+    # Should not exceed OLLAMA_NUM_PARALLEL on the model server.
+    picture_desc_concurrency: int = 5
     finalize_max_retries: int = 1
     finalize_retry_delay: int = 30
     finalize_soft_time_limit: int = 120
     finalize_time_limit: int = 180
+    # Max age (seconds) a stage_run row can sit at status='RUNNING' before the
+    # periodic sweeper marks it FAILED. Must be larger than the slowest observed
+    # legitimate stage duration; 15 min is safely above the ~9 min peak seen in
+    # 2026-04-23 detect_and_translate runs.
+    stale_stage_run_threshold_seconds: int = 900
     # Docling concurrency: max concurrent Docling conversions (Redis semaphore)
     docling_concurrency: int = 1
     # Lock timeout (auto-release if worker crashes)
