@@ -336,7 +336,7 @@ async def test_call_llm_for_report_line_fallback_when_json_missing():
 
 @pytest.mark.asyncio
 async def test_call_llm_for_report_reads_reasoning_content_when_content_empty():
-    """gpt-oss with OLLAMA_THINK=high puts the answer in reasoning_content."""
+    """gpt-oss with COMMUNITY_REPORT_LLM_THINK=high puts the answer in reasoning_content."""
     from app.services.arcadedb_community import _call_llm_for_report
 
     fake_response = MagicMock()

@@ -130,15 +130,19 @@ OLLAMA_LLM_BASE_URL=                              # Chat/reasoning: doc analysis
 OLLAMA_VLM_BASE_URL=                              # Vision/multimodal: picture description
 OLLAMA_EMBEDDING_BASE_URL=                        # Embedding: BGE text embeddings
 OLLAMA_NUM_CTX=16384                              # Context window for Ollama (must fit prompt + response)
-OLLAMA_THINK=                                     # low/medium/high for gpt-oss thinking
 LLM_MAX_TOKENS=64000
 
 # Per-feature model selection
 DOC_ANALYSIS_LLM_MODEL=gpt-oss:120b              # Model for document metadata extraction
+DOC_ANALYSIS_LLM_THINK=high                      # true|false for most models; low|medium|high only for gpt-oss
 PICTURE_DESCRIPTION_MODEL=gemma3:27b              # Model for multimodal image descriptions
+PICTURE_DESCRIPTION_THINK=false                  # true|false for most models; low|medium|high only for gpt-oss
 TRANSLATION_MODEL=gpt-oss:120b                    # Model for foreign language translation
+TRANSLATION_THINK=medium                         # true|false for most models; low|medium|high only for gpt-oss
 COMMUNITY_REPORT_LLM_MODEL=gpt-oss:120b          # Model for community report generation
+COMMUNITY_REPORT_LLM_THINK=low                   # true|false for most models; low|medium|high only for gpt-oss
 DOCLING_GRAPH_LLM_MODEL=gpt-oss:120b             # Model for ontology-driven graph extraction
+DOCLING_GRAPH_LLM_THINK=false                    # Extraction default: false
 DOCLING_GRAPH_LLM_PROVIDER=ollama                 # ollama | openai (defaults to LLM_PROVIDER if not set)
 
 # Docling-Graph service (ontology-driven graph extraction)
@@ -163,7 +167,19 @@ The three `OLLAMA_*_BASE_URL` variables allow pointing different model types at 
 | `OLLAMA_VLM_BASE_URL` | `OLLAMA_BASE_URL` | Picture description (gemma3, llava, etc.) |
 | `OLLAMA_EMBEDDING_BASE_URL` | `OLLAMA_BASE_URL` | BGE text embeddings |
 
-The docling-graph service inherits `OLLAMA_LLM_BASE_URL` via the docker-compose cascade.
+Per-request thinking is configured separately per application:
+
+| Think Variable | Used by |
+|---|---|
+| `DOC_ANALYSIS_LLM_THINK` | Document metadata extraction |
+| `PICTURE_DESCRIPTION_THINK` | Picture description |
+| `TRANSLATION_THINK` | Translation |
+| `COMMUNITY_REPORT_LLM_THINK` | Community reports and global query synthesis |
+| `DOCLING_GRAPH_LLM_THINK` | Docling-graph extraction only |
+
+For most Ollama models, `think` should be `true` or `false`. `low`, `medium`, and `high` are gpt-oss-specific thinking levels and should only be used with `gpt-oss` models.
+
+The docling-graph service inherits `OLLAMA_LLM_BASE_URL` and its own `DOCLING_GRAPH_LLM_THINK` override via the docker-compose cascade.
 
 ## Running Tests
 

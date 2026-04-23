@@ -168,7 +168,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OLLAMA_API_BASE: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
-      OLLAMA_THINK: ${OLLAMA_THINK:-}              # "low", "medium", "high" for gpt-oss thinking level
+      DOCLING_GRAPH_LLM_THINK: ${DOCLING_GRAPH_LLM_THINK:-false}   # extraction think; use true|false for most models, low|medium|high only for gpt-oss
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       HF_TOKEN: ${HF_TOKEN:-}

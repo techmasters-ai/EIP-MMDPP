@@ -85,7 +85,26 @@ class Settings(BaseSettings):
     ollama_vlm_base_url: str = ""   # vision/image models — falls back to ollama_base_url
     ollama_embedding_base_url: str = ""  # embedding models — falls back to ollama_base_url
     ollama_num_ctx: int = 16384
-    ollama_think: str = ""  # "low", "medium", "high" for gpt-oss thinking level
+
+    @staticmethod
+    def _normalize_ollama_think(value: str) -> str | bool | None:
+        normalized = (value or "").strip().lower()
+        if not normalized:
+            return None
+        if normalized in {"false", "off", "disabled"}:
+            return False
+        if normalized in {"true", "on", "enabled"}:
+            return True
+        if normalized in {"low", "medium", "high"}:
+            return normalized
+        return None
+
+    @classmethod
+    def _resolve_ollama_think(cls, value: str, model: str) -> str | bool | None:
+        normalized = cls._normalize_ollama_think(value)
+        if normalized in {"low", "medium", "high"} and "gpt-oss" not in (model or "").lower():
+            return None
+        return normalized
 
     def get_ollama_llm_url(self) -> str:
         return self.ollama_llm_base_url or self.ollama_base_url
@@ -95,6 +114,7 @@ class Settings(BaseSettings):
 
     def get_ollama_embedding_url(self) -> str:
         return self.ollama_embedding_base_url or self.ollama_base_url
+
     llm_max_tokens: int = 64000
 
     # --- Docling-Graph service (entity/relationship extraction) ---
@@ -156,6 +176,7 @@ class Settings(BaseSettings):
     community_detection_resolution: float = 1.0
     community_detection_max_iterations: int = 20
     community_report_llm_model: str = "llama3.2"
+    community_report_llm_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
     community_report_llm_prompt: str = ""
     community_global_synthesis_prompt: str = ""
 
@@ -183,6 +204,7 @@ class Settings(BaseSettings):
     # Document Analysis (LLM metadata extraction)
     doc_analysis_enabled: bool = True
     doc_analysis_llm_model: str = "gpt-oss:120b"
+    doc_analysis_llm_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
     doc_analysis_timeout: int = 300
     doc_analysis_summary_prompt: str = "Summarize this document in 3-5 sentences for a technical reader. Focus on the main subject, scope, and notable findings. Do not include source endnote markings such as [1]."
     doc_analysis_date_prompt: str = "Extract the most relevant date of information (publication date, report date, or coverage window). If only month/year appears, return that. If there is a range, return it exactly. If unsure, return Unknown. Provide ONLY the date or range."
@@ -191,12 +213,14 @@ class Settings(BaseSettings):
 
     # Picture Description (post-conversion enrichment via Ollama)
     picture_description_model: str = "gemma3:27b"
+    picture_description_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
     picture_description_timeout: int = 300
     picture_description_prompt: str = "Analyze this image from a multi-modal PDF using the required narrative sections and the missile/radar/S&T emphasis. Return sections 1-8 exactly as specified. Use the PDF Summary for context but rely on visual evidence.\\n\\n- PDF Summary: {document_summary}\\n\\n- Image:"
 
     # Translation (foreign language detection + LLM translation)
     translation_enabled: bool = True
     translation_model: str = "llama3.3:70b"
+    translation_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
     translation_timeout: int = 300
     translation_prompt: str = "Translate ALL non-English text to English. The input may contain a mix of English and non-English text — translate every non-English word or phrase to English while keeping English portions unchanged. Do NOT skip non-English text even if it appears alongside English. Preserve all markdown formatting including headings (#), bullet points, tables, and code blocks. Keep technical designators like model numbers (С-75, 9М38) in their original form, but translate descriptive words around them (e.g., 'Зенитный Ракетный Комплекс С-75' → 'Anti-aircraft Missile System С-75'). Preserve all numbers, units, and acronyms. Preserve ---ELEMENT_BOUNDARY--- markers exactly as they appear. Return only the translated text with no commentary."
     translation_min_detect_length: int = 5
@@ -281,6 +305,21 @@ class Settings(BaseSettings):
     # Retrieval diversity (content-level dedup)
     retrieval_diversity_oversample_factor: int = 8
     retrieval_diversity_max_candidates: int = 800
+
+    def get_doc_analysis_llm_think(self) -> str | bool | None:
+        return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)
+
+    def get_picture_description_think(self) -> str | bool | None:
+        return self._resolve_ollama_think(self.picture_description_think, self.picture_description_model)
+
+    def get_translation_think(self) -> str | bool | None:
+        return self._resolve_ollama_think(self.translation_think, self.translation_model)
+
+    def get_community_report_llm_think(self) -> str | bool | None:
+        return self._resolve_ollama_think(
+            self.community_report_llm_think,
+            self.community_report_llm_model,
+        )
 
 
 @lru_cache

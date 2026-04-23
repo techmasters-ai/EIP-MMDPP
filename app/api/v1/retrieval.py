@@ -1190,19 +1190,23 @@ async def _synthesize_global_answer(
     url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
     model = settings.community_report_llm_model
     timeout = settings.doc_analysis_timeout
+    think = settings.get_community_report_llm_think()
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.2,
+                "max_tokens": settings.llm_max_tokens,
+            }
+            if think is not None:
+                payload["think"] = think
             resp = await client.post(
                 url,
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": settings.llm_max_tokens,
-                },
+                json=payload,
             )
             resp.raise_for_status()
             message = resp.json()["choices"][0]["message"]
@@ -1237,4 +1241,3 @@ async def get_retrieval_settings():
         "reranker_top_n": settings.reranker_top_n,
         "min_confidence": settings.query_default_min_confidence,
     }
-

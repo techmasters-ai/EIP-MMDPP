@@ -99,6 +99,7 @@ def translate_elements(
     settings = get_settings()
     url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
     model = settings.translation_model
+    think = settings.get_translation_think()
     prompt = settings.translation_prompt.replace("\\n", "\n")
     timeout = settings.translation_timeout
     max_tokens = settings.llm_max_tokens
@@ -139,7 +140,7 @@ def translate_elements(
                 idx = batch_indices[0]
                 translated = _ollama_translate(
                     client, url, model, prompt, elements[idx]["content_text"],
-                    timeout=timeout, max_tokens=max_tokens,
+                    timeout=timeout, max_tokens=max_tokens, think=think,
                 )
                 logger.info("translate batch %d (single idx=%d): input=%d chars, output=%d chars, changed=%s",
                             batch_num, idx, len(elements[idx]["content_text"]),
@@ -151,7 +152,7 @@ def translate_elements(
                 combined = _BOUNDARY.join(elements[idx]["content_text"] for idx in batch_indices)
                 translated = _ollama_translate(
                     client, url, model, prompt, combined,
-                    timeout=timeout, max_tokens=max_tokens,
+                    timeout=timeout, max_tokens=max_tokens, think=think,
                 )
                 logger.info("translate batch %d (%d elements): input=%d chars, output=%d chars, has_boundary=%s",
                             batch_num, len(batch_indices), len(combined),
@@ -168,12 +169,12 @@ def translate_elements(
                                     batch_num, len(parts), len(batch_indices))
                         _translate_individually(
                             client, url, model, prompt, elements, batch_indices, result,
-                            timeout=timeout, max_tokens=max_tokens,
+                            timeout=timeout, max_tokens=max_tokens, think=think,
                         )
                 else:
                     _translate_individually(
                         client, url, model, prompt, elements, batch_indices, result,
-                        timeout=timeout, max_tokens=max_tokens,
+                        timeout=timeout, max_tokens=max_tokens, think=think,
                     )
 
     return result
@@ -182,13 +183,13 @@ def translate_elements(
 def _translate_individually(
     client: httpx.Client, url: str, model: str, prompt: str,
     elements: list[dict], indices: list[int], result: list[str],
-    *, timeout: float, max_tokens: int,
+    *, timeout: float, max_tokens: int, think: str | bool | None,
 ) -> None:
     """Fallback: translate each element individually."""
     for idx in indices:
         translated = _ollama_translate(
             client, url, model, prompt, elements[idx]["content_text"],
-            timeout=timeout, max_tokens=max_tokens,
+            timeout=timeout, max_tokens=max_tokens, think=think,
         )
         if translated:
             result[idx] = translated.strip()
@@ -196,7 +197,7 @@ def _translate_individually(
 
 def _ollama_translate(
     client: httpx.Client, url: str, model: str, prompt: str, text: str,
-    *, timeout: float, max_tokens: int,
+    *, timeout: float, max_tokens: int, think: str | bool | None,
 ) -> str | None:
     """Send text to Ollama for translation using shared client."""
     from app.services.document_analysis import _ollama_chat
@@ -208,6 +209,7 @@ def _ollama_translate(
             temperature=0.1,
             max_tokens=max_tokens,
             timeout=timeout,
+            think=think,
         )
     except Exception as e:
         logger.warning("Translation failed: %s", e)

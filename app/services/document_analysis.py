@@ -25,16 +25,20 @@ def _ollama_chat(
     temperature: float = 0.1,
     max_tokens: int,
     timeout: float = 300,
+    think: str | bool | None = None,
 ) -> str:
     """Shared Ollama chat completion call. Returns stripped assistant content."""
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if think is not None:
+        payload["think"] = think
     resp = client.post(
         url,
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
+        json=payload,
         timeout=timeout,
     )
     resp.raise_for_status()
@@ -56,6 +60,7 @@ def extract_document_metadata(markdown: str, classification_text: str | None = N
     model = settings.doc_analysis_llm_model
     timeout = settings.doc_analysis_timeout
     url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
+    think = settings.get_doc_analysis_llm_think()
 
     # Shared client for connection reuse across parallel calls (httpx.Client is thread-safe)
     client = httpx.Client(timeout=timeout)
@@ -66,7 +71,7 @@ def extract_document_metadata(markdown: str, classification_text: str | None = N
         return _ollama_chat(
             client, url, model,
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
-            temperature=0.1, max_tokens=max_tokens, timeout=timeout,
+            temperature=0.1, max_tokens=max_tokens, timeout=timeout, think=think,
         )
 
     # Truncate markdown to avoid exceeding context window
@@ -216,7 +221,10 @@ def _describe_single_image(
         with httpx.Client(timeout=timeout) as client:
             content = _ollama_chat(
                 client, url, model, messages,
-                temperature=0.2, max_tokens=settings.llm_max_tokens, timeout=timeout,
+                temperature=0.2,
+                max_tokens=settings.llm_max_tokens,
+                timeout=timeout,
+                think=settings.get_picture_description_think(),
             )
         logger.debug("Picture description (%d chars): %.100s...", len(content), content)
         return content

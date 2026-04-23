@@ -237,27 +237,31 @@ async def _call_llm_for_report(prompt: str, model: str) -> dict[str, str]:
     settings = get_settings()
     url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
     timeout = settings.doc_analysis_timeout
+    think = settings.get_community_report_llm_think()
 
     async with httpx.AsyncClient(timeout=timeout) as client:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a knowledge-graph analyst. "
+                        "Respond with a single JSON object containing "
+                        '"title" (short, descriptive) and "summary" '
+                        "(2-4 paragraphs). Do not include any other text."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.1,
+            "max_tokens": settings.llm_max_tokens,
+        }
+        if think is not None:
+            payload["think"] = think
         resp = await client.post(
             url,
-            json={
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a knowledge-graph analyst. "
-                            "Respond with a single JSON object containing "
-                            '"title" (short, descriptive) and "summary" '
-                            "(2-4 paragraphs). Do not include any other text."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.1,
-                "max_tokens": settings.llm_max_tokens,
-            },
+            json=payload,
         )
         resp.raise_for_status()
         message = resp.json()["choices"][0]["message"]

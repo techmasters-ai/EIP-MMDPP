@@ -53,7 +53,9 @@ except ModuleNotFoundError:  # pragma: no cover - test-host fallback only
 #    be empty.  Fix: richer error with diagnostic fields, no silent failure.
 #
 # 3. For Ollama: send format=<schema> (structured) or format="json" (fallback),
-#    think="low" for gpt-oss, stream=False for reliable structured output.
+#    stream=False for reliable structured output, and apply per-request
+#    DOCLING_GRAPH_LLM_THINK when configured. Most models use true/false;
+#    gpt-oss also supports low/medium/high.
 # ---------------------------------------------------------------------------
 import litellm as _litellm
 
@@ -149,8 +151,13 @@ def _patched_build_request(
     if gen.stop is not None:
         request["stop"] = gen.stop
 
-    if is_ollama and "gpt-oss" in str(model_name).lower():
-        request["think"] = "low"
+    think_value = os.environ.get("DOCLING_GRAPH_LLM_THINK", "").strip().lower()
+    if think_value in {"false", "off", "disabled"}:
+        request["think"] = False
+    elif think_value in {"true", "on", "enabled"}:
+        request["think"] = True
+    elif is_ollama and "gpt-oss" in str(model_name).lower() and think_value in {"low", "medium", "high"}:
+        request["think"] = think_value
 
     supported_fn = getattr(_litellm, "get_supported_openai_params", None)
     if callable(supported_fn):
