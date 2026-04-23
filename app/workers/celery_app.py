@@ -61,7 +61,16 @@ celery_app.conf.update(
     },
     # Task result expiry
     result_expires=86400,  # 24 hours
-    # Retry defaults
+    # Worker lifecycle posture (verified 2026-04-23):
+    #   task_acks_late=True            -> task ACKed only after return/success
+    #   task_reject_on_worker_lost=True -> on worker death, task is requeued
+    #   worker_prefetch_multiplier=1   -> at most one queued-but-not-running task per slot
+    #   worker_max_tasks_per_child=0   -> no forkpool recycle (Celery default)
+    #   worker_max_memory_per_child=0  -> no memory-based recycle (Celery default)
+    # Recycling a forkpool child mid-task can silently lose the in-flight task,
+    # so the recycle knobs are intentionally left at the default 0. If either
+    # is raised in the future, audit every long-running stage for idempotency
+    # and rely on periodic_stale_run_sweep to close the gap.
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     # Prevent long tasks from starving short ones
