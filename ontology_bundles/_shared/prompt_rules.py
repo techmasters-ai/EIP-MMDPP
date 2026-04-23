@@ -371,7 +371,15 @@ def _contains_relationships_only_template(value: Any) -> bool:
         return True
 
     if isinstance(value, str):
-        return value in {"system_links", "SystemLinksPass"}
+        markers = (
+            "system_links",
+            "SystemLinksPass",
+            "relationships[]",
+            "from_ref_id",
+            "to_ref_id",
+            "Upstream entities:",
+        )
+        return any(marker in value for marker in markers)
 
     if isinstance(value, Mapping):
         return any(_contains_relationships_only_template(v) for v in value.values())

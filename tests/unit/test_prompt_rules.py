@@ -40,4 +40,5 @@ def test_relationships_only_prompt_adds_root_and_relationship_node_rules():
 def test_select_delta_system_prompt_uses_relationships_only_variant_for_system_links():
     assert select_delta_system_prompt(template_class=SystemLinksPass) == RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT
     assert select_delta_system_prompt(pass_name="system_links") == RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT
+    assert select_delta_system_prompt(user_prompt="Schema paths: relationships[] with from_ref_id and to_ref_id") == RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT
     assert select_delta_system_prompt(template_class=MissileDomainPass) == DELTA_SYSTEM_PROMPT
