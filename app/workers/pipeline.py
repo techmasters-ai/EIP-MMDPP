@@ -5097,13 +5097,32 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
                     node.get("rid"),
                 )
 
+            # Fallback pool for mentions whose element_uid doesn't resolve
+            # through element_uid_chunk_map. The docling-graph service's
+            # provenance synthesizer emits Docling-internal self_refs
+            # (e.g. "#/pictures/1") as element_uid when the library's
+            # salvage path strips the per-node element-tracking attrs,
+            # but DocumentElement.element_uid is stored as
+            # "{page}-{order}-{type}-{hash}" — the two namespaces don't
+            # overlap. Without a fallback, those mentions produce zero
+            # EXTRACTED_FROM edges and the entity becomes unreachable
+            # from Document via the chunk traversal. Fan out across all
+            # TextChunks of this document as a coarse-but-valid anchor.
+            all_text_chunk_ids = [str(tc.id) for tc in text_chunks]
+
             for mention in graph_extraction.graph_json.get("mentions", []):
                 eid = mention.get("entity_id")
                 name = mention.get("entity_name", "")
                 etype = mention.get("entity_type", "UNKNOWN")
                 euid = mention.get("element_uid", "")
                 src_rid = mention.get("rid")
-                for chunk_id in element_uid_chunk_map.get(euid, []):
+                resolved_chunks = element_uid_chunk_map.get(euid, [])
+                if not resolved_chunks and isinstance(euid, str) and euid.startswith("#/"):
+                    # Synthesizer-anchored self_ref couldn't resolve to a
+                    # concrete DocumentElement. Attach to every text chunk
+                    # in the document.
+                    resolved_chunks = all_text_chunk_ids
+                for chunk_id in resolved_chunks:
                     edge_records.append((name, etype, chunk_id, eid, src_rid))
                     if eid:
                         mentioned_entity_ids.add(eid)
