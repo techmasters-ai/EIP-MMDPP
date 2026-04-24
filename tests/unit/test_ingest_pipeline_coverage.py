@@ -362,25 +362,25 @@ class TestCollectDerivations:
         mock_update.assert_called_once_with(DOC_ID, "PROCESSING", stage="collect_derivations")
 
     @patch("app.workers.pipeline._update_document_status")
-    def test_exception_sets_partial_complete(self, mock_update):
-        """If _update_document_status raises on the first call, the except
-        branch calls it again with PARTIAL_COMPLETE."""
+    def test_exception_terminalizes_via_guard(self, mock_update):
+        """If _update_document_status raises, the guard_stage_run decorator
+        catches the exception, writes stage_runs FAILED, and calls
+        _terminalize_doc_and_run. The task body no longer has its own
+        try/except PARTIAL_COMPLETE branch — terminalization is the guard's
+        responsibility after the 2026-04-24 ingest-hardening plan."""
+        import pytest
+        from unittest.mock import patch
         from app.workers.pipeline import collect_derivations
 
-        call_count = 0
-        def side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise RuntimeError("db error")
-        mock_update.side_effect = side_effect
+        mock_update.side_effect = RuntimeError("db error")
 
-        collect_derivations.run(DOC_ID, RUN_ID)
+        with patch("app.workers.pipeline._get_db"), \
+             patch("app.workers.pipeline._update_stage_run"), \
+             patch("app.workers.pipeline._terminalize_doc_and_run") as m_term:
+            with pytest.raises(RuntimeError):
+                collect_derivations.run(DOC_ID, RUN_ID)
 
-        # First call raised → second call with PARTIAL_COMPLETE
-        assert mock_update.call_count == 2
-        second_call = mock_update.call_args_list[1]
-        assert second_call[0][1] == "PARTIAL_COMPLETE"
+        m_term.assert_called_once()
 
 
 # ===========================================================================
