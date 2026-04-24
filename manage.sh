@@ -3,8 +3,9 @@
 # EIP-MMDPP — Project management CLI
 # ============================================================
 # Usage:
-#   ./manage.sh --start          Build and start all services (single worker)
-#   ./manage.sh --start-split    Build and start with split workers (ingest/embed/graph)
+#   ./manage.sh --start          Build and start all services (split workers: ingest/embed/graph — default)
+#   ./manage.sh --start-mixed    Build and start with a single mixed worker (legacy)
+#   ./manage.sh --start-split    Alias for --start (backward compat)
 #   ./manage.sh --stop           Stop all services
 #   ./manage.sh --restart        Restart without rebuild
 #   ./manage.sh --status         Show status and health checks
@@ -367,24 +368,30 @@ cmd_db_shell() {
 cmd_worker_status() {
   header "Celery Worker Status"
 
-  info "Active tasks:"
-  dc exec worker celery -A app.workers.celery_app inspect active 2>/dev/null || warn "No workers responded."
+  # Auto-detect which worker container(s) are running — split mode launches
+  # worker-ingest / worker-embed / worker-graph; mixed mode launches worker.
+  local workers=()
+  for w in worker-ingest worker-embed worker-graph worker; do
+    if docker ps --filter "name=eip-mmdpp-${w}-1" --format '{{.Names}}' | grep -q "^eip-mmdpp-${w}-1$"; then
+      workers+=("${w}")
+    fi
+  done
 
-  divider
-  info "Reserved (prefetched) tasks:"
-  dc exec worker celery -A app.workers.celery_app inspect reserved 2>/dev/null || warn "No workers responded."
+  if [[ ${#workers[@]} -eq 0 ]]; then
+    warn "No worker containers are running."
+    return
+  fi
 
-  divider
-  info "Scheduled tasks:"
-  dc exec worker celery -A app.workers.celery_app inspect scheduled 2>/dev/null || warn "No workers responded."
-
-  divider
-  info "Registered task types:"
-  dc exec worker celery -A app.workers.celery_app inspect registered 2>/dev/null || warn "No workers responded."
-
-  divider
-  info "Worker stats:"
-  dc exec worker celery -A app.workers.celery_app inspect stats 2>/dev/null || warn "No workers responded."
+  for w in "${workers[@]}"; do
+    header "${w}"
+    info "Active tasks:"
+    dc exec "${w}" celery -A app.workers.celery_app inspect active 2>/dev/null || warn "No response from ${w}."
+    info "Registered tasks:"
+    dc exec "${w}" celery -A app.workers.celery_app inspect registered 2>/dev/null || warn "No response from ${w}."
+    info "Stats:"
+    dc exec "${w}" celery -A app.workers.celery_app inspect stats 2>/dev/null || warn "No response from ${w}."
+    divider
+  done
 
   header "Beat Container"
   dc ps beat
@@ -420,8 +427,9 @@ ${BOLD}EIP-MMDPP Management CLI${NC}
 ${CYAN}Usage:${NC}  ./manage.sh <command> [args]
 
 ${CYAN}Service Lifecycle:${NC}
-  --start              Build images and start all services (single mixed worker)
-  --start-split        Build and start with split workers (ingest/embed/graph)
+  --start              Build images and start all services (split workers — default)
+  --start-mixed        Build and start with a single mixed worker (legacy, low-load)
+  --start-split        Alias for --start (backward compat)
   --stop               Stop all services gracefully (preserves data)
   --restart            Restart without rebuilding images
   --status             Show service status and health checks
@@ -467,8 +475,9 @@ main() {
   validate_env
 
   case "${1}" in
-    --start)          cmd_start ;;
-    --start-split)    cmd_start split ;;
+    --start)          cmd_start split ;;   # split-worker is now the default
+    --start-mixed)    cmd_start ;;          # legacy single-worker layout
+    --start-split)    cmd_start split ;;   # alias, backward compat
     --stop)           cmd_stop ;;
     --restart)        cmd_restart ;;
     --status)         cmd_status ;;
