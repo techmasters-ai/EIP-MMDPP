@@ -4352,8 +4352,12 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
             db.commit()
 
-        # ── Pass 2: Image description sections ──────────────────────────
-        from app.services.chunking import split_description_sections
+        # ── Pass 2: Image descriptions ──────────────────────────────────
+        # One chunk per image element. The prior behavior split descriptions
+        # into sections via split_description_sections and embedded each
+        # section as a separate TextChunk — that matched the old multi-section
+        # VLM prompt format. The current prompt produces a single-blob
+        # description per image, so we embed the full text as one unit.
         from app.models.retrieval import ChunkLink
 
         img_elements = db.execute(
@@ -4373,29 +4377,31 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
         for img_elem in img_elements:
             # Normalize Unicode to prevent NaN embeddings (same pattern as text chunk pass)
             desc_text = _normalize_text(img_elem.content_text)
-            sections = split_description_sections(desc_text)
-            if not sections:
+            if not desc_text or not desc_text.strip():
                 continue
 
-            for sec_idx, section_text in enumerate(sections):
-                chunk_index = 100000 + img_elem.element_order * 100 + sec_idx
-                uid_str = str(img_elem.element_uid) if img_elem.element_uid else str(img_elem.id)
-                chunk_key = hashlib.sha256(
-                    f"{document_id}:{uid_str}:{sec_idx}:{model_version}".encode()
-                ).hexdigest()
-                chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+            # Single chunk per image description. sec_idx=0 kept in the key so
+            # existing chunk_id derivation for already-ingested docs stays
+            # backward-compatible.
+            sec_idx = 0
+            chunk_index = 100000 + img_elem.element_order * 100 + sec_idx
+            uid_str = str(img_elem.element_uid) if img_elem.element_uid else str(img_elem.id)
+            chunk_key = hashlib.sha256(
+                f"{document_id}:{uid_str}:{sec_idx}:{model_version}".encode()
+            ).hexdigest()
+            chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
 
-                img_desc_texts.append(section_text)
-                img_desc_chunk_metas.append({
-                    "chunk_id": chunk_id,
-                    "artifact_id": img_elem.artifact_id,
-                    "document_id": uuid.UUID(document_id),
-                    "chunk_index": chunk_index,
-                    "page_number": img_elem.page_number,
-                    "section_text": section_text,
-                    "element_order": img_elem.element_order,
-                    "sec_idx": sec_idx,
-                })
+            img_desc_texts.append(desc_text)
+            img_desc_chunk_metas.append({
+                "chunk_id": chunk_id,
+                "artifact_id": img_elem.artifact_id,
+                "document_id": uuid.UUID(document_id),
+                "chunk_index": chunk_index,
+                "page_number": img_elem.page_number,
+                "section_text": desc_text,
+                "element_order": img_elem.element_order,
+                "sec_idx": sec_idx,
+            })
 
         # Batch embed all image description sections
         if img_desc_texts:
