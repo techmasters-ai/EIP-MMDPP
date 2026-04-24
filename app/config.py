@@ -120,7 +120,13 @@ class Settings(BaseSettings):
     # --- Docling-Graph service (entity/relationship extraction) ---
     docling_graph_base_url: str = "http://docling-graph:8002"
     docling_graph_concurrency: int = 2
-    docling_graph_timeout: int = 10800
+    # Per-call HTTP timeout for docling-graph /extract-pass. 30 min per LLM call;
+    # with pass_max_retries=3 inside _run_single_pass, worst case per pass = 90 min,
+    # which fits ~4 passes within the 8h graph_soft_time_limit.
+    # Note: DOCLING_GRAPH_LLM_TIMEOUT is consumed by the separate docling-graph
+    # service — update via docker-compose.yml fallback and
+    # docker/docling-graph/app/config_builder.py.
+    docling_graph_timeout: int = 1800
     # Max attempts per extraction pass (spec §6.5). Default 3 means 1 initial
     # call + 2 retries before giving up.
     pass_max_retries: int = 3
@@ -253,8 +259,10 @@ class Settings(BaseSettings):
     embed_time_limit: int = 4500
     graph_max_retries: int = 2
     graph_retry_delay: int = 60
-    graph_soft_time_limit: int = 21600
-    graph_time_limit: int = 25200
+    # Graph extraction is the slowest stage. 8h soft covers the 6h+ observed on
+    # one doc in the 2026-04-24 run; 9h hard SIGKILL ceiling.
+    graph_soft_time_limit: int = 28800
+    graph_time_limit: int = 32400
     picture_desc_max_retries: int = 1
     picture_desc_retry_delay: int = 30
     picture_desc_soft_time_limit: int = 18000
@@ -269,8 +277,8 @@ class Settings(BaseSettings):
     # Max age (seconds) a stage_run row can sit at status='RUNNING' before the
     # periodic sweeper marks it FAILED. Must be larger than max(*_time_limit)
     # so the sweeper only fires after Celery's own timeout should already have
-    # killed + retried. max time_limit = graph_time_limit = 25200, so 27000.
-    stale_stage_run_threshold_seconds: int = 27000
+    # killed + retried. max time_limit = graph_time_limit = 32400, so 34200.
+    stale_stage_run_threshold_seconds: int = 34200
     # Max chain-level sweeper-triggered retries per document. Beyond this, the
     # document is permanently FAILED for operator triage.
     max_doc_retry_count: int = 3
@@ -284,7 +292,7 @@ class Settings(BaseSettings):
     docling_503_max_retries: int = 20
 
     # Celery Redis visibility timeout (seconds) — prevents redelivery of long tasks
-    celery_visibility_timeout: int = 10800  # 3 hours
+    celery_visibility_timeout: int = 36000  # 10h — must exceed longest Celery time_limit
 
     # Singleflight lock timeout for prepare_document (seconds)
     prepare_singleflight_timeout: int = 5400  # 90 minutes

@@ -159,7 +159,7 @@ services:
       # registry (llama3.3:70b). Must be >= DOCLING_GRAPH_LLM_MAX_TOKENS.
       DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS: ${DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS:-32000}
       DOCLING_GRAPH_LLM_CONTEXT_LIMIT: ${DOCLING_GRAPH_LLM_CONTEXT_LIMIT:-131072}
-      DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-10800}
+      DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-1800}
       # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
       DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
       # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,

@@ -91,7 +91,7 @@ class DoclingGraphSettings(BaseSettings):
     # llama3.1:8b (4092 cap) or raise to 64000+ for gpt-oss:120b via
     # the DOCLING_GRAPH_LLM_MAX_TOKENS env var.
     docling_graph_llm_max_tokens: int | None = 32000
-    docling_graph_llm_timeout: int = 10800
+    docling_graph_llm_timeout: int = 1800  # 30 min per LLM call
     ollama_llm_base_url: str = "http://ollama:11434"
     # For models missing from LiteLLM's metadata registry (e.g. ollama/llama3.3:70b)
     # the library's resolve_effective_model_config falls back to
