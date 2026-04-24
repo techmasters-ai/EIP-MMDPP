@@ -1207,17 +1207,27 @@ class ArcadeDBGraphStore:
         if not rid:
             return []
 
-        # MATCH traversal captures the intermediate entity so callers get
-        # rel_type context and can distinguish text vs image chunks.
-        #
-        # ArcadeDB SQL quirks (both from 2026-04-24 observed HTTP 500s):
-        #  - `{class: V, ...}` is rejected by the parser; MATCH nodes use
-        #    `type:` (with a concrete vertex type) or no type at all.
-        #  - `.@class` is a parser error (see get_structural_neighbors);
-        #    `.@type` resolves cleanly inside a MATCH alias scope.
+        # ArcadeDB MATCH requires a concrete `type:` on the first node:
+        # omitting it (or using `type: V`) throws UnsupportedOperationException
+        # on transaction commit. We don't know whether the seed is a TextChunk
+        # or an ImageChunk at the call site, so resolve @type with one
+        # lightweight lookup before building the typed MATCH. Also:
+        # `{class: V, ...}` is rejected by the parser; only `type:` works.
+        # `.@class` in a projection / alias is a parser error; `.@type`
+        # resolves cleanly inside the MATCH alias scope.
+        type_rows = await self._client.query(
+            self._database, "sql",
+            f"SELECT @type AS node_type FROM {rid}",
+        )
+        seed_type = None
+        if type_rows and isinstance(type_rows[0], dict):
+            seed_type = type_rows[0].get("node_type")
+        if seed_type not in ("TextChunk", "ImageChunk"):
+            return []
+
         sql = (
             f"MATCH "
-            f"{{as: seed, where: (@rid = {rid})}}"
+            f"{{type: {seed_type}, as: seed, where: (@rid = {rid})}}"
             f".in('EXTRACTED_FROM') {{as: entity}}"
             f".out('EXTRACTED_FROM') {{as: chunk, where: (@rid <> {rid})}} "
             f"RETURN chunk.@rid AS chunk_rid, chunk.@type AS chunk_type, "
@@ -1291,8 +1301,13 @@ class ArcadeDBGraphStore:
         rid = await self._resolve_rid(entity_rid)
         if not rid:
             return []
+        # ArcadeDB SQL: `SELECT *, <alias>, <alias>` is a parser error
+        # ("mismatched input ','") — the parser rejects additional
+        # projections when `*` is present. `@class` is likewise not a valid
+        # projection expression; `@type` is. Enumerate fields explicitly.
         sql = (
-            f"SELECT *, @class AS chunk_type, @rid AS chunk_rid "
+            f"SELECT @rid AS chunk_rid, @type AS chunk_type, "
+            f"chunk_id, document_id, text, chunk_text, modality, page_number "
             f"FROM (SELECT expand(out('EXTRACTED_FROM')) FROM {rid}) "
             f"LIMIT :limit"
         )
