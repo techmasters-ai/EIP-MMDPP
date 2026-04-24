@@ -1357,68 +1357,180 @@ def _cleanup_stale_runs(sender, **kwargs):
 
 
 def _sweep_stale_runs() -> int:
-    """Mark stage_runs stuck at RUNNING beyond the configured threshold as FAILED.
+    """Sweep stale RUNNING stage_runs and auto-restart their documents.
 
-    Returns the number of rows swept. Intended to be called from a periodic
-    Celery-beat task — complements `_cleanup_stale_runs` (which only runs on
-    worker startup) by catching mid-session orphans on long-lived workers.
+    For each stage_run at status='RUNNING' older than
+    settings.stale_stage_run_threshold_seconds:
+
+      1. Mark the stage_run FAILED + pipeline_run FAILED + bump retry_count.
+         **Commit these writes before calling start_ingest_pipeline** — the
+         dispatch guard in start_ingest_pipeline runs in its own DB session
+         and won't see uncommitted changes.
+      2. If new retry_count <= settings.max_doc_retry_count, call
+         start_ingest_pipeline(doc_id). On success it creates a fresh
+         pipeline_run + chain in its own transaction. On exception we run
+         a compensating transaction: revert retry_count, mark doc FAILED.
+      3. If new retry_count > cap, the initial transaction sets
+         pipeline_status='FAILED' and we do NOT dispatch.
+
+    The failure → dispatch handoff is split across two transactions by
+    design; required for the dispatch guard to see the FAILED row.
+
+    Returns the number of stage_runs swept.
     """
     from sqlalchemy import text
 
     threshold = settings.stale_stage_run_threshold_seconds
+    max_retry = settings.max_doc_retry_count
+
     db = _get_db()
     try:
-        stale = db.execute(
+        stale_rows = db.execute(
             text(
                 """
-                SELECT id, pipeline_run_id
-                FROM ingest.stage_runs
-                WHERE status = 'RUNNING'
-                  AND started_at < NOW() - make_interval(secs => :threshold)
+                SELECT sr.id, sr.pipeline_run_id, pr.document_id, sr.stage_name
+                FROM ingest.stage_runs sr
+                JOIN ingest.pipeline_runs pr ON pr.id = sr.pipeline_run_id
+                WHERE sr.status = 'RUNNING'
+                  AND sr.started_at < NOW() - make_interval(secs => :threshold)
+                  AND pr.status = 'PROCESSING'
                 """
             ),
             {"threshold": threshold},
         ).fetchall()
 
-        if not stale:
+        if not stale_rows:
             return 0
 
-        sr_ids = [row[0] for row in stale]
-        pr_ids = list({row[1] for row in stale})
+        to_dispatch: list[tuple] = []  # (document_id, stage_name, new_retry_count)
 
-        db.execute(
-            text(
-                """
-                UPDATE ingest.stage_runs
-                SET status = 'FAILED',
-                    finished_at = NOW(),
-                    error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
-                WHERE id = ANY(:ids)
-                """
-            ),
-            {"ids": sr_ids},
-        )
+        for stage_run_id, pipeline_run_id, document_id, stage_name in stale_rows:
+            # 1a. Mark stage_run FAILED
+            db.execute(
+                text(
+                    """
+                    UPDATE ingest.stage_runs
+                    SET status = 'FAILED',
+                        finished_at = NOW(),
+                        error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                    WHERE id = :id
+                    """
+                ),
+                {"id": stage_run_id},
+            )
 
-        db.execute(
-            text(
-                """
-                UPDATE ingest.pipeline_runs
-                SET status = 'FAILED',
-                    finished_at = COALESCE(finished_at, NOW()),
-                    error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
-                WHERE id = ANY(:ids) AND status = 'PROCESSING'
-                """
-            ),
-            {"ids": pr_ids},
-        )
+            # 1b. Atomically flip pipeline_run PROCESSING -> FAILED.
+            pr_update = db.execute(
+                text(
+                    """
+                    UPDATE ingest.pipeline_runs
+                    SET status = 'FAILED',
+                        finished_at = COALESCE(finished_at, NOW()),
+                        error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                    WHERE id = :id AND status = 'PROCESSING'
+                    """
+                ),
+                {"id": pipeline_run_id},
+            )
+            if pr_update.rowcount == 0:
+                # Already FAILED from a prior sweep; don't double-dispatch.
+                continue
 
+            # 1c. Bump retry_count atomically.
+            bump = db.execute(
+                text(
+                    """
+                    UPDATE ingest.documents
+                    SET retry_count = retry_count + 1
+                    WHERE id = :doc_id
+                    RETURNING retry_count
+                    """
+                ),
+                {"doc_id": document_id},
+            ).scalar()
+
+            if bump is None:
+                logger.warning(
+                    "sweeper: document %s disappeared before retry bump; skipping",
+                    document_id,
+                )
+                continue
+
+            # 1d. If over cap, mark document permanently FAILED in this same tx.
+            #     failed_stages is ARRAY(String) — see app/models/ingest.py:67.
+            if bump > max_retry:
+                db.execute(
+                    text(
+                        """
+                        UPDATE ingest.documents
+                        SET pipeline_status = 'FAILED',
+                            pipeline_stage = :stage,
+                            failed_stages =
+                                COALESCE(failed_stages, ARRAY[]::text[])
+                                || ARRAY[:stage]::text[]
+                        WHERE id = :doc_id
+                        """
+                    ),
+                    {"doc_id": document_id, "stage": stage_name},
+                )
+                logger.error(
+                    "sweeper: document=%s exhausted retries (%d > %d) — permanently FAILED",
+                    document_id, bump, max_retry,
+                )
+            else:
+                # Under cap: defer dispatch until after this tx commits.
+                to_dispatch.append((document_id, stage_name, bump))
+
+        # Commit failure bookkeeping. After this, start_ingest_pipeline can see
+        # pipeline_run.status='FAILED' from its own session.
         db.commit()
-        logger.warning(
-            "periodic_stale_run_sweep: marked %d stale stage_runs FAILED "
-            "(threshold=%ds, pipeline_runs affected=%d)",
-            len(sr_ids), threshold, len(pr_ids),
-        )
-        return len(sr_ids)
+
+        swept = len(stale_rows)
+
+        for document_id, stage_name, bump in to_dispatch:
+            try:
+                start_ingest_pipeline(str(document_id))
+                logger.warning(
+                    "sweeper: redispatched document=%s stage_failed=%s retry=%d/%d",
+                    document_id, stage_name, bump, max_retry,
+                )
+            except Exception:
+                # Compensating transaction in a fresh session so the failed
+                # dispatch doesn't leave a doc with bumped retry_count + no
+                # running chain (invisible to next sweep).
+                logger.exception(
+                    "sweeper: redispatch failed for document=%s; "
+                    "marking FAILED and reverting retry_count",
+                    document_id,
+                )
+                comp = _get_db()
+                try:
+                    comp.execute(
+                        text(
+                            """
+                            UPDATE ingest.documents
+                            SET retry_count = GREATEST(retry_count - 1, 0),
+                                pipeline_status = 'FAILED',
+                                pipeline_stage = :stage,
+                                failed_stages =
+                                    COALESCE(failed_stages, ARRAY[]::text[])
+                                    || ARRAY[:stage]::text[]
+                            WHERE id = :doc_id
+                            """
+                        ),
+                        {"doc_id": document_id, "stage": stage_name},
+                    )
+                    comp.commit()
+                except Exception:
+                    logger.exception(
+                        "sweeper: compensation write also failed for %s; operator must triage",
+                        document_id,
+                    )
+                    comp.rollback()
+                finally:
+                    comp.close()
+
+        return swept
     except Exception:
         logger.exception("_sweep_stale_runs: rollback due to error")
         db.rollback()

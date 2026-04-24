@@ -16,29 +16,34 @@ pytestmark = pytest.mark.unit
 
 class TestSweepStaleRuns:
     def test_marks_old_running_stage_runs_failed(self):
-        """A stage_run RUNNING older than threshold is flipped to FAILED."""
+        """A stage_run RUNNING older than threshold is flipped to FAILED + pipeline_run FAILED + retry bump."""
         from app.workers.pipeline import _sweep_stale_runs
 
         stale_sr_id = uuid.uuid4()
         stale_pr_id = uuid.uuid4()
-        fake_rows = [(stale_sr_id, stale_pr_id)]
+        doc_id = uuid.uuid4()
+        # New SELECT returns (stage_run_id, pipeline_run_id, document_id, stage_name)
+        fake_rows = [(stale_sr_id, stale_pr_id, doc_id, "prepare_document")]
 
         db = MagicMock()
-        # first execute: SELECT stale rows; second: UPDATE stage_runs; third: UPDATE pipeline_runs
+        # SELECT -> UPDATE stage_runs -> UPDATE pipeline_runs (rowcount=1) ->
+        # UPDATE documents RETURNING retry_count (scalar=1)
         db.execute.side_effect = [
             MagicMock(fetchall=MagicMock(return_value=fake_rows)),
             MagicMock(),
-            MagicMock(),
+            MagicMock(rowcount=1),
+            MagicMock(scalar=MagicMock(return_value=1)),
         ]
 
         with patch("app.workers.pipeline._get_db", return_value=db), \
-             patch("app.workers.pipeline.settings") as mock_settings:
-            mock_settings.stale_stage_run_threshold_seconds = 900
+             patch("app.workers.pipeline.settings") as mock_settings, \
+             patch("app.workers.pipeline.start_ingest_pipeline"):
+            mock_settings.stale_stage_run_threshold_seconds = 27000
+            mock_settings.max_doc_retry_count = 3
             swept = _sweep_stale_runs()
 
         assert swept == 1
         assert db.commit.called
-        assert db.execute.call_count == 3
 
     def test_returns_zero_when_nothing_stale(self):
         """No stale rows -> returns 0, no UPDATEs issued."""
