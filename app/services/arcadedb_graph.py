@@ -1723,26 +1723,58 @@ class ArcadeDBGraphStore:
         """
         if not entity_names:
             return []
-        from app.services.arcadedb_schema import _STRUCTURAL_EDGE_TYPES
+        from app.services.arcadedb_schema import _STRUCTURAL_EDGE_TYPES, _safe_type_name
+        from app.services.ontology_templates import load_ontology
         structural = set(_STRUCTURAL_EDGE_TYPES)
 
-        # ArcadeDB SQL quirks (same class as the 2026-04-24 get_structural_neighbors fix):
+        # ArcadeDB SQL quirks (same class as the get_ontology_linked_chunks
+        # fix in the same file):
+        #  - MATCH first node without `type:` throws
+        #    java.lang.UnsupportedOperationException; `type: V` fails
+        #    because there's no root type registered.
         #  - Top-level `@class` projection is a parser error; use `@type`.
         #  - `out.@class` / `in.@class` fail with "no viable alternative at input '.@'".
         #    MATCH aliases (`e.@type`, `src.@type`, etc.) resolve correctly.
-        sql = (
-            "MATCH {as: src, where: (name IN :names)}"
-            ".outE() {as: e}"
-            ".inV() {as: dst, where: (name IN :names)} "
-            "RETURN e.@type AS rel_type, "
-            "src.name AS from_name, src.@type AS from_type, "
-            "dst.name AS to_name, dst.@type AS to_type"
-        )
-        rows = await self._client.query(
-            self._database, "sql", sql,
-            params={"names": entity_names},
-        )
-        return [r for r in rows if r.get("rel_type") not in structural]
+        #
+        # The seed type is intrinsically unknown here (names may span
+        # MISSILE_SYSTEM, RADAR_SYSTEM, etc.), so iterate the ontology's
+        # entity types and run one MATCH per type with `type: T` on src.
+        # dst carries no type constraint, so cross-type edges (e.g.
+        # RADAR→MISSILE) are still captured in the iteration where the
+        # src-side type matches either endpoint. Types that aren't yet
+        # registered in ArcadeDB's schema raise SchemaException; skip
+        # those and continue.
+        try:
+            ontology = load_ontology()
+            entity_types = [
+                _safe_type_name(e["name"]) for e in ontology.get("entity_types", [])
+            ]
+        except Exception:
+            entity_types = []
+        if not entity_types:
+            return []
+
+        all_rows: list[dict] = []
+        for etype in entity_types:
+            sql = (
+                f"MATCH {{type: {etype}, as: src, where: (name IN :names)}}"
+                f".outE() {{as: e}}"
+                f".inV() {{as: dst, where: (name IN :names)}} "
+                f"RETURN e.@type AS rel_type, "
+                f"src.name AS from_name, src.@type AS from_type, "
+                f"dst.name AS to_name, dst.@type AS to_type"
+            )
+            try:
+                rows = await self._client.query(
+                    self._database, "sql", sql,
+                    params={"names": entity_names},
+                )
+                all_rows.extend(rows)
+            except Exception:
+                # Type not yet in ArcadeDB schema (nothing ingested with
+                # that type) or a per-type query failed — continue.
+                continue
+        return [r for r in all_rows if r.get("rel_type") not in structural]
 
     # ==================================================================
     # Lifecycle operations

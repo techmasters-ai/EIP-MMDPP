@@ -793,13 +793,30 @@ class TestAdditionalOperations:
         assert results[0]["community_id"] == 1
 
     async def test_get_relationships_between_entities_excludes_structural(self):
-        """Should filter out EXTRACTED_FROM and other structural edges."""
-        client = _make_client(query_result=[
+        """Should filter out EXTRACTED_FROM and other structural edges.
+
+        Implementation iterates ontology entity types (MATCH first node
+        requires `type: T` — omitting it throws UnsupportedOperationException
+        in ArcadeDB). Simulate one type returning the edges and the rest
+        returning []; matches reality where only the type that actually
+        holds the named entity produces rows.
+        """
+        client = _make_client()
+        matched_rows = [
             {"rel_type": "USES", "from_name": "APG-77", "from_type": "RADAR_SYSTEM",
              "to_name": "AIM-120", "to_type": "MISSILE"},
             {"rel_type": "EXTRACTED_FROM", "from_name": "APG-77", "from_type": "RADAR_SYSTEM",
              "to_name": "chunk-1", "to_type": "TextChunk"},
-        ])
+        ]
+        # Return the matched rows on the first per-type call, [] for all
+        # subsequent per-type calls in the loop.
+        call_count = {"n": 0}
+
+        async def _query(*args, **kwargs):
+            call_count["n"] += 1
+            return matched_rows if call_count["n"] == 1 else []
+
+        client.query = _query
         store = _graph(client)
 
         results = await store.get_relationships_between_entities(["APG-77", "AIM-120"])
