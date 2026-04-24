@@ -1209,12 +1209,18 @@ class ArcadeDBGraphStore:
 
         # MATCH traversal captures the intermediate entity so callers get
         # rel_type context and can distinguish text vs image chunks.
+        #
+        # ArcadeDB SQL quirks (both from 2026-04-24 observed HTTP 500s):
+        #  - `{class: V, ...}` is rejected by the parser; MATCH nodes use
+        #    `type:` (with a concrete vertex type) or no type at all.
+        #  - `.@class` is a parser error (see get_structural_neighbors);
+        #    `.@type` resolves cleanly inside a MATCH alias scope.
         sql = (
             f"MATCH "
-            f"{{class: V, as: seed, where: (@rid = {rid})}}"
+            f"{{as: seed, where: (@rid = {rid})}}"
             f".in('EXTRACTED_FROM') {{as: entity}}"
             f".out('EXTRACTED_FROM') {{as: chunk, where: (@rid <> {rid})}} "
-            f"RETURN chunk.@rid AS chunk_rid, chunk.@class AS chunk_type, "
+            f"RETURN chunk.@rid AS chunk_rid, chunk.@type AS chunk_type, "
             f"chunk.chunk_id AS chunk_id, chunk.document_id AS document_id, "
             f"chunk.text AS text, chunk.chunk_text AS chunk_text, "
             f"chunk.modality AS modality, chunk.page_number AS page_number, "
@@ -1705,12 +1711,17 @@ class ArcadeDBGraphStore:
         from app.services.arcadedb_schema import _STRUCTURAL_EDGE_TYPES
         structural = set(_STRUCTURAL_EDGE_TYPES)
 
+        # ArcadeDB SQL quirks (same class as the 2026-04-24 get_structural_neighbors fix):
+        #  - Top-level `@class` projection is a parser error; use `@type`.
+        #  - `out.@class` / `in.@class` fail with "no viable alternative at input '.@'".
+        #    MATCH aliases (`e.@type`, `src.@type`, etc.) resolve correctly.
         sql = (
-            "SELECT @class AS rel_type, "
-            "out.name AS from_name, out.@class AS from_type, "
-            "in.name AS to_name, in.@class AS to_type "
-            "FROM (SELECT expand(outE()) FROM V WHERE name IN :names) "
-            "WHERE in.name IN :names"
+            "MATCH {as: src, where: (name IN :names)}"
+            ".outE() {as: e}"
+            ".inV() {as: dst, where: (name IN :names)} "
+            "RETURN e.@type AS rel_type, "
+            "src.name AS from_name, src.@type AS from_type, "
+            "dst.name AS to_name, dst.@type AS to_type"
         )
         rows = await self._client.query(
             self._database, "sql", sql,
