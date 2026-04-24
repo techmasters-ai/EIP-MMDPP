@@ -5591,17 +5591,17 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 
         entity_links = 0
         if entity_edge_records:
-            try:
-                entity_links = graph_store.batch_create_entity_chunk_edges_sync(
-                    entity_edge_records,
-                    document_id=str(document_id),
-                    pipeline_run_id=str(run_id) if run_id is not None else None,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "derive_structure_links: batch entity-chunk edge creation failed: %s",
-                    exc,
-                )
+            # NOTE: failures are NOT swallowed here. batch_create_entity_chunk_edges_sync
+            # retries on ArcadeDB's RecordNotFound race internally (up to 3 attempts).
+            # Any exception that escapes the retry helper is a genuine failure and
+            # should propagate to guard_stage_run, which will terminalize the doc
+            # rather than silently complete with missing edges. (Pre-2026-04-24
+            # behavior swallowed these and the 2026-04-24 run lost 5+ edges silently.)
+            entity_links = graph_store.batch_create_entity_chunk_edges_sync(
+                entity_edge_records,
+                document_id=str(document_id),
+                pipeline_run_id=str(run_id) if run_id is not None else None,
+            )
 
         db.commit()
 

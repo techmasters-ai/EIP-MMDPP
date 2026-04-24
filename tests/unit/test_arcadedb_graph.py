@@ -988,3 +988,97 @@ class TestUpsertNodesBatchSyncIdentityValidation:
         assert "LET v0 = UPDATE" in sent_script
         assert "LET v1 = UPDATE" in sent_script
         assert "RETURN [$v0, $v1]" in sent_script
+
+
+# ---------------------------------------------------------------------------
+# Batch entity-chunk edge retry (Task 4 of 2026-04-24-ingest-hardening-v2)
+# ---------------------------------------------------------------------------
+
+class TestBatchEntityChunkEdgeRetry:
+    """EntityChunkEdge fields (from graph_store.py:107):
+        entity_name: str, entity_type: str, chunk_rid: str,
+        entity_id: str | None = None, source_rid: str | None = None
+    """
+
+    def _http_status_error(self, body_text):
+        import httpx
+        resp = httpx.Response(
+            status_code=500,
+            request=httpx.Request("POST", "http://test"),
+            text=body_text,
+        )
+        return httpx.HTTPStatusError("500", request=resp.request, response=resp)
+
+    def _sample_edge(self):
+        from app.services.graph_store import EntityChunkEdge
+        return EntityChunkEdge(
+            entity_name="APG-77",
+            entity_type="RADAR_SYSTEM",
+            chunk_rid="#40:0",
+            entity_id="E1",
+            source_rid="#37:9",
+        )
+
+    def test_retries_on_record_not_found(self):
+        """One transient NotFound — retry should succeed on second attempt."""
+        gs = _graph()
+        calls = {"n": 0}
+
+        def fake_command_sync(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise self._http_status_error(
+                    '{"error":"Error on transaction commit",'
+                    '"detail":"Record #37:9 not found"}'
+                )
+            return [{"@rid": "#50:0"}]
+
+        gs._client.command_sync.side_effect = fake_command_sync
+        count = gs.batch_create_entity_chunk_edges_sync(
+            [self._sample_edge()],
+            document_id="doc-uuid",
+        )
+        assert calls["n"] == 2
+        assert count == 1  # attempted count (confirmed-count is separate follow-up)
+
+    def test_raises_after_exhausting_retries(self):
+        """Persistent NotFound — retry helper should give up and raise."""
+        import httpx
+        import pytest
+
+        gs = _graph()
+        gs._client.command_sync.side_effect = self._http_status_error(
+            '{"error":"tx commit","detail":"Record #37:9 not found"}'
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            gs.batch_create_entity_chunk_edges_sync(
+                [self._sample_edge()],
+                document_id="doc-uuid",
+            )
+
+    def test_non_record_not_found_error_not_retried(self):
+        """A different 500 (e.g. SQL syntax error) should NOT be retried —
+        only the specific Record-not-found race is transient."""
+        import httpx
+        import pytest
+
+        gs = _graph()
+        calls = {"n": 0}
+
+        def fake_command_sync(*a, **kw):
+            calls["n"] += 1
+            raise self._http_status_error(
+                '{"error":"Syntax error","detail":"unexpected token AT"}'
+            )
+
+        gs._client.command_sync.side_effect = fake_command_sync
+
+        with pytest.raises(httpx.HTTPStatusError):
+            gs.batch_create_entity_chunk_edges_sync(
+                [self._sample_edge()],
+                document_id="doc-uuid",
+            )
+
+        # No retry on non-matching errors
+        assert calls["n"] == 1

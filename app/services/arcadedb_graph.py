@@ -2236,9 +2236,35 @@ class ArcadeDBGraphStore:
                 "post-merge identity_to_rid map.",
                 fallback_count, len(edges),
             )
-        self._client.command_sync(
-            self._database, "sqlscript", ";\n".join(statements), params,
-        )
+
+        # Retry on ArcadeDB's "Record #N:M not found" race (read-after-write
+        # visibility lag between vertex upsert and edge create in separate
+        # HTTP sessions). See docs/superpowers/plans/2026-04-24-ingest-hardening-v2.md Task 4.
+        import httpx
+        import re
+        import time as _time
+        _RECORD_NOT_FOUND = re.compile(r"Record #\d+:\d+\s+not found", re.IGNORECASE)
+
+        script = ";\n".join(statements)
+        max_attempts = 3
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            try:
+                self._client.command_sync(
+                    self._database, "sqlscript", script, params,
+                )
+                break
+            except httpx.HTTPStatusError as exc:
+                body = getattr(getattr(exc, "response", None), "text", "") or ""
+                if _RECORD_NOT_FOUND.search(body) and attempt + 1 < max_attempts:
+                    logger.warning(
+                        "batch_create_entity_chunk_edges_sync: RecordNotFound on attempt %d — retrying",
+                        attempt + 1,
+                    )
+                    _time.sleep(0.2 * (attempt + 1))
+                    last_exc = exc
+                    continue
+                raise
         return len(edges)
 
     def get_chunk_rid_sync(
