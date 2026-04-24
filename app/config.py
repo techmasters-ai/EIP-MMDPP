@@ -205,7 +205,11 @@ class Settings(BaseSettings):
     doc_analysis_enabled: bool = True
     doc_analysis_llm_model: str = "gpt-oss:120b"
     doc_analysis_llm_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
-    doc_analysis_timeout: int = 300
+    doc_analysis_timeout: int = 1500  # HTTP client timeout for individual LLM calls
+    # Celery soft/hard time limits for derive_document_metadata. Previously derived
+    # inline as doc_analysis_timeout+60/+120; now explicit so env controls directly.
+    doc_analysis_soft_time_limit: int = 1800
+    doc_analysis_time_limit: int = 2400
     doc_analysis_summary_prompt: str = "Summarize this document in 3-5 sentences for a technical reader. Focus on the main subject, scope, and notable findings. Do not include source endnote markings such as [1]."
     doc_analysis_date_prompt: str = "Extract the most relevant date of information (publication date, report date, or coverage window). If only month/year appears, return that. If there is a range, return it exactly. If unsure, return Unknown. Provide ONLY the date or range."
     doc_analysis_source_prompt: str = "Characterize the source: 1) Organization or author (if unknown return UNKNOWN) 2) Type of information (website, journal, etc; if unknown return UNKNOWN) 3) Reliability score 1-10. Format: Organization: <name>\\nType: <type>\\nReliability: <score>/10"
@@ -224,8 +228,8 @@ class Settings(BaseSettings):
     translation_timeout: int = 300
     translation_prompt: str = "Translate ALL non-English text to English. The input may contain a mix of English and non-English text — translate every non-English word or phrase to English while keeping English portions unchanged. Do NOT skip non-English text even if it appears alongside English. Preserve all markdown formatting including headings (#), bullet points, tables, and code blocks. Keep technical designators like model numbers (С-75, 9М38) in their original form, but translate descriptive words around them (e.g., 'Зенитный Ракетный Комплекс С-75' → 'Anti-aircraft Missile System С-75'). Preserve all numbers, units, and acronyms. Preserve ---ELEMENT_BOUNDARY--- markers exactly as they appear. Return only the translated text with no commentary."
     translation_min_detect_length: int = 5
-    translation_soft_time_limit: int = 3600
-    translation_time_limit: int = 3660
+    translation_soft_time_limit: int = 7200
+    translation_time_limit: int = 8100
 
     # Docling OCR language
     docling_ocr_lang: str = "en"
@@ -241,32 +245,35 @@ class Settings(BaseSettings):
     # Pipeline retry & time-limit settings (env-var configurable)
     prepare_max_retries: int = 3
     prepare_retry_delay: int = 30
-    prepare_soft_time_limit: int = 4200
-    prepare_time_limit: int = 4260
+    prepare_soft_time_limit: int = 3600
+    prepare_time_limit: int = 4500
     embed_max_retries: int = 10
     embed_retry_delay: int = 60
-    embed_soft_time_limit: int = 1800
-    embed_time_limit: int = 1860
+    embed_soft_time_limit: int = 3600
+    embed_time_limit: int = 4500
     graph_max_retries: int = 2
     graph_retry_delay: int = 60
-    graph_soft_time_limit: int = 1800
-    graph_time_limit: int = 1860
+    graph_soft_time_limit: int = 21600
+    graph_time_limit: int = 25200
     picture_desc_max_retries: int = 1
     picture_desc_retry_delay: int = 30
-    picture_desc_soft_time_limit: int = 3600
-    picture_desc_time_limit: int = 3660
+    picture_desc_soft_time_limit: int = 18000
+    picture_desc_time_limit: int = 21600
     # Max concurrent VLM calls per document during derive_picture_descriptions.
     # Should not exceed OLLAMA_NUM_PARALLEL on the model server.
     picture_desc_concurrency: int = 5
     finalize_max_retries: int = 1
     finalize_retry_delay: int = 30
-    finalize_soft_time_limit: int = 120
-    finalize_time_limit: int = 180
+    finalize_soft_time_limit: int = 600
+    finalize_time_limit: int = 900
     # Max age (seconds) a stage_run row can sit at status='RUNNING' before the
-    # periodic sweeper marks it FAILED. Must be larger than the slowest observed
-    # legitimate stage duration; 15 min is safely above the ~9 min peak seen in
-    # 2026-04-23 detect_and_translate runs.
-    stale_stage_run_threshold_seconds: int = 900
+    # periodic sweeper marks it FAILED. Must be larger than max(*_time_limit)
+    # so the sweeper only fires after Celery's own timeout should already have
+    # killed + retried. max time_limit = graph_time_limit = 25200, so 27000.
+    stale_stage_run_threshold_seconds: int = 27000
+    # Max chain-level sweeper-triggered retries per document. Beyond this, the
+    # document is permanently FAILED for operator triage.
+    max_doc_retry_count: int = 3
     # Docling concurrency: max concurrent Docling conversions (Redis semaphore)
     docling_concurrency: int = 1
     # Lock timeout (auto-release if worker crashes)

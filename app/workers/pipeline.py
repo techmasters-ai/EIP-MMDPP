@@ -3167,8 +3167,8 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     name="app.workers.pipeline.derive_document_metadata",
     max_retries=2,
     default_retry_delay=30,
-    soft_time_limit=settings.doc_analysis_timeout + 60,
-    time_limit=settings.doc_analysis_timeout + 120,
+    soft_time_limit=settings.doc_analysis_soft_time_limit,
+    time_limit=settings.doc_analysis_time_limit,
     queue="ingest",
 )
 def derive_document_metadata(self, document_id: str, run_id: str | None = None) -> dict:
