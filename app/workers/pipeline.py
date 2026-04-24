@@ -3485,9 +3485,9 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
 
     except CeleryRetry:
         raise
-    except SoftTimeLimitExceeded:
+    except SoftTimeLimitExceeded as exc:
         logger.warning(
-            "detect_and_translate: soft time limit for %s — marking FAILED",
+            "detect_and_translate: soft time limit for %s — retrying via Celery",
             document_id,
         )
         if run_id:
@@ -3496,9 +3496,8 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
                                   attempt=self.request.retries + 1, error="soft time limit exceeded")
                 db.commit()
             except Exception:
-                pass
-        _update_document_status(document_id, STATUS_PARTIAL_COMPLETE, stage="detect_and_translate")
-        return {"stage": "detect_and_translate", "status": "timeout"}
+                logger.exception("detect_and_translate: stage_run FAILED write also failed")
+        raise self.retry(exc=exc)
     except Exception as exc:
         logger.error("detect_and_translate failed for %s: %s", document_id, exc)
         if run_id:
@@ -3719,7 +3718,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
         raise
     except SoftTimeLimitExceeded as exc:
         logger.warning(
-            "derive_picture_descriptions: soft time limit for %s — marking PARTIAL_COMPLETE",
+            "derive_picture_descriptions: soft time limit for %s — retrying via Celery",
             document_id,
         )
         if run_id:
@@ -3727,9 +3726,8 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
                 _update_stage_run(db, run_id, "derive_picture_descriptions", "FAILED", attempt=self.request.retries + 1, error="soft time limit exceeded")
                 db.commit()
             except Exception:
-                pass
-        _update_document_status(document_id, STATUS_PARTIAL_COMPLETE, stage="derive_picture_descriptions")
-        return {"stage": "derive_picture_descriptions", "status": "timeout", "pictures_updated": 0}
+                logger.exception("derive_picture_descriptions: stage_run FAILED write also failed")
+        raise self.retry(exc=exc)
     except Exception as exc:
         logger.error("derive_picture_descriptions failed for %s: %s", document_id, exc)
         if run_id:
@@ -4247,14 +4245,14 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
     except CeleryRetry:
         raise
-    except SoftTimeLimitExceeded:
-        logger.warning("derive_text_chunks_and_embeddings: soft time limit for %s", document_id)
+    except SoftTimeLimitExceeded as exc:
+        logger.warning("derive_text_chunks_and_embeddings: soft time limit for %s — retrying via Celery", document_id)
         db.rollback()
         if run_id:
             _update_stage_run(db, run_id, "derive_text_embeddings", "FAILED",
                               attempt=self.request.retries + 1, error="soft time limit exceeded")
             db.commit()
-        return {"stage": "derive_text_embeddings", "status": "failed", "error": "soft time limit exceeded"}
+        raise self.retry(exc=exc)
     except Exception as exc:
         logger.error("derive_text_chunks_and_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
@@ -4416,14 +4414,14 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
 
     except CeleryRetry:
         raise
-    except SoftTimeLimitExceeded:
-        logger.warning("derive_image_embeddings: soft time limit for %s", document_id)
+    except SoftTimeLimitExceeded as exc:
+        logger.warning("derive_image_embeddings: soft time limit for %s — retrying via Celery", document_id)
         db.rollback()
         if run_id:
             _update_stage_run(db, run_id, "derive_image_embeddings", "FAILED",
                               attempt=self.request.retries + 1, error="soft time limit exceeded")
             db.commit()
-        return {"stage": "derive_image_embeddings", "status": "failed", "error": "soft time limit exceeded"}
+        raise self.retry(exc=exc)
     except Exception as exc:
         logger.error("derive_image_embeddings failed for %s: %s", document_id, exc)
         db.rollback()
@@ -4624,9 +4622,9 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
 
     except CeleryRetry:
         raise
-    except SoftTimeLimitExceeded:
+    except SoftTimeLimitExceeded as exc:
         logger.warning(
-            "derive_document_anchors: soft time limit for %s", document_id,
+            "derive_document_anchors: soft time limit for %s — retrying via Celery", document_id,
         )
         db.rollback()
         if run_id:
@@ -4636,10 +4634,7 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
                 error="soft time limit exceeded",
             )
             db.commit()
-        return {
-            "stage": "derive_document_anchors", "status": "failed",
-            "error": "soft time limit exceeded",
-        }
+        raise self.retry(exc=exc)
     except Exception as exc:
         logger.error(
             "derive_document_anchors failed for %s: %s", document_id, exc,
