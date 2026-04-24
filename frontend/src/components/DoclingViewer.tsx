@@ -86,6 +86,13 @@ function buildDoclingHtml(docJson: Record<string, unknown>): string {
     <script id="dcljson" type="application/json">${jsonStr}<\/script>
 
     <script>
+      // docling-components.js ships a hard-coded label whitelist on the
+      // default text renderer (docling-item-text), so hovering a formula
+      // element produces no tooltip. Extend the existing canDrawItem to
+      // also claim label === 'formula' (and 'code'); the inherited
+      // renderItem just prints item.text, which is the LaTeX the Docling
+      // formula enrichment emits. Runs before we set .src so the first
+      // hover picks up the patched predicate.
       (function() {
         function applySrc() {
           try {
@@ -96,11 +103,25 @@ function buildDoclingHtml(docJson: Record<string, unknown>): string {
             console.error('Failed to set docling-img src:', e);
           }
         }
-        if (!customElements.get('docling-img')) {
-          customElements.whenDefined('docling-img').then(applySrc);
-        } else {
-          applySrc();
+        function patchTextRenderer() {
+          var TextClass = customElements.get('docling-item-text');
+          if (!TextClass || TextClass.__eipFormulaPatched) return;
+          var origCanDraw = TextClass.prototype.canDrawItem;
+          TextClass.prototype.canDrawItem = function(item) {
+            if (item && (item.label === 'formula' || item.label === 'code')) {
+              return true;
+            }
+            return origCanDraw.call(this, item);
+          };
+          TextClass.__eipFormulaPatched = true;
         }
+        Promise.all([
+          customElements.whenDefined('docling-img'),
+          customElements.whenDefined('docling-item-text'),
+        ]).then(function() {
+          patchTextRenderer();
+          applySrc();
+        });
       })();
     <\/script>
   </body>
