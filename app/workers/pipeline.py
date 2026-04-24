@@ -5647,16 +5647,42 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 @celery_app.task(bind=True)
 @guard_stage_run("collect_derivations")
 def collect_derivations(self, document_id: str, run_id: str | None = None) -> None:
-    """Post-derivation checkpoint: mark document as past derivation stages."""
-    try:
-        logger.info("collect_derivations: document_id=%s", document_id)
-        _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
-    except Exception as exc:
-        logger.error("collect_derivations failed for %s: %s", document_id, exc)
-        _update_document_status(
-            document_id, STATUS_PARTIAL_COMPLETE,
-            stage="collect_derivations", error=str(exc),
-        )
+    """Post-derivation checkpoint: mark document as past derivation stages.
+
+    Also writes a COMPLETE stage_run row so finalize_document's
+    REQUIRED_STAGES check (pipeline.py ~line 5749) sees this stage as
+    complete. Previously the task only updated documents.pipeline_stage
+    without writing stage_runs, which caused finalize to report the stage
+    missing in edge cases.
+    """
+    logger.info("collect_derivations: document_id=%s run_id=%s", document_id, run_id)
+    _update_document_status(document_id, STATUS_PROCESSING, stage="collect_derivations")
+
+    if run_id:
+        db = _get_db()
+        try:
+            _update_stage_run(
+                db, run_id, "collect_derivations", "RUNNING",
+                attempt=self.request.retries + 1,
+            )
+            db.commit()
+        finally:
+            db.close()
+
+    # No-op body beyond the status/stage_run bookkeeping; this task is a
+    # Celery join point that runs after derivation stages and before the
+    # structure-link / canonicalize / finalize tail.
+
+    if run_id:
+        db = _get_db()
+        try:
+            _update_stage_run(
+                db, run_id, "collect_derivations", "COMPLETE",
+                attempt=self.request.retries + 1,
+            )
+            db.commit()
+        finally:
+            db.close()
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",

@@ -94,3 +94,42 @@ class TestTaskRouting:
         from app.workers.celery_app import celery_app
         routes = celery_app.conf.task_routes
         assert routes["app.workers.pipeline.finalize_document"]["queue"] == "ingest"
+
+
+class TestCollectDerivationsStageRun:
+    """collect_derivations must write a COMPLETE stage_runs row so
+    finalize_document's REQUIRED_STAGES check doesn't report it as missing."""
+
+    def test_writes_running_then_complete_stage_run(self):
+        from app.workers.pipeline import collect_derivations
+
+        doc_id = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())
+
+        with patch("app.workers.pipeline._get_db") as mock_get_db, \
+             patch("app.workers.pipeline._update_document_status"), \
+             patch("app.workers.pipeline._update_stage_run") as mock_update_stage:
+            mock_get_db.return_value = MagicMock()
+            collect_derivations.run(doc_id, run_id)
+
+        # Two writes: RUNNING then COMPLETE
+        statuses = [call.args[3] for call in mock_update_stage.call_args_list]
+        assert "RUNNING" in statuses
+        assert "COMPLETE" in statuses
+        # The stage_name passed is "collect_derivations"
+        stage_names = [call.args[2] for call in mock_update_stage.call_args_list]
+        assert all(n == "collect_derivations" for n in stage_names)
+
+    def test_no_run_id_skips_stage_writes(self):
+        """When run_id is None, no stage_runs writes occur."""
+        from app.workers.pipeline import collect_derivations
+
+        doc_id = str(uuid.uuid4())
+
+        with patch("app.workers.pipeline._get_db") as mock_get_db, \
+             patch("app.workers.pipeline._update_document_status"), \
+             patch("app.workers.pipeline._update_stage_run") as mock_update_stage:
+            collect_derivations.run(doc_id, None)
+
+        mock_update_stage.assert_not_called()
+        mock_get_db.assert_not_called()
