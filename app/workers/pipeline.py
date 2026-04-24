@@ -2001,6 +2001,7 @@ def guard_stage_run(stage_name: str):
                             run_id, stage_name,
                         )
                 raise
+        wrapper.stage_name = stage_name  # surfaced for test introspection
         return wrapper
     return decorator
 
@@ -3171,6 +3172,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     time_limit=settings.doc_analysis_time_limit,
     queue="ingest",
 )
+@guard_stage_run("derive_document_metadata")
 def derive_document_metadata(self, document_id: str, run_id: str | None = None) -> dict:
     """Extract document metadata (summary, date, classification, source) via LLM."""
     import json as json_mod
@@ -3278,6 +3280,7 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
     time_limit=settings.translation_time_limit,
     queue="ingest",
 )
+@guard_stage_run("detect_and_translate")
 def detect_and_translate(self, document_id: str, run_id: str | None = None) -> dict:
     """Detect non-English elements and translate them via Ollama."""
     import json as json_mod
@@ -3523,6 +3526,7 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
     time_limit=settings.picture_desc_time_limit,
     queue="ingest",
 )
+@guard_stage_run("derive_picture_descriptions")
 def derive_picture_descriptions(self, document_id: str, run_id: str | None = None) -> dict:
     """Enrich picture items with LLM-generated descriptions using document summary context."""
     import json as json_mod
@@ -3741,6 +3745,7 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
 
 @celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,
                  time_limit=settings.finalize_time_limit, queue="ingest")
+@guard_stage_run("purge_document_derivations")
 def purge_document_derivations(self, document_id: str, run_id: str | None = None) -> str:
     """Delete stale derived data for a document before re-deriving.
 
@@ -3814,6 +3819,7 @@ def purge_document_derivations(self, document_id: str, run_id: str | None = None
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
+@guard_stage_run("derive_text_embeddings")
 def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
 
@@ -4273,6 +4279,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
+@guard_stage_run("derive_image_embeddings")
 def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read image document_elements → CLIP embed → upsert image_chunks.
 
@@ -4446,6 +4453,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
     soft_time_limit=settings.finalize_soft_time_limit,
     time_limit=settings.finalize_time_limit,
 )
+@guard_stage_run("derive_document_anchors")
 def derive_document_anchors(self, document_id: str, run_id: str | None = None) -> dict:
     """Emit ontology DOCUMENT / SECTION / FIGURE / TABLE vertices and
     their structural edges (HAS_SECTION / HAS_FIGURE / HAS_TABLE /
@@ -4848,6 +4856,7 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
                  soft_time_limit=settings.graph_soft_time_limit,
                  time_limit=settings.graph_time_limit)
+@guard_stage_run("derive_ontology_graph")
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
     """Dispatch graph extraction via the bundle-passes orchestrator.
 
@@ -4860,6 +4869,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
                  soft_time_limit=settings.finalize_soft_time_limit,
                  time_limit=settings.finalize_time_limit)
+@guard_stage_run("derive_structure_links")
 def derive_structure_links(self, document_id: str, run_id: str | None = None) -> dict:
     """Generate chunk_links and structural ArcadeDB edges.
 
@@ -5381,6 +5391,7 @@ def derive_structure_links(self, document_id: str, run_id: str | None = None) ->
 
 
 @celery_app.task(bind=True)
+@guard_stage_run("collect_derivations")
 def collect_derivations(self, document_id: str, run_id: str | None = None) -> None:
     """Post-derivation checkpoint: mark document as past derivation stages."""
     try:
@@ -5397,6 +5408,7 @@ def collect_derivations(self, document_id: str, run_id: str | None = None) -> No
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
                  soft_time_limit=settings.finalize_soft_time_limit,
                  time_limit=settings.finalize_time_limit)
+@guard_stage_run("derive_canonicalization")
 def derive_canonicalization(self, document_id: str, run_id: str | None = None) -> dict:
     """Post-extraction entity canonicalization pass.
 
@@ -5458,6 +5470,7 @@ def derive_canonicalization(self, document_id: str, run_id: str | None = None) -
 
 @celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,
                  time_limit=settings.finalize_time_limit)
+@guard_stage_run("finalize_document")
 def finalize_document(self, document_id: str, run_id: str | None = None) -> None:
     """Mark pipeline COMPLETE if all required stages succeeded."""
     from app.models.ingest import PipelineRun, StageRun
