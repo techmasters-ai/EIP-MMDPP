@@ -151,7 +151,30 @@ export function DoclingViewer({
     getDocumentMetadata(documentId).then(setMetadata);
     getDocumentImageDescriptions(documentId).then(setImageDescriptions);
     getDoclingRawJson(documentId)
-      .then(setDocJson)
+      .then((raw) => {
+        // Legacy-stub detection: .txt and other non-Docling-supported mimes
+        // go through _build_legacy_docling_document_json(), which produces
+        // a schema-valid DoclingDocument with pages={} and texts carrying
+        // no prov. The <docling-img> component renders nothing in that
+        // case (no page bitmaps, no bboxes), so fall through to the
+        // plain-text view instead of showing an empty iframe.
+        const pages = (raw as { pages?: Record<string, unknown> }).pages;
+        const texts = (raw as { texts?: Array<{ text?: string }> }).texts;
+        const hasPages = pages && Object.keys(pages).length > 0;
+        if (!hasPages) {
+          const joined = (texts ?? [])
+            .map((t) => t?.text ?? "")
+            .filter((t) => t.length > 0)
+            .join("\n\n");
+          if (joined) {
+            setPlainText(joined);
+          } else {
+            setError("No viewable content available for this document.");
+          }
+          return;
+        }
+        setDocJson(raw);
+      })
       .catch(() => {
         // Fallback: try fetching markdown/text content for non-PDF files
         return getDoclingDocument(documentId)
