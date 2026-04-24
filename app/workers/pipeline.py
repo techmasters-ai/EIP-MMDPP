@@ -1052,6 +1052,75 @@ def _update_document_pipeline_status(document_id: str, new_status: str) -> None:
         db.close()
 
 
+# Terminal statuses the guard must NOT overwrite. String literals (not the
+# STATUS_* constants) because those are defined later in the module.
+# PENDING_HUMAN_REVIEW is terminal-ish — the doc is awaiting operator action;
+# guard must not downgrade it to PARTIAL_COMPLETE.
+_TERMINAL_DOC_STATUSES = {
+    "COMPLETE",
+    "FAILED",
+    "PARTIAL_COMPLETE",
+    "PENDING_HUMAN_REVIEW",
+}
+
+
+def _terminalize_doc_and_run(document_id: str, run_id: str | None, doc_status: str) -> None:
+    """Flip a document and its owning PipelineRun to terminal states.
+
+    Preserves existing terminal document statuses — if the doc is already
+    FAILED / COMPLETE / PARTIAL_COMPLETE / PENDING_HUMAN_REVIEW, do NOT
+    overwrite with a softer value.
+
+    The pipeline_run always moves to FAILED when it was PROCESSING, regardless
+    of the doc_status argument (a PARTIAL_COMPLETE document still corresponds
+    to a FAILED run — the chain didn't reach finalize_document).
+
+    All failure paths are swallowed — the caller is usually the guard handling
+    an already-failing task; we don't want the terminalization itself to mask
+    the original exception.
+    """
+    from datetime import datetime as dt
+    from app.models.ingest import Document, PipelineRun
+
+    try:
+        db = _get_db()
+    except Exception:
+        logger.exception(
+            "_terminalize_doc_and_run: failed to open DB session for document=%s",
+            document_id,
+        )
+        return
+
+    try:
+        try:
+            doc = db.get(Document, uuid.UUID(str(document_id)))
+            if doc is not None and doc.pipeline_status not in _TERMINAL_DOC_STATUSES:
+                doc.pipeline_status = doc_status
+
+            if run_id:
+                run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+                if run is not None and run.status == "PROCESSING":
+                    run.status = "FAILED"
+                    if run.finished_at is None:
+                        run.finished_at = dt.utcnow()
+
+            db.commit()
+        except Exception:
+            logger.exception(
+                "_terminalize_doc_and_run: failed for document=%s run_id=%s",
+                document_id, run_id,
+            )
+            try:
+                db.rollback()
+            except Exception:
+                logger.exception("_terminalize_doc_and_run: rollback also failed")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 def check_required_pass_gate(pipeline_run_id) -> GateResult:
     """Required-pass gate per spec §6.4.
 
@@ -2086,8 +2155,14 @@ def guard_stage_run(stage_name: str):
         def wrapper(self, document_id, run_id=None, *args, **kwargs):
             try:
                 return fn(self, document_id, run_id, *args, **kwargs)
-            except (CeleryRetry, SoftTimeLimitExceeded):
+            except CeleryRetry:
                 raise
+            # NOTE: SoftTimeLimitExceeded is intentionally NOT passed through
+            # here. When a task's body calls self.retry(exc=SoftTimeLimitExceeded)
+            # on retry exhaustion, Celery 5 re-raises the provided `exc` itself
+            # (not MaxRetriesExceededError), so SoftTimeLimitExceeded reaches
+            # this wrapper on the final attempt. Letting it fall through to
+            # `except Exception` ensures terminalization on exhaustion.
             except Exception as exc:
                 logger.exception(
                     "guard_stage_run: %s raised unhandled exception "
@@ -2112,6 +2187,11 @@ def guard_stage_run(stage_name: str):
                             "for run_id=%s stage=%s",
                             run_id, stage_name,
                         )
+                # Unconditional terminalization: reaching this branch means the
+                # task did not convert the exception via self.retry (which
+                # raises CeleryRetry and is pass-through). The helper preserves
+                # existing terminal statuses.
+                _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
                 raise
         wrapper.stage_name = stage_name  # surfaced for test introspection
         return wrapper
