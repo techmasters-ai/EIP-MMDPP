@@ -146,7 +146,13 @@ class TestSourcesSchemas:
         from app.schemas.sources import WatchDirCreate
         wdc = WatchDirCreate(path="/data/watch", source_id=uuid.uuid4())
         assert wdc.poll_interval_seconds == 30
-        assert wdc.file_patterns == ["*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"]
+        # Default mirrors Docling's full allowed_formats surface (see
+        # app/schemas/sources.py::WatchDirCreate). Assert shape + core entries
+        # rather than the full list so adding a new supported format doesn't
+        # break this test.
+        assert isinstance(wdc.file_patterns, list)
+        for core in ("*.pdf", "*.docx", "*.txt", "*.png", "*.jpg", "*.tiff"):
+            assert core in wdc.file_patterns
 
 
 # ---------------------------------------------------------------------------

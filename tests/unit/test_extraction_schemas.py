@@ -5,16 +5,15 @@ from typing import get_args, get_origin, Union
 from pydantic import BaseModel
 
 from ontology_bundles.air_defense_v3.extraction_schemas import (
-    radar_domain, missile_domain, other_systems, system_links,
+    radar_domain, missile_domain, system_links,
 )
 
-# Post-C-1/C-2: the `reference` pass was deleted — deterministic Docling
-# anchor walker (D-3) emits SECTION/FIGURE/TABLE now, and manifest.yaml
-# declares 4 passes. The old 5-pass assumption has been retired.
+# Post-C-1/C-2 + flat-checklist refactor: `reference` and `other_systems`
+# passes were deleted. The deterministic Docling anchor walker (D-3) now
+# emits SECTION/FIGURE/TABLE, and manifest.yaml declares 3 passes.
 PASS_MODULES = [
     (radar_domain, "RadarDomainPass"),
     (missile_domain, "MissileDomainPass"),
-    (other_systems, "OtherSystemsPass"),
     (system_links, "SystemLinksPass"),
 ]
 

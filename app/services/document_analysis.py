@@ -161,8 +161,7 @@ def describe_pictures(docling_json: dict, document_summary: str) -> dict:
         logger.info("Picture descriptions: 0 describable pictures found")
         return docling_json
 
-    # Parallel description with bounded concurrency (max 3 to avoid Ollama overload)
-    max_workers = min(3, len(describable))
+    max_workers = min(settings.picture_desc_concurrency, len(describable))
     descriptions: dict[int, str] = {}
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:

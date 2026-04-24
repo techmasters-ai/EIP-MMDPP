@@ -13,9 +13,9 @@ def test_load_bundle_manifest_returns_four_passes():
     m = load_bundle_manifest("air_defense_v3")
     assert isinstance(m, BundleManifest)
     assert m.bundle_key == "air_defense_v3"
-    assert len(m.passes) == 4
+    assert len(m.passes) == 3
     assert {p.name for p in m.passes} == {
-        "radar_domain", "missile_domain", "other_systems", "system_links",
+        "radar_domain", "missile_domain", "system_links",
     }
 
 
@@ -24,12 +24,14 @@ def test_load_bundle_manifest_populates_pass_metadata():
     from app.services.ontology_bundles import load_bundle_manifest
     m = load_bundle_manifest("air_defense_v3")
     radar = m.find_pass("radar_domain")
-    # Domain passes (radar/missile/other_systems) are non-required so docs
-    # without matching content don't fail the pipeline on empty LLM output.
+    # Domain passes (radar/missile) are non-required so docs without matching
+    # content don't fail the pipeline on empty LLM output.
     assert radar.required is False
-    assert radar.kind == "entities_and_relationships"
+    # Flat checklist-aligned schema — all antenna / RF / modulation fields are
+    # properties on RADAR_SYSTEM, no typed HAS_* edges.
+    assert radar.kind == "entities"
     assert radar.input_mode == "document_only"
-    assert "PLATFORM" in radar.bridge_entity_types
+    assert radar.bridge_entity_types == []
     assert "RADAR_SYSTEM" in radar.primary_entity_types
     # system_links must remain required — cross-pass linking is critical.
     assert m.find_pass("system_links").required is True

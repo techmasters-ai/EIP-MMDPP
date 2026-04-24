@@ -3589,6 +3589,7 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
         detection = detect_element_languages(elem_dicts)
         detected_language = detection["document_language"]
         non_english_indices = detection["non_english_indices"]
+        language_confidences = detection.get("language_confidences", {})
 
         total_elements = len(elem_dicts)
         non_english_count = len(non_english_indices)
@@ -3624,6 +3625,41 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
             logger.info("detect_and_translate: document_id=%s all-English (%s), nothing to translate",
                         document_id, detected_language)
             return {"stage": "detect_and_translate", "status": "ok", "translated": 0}
+
+        # Guard against langdetect-noise: if every flagged element failed langdetect
+        # classification, the non-Latin regex almost certainly false-fired on OCR
+        # artefacts. Sending that garbage to the LLM wastes a full translation
+        # timeout per element with no useful result.
+        unknown_count = language_confidences.get("unknown", 0)
+        if unknown_count and unknown_count == non_english_count:
+            _merge_doc_metadata({
+                "detected_language": "unknown",
+                "has_translation": False,
+                "translation_skipped_reason": "langdetect_no_match",
+            })
+            db.commit()
+            if run_id:
+                _update_stage_run(db, run_id, "detect_and_translate", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={
+                                      "detected_language": "unknown",
+                                      "total_elements": total_elements,
+                                      "non_english_elements": non_english_count,
+                                      "elements_translated": 0,
+                                      "skipped_reason": "langdetect_no_match",
+                                  })
+                db.commit()
+            logger.warning(
+                "detect_and_translate: document_id=%s %d elements flagged by non-Latin "
+                "regex but none classified by langdetect — skipping as probable OCR noise",
+                document_id, non_english_count,
+            )
+            return {
+                "stage": "detect_and_translate",
+                "status": "skipped",
+                "reason": "langdetect_no_match",
+                "flagged": non_english_count,
+            }
 
         # Translate non-English elements
         translated_texts = translate_elements(elem_dicts, non_english_indices)

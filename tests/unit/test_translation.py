@@ -83,6 +83,17 @@ class TestDetectElementLanguages:
         assert result["document_language"] == "en"
         assert result["non_english_indices"] == []
 
+    def test_language_confidences_returned(self):
+        """Result exposes per-language classification counts so callers can
+        detect the all-unknown case and skip sending garbage to the LLM."""
+        from app.services.translation import detect_element_languages
+        elements = [
+            {"content_text": "Зенитная ракетная система С-75 Двина предназначена для поражения воздушных целей на средних и больших высотах.", "element_type": "text"},
+        ]
+        result = detect_element_languages(elements)
+        assert "language_confidences" in result
+        assert result["language_confidences"].get("ru", 0) >= 1
+
 
 class TestTranslateElements:
     @patch("app.services.translation._ollama_translate")

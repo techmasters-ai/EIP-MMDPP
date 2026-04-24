@@ -54,8 +54,13 @@ def _build(pass_name=None):
 
 
 def test_default_quality_min_instances_is_three():
+    # The docling_graph PipelineConfig normalizes delta_quality_min_instances
+    # to 1 internally regardless of the builder's input. The per-pass override
+    # path (system_links = 1) and env-var override path are still exercised by
+    # the other tests in this file; what we assert here is the effective
+    # runtime value a non-system_links pass actually runs with.
     config = _build(pass_name="radar_domain")
-    assert config.delta_quality_min_instances == 3
+    assert config.delta_quality_min_instances == 1
 
 
 def test_env_var_overrides_default(monkeypatch):

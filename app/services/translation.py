@@ -52,8 +52,11 @@ def detect_element_languages(elements: list[dict]) -> dict:
 
     Returns:
         {
-            "document_language": "ru",  # most common non-English, or "en"
-            "non_english_indices": [0, 2, 5],  # indices needing translation
+            "document_language": "ru",           # most common non-English, or "en"
+            "non_english_indices": [0, 2, 5],    # indices needing translation
+            "language_confidences": {"ru": 2, "unknown": 4},  # per-language counts;
+                                                 # "unknown" = regex-flagged but
+                                                 # langdetect couldn't classify
         }
     """
     settings = get_settings()
@@ -79,6 +82,7 @@ def detect_element_languages(elements: list[dict]) -> dict:
     return {
         "document_language": doc_lang,
         "non_english_indices": non_english,
+        "language_confidences": dict(lang_counts),
     }
 
 

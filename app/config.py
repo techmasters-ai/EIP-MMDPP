@@ -231,7 +231,7 @@ class Settings(BaseSettings):
     translation_enabled: bool = True
     translation_model: str = "llama3.3:70b"
     translation_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
-    translation_timeout: int = 300
+    translation_timeout: int = 180
     translation_prompt: str = "Translate ALL non-English text to English. The input may contain a mix of English and non-English text — translate every non-English word or phrase to English while keeping English portions unchanged. Do NOT skip non-English text even if it appears alongside English. Preserve all markdown formatting including headings (#), bullet points, tables, and code blocks. Keep technical designators like model numbers (С-75, 9М38) in their original form, but translate descriptive words around them (e.g., 'Зенитный Ракетный Комплекс С-75' → 'Anti-aircraft Missile System С-75'). Preserve all numbers, units, and acronyms. Preserve ---ELEMENT_BOUNDARY--- markers exactly as they appear. Return only the translated text with no commentary."
     translation_min_detect_length: int = 5
     translation_soft_time_limit: int = 7200

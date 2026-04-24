@@ -213,6 +213,9 @@ class TestDescribePictures:
         s.picture_description_model = "gemma3:27b"
         s.picture_description_timeout = 60
         s.picture_description_prompt = "Describe this image. {document_summary}"
+        # describe_pictures passes picture_desc_concurrency to
+        # min(...) — must be a real int, not a MagicMock.
+        s.picture_desc_concurrency = 5
         mock_settings.return_value = s
         mock_describe.return_value = "A radar installation on a vehicle."
 
