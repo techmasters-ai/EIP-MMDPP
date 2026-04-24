@@ -14,22 +14,40 @@ pytestmark = pytest.mark.unit
 
 class TestStartIngestPipeline:
     def test_creates_celery_chain(self):
-        """start_ingest_pipeline returns a chain of the expected tasks."""
+        """start_ingest_pipeline builds and dispatches the full Celery chain
+        and returns an IngestDispatchResult carrying the pipeline_run_id and
+        celery_task_id."""
         from app.workers.pipeline import start_ingest_pipeline
 
         doc_id = str(uuid.uuid4())
+        run_id = str(uuid.uuid4())
+
+        # db.execute(...).scalar_one_or_none() → None (no active run — take the dispatch path)
+        # db.get(Document, ...) → None (simulates no Document row; source_key falls back)
         mock_db = MagicMock()
         mock_db.execute.return_value.scalar_one_or_none.return_value = None
-        mock_db.execute.return_value.scalar.return_value = None
+        mock_db.get.return_value = None
+
+        mock_manifest = MagicMock(
+            ontology_name="test",
+            ontology_version="0.0.1",
+            extraction_profile_version="v0",
+        )
 
         with patch("app.workers.pipeline._get_db", return_value=mock_db), \
-             patch("app.workers.pipeline._create_pipeline_run", return_value=str(uuid.uuid4())), \
+             patch("app.workers.pipeline._create_pipeline_run", return_value=run_id), \
+             patch("app.services.ontology_bundles.resolve_bundle_key", return_value="air_defense_v3"), \
+             patch("app.services.ontology_bundles.load_bundle_manifest", return_value=mock_manifest), \
              patch("app.workers.pipeline.chain") as mock_chain:
             mock_apply = MagicMock(id="task-123")
             mock_chain.return_value.apply_async.return_value = mock_apply
+
             result = start_ingest_pipeline(doc_id)
-            assert result == "task-123"
-            mock_chain.assert_called_once()
+
+        mock_chain.assert_called_once()
+        # start_ingest_pipeline returns an IngestDispatchResult, not a bare string.
+        assert result.pipeline_run_id == run_id
+        assert result.celery_task_id == "task-123"
 
 
 class TestTasksRegistered:
