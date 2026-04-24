@@ -1419,11 +1419,19 @@ class ArcadeDBGraphStore:
             doc_list = ", ".join(f"'{d}'" for d in document_ids)
             where_clause = f" WHERE document_id IN [{doc_list}]"
 
+        # ArcadeDB quirk: when vectorNeighbors is expanded inside a subquery,
+        # `$distance` is NOT projected in the outer SELECT (only available while
+        # vectorNeighbors is being evaluated). Referencing it in ORDER BY forces
+        # the engine to surface it as a `distance` column, which _to_entity then
+        # converts to a similarity score. Without this, every hit arrives with
+        # extraction_confidence=None and the retrieval min-score filter drops
+        # 100% of results (empty search).
         sql = (
-            f"SELECT *, $distance, @rid AS node_id "
+            f"SELECT *, @rid AS node_id "
             f"FROM (SELECT expand(vectorNeighbors('{index_name}', "
             f":query_vector, :top_k{ef_arg})))"
-            f"{where_clause}"
+            f"{where_clause} "
+            f"ORDER BY $distance ASC"
         )
         params: dict[str, Any] = {
             "query_vector": query_vector,
