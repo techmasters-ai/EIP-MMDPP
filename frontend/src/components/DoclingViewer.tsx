@@ -69,6 +69,8 @@ function buildDoclingHtml(docJson: Record<string, unknown>): string {
 <html>
   <head>
     <meta charset="utf-8" />
+    <link rel="stylesheet" href="/static/katex/katex.min.css" />
+    <script defer src="/static/katex/katex.min.js"><\/script>
     <script src="/static/docling-components.js" type="module"><\/script>
     <style>
       body { margin: 0; background: #f5f5f5; display: flex; justify-content: center; }
@@ -88,11 +90,10 @@ function buildDoclingHtml(docJson: Record<string, unknown>): string {
     <script>
       // docling-components.js ships a hard-coded label whitelist on the
       // default text renderer (docling-item-text), so hovering a formula
-      // element produces no tooltip. Extend the existing canDrawItem to
-      // also claim label === 'formula' (and 'code'); the inherited
-      // renderItem just prints item.text, which is the LaTeX the Docling
-      // formula enrichment emits. Runs before we set .src so the first
-      // hover picks up the patched predicate.
+      // element produces no tooltip. Extend canDrawItem to claim 'formula'
+      // and 'code', and override renderItem for formula items to hand back
+      // KaTeX-rendered HTML instead of raw LaTeX. All KaTeX assets are
+      // served from /static/katex/ so the viewer works fully offline.
       (function() {
         function applySrc() {
           try {
@@ -103,15 +104,52 @@ function buildDoclingHtml(docJson: Record<string, unknown>): string {
             console.error('Failed to set docling-img src:', e);
           }
         }
+        function renderFormulaFragment(latex) {
+          // Shadow DOM doesn't inherit the iframe head's KaTeX stylesheet,
+          // so include a <link> in the returned fragment. Browser caches
+          // the CSS after the first render.
+          var wrapper = document.createElement('div');
+          wrapper.className = 'eip-formula';
+          wrapper.style.padding = '0.25rem 0';
+          var link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = '/static/katex/katex.min.css';
+          wrapper.appendChild(link);
+          var mount = document.createElement('span');
+          try {
+            if (window.katex) {
+              mount.innerHTML = window.katex.renderToString(latex || '', {
+                throwOnError: false,
+                displayMode: false,
+              });
+            } else {
+              // KaTeX script hadn't finished loading — fall back to raw.
+              mount.textContent = latex || '';
+              mount.style.fontFamily = 'monospace';
+            }
+          } catch (err) {
+            mount.textContent = latex || '';
+            mount.style.fontFamily = 'monospace';
+          }
+          wrapper.appendChild(mount);
+          return wrapper;
+        }
         function patchTextRenderer() {
           var TextClass = customElements.get('docling-item-text');
           if (!TextClass || TextClass.__eipFormulaPatched) return;
           var origCanDraw = TextClass.prototype.canDrawItem;
+          var origRenderItem = TextClass.prototype.renderItem;
           TextClass.prototype.canDrawItem = function(item) {
             if (item && (item.label === 'formula' || item.label === 'code')) {
               return true;
             }
             return origCanDraw.call(this, item);
+          };
+          TextClass.prototype.renderItem = function(item, page, prov) {
+            if (item && item.label === 'formula') {
+              return renderFormulaFragment(item.text);
+            }
+            return origRenderItem.call(this, item, page, prov);
           };
           TextClass.__eipFormulaPatched = true;
         }
