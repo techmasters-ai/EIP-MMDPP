@@ -317,3 +317,40 @@ class TestDispatch:
         derive_ontology_graph.run("doc-1")
 
         mock_new.assert_called_once()
+
+
+class TestSoftTimeLimitRetry:
+    """SoftTimeLimitExceeded inside the bundle-passes helper must route through
+    self.retry(exc=exc) so Celery's retry budget engages — not silently
+    terminalize the doc to PARTIAL_COMPLETE as the pre-fix generic Exception
+    branch did."""
+
+    def test_soft_time_limit_triggers_self_retry(self):
+        import uuid as _uuid
+        from unittest.mock import MagicMock, patch
+        from celery.exceptions import Retry as CeleryRetry, SoftTimeLimitExceeded
+        from app.workers.pipeline import _derive_ontology_graph_bundle_passes
+
+        self_mock = MagicMock()
+        self_mock.retry.side_effect = CeleryRetry()
+        self_mock.request.retries = 0
+
+        # Patch module-level helpers the nested _terminalize_failure calls
+        # (that function is a closure inside the target and cannot be patched
+        # at module level). Trigger SoftTimeLimitExceeded early by making
+        # load_bundle_manifest raise.
+        with patch("app.workers.pipeline.load_bundle_manifest",
+                   side_effect=SoftTimeLimitExceeded()), \
+             patch("app.workers.pipeline._update_document_pipeline_status"), \
+             patch("app.workers.pipeline._attempt_rollback"), \
+             patch("app.workers.pipeline._get_db"):
+            with pytest.raises(CeleryRetry):
+                _derive_ontology_graph_bundle_passes(
+                    self_mock,
+                    str(_uuid.uuid4()),
+                    str(_uuid.uuid4()),
+                )
+
+        self_mock.retry.assert_called_once()
+        _, kwargs = self_mock.retry.call_args
+        assert isinstance(kwargs.get("exc"), SoftTimeLimitExceeded)

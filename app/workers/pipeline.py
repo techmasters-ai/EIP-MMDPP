@@ -5031,6 +5031,18 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
     except IngestFailed as exc:
         _terminalize_failure("gate_failed", str(exc), should_rollback=False)
         raise
+    except SoftTimeLimitExceeded as exc:
+        # Celery's soft-timeout inside the helper. Engage self.retry so Celery's
+        # max_retries=2 budget applies. On exhaustion self.retry re-raises
+        # SoftTimeLimitExceeded, which reaches guard_stage_run (post-Task 0
+        # the guard terminalizes unconditionally on any Exception). Stage_run
+        # FAILED row is written by the guard — skip it here to avoid NameError
+        # if SoftTimeLimitExceeded fires before stage_summary_id is assigned.
+        logger.warning(
+            "derive_ontology_graph: soft time limit for run=%s doc=%s — retrying via Celery",
+            pipeline_run_id, document_id,
+        )
+        raise self.retry(exc=exc)
     except Exception as exc:
         logger.exception("derive_ontology_graph bundle_passes failure")
         _terminalize_failure(
