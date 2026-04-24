@@ -67,6 +67,11 @@ class Document(Base, TimestampMixin):
     failed_stages: Mapped[Optional[list]] = mapped_column(ARRAY(String), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Times the sweeper has restarted this doc. Capped at settings.max_doc_retry_count.
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     # Task tracking
     celery_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     uploaded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
