@@ -1174,6 +1174,25 @@ def check_required_pass_gate(pipeline_run_id) -> GateResult:
     return GateResult(passed=(not failures), failures=failures)
 
 
+def _build_legacy_docling_document_json(document_id: str, text: str) -> dict:
+    """Construct a minimal schema-valid DoclingDocument dict for legacy fallback.
+
+    Triggered for non-Docling-supported mimes (text/plain, etc.) in
+    prepare_document. Downstream stages like derive_document_anchors call
+    DoclingDocument.model_validate(...) on the stored JSON artifact, so a
+    hand-crafted dict fails validation. This uses the DoclingDocument API
+    to guarantee schema validity.
+
+    Empty text is OK — the stub just omits the text item.
+    """
+    from docling_core.types.doc import DoclingDocument, DocItemLabel
+
+    doc = DoclingDocument(name=str(document_id))
+    if text:
+        doc.add_text(label=DocItemLabel.TEXT, text=text)
+    return doc.export_to_dict()
+
+
 def _build_docling_document_json(document_id: str) -> dict:
     """Load the persisted docling_document.json for a document from MinIO.
 
@@ -2955,7 +2974,9 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             _legacy_extract(db, document_id, doc, file_bytes)
             db.commit()
 
-            # Persist extracted text as markdown so derive_document_metadata can run
+            # Aggregate extracted text once — used for BOTH the markdown artifact
+            # and the stub docling_document.json below.
+            fallback_md = ""
             try:
                 from app.models.ingest import DocumentElement
                 from sqlalchemy import select as sql_select
@@ -2967,17 +2988,51 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 fallback_md = "\n\n".join(t for t in elems if t and t.strip())
                 if fallback_md:
                     fallback_md = _normalize_text(fallback_md)
-                    from app.services.storage import upload_bytes_sync
-                    _fb_base = f"artifacts/{document_id}"
+            except Exception:
+                logger.exception(
+                    "prepare_document: failed to aggregate legacy text for %s",
+                    document_id,
+                )
+
+            _fb_base = f"artifacts/{document_id}"
+            from app.services.storage import upload_bytes_sync
+
+            # Markdown is best-effort — keep the swallow so a MinIO blip doesn't
+            # fail an otherwise-successful legacy ingest.
+            if fallback_md:
+                try:
                     upload_bytes_sync(
                         fallback_md.encode("utf-8"),
                         settings.minio_bucket_derived,
                         f"{_fb_base}/docling_document.md",
                         content_type="text/markdown; charset=utf-8",
                     )
-                    logger.info("prepare_document: persisted legacy markdown for %s (%d chars)", document_id, len(fallback_md))
-            except Exception as _fb_err:
-                logger.warning("prepare_document: failed to persist legacy markdown for %s: %s", document_id, _fb_err)
+                    logger.info(
+                        "prepare_document: persisted legacy markdown for %s (%d chars)",
+                        document_id, len(fallback_md),
+                    )
+                except Exception as _fb_err:
+                    logger.warning(
+                        "prepare_document: failed to persist legacy markdown for %s: %s",
+                        document_id, _fb_err,
+                    )
+
+            # Stub docling_document.json is REQUIRED by derive_document_anchors
+            # and other downstream stages (they call DoclingDocument.model_validate
+            # on the fetched JSON). Always write, even when fallback_md is empty.
+            # Do NOT swallow failures — let them propagate to guard_stage_run.
+            import json as _json
+            stub = _build_legacy_docling_document_json(document_id, fallback_md or "")
+            upload_bytes_sync(
+                _json.dumps(stub, ensure_ascii=False).encode("utf-8"),
+                settings.minio_bucket_derived,
+                f"{_fb_base}/docling_document.json",
+                content_type="application/json; charset=utf-8",
+            )
+            logger.info(
+                "prepare_document: persisted legacy docling_document.json stub for %s",
+                document_id,
+            )
 
             _update_stage_run(db, run_id, "prepare_document", "COMPLETE", attempt=self.request.retries + 1, metrics={"fallback": True, "reason": "unsupported_format"})
             db.commit()
