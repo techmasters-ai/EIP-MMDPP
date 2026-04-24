@@ -1247,20 +1247,24 @@ class ArcadeDBGraphStore:
         if not rid:
             return []
 
+        # ArcadeDB SQL quirk: `target.@class` / `edge.@class` is a parser error
+        # ("no viable alternative at input '.@'"). MATCH + `as: X` + `X.@type`
+        # works because @type is resolved inside the MATCH scope rather than as
+        # a dotted attribute lookup on a LET variable. Return weight via
+        # explicit projection and handle null weight in ORDER BY.
         sql = (
-            f"SELECT target.chunk_id AS chunk_id, "
-            f"target.@class AS chunk_type, "
-            f"target.document_id AS document_id, "
-            f"target.modality AS modality, "
-            f"edge.@class AS link_type, "
-            f"edge.weight AS weight "
-            f"FROM ("
-            f"  SELECT expand(bothE('NEXT_CHUNK','SAME_PAGE','SAME_SECTION','SAME_ARTIFACT')) "
-            f"  FROM {rid}"
-            f") AS edge "
-            f"LET target = edge.bothV()[0] "
-            f"WHERE target.@rid <> {rid} "
-            f"ORDER BY edge.weight DESC "
+            f"MATCH "
+            f"{{type: TextChunk, as: src, where: (@rid = {rid})}}"
+            f".bothE('NEXT_CHUNK','SAME_PAGE','SAME_SECTION','SAME_ARTIFACT'){{as: e}}"
+            f".bothV(){{as: tgt, where: (@rid <> {rid})}} "
+            f"RETURN "
+            f"tgt.chunk_id AS chunk_id, "
+            f"tgt.@type AS chunk_type, "
+            f"tgt.document_id AS document_id, "
+            f"tgt.modality AS modality, "
+            f"e.@type AS link_type, "
+            f"e.weight AS weight "
+            f"ORDER BY weight DESC "
             f"LIMIT :limit"
         )
         rows = await self._client.query(
