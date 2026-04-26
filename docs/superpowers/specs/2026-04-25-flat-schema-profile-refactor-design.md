@@ -1,7 +1,7 @@
 # Flat-Schema Profile Refactor — Design
 
 **Date:** 2026-04-25
-**Status:** Revised after fifth review pass — 5 additional findings addressed (see §15)
+**Status:** Frozen after sixth review pass — 2 cleanup edits applied (see §16). Ready for implementation planning.
 **Scope:** Bring the four starter query profiles (System Dossier, System Components, System RF Parameters, System Performance) onto the flat-checklist extraction schema, and sync the canonical ontology entities so the schema-drift xfails clear at the same time.
 
 ---
@@ -120,7 +120,7 @@ Phase 1 is broader than the original draft. The orphan canonical classes are ref
 
   Reviewer (pass 3) correctly flagged that deleting the legacy `/graph/system-dossier` endpoint inside Phase 1 contradicts §7's "Phase 1 is ontology-only" backward-compat story. The constants reference type-name **strings** (`"FREQUENCY_BAND"`, `"RF_EMISSION"`, …), not the deleted Pydantic classes, so deleting the orphan classes does NOT break `dossier_service.py` at import time — the legacy endpoint continues to load and runs against an empty graph for those types (post-flat-refactor reality), returning empty results. That's the same behavior the user already sees today; we're not regressing.
 
-  Phase 2 owns the deletion of `dossier_service.py` and the `/graph/system-dossier` route — see §4.13. This restores §7's purity: Phase 1 is ontology-only; the legacy-endpoint removal is a deliberate Phase 2 breaking change with migration notes.
+  Phase 2 owns the deletion of `dossier_service.py` and **all four** `/graph/system-*` routes (`/system-dossier`, `/system-components`, `/system-rf-parameters`, `/system-performance`) plus the `_system_section` helper — see §4.13. This restores §7's purity: Phase 1 is ontology-only; the legacy-endpoint removal is a deliberate Phase 2 breaking change with migration notes.
 - `tests/unit/test_docs_compliance_contracts.py`, `tests/unit/contracts/test_extraction_schema_contract.py`, `tests/unit/test_coverage_checker.py` — drop the 5 `xfail(strict=False)` markers from the prior debugging pass.
 
 After the first `check_bundle()` run lands a green result on the modified bundle, the Phase 1 file scope is verified. Anything that still references a deleted symbol surfaces as an `ImportError` or a `check_bundle()` failure; both are deterministic gates we can iterate on.
@@ -236,7 +236,7 @@ Once 3.2–3.4 land, the 5 schema-drift tests pass without their `xfail` markers
 - `frontend/src/api/client.ts` — extend `QueryProfileDefinition.kind` literal from `"section" | "dossier"` (line ~520) to `"section" | "section_properties" | "dossier"`; add new TS interfaces for `QueryProfileFieldGroup`, `QueryProfileFieldEntry`, `QueryProfileDossierSection`; update `QueryProfileSectionResponse` and `QueryProfileDossierResponse` interfaces to expose `field_groups`, `related_systems`, and the new dossier shape (one root + per-section blocks).
 - `frontend/src/components/QueryPage.tsx` (around the `selectedIsGraphProfile` branch at ~line 827) — split the result-rendering switch on `profile.kind`: `"section"` keeps the existing `items`-flattening render; `"section_properties"` calls a new `<FieldGroupTable>` render path; `"dossier"` calls a new `<DossierSectionList>` that renders one entity header + N stacked field-group cards. The existing `setResults` / `setTotalResults` plumbing is generalized: `setSectionResponse` / `setDossierResponse` carry the typed payloads.
 - `frontend/src/components/FieldGroupTable.tsx` — new component. Stacked collapsible cards keyed by `subgroup_label`; each card renders a property table with `label : value` rows; canonical `description` shown on hover; per-field `evidence` (Phase 3) renders a small chip that opens an evidence popover.
-- `frontend/src/components/FieldEvidencePopover.tsx` — new component (Phase 3). Lists each `(snippet, chunk_id)` pair with a deep link to the document viewer at the matching `element_uid`.
+- (Listed elsewhere — **`FieldEvidencePopover.tsx` is built in Phase 3, not Phase 2.** See §5.2 for its file entry. Phase 2 leaves the per-row evidence chip on `<FieldGroupTable>` inert; Phase 3 wires it up.)
 - `tests/unit/test_query_profiles.py` — rewrite for property-projection paths; new helper tests for `_project_field_groups`, `_canonical_class_for`, the `_CANONICAL_ROOT_ENTITY_TYPES` ↔ `_CANONICAL_BY_ENTITY_TYPE` sync contract.
 - `tests/unit/test_dossier_service.py` — **delete** (per pass-3 reviewer note: §4.13 deletes `app/services/dossier_service.py`, so its test counterpart goes with it). Coverage of dossier behavior moves into `tests/unit/test_query_profiles.py` under the dossier execute path.
 
@@ -422,10 +422,9 @@ Concrete touch points (all in `frontend/src/`):
   - `kind === "dossier"` → render `<DossierSectionList>`: one entity header + a stacked list of field-group blocks per section.
   - The result-state hook (`setResults` / `setTotalResults`) is generalized to a `result: SectionPayload | DossierPayload | LegacyItemsPayload` discriminated union.
 - **`components/FieldGroupTable.tsx`** *(new)* — stacked collapsible cards keyed by `subgroup_label`. Property table rows show `label : value`; canonical `description` is the tooltip; canonical `examples` show as a placeholder for empty rows. The first subgroup card defaults expanded; the rest collapsed.
-- **`components/FieldEvidencePopover.tsx`** *(new, Phase 3)* — per-field evidence chip; on click opens a popover listing each `(snippet, chunk_id, element_uid)` row, with a "Open in document viewer" deep link.
 - **`components/DossierSectionList.tsx`** *(new)* — one entity-header card (using `resolved_root.name` + `nomenclature` if populated, plus type chip), then N stacked section blocks each containing a `<FieldGroupTable>`. Empty sections render with a "no data extracted" placeholder rather than disappearing.
 
-Phase 1+2 land all of the Phase-2-tagged components above. Phase 3 only adds `<FieldEvidencePopover>` and a per-row chip in `<FieldGroupTable>` — no further structural change.
+Phase 2 builds `<FieldGroupTable>` and `<DossierSectionList>` but leaves `<FieldGroupTable>`'s per-row evidence chip inert (the API returns `evidence: []` until Phase 3). Phase 3 (§5.2) builds `<FieldEvidencePopover>` and wires the chip to open it; no further structural change.
 
 ### 4.10 Active-registry reconciliation
 
@@ -548,7 +547,8 @@ The service then converts each `FieldProvenanceRow` into a wire-shape `Extractio
 - `app/services/arcadedb_graph.py` — `upsert_nodes_batch_sync` writes `_field_evidence: dict[field_name, list[{chunk_id, snippet, element_uid}]]` as a JSON property on the entity vertex.
 - `app/services/query_profiles.py` — `_project_field_groups` reads `_field_evidence`, fills `QueryProfileFieldEntry.evidence`.
 - `app/schemas/query_profiles.py` — `QueryProfileFieldEntry.evidence: list[QueryProfileFieldEvidence] = []`. The new `QueryProfileFieldEvidence` shape (defined in §5.8) carries chunk metadata + `supporting_snippet` + `element_uid` — `GraphEvidenceItem` lacks the latter two fields and is left untouched on retrieval / dossier paths where they're meaningless.
-- Frontend — per-field evidence popover in `<FieldGroupTable>`.
+- `frontend/src/components/FieldEvidencePopover.tsx` — *new component, built here in Phase 3.* Lists each evidence row as `(supporting_snippet, chunk_id, element_uid)` with a deep link to the document viewer at the matching element. "Unverified source" badge on rows where post-process couldn't substring-match the snippet.
+- `frontend/src/components/FieldGroupTable.tsx` — Phase 2 already created this component but left the evidence column inert. Phase 3 wires the per-row evidence chip to open `<FieldEvidencePopover>`.
 
 ### 5.3 Wire schema
 
@@ -878,3 +878,14 @@ None expected after the brainstorming pass — all design decisions were capture
 | 3 | Medium | §5.9 popover text said `(snippet, chunk_id)` but the API now also carries `element_uid` and unresolved-state requires a badge. | §5.9 rewritten: popover lists `(supporting_snippet, chunk_id, element_uid)`; "Unverified source" badge for rows where snippet didn't substring-match (both `chunk_id` and `element_uid` are `None`); snippet still shown so the citation is verifiable by the reader. |
 | 4 | Low | Architecture diagram said "Active-registry reconciliation on startup" but §4.10 recommended an alembic migration. | Diagram (§2) updated to "Starter-profile registry migration (alembic) — see §4.10". Also adds a one-line callout that Phase 2 removes 4 legacy endpoints (§4.13) so the diagram reflects the breaking change. |
 | 5 | Low | §14 row 3 cross-referenced "§4.12 risks" — risks are now §4.14. | Cross-reference fixed in §14 row 3. |
+
+---
+
+## 16. Review responses (revision 6 — freeze cleanup)
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | §3.1 said "Phase 2 owns deletion of `dossier_service.py` and the `/graph/system-dossier` route" — should match §4.13 / §7's enumeration of all four routes. | §3.1 enumerates all four `/graph/system-*` routes plus `_system_section`. |
+| 2 | §4.1 listed `FieldEvidencePopover.tsx` inside Phase 2's file list with a "(Phase 3)" parenthetical — confusing for implementation tracking. | Phase 2's file list now contains a placeholder entry pointing to §5.2 (Phase 3) for `FieldEvidencePopover.tsx`. The component itself is listed in §5.2's file list as Phase 3 work. §4.9's component list also clarified — Phase 2 builds `FieldGroupTable` (with inert evidence chip) and `DossierSectionList`; Phase 3 builds `FieldEvidencePopover` and activates the chip. |
+
+**Spec is frozen.** Ready to hand off to `writing-plans`.
