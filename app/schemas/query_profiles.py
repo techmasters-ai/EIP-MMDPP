@@ -35,6 +35,36 @@ class QueryProfileTraversal(APIModel):
     steps: list[QueryProfileStep] = Field(default_factory=list, min_length=1, max_length=3)
 
 
+class QueryProfileFieldEvidence(APIModel):
+    """Phase 3 stub. Populated with snippet + element_uid + chunk
+    metadata once the docling-graph extraction emits per-field
+    provenance. Empty default for Phase 2."""
+    supporting_snippet: str = ""
+    element_uid: Optional[str] = None
+
+
+class QueryProfileFieldEntry(APIModel):
+    """One row in a property table — a single canonical field's value
+    with its metadata, plus optional per-field evidence (Phase 3)."""
+    name: str
+    label: str
+    value: Any
+    description: Optional[str] = None
+    examples: Optional[list[Any]] = None
+    enum: Optional[list[str]] = None
+    evidence: list[QueryProfileFieldEvidence] = Field(default_factory=list)
+
+
+class QueryProfileFieldGroup(APIModel):
+    """A subgroup of fields rendered as one collapsible card on the
+    section UI. `subgroup` is the canonical key from
+    json_schema_extra['profile_subgroup']; `subgroup_label` is the
+    title-cased display name."""
+    subgroup: Optional[str] = None
+    subgroup_label: Optional[str] = None
+    fields: list[QueryProfileFieldEntry]
+
+
 class QueryProfileDefinition(APIModel):
     id: str = Field(..., min_length=1, max_length=100)
     label: str = Field(..., min_length=1, max_length=255)
