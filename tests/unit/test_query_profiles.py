@@ -379,3 +379,42 @@ def test_starter_profiles_use_section_properties():
     assert dossier.section_profile_ids == [
         "system_rf_parameters", "system_components", "system_performance",
     ]
+
+
+def test_project_field_groups_surfaces_field_evidence():
+    """Phase 3 task 35 — when instance_data carries _field_evidence,
+    each QueryProfileFieldEntry's evidence list is populated."""
+    from ontology_bundles.air_defense_v3.entities import RadarSystemEntity
+    from app.services.query_profiles import _project_field_groups
+
+    instance_data = {
+        "gain_dbi": 35.0,
+        "_field_evidence": {
+            "gain_dbi": [
+                {
+                    "chunk_id": None,
+                    "element_uid": "#/texts/12",
+                    "snippet": "antenna gain measured at 35 dBi",
+                    "value": 35.0,
+                },
+            ],
+        },
+    }
+    groups = _project_field_groups(RadarSystemEntity, instance_data, "rf_parameters")
+    antenna = next(g for g in groups if g.subgroup == "antenna")
+    gain = next(f for f in antenna.fields if f.name == "gain_dbi")
+    assert len(gain.evidence) == 1
+    assert gain.evidence[0].supporting_snippet.startswith("antenna gain")
+    assert gain.evidence[0].element_uid == "#/texts/12"
+
+
+def test_project_field_groups_handles_missing_field_evidence():
+    """Old data without _field_evidence yields empty evidence lists."""
+    from ontology_bundles.air_defense_v3.entities import RadarSystemEntity
+    from app.services.query_profiles import _project_field_groups
+
+    instance_data = {"gain_dbi": 35.0}
+    groups = _project_field_groups(RadarSystemEntity, instance_data, "rf_parameters")
+    antenna = next(g for g in groups if g.subgroup == "antenna")
+    gain = next(f for f in antenna.fields if f.name == "gain_dbi")
+    assert gain.evidence == []

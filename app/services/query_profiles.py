@@ -73,10 +73,19 @@ def _project_field_groups(
     name asc; fields by name asc within group). Spec §4.3.
     """
     from app.schemas.query_profiles import (
-        QueryProfileFieldEntry, QueryProfileFieldGroup,
+        QueryProfileFieldEntry, QueryProfileFieldEvidence, QueryProfileFieldGroup,
     )
 
     groups_by_subgroup: dict[str, list[QueryProfileFieldEntry]] = {}
+
+    # Phase 3 task 35: per-field evidence is persisted on the vertex as
+    # _field_evidence: { field_name: [{chunk_id, snippet, element_uid, value}, ...] }
+    # Read it (if present) and surface as QueryProfileFieldEvidence rows on
+    # each entry. Old data lacking _field_evidence yields empty evidence —
+    # the UI just renders no popover chip.
+    field_evidence_blob: dict = instance_data.get("_field_evidence") or {}
+    if not isinstance(field_evidence_blob, dict):
+        field_evidence_blob = {}
 
     for fname, finfo in canonical_cls.model_fields.items():
         extra = finfo.json_schema_extra or {}
@@ -89,6 +98,17 @@ def _project_field_groups(
         if value is None:
             continue
         subgroup = extra.get("profile_subgroup") or ""
+
+        evidence_rows: list[QueryProfileFieldEvidence] = []
+        for raw in field_evidence_blob.get(fname) or []:
+            if not isinstance(raw, dict):
+                continue
+            evidence_rows.append(QueryProfileFieldEvidence(
+                chunk_id=raw.get("chunk_id"),
+                supporting_snippet=raw.get("snippet") or "",
+                element_uid=raw.get("element_uid"),
+            ))
+
         entry = QueryProfileFieldEntry(
             name=fname,
             label=_human_label(fname),
@@ -96,6 +116,7 @@ def _project_field_groups(
             description=finfo.description,
             examples=list(finfo.examples) if finfo.examples else None,
             enum=extra.get("enum"),
+            evidence=evidence_rows,
         )
         groups_by_subgroup.setdefault(subgroup, []).append(entry)
 
