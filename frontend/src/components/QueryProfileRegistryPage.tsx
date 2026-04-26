@@ -52,11 +52,13 @@ interface ProfileDraft {
   id: string;
   label: string;
   description: string;
-  kind: "section" | "dossier";
+  kind: "section" | "section_properties" | "dossier";
   exposed: boolean;
   rootEntityTypes: string[];
   targetEntityTypes: string[];
   sectionProfileIds: string[];
+  profileSections: string[];
+  includeAssociatedSystems: boolean;
   traversals: ProfileDraftTraversal[];
   placeholderQuery: string;
 }
@@ -71,6 +73,8 @@ function blankProfileDraft(): ProfileDraft {
     rootEntityTypes: [],
     targetEntityTypes: [],
     sectionProfileIds: [],
+    profileSections: [],
+    includeAssociatedSystems: false,
     traversals: [
       {
         steps: [
@@ -121,6 +125,8 @@ function draftFromProfile(profile: QueryProfileDefinition): ProfileDraft {
     rootEntityTypes: [...profile.root_entity_types],
     targetEntityTypes: [...profile.target_entity_types],
     sectionProfileIds: [...profile.section_profile_ids],
+    profileSections: [...(profile.profile_sections ?? [])],
+    includeAssociatedSystems: profile.include_associated_systems ?? false,
     traversals:
       profile.traversals.length > 0
         ? profile.traversals.map((traversal) => ({
@@ -157,6 +163,10 @@ function profileFromDraft(draft: ProfileDraft): QueryProfileDefinition {
             .filter((traversal) => traversal.steps.length > 0)
         : [],
     section_profile_ids: draft.kind === "dossier" ? uniqueSorted(draft.sectionProfileIds) : [],
+    profile_sections:
+      draft.kind === "section_properties" ? uniqueSorted(draft.profileSections) : [],
+    include_associated_systems:
+      draft.kind === "section_properties" ? draft.includeAssociatedSystems : false,
     placeholder_query: draft.placeholderQuery.trim() || null,
   };
 }

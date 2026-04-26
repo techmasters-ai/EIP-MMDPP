@@ -26,7 +26,7 @@ interface GraphProfileModePreset {
   kind: "graph_profile";
   key: string;
   profileId: string;
-  profileKind: "section" | "dossier";
+  profileKind: "section" | "section_properties" | "dossier";
   label: string;
   description: string;
   placeholder?: string | null;

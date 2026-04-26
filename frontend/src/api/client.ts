@@ -521,13 +521,38 @@ export interface QueryProfileDefinition {
   id: string;
   label: string;
   description?: string | null;
-  kind: "section" | "dossier";
+  kind: "section" | "section_properties" | "dossier";
   exposed: boolean;
   root_entity_types: string[];
   target_entity_types: string[];
   traversals: QueryProfileTraversal[];
+  profile_sections: string[];
+  include_associated_systems: boolean;
   section_profile_ids: string[];
   placeholder_query?: string | null;
+}
+
+export interface QueryProfileFieldEvidence {
+  // Phase 3 expands this. Phase 2 keeps it minimal so empty arrays
+  // type-check.
+  supporting_snippet: string;
+  element_uid?: string | null;
+}
+
+export interface QueryProfileFieldEntry {
+  name: string;
+  label: string;
+  value: unknown;
+  description?: string | null;
+  examples?: unknown[] | null;
+  enum?: string[] | null;
+  evidence: QueryProfileFieldEvidence[];
+}
+
+export interface QueryProfileFieldGroup {
+  subgroup?: string | null;
+  subgroup_label?: string | null;
+  fields: QueryProfileFieldEntry[];
 }
 
 export interface QueryProfileRegistry {
@@ -589,6 +614,8 @@ export interface QueryProfileSectionResponse {
   profile_id: string;
   profile_label: string;
   resolved_root: GraphProfileEntityResult;
+  field_groups: QueryProfileFieldGroup[];
+  related_systems: GraphProfileEntityResult[];
   items: GraphProfileEntityResult[];
   total: number;
 }
@@ -596,6 +623,9 @@ export interface QueryProfileSectionResponse {
 export interface QueryProfileDossierSection {
   profile_id: string;
   profile_label: string;
+  kind: "section" | "section_properties";
+  field_groups: QueryProfileFieldGroup[];
+  related_systems: GraphProfileEntityResult[];
   items: GraphProfileEntityResult[];
   total: number;
 }
