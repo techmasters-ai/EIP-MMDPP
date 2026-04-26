@@ -101,7 +101,9 @@ class TestArcadeDBConfig:
         from app.config import Settings
         s = Settings(_env_file=None, postgres_password="test")
         assert s.community_detection_enabled is True
-        assert s.community_detection_algorithm == "leiden"
+        # algo.leiden in ArcadeDB 26.5.x returns null communityId — louvain
+        # is the working default until upstream fixes leiden.
+        assert s.community_detection_algorithm == "louvain"
 
 
 class TestGetSettingsCaching:

@@ -4767,6 +4767,27 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
     try:
         if not run_id:
             run_id = _get_pipeline_run_id(db, document_id)
+        # Orphaned-task guard: if the document was hard-deleted while this
+        # task was queued, MinIO artefacts and the parent pipeline_run are
+        # gone too. Exit cleanly to avoid a NoSuchKey on the docling JSON
+        # download and a follow-on FK violation when writing stage_runs.
+        # Match the string-comparison pattern used at the existing
+        # Document lookup below so SQLAlchemy handles UUID coercion.
+        from app.models.ingest import Document as _DocModel
+        _existing_doc = db.query(_DocModel).filter(
+            _DocModel.id == document_id
+        ).first()
+        if _existing_doc is None:
+            logger.warning(
+                "derive_document_anchors: document %s not found "
+                "(likely deleted); skipping orphaned task",
+                document_id,
+            )
+            return {
+                "stage": "derive_document_anchors",
+                "status": "skipped",
+                "reason": "orphaned_document",
+            }
         if run_id:
             _update_stage_run(
                 db, run_id, "derive_document_anchors", "RUNNING",
@@ -4954,6 +4975,21 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
     db = _get_db()
     try:
         run = db.get(PipelineRun, uuid.UUID(pipeline_run_id))
+        if run is None:
+            # Parent pipeline_run was hard-deleted (cascade from document
+            # delete) while this task was queued. Inserting the stage_runs
+            # row would FK-violate; nothing else this task does is useful.
+            # Exit cleanly so the chain doesn't keep retrying.
+            logger.warning(
+                "derive_ontology_graph: pipeline_run %s not found "
+                "(document likely deleted); skipping orphaned task",
+                pipeline_run_id,
+            )
+            return {
+                "stage": "derive_ontology_graph",
+                "status": "skipped",
+                "reason": "orphaned_run",
+            }
         stage_summary = StageRun(
             pipeline_run_id=uuid.UUID(pipeline_run_id),
             stage_name="derive_ontology_graph",

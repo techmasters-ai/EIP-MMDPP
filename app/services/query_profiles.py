@@ -584,17 +584,14 @@ async def _fetch_section_items(
     if not resolved.node_id:
         return []
 
-    # Convert profile traversal steps to the format get_directed_traversal expects
-    steps = []
-    if profile.traversal and profile.traversal.steps:
-        for step in profile.traversal.steps:
-            steps.append({
-                "direction": step.direction,
-                "rel_types": step.rel_types,
-                "min_hops": step.min_hops,
-                "max_hops": step.max_hops,
-            })
-    else:
+    # QueryProfileDefinition.traversals is a list of traversals; previously
+    # the code accessed `profile.traversal` (singular), which raised
+    # AttributeError on Pydantic v2 because no such field exists. Run each
+    # traversal as a separate directed MATCH and merge the results.
+    traversals_with_steps = [
+        t for t in (profile.traversals or []) if t.steps
+    ]
+    if not traversals_with_steps:
         # Fallback: generic undirected traversal if profile has no steps
         rel_types = _collect_rel_types(profile)
         depth = _max_depth(profile)
@@ -609,12 +606,24 @@ async def _fetch_section_items(
         neighbors = [n for n in neighbors if getattr(n, "node_id", "") != resolved.node_id]
         return _merge_section_results(neighbors[:request.top_k])
 
-    neighbors = await graph_store.get_directed_traversal(
-        resolved.node_id,
-        steps=steps,
-        target_entity_types=profile.target_entity_types or None,
-        limit=request.top_k,
-    )
+    neighbors: list = []
+    for traversal in traversals_with_steps:
+        steps = [
+            {
+                "direction": step.direction,
+                "rel_types": step.rel_types,
+                "min_hops": step.min_hops,
+                "max_hops": step.max_hops,
+            }
+            for step in traversal.steps
+        ]
+        rows = await graph_store.get_directed_traversal(
+            resolved.node_id,
+            steps=steps,
+            target_entity_types=profile.target_entity_types or None,
+            limit=request.top_k,
+        )
+        neighbors.extend(rows)
 
     # Exclude the root entity itself
     neighbors = [

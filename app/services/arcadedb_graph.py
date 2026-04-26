@@ -996,11 +996,48 @@ class ArcadeDBGraphStore:
         """Resolve a name to its canonical root entity.
 
         When *entity_type* is provided, queries that specific type to leverage
-        type-specific indexes.  Falls back to ``V`` when type is unknown.
+        type-specific indexes. When unknown, iterate ontology entity types
+        (ArcadeDB has no root vertex type — `FROM V` and `FROM Vertex` both
+        raise SchemaException). Returns the first match.
         """
-        sql, params = _build_resolve_root_entity_sql(name, entity_type)
-        rows = await self._client.query(self._database, "sql", sql, params)
-        return _to_entity(rows[0]) if rows else None
+        if entity_type:
+            sql, params = _build_resolve_root_entity_sql(name, entity_type)
+            rows = await self._client.query(self._database, "sql", sql, params)
+            return _to_entity(rows[0]) if rows else None
+
+        try:
+            from app.services.ontology_templates import load_ontology
+            from app.services.arcadedb_schema import STRUCTURAL_TYPES
+            ont = load_ontology()
+            ontology_types = [
+                _safe_type_name(e["name"]) for e in ont.get("entity_types", [])
+            ]
+            # Search domain entities first; structural types (SECTION,
+            # FIGURE, etc.) last. The SECTION class in particular has an
+            # ArcadeDB index quirk where `WHERE name = 'SA-2'` returns
+            # SECTIONs whose name is "2", so picking up a domain hit
+            # first avoids returning bogus structural matches.
+            ontology_types.sort(key=lambda t: (t in STRUCTURAL_TYPES, t))
+        except Exception:
+            ontology_types = []
+        if not ontology_types:
+            return None
+
+        for etype in ontology_types:
+            sql, params = _build_resolve_root_entity_sql(name, etype)
+            try:
+                rows = await self._client.query(self._database, "sql", sql, params)
+            except Exception:
+                # Type not yet in ArcadeDB schema (no docs ingested with
+                # that type yet) — skip and keep looking.
+                continue
+            if rows:
+                # Defensive: SECTION's broken index can return rows that
+                # don't actually match. Verify before returning.
+                row_name = rows[0].get("name")
+                if row_name == name:
+                    return _to_entity(rows[0])
+        return None
 
     async def fulltext_search(
         self,
@@ -1139,8 +1176,31 @@ class ArcadeDBGraphStore:
         if not rid:
             return []
 
+        # ArcadeDB MATCH quirks worked around here (mirrors the
+        # get_ontology_linked_chunks fix):
+        #   * The first node MUST declare a concrete `type:` — omitting
+        #     it throws java.lang.UnsupportedOperationException. Resolve
+        #     @type via a quick lookup before building the MATCH.
+        #   * Edge type filters in `.out()/.in()/.both()` are positional
+        #     string args (`.out('A','B')`), NOT a `{class: ...}` map.
+        #     The `class:` keyword is rejected by the parser here.
+        #   * The `while:` predicate for variable-depth traversal goes
+        #     inside the *target node* alias spec, not inside the edge
+        #     traversal call.
+        type_rows = await self._client.query(
+            self._database, "sql",
+            f"SELECT @type AS node_type FROM {rid}",
+        )
+        seed_type = None
+        if type_rows and isinstance(type_rows[0], dict):
+            seed_type = type_rows[0].get("node_type")
+        if not seed_type:
+            return []
+
         # Build MATCH pattern: root → step1 → step2 → ... → target
-        match_parts = [f"{{as: root, where: (@rid ={rid})}}"]
+        match_parts = [
+            f"{{type: {seed_type}, as: root, where: (@rid = {rid})}}"
+        ]
         for i, step in enumerate(steps):
             direction = step.get("direction", "out")
             rel_types = step.get("rel_types", [])
@@ -1149,34 +1209,29 @@ class ArcadeDBGraphStore:
 
             # Direction: .out() / .in() / .both()
             dir_fn = "out" if direction == "out" else "in" if direction == "in" else "both"
-            # Rel type filter inside the traversal
-            rel_filter = ""
-            if rel_types:
-                rel_filter = "class: " + ",".join(rel_types) + ", "
-
+            # Rel type filter as positional string args
+            rel_args = ",".join(f"'{t}'" for t in rel_types) if rel_types else ""
+            # Variable-depth `while:` belongs in the alias spec
+            while_clause = f", while: ($depth >= {min_hops} AND $depth <= {max_hops})"
             match_parts.append(
-                f".{dir_fn}({{{rel_filter}while: ($depth >= {min_hops} AND $depth <= {max_hops})}}) "
-                f"{{as: step{i}}}"
+                f".{dir_fn}({rel_args}) "
+                f"{{as: step{i}{while_clause}}}"
             )
 
         # The last step alias is the target
         last_alias = f"step{len(steps) - 1}"
 
-        # Type filter on the final target
-        type_filter = ""
-        if target_entity_types:
+        # Type filter on the final target — inject into the last alias
+        # spec, which already carries `while:`. Match `{as: stepN, while: ...}`
+        # and slot in `where: (...)` after the alias name.
+        if target_entity_types and match_parts:
             type_list = ", ".join(f"'{t}'" for t in target_entity_types)
-            type_filter = f", where: (entity_type IN [{type_list}])"
-
-        # Replace the last step to include type filter
-        if type_filter and match_parts:
+            type_filter = f"where: (entity_type IN [{type_list}]), "
             last_part = match_parts[-1]
-            # Insert where clause into the last alias block
-            last_part = last_part.replace(
-                f"{{as: {last_alias}}}",
-                f"{{as: {last_alias}{type_filter}}}",
+            match_parts[-1] = last_part.replace(
+                f"{{as: {last_alias}, ",
+                f"{{as: {last_alias}, {type_filter}",
             )
-            match_parts[-1] = last_part
 
         sql = (
             f"MATCH {''.join(match_parts)} "
@@ -1598,29 +1653,37 @@ class ArcadeDBGraphStore:
         vertices (Document, TextChunk, etc.) do not influence community
         assignment.
 
-        Cypher in ArcadeDB cannot reference ``@class`` or ``@rid`` directly
-        (they are ArcadeDB SQL-only metadata fields), so we filter via
-        ``NOT node:Label`` predicates and derive entity_type from the Cypher
-        ``labels(node)[0]`` accessor.
+        ArcadeDB quirks worked around here:
+
+        * ``CALL algo.{leiden,louvain}() YIELD node`` returns a
+          ``DatabaseRID`` value, not a vertex object — so ``node.name`` and
+          ``labels(node)`` are unbound (``node.name`` returned NULL for
+          every row, killing community detection silently). The fix is to
+          carry the RID forward via ``toString(node)`` and ``MATCH (n)
+          WHERE toString(id(n)) = ...`` to bind a real vertex.
+        * Cypher cannot reference ``@class`` or ``@rid``; filter via
+          ``NOT n:Label`` predicates against the matched vertex.
+        * In ArcadeDB 26.5.x ``algo.leiden`` populates ``node`` but always
+          returns ``communityId = NULL`` — the algorithm doesn't actually
+          assign communities. ``algo.louvain`` works. Callers should
+          configure ``community_detection_algorithm=louvain`` until
+          upstream fixes leiden.
         """
         algo_params = ", ".join(f"{k}: {v}" for k, v in params.items())
 
+        where_clause = "WHERE toString(id(n)) = rid"
         if exclude_types:
-            # Cypher cannot use @class; use label negation predicates.
-            # Label names are ArcadeDB type names (already safe identifiers).
-            where_clause = (
-                "WHERE "
-                + " AND ".join(f"NOT node:{t}" for t in sorted(exclude_types))
-                + " "
+            where_clause += " AND " + " AND ".join(
+                f"NOT n:{t}" for t in sorted(exclude_types)
             )
-        else:
-            where_clause = ""
 
         cypher = (
             f"CALL algo.{algorithm}({{{algo_params}}}) YIELD node, communityId "
-            f"{where_clause}"
-            f"RETURN node.name AS name, labels(node)[0] AS entity_type, "
-            f"id(node) AS node_rid, communityId AS community_id"
+            f"WITH toString(node) AS rid, communityId AS cid "
+            f"MATCH (n) "
+            f"{where_clause} "
+            f"RETURN n.name AS name, labels(n)[0] AS entity_type, "
+            f"id(n) AS node_rid, cid AS community_id"
         )
         return await self._client.query(self._database, "cypher", cypher)
 

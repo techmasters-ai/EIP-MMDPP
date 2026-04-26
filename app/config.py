@@ -178,7 +178,9 @@ class Settings(BaseSettings):
     community_detection_interval_minutes: int = 60
     community_detection_post_ingest_enabled: bool = True
     community_detection_post_ingest_threshold: int = 5
-    community_detection_algorithm: str = "leiden"
+    # algo.leiden in ArcadeDB 26.5.x silently returns NULL communityId for
+    # every node — it doesn't actually assign communities. louvain works.
+    community_detection_algorithm: str = "louvain"
     community_detection_resolution: float = 1.0
     community_detection_max_iterations: int = 20
     community_report_llm_model: str = "llama3.2"
