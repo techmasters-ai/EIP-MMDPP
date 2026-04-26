@@ -30,6 +30,7 @@ from ..validators import (
     dedupe_entities_by_identity,
     sanitize_entity_list,
 )
+from ._field_provenance import FieldProvenanceRow
 
 
 def edge(
@@ -586,6 +587,18 @@ class MissileDomainPass(BaseModel):
         ),
         examples=[["SA-2", "SA-20"], ["PAC-3 MSE", "SM-6 Block IA"]],
         default_factory=list,
+    )
+
+    field_provenance: list[FieldProvenanceRow] = Field(
+        default_factory=list,
+        description=(
+            "Per-field source snippets the LLM quoted to justify each "
+            "field value. The docling-graph service post-processes these "
+            "to resolve element_uid by substring-matching the snippet "
+            "against the input chunks. Empty by default; populated only "
+            "when the prompt asks for it (Phase 3 of the flat-schema "
+            "profile refactor)."
+        ),
     )
 
     @model_validator(mode="before")
