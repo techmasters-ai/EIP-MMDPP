@@ -259,7 +259,11 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
   );
 
   const sectionProfiles = useMemo(
-    () => (selectedRegistry?.profiles ?? []).filter((profile) => profile.kind === "section"),
+    () =>
+      (selectedRegistry?.profiles ?? []).filter(
+        (profile) =>
+          profile.kind === "section" || profile.kind === "section_properties",
+      ),
     [selectedRegistry],
   );
 
@@ -786,18 +790,29 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
                         <select
                           id="profile-kind"
                           value={profileDraft.kind}
-                          onChange={(event) =>
+                          onChange={(event) => {
+                            const next = event.target.value as
+                              | "section"
+                              | "section_properties"
+                              | "dossier";
                             setProfileDraft((current) => ({
                               ...current,
-                              kind: event.target.value as "section" | "dossier",
+                              kind: next,
                               targetEntityTypes:
-                                event.target.value === "section" ? current.targetEntityTypes : [],
+                                next === "section" ? current.targetEntityTypes : [],
                               sectionProfileIds:
-                                event.target.value === "dossier" ? current.sectionProfileIds : [],
-                            }))
-                          }
+                                next === "dossier" ? current.sectionProfileIds : [],
+                              profileSections:
+                                next === "section_properties" ? current.profileSections : [],
+                              includeAssociatedSystems:
+                                next === "section_properties"
+                                  ? current.includeAssociatedSystems
+                                  : false,
+                            }));
+                          }}
                         >
-                          <option value="section">Section</option>
+                          <option value="section">Section (legacy traversal)</option>
+                          <option value="section_properties">Section properties (flat schema)</option>
                           <option value="dossier">Dossier</option>
                         </select>
                       </div>
@@ -832,7 +847,7 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
                         helperText="Optional. Restricts which entity types can be resolved as the search root."
                       />
 
-                      {profileDraft.kind === "section" ? (
+                      {profileDraft.kind === "section" && (
                         <MultiSelectField
                           id="profile-target-types"
                           label="Target entity types"
@@ -841,17 +856,46 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
                           onChange={(value) => setProfileDraft((current) => ({ ...current, targetEntityTypes: value }))}
                           helperText="Optional. Restricts which entity types can be returned by the traversal."
                         />
-                      ) : (
+                      )}
+                      {profileDraft.kind === "section_properties" && (
+                        <MultiSelectField
+                          id="profile-sections"
+                          label="Profile sections"
+                          options={["rf_parameters", "components", "performance"]}
+                          value={profileDraft.profileSections}
+                          onChange={(value) => setProfileDraft((current) => ({ ...current, profileSections: value }))}
+                          helperText="Which canonical-class section(s) this profile projects (e.g. rf_parameters, components, performance)."
+                        />
+                      )}
+                      {profileDraft.kind === "dossier" && (
                         <MultiSelectField
                           id="profile-section-ids"
                           label="Section profiles"
                           options={sectionProfiles.map((profile) => profile.id)}
                           value={profileDraft.sectionProfileIds}
                           onChange={(value) => setProfileDraft((current) => ({ ...current, sectionProfileIds: value }))}
-                          helperText="Dossier profiles bundle existing section profiles into one exact search mode."
+                          helperText="Dossier profiles bundle existing section / section_properties profiles into one exact search mode."
                         />
                       )}
                     </div>
+
+                    {profileDraft.kind === "section_properties" && (
+                      <label className="flex-center gap-sm" style={{ marginTop: "0.75rem" }}>
+                        <input
+                          type="checkbox"
+                          checked={profileDraft.includeAssociatedSystems}
+                          onChange={(event) =>
+                            setProfileDraft((current) => ({
+                              ...current,
+                              includeAssociatedSystems: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span className="text-sm">
+                          Include related systems via ASSOCIATED_WITH / CUES (used by System Components).
+                        </span>
+                      </label>
+                    )}
 
                     {profileDraft.kind === "section" && (
                       <div style={{ marginTop: "1rem" }}>
@@ -1074,7 +1118,9 @@ export function QueryProfileRegistryPage({ onOntologyChanged }: { onOntologyChan
                               <div className="text-xs text-muted" style={{ marginBottom: "0.75rem" }}>
                                 {profile.kind === "section"
                                   ? `${profile.traversals.length} traversal path(s)`
-                                  : `${profile.section_profile_ids.length} section profile reference(s)`}
+                                  : profile.kind === "section_properties"
+                                    ? `Sections: ${profile.profile_sections.join(", ") || "(none)"}`
+                                    : `${profile.section_profile_ids.length} section profile reference(s)`}
                               </div>
                               <div className="flex-center gap-sm">
                                 <button

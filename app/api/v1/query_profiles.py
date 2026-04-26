@@ -71,10 +71,13 @@ def _validate_profile_references(
     if profile.kind != "dossier":
         return
 
+    # Dossier may reference either kind="section" (legacy traversal) or
+    # kind="section_properties" (Phase 2 flat-schema refactor) profiles.
     available_section_ids = {
         item.id
         for item in existing_profiles
-        if item.kind == "section" and item.id != replacing_profile_id
+        if item.kind in ("section", "section_properties")
+        and item.id != replacing_profile_id
     }
     missing = [
         section_id
@@ -85,7 +88,8 @@ def _validate_profile_references(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Dossier profiles can only reference existing section profiles. "
+                "Dossier profiles can only reference existing section or "
+                "section_properties profiles. "
                 f"Missing section ids: {', '.join(sorted(missing))}"
             ),
         )
