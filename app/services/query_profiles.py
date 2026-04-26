@@ -56,6 +56,60 @@ def _canonical_class_for(entity_type: str):
     return cls
 
 
+def _human_label(field_name: str) -> str:
+    """Convert canonical field name to a display label (title-cased)."""
+    return field_name.replace("_", " ").title()
+
+
+def _project_field_groups(
+    canonical_cls: type,
+    instance_data: dict,
+    profile_section: str,
+):
+    """Walk canonical_cls.model_fields, pick fields whose
+    json_schema_extra['profile_sections'] contains *profile_section*,
+    group by 'profile_subgroup'. Skip fields where instance_data[name]
+    is None. Returns deterministically ordered groups (by subgroup
+    name asc; fields by name asc within group). Spec §4.3.
+    """
+    from app.schemas.query_profiles import (
+        QueryProfileFieldEntry, QueryProfileFieldGroup,
+    )
+
+    groups_by_subgroup: dict[str, list[QueryProfileFieldEntry]] = {}
+
+    for fname, finfo in canonical_cls.model_fields.items():
+        extra = finfo.json_schema_extra or {}
+        if not isinstance(extra, dict):
+            continue
+        sections = extra.get("profile_sections") or []
+        if profile_section not in sections:
+            continue
+        value = instance_data.get(fname)
+        if value is None:
+            continue
+        subgroup = extra.get("profile_subgroup") or ""
+        entry = QueryProfileFieldEntry(
+            name=fname,
+            label=_human_label(fname),
+            value=value,
+            description=finfo.description,
+            examples=list(finfo.examples) if finfo.examples else None,
+            enum=extra.get("enum"),
+        )
+        groups_by_subgroup.setdefault(subgroup, []).append(entry)
+
+    out: list[QueryProfileFieldGroup] = []
+    for subgroup_key in sorted(groups_by_subgroup.keys()):
+        entries = sorted(groups_by_subgroup[subgroup_key], key=lambda e: e.name)
+        out.append(QueryProfileFieldGroup(
+            subgroup=subgroup_key or None,
+            subgroup_label=_human_label(subgroup_key) if subgroup_key else None,
+            fields=entries,
+        ))
+    return out
+
+
 _REL_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _CURRENT_ONTOLOGY_NAME = "EIP-MMDPP Military Equipment & EM/RF Ontology"

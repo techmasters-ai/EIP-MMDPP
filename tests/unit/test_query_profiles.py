@@ -247,3 +247,78 @@ def test_canonical_root_entity_types_in_sync_with_dispatch():
     from app.schemas.query_profiles import _CANONICAL_ROOT_ENTITY_TYPES
     from app.services.query_profiles import _CANONICAL_BY_ENTITY_TYPE
     assert set(_CANONICAL_BY_ENTITY_TYPE.keys()) == _CANONICAL_ROOT_ENTITY_TYPES
+
+
+def test_project_field_groups_groups_by_subgroup():
+    """Walks canonical model_fields, picks fields whose
+    profile_sections contains the requested section, groups by
+    profile_subgroup, sorts deterministically."""
+    from ontology_bundles.air_defense_v3.entities import RadarSystemEntity
+    from app.services.query_profiles import _project_field_groups
+
+    instance_data = {
+        "name": "Fan Song",
+        "system_name": "Fan Song",
+        "gain_dbi": 35.0,
+        "beamwidth_az_deg": 1.5,
+        "tx_peak_power_kw": 600.0,
+        "nominal_rf_mhz": 3000.0,
+        "max_speed_mps": None,
+    }
+    groups = _project_field_groups(RadarSystemEntity, instance_data, "rf_parameters")
+
+    antenna = next(g for g in groups if g.subgroup == "antenna")
+    field_names = {f.name for f in antenna.fields}
+    assert "gain_dbi" in field_names
+    assert "beamwidth_az_deg" in field_names
+
+    transmit = next(g for g in groups if g.subgroup == "transmit")
+    assert {f.name for f in transmit.fields} == {"tx_peak_power_kw"}
+
+
+def test_project_field_groups_skips_none_fields():
+    from ontology_bundles.air_defense_v3.entities import RadarSystemEntity
+    from app.services.query_profiles import _project_field_groups
+
+    instance_data = {"name": "X", "gain_dbi": None}
+    groups = _project_field_groups(RadarSystemEntity, instance_data, "rf_parameters")
+
+    for g in groups:
+        for f in g.fields:
+            assert f.value is not None
+
+
+def test_project_field_groups_only_returns_requested_section():
+    """A field tagged ['rf_parameters', 'performance'] appears in both
+    sections. A field tagged only ['performance'] appears only in
+    performance projections."""
+    from ontology_bundles.air_defense_v3.entities import MissileSystemEntity
+    from app.services.query_profiles import _project_field_groups
+
+    instance_data = {
+        "system_name": "SA-2",
+        "max_speed_mps": 1100.0,
+        "body_length_m": 10.6,
+    }
+    perf = _project_field_groups(MissileSystemEntity, instance_data, "performance")
+    comp = _project_field_groups(MissileSystemEntity, instance_data, "components")
+
+    perf_names = {f.name for g in perf for f in g.fields}
+    comp_names = {f.name for g in comp for f in g.fields}
+
+    assert "max_speed_mps" in perf_names
+    assert "max_speed_mps" not in comp_names
+    assert "body_length_m" in perf_names
+    assert "body_length_m" in comp_names
+
+
+def test_project_field_groups_carries_metadata():
+    from ontology_bundles.air_defense_v3.entities import RadarSystemEntity
+    from app.services.query_profiles import _project_field_groups
+
+    instance_data = {"gain_dbi": 35.0}
+    groups = _project_field_groups(RadarSystemEntity, instance_data, "rf_parameters")
+    antenna = next(g for g in groups if g.subgroup == "antenna")
+    gain = next(f for f in antenna.fields if f.name == "gain_dbi")
+    assert gain.description and "gain" in gain.description.lower()
+    assert gain.label
