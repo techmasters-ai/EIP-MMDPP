@@ -322,3 +322,36 @@ def test_project_field_groups_carries_metadata():
     gain = next(f for f in antenna.fields if f.name == "gain_dbi")
     assert gain.description and "gain" in gain.description.lower()
     assert gain.label
+
+
+@pytest.mark.asyncio
+async def test_fetch_section_items_property_branch():
+    """When profile.kind == section_properties, _fetch_section_items
+    returns a list[QueryProfileFieldGroup], not list[GraphEntityResult]."""
+    from unittest.mock import AsyncMock
+    from app.schemas.graph_store import GraphEntityResult
+    from app.schemas.query_profiles import (
+        QueryProfileDefinition,
+        QueryProfileSearchRequest,
+    )
+    from app.services.query_profiles import _fetch_section_items
+
+    profile = QueryProfileDefinition(
+        id="test_rf", label="Test", kind="section_properties",
+        root_entity_types=["RADAR_SYSTEM"],
+        profile_sections=["rf_parameters"],
+    )
+    resolved = GraphEntityResult(
+        node_id="#37:0", name="Fan Song", entity_type="RADAR_SYSTEM",
+    )
+    request = QueryProfileSearchRequest(
+        profile_id="test_rf", query_text="Fan Song", top_k=10,
+    )
+    graph_store = AsyncMock()
+    graph_store.get_entity_by_rid = AsyncMock(return_value={
+        "system_name": "Fan Song", "gain_dbi": 35.0, "tx_peak_power_kw": 600.0,
+    })
+
+    groups = await _fetch_section_items(graph_store, resolved, request, profile)
+    assert len(groups) >= 1
+    assert any(f.name == "gain_dbi" for g in groups for f in g.fields)

@@ -655,13 +655,30 @@ async def _fetch_section_items(
     resolved: GraphEntityResult,
     request: QueryProfileSearchRequest,
     profile: QueryProfileDefinition,
-) -> list[GraphEntityResult]:
-    """Fetch section items using directed MATCH traversal from query-profile steps.
+):
+    """Fetch section items.
 
-    Each profile's traversal steps define direction, rel_types, and hop bounds.
-    These are compiled into a native ArcadeDB MATCH pattern instead of
-    collapsing to a single undirected neighborhood walk.
+    Returns:
+      - list[QueryProfileFieldGroup] when profile.kind == "section_properties"
+      - list[GraphEntityResult]      when profile.kind == "section" (legacy)
+
+    For section_properties profiles, resolves the root vertex's full property
+    dict via get_entity_by_rid and projects it through _project_field_groups
+    for each requested profile_section (spec §4.4).
+
+    For legacy section profiles, compiles the traversal steps into a native
+    ArcadeDB MATCH pattern and returns matching neighbor entities.
     """
+    if profile.kind == "section_properties":
+        if not resolved.node_id:
+            return []
+        instance_data = await graph_store.get_entity_by_rid(resolved.node_id)
+        canonical = _canonical_class_for(resolved.entity_type)
+        groups: list = []
+        for section in profile.profile_sections:
+            groups.extend(_project_field_groups(canonical, instance_data, section))
+        return groups
+
     if not resolved.node_id:
         return []
 
