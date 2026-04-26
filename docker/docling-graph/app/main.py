@@ -337,6 +337,7 @@ _install_prompt_rules()
 _install_resolver_patch()
 
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
+from app._field_provenance_helpers import _primary_list_field_name
 from app.config_builder import build_pipeline_config
 from app.evidence_gate import (
     apply_bundle_postprocessing as _apply_bundle_postprocessing,
@@ -354,6 +355,7 @@ from app.schemas import (
     ExtractionProvenance,
     HealthResponse,
     ExtractPassRequest,
+    ExtractionFieldProvenance,
     ExtractPassResponse,
     EntityRef,  # for typing only; runtime uses attribute access
 )
@@ -931,6 +933,52 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         diagnostics["path_counts"] = filtered_counts["path_counts"]
         context._delta_trace = diagnostics
 
+        # Phase 3: per-field provenance.
+        # Build ExtractionFieldProvenance rows from the template's
+        # field_provenance list. Resolve entity_index → instance_id by
+        # looking up the entity's identity values in provenance_rows.
+        # Snippet → element_uid resolution comes in Task 31.
+        field_provenance_rows: list[ExtractionFieldProvenance] = []
+        template_fp = getattr(template_instance, "field_provenance", None) or []
+        if template_fp:
+            primary_types = pass_def.get("primary_entity_types", []) or []
+            primary_type = primary_types[0] if primary_types else None
+            list_field_name: str | None = None
+            if primary_type:
+                try:
+                    list_field_name = _primary_list_field_name(template_cls, primary_type)
+                except ValueError:
+                    list_field_name = None
+            if list_field_name:
+                primary_entities = getattr(template_instance, list_field_name, []) or []
+                # Build identity → instance_id index from provenance_rows.
+                identity_to_instance: dict[tuple[str, str], str] = {}
+                for prow in provenance_rows:
+                    iv = getattr(prow, "identity_values", {}) or {}
+                    for k, v in iv.items():
+                        if v:
+                            identity_to_instance[(str(k), str(v))] = getattr(prow, "instance_id", "")
+                for fp_row in template_fp:
+                    idx = getattr(fp_row, "entity_index", -1)
+                    if not (0 <= idx < len(primary_entities)):
+                        continue
+                    entity = primary_entities[idx]
+                    iv_dump = entity.model_dump() if hasattr(entity, "model_dump") else {}
+                    instance_id = ""
+                    for k, v in iv_dump.items():
+                        if v and (str(k), str(v)) in identity_to_instance:
+                            instance_id = identity_to_instance[(str(k), str(v))]
+                            break
+                    field_name = getattr(fp_row, "field_name", "")
+                    value = getattr(entity, field_name, None) if field_name else None
+                    field_provenance_rows.append(ExtractionFieldProvenance(
+                        instance_id=instance_id,
+                        field_name=field_name,
+                        value=value,
+                        supporting_snippet=getattr(fp_row, "supporting_snippet", ""),
+                        element_uid=None,  # resolved in Task 31
+                    ))
+
         return ExtractPassResponse(
             bundle_key=body.bundle_key,
             pass_name=body.pass_name,
@@ -939,6 +987,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             model=os.environ.get("DOCLING_GRAPH_LLM_MODEL", "granite3-dense:8b"),
             provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
             provenance=provenance_rows,
+            field_provenance=field_provenance_rows,
             diagnostics=getattr(context, "_delta_trace", None),
         )
     finally:

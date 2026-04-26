@@ -123,6 +123,35 @@ class ExtractionProvenance(BaseModel):
     chunk_index: Optional[int] = Field(None)
 
 
+class ExtractionFieldProvenance(BaseModel):
+    """Wire-shape per-field provenance row (spec §5.3, §5.1.1).
+
+    Built by the service post-process from the pass-template's
+    field_provenance list. Joins entity_index → instance_id by indexing
+    into the pass's primary entity list (resolved via
+    _primary_list_field_name)."""
+    instance_id: str = Field(
+        ..., description="Resolved entity instance id from the merge layer."
+    )
+    field_name: str = Field(
+        ..., description="Canonical field name on the entity model."
+    )
+    value: Any = Field(
+        None, description="The field value the LLM extracted."
+    )
+    supporting_snippet: str = Field(
+        ..., description="Verbatim quote from the source chunks."
+    )
+    element_uid: Optional[str] = Field(
+        None,
+        description=(
+            "DoclingDocument element_uid the snippet was matched to. "
+            "None when the resolver couldn't locate the snippet — "
+            "treated as 'unverified source' by the UI."
+        ),
+    )
+
+
 class ExtractPassResponse(BaseModel):
     """Response body for POST /extract-pass. Spec §5.9 wire contract.
 
@@ -144,6 +173,14 @@ class ExtractPassResponse(BaseModel):
             "to DoclingDocument elements. Empty by default; populated "
             "by the /extract-pass handler when the service can resolve "
             "element_uid per node in context.knowledge_graph."
+        ),
+    )
+    field_provenance: list[ExtractionFieldProvenance] = Field(
+        default_factory=list,
+        description=(
+            "Per-field source snippets emitted by the LLM and resolved "
+            "to DoclingDocument element_uid by the service post-process. "
+            "Phase 3 of the flat-schema profile refactor (spec §5.3)."
         ),
     )
     diagnostics: Optional[dict[str, Any]] = Field(
