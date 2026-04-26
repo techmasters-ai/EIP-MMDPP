@@ -13,9 +13,6 @@ from app.schemas.graph_store import (
     GraphNeighborhoodResponse,
     GraphQueryRequest,
     GraphRelationshipIngest,
-    SystemDossierResponse,
-    SystemQueryRequest,
-    SystemSectionResponse,
 )
 from app.schemas.retrieval import QueryResultItem
 from app.services.graph_store import NodeRecord, RelationshipRecord
@@ -171,46 +168,9 @@ async def get_neighborhood(
     )
 
 
-# Legacy deterministic dossier endpoints -- kept for backward compatibility.
-# New ontology-driven dossier queries should use the query profiles system
-# at /query-profiles/search/section and /query-profiles/search/dossier.
-@router.post("/graph/system-dossier", response_model=SystemDossierResponse)
-async def get_system_dossier(
-    body: SystemQueryRequest,
-    db: AsyncSession = Depends(get_async_session),
-) -> SystemDossierResponse:
-    """Return a deterministic, provenance-backed dossier for one system."""
-    from app.services.dossier_service import (
-        SystemNotFoundError,
-        build_system_dossier,
-    )
-
-    graph_store = get_graph_store()
-    try:
-        return await build_system_dossier(graph_store, db, body)
-    except SystemNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-async def _system_section(body: SystemQueryRequest, db: AsyncSession, section: str) -> SystemSectionResponse:
-    from app.services.dossier_service import SystemNotFoundError, build_section_response
-    graph_store = get_graph_store()
-    try:
-        return await build_section_response(graph_store, db, body, section)
-    except SystemNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@router.post("/graph/system-components", response_model=SystemSectionResponse)
-async def get_system_components(body: SystemQueryRequest, db: AsyncSession = Depends(get_async_session)):
-    return await _system_section(body, db, "components")
-
-
-@router.post("/graph/system-rf-parameters", response_model=SystemSectionResponse)
-async def get_system_rf_parameters(body: SystemQueryRequest, db: AsyncSession = Depends(get_async_session)):
-    return await _system_section(body, db, "rf_parameters")
-
-
-@router.post("/graph/system-performance", response_model=SystemSectionResponse)
-async def get_system_performance(body: SystemQueryRequest, db: AsyncSession = Depends(get_async_session)):
-    return await _system_section(body, db, "performance")
+# Legacy /graph/system-* endpoints removed in the flat-schema profile
+# refactor (spec §4.13). Replaced by:
+#   POST /v1/query-profiles/search/section   (kind=section_properties)
+#   POST /v1/query-profiles/search/dossier   (kind=dossier)
+# See alembic/versions/0018_starter_profiles_to_section_properties.py
+# for the registry-data migration.

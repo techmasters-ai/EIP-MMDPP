@@ -47,15 +47,6 @@ class GraphNeighborhoodResponse(APIModel):
     edges: list[dict[str, Any]] = []
 
 
-class SystemQueryRequest(APIModel):
-    system_name: str = Field(..., min_length=1, max_length=4096)
-    include_aliases: bool = True
-    include_variants: bool = False
-    include_evidence: bool = True
-    evidence_top_k: int = Field(default=3, ge=1, le=10)
-    top_k: int = Field(default=25, ge=1, le=100)
-
-
 class GraphEvidenceItem(APIModel):
     chunk_id: Optional[uuid.UUID] = None
     chunk_type: str
@@ -85,16 +76,3 @@ class GraphEntityResult(APIModel):
     evidence: list[GraphEvidenceItem] = Field(default_factory=list)
 
 
-class SystemSectionResponse(APIModel):
-    resolved_system: GraphEntityResult
-    items: list[GraphEntityResult] = Field(default_factory=list)
-    total: int = 0
-
-
-class SystemDossierResponse(APIModel):
-    resolved_system: GraphEntityResult
-    aliases: list[str] = Field(default_factory=list)
-    components: list[GraphEntityResult] = Field(default_factory=list)
-    rf_parameters: list[GraphEntityResult] = Field(default_factory=list)
-    performance_characteristics: list[GraphEntityResult] = Field(default_factory=list)
-    organizations_platforms: list[GraphEntityResult] = Field(default_factory=list)
