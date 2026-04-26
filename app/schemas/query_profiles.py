@@ -36,9 +36,21 @@ class QueryProfileTraversal(APIModel):
 
 
 class QueryProfileFieldEvidence(APIModel):
-    """Phase 3 stub. Populated with snippet + element_uid + chunk
-    metadata once the docling-graph extraction emits per-field
-    provenance. Empty default for Phase 2."""
+    """Per-field evidence row (spec §5.8). Combines chunk metadata
+    (same surface as GraphEvidenceItem) with field-specific signals
+    (supporting_snippet + element_uid)."""
+    chunk_id: Optional[uuid.UUID] = None
+    chunk_type: Optional[str] = None
+    artifact_id: Optional[uuid.UUID] = None
+    document_id: Optional[uuid.UUID] = None
+    document_name: Optional[str] = None
+    modality: Optional[str] = None
+    page_number: Optional[int] = None
+    classification: str = "UNCLASSIFIED"
+    content_text: Optional[str] = None
+    source_characterization: Optional[str] = None
+    date_of_information: Optional[str] = None
+    extraction_confidence: Optional[float] = None
     supporting_snippet: str = ""
     element_uid: Optional[str] = None
 
