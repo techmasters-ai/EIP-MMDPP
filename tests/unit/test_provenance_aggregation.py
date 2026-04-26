@@ -20,7 +20,22 @@ from app.services.extraction_merge import (
     _build_logical_identity,
     logical_identity_from_dict,
 )
-from ontology_bundles.air_defense_v3.entities import AntennaEntity
+from pydantic import BaseModel
+from typing import Optional
+
+
+class AntennaEntity(BaseModel):
+    """Local test fixture for provenance-aggregation tests.
+
+    The merge logic under test routes by ontology_name="ANTENNA" and the
+    fallback path looks for an ``antennas`` list on the template, so the
+    actual class used here is just a vehicle to instantiate something
+    with a ``name`` field. Defined locally so this test no longer depends
+    on the canonical ``AntennaEntity`` (deleted in the flat-schema
+    profile refactor — orphan class with no extraction path)."""
+
+    name: str
+    gain_dbi: Optional[float] = None
 
 
 DOC_ID = "doc-test-1"
