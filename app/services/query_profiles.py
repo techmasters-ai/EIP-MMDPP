@@ -837,14 +837,34 @@ async def execute_section_search(
 ) -> QueryProfileSectionResponse:
     registry = registry or await get_required_active_registry(db)
     profile = _get_profile(registry, request.profile_id)
-    if profile.kind != "section":
+    if profile.kind not in ("section", "section_properties"):
         raise QueryProfileNotFoundError(
             f"Profile '{request.profile_id}' is not a section query profile"
         )
 
     resolved = await resolve_root_entity(graph_store, registry, profile, request)
-    items = await _fetch_section_items(graph_store, resolved, request, profile)
+    raw = await _fetch_section_items(graph_store, resolved, request, profile)
 
+    if profile.kind == "section_properties":
+        field_groups = raw  # list[QueryProfileFieldGroup]
+        related_systems: list[GraphEntityResult] = []
+        if profile.include_associated_systems and resolved.node_id:
+            related_systems = await graph_store.get_associated_systems(resolved.node_id)
+        if request.include_evidence and related_systems:
+            await attach_evidence(graph_store, db, [resolved] + related_systems, request.evidence_top_k)
+        total = sum(len(g.fields) for g in field_groups) + len(related_systems)
+        return QueryProfileSectionResponse(
+            registry_id=getattr(registry, "id", None),
+            profile_id=profile.id,
+            profile_label=profile.label,
+            resolved_root=resolved,
+            field_groups=field_groups,
+            related_systems=related_systems,
+            items=[],
+            total=total,
+        )
+
+    items = raw  # list[GraphEntityResult]
     if request.include_evidence:
         await attach_evidence(graph_store, db, [resolved] + items, request.evidence_top_k)
 
