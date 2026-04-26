@@ -1,7 +1,7 @@
 # Flat-Schema Profile Refactor — Design
 
 **Date:** 2026-04-25
-**Status:** Draft, awaiting user review
+**Status:** Revised after first review pass — 8 findings addressed (see §11)
 **Scope:** Bring the four starter query profiles (System Dossier, System Components, System RF Parameters, System Performance) onto the flat-checklist extraction schema, and sync the canonical ontology entities so the schema-drift xfails clear at the same time.
 
 ---
@@ -10,7 +10,7 @@
 
 ### 1.1 What changed under us
 
-The Phase 5/6/7 Pydantic ontology SSoT work refactored the radar/missile extraction schemas to a **flat checklist** model: instead of emitting nested `ANTENNA`, `RECEIVER`, `BOOSTER`, `SEEKER`, `SPECIFICATION` etc. entities and connecting them to `RADAR_SYSTEM` / `MISSILE_SYSTEM` via typed edges (`HAS_ANTENNA`, `EMITS`, `OPERATES_IN_BAND`, …), the new schemas put every parameter as a **property field** on the parent system entity. The bundle manifest now declares 3 passes (`radar_domain`, `missile_domain`, `system_links`) and `kind="entities"` everywhere — no typed RF/component edges.
+The Phase 5/6/7 Pydantic ontology SSoT work refactored the radar/missile extraction schemas to a **flat checklist** model: instead of emitting nested `ANTENNA`, `RECEIVER`, `BOOSTER`, `SEEKER`, `SPECIFICATION` etc. entities and connecting them to `RADAR_SYSTEM` / `MISSILE_SYSTEM` via typed edges (`HAS_ANTENNA`, `EMITS`, `OPERATES_IN_BAND`, …), the new schemas put every parameter as a **property field** on the parent system entity. The bundle manifest now declares 3 passes — `radar_domain` (`kind="entities"`), `missile_domain` (`kind="entities"`), and `system_links` (`kind="relationships_only"`, `extracted_relationship_types: [ASSOCIATED_WITH, CUES]`). No typed RF/component edges; only the two coarse system-to-system edges from `system_links`.
 
 ### 1.2 What this broke
 
@@ -32,7 +32,7 @@ The profile refactor needs to know "which flat fields belong to which profile se
 | 1 | One spec, two-phase plan: ontology sync first, then profile refactor. Phase 3 (field-level evidence) added per user request. |
 | 2 | Section result shape: one result with structured `field_groups`, **not** a list of pseudo-entities. |
 | 3 | Field → profile-section mapping lives on the Pydantic field via `json_schema_extra={"profile_sections": [...], "profile_subgroup": "..."}`. |
-| 4 | `System Components` becomes property-groups (antenna, booster, seeker, …) **plus** a small `related_systems` block fed from `CHILD_OF` edges. |
+| 4 | `System Components` becomes property-groups (antenna, booster, seeker, …) **plus** a small `related_systems` block fed from `ASSOCIATED_WITH` edges. (Original draft said `CHILD_OF`; review pointed out `CHILD_OF` is declared `SECTION → SECTION` in `validation_matrix.py:152` and `system_links` only emits `ASSOCIATED_WITH` and `CUES` between systems.) |
 | 5 | A field can belong to multiple profile sections (`profile_sections` is a list, not a string). |
 | 6 | Field-level evidence is in scope (Phase 3). |
 | 7 | Field-level evidence implementation: option 1 — real LLM-extracted source snippets, deterministically resolved to `element_uid` post-LLM. |
@@ -74,6 +74,10 @@ The profile refactor needs to know "which flat fields belong to which profile se
 ┌─────────────────────────────────────────────────────────────────┐
 │  Phase 3: Field-level evidence                                  │
 │  ──────────────────────────────                                 │
+│  ontology_bundles/.../extraction_schemas/                       │
+│    + RadarDomainPass / MissileDomainPass gain                   │
+│      field_provenance: list[FieldProvenanceRow]                 │
+│      (top-level on the pass template — survives extra="ignore") │
 │  docker/docling-graph/app/                                      │
 │    + LLM prompt asks for per-field supporting snippets          │
 │    + Service post-process resolves snippet → element_uid        │
@@ -83,7 +87,7 @@ The profile refactor needs to know "which flat fields belong to which profile se
 │  app/services/arcadedb_graph.py                                 │
 │    + persist _field_evidence JSON on entity vertex              │
 │  app/services/query_profiles.py                                 │
-│    + surface evidence: list[ChunkExcerpt] on each FieldEntry    │
+│    + surface evidence: list[GraphEvidenceItem] on each FieldEntry    │
 │  Frontend                                                        │
 │    + per-field evidence popover                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -97,8 +101,20 @@ Phase boundaries are sequential. Phase 2 cannot land before Phase 1 (depends on 
 
 ### 3.1 Files touched
 
-- `ontology_bundles/air_defense_v3/entities.py` — `RadarSystemEntity`, `MissileSystemEntity` get all flat fields; orphan classes deleted.
-- `tests/unit/test_docs_compliance_contracts.py`, `tests/unit/contracts/test_extraction_schema_contract.py`, `tests/unit/test_coverage_checker.py` — drop the 5 `xfail(strict=False)` markers added during the prior debugging pass.
+Phase 1 is broader than the original draft. The orphan canonical classes are referenced by enough sibling files that a partial deletion leaves an incoherent bundle and `check_bundle()` will fail. Treat these as one atomic change set:
+
+- `ontology_bundles/air_defense_v3/entities.py`
+  - **Add** flat fields onto `RadarSystemEntity` (lines 411-…) and `MissileSystemEntity` (lines 568-…) per §3.2/§3.3.
+  - **Delete** the now-unused `edge(...)` declarations on `RadarSystemEntity` and `MissileSystemEntity` (e.g., `waveforms`, `rf_emissions`, `antennas`, `receivers`, `transmitters`, `frequency_bands`, `modulations`, `scan_patterns`, `signal_processing_chains`, `if_amplifiers`, `seekers`, `specifications`, `propulsion_*`, `radar_performance`, `missile_performance`, `missile_physical_characteristics`, `capabilities`, etc.) — see §3.4 for the full deletion list.
+  - **Delete** the orphan canonical classes themselves (the standalone `AntennaEntity`, `ReceiverEntity`, `WaveformEntity`, etc.) — full list in §3.4.
+  - **Remove** the deleted classes from the `ENTITY_TYPES` registry at `entities.py:1346`. Anything that's no longer importable must not appear in the dict.
+- `ontology_bundles/air_defense_v3/coverage.yaml` — remove the orphan entity types from the section coverage lists; remove the orphan `HAS_*`, `EMITS`, `RADIATES`, `RECEIVES`, etc. relationship types from the relationship coverage lists.
+- `ontology_bundles/air_defense_v3/validation_matrix.py` — drop every tuple whose subject or object is an orphan type. The `ASSERTION` rows are already TODO'd as dead per the file's own comment; remove them in the same pass.
+- `ontology_bundles/air_defense_v3/relationships.py` — delete `RelationshipType` members for the dropped edge labels (`HAS_ANTENNA`, `HAS_RECEIVER`, `HAS_TRANSMITTER`, `EMITS`, `RADIATES`, `RECEIVES`, `OPERATES_IN_BAND`, `USES_WAVEFORM`, `USES_MODULATION`, `SPECIFIED_BY`, `HAS_SCAN`, `HAS_SEEKER`, `HAS_SIGNATURE`, `HAS_PROCESSING_CHAIN`, …). Keep `IS_A`, `PART_OF`, `INSTALLED_ON`, `ASSOCIATED_WITH`, `CUES`, `CHILD_OF`, the document/structure edges, and any other relationship still emitted by current passes.
+- `app/services/dossier_service.py` — delete the stale `RF_ENTITY_TYPES`, `PERFORMANCE_ENTITY_TYPES`, `COMPONENT_ENTITY_TYPES` constants (around lines 38-65). They're hard-coded lists of the now-deleted entity types and are dead code after Phase 1. Any caller that imports them is repointed to read `profile_sections` introspectively (the same way `_project_field_groups` will, in Phase 2).
+- `tests/unit/test_docs_compliance_contracts.py`, `tests/unit/contracts/test_extraction_schema_contract.py`, `tests/unit/test_coverage_checker.py` — drop the 5 `xfail(strict=False)` markers from the prior debugging pass.
+
+After the first `check_bundle()` run lands a green result on the modified bundle, the Phase 1 file scope is verified. Anything that still references a deleted symbol surfaces as an `ImportError` or a `check_bundle()` failure; both are deterministic gates we can iterate on.
 
 ### 3.2 Field migration
 
@@ -112,7 +128,15 @@ The `confidence` system field on each canonical class is unchanged.
 
 ### 3.3 `profile_sections` and `profile_subgroup` mapping
 
-**`RadarSystemEntity` (canonical):**
+**Convention:** every non-system field on the canonical class falls into one of three buckets, and the contract is enforced by a Phase 1 unit test (§3.6 success criteria):
+
+1. **Profile-mapped** — `profile_sections: list[str]` non-empty, `profile_subgroup: str` set.
+2. **System metadata** — `profile_sections: []` AND `system_metadata: True` (new flag in `json_schema_extra`). The field is real and indexed but never surfaced by a starter profile (e.g., audit trails like `responsible_agency`, identity adjuncts like `nomenclature`, internal classifiers like `dieqp`).
+3. **System field** (the existing `system_field: True` marker) — bookkeeping like `confidence`, `extraction_confidence`. Unchanged.
+
+A field with `profile_sections=[]` AND no `system_metadata` flag is a bug — the contract test fails the build.
+
+**`RadarSystemEntity` (canonical) full mapping:**
 
 | Fields | `profile_sections` | `profile_subgroup` |
 |---|---|---|
@@ -120,9 +144,11 @@ The `confidence` system field on each canonical class is unchanged.
 | `antenna_dim_az_m`, `antenna_dim_el_m`, `beamwidth_az_deg`, `beamwidth_el_deg`, `gain_dbi`, `antenna_photo`, `spoiled`, `coverage_limits_el_deg` | `["rf_parameters","components"]` | `"antenna"` |
 | `tx_peak_power_kw`, `erp_dbw` | `["rf_parameters","performance"]` | `"transmit"` |
 | `scan_type`, `scan_period_sec` | `["rf_parameters","performance"]` | `"scan"` |
-| `elnot`, `dieqp`, `asrd`, `system_status`, `responsible_agency`, `review_cycle`, `next_review_date` | `[]` | n/a (system metadata) |
+| `emitter_function` | `["rf_parameters"]` | `"classification"` |
+| `nomenclature` | `[]`, `system_metadata=True` | n/a (identity adjunct, surfaced on entity header) |
+| `elnot`, `dieqp`, `asrd`, `system_status`, `responsible_agency`, `review_cycle`, `next_review_date` | `[]`, `system_metadata=True` | n/a |
 
-**`MissileSystemEntity` (canonical):**
+**`MissileSystemEntity` (canonical) full mapping:**
 
 | Fields | `profile_sections` | `profile_subgroup` |
 |---|---|---|
@@ -134,21 +160,29 @@ The `confidence` system field on each canonical class is unchanged.
 | `min_intercept_km`, `max_intercept_km`, `min_altitude_km`, `max_altitude_km`, `max_launch_angle_deg` | `["performance"]` | `"engagement"` |
 | `average_speed_mps`, `max_speed_mps`, `max_flyout_time_sec`, `flight_time_sec`, `coast_time_sec`, `total_burn_time_sec`, `intra_salvo_time_sec` | `["performance"]` | `"kinematics"` |
 | `guidance_type` | `["performance"]` | `"guidance"` |
+| `emitter_function` | `["performance"]` | `"classification"` |
+| `nomenclature` | `[]`, `system_metadata=True` | n/a (identity adjunct, surfaced on entity header) |
+| `asrd` | `[]`, `system_metadata=True` | n/a |
 
-A field with empty `profile_sections` is "system metadata" — it is not surfaced by any starter profile but remains a real part of the entity (and is still extracted, indexed, and visible on the entity-detail view).
+**Identity-adjunct surfacing.** `nomenclature` is not part of any profile section but is high-value identity context (formal designator vs. NATO common name). The entity header on the section/dossier UI renders the resolved root's `nomenclature` next to the system name when populated. No special schema work — `nomenclature` rides along on `resolved_root.properties` like any other field.
 
-### 3.4 Orphan canonical entities
+### 3.4 Orphan canonical entities — full audit
 
-Delete the following from `entities.py`:
+The original draft listed 6 classes. Reviewer (correctly) flagged that this is too narrow: the broader set of subtypes registered in `ENTITY_TYPES` at `entities.py:1346` are also orphaned by the flat-checklist refactor and have to be removed coherently for `check_bundle()` to pass.
 
-- `AntennaEntity` (line ~944)
-- `FrequencyBandEntity` (line ~842)
-- `MissilePerformanceEntity` (line ~1101)
-- `MissilePhysicalCharacteristicsEntity` (line ~1127)
-- `RadarPerformanceEntity` (line ~1176)
-- `SpecificationEntity` (line ~1233)
+**Full deletion set** (every class registered in `ENTITY_TYPES` that has no extraction path in `radar_domain.py`, `missile_domain.py`, or `system_links.py`, and is not a structural anchor or top-level system type):
 
-These have no extraction path and no surviving incoming references after Phase 1.2. Grep across the whole tree to confirm and remove dead imports. If any tests reference them, either delete the test (orphan coverage) or repoint to the parent system class.
+`FrequencyBandEntity`, `ModulationEntity`, `RfSignatureEntity`, `RfEmissionEntity`, `WaveformEntity`, `ScanPatternEntity`, `AntennaEntity`, `TransmitterEntity`, `ReceiverEntity`, `IfAmplifierEntity`, `SignalProcessingChainEntity`, `GuidanceMethodEntity`, `SeekerEntity`, `MissilePerformanceEntity`, `MissilePhysicalCharacteristicsEntity`, `PropulsionStackEntity`, `PropulsionStageEntity`, `CapabilityEntity`, `RadarPerformanceEntity`, `EngagementTimelineEntity`, `ForceStructureEntity`, `AssemblyEntity`, `SpecificationEntity`, `StandardEntity`, `ProcedureEntity`, `FailureModeEntity`, `TestEventEntity`.
+
+**Retained classes** (used by the structural / system layer, not orphaned):
+
+`DocumentEntity`, `SectionEntity`, `FigureEntity`, `TableEntity`, `ImageEntity`, `TextBlockEntity`, `OrganizationEntity`, `PlatformEntity`, `WeaponSystemEntity`, `EquipmentSystemEntity`, `SubsystemEntity`, `ComponentEntity`, `RadarSystemEntity`, `MissileSystemEntity`, `AirDefenseArtillerySystemEntity`, `ElectronicWarfareSystemEntity`, `FireControlSystemEntity`, `IntegratedAirDefenseSystemEntity`, `LauncherSystemEntity`, `Alias`.
+
+**Audit gate:** before deletion, grep each candidate name across the entire repo (`grep -rn "AntennaEntity\|ANTENNA\b" --include='*.py' --include='*.yaml' --include='*.md'`) and inspect each hit. Anything that's a test fixture / notebook reference / orphaned import gets cleaned up in the same commit; anything that turns out to be a live consumer (extraction path I missed, fixtures we still want to keep) is escalated and the deletion is reconsidered for that specific class.
+
+**Validation matrix + relationship enum:** every tuple in `validation_matrix.py` whose subject or object is in the deletion set goes away, and every relationship label that only occurred between deleted classes (`HAS_ANTENNA`, `EMITS`, `RADIATES`, `RECEIVES`, `OPERATES_IN_BAND`, `USES_WAVEFORM`, `USES_MODULATION`, `SPECIFIED_BY`, `HAS_SCAN`, `HAS_SEEKER`, `HAS_SIGNATURE`, `HAS_PROCESSING_CHAIN`, `HAS_RECEIVER`, `HAS_TRANSMITTER`, `HAS_IF_AMPLIFIER`, `HAS_PROPULSION`, `HAS_GUIDANCE`, `MEASURES`, `MANUFACTURED_BY` if no longer reachable, …) is removed from `RelationshipType` in `relationships.py` and from `coverage.yaml`. The `system_links` pass continues to emit `ASSOCIATED_WITH` and `CUES`; those stay.
+
+**Edge fields on retained entities:** `RadarSystemEntity` and `MissileSystemEntity` currently declare ~20 `edge(...)` fields each pointing at the deleted classes (e.g., `waveforms: List["WaveformEntity"]`). All such fields are deleted. The retained edge fields on these classes are: `documents` (`DERIVED_FROM` → DocumentEntity), `organizations` (`MANUFACTURED_BY` → OrganizationEntity, if kept), `platform` (`INSTALLED_ON` → PlatformEntity), and any structural edges that survive the relationship-type audit.
 
 ### 3.5 Drop xfails
 
@@ -157,7 +191,9 @@ Once 3.2–3.4 land, the 5 schema-drift tests pass without their `xfail` markers
 ### 3.6 Phase 1 success criteria
 
 - `pytest tests/unit -q` shows the 5 previously-xfail'd tests passing without markers.
+- New contract test: every domain field on `RadarSystemEntity` and `MissileSystemEntity` either has non-empty `profile_sections` OR carries `system_metadata=True` (no field falls through the cracks).
 - `check_bundle(ontology_bundles/air_defense_v3)` returns 0 errors.
+- `python -c "from ontology_bundles.air_defense_v3 import entities, relationships, validation_matrix"` succeeds with no `ImportError` (i.e., we deleted everything we said we'd delete and nothing references a deleted name).
 - A re-ingest of one previously-ingested doc still produces `RADAR_SYSTEM` / `MISSILE_SYSTEM` vertices with all the new fields populated where the LLM had values (no extraction regression).
 
 ### 3.7 Risks
@@ -173,8 +209,11 @@ Once 3.2–3.4 land, the 5 schema-drift tests pass without their `xfail` markers
 
 - `app/services/query_profiles.py` — starter definitions, `_fetch_section_items`, `execute_section_search`, `execute_dossier_search`, new helpers.
 - `app/schemas/query_profiles.py` — new `QueryProfileFieldGroup`, `QueryProfileFieldEntry`; `QueryProfileSectionResponse.field_groups`, `.related_systems`; `QueryProfileDossierSection`, `QueryProfileDossierResponse` updated per Q7-B.
-- `app/services/arcadedb_graph.py` — new `get_child_of_systems(node_id)`, new `get_entity_by_rid(node_id)` (if not already present in usable shape).
-- `frontend/src/components/QueryPage.tsx` (or co-located components) — new `<FieldGroupTable>` render path; existing list path retained for legacy traversal profiles.
+- `app/services/arcadedb_graph.py` — new `get_associated_systems(node_id)`, new `get_entity_by_rid(node_id)` (if not already present in usable shape).
+- `frontend/src/api/client.ts` — extend `QueryProfileDefinition.kind` literal from `"section" | "dossier"` (line ~520) to `"section" | "section_properties" | "dossier"`; add new TS interfaces for `QueryProfileFieldGroup`, `QueryProfileFieldEntry`, `QueryProfileDossierSection`; update `QueryProfileSectionResponse` and `QueryProfileDossierResponse` interfaces to expose `field_groups`, `related_systems`, and the new dossier shape (one root + per-section blocks).
+- `frontend/src/components/QueryPage.tsx` (around the `selectedIsGraphProfile` branch at ~line 827) — split the result-rendering switch on `profile.kind`: `"section"` keeps the existing `items`-flattening render; `"section_properties"` calls a new `<FieldGroupTable>` render path; `"dossier"` calls a new `<DossierSectionList>` that renders one entity header + N stacked field-group cards. The existing `setResults` / `setTotalResults` plumbing is generalized: `setSectionResponse` / `setDossierResponse` carry the typed payloads.
+- `frontend/src/components/FieldGroupTable.tsx` — new component. Stacked collapsible cards keyed by `subgroup_label`; each card renders a property table with `label : value` rows; canonical `description` shown on hover; per-field `evidence` (Phase 3) renders a small chip that opens an evidence popover.
+- `frontend/src/components/FieldEvidencePopover.tsx` — new component (Phase 3). Lists each `(snippet, chunk_id)` pair with a deep link to the document viewer at the matching `element_uid`.
 - `tests/unit/test_query_profiles.py`, `tests/unit/test_dossier_service.py` — rewrite for property-projection paths; new helper tests.
 
 ### 4.2 New profile kind
@@ -182,7 +221,7 @@ Once 3.2–3.4 land, the 5 schema-drift tests pass without their `xfail` markers
 Add `"section_properties"` to `QueryProfileDefinition.kind`. Schema additions:
 
 - `profile_sections: list[str]` — which `json_schema_extra["profile_sections"]` tags this profile pulls.
-- `include_child_of: bool = False` — when true, the section response includes `related_systems` populated from `CHILD_OF` edges. Only `system_components` sets it.
+- `include_associated_systems: bool = False` — when true, the section response includes `related_systems` populated from `ASSOCIATED_WITH` / `CUES` edges. Only `system_components` sets it. (Renamed from `include_child_of` per review.)
 
 `validate_shape` model_validator updated:
 
@@ -225,7 +264,7 @@ async def _fetch_section_items(graph_store, resolved, request, profile):
     # existing traversal branch unchanged for kind="section"
 ```
 
-`execute_section_search` packages the result into `QueryProfileSectionResponse` — populating `field_groups` for `section_properties` profiles, `items` for legacy `section` profiles, and `related_systems` only when `profile.include_child_of`.
+`execute_section_search` packages the result into `QueryProfileSectionResponse` — populating `field_groups` for `section_properties` profiles, `items` for legacy `section` profiles, and `related_systems` only when `profile.include_associated_systems`.
 
 ### 4.5 `_canonical_class_for` resolver
 
@@ -247,19 +286,28 @@ def _canonical_class_for(entity_type: str) -> type[BaseModel]:
 
 If a future profile lands on a different entity type (e.g., `INTEGRATED_AIR_DEFENSE_SYSTEM`), register the class here. The error message is explicit so the failure mode is obvious.
 
-### 4.6 `get_child_of_systems`
+### 4.6 `get_associated_systems`
+
+(Renamed from the original draft's `get_child_of_systems`. Reviewer correctly noted that `CHILD_OF` is declared `SECTION → SECTION` in `validation_matrix.py:152` — it does not connect systems. The relationship `system_links` actually emits between systems is `ASSOCIATED_WITH` (and `CUES`).)
 
 ```python
-async def get_child_of_systems(self, node_id: str) -> list[GraphEntityResult]:
-    """Return systems linked by CHILD_OF in either direction.
+async def get_associated_systems(self, node_id: str) -> list[GraphEntityResult]:
+    """Return systems linked by ASSOCIATED_WITH or CUES in either direction.
 
-    out('CHILD_OF') → parent platforms; in('CHILD_OF') → variants.
-    Returns deduplicated list with direction annotation in
-    relationship_types (`["CHILD_OF"]` or `["PARENT_OF"]`).
+    Used by the System Components profile's `related_systems` block.
+    Resolves @type for typed MATCH, traverses bothE() across the two
+    relevant edge labels, deduplicates by RID, returns up to 25.
+    Direction is annotated on each result via `relationship_types`,
+    e.g. `["ASSOCIATED_WITH"]` or `["CUES_IN"]` / `["CUES_OUT"]`.
     """
 ```
 
-Implemented as a typed-MATCH against `RADAR_SYSTEM` and `MISSILE_SYSTEM` (per the type-required pattern established in the recent ArcadeDB fixes). Resolves the node's `@type` first, builds a typed seed, traverses both directions, returns up to 25 systems.
+Why not add a new `RELATED_TO` / `CHILD_OF` between systems? Because:
+
+1. The relationship-extraction prompt for `system_links` would have to be redesigned to produce it, which lands a moving target on top of the refactor.
+2. `ASSOCIATED_WITH` already captures the "this radar pairs with that missile" semantics the user actually wants from the Components panel (e.g., Fan Song ↔ SA-2). It's coarser than a typed `CHILD_OF`, but it's real data. We can refine post-Phase-2 if it's not enough.
+
+Implementation pattern matches the recent typed-MATCH fixes (`get_ontology_linked_chunks`, `get_relationships_between_entities`): resolve the seed's `@type` with a quick `SELECT @type FROM <rid>`, then build a typed-seed MATCH; ArcadeDB MATCH first-node-without-`type:` throws `UnsupportedOperationException`.
 
 ### 4.7 Dossier composition (per Q7-B)
 
@@ -312,7 +360,7 @@ QueryProfileDefinition(
     description="Antenna, propulsion, seeker, ejector, body, and other physical components of the resolved system.",
     root_entity_types=["RADAR_SYSTEM", "MISSILE_SYSTEM"],
     profile_sections=["components"],
-    include_child_of=True,
+    include_associated_systems=True,
     placeholder_query="e.g. SA-2",
 ),
 QueryProfileDefinition(
@@ -335,13 +383,20 @@ The legacy traversal-based starter profiles (and any registry-overridden user pr
 
 ### 4.9 Frontend
 
-`QueryPage.tsx` (or wherever section results render) gets a render branch:
+Concrete touch points (all in `frontend/src/`):
 
-- If response carries `field_groups` non-empty → render `<FieldGroupTable>`: stacked collapsible cards keyed by `subgroup_label`, each with a property table (`label : value`, value formatted by type, description as tooltip). When the profile has `related_systems` non-empty (Components only), render a chip row above the field groups linking each related system back into the same profile search.
-- Else if response carries `items` non-empty → existing result-card list (legacy).
-- Else → "No results" empty state with the profile-specific placeholder hint.
+- **`api/client.ts:520`** — extend the `QueryProfileDefinition.kind` literal type from `"section" | "dossier"` to include `"section_properties"`. Without this, TypeScript rejects every section-properties profile shape on receipt.
+- **`api/client.ts`** — add interfaces for `QueryProfileFieldEntry`, `QueryProfileFieldGroup`, `QueryProfileDossierSection`. Update `QueryProfileSectionResponse` to add optional `field_groups: QueryProfileFieldGroup[]` and `related_systems: GraphEntityResult[]`. Update `QueryProfileDossierResponse` to the new single-root + per-section-blocks shape (per Q7-B).
+- **`components/QueryPage.tsx`** — at the `selectedIsGraphProfile` branch (~line 827), the response handler currently flattens dossier results through `items`. Replace with a `kind`-typed switch:
+  - `kind === "section"` → existing `items`-flattening (legacy).
+  - `kind === "section_properties"` → render `<FieldGroupTable>` for `field_groups`; if `related_systems` non-empty, render a chip row above.
+  - `kind === "dossier"` → render `<DossierSectionList>`: one entity header + a stacked list of field-group blocks per section.
+  - The result-state hook (`setResults` / `setTotalResults`) is generalized to a `result: SectionPayload | DossierPayload | LegacyItemsPayload` discriminated union.
+- **`components/FieldGroupTable.tsx`** *(new)* — stacked collapsible cards keyed by `subgroup_label`. Property table rows show `label : value`; canonical `description` is the tooltip; canonical `examples` show as a placeholder for empty rows. The first subgroup card defaults expanded; the rest collapsed.
+- **`components/FieldEvidencePopover.tsx`** *(new, Phase 3)* — per-field evidence chip; on click opens a popover listing each `(snippet, chunk_id, element_uid)` row, with a "Open in document viewer" deep link.
+- **`components/DossierSectionList.tsx`** *(new)* — one entity-header card (using `resolved_root.name` + `nomenclature` if populated, plus type chip), then N stacked section blocks each containing a `<FieldGroupTable>`. Empty sections render with a "no data extracted" placeholder rather than disappearing.
 
-Dossier rendering is the per-section block list under one entity header, each block calling the same `<FieldGroupTable>` component.
+Phase 1+2 land all of the Phase-2-tagged components above. Phase 3 only adds `<FieldEvidencePopover>` and a per-row chip in `<FieldGroupTable>` — no further structural change.
 
 ### 4.10 Phase 2 success criteria
 
@@ -368,16 +423,48 @@ The LLM is asked for **the supporting text snippet** for each field value, not f
 2. No risk of hallucinated IDs.
 3. The snippet is the citation we want to display anyway — chunk_id is plumbing.
 
+### 5.1.1 Where the LLM emits provenance — top-level wrapper, not per-entity
+
+The original draft suggested per-entity `_field_provenance: dict[str, str]` on each `RadarSystemEntity` / `MissileSystemEntity` instance. **That doesn't work.** Reviewer caught this: the extraction entity classes set `model_config = ConfigDict(extra="ignore", ...)` (see `extraction_schemas/radar_domain.py:94`, `missile_domain.py:86`), and the docling-graph service serializes via `template_instance.model_dump(mode="json")` at `docker/docling-graph/app/main.py:850`. An undeclared `_field_provenance` key on an entity would be silently dropped during Pydantic validation before it ever reaches `pass_output`.
+
+**Revised design:** put provenance at the **pass-template level**, parallel to the entities, not nested inside them.
+
+`RadarDomainPass` (and `MissileDomainPass`) are the structured-output template classes — they already carry the list of extracted entities. Add a sibling field:
+
+```python
+class RadarDomainPass(BaseModel):
+    primary_entities: list[RadarSystemEntity] = Field(default_factory=list, ...)
+    field_provenance: list[FieldProvenanceRow] = Field(
+        default_factory=list,
+        description=(
+            "Per-field source attribution. One row per (entity, field) pair "
+            "for which the LLM identified a verbatim source snippet. The "
+            "service post-processes these rows to resolve element_uid by "
+            "substring-matching supporting_snippet against the input chunks."
+        ),
+    )
+
+class FieldProvenanceRow(BaseModel):
+    entity_index: int          # position in primary_entities
+    field_name: str            # canonical field on the entity model
+    supporting_snippet: str    # exact verbatim quote from source
+```
+
+Because `field_provenance` is a declared field on the pass template, `model_dump(mode="json")` carries it through the wire intact. The structured-output JSON schema the LLM sees is updated accordingly — the prompt asks for two top-level keys per pass response: `primary_entities` (existing) and `field_provenance` (new).
+
+The service then converts each `FieldProvenanceRow` into a wire-shape `ExtractionFieldProvenance` row (joining `entity_index` to the matching `instance_id` from the entity-level provenance the service already tracks) before returning the response.
+
 ### 5.2 Files touched
 
-- `docker/docling-graph/app/schemas.py` — new `ExtractionFieldProvenance`; `ExtractPassResponse` gets `field_provenance: list[ExtractionFieldProvenance]`.
+- `ontology_bundles/air_defense_v3/extraction_schemas/radar_domain.py`, `missile_domain.py` — add `field_provenance: list[FieldProvenanceRow]` field to `RadarDomainPass` and `MissileDomainPass` (the pass-template classes that the docling-graph service serializes). Add `FieldProvenanceRow` itself in a shared module (e.g. `ontology_bundles/air_defense_v3/extraction_schemas/_field_provenance.py`).
+- `docker/docling-graph/app/schemas.py` — new wire-shape `ExtractionFieldProvenance`; `ExtractPassResponse` gets `field_provenance: list[ExtractionFieldProvenance]`. Built from each pass response's `template_instance.field_provenance` rows in the service post-process.
 - `docker/docling-graph/app/main.py` (or wherever the extraction prompt + structured-output schema is composed) — extend output schema and prompt with per-field source-snippet requirement.
 - `docker/docling-graph/app/prompt_rules.py` — add a "field provenance" instruction block.
 - `docker/docling-graph/app/provenance.py` — extend the existing post-LLM provenance pass to also resolve `ExtractionFieldProvenance` snippets to `element_uid`.
 - `app/services/extraction_merge.py` — parse `field_provenance` from `ExtractPassResponse`, attach to `MergedEntityRecord`, dedup on `(instance_id, field_name)`.
 - `app/services/arcadedb_graph.py` — `upsert_nodes_batch_sync` writes `_field_evidence: dict[field_name, list[{chunk_id, snippet, element_uid}]]` as a JSON property on the entity vertex.
 - `app/services/query_profiles.py` — `_project_field_groups` reads `_field_evidence`, fills `QueryProfileFieldEntry.evidence`.
-- `app/schemas/query_profiles.py` — `QueryProfileFieldEntry.evidence: list[ChunkExcerpt] = []`.
+- `app/schemas/query_profiles.py` — `QueryProfileFieldEntry.evidence: list[GraphEvidenceItem] = []`.
 - Frontend — per-field evidence popover in `<FieldGroupTable>`.
 
 ### 5.3 Wire schema
@@ -399,13 +486,17 @@ class ExtractPassResponse(BaseModel):
 
 ### 5.4 Prompt and structured-output changes
 
-The structured-output JSON schema for each entity gains an additional `_field_provenance` map: `dict[str, str]` from canonical field name to supporting snippet. The system prompt adds:
+The structured-output JSON schema gets a new top-level `field_provenance` array (per §5.1.1). The system prompt is extended with:
 
-> For every field you populate on an extracted entity, also include in `_field_provenance` the exact verbatim snippet from the source text that established that value. The snippet must appear verbatim somewhere in the chunks provided. Do not paraphrase or summarize. If you cannot quote a source for a field, omit that field rather than guess.
+> After populating `primary_entities`, fill `field_provenance`. For every field you populated on an entity for which you can quote a source, emit one `field_provenance` row containing:
+>
+> - `entity_index`: the 0-based position of the entity in `primary_entities`
+> - `field_name`: the canonical field name on that entity (e.g. `gain_dbi`, `max_speed_mps`)
+> - `supporting_snippet`: an exact verbatim quote from the input text that established the field's value. The snippet must appear verbatim somewhere in the chunks provided. Do not paraphrase or summarize. Whitespace differences are acceptable; word substitution is not.
+>
+> If you cannot quote a source for a field, simply omit that field's row from `field_provenance` — never invent or paraphrase. An empty `field_provenance` array is acceptable.
 
-Empty `_field_provenance` for an entity is allowed (e.g., entities derived from headings); fields without an entry get no field-evidence row but are not dropped.
-
-The service unpacks each entity's `_field_provenance` into `ExtractionFieldProvenance` rows, one per field, with `instance_id` set to the entity's instance id (same id used by `ExtractionProvenance`).
+The service post-process converts each `FieldProvenanceRow` (with `entity_index`) into an `ExtractionFieldProvenance` row (with `instance_id`) by indexing into the same `primary_entities` array the service already iterates over to emit entity-level provenance.
 
 ### 5.5 Snippet → element_uid resolver
 
@@ -463,7 +554,7 @@ On re-ingest the JSON is replaced wholesale (the merger's per-field provenance r
 
 ### 5.8 Section-endpoint surfacing
 
-`_project_field_groups` reads `instance_data["_field_evidence"][field_name]` and converts each row to a `ChunkExcerpt` using the same `_lookup_chunk_by_type` helper that retrieval uses. Old data: `_field_evidence` missing → `evidence=[]`. The UI renders an empty cell with "no per-field evidence" tooltip.
+`_project_field_groups` reads `instance_data["_field_evidence"][field_name]` and converts each row to a `GraphEvidenceItem` using the same `_lookup_chunk_by_type` helper that retrieval uses. Old data: `_field_evidence` missing → `evidence=[]`. The UI renders an empty cell with "no per-field evidence" tooltip.
 
 ### 5.9 Frontend
 
@@ -507,7 +598,7 @@ class QueryProfileFieldEntry(APIModel):
     description: str | None = None
     examples: list[Any] | None = None
     enum: list[str] | None = None
-    evidence: list[ChunkExcerpt] = []      # Phase 3 — empty until re-ingest
+    evidence: list[GraphEvidenceItem] = []      # Phase 3 — empty until re-ingest
 
 class QueryProfileFieldGroup(APIModel):
     subgroup: str | None = None
@@ -558,7 +649,7 @@ class QueryProfileDefinition(APIModel):
     target_entity_types: list[str] = []      # only meaningful for kind=section
     traversals: list[QueryProfileTraversal] = []   # only meaningful for kind=section
     profile_sections: list[str] = []          # NEW — only for kind=section_properties
-    include_child_of: bool = False            # NEW — Components only
+    include_associated_systems: bool = False  # NEW — Components only (ASSOCIATED_WITH / CUES)
     section_profile_ids: list[str] = []       # only meaningful for kind=dossier
     placeholder_query: str | None = None
 ```
@@ -587,7 +678,7 @@ class QueryProfileDefinition(APIModel):
 |---|---|---|---|
 | 1 | Field-level introspection: every domain field has either ≥1 `profile_sections` tag or `system_metadata=True`. Bundle checker contract. | None (ontology-only). | 5 xfail'd schema-drift tests pass; remove markers. |
 | 2 | `_project_field_groups` table-driven; `_canonical_class_for` resolution; `validate_shape` for `kind="section_properties"`; `_fetch_section_items` branching. | `/search/section` for each starter profile against running ArcadeDB returns non-empty `field_groups` on a known SA-2 / Fan Song; `/search/dossier` returns one root + 3 section blocks. | New: `kind="section_properties"` profile shape requires `profile_sections` non-empty. |
-| 3 | docling-graph `_field_provenance` parser; snippet→element_uid resolver; `MergedEntityRecord.field_evidence` union; upsert serialization round-trip; `_project_field_groups` evidence pass-through. | End-to-end re-ingest of one doc → `_field_evidence` populated; `/search/section` surfaces ≥1 per-field evidence row. | Field-evidence rows joined to chunks 1:1; missing snippet → `element_uid=None, chunk_id=None`, no fabrication. |
+| 3 | `RadarDomainPass.field_provenance` round-trip through `model_dump`; snippet→element_uid resolver; `MergedEntityRecord.field_evidence` union; upsert serialization round-trip; `_project_field_groups` evidence pass-through. | End-to-end re-ingest of one doc → `_field_evidence` populated on the entity vertex; `/search/section` surfaces ≥1 per-field evidence row. | Field-evidence rows joined to chunks 1:1; missing snippet → `element_uid=None, chunk_id=None`, no fabrication. |
 
 ---
 
@@ -604,3 +695,18 @@ class QueryProfileDefinition(APIModel):
 ## 10. Open questions
 
 None expected after the brainstorming pass — all design decisions were captured in §1.4. If reviewers surface new ones during the spec-review loop, we add them here and revise.
+
+---
+
+## 11. Review responses (revision 1)
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| 1 | High | Phase 1 file scope incomplete: stale references in `coverage.yaml`, `validation_matrix.py`, `entities.py:ENTITY_TYPES`, `dossier_service.py:38`. `check_bundle()` won't pass. | §3.1 expanded to enumerate all six files (coverage.yaml, validation_matrix.py, relationships.py, entities.py + ENTITY_TYPES catalog, dossier_service.py constants, plus the canonical-class `edge(...)` field deletions on `RadarSystemEntity` / `MissileSystemEntity`). §3.6 adds an explicit import-time gate to catch any remaining stale reference. |
+| 2 | High | `CHILD_OF` doesn't connect systems — declared `SECTION → SECTION` only. `system_links` emits `ASSOCIATED_WITH` and `CUES`. Components' `related_systems` would be empty. | §1.4 #4 updated. §4.6 renamed to `get_associated_systems`, switched to `ASSOCIATED_WITH`/`CUES`. Profile flag renamed `include_child_of` → `include_associated_systems`. Rationale documented inline. |
+| 3 | High | Phase 1 mapping omits `nomenclature`, `emitter_function`, and (on missile) extra fields. Will fail the contract or vanish silently. | §3.3 mapping now has explicit rows for `nomenclature` (system_metadata=True, surfaced on entity header), `emitter_function` (mapped to `rf_parameters` for radar / `performance` for missile), `asrd` and other audit-trail fields (system_metadata=True). New convention spelled out: every domain field is in exactly one of {profile-mapped, system_metadata, system_field}. New contract test gates the build. |
+| 4 | Medium | Orphan-deletion list too narrow — radar/missile entities still have nested edge fields and `ENTITY_TYPES` registers ~33 classes, only 6 are listed for deletion. | §3.4 expanded to a full audit: 27 classes deleted, 20 retained, with the criterion stated (orphan = no extraction path AND not a structural anchor / system top type). The relationship-type cleanup in `relationships.py` and `validation_matrix.py` is in scope alongside the class deletions. |
+| 5 | Medium | Phase 3 per-entity `_field_provenance` is dropped by `extra="ignore"` before the service unpacks it. | §5.1.1 added: provenance moves to a top-level `field_provenance: list[FieldProvenanceRow]` on the pass-template class (`RadarDomainPass` / `MissileDomainPass`), parallel to `primary_entities`. Declared field, no `extra` swallowing. The wire `ExtractionFieldProvenance` is built in the service post-process by joining `entity_index` to `instance_id`. §5.4 prompt instructions rewritten accordingly. |
+| 6 | Medium | Frontend impact understated: TS API only allows `kind: "section" | "dossier"`; `QueryPage` flattens through `items`. | §3.1 (under Phase 2 file list) and §4.9 expanded with concrete file paths (`api/client.ts:520` literal-type extension, `QueryPage.tsx:827` switch refactor) and three new components (`FieldGroupTable`, `FieldEvidencePopover`, `DossierSectionList`). |
+| 7 | Low | §1.1 incorrectly says manifest is `kind="entities"` everywhere; `system_links` is `relationships_only`. | §1.1 corrected to spell out the per-pass kinds and the two relationship types `system_links` actually emits. |
+| 8 | Low | `ChunkExcerpt` is not an existing schema name — current evidence shape is `GraphEvidenceItem`. | All references updated to `GraphEvidenceItem` throughout (§§4-6). |
