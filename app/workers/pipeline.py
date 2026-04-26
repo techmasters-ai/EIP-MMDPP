@@ -939,8 +939,24 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
 
     # Build all records in pure Python first. If this raises, tracker
     # stays False and the rollback gate correctly skips.
-    node_records = [
-        NodeRecord(
+    def _build_node_record(e):
+        # Phase 3 task 33: persist per-field evidence on the entity vertex.
+        # Attach as _field_evidence (JSON-serializable) when populated.
+        props = dict(e.properties)
+        if getattr(e, "field_evidence", None):
+            props["_field_evidence"] = {
+                field_name: [
+                    {
+                        "chunk_id": row.chunk_id,
+                        "snippet": row.snippet,
+                        "element_uid": row.element_uid,
+                        "value": row.value,
+                    }
+                    for row in rows
+                ]
+                for field_name, rows in e.field_evidence.items()
+            }
+        return NodeRecord(
             entity_type=e.identity.entity_type,
             identity_fields=e.identity.as_upsert_identity_dict(),
             name=build_display_label(
@@ -948,11 +964,11 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
                 e.identity.identity_values_dict(),
                 e.properties,
             ),
-            properties=e.properties,
+            properties=props,
             extraction_confidence=e.confidence,
         )
-        for e in merged.entities
-    ]
+
+    node_records = [_build_node_record(e) for e in merged.entities]
 
     tracker.mark()
     graph_store = get_graph_store()
