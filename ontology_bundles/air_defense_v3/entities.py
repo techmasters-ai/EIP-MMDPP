@@ -57,6 +57,84 @@ def edge(
     return Field(json_schema_extra=existing_extra, **field_kwargs)
 
 
+def profile_field(
+    *,
+    sections: list[str],
+    subgroup: str,
+    description: str,
+    examples: list | None = None,
+    default=None,
+    default_factory=None,
+    ge=None,
+    le=None,
+):
+    """Field constructor for profile-mapped properties (spec §3.3 bucket 1).
+
+    Tags the field with json_schema_extra={"profile_sections": [...],
+    "profile_subgroup": "..."} so query_profiles' _project_field_groups
+    can introspect and group by profile + subgroup.
+    """
+    extra = {"profile_sections": list(sections), "profile_subgroup": subgroup}
+    kwargs: dict[str, Any] = {"description": description, "json_schema_extra": extra}
+    if examples is not None:
+        kwargs["examples"] = examples
+    if default_factory is not None:
+        kwargs["default_factory"] = default_factory
+    else:
+        kwargs["default"] = default
+    if ge is not None:
+        kwargs["ge"] = ge
+    if le is not None:
+        kwargs["le"] = le
+    return Field(**kwargs)
+
+
+def metadata_field(
+    *,
+    description: str,
+    examples: list | None = None,
+    default=None,
+):
+    """Field constructor for system_metadata (spec §3.3 bucket 2).
+
+    Real, indexed field — never surfaced by a starter profile. Used
+    for audit trails, classifier IDs, status flags, review cadence.
+    """
+    extra = {"profile_sections": [], "system_metadata": True}
+    kwargs: dict[str, Any] = {
+        "default": default,
+        "description": description,
+        "json_schema_extra": extra,
+    }
+    if examples is not None:
+        kwargs["examples"] = examples
+    return Field(**kwargs)
+
+
+def identity_field(
+    *,
+    description: str,
+    examples: list | None = None,
+    default=None,
+):
+    """Field constructor for identity adjuncts (spec §3.3 bucket 3).
+
+    Used for fields like `nomenclature` and the missile-schema `name`
+    that are identity context but not graph_id_fields. The four-bucket
+    contract test treats them as identity rather than profile-mapped
+    or metadata.
+    """
+    extra = {"profile_sections": [], "identity_field": True}
+    kwargs: dict[str, Any] = {
+        "default": default,
+        "description": description,
+        "json_schema_extra": extra,
+    }
+    if examples is not None:
+        kwargs["examples"] = examples
+    return Field(**kwargs)
+
+
 # ----------------------------------------------------------------------
 # Layer 1
 # ----------------------------------------------------------------------
