@@ -2417,6 +2417,7 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
     from app.services.extraction_merge import (
         ExtractionMetadata,
         ExtractionProvenance,
+        FieldEvidenceRow,
         PassResult,
     )
 
@@ -2472,6 +2473,40 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             chunk_index=chunk_index,
         ))
 
+    # Phase 3 task 32: parse field_provenance rows from the response
+    # and group by (instance_id, field_name) for the merger to attach.
+    # element_uid → chunk_id resolution happens lazily downstream
+    # (chunk_id is the worker-side handle); we keep element_uid here.
+    field_evidence: dict[str, dict[str, list[FieldEvidenceRow]]] = {}
+    for raw in response_json.get("field_provenance") or []:
+        if not isinstance(raw, dict):
+            logger.warning(
+                "_parse_pass_response: dropping non-dict field_provenance row: %r",
+                raw,
+            )
+            continue
+        instance_id = raw.get("instance_id")
+        field_name = raw.get("field_name")
+        snippet = raw.get("supporting_snippet") or ""
+        if not (isinstance(instance_id, str) and instance_id
+                and isinstance(field_name, str) and field_name
+                and snippet):
+            logger.warning(
+                "_parse_pass_response: dropping field_provenance row missing required fields: %r",
+                raw,
+            )
+            continue
+        element_uid = raw.get("element_uid")
+        if element_uid is not None and not isinstance(element_uid, str):
+            element_uid = None
+        row = FieldEvidenceRow(
+            chunk_id=None,  # resolved later from element_uid → chunk vertex
+            snippet=snippet,
+            element_uid=element_uid,
+            value=raw.get("value"),
+        )
+        field_evidence.setdefault(instance_id, {}).setdefault(field_name, []).append(row)
+
     return PassResult(
         pass_name=pass_def.name,
         template_instance=template_instance,
@@ -2481,6 +2516,7 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         ),
         pre_merge_rejections=[],
         provenance=provenance_rows,
+        field_evidence=field_evidence,
     )
 
 

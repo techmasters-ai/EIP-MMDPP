@@ -137,6 +137,21 @@ class ExtractionMetadata:
 
 
 @dataclass
+class FieldEvidenceRow:
+    """Worker-side per-field evidence row (spec §5.6).
+
+    Mirrors ``docker/docling-graph/app/schemas.py::ExtractionFieldProvenance``
+    after the worker resolves element_uid → chunk_id. ``chunk_id`` is
+    ``None`` when the snippet didn't match any chunk (unverified source);
+    the snippet still ships to the UI with an "Unverified source" badge.
+    """
+    chunk_id: str | None
+    snippet: str
+    element_uid: str | None
+    value: Any = None
+
+
+@dataclass
 class ExtractionProvenance:
     """Worker-side mirror of ``docker/docling-graph/app/schemas.py::ExtractionProvenance``.
 
@@ -206,6 +221,14 @@ class PassResult:
     # into MergedEntityRecord.provenance and by Task 53's
     # _serialize_for_audit mentions[] emission.
     provenance: list["ExtractionProvenance"] = field(default_factory=list)
+    # Phase 3 (flat-schema profile refactor) Task 32: per-field evidence
+    # rows, parsed from the docling-graph response's field_provenance
+    # list and grouped by (instance_id, field_name) here. Consumed by
+    # merge_and_resolve to populate MergedEntityRecord.field_evidence.
+    # Outer dict keys by instance_id; inner dict keys by field_name.
+    field_evidence: dict[str, dict[str, list["FieldEvidenceRow"]]] = field(
+        default_factory=dict,
+    )
     _walker_entities_cache: list[Any] | None = field(default=None, init=False, repr=False)
 
     def _cached_entities(self) -> list[Any]:
@@ -298,6 +321,13 @@ class MergedEntityRecord:
     # Default empty so existing fixtures that construct the record
     # without this kwarg continue to work.
     provenance: list["ExtractionProvenance"] = field(default_factory=list)
+    # Phase 3 (flat-schema profile refactor) Task 32: per-field evidence
+    # rows aggregated from PassResult.field_evidence across passes that
+    # produced this record. Outer dict keys by canonical field_name;
+    # inner list is one FieldEvidenceRow per source quotation.
+    field_evidence: dict[str, list["FieldEvidenceRow"]] = field(
+        default_factory=dict,
+    )
 
 
 @dataclass
@@ -994,6 +1024,43 @@ def merge_and_resolve(
                 continue
             seen_keys.add(key)
             record.provenance.append(prov)
+
+    # --- Phase 1.6: per-field evidence aggregation (Phase 3 task 32) ---
+    #
+    # PassResult.field_evidence is keyed by instance_id (outer) and
+    # field_name (inner). Walk each instance's provenance rows to find
+    # the matching record (same instance_id appears in record.provenance),
+    # and append the FieldEvidenceRow under the canonical field_name.
+    # Cross-pass dedup by (chunk_id, snippet, element_uid).
+    for pass_name, pass_result in pass_results.items():
+        if not pass_result.field_evidence:
+            continue
+        # Build instance_id → record index from the provenance rows we
+        # just aggregated; same logical record can have many instance_ids
+        # across passes, so this is a multi-map.
+        instance_to_record: dict[str, MergedEntityRecord] = {}
+        for record in entity_index.values():
+            for prov in record.provenance:
+                instance_to_record[prov.instance_id] = record
+        for instance_id, fields_dict in pass_result.field_evidence.items():
+            record = instance_to_record.get(instance_id)
+            if record is None:
+                logger.warning(
+                    "drop post-merge-absent field_evidence instance_id=%s pass=%s",
+                    instance_id, pass_name,
+                )
+                continue
+            for field_name, rows in fields_dict.items():
+                bucket = record.field_evidence.setdefault(field_name, [])
+                seen_pairs = {
+                    (r.chunk_id, r.snippet, r.element_uid) for r in bucket
+                }
+                for row in rows:
+                    key = (row.chunk_id, row.snippet, row.element_uid)
+                    if key in seen_pairs:
+                        continue
+                    seen_pairs.add(key)
+                    bucket.append(row)
 
     # --- Pass 2: resolve relationships (plan Task 36) ---
     #
