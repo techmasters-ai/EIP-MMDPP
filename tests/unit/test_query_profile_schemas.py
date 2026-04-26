@@ -33,3 +33,28 @@ def test_query_profile_field_group_groups_entries():
     )
     assert len(grp.fields) == 2
     assert grp.subgroup == "antenna"
+
+
+def test_section_response_default_field_groups_empty():
+    from app.schemas.query_profiles import QueryProfileSectionResponse
+    from app.schemas.graph_store import GraphEntityResult
+
+    resp = QueryProfileSectionResponse(
+        registry_id=None, profile_id="p", profile_label="P",
+        resolved_root=GraphEntityResult(name="X", entity_type="RADAR_SYSTEM"),
+        total=0,
+    )
+    assert resp.field_groups == []
+    assert resp.related_systems == []
+    assert resp.items == []
+
+
+def test_dossier_section_carries_kind_discriminator():
+    from app.schemas.query_profiles import QueryProfileDossierSection
+    sec = QueryProfileDossierSection(
+        profile_id="system_rf_parameters", profile_label="RF",
+        kind="section_properties",
+    )
+    assert sec.kind == "section_properties"
+    assert sec.field_groups == []
+    assert sec.items == []

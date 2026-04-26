@@ -147,6 +147,8 @@ class QueryProfileSectionResponse(APIModel):
     profile_id: str
     profile_label: str
     resolved_root: GraphEntityResult
+    field_groups: list[QueryProfileFieldGroup] = Field(default_factory=list)
+    related_systems: list[GraphEntityResult] = Field(default_factory=list)
     items: list[GraphEntityResult] = Field(default_factory=list)
     total: int = 0
 
@@ -154,6 +156,9 @@ class QueryProfileSectionResponse(APIModel):
 class QueryProfileDossierSection(APIModel):
     profile_id: str
     profile_label: str
+    kind: Literal["section", "section_properties"] = "section"
+    field_groups: list[QueryProfileFieldGroup] = Field(default_factory=list)
+    related_systems: list[GraphEntityResult] = Field(default_factory=list)
     items: list[GraphEntityResult] = Field(default_factory=list)
     total: int = 0
 
