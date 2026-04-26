@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 _READY_MAX_RETRIES = 5
 _READY_BACKOFF_BASE = 0.5  # seconds
 
+# Local mirror — kept consistent with app.services.query_profiles via
+# the Task 15 sync contract test. section_properties profiles dispatch
+# off this set when traversing related systems.
+_CANONICAL_ROOT_ENTITY_TYPES_RUNTIME: frozenset[str] = frozenset({
+    "RADAR_SYSTEM", "MISSILE_SYSTEM",
+})
+
 
 class UpsertMissingRIDError(RuntimeError):
     """Raised when ``upsert_nodes_batch_sync`` completes the sqlscript but
@@ -1306,6 +1313,74 @@ class ArcadeDBGraphStore:
                 seen.add(crid)
                 result.append(r)
         return result
+
+    async def get_entity_by_rid(self, rid: str) -> dict[str, Any]:
+        """Return all properties of the vertex at the given RID, including
+        nullable ones. Used by section_properties profiles to feed
+        _project_field_groups (spec §4.6).
+
+        ArcadeDB note: SELECT * already includes @rid and @type in the
+        projection — explicit projection syntax (`SELECT @rid, @type, *`)
+        is rejected as a SQL parse error.
+        """
+        if not rid.startswith("#"):
+            raise ValueError(f"get_entity_by_rid expects an ArcadeDB RID (got {rid!r})")
+        rows = await self._client.query(
+            self._database, "sql",
+            f"SELECT * FROM {rid}",
+        )
+        return rows[0] if rows else {}
+
+    async def get_associated_systems(self, node_id: str) -> list[GraphEntityResult]:
+        """Return systems linked by ASSOCIATED_WITH or CUES in either direction.
+
+        Spec §4.6. Used by the System Components profile's `related_systems`
+        block. Resolves @type for typed MATCH (ArcadeDB 26.5.x throws
+        UnsupportedOperationException without it), traverses bothE() across
+        the two relevant edge labels, deduplicates by RID, returns up to 25.
+        """
+        rid = await self._resolve_rid(node_id)
+        if not rid:
+            return []
+        type_rows = await self._client.query(
+            self._database, "sql",
+            f"SELECT @type AS node_type FROM {rid}",
+        )
+        if not type_rows:
+            return []
+        seed_type = type_rows[0].get("node_type")
+        if seed_type not in _CANONICAL_ROOT_ENTITY_TYPES_RUNTIME:
+            return []
+
+        sql = (
+            f"MATCH {{type: {seed_type}, as: src, where: (@rid = {rid})}}"
+            f".bothE('ASSOCIATED_WITH', 'CUES') {{as: e}}"
+            f".bothV() {{as: tgt, where: (@rid <> {rid})}} "
+            f"RETURN tgt.@rid AS node_id, tgt.name AS name, "
+            f"tgt.@type AS entity_type, tgt.canonical_name AS canonical_name, "
+            f"e.@type AS rel_type "
+            f"LIMIT 25"
+        )
+        try:
+            rows = await self._client.query(self._database, "sql", sql)
+        except Exception:
+            return []
+
+        seen: set[str] = set()
+        out: list[GraphEntityResult] = []
+        for r in rows:
+            nid = str(r.get("node_id", ""))
+            if not nid or nid in seen:
+                continue
+            seen.add(nid)
+            out.append(GraphEntityResult(
+                node_id=nid,
+                name=r.get("name", ""),
+                entity_type=r.get("entity_type", ""),
+                canonical_name=r.get("canonical_name"),
+                relationship_types=[r.get("rel_type", "")] if r.get("rel_type") else [],
+            ))
+        return out
 
     async def get_structural_neighbors(
         self,
