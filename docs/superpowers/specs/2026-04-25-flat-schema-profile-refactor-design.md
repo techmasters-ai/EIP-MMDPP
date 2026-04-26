@@ -1,7 +1,7 @@
 # Flat-Schema Profile Refactor — Design
 
 **Date:** 2026-04-25
-**Status:** Revised after second review pass — 7 additional findings addressed (see §12)
+**Status:** Revised after third review pass — 8 additional findings addressed (see §13)
 **Scope:** Bring the four starter query profiles (System Dossier, System Components, System RF Parameters, System Performance) onto the flat-checklist extraction schema, and sync the canonical ontology entities so the schema-drift xfails clear at the same time.
 
 ---
@@ -113,18 +113,11 @@ Phase 1 is broader than the original draft. The orphan canonical classes are ref
 - `ontology_bundles/air_defense_v3/coverage.yaml` — remove the orphan entity types from the section coverage lists; remove the orphan `HAS_*`, `EMITS`, `RADIATES`, `RECEIVES`, etc. relationship types from the relationship coverage lists.
 - `ontology_bundles/air_defense_v3/validation_matrix.py` — drop every tuple whose subject or object is an orphan type. The `ASSERTION` rows are already TODO'd as dead per the file's own comment; remove them in the same pass.
 - `ontology_bundles/air_defense_v3/relationships.py` — delete `RelationshipType` members for the dropped edge labels (`HAS_ANTENNA`, `HAS_RECEIVER`, `HAS_TRANSMITTER`, `EMITS`, `RADIATES`, `RECEIVES`, `OPERATES_IN_BAND`, `USES_WAVEFORM`, `USES_MODULATION`, `SPECIFIED_BY`, `HAS_SCAN`, `HAS_SEEKER`, `HAS_SIGNATURE`, `HAS_PROCESSING_CHAIN`, …). Keep `IS_A`, `PART_OF`, `INSTALLED_ON`, `ASSOCIATED_WITH`, `CUES`, `CHILD_OF`, the document/structure edges, and any other relationship still emitted by current passes.
-- `app/services/dossier_service.py` — **the constants are not dead code; the legacy `/graph/system-dossier` endpoint still depends on them.** `app/api/v1/graph_store.py:177` calls `build_system_dossier`, which in turn calls `get_system_components`, `get_system_rf_parameters`, `get_system_performance` (`dossier_service.py:390+`), all of which use the constants. Reviewer caught this in pass 2.
+- `app/services/dossier_service.py` — **kept untouched in Phase 1** (per pass-3 review).
 
-  Resolution: **delete the legacy endpoint and the `dossier_service.py` module entirely** in Phase 1. Justification:
-  - The frontend has zero references to `/graph/system-dossier` (`grep -rn "/graph/system-dossier" frontend/src/` returns nothing).
-  - The new `/v1/query-profiles/search/dossier` (Phase 2) is the replacement and ships in the same release.
-  - Refactoring `build_system_dossier` to the flat-projection path would duplicate Phase 2 logic — no benefit.
+  Reviewer (pass 3) correctly flagged that deleting the legacy `/graph/system-dossier` endpoint inside Phase 1 contradicts §7's "Phase 1 is ontology-only" backward-compat story. The constants reference type-name **strings** (`"FREQUENCY_BAND"`, `"RF_EMISSION"`, …), not the deleted Pydantic classes, so deleting the orphan classes does NOT break `dossier_service.py` at import time — the legacy endpoint continues to load and runs against an empty graph for those types (post-flat-refactor reality), returning empty results. That's the same behavior the user already sees today; we're not regressing.
 
-  Specific changes:
-  - Delete `app/services/dossier_service.py`.
-  - Remove the `/graph/system-dossier` route handler from `app/api/v1/graph_store.py` (around line 177) and its associated request/response schemas if exclusive to this endpoint.
-  - Drop the `app.services.dossier_service` import from any other module that still references it (grep audit).
-  - `app/services/query_profiles.py` previously imported one helper from `dossier_service.py` for the entity_evidence path (line 359); inline the equivalent or fold into `query_profiles.py` directly.
+  Phase 2 owns the deletion of `dossier_service.py` and the `/graph/system-dossier` route — see §4.13. This restores §7's purity: Phase 1 is ontology-only; the legacy-endpoint removal is a deliberate Phase 2 breaking change with migration notes.
 - `tests/unit/test_docs_compliance_contracts.py`, `tests/unit/contracts/test_extraction_schema_contract.py`, `tests/unit/test_coverage_checker.py` — drop the 5 `xfail(strict=False)` markers from the prior debugging pass.
 
 After the first `check_bundle()` run lands a green result on the modified bundle, the Phase 1 file scope is verified. Anything that still references a deleted symbol surfaces as an `ImportError` or a `check_bundle()` failure; both are deterministic gates we can iterate on.
@@ -141,13 +134,14 @@ The `confidence` system field on each canonical class is unchanged.
 
 ### 3.3 `profile_sections` and `profile_subgroup` mapping
 
-**Convention:** every non-system field on the canonical class falls into one of three buckets, and the contract is enforced by a Phase 1 unit test (§3.6 success criteria):
+**Convention:** every field on the canonical class falls into one of four buckets, and the contract is enforced by a Phase 1 unit test (§3.6 success criteria):
 
 1. **Profile-mapped** — `profile_sections: list[str]` non-empty, `profile_subgroup: str` set.
-2. **System metadata** — `profile_sections: []` AND `system_metadata: True` (new flag in `json_schema_extra`). The field is real and indexed but never surfaced by a starter profile (e.g., audit trails like `responsible_agency`, identity adjuncts like `nomenclature`, internal classifiers like `dieqp`).
-3. **System field** (the existing `system_field: True` marker) — bookkeeping like `confidence`, `extraction_confidence`. Unchanged.
+2. **System metadata** — `profile_sections: []` AND `system_metadata: True` (new flag in `json_schema_extra`). The field is real and indexed but never surfaced by a starter profile (e.g., audit trails like `responsible_agency`, classifier IDs like `dieqp`, status flags like `system_status`, review cadence like `review_cycle`/`next_review_date`).
+3. **Identity** — fields named in `model_config["graph_id_fields"]` (e.g., `system_name`) or marked `identity_field: True` (e.g., `nomenclature`, the missile-schema `name` alias field). Identity fields are surfaced on the entity header in the UI; they're excluded from the contract's "must be profile-mapped or metadata" rule because they're identity, not profile content.
+4. **System field** (the existing `system_field: True` marker) — bookkeeping like `confidence`, `extraction_confidence`. Unchanged.
 
-A field with `profile_sections=[]` AND no `system_metadata` flag is a bug — the contract test fails the build.
+A field that's none of profile-mapped / system_metadata / identity / system_field is a bug — the contract test fails the build. Reviewer (pass 3) flagged that the prior two-bucket taxonomy didn't account for identity fields like `system_name` (a `graph_id_field`) and that `MissileSystemEntity` has more metadata than the original mapping enumerated; this revision is the four-bucket replacement.
 
 **`RadarSystemEntity` (canonical) full mapping:**
 
@@ -158,7 +152,8 @@ A field with `profile_sections=[]` AND no `system_metadata` flag is a bug — th
 | `tx_peak_power_kw`, `erp_dbw` | `["rf_parameters","performance"]` | `"transmit"` |
 | `scan_type`, `scan_period_sec` | `["rf_parameters","performance"]` | `"scan"` |
 | `emitter_function` | `["rf_parameters"]` | `"classification"` |
-| `nomenclature` | `[]`, `system_metadata=True` | n/a (identity adjunct, surfaced on entity header) |
+| `system_name` | identity (`graph_id_field`) | n/a — surfaced on entity header |
+| `nomenclature` | identity (`identity_field=True`) | n/a — surfaced on entity header |
 | `elnot`, `dieqp`, `asrd`, `system_status`, `responsible_agency`, `review_cycle`, `next_review_date` | `[]`, `system_metadata=True` | n/a |
 
 **`MissileSystemEntity` (canonical) full mapping:**
@@ -174,8 +169,9 @@ A field with `profile_sections=[]` AND no `system_metadata` flag is a bug — th
 | `average_speed_mps`, `max_speed_mps`, `max_flyout_time_sec`, `flight_time_sec`, `coast_time_sec`, `total_burn_time_sec`, `intra_salvo_time_sec` | `["performance"]` | `"kinematics"` |
 | `guidance_type` | `["performance"]` | `"guidance"` |
 | `emitter_function` | `["performance"]` | `"classification"` |
-| `nomenclature` | `[]`, `system_metadata=True` | n/a (identity adjunct, surfaced on entity header) |
-| `asrd` | `[]`, `system_metadata=True` | n/a |
+| `system_name` | identity (`graph_id_field`) | n/a — surfaced on entity header |
+| `nomenclature`, `name` | identity (`identity_field=True`) | n/a — `name` is the missile-schema secondary alias field at `missile_domain.py:131`; rendered after `nomenclature` on the entity header |
+| `dieqp`, `asrd`, `system_status`, `responsible_agency`, `review_cycle`, `next_review_date` | `[]`, `system_metadata=True` | n/a — full list expanded per pass-3 reviewer note (`MissileSystemEntity` extraction at `missile_domain.py:122,153,174,186,195` includes all of these as Optional fields) |
 
 **Identity-adjunct surfacing.** `nomenclature` is not part of any profile section but is high-value identity context (formal designator vs. NATO common name). The entity header on the section/dossier UI renders the resolved root's `nomenclature` next to the system name when populated. No special schema work — `nomenclature` rides along on `resolved_root.properties` like any other field.
 
@@ -189,7 +185,9 @@ The original draft listed 6 classes. Reviewer (correctly) flagged that this is t
 
 **Retained classes** (used by the structural / system layer, not orphaned):
 
-`DocumentEntity`, `SectionEntity`, `FigureEntity`, `TableEntity`, `ImageEntity`, `TextBlockEntity`, `OrganizationEntity`, `PlatformEntity`, `WeaponSystemEntity`, `EquipmentSystemEntity`, `SubsystemEntity`, `ComponentEntity`, `RadarSystemEntity`, `MissileSystemEntity`, `AirDefenseArtillerySystemEntity`, `ElectronicWarfareSystemEntity`, `FireControlSystemEntity`, `IntegratedAirDefenseSystemEntity`, `LauncherSystemEntity`, `Alias`.
+`DocumentEntity`, `SectionEntity`, `FigureEntity`, `TableEntity`, `ImageEntity`, `TextBlockEntity`, `OrganizationEntity`, `PlatformEntity`, `WeaponSystemEntity`, `EquipmentSystemEntity`, `SubsystemEntity`, `ComponentEntity`, `RadarSystemEntity`, `MissileSystemEntity`, `AirDefenseArtillerySystemEntity`, `ElectronicWarfareSystemEntity`, `FireControlSystemEntity`, `IntegratedAirDefenseSystemEntity`, `LauncherSystemEntity`.
+
+(Pass-3 reviewer note: `Alias` is **not** a Pydantic canonical class — it's an ArcadeDB schema-level vertex type used for entity-aliasing in the graph layer. It stays in the ArcadeDB schema, not in this canonical-class list.)
 
 **Audit gate:** before deletion, grep each candidate name across the entire repo (`grep -rn "AntennaEntity\|ANTENNA\b" --include='*.py' --include='*.yaml' --include='*.md'`) and inspect each hit. Anything that's a test fixture / notebook reference / orphaned import gets cleaned up in the same commit; anything that turns out to be a live consumer (extraction path I missed, fixtures we still want to keep) is escalated and the deletion is reconsidered for that specific class.
 
@@ -236,7 +234,8 @@ Once 3.2–3.4 land, the 5 schema-drift tests pass without their `xfail` markers
 - `frontend/src/components/QueryPage.tsx` (around the `selectedIsGraphProfile` branch at ~line 827) — split the result-rendering switch on `profile.kind`: `"section"` keeps the existing `items`-flattening render; `"section_properties"` calls a new `<FieldGroupTable>` render path; `"dossier"` calls a new `<DossierSectionList>` that renders one entity header + N stacked field-group cards. The existing `setResults` / `setTotalResults` plumbing is generalized: `setSectionResponse` / `setDossierResponse` carry the typed payloads.
 - `frontend/src/components/FieldGroupTable.tsx` — new component. Stacked collapsible cards keyed by `subgroup_label`; each card renders a property table with `label : value` rows; canonical `description` shown on hover; per-field `evidence` (Phase 3) renders a small chip that opens an evidence popover.
 - `frontend/src/components/FieldEvidencePopover.tsx` — new component (Phase 3). Lists each `(snippet, chunk_id)` pair with a deep link to the document viewer at the matching `element_uid`.
-- `tests/unit/test_query_profiles.py`, `tests/unit/test_dossier_service.py` — rewrite for property-projection paths; new helper tests.
+- `tests/unit/test_query_profiles.py` — rewrite for property-projection paths; new helper tests for `_project_field_groups`, `_canonical_class_for`, the `_CANONICAL_ROOT_ENTITY_TYPES` ↔ `_CANONICAL_BY_ENTITY_TYPE` sync contract.
+- `tests/unit/test_dossier_service.py` — **delete** (per pass-3 reviewer note: §4.13 deletes `app/services/dossier_service.py`, so its test counterpart goes with it). Coverage of dossier behavior moves into `tests/unit/test_query_profiles.py` under the dossier execute path.
 
 ### 4.2 New profile kind
 
@@ -248,7 +247,9 @@ Add `"section_properties"` to `QueryProfileDefinition.kind`. Schema additions:
 `validate_shape` model_validator updated:
 
 - `kind=="section"` requires non-empty `traversals` (existing rule, unchanged).
-- `kind=="section_properties"` requires non-empty `profile_sections` AND every entry in `root_entity_types` MUST appear in `_CANONICAL_BY_ENTITY_TYPE` (per pass-2 reviewer note — without this, an unknown root type 500s at execution time instead of failing at registry validation). The check imports `_CANONICAL_BY_ENTITY_TYPE` lazily to avoid a circular import between `app.schemas.query_profiles` and `app.services.query_profiles`.
+- `kind=="section_properties"` requires non-empty `profile_sections` AND every entry in `root_entity_types` MUST appear in the allowed-root-types set (per pass-2 reviewer note).
+
+  **Where the validation lives** (per pass-3 reviewer note): the schema-side Pydantic validator references a module-local constant `_CANONICAL_ROOT_ENTITY_TYPES: frozenset[str] = frozenset({"RADAR_SYSTEM", "MISSILE_SYSTEM"})` declared at the top of `app/schemas/query_profiles.py`. The service-side dispatch dict `_CANONICAL_BY_ENTITY_TYPE` in `app/services/query_profiles.py` is kept in sync via a contract test that asserts `set(_CANONICAL_BY_ENTITY_TYPE.keys()) == _CANONICAL_ROOT_ENTITY_TYPES`. This avoids a backward dep from schema → service (the service module already imports from the schema module; the reverse direction would create a circular import even with lazy resolution). Single source of truth in the schema layer; the service mirrors it.
 - `kind=="dossier"` requires non-empty `section_profile_ids` (existing rule, unchanged).
 
 ### 4.3 Property-projection helper
@@ -351,8 +352,10 @@ async def execute_dossier_search(graph_store, db, request) -> QueryProfileDossie
         sections.append(QueryProfileDossierSection(
             profile_id=section_id,
             profile_label=section_profile.label,
-            field_groups=section_resp.field_groups,
+            kind=section_profile.kind,                # "section" | "section_properties"
+            field_groups=section_resp.field_groups,    # populated for section_properties
             related_systems=section_resp.related_systems,
+            items=section_resp.items,                  # populated for legacy section
         ))
 
     return QueryProfileDossierResponse(
@@ -448,7 +451,18 @@ User-defined custom profiles inheriting from the old `kind="section"` shape cont
 - The legacy `kind="section"` profile path still produces `items` correctly; the new branch is purely additive on the response and inert on legacy profiles.
 - Unit suite green; no xfail regressions.
 
-### 4.12 Risks
+### 4.13 Legacy `/graph/system-dossier` removal (Phase 2 breaking change)
+
+The legacy endpoint at `app/api/v1/graph_store.py:177` and its backing module `app/services/dossier_service.py` are removed as part of Phase 2 (not Phase 1). This is a deliberate breaking change, packaged with the new dossier endpoint:
+
+- Delete `app/services/dossier_service.py`.
+- Remove the `/graph/system-dossier` route handler from `app/api/v1/graph_store.py` (around line 177) and its associated request/response schemas if exclusive to this endpoint.
+- Drop any `app.services.dossier_service` imports from other modules (grep audit).
+- `app/services/query_profiles.py` previously imported one helper from `dossier_service.py` (around line 359) for the entity_evidence path — inline the equivalent or fold it into `query_profiles.py` directly.
+
+Migration notes for §7: callers of `/graph/system-dossier` move to `POST /v1/query-profiles/search/dossier` with `profile_id="system_dossier"`. Frontend has zero references to the legacy endpoint (`grep -rn "/graph/system-dossier" frontend/src/` returns nothing), so no frontend coordination needed. External API consumers (if any) get a deprecation note in CHANGELOG.
+
+### 4.14 Risks
 
 - A canonical field that was meant to belong to a profile but was tagged `[]` by mistake silently disappears from the UI. Mitigation: a contract test that asserts every domain field on `RadarSystemEntity` / `MissileSystemEntity` either belongs to ≥1 profile section or is explicitly tagged `system_metadata=True`.
 - `_canonical_class_for` doesn't know a new entity type and the section endpoint 500s. Mitigation: explicit error message; profile registry validation catches the unknown type at registration time.
@@ -608,7 +622,35 @@ On re-ingest the JSON is replaced wholesale (the merger's per-field provenance r
 
 ### 5.8 Section-endpoint surfacing
 
-`_project_field_groups` reads `instance_data["_field_evidence"][field_name]` and converts each row to a `GraphEvidenceItem` using the same `_lookup_chunk_by_type` helper that retrieval uses. Old data: `_field_evidence` missing → `evidence=[]`. The UI renders an empty cell with "no per-field evidence" tooltip.
+`GraphEvidenceItem` (`app/schemas/graph_store.py:59`) carries chunk metadata and `content_text` but **does not** carry `supporting_snippet` or `element_uid`, both of which the Phase 3 UI needs (snippet for the popover quote; `element_uid` for the deep link into the document viewer). Reviewer (pass 3) correctly flagged this.
+
+A dedicated `QueryProfileFieldEvidence` shape is added to `app/schemas/query_profiles.py`:
+
+```python
+class QueryProfileFieldEvidence(APIModel):
+    # Chunk metadata — same surface as GraphEvidenceItem.
+    chunk_id: Optional[uuid.UUID] = None         # None when snippet didn't resolve to a chunk
+    chunk_type: Optional[str] = None
+    artifact_id: Optional[uuid.UUID] = None
+    document_id: Optional[uuid.UUID] = None
+    document_name: Optional[str] = None
+    modality: Optional[str] = None
+    page_number: Optional[int] = None
+    classification: str = "UNCLASSIFIED"
+    content_text: Optional[str] = None
+    source_characterization: Optional[str] = None
+    date_of_information: Optional[str] = None
+    extraction_confidence: Optional[float] = None
+    # Field-evidence specific.
+    supporting_snippet: str                       # the LLM's exact-quoted source text
+    element_uid: Optional[str] = None             # DoclingDocument element_uid; None when unresolved
+```
+
+`QueryProfileFieldEntry.evidence: list[QueryProfileFieldEvidence] = []`. `_project_field_groups` reads `instance_data["_field_evidence"][field_name]`, looks up the chunk via the same `_lookup_chunk_by_type` retrieval helper, and combines chunk metadata + `supporting_snippet` + `element_uid` into one `QueryProfileFieldEvidence` row per evidence entry.
+
+Old data: `_field_evidence` missing → `evidence=[]`. The UI renders an empty cell with a "no per-field evidence" tooltip.
+
+Why not extend `GraphEvidenceItem`: it's used across retrieval and other paths where `supporting_snippet` is meaningless. Adding optional fields there would pollute every other consumer's TypeScript surface. The dedicated schema is purely additive.
 
 ### 5.9 Frontend
 
@@ -632,7 +674,7 @@ Per-field snippets enlarge each entity's output by roughly the number of populat
 
 ### 5.13 Risks
 
-- LLM ignores or paraphrases snippets despite the prompt. Mitigation: a service-side validator drops snippets that don't substring-match any input chunk, logging the field; this prevents fabricated quotes.
+- LLM ignores or paraphrases snippets despite the prompt. Mitigation: **keep the row, set `element_uid=None` and `chunk_id=None`, log a structured warning** (per pass-3 reviewer note resolving the §5.12/§5.13 contradiction in the prior draft). The UI renders unmatched snippets with a visible "unverified source" badge so a reviewer can decide whether to trust them. Dropping the row would silently lose informative quoted evidence; the badge is a better defense against fabrication because a human can audit it.
 - Output size growth degrades extraction throughput. Mitigation: budget tracked in Phase 3 acceptance test; if over 5%, prompt is split into "structured fields first, then provenance" to avoid LLM wandering.
 - Snippet collisions across chunks (same text appears in multiple chunks). Mitigation: longest-unique-prefix tiebreaker; if still ambiguous, attach all candidate `element_uid`s as a list.
 
@@ -678,8 +720,10 @@ Request unchanged.
 class QueryProfileDossierSection(APIModel):
     profile_id: str
     profile_label: str
-    field_groups: list[QueryProfileFieldGroup] = []
-    related_systems: list[GraphEntityResult] = []
+    kind: Literal["section", "section_properties"]    # so the UI knows which payload to render
+    field_groups: list[QueryProfileFieldGroup] = []   # populated when kind == "section_properties"
+    related_systems: list[GraphEntityResult] = []     # populated when kind == "section_properties" + Components
+    items: list[GraphEntityResult] = []                # populated when kind == "section" (legacy traversal)
 
 class QueryProfileDossierResponse(APIModel):
     registry_id: uuid.UUID
@@ -720,8 +764,8 @@ class QueryProfileDefinition(APIModel):
 
 ## 7. Migration & backward compatibility
 
-- **Phase 1:** ontology-only; no data migration. Tests gate.
-- **Phase 2:** API is purely additive — `field_groups`, `related_systems` default `[]`. Legacy `kind="section"` profiles unaffected. Frontend renders both branches. **Phase 1+2 deliver the visible fix without a re-ingest** because the flat extraction has been writing the field values onto the entity vertices all along; the canonical entity definitions just didn't recognize them. Sections become populated as soon as Phase 1+2 ship.
+- **Phase 1:** ontology-only — class deletions and field migrations on `entities.py`, `relationships.py`, `validation_matrix.py`, `coverage.yaml`, plus the `ENTITY_TYPES` registry. **No API changes.** No data migration. The legacy `/graph/system-dossier` endpoint and `dossier_service.py` are **kept in place** here (their constants reference type-name strings, not deleted Pydantic classes, so they don't break at import time); the legacy endpoint already returns empty results today and continues to return empty results after Phase 1. Phase 1 success is gated by the contract tests + a clean `python -c "from ontology_bundles.air_defense_v3 import entities, relationships, validation_matrix"`.
+- **Phase 2:** purely additive on the **new** API surface — `/v1/query-profiles/search/section` gains optional `field_groups`/`related_systems`, `/v1/query-profiles/search/dossier` gains the new single-root + per-section-blocks shape. Plus one **deliberate breaking change** (per pass-3 review): the legacy `/graph/system-dossier` endpoint is removed in Phase 2 alongside `app/services/dossier_service.py` (see §4.13). Frontend has zero references to the legacy endpoint, so no frontend coordination is needed; external API consumers (if any) get a CHANGELOG migration note pointing them to `POST /v1/query-profiles/search/dossier` with `profile_id="system_dossier"`. **Phase 1+2 deliver the visible fix without a re-ingest** because the flat extraction has been writing the field values onto the entity vertices all along; the canonical entity definitions just didn't recognize them. Sections become populated as soon as Phase 1+2 ship.
 - **Phase 3:** wire and storage are additive. Old vertices have no `_field_evidence`; UI shows empty evidence cells with a tooltip explaining "no per-field evidence; re-ingest to populate." A one-time re-ingest of all corpora after Phase 3 lands populates evidence; not required.
 
 ---
@@ -778,3 +822,18 @@ None expected after the brainstorming pass — all design decisions were capture
 | 5 | Medium | `kind="section_properties"` validation only checks `profile_sections` non-empty, not `root_entity_types ⊆ _CANONICAL_BY_ENTITY_TYPE`. Endpoint will 500 instead of failing at registration. | §4.2 `validate_shape` rule extended: every entry in `root_entity_types` for a `section_properties` profile must appear in `_CANONICAL_BY_ENTITY_TYPE.keys()`. Lazy import to dodge the circular dependency. |
 | 6 | Low | `FieldEvidenceRow.chunk_id` typed `str` but design allows None for unmatched snippets. | §5.6 dataclass updated to `chunk_id: str | None`. |
 | 7 | Low | Architecture overview still showed `get_child_of_systems(node_id)` despite §4.6 rename. | §2 diagram updated to `get_associated_systems(node_id)`. |
+
+---
+
+## 13. Review responses (revision 3)
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| 1 | High | `MissileSystemEntity` mapping omits `dieqp`, `name`, `system_status`, `responsible_agency`, `review_cycle`, `next_review_date`. Identity fields like `system_name` need explicit handling. | §3.3 reworked from a three-bucket convention to a four-bucket convention: profile-mapped / system_metadata / **identity** / system_field. `system_name` is identity (`graph_id_field`); `nomenclature` and the missile-schema `name` field are identity (`identity_field=True`); the six metadata fields are explicitly listed under `system_metadata=True`. Contract test enforces all four buckets. |
+| 2 | High | Deleting `/graph/system-dossier` in Phase 1 contradicts §7's "Phase 1 ontology-only" backward-compat story. | §3.1 reverts: `dossier_service.py` and the legacy endpoint are **kept** in Phase 1 (they don't break at import time because the constants reference type-name strings, not deleted classes). New §4.13 owns the removal as a deliberate Phase 2 breaking change with explicit migration notes. §7 rewritten to call the Phase 2 removal out as a breaking change. |
+| 3 | High | `GraphEvidenceItem` doesn't carry `supporting_snippet` or `element_uid` — Phase 3 needs both for the per-field popover and deep link. | §5.8 rewritten: introduce a dedicated `QueryProfileFieldEvidence` Pydantic shape in `app/schemas/query_profiles.py` that carries chunk metadata + `supporting_snippet` + `element_uid`. `QueryProfileFieldEntry.evidence` switches to `list[QueryProfileFieldEvidence]`. `GraphEvidenceItem` is left untouched on retrieval / dossier paths where snippet is meaningless. |
+| 4 | Medium | §5.12 and §5.13 contradicted on unmatched snippets (surface-with-None vs. drop-and-log). | §5.13 risk mitigation rewritten: keep the row, set `element_uid=None`/`chunk_id=None`, log a structured warning. UI renders an "unverified source" badge. Dropping would silently lose informative quoted evidence; badge + log is the better defense against fabrication because it's auditable. |
+| 5 | Medium | `_CANONICAL_BY_ENTITY_TYPE` import inside `app/schemas/query_profiles.py` creates a service-to-schema backward dep, brittle even with lazy imports. | §4.2 reworked: schema layer declares its own `_CANONICAL_ROOT_ENTITY_TYPES: frozenset[str]` constant; service-side `_CANONICAL_BY_ENTITY_TYPE` keys are kept in sync via a contract test. Schema-side validator references only the schema-local constant. No backward dep. |
+| 6 | Medium | `QueryProfileDossierSection` lacked `items` — a dossier composing a legacy `kind="section"` profile would silently drop results. | §6.2 schema and the `execute_dossier_search` snippet add `items: list[GraphEntityResult] = []` and a `kind: Literal["section", "section_properties"]` discriminator on `QueryProfileDossierSection`. UI branches on `kind` like the section endpoint does. |
+| 7 | Low | Retained-class list included `Alias`, but `Alias` is an ArcadeDB schema vertex type, not a Pydantic canonical class. | §3.4 retained list updated; explicit note added that `Alias` is a graph-schema concept, not an ontology-class concept. |
+| 8 | Low | Testing section referenced `tests/unit/test_dossier_service.py`, but Phase 2 deletes the underlying module. | §3.1/§4.x test list now explicitly **deletes** `tests/unit/test_dossier_service.py` in Phase 2 alongside `dossier_service.py`. Dossier behavior coverage moves into `tests/unit/test_query_profiles.py` under the dossier execute path. |
