@@ -1,4 +1,10 @@
-import type { QueryProfileFieldGroup } from "../api/client";
+import { useState } from "react";
+import type {
+  QueryProfileFieldEntry,
+  QueryProfileFieldEvidence,
+  QueryProfileFieldGroup,
+} from "../api/client";
+import { FieldEvidencePopover } from "./FieldEvidencePopover";
 
 interface FieldGroupTableProps {
   groups: QueryProfileFieldGroup[];
@@ -9,6 +15,49 @@ function formatValue(v: unknown): string {
   if (typeof v === "boolean") return v ? "yes" : "no";
   if (typeof v === "number") return v.toLocaleString();
   return String(v);
+}
+
+function EvidenceChip({
+  evidence,
+  fieldName,
+}: {
+  evidence: QueryProfileFieldEvidence[];
+  fieldName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        className="evidence-chip btn btn-ghost btn-sm"
+        onClick={() => setOpen(true)}
+        title={`Show ${evidence.length} source${evidence.length !== 1 ? "s" : ""} for ${fieldName}`}
+      >
+        📄 {evidence.length}
+      </button>
+      {open && (
+        <FieldEvidencePopover
+          evidence={evidence}
+          fieldName={fieldName}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function FieldRow({ f }: { f: QueryProfileFieldEntry }) {
+  return (
+    <tr>
+      <th title={f.description ?? undefined}>{f.label}</th>
+      <td>{formatValue(f.value)}</td>
+      <td className="evidence-cell">
+        {f.evidence.length > 0 && (
+          <EvidenceChip evidence={f.evidence} fieldName={f.label} />
+        )}
+      </td>
+    </tr>
+  );
 }
 
 export function FieldGroupTable({ groups }: FieldGroupTableProps) {
@@ -23,13 +72,7 @@ export function FieldGroupTable({ groups }: FieldGroupTableProps) {
           <table>
             <tbody>
               {g.fields.map((f) => (
-                <tr key={f.name}>
-                  <th title={f.description ?? undefined}>{f.label}</th>
-                  <td>{formatValue(f.value)}</td>
-                  <td className="evidence-cell">
-                    {/* Phase 3 wires the chip; Phase 2 leaves empty */}
-                  </td>
-                </tr>
+                <FieldRow key={f.name} f={f} />
               ))}
             </tbody>
           </table>

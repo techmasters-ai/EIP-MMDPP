@@ -533,8 +533,18 @@ export interface QueryProfileDefinition {
 }
 
 export interface QueryProfileFieldEvidence {
-  // Phase 3 expands this. Phase 2 keeps it minimal so empty arrays
-  // type-check.
+  chunk_id?: string | null;
+  chunk_type?: string | null;
+  artifact_id?: string | null;
+  document_id?: string | null;
+  document_name?: string | null;
+  modality?: string | null;
+  page_number?: number | null;
+  classification: string;
+  content_text?: string | null;
+  source_characterization?: string | null;
+  date_of_information?: string | null;
+  extraction_confidence?: number | null;
   supporting_snippet: string;
   element_uid?: string | null;
 }
