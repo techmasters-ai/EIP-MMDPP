@@ -21,11 +21,11 @@ class RelationshipType(str, Enum):
     """Every relationship type declared in ``ontology.yaml``.
 
     ``str`` subclass so Pydantic coerces string inputs via value-match.
-    Members are alphabetical for stable diff review. 56 members total.
+    Members are alphabetical for stable diff review. 31 members total
+    (reduced from 56 by the flat-schema profile refactor — spec §3.4
+    removed orphan-class predicates).
     """
 
-    ABOUT = "ABOUT"
-    AFFECTS = "AFFECTS"
     ALIAS_OF = "ALIAS_OF"
     ASSOCIATED_WITH = "ASSOCIATED_WITH"
     CHILD_OF = "CHILD_OF"
@@ -36,27 +36,14 @@ class RelationshipType(str, Enum):
     DERIVED_FROM = "DERIVED_FROM"
     DESIGNATES = "DESIGNATES"
     DETECTS = "DETECTS"
-    EMITS = "EMITS"
     ENGAGES = "ENGAGES"
     GUIDES = "GUIDES"
-    HAS_ANTENNA = "HAS_ANTENNA"
     HAS_COMPONENT = "HAS_COMPONENT"
     HAS_FIGURE = "HAS_FIGURE"
-    HAS_GUIDANCE = "HAS_GUIDANCE"
     HAS_IMAGE = "HAS_IMAGE"
-    HAS_PERFORMANCE = "HAS_PERFORMANCE"
-    HAS_PROCESSING_CHAIN = "HAS_PROCESSING_CHAIN"
-    HAS_PROPULSION = "HAS_PROPULSION"
-    HAS_RECEIVER = "HAS_RECEIVER"
-    HAS_SCAN = "HAS_SCAN"
     HAS_SECTION = "HAS_SECTION"
-    HAS_SEEKER = "HAS_SEEKER"
-    HAS_SIGNATURE = "HAS_SIGNATURE"
-    HAS_STAGE = "HAS_STAGE"
     HAS_TABLE = "HAS_TABLE"
     HAS_SUBSYSTEM = "HAS_SUBSYSTEM"
-    HAS_TIMELINE = "HAS_TIMELINE"
-    HAS_TRANSMITTER = "HAS_TRANSMITTER"
     INSTALLED_ON = "INSTALLED_ON"
     INSTANCE_OF = "INSTANCE_OF"
     IS_A = "IS_A"
@@ -65,21 +52,11 @@ class RelationshipType(str, Enum):
     MENTIONED_IN = "MENTIONED_IN"
     NEAR_TEXT = "NEAR_TEXT"
     OPERATED_BY = "OPERATED_BY"
-    OPERATES_IN_BAND = "OPERATES_IN_BAND"
     PART_OF = "PART_OF"
-    PROCESSES = "PROCESSES"
-    PROVIDES = "PROVIDES"
-    RADIATES = "RADIATES"
-    RECEIVES = "RECEIVES"
     REVIEWED_BY = "REVIEWED_BY"
-    SPECIFIED_BY = "SPECIFIED_BY"
     SUPERSEDES = "SUPERSEDES"
-    SUPPORTED_BY = "SUPPORTED_BY"
     SUPPORTS_ENGAGEMENT_OF = "SUPPORTS_ENGAGEMENT_OF"
-    TESTED_IN = "TESTED_IN"
     TRACKS = "TRACKS"
-    USES_MODULATION = "USES_MODULATION"
-    USES_WAVEFORM = "USES_WAVEFORM"
 
 
 class RelationshipMetadata(BaseModel):
@@ -139,26 +116,11 @@ _STATIC_RELATIONSHIP_METADATA: list[dict] = [
     {"name": "CONTAINS", "label": "Contains", "description": "System or assembly contains a component or subsystem", "source_type": None, "target_type": None, "cardinality": "one_to_many"},
     {"name": "HAS_SUBSYSTEM", "label": "Has Subsystem", "description": "System has a major functional subsystem", "source_type": None, "target_type": "SUBSYSTEM", "cardinality": "one_to_many"},
     {"name": "HAS_COMPONENT", "label": "Has Component", "description": "System or subsystem has a physical component", "source_type": None, "target_type": "COMPONENT", "cardinality": "one_to_many"},
-    {"name": "HAS_STAGE", "label": "Has Stage", "description": "Propulsion stack has a propulsion stage", "source_type": "PROPULSION_STACK", "target_type": "PROPULSION_STAGE", "cardinality": "one_to_many"},
     {"name": "INSTALLED_ON", "label": "Installed On", "description": "System is installed on a platform", "source_type": None, "target_type": "PLATFORM", "cardinality": "many_to_one"},
     {"name": "DEPLOYED_ON", "label": "Deployed On", "description": "System or unit is deployed on a platform or at a site", "source_type": None, "target_type": "PLATFORM", "cardinality": "many_to_one"},
     {"name": "ASSOCIATED_WITH", "label": "Associated With", "description": "System association (radar↔missile, radar↔AAA)", "source_type": None, "target_type": None, "cardinality": "many_to_many"},
     {"name": "OPERATED_BY", "label": "Operated By", "description": "Platform or system is operated by an organization", "source_type": None, "target_type": "ORGANIZATION", "cardinality": "many_to_many"},
     {"name": "MANUFACTURED_BY", "label": "Manufactured By", "description": "System or component is manufactured by an organization", "source_type": None, "target_type": "ORGANIZATION", "cardinality": "many_to_many"},
-    {"name": "OPERATES_IN_BAND", "label": "Operates In Band", "description": "System operates in a frequency band", "source_type": None, "target_type": "FREQUENCY_BAND", "cardinality": "many_to_many"},
-    {"name": "USES_WAVEFORM", "label": "Uses Waveform", "description": "Radar uses a specific waveform", "source_type": "RADAR_SYSTEM", "target_type": "WAVEFORM", "cardinality": "many_to_many"},
-    {"name": "USES_MODULATION", "label": "Uses Modulation", "description": "Waveform uses a modulation scheme", "source_type": "WAVEFORM", "target_type": "MODULATION", "cardinality": "many_to_many"},
-    {"name": "EMITS", "label": "Emits", "description": "System generates an RF emission", "source_type": None, "target_type": "RF_EMISSION", "cardinality": "one_to_many"},
-    {"name": "RADIATES", "label": "Radiates", "description": "Antenna radiates an RF emission", "source_type": "ANTENNA", "target_type": "RF_EMISSION", "cardinality": "one_to_many"},
-    {"name": "RECEIVES", "label": "Receives", "description": "Receiver processes incoming signals", "source_type": "RECEIVER", "target_type": "RF_EMISSION", "cardinality": "many_to_many"},
-    {"name": "PROCESSES", "label": "Processes", "description": "Signal processing chain processes signals", "source_type": "SIGNAL_PROCESSING_CHAIN", "target_type": "RF_EMISSION", "cardinality": "many_to_many"},
-    {"name": "HAS_SIGNATURE", "label": "Has Signature", "description": "Emission or system has an RF signature", "source_type": None, "target_type": "RF_SIGNATURE", "cardinality": "many_to_many"},
-    {"name": "HAS_SCAN", "label": "Has Scan", "description": "Radar has a scan pattern", "source_type": "RADAR_SYSTEM", "target_type": "SCAN_PATTERN", "cardinality": "one_to_many"},
-    {"name": "HAS_RECEIVER", "label": "Has Receiver", "description": "Radar has a receiver subsystem", "source_type": "RADAR_SYSTEM", "target_type": "RECEIVER", "cardinality": "one_to_many"},
-    {"name": "HAS_TRANSMITTER", "label": "Has Transmitter", "description": "Radar has a transmitter subsystem", "source_type": "RADAR_SYSTEM", "target_type": "TRANSMITTER", "cardinality": "one_to_many"},
-    {"name": "HAS_ANTENNA", "label": "Has Antenna", "description": "Radar has an antenna", "source_type": "RADAR_SYSTEM", "target_type": "ANTENNA", "cardinality": "one_to_many"},
-    {"name": "HAS_PROCESSING_CHAIN", "label": "Has Processing Chain", "description": "Radar has a signal processing chain", "source_type": "RADAR_SYSTEM", "target_type": "SIGNAL_PROCESSING_CHAIN", "cardinality": "one_to_one"},
-    {"name": "HAS_PERFORMANCE", "label": "Has Performance", "description": "System has performance characteristics", "source_type": None, "target_type": None, "cardinality": "one_to_one"},
     {"name": "CUES", "label": "Cues", "description": "Directional handoff of target data. Valid shapes: (a) search radar cues fire-control / guidance radar (RADAR_SYSTEM → RADAR_SYSTEM), (b) radar cues missile system for engagement (RADAR_SYSTEM → MISSILE_SYSTEM).", "source_type": "RADAR_SYSTEM", "target_type": None, "cardinality": "many_to_many"},
     {"name": "GUIDES", "label": "Guides", "description": "System guides a missile to target", "source_type": None, "target_type": "MISSILE_SYSTEM", "cardinality": "many_to_many"},
     {"name": "TRACKS", "label": "Tracks", "description": "System tracks a target", "source_type": None, "target_type": None, "cardinality": "many_to_many"},
@@ -168,24 +130,10 @@ _STATIC_RELATIONSHIP_METADATA: list[dict] = [
     {"name": "DESIGNATES", "label": "Designates", "description": "System designates targets for engagement", "source_type": None, "target_type": None, "cardinality": "many_to_many"},
     {"name": "LAUNCHES", "label": "Launches", "description": "Launcher launches a missile", "source_type": "LAUNCHER_SYSTEM", "target_type": "MISSILE_SYSTEM", "cardinality": "many_to_many"},
     {"name": "SUPPORTS_ENGAGEMENT_OF", "label": "Supports Engagement Of", "description": "System supports engagement of a target type", "source_type": None, "target_type": None, "cardinality": "many_to_many"},
-    {"name": "HAS_GUIDANCE", "label": "Has Guidance", "description": "Missile uses a guidance method", "source_type": "MISSILE_SYSTEM", "target_type": "GUIDANCE_METHOD", "cardinality": "many_to_one"},
-    {"name": "HAS_PROPULSION", "label": "Has Propulsion", "description": "Missile has a propulsion stack", "source_type": "MISSILE_SYSTEM", "target_type": "PROPULSION_STACK", "cardinality": "one_to_one"},
-    {"name": "HAS_SEEKER", "label": "Has Seeker", "description": "Missile has a terminal guidance seeker", "source_type": "MISSILE_SYSTEM", "target_type": "SEEKER", "cardinality": "one_to_one"},
-    {"name": "PROVIDES", "label": "Provides", "description": "System provides a capability (DoDAF DM2)", "source_type": None, "target_type": "CAPABILITY", "cardinality": "many_to_many"},
-    {"name": "HAS_TIMELINE", "label": "Has Timeline", "description": "Weapon system has an engagement timeline", "source_type": None, "target_type": "ENGAGEMENT_TIMELINE", "cardinality": "one_to_one"},
-    # TODO(docs-alignment): ASSERTION-sourced rows are dead — the
-    # AssertionEntity class was dropped in B-1 (commit 2498a20). They're
-    # retained here for parity with validation_matrix.py + the YAML snapshot;
-    # once F-4 deletes the parity tests, these rows can be stripped.
-    {"name": "SUPPORTED_BY", "label": "Supported By", "description": "Assertion is supported by a document resource", "source_type": "ASSERTION", "target_type": None, "cardinality": "many_to_many"},
     {"name": "MENTIONED_IN", "label": "Mentioned In", "description": "Entity is mentioned in a document", "source_type": None, "target_type": "DOCUMENT", "cardinality": "many_to_many"},
     {"name": "DERIVED_FROM", "label": "Derived From", "description": "Entity or assertion is derived from another source", "source_type": None, "target_type": None, "cardinality": "many_to_many"},
     {"name": "REVIEWED_BY", "label": "Reviewed By", "description": "Assertion or entity was reviewed by an organization or person", "source_type": None, "target_type": "ORGANIZATION", "cardinality": "many_to_many"},
-    {"name": "ABOUT", "label": "About", "description": "Assertion is about an entity", "source_type": "ASSERTION", "target_type": None, "cardinality": "many_to_many"},
-    {"name": "SPECIFIED_BY", "label": "Specified By", "description": "A system is specified by a performance specification", "source_type": None, "target_type": "SPECIFICATION", "cardinality": "many_to_many"},
-    {"name": "AFFECTS", "label": "Affects", "description": "A failure mode affects a component or subsystem", "source_type": "FAILURE_MODE", "target_type": None, "cardinality": "many_to_many"},
     {"name": "SUPERSEDES", "label": "Supersedes", "description": "A newer document or standard supersedes an older one", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
-    {"name": "TESTED_IN", "label": "Tested In", "description": "A system was tested in a test event", "source_type": None, "target_type": "TEST_EVENT", "cardinality": "many_to_many"},
     {"name": "HAS_SECTION", "label": "Has Section", "description": "Document or parent contains a section", "source_type": None, "target_type": "SECTION", "cardinality": "one_to_many"},
     {"name": "HAS_FIGURE",  "label": "Has Figure",  "description": "Document or section contains a captioned figure", "source_type": None, "target_type": "FIGURE", "cardinality": "one_to_many"},
     {"name": "HAS_TABLE",   "label": "Has Table",   "description": "Document or section contains a table", "source_type": None, "target_type": "TABLE", "cardinality": "one_to_many"},
