@@ -33,10 +33,13 @@ like an uppercase ontology name is treated as an entity.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
+
+_WS_NORM = re.compile(r"\s+")
 
 logger = logging.getLogger(__name__)
 
@@ -321,3 +324,55 @@ def build_provenance_from_context(
             )
         )
     return out
+
+
+def _normalize_text(text: str) -> str:
+    """Whitespace-collapsed casefold for fuzzy substring matching."""
+    return _WS_NORM.sub(" ", text).strip().casefold()
+
+
+def resolve_field_provenance_uids(
+    field_provenance: list[Any],
+    input_chunks: list[tuple[str, str]],
+) -> None:
+    """Resolve each row's element_uid by whitespace-collapsed
+    case-insensitive substring match against ``input_chunks``.
+
+    ``input_chunks`` is a list of (element_uid, text) tuples — one per
+    DoclingDocument chunk fed to the LLM.
+
+    Single match wins. Multi-match falls back to longest chunk text and
+    emits an ``ambiguous_snippet`` log row carrying all candidate uids.
+    No match keeps element_uid=None and emits an ``unverified_source``
+    log row (spec §5.5, §5.13). Mutates rows in place.
+    """
+    for row in field_provenance:
+        snippet = getattr(row, "supporting_snippet", "") or ""
+        snippet_norm = _normalize_text(snippet)
+        if not snippet_norm:
+            continue
+        candidates: list[tuple[str, str]] = []
+        for euid, ctext in input_chunks:
+            if snippet_norm in _normalize_text(ctext or ""):
+                candidates.append((euid, ctext or ""))
+        if not candidates:
+            logger.info(
+                "unverified_source: no chunk match for snippet on %s.%s (snippet=%r)",
+                getattr(row, "instance_id", ""),
+                getattr(row, "field_name", ""),
+                snippet[:120],
+            )
+            continue
+        if len(candidates) == 1:
+            row.element_uid = candidates[0][0]
+            continue
+        candidates.sort(key=lambda c: -len(c[1]))
+        row.element_uid = candidates[0][0]
+        logger.info(
+            "ambiguous_snippet: %d chunks matched on %s.%s; picked %s (candidates=%s)",
+            len(candidates),
+            getattr(row, "instance_id", ""),
+            getattr(row, "field_name", ""),
+            candidates[0][0],
+            [c[0] for c in candidates],
+        )

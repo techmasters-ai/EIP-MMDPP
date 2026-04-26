@@ -348,6 +348,7 @@ from app.evidence_gate import (
 )
 from app.provenance import (
     build_provenance_from_context,
+    resolve_field_provenance_uids,
     synthesize_provenance_from_pass_output,
 )
 from app.schemas import (
@@ -976,8 +977,26 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                         field_name=field_name,
                         value=value,
                         supporting_snippet=getattr(fp_row, "supporting_snippet", ""),
-                        element_uid=None,  # resolved in Task 31
+                        element_uid=None,
                     ))
+
+        # Resolve snippet → element_uid by substring-matching against
+        # the DoclingDocument's text elements. Mutates rows in place;
+        # rows with no chunk match keep element_uid=None and emit an
+        # unverified_source log row (spec §5.5, §5.13).
+        if field_provenance_rows:
+            input_chunks_for_resolver: list[tuple[str, str]] = []
+            doc = getattr(context, "docling_document", None)
+            if doc is not None:
+                for text_elem in (getattr(doc, "texts", []) or []):
+                    self_ref = getattr(text_elem, "self_ref", None)
+                    txt = getattr(text_elem, "text", None) or getattr(text_elem, "orig", None)
+                    if self_ref and txt:
+                        input_chunks_for_resolver.append((str(self_ref), str(txt)))
+            if input_chunks_for_resolver:
+                resolve_field_provenance_uids(
+                    field_provenance_rows, input_chunks_for_resolver,
+                )
 
         return ExtractPassResponse(
             bundle_key=body.bundle_key,
