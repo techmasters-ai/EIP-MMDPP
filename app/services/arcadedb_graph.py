@@ -1033,9 +1033,14 @@ class ArcadeDBGraphStore:
                 continue
             if rows:
                 # Defensive: SECTION's broken index can return rows that
-                # don't actually match. Verify before returning.
-                row_name = rows[0].get("name")
-                if row_name == name:
+                # don't actually match the requested name (e.g. WHERE
+                # name='SA-2' returning rows whose name is '2'). Verify
+                # the returned row's name matches case-insensitively —
+                # ArcadeDB's WHERE is case-insensitive too, so the DB
+                # may legitimately return 'FAN SONG' for a 'Fan Song'
+                # query and we want to accept that.
+                row_name = rows[0].get("name") or ""
+                if row_name.casefold() == name.casefold():
                     return _to_entity(rows[0])
         return None
 

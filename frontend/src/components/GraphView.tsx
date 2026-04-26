@@ -191,6 +191,15 @@ export function GraphView({ elements, onNodeClick, onClose }: GraphViewProps) {
         stylesheet={STYLESHEET}
         style={{ width: "100%", height: "100%" }}
         cy={handleCy}
+        // Setting wheelSensitivity explicitly registers a non-passive
+        // wheel listener; without it modern browsers default the wheel
+        // event to passive and cytoscape can't preventDefault, so the
+        // outer page scrolls instead of the graph zooming. Lower
+        // values mean smoother zoom steps.
+        wheelSensitivity={0.2}
+        userZoomingEnabled={true}
+        userPanningEnabled={true}
+        boxSelectionEnabled={false}
       />
       <GraphTooltip
         visible={tooltip.visible}
