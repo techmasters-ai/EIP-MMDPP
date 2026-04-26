@@ -899,18 +899,42 @@ async def execute_dossier_search(
     all_items: list[GraphEntityResult] = [resolved]
     for section_id in profile.section_profile_ids:
         section_profile = pmap.get(section_id)
-        if section_profile is None or section_profile.kind != "section":
+        if section_profile is None:
             continue
-        items = await _fetch_section_items(graph_store, resolved, request, section_profile)
-        all_items.extend(items)
-        sections.append(
-            QueryProfileDossierSection(
-                profile_id=section_profile.id,
-                profile_label=section_profile.label,
-                items=items,
-                total=len(items),
+        if section_profile.kind not in ("section", "section_properties"):
+            continue
+        raw = await _fetch_section_items(graph_store, resolved, request, section_profile)
+
+        if section_profile.kind == "section_properties":
+            field_groups = raw  # list[QueryProfileFieldGroup]
+            related_systems: list[GraphEntityResult] = []
+            if section_profile.include_associated_systems and resolved.node_id:
+                related_systems = await graph_store.get_associated_systems(resolved.node_id)
+            all_items.extend(related_systems)
+            total = sum(len(g.fields) for g in field_groups) + len(related_systems)
+            sections.append(
+                QueryProfileDossierSection(
+                    profile_id=section_profile.id,
+                    profile_label=section_profile.label,
+                    kind="section_properties",
+                    field_groups=field_groups,
+                    related_systems=related_systems,
+                    items=[],
+                    total=total,
+                )
             )
-        )
+        else:
+            items = raw  # list[GraphEntityResult]
+            all_items.extend(items)
+            sections.append(
+                QueryProfileDossierSection(
+                    profile_id=section_profile.id,
+                    profile_label=section_profile.label,
+                    kind="section",
+                    items=items,
+                    total=len(items),
+                )
+            )
 
     if request.include_evidence:
         await attach_evidence(graph_store, db, all_items, request.evidence_top_k)
