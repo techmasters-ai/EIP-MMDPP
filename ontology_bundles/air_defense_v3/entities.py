@@ -449,162 +449,154 @@ class RadarSystemEntity(BaseModel):
     """
     model_config = ConfigDict(ontology_name="RADAR_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the radar system", examples=['Tombstone', 'Clam Shell'])
+    system_name: str = Field(..., description="Canonical designation of the RADAR itself. Accept canonical proper-noun radar names from prose when unambiguous (e.g. 'Fan Song', 'Spoon Rest', 'Tombstone', 'Flap Lid', 'AN/MPQ-65'). FORBIDDEN values — never emit any of these as system_name because they are weapon/missile systems, not radars: SA-2, SA-3, SA-5, SA-6, SA-10, SA-12, SA-15, SA-17, SA-20, SA-21, SA-22, SA-23, Patriot, PAC-2, PAC-3, PAC-3 MSE, Hawk, Nike-Hercules, S-75, S-125, S-200, S-300, S-350, S-400, S-500, Aegis BMD, SM-2, SM-3, SM-6, THAAD, Arrow, Iron Dome, David's Sling. Also FORBIDDEN: aircraft / platform / target names (U-2, SR-71, RF-4C, F-4, F-15, F-16, B-52, MiG-21, MiG-23, MiG-29, Su-27) — these are targets that radars detect, not radars themselves. If the text says 'the SA-2 radar', emit the radar's own name ('Fan Song') if stated, otherwise omit. Do NOT emit 'SA-2' here. Reject descriptive phrases ('the radar', 'the acquisition radar').", examples=['Fan Song', 'Spoon Rest', 'Tombstone', 'AN/MPQ-65', 'Flap Lid'])
 
     # ===== Flat-checklist fields (spec §3.3) =====
-    # Waveform group — RF Parameters only
+    # waveform group — sections=['rf_parameters']
     nominal_rf_mhz: Optional[float] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Nominal radio frequency in MHz at which the radar transmits.",
-        examples=[3000.0, 9300.0],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Nominal operating RF (carrier frequency) in megahertz. Common radar bands: L-band 1000-2000, S-band 2000-4000, C-band 4000-8000, X-band 8000-12000, Ku-band 12000-18000. If the source gives GHz, multiply by 1000. If it gives a range, emit the center frequency.',
+        examples=[3000, 9400, 16000],
     )
     frequency_excursion_mhz: Optional[float] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Total instantaneous frequency excursion during a coherent processing interval, in MHz.",
-        examples=[5.0, 50.0],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Frequency excursion (chirp bandwidth) in megahertz — for an LFM chirp waveform, the total swept bandwidth Δf across the pulse duration. Determines range resolution: resolution_m ≈ 150 / bandwidth_MHz. Only meaningful for frequency-modulated (chirped) waveforms.',
+        examples=[1.0, 10.0, 50.0],
     )
     nominal_pri_usec: Optional[float] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Pulse repetition interval in microseconds.",
-        examples=[1000.0],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Nominal Pulse Repetition Interval (PRI) in microseconds — the time from the start of one pulse to the start of the next. PRI = 1 / PRF. Determines unambiguous range: unambiguous_range_km = PRI_usec × 0.15. Typical long-range search radars: 3000-10000 µs. Fire-control radars: 100-1000 µs. If the source gives PRF in Hz, convert: PRI_usec = 1_000_000 / PRF_Hz.',
+        examples=[1000, 5000],
     )
     nominal_pd_usec: Optional[float] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Pulse duration in microseconds.",
-        examples=[1.0],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Nominal Pulse Duration / pulse width (PD) in microseconds — the length of a single transmitted pulse. Short pulses (0.1-1 µs) give fine range resolution; long pulses (50-200 µs) give more energy on target. Compressed-pulse radars specify the pre-compression PD here (the long pulse before matched filtering).',
+        examples=[0.5, 50.0, 200.0],
     )
     inter_pulse: Optional[str] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Inter-pulse modulation pattern.",
-        examples=["staggered PRI", "fixed"],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Inter-pulse modulation — how successive pulses vary. Typical patterns: CONSTANT_PRI (fixed spacing between pulses), PRI_STAGGER (multi-level PRI that cycles between values; resolves range ambiguity), PRI_JITTER (random PRI variation; anti-jam / ECCM), FREQ_AGILE (pulse-to-pulse frequency hopping). Emit as uppercase token when possible.',
+        examples=['CONSTANT_PRI', 'PRI_STAGGER', 'FREQ_AGILE'],
     )
     pulses_per_dwell: Optional[int] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Pulses per coherent dwell.",
-        examples=[16],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Number of pulses coherently or non-coherently integrated in one beam-position dwell. More pulses = more energy on target (and better Doppler resolution for coherent integration), at the cost of slower scan rate. Typical values: 8-64 for modern radars.',
+        examples=[16, 64],
     )
-    dwell_time: Optional[float] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Coherent dwell time, seconds.",
-        examples=[0.05],
+    dwell_time: Optional[str] = profile_field(
+        sections=['rf_parameters'], subgroup='waveform',
+        description="Time spent at a single beam position (dwell-and-switch scans). Free-text because sources sometimes give a duration ('12 ms'), a count ('16 pulses'), or a descriptive phrase. Only relevant for DWELL_AND_SWITCH or phased-array scan_types.",
+        examples=['12 ms', '16 pulses'],
     )
     intra_pulse_mop: Optional[str] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Intra-pulse modulation on pulse.",
-        examples=["LFM", "BPSK"],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Intra-pulse modulation (Modulation On Pulse) — how the transmitted pulse is modulated for compression. Typical values: CW (continuous wave / unmodulated), LFM_CHIRP (linear frequency modulation / chirp), NLFM (non-linear FM), BARKER_CODE (binary phase-coded, Barker sequence), POLYPHASE (multi-level phase code, e.g. Frank / P1-P4), BIPHASE (2-level phase code). Free-text emission OK if the source uses different terms.',
+        examples=['LFM_CHIRP', 'BARKER_CODE', 'BIPHASE'],
     )
     num_bits_in_code: Optional[int] = profile_field(
-        sections=["rf_parameters"], subgroup="waveform",
-        description="Number of bits in the phase-code (when phase-coded MOP).",
-        examples=[13],
+        sections=['rf_parameters'], subgroup='waveform',
+        description='Number of chips in the phase-code sequence used for pulse compression. Only meaningful for phase-coded waveforms (Barker, polyphase, etc.). Common Barker codes: 7, 11, 13. Longer codes (128, 256, 1024) appear in modern systems. Null for CW or FM-chirp radars.',
+        examples=[7, 13, 1024],
     )
-
-    # Antenna group — RF Parameters and Components
+    # antenna group — sections=['rf_parameters', 'components']
     antenna_dim_az_m: Optional[float] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="Antenna aperture, azimuth dimension, meters.",
-        examples=[6.0],
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description="Antenna aperture width in the azimuth (horizontal) dimension, in meters. For a rectangular planar array this is the long dimension of the face; for a parabolic dish it's the horizontal diameter. Drives azimuth beamwidth via beamwidth ≈ (wavelength / aperture) × 51 degrees.",
+        examples=[4.5, 12.0],
     )
     antenna_dim_el_m: Optional[float] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="Antenna aperture, elevation dimension, meters.",
-        examples=[2.0],
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description='Antenna aperture height in the elevation (vertical) dimension, in meters. Analogous to antenna_dim_az_m but for the elevation plane. A radar with asymmetric az/el dimensions has a fan beam (narrow azimuth, broad elevation) typical of 2D surveillance radars.',
+        examples=[2.5, 4.0],
     )
     beamwidth_az_deg: Optional[float] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="One-way 3 dB azimuth beamwidth, degrees.",
-        examples=[1.5],
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description="Main-beam 3dB azimuth beamwidth, in degrees. Defines the angular spread of the radar's beam in the horizontal plane between half-power points. Typical ground-based S-band / C-band radars: 1-4 degrees.",
+        examples=[1.5, 2.8],
     )
     beamwidth_el_deg: Optional[float] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="One-way 3 dB elevation beamwidth, degrees.",
-        examples=[2.0],
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description='Main-beam 3dB elevation beamwidth, in degrees. The vertical analogue of beamwidth_az_deg. Fan-beam surveillance radars have intentionally wide elevation beamwidths (10-40°) to cover airspace with a single scan; pencil-beam tracking radars keep elevation beamwidth tight (1-4°).',
+        examples=[1.5, 15.0],
     )
     gain_dbi: Optional[float] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="Antenna gain, dBi.",
-        examples=[35.0],
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description='Peak antenna gain in dBi (decibels relative to an isotropic radiator). Higher gain = narrower main beam. Typical dish / parabolic radar antennas: 30-45 dBi. Phased arrays: 35-50 dBi.',
+        examples=[38.0, 42.0],
     )
     antenna_photo: Optional[bool] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="Whether a photo of the antenna is available in source documents.",
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description='Whether an antenna photograph is included in the record (Y/N). Use null when the document does not state this — do NOT default to false. Emit true only when the text explicitly indicates a photograph is included.',
     )
     spoiled: Optional[bool] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="Whether the antenna pattern is spoiled (broadened) for surveillance.",
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description='Whether the beam is spoiled (Y/N). Use null when the document does not state this — do NOT default to false. Emit true only when the text explicitly indicates a spoiled beam; emit false only when the text explicitly indicates an unspoiled beam.',
     )
-    coverage_limits_el_deg: Optional[str] = profile_field(
-        sections=["rf_parameters", "components"], subgroup="antenna",
-        description="Elevation coverage limits, degrees (e.g. '0–60').",
-        examples=["0–60"],
+    coverage_limits_el_deg: Optional[float] = profile_field(
+        sections=['rf_parameters', 'components'], subgroup='antenna',
+        description="Maximum elevation angle (degrees) the radar can scan or track to. Ground-based search radars typically cap at 30-40°; fire-control radars can go to 80°+. When the source gives a range ('0-45°'), emit the upper limit. Null when the document doesn't state a cap.",
+        examples=[45.0, 80.0],
     )
-
-    # Transmit group — RF Parameters and Performance
+    # transmit group — sections=['rf_parameters', 'performance']
     tx_peak_power_kw: Optional[float] = profile_field(
-        sections=["rf_parameters", "performance"], subgroup="transmit",
-        description="Transmitter peak power, kilowatts.",
-        examples=[600.0],
+        sections=['rf_parameters', 'performance'], subgroup='transmit',
+        description="Transmitter peak power output in kilowatts. This is the power at the transmitter's output port BEFORE the antenna — not effective radiated power. Typical S-band ground radars: 100-1000 kW peak. If the source gives power in watts, divide by 1000; if in megawatts, multiply by 1000.",
+        examples=[150, 600, 1000],
     )
     erp_dbw: Optional[float] = profile_field(
-        sections=["rf_parameters", "performance"], subgroup="transmit",
-        description="Effective radiated power, dBW.",
-        examples=[88.0],
+        sections=['rf_parameters', 'performance'], subgroup='transmit',
+        description='Effective Radiated Power in dBW (decibels relative to 1 watt). ERP = transmitter power × antenna gain, expressed on the log scale. Typical combat radars: 50-90 dBW. If the source gives ERP in dBm, subtract 30 (1 W = 30 dBm = 0 dBW). If given in watts or kilowatts, convert: dBW = 10 × log10(watts).',
+        examples=[72.0, 85.0],
     )
-
-    # Scan group — RF Parameters and Performance
+    # scan group — sections=['rf_parameters', 'performance']
     scan_type: Optional[str] = profile_field(
-        sections=["rf_parameters", "performance"], subgroup="scan",
-        description="Scan mechanism / mode (e.g. 'mechanical', 'phased-array', 'electronic').",
-        examples=["phased-array"],
+        sections=['rf_parameters', 'performance'], subgroup='scan',
+        description="How the radar's beam is mechanically or electronically steered. Typical values: CIRCULAR (continuous 360° mechanical rotation), SECTOR (back-and-forth sweep over a limited arc), RASTER (2D sweep covering an elevation stack), ELECTRONIC (phased-array beam steering, no moving parts), DWELL_AND_SWITCH (mechanical slew with pause at each beam position), HELICAL (continuous rotation with simultaneous elevation stepping). Emit as uppercase when possible.",
+        examples=['CIRCULAR', 'ELECTRONIC', 'DWELL_AND_SWITCH'],
     )
     scan_period_sec: Optional[float] = profile_field(
-        sections=["rf_parameters", "performance"], subgroup="scan",
-        description="Scan revisit / repeat period, seconds.",
-        examples=[10.0],
+        sections=['rf_parameters', 'performance'], subgroup='scan',
+        description='Time (seconds) to complete one full scan pattern — e.g. 360° rotation for a CIRCULAR scan, or one full raster for a RASTER scan. Combined with beamwidth this determines revisit rate. Typical rotating search radars: 4-12 s per revolution.',
+        examples=[4.0, 10.0],
     )
-
-    # Classification group — RF Parameters
+    # classification group — sections=['rf_parameters']
     emitter_function: Optional[str] = profile_field(
-        sections=["rf_parameters"], subgroup="classification",
-        description="Primary emitter function (e.g. 'acquisition', 'tracking', 'engagement').",
-        examples=["tracking"],
+        sections=['rf_parameters'], subgroup='classification',
+        description="Operational role of the radar in an engagement kill-chain. Enum values and their meanings: SEARCH = early-warning / acquisition radar that detects targets at long range; TRACKING = radar that maintains target track after acquisition but does not provide the terminal weapon-guidance function; FIRE_CONTROL = terminal-guidance radar that provides the tracking signal used by the weapon system's seeker or command-guidance link. Guidance / illumination radars such as Fan Song belong here; MULTI_FUNCTION = a single radar that performs multiple roles (phased-array designs like AN/SPY-1 are typical examples); HEIGHT_FINDER = dedicated elevation-measurement radar paired with 2D search radars; NAV = navigation or weather radar (not a combat emitter).",
+        examples=['SEARCH', 'FIRE_CONTROL', 'TRACKING', 'MULTI_FUNCTION'],
     )
 
     # Identity adjuncts
     nomenclature: Optional[str] = identity_field(
-        description=(
-            "Official military nomenclature — formal alphanumeric designator "
-            "(JETDS for US, GRAU index for Russian). Distinct from system_name."
-        ),
-        examples=["AN/MPQ-65", "5N63S", "30N6E"],
+        description="Official military nomenclature — the formal alphanumeric designation assigned by the manufacturing country. For US radars this is the JETDS / AN-style designator (e.g. 'AN/MPQ-65'). For Russian / Soviet-origin radars it's the GRAU index or manufacturer model (e.g. '5N63S', '30N6E'). Distinct from system_name, which is the common (often NATO reporting) name. Emit when the document explicitly states the formal designation alongside the common name.",
+        examples=['AN/MPQ-65', '5N63S', '30N6E', 'AN/SPY-1D'],
     )
 
     # System metadata
     elnot: Optional[str] = metadata_field(
-        description="Emitter library number (ELNOT) — IC enumeration.",
-        examples=["E0123"],
+        description='ELINT Notation (ELNOT) — an ELINT-community unique alphabetic code assigned to a specific emitter signal by signals intelligence databases (typically a 4- or 5-letter code). Only appears in intelligence-community source documents. Emit verbatim from the document — do not infer.',
     )
     dieqp: Optional[str] = metadata_field(
-        description="Digital Intelligence Equipment Parameters cross-reference identifier.",
+        description='Digital Intelligence Equipment Parameters (DIEQP) identifier — a cross-reference ID into the DIEQP database maintained by the MDE (Mission Data Engineering) community. Typically a short alphanumeric token. Only appears in IC / MDE source documents. Emit verbatim — do not infer.',
     )
     asrd: Optional[str] = metadata_field(
-        description="ASRD identifier — IC source-of-record reference.",
+        description='ASRD identifier — a catalog code from the All-Source Reference Document, a classified IC catalog of emitters. Emit verbatim when explicitly stated in the source; do not infer or cross-reference.',
     )
     system_status: Optional[str] = metadata_field(
-        description="Operational status (e.g. 'in service', 'retired', 'in development').",
-        examples=["in service"],
+        description='Lifecycle status of the radar system as described in the source. Typical values: OPERATIONAL (currently deployed), DEVELOPMENTAL (prototype or pre-IOC), RETIRED (withdrawn from service), UPGRADED (modified variant superseding the base model), EXPORTED (sold to foreign operators only). Emit only when the document explicitly states the status; do not infer OPERATIONAL from historical narrative or from the fact that the radar appears in a museum display.',
+        examples=['OPERATIONAL', 'RETIRED', 'DEVELOPMENTAL'],
     )
     responsible_agency: Optional[str] = metadata_field(
-        description="Agency or organization that owns the parametric record.",
-        examples=["NASIC"],
+        description="Organization responsible for maintaining the MDE record for this radar. Typically a 3-letter IC acronym (e.g. 'IWC' = Information Warfare Center, 'NASIC' = National Air and Space Intelligence Center, 'ONI' = Office of Naval Intelligence, 'NGIC' = National Ground Intelligence Center).",
+        examples=['IWC', 'NASIC', 'ONI', 'NGIC'],
     )
     review_cycle: Optional[str] = metadata_field(
-        description="Review cadence for the parametric record.",
-        examples=["annual"],
+        description="Scheduled cadence at which the MDE record for this radar is reviewed and re-validated. Typical values: 'annual', 'biennial', '2-year', '3-year', or an explicit duration. Free-text; emit verbatim when stated.",
+        examples=['annual', 'biennial', '3-year'],
     )
     next_review_date: Optional[str] = metadata_field(
-        description="Next scheduled review date for the record (YYYY-MM-DD).",
-        examples=["2027-04-01"],
+        description='Date of the next scheduled MDE review. Prefer ISO 8601 (YYYY-MM-DD); otherwise emit the date string verbatim as written in the source.',
+        examples=['2026-06-30', 'June 2026'],
     )
 
     platform: Optional["PlatformEntity"] = edge(
@@ -649,195 +641,189 @@ class RadarSystemEntity(BaseModel):
         examples=[["PAC-3 MSE", "SM-6 Block IA"], ["THAAD Interceptor"]],
         default_factory=list,
     )
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
+    confidence: Optional[float] = Field(default=None, description="Overall extraction confidence for this radar instance, 0-1. Combines identity certainty + parametric confidence. Use 0.9-1.0 when identity is from a table/figure caption and parameters are explicit; 0.5-0.8 for prose mentions with partial parameters; <0.5 for inferred / reconstructed values. System-populated — leave null if unsure.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class MissileSystemEntity(BaseModel):
     """Missile System — Guided missile weapon system with seeker, guidance, and propulsion
     """
     model_config = ConfigDict(ontology_name="MISSILE_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
-    system_name: str = Field(..., description="Common name of the missile system", examples=['PAC-3 MSE', 'SM-6 Block IA'])
+    system_name: str = Field(..., description="Canonical designation of the MISSILE / WEAPON SYSTEM itself. Accept canonical proper-noun weapon identifiers from prose when unambiguous (e.g. 'SA-2', 'SA-20', 'PAC-3 MSE', '9M96'). FORBIDDEN values — never emit any of these as system_name because they are radars, not missile/weapon systems: Fan Song, Spoon Rest, Flat Face, Side Net, Flap Lid, Grave Stone, Big Bird, Back Trap, Tombstone, AN/MPQ-53, AN/MPQ-65, AN/SPY-1, AN/SPY-6, AN/TPY-2. Also FORBIDDEN: aircraft / platform / target names (U-2, SR-71, RF-4C, F-4, F-15, F-16, B-52, MiG-21, MiG-23, MiG-29, Su-27) — these are aircraft that may be engaged by a missile, but they are NOT missile systems. If the text says 'U-2 was shot down by SA-2', only emit the missile ('SA-2'). Do NOT emit 'U-2'. Reject descriptive phrases ('the missile', 'the interceptor').", examples=['SA-2', 'SA-20', 'PAC-3 MSE', 'SM-6 Block IA', '9M96'])
 
     # ===== Flat-checklist fields (spec §3.3) =====
-    # Airframe group — Components + Performance
+    # airframe group — sections=['components', 'performance']
     body_length_m: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="airframe",
-        description="Missile body length, meters.",
-        examples=[10.6],
+        sections=['components', 'performance'], subgroup='airframe',
+        description='Overall missile body length in meters, nose-tip to tail (booster included if permanently attached). Typical SAM ranges vary by class. If source gives feet, multiply by 0.3048.',
     )
     body_diameter_m: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="airframe",
-        description="Missile body diameter, meters.",
-        examples=[0.5],
+        sections=['components', 'performance'], subgroup='airframe',
+        description='Missile body diameter (airframe cross-section) in meters. If source gives inches, multiply by 0.0254; if centimeters, divide by 100.',
     )
     total_mass_kg: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="airframe",
-        description="Total missile mass at launch, kilograms.",
-        examples=[2300.0],
+        sections=['components', 'performance'], subgroup='airframe',
+        description="Total missile launch mass in kilograms (all stages + warhead + fuel). If source gives pounds, divide by 2.205. Note: the MDE checklist unit column shows 'deg' in row 20 — that's a source typo; this field is mass in kg.",
     )
     missile_photo: Optional[bool] = profile_field(
-        sections=["components", "performance"], subgroup="airframe",
-        description="Whether a photo of the missile is available in source documents.",
+        sections=['components', 'performance'], subgroup='airframe',
+        description='Whether a missile photograph is included in the record (Y/N). Use null when the document does not state this — do NOT default to false. Emit true only when the text explicitly indicates a photograph is included.',
     )
-
-    # Seeker group — Components + Performance
+    # seeker group — sections=['components', 'performance']
     seeker_type: Optional[str] = profile_field(
-        sections=["components", "performance"], subgroup="seeker",
-        description="Seeker type (e.g. 'semi-active radar', 'IR', 'inertial+command').",
-        examples=["semi-active radar"],
+        sections=['components', 'performance'], subgroup='seeker',
+        description="Terminal-phase seeker technology. Enum values: ACTIVE_RADAR = onboard radar illuminator + receiver (PAC-3, AMRAAM); SEMI_ACTIVE_RADAR = receives target echoes from a separate illuminating radar; PASSIVE_RADAR = detects target's own RF emissions (anti-radiation missiles); IR = infrared / thermal guidance; DUAL_MODE = IR + radar; ARM = anti-radiation homing; GPS_INS = navigation-based (no terminal seeker); COMMAND = no onboard seeker, ground-uplink guidance only from an external control unit.",
     )
-
-    # Booster group — Components + Performance
+    # booster group — sections=['components', 'performance']
     booster_time_sec: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="booster",
-        description="Booster burn duration, seconds.",
-        examples=[5.0],
+        sections=['components', 'performance'], subgroup='booster',
+        description='Booster (first-stage) motor burn duration in seconds. The booster provides initial acceleration from rest to a target velocity at which the sustainer can take over. Typical SAM boosters: 4-10 s.',
+        examples=[6.0, 8.0],
     )
     booster_thrust: Optional[str] = profile_field(
-        sections=["components", "performance"], subgroup="booster",
-        description="Booster thrust (string — units may vary in source documents).",
-        examples=["50 kN"],
+        sections=['components', 'performance'], subgroup='booster',
+        description='Booster-stage thrust. Free-text (see ejector_thrust). Emit verbatim with units as the source provides.',
+        examples=['220 kN', '50000 lbf'],
     )
     booster_mass_kg: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="booster",
-        description="Booster section mass, kilograms.",
-        examples=[200.0],
+        sections=['components', 'performance'], subgroup='booster',
+        description='Booster stage mass (hardware + propellant) in kilograms. For two-stage missiles the booster typically separates after burnout. Typical: 300-1000 kg for medium / long-range SAMs.',
+        examples=[700.0, 1200.0],
     )
-
-    # Sustain group — Components + Performance
+    # sustain group — sections=['components', 'performance']
     sustain_time_sec: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="sustain",
-        description="Sustain motor burn duration, seconds.",
-        examples=[60.0],
+        sections=['components', 'performance'], subgroup='sustain',
+        description='Sustainer (second-stage) motor burn duration in seconds. Sustains the velocity gained from the booster and maintains kinetic energy through the intercept geometry. Typical: 10-30 s for long-range SAMs.',
+        examples=[18.0, 25.0],
     )
     sustain_thrust: Optional[str] = profile_field(
-        sections=["components", "performance"], subgroup="sustain",
-        description="Sustain motor thrust (string — units may vary).",
-        examples=["10 kN"],
+        sections=['components', 'performance'], subgroup='sustain',
+        description='Sustainer-stage thrust. Free-text (see ejector_thrust). Typically lower than booster thrust because the sustainer burns longer at lower pressure.',
+        examples=['50 kN', '11000 lbf'],
     )
     sustain_mass_kg: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="sustain",
-        description="Sustain motor section mass, kilograms.",
-        examples=[100.0],
+        sections=['components', 'performance'], subgroup='sustain',
+        description='Sustainer stage mass (hardware + propellant) in kilograms. For single-stage missiles this is the whole motor. Typical range: 100-500 kg for medium / long-range SAMs.',
+        examples=[250.0, 400.0],
     )
-
-    # Ejector group — Components + Performance
+    # ejector group — sections=['components', 'performance']
     ejector_time_sec: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="ejector",
-        description="Ejector charge burn duration, seconds.",
-        examples=[0.2],
+        sections=['components', 'performance'], subgroup='ejector',
+        description='Ejector / launch-eject stage duration in seconds. The ejector is a low-thrust charge that pushes the missile out of a vertical launch canister before main motor ignition (cold launch). Typical: 0.5-2 s. Null if the missile uses hot launch (no ejector stage).',
+        examples=[1.0, 1.5],
     )
     ejector_thrust: Optional[str] = profile_field(
-        sections=["components", "performance"], subgroup="ejector",
-        description="Ejector charge thrust (string — units may vary).",
+        sections=['components', 'performance'], subgroup='ejector',
+        description='Ejector-stage thrust. Free-text because the checklist unit column is blank — source may give newtons, kilonewtons, or pounds-force. Emit verbatim with the unit the source uses.',
+        examples=['12 kN', '2700 lbf'],
     )
     ejector_mass_kg: Optional[float] = profile_field(
-        sections=["components", "performance"], subgroup="ejector",
-        description="Ejector charge mass, kilograms.",
+        sections=['components', 'performance'], subgroup='ejector',
+        description='Mass of the ejector stage + its expended propellant, in kilograms. Separates from the missile and is discarded before main motor burn. Typical: 5-30 kg.',
+        examples=[20.0, 10.0],
     )
-
-    # Engagement envelope — Performance only
+    # engagement group — sections=['performance']
     min_intercept_km: Optional[float] = profile_field(
-        sections=["performance"], subgroup="engagement",
-        description="Minimum intercept range, kilometers.",
-        examples=[3.0],
+        sections=['performance'], subgroup='engagement',
+        description="Minimum effective intercept / engagement range, in kilometers. Below this range the missile's safety arm, initialization sequence, or terminal-guidance lock-on cannot complete in time. Typical SAMs: 2-10 km minimum. If source gives the value in miles, nautical miles, feet, or meters, convert to km before emitting. Do not copy the raw source number when the source unit is not already kilometers.",
+        examples=[2.0, 5.0],
     )
     max_intercept_km: Optional[float] = profile_field(
-        sections=["performance"], subgroup="engagement",
-        description="Maximum intercept range, kilometers.",
-        examples=[150.0],
+        sections=['performance'], subgroup='engagement',
+        description="Maximum effective intercept / engagement range, in kilometers. The outer edge of the missile's engagement envelope against an assumed target profile. Use the document's effective range value here. Do NOT use slant range, ferry range, or maximum kinematic distance unless the document explicitly says those are the effective engagement range. Convert source units to km.",
+        examples=[35.0, 400.0],
     )
     min_altitude_km: Optional[float] = profile_field(
-        sections=["performance"], subgroup="engagement",
-        description="Minimum engagement altitude, kilometers.",
-        examples=[0.05],
+        sections=['performance'], subgroup='engagement',
+        description='Minimum engagement altitude, in kilometers. Below this altitude the missile cannot acquire or intercept. Legacy SAMs (SA-2) have ~1 km minimum; modern systems reach sea-skimming altitudes (<0.05 km). Only populate when the document explicitly states a minimum altitude / floor; do not infer from generic system knowledge.',
+        examples=[0.05, 1.0],
     )
     max_altitude_km: Optional[float] = profile_field(
-        sections=["performance"], subgroup="engagement",
-        description="Maximum engagement altitude, kilometers.",
-        examples=[30.0],
+        sections=['performance'], subgroup='engagement',
+        description="Maximum engagement altitude (ceiling), in kilometers. The top of the missile's engagement envelope. Classical high-altitude SAMs (SA-2 / S-75): ~25 km. Exo-atmospheric interceptors (SM-3, GBI): >100 km. If the source gives ceiling in feet or meters, convert to km.",
+        examples=[18.0, 35.0, 180.0],
     )
     max_launch_angle_deg: Optional[float] = profile_field(
-        sections=["performance"], subgroup="engagement",
-        description="Maximum launch elevation angle from vertical, degrees.",
-        examples=[60.0],
+        sections=['performance'], subgroup='engagement',
+        description="Maximum launch angle off vertical / elevation, in degrees. For vertical-launch systems this may be fixed at 0° (true vertical) or slightly canted. For tilt-launchers (SA-2, SA-3) it's typically 50-80°. 90° means the launcher can fire horizontally.",
+        examples=[60.0, 80.0],
     )
-
-    # Kinematics — Performance only
+    # kinematics group — sections=['performance']
     average_speed_mps: Optional[float] = profile_field(
-        sections=["performance"], subgroup="kinematics",
-        description="Average flight speed, meters per second.",
+        sections=['performance'], subgroup='kinematics',
+        description='Average in-flight speed in meters per second (averaged over powered + coast phases). If source gives Mach, multiply by ~340 (sea-level Mach ≈ 340 m/s). If km/h, divide by 3.6.',
     )
     max_speed_mps: Optional[float] = profile_field(
-        sections=["performance"], subgroup="kinematics",
-        description="Maximum flight speed, meters per second.",
-        examples=[1100.0],
+        sections=['performance'], subgroup='kinematics',
+        description='Peak in-flight speed in meters per second (typically reached at end of boost phase). Same unit-conversion rules as average_speed_mps.',
     )
     max_flyout_time_sec: Optional[float] = profile_field(
-        sections=["performance"], subgroup="kinematics",
-        description="Maximum flyout duration to engagement, seconds.",
+        sections=['performance'], subgroup='kinematics',
+        description='Maximum total time of flight from launch to intercept or self-destruct, in seconds. Determined by fuel burn + coast dynamics + range. Typical long-range SAMs: 60-120 s.',
+        examples=[60.0, 120.0],
     )
     flight_time_sec: Optional[float] = profile_field(
-        sections=["performance"], subgroup="kinematics",
-        description="Nominal flight duration, seconds.",
+        sections=['performance'], subgroup='kinematics',
+        description='Typical / nominal flight time from launch to expected intercept, in seconds (for a median engagement profile). Shorter than max_flyout_time_sec, which is the worst-case.',
+        examples=[30.0, 60.0],
     )
     coast_time_sec: Optional[float] = profile_field(
-        sections=["performance"], subgroup="kinematics",
-        description="Coast (unpowered) phase duration, seconds.",
+        sections=['performance'], subgroup='kinematics',
+        description='Duration of the unpowered (post-motor-burnout) coast phase, in seconds. The missile relies on residual kinetic energy + aerodynamic control. Longer-range missiles have more coast time; short-range MANPADS may have near-zero coast.',
+        examples=[10.0, 45.0],
     )
     total_burn_time_sec: Optional[float] = profile_field(
-        sections=["performance"], subgroup="kinematics",
-        description="Total powered burn duration across all motors, seconds.",
+        sections=['performance'], subgroup='kinematics',
+        description='Total powered-flight burn time across all propulsion stages (boost + sustain, plus ejector if applicable), in seconds. Excludes any coast phase. Typical long-range two-stage SAMs: 20-40 s total.',
+        examples=[22.0, 35.0],
     )
     intra_salvo_time_sec: Optional[float] = profile_field(
-        sections=["performance"], subgroup="kinematics",
-        description="Inter-shot interval within a salvo, seconds.",
+        sections=['performance'], subgroup='kinematics',
+        description="Time between successive missile launches in a salvo, in seconds. For multi-missile engagements (shoot-look-shoot or ripple-fire tactics). Note: the MDE checklist labels this 'Intra-Solvo Time' — source typo.",
+        examples=[6.0, 30.0],
     )
-
-    # Guidance — Performance only
+    # guidance group — sections=['performance']
     guidance_type: Optional[str] = profile_field(
-        sections=["performance"], subgroup="guidance",
-        description="Guidance approach (e.g. 'command', 'inertial+command+terminal-active').",
-        examples=["command + terminal-SARH"],
+        sections=['performance'], subgroup='guidance',
+        description='Primary guidance method used to drive the missile to intercept. Enum values and meanings: COMMAND = ground station computes aim and uplinks guidance from an external control unit; BEAM_RIDING = missile rides the radar beam to target; SARH = semi-active radar homing (missile homes on target-illuminated RF energy; target illumination from a separate radar); ARH = active radar homing (missile carries its own seeker radar); IR = passive infrared homing; TVM = track-via-missile (missile relays target data back to ground, hybrid command + SARH); GPS_INS = inertial-navigation with GPS updates (usually for mid-course of a longer-range missile); DUAL_MODE = combines two modes (e.g. IR + radar). Many modern missiles combine phases: MID_COURSE + TERMINAL.',
     )
-
-    # Classification — Performance only
+    # classification group — sections=['performance']
     emitter_function: Optional[str] = profile_field(
-        sections=["performance"], subgroup="classification",
-        description="Primary emitter function for the missile's seeker / data link.",
+        sections=['performance'], subgroup='classification',
+        description="MDE-checklist emitter-function field. For a missile weapon system this is typically null (missiles don't usually have their own active emitters; their radar is a separate system). Emit a value only when the source explicitly assigns an emitter function to the missile itself (e.g. missile seeker listed as 'ACTIVE_RADAR_HOMING').",
     )
 
     # Identity adjuncts
     nomenclature: Optional[str] = identity_field(
-        description="Military designation or NATO reporting name.",
-        examples=["MIM-104F"],
+        description='Military designation or NATO reporting name.',
+        examples=['MIM-104F'],
     )
     name: Optional[str] = identity_field(
-        description=(
-            "Secondary alias / common name. The missile schema's secondary "
-            "alias field; rendered after nomenclature on the entity header."
-        ),
+        description="Formal NAME field from the MDE checklist, distinct from the common ``system_name``. Often the full proper name (e.g. 'Patriot Advanced Capability 3 Missile Segment Enhancement'). Emit when the source provides a formal long-form name alongside the short system_name.",
+        examples=['Patriot Advanced Capability 3 MSE', 'S-400 Triumf'],
     )
 
     # System metadata
     dieqp: Optional[str] = metadata_field(
-        description="Digital Intelligence Equipment Parameters cross-reference identifier.",
+        description='Digital Intelligence Equipment Parameters (DIEQP) identifier — a cross-reference ID into the DIEQP database maintained by the MDE (Mission Data Engineering) community. Only appears in IC / MDE source documents. Emit verbatim — do not infer.',
     )
     asrd: Optional[str] = metadata_field(
-        description="ASRD identifier — IC source-of-record reference.",
+        description='ASRD identifier — a catalog code from the All-Source Reference Document, a classified IC catalog. Emit verbatim when explicitly stated; do not infer.',
     )
     system_status: Optional[str] = metadata_field(
-        description="Operational status.",
-        examples=["in service"],
+        description='Lifecycle status of the missile system. Typical values: OPERATIONAL (currently deployed), DEVELOPMENTAL (prototype or pre-IOC), RETIRED (withdrawn from service), UPGRADED (modified variant superseding a base model), EXPORTED (sold to foreign operators only). Emit only when the document explicitly states the status; do not infer it from historical or descriptive text.',
+        examples=['OPERATIONAL', 'RETIRED', 'DEVELOPMENTAL'],
     )
     responsible_agency: Optional[str] = metadata_field(
-        description="Agency or organization that owns the parametric record.",
+        description="Organization responsible for maintaining the MDE record for this missile system. Typically a 3-letter IC acronym (e.g. 'IWC' = Information Warfare Center, 'NASIC' = National Air and Space Intelligence Center, 'ONI' = Office of Naval Intelligence, 'NGIC' = National Ground Intelligence Center, 'MSIC' = Missile and Space Intelligence Center).",
+        examples=['IWC', 'NASIC', 'MSIC'],
     )
     review_cycle: Optional[str] = metadata_field(
-        description="Review cadence for the parametric record.",
+        description="Scheduled cadence at which the MDE record for this missile is reviewed. Typical values: 'annual', 'biennial', '2-year', '3-year', or an explicit duration. Free-text; emit verbatim.",
+        examples=['annual', 'biennial', '3-year'],
     )
     next_review_date: Optional[str] = metadata_field(
-        description="Next scheduled review date for the record (YYYY-MM-DD).",
+        description='Date of the next scheduled MDE review. Prefer ISO 8601 (YYYY-MM-DD); otherwise emit the date string verbatim.',
+        examples=['2026-06-30', 'June 2026'],
     )
 
     platform: Optional["PlatformEntity"] = edge(
@@ -870,7 +856,7 @@ class MissileSystemEntity(BaseModel):
         examples=[["MiG-29", "Cruise Missile"], ["Ballistic Missile"]],
         default_factory=list,
     )
-    confidence: Optional[float] = Field(default=None, description="Extraction confidence for this instance, 0–1.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
+    confidence: Optional[float] = Field(default=None, description="Overall extraction confidence for this missile instance, 0-1. System-populated field. Leave null unless the document itself explicitly provides a confidence value.", ge=0.0, le=1.0, json_schema_extra={"system_field": True})
 
 class AirDefenseArtillerySystemEntity(BaseModel):
     """Air Defense Artillery System — Gun-based air defense system (AAA)

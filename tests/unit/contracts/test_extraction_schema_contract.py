@@ -91,12 +91,12 @@ def test_edge_fields_have_edge_label():
 
 
 @pytest.mark.xfail(
-    reason="Pre-existing schema drift — extraction schemas added flat "
-           "MDE-checklist fields (elnot, dieqp, antenna_*, body_length_m, "
-           "booster_*, sustain_*, ...) that don't yet exist on the canonical "
-           "ontology entities. The R11 oracle reports these as 'not on "
-           "canonical' for every such field. Re-enable once the canonical "
-           "ontology is synced with the checklist-aligned extraction schemas.",
+    reason="The flat-checklist drift the original xfail flagged is resolved "
+           "(elnot, dieqp, antenna_*, body_length_m, booster_*, sustain_*, "
+           "etc. are now on the canonical). Remaining offender: ImageEntity.bbox "
+           "is a nested dict, a structural-anchor field that predates the "
+           "flat-schema profile refactor. Out of scope here; flatten bbox to "
+           "x/y/w/h primitives in a focused follow-up.",
     strict=False,
 )
 def test_no_nested_property_dicts():
