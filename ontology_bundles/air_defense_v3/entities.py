@@ -783,13 +783,189 @@ class MissileSystemEntity(BaseModel):
     model_config = ConfigDict(ontology_name="MISSILE_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
     system_name: str = Field(..., description="Common name of the missile system", examples=['PAC-3 MSE', 'SM-6 Block IA'])
-    nomenclature: Optional[str] = Field(default=None, description="Military designation or NATO reporting name", examples=['MIM-104F'])
-    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code", examples=["DE12345", "DE67890"])
-    system_status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
-    guidance_type: Optional[str] = Field(default=None, description="Primary guidance method used", examples=['Active radar homing'])
-    seeker_nomenclature: Optional[str] = Field(default=None, description="Designation of the terminal guidance seeker", examples=['Ka-band active seeker'])
-    seeker_ELNOT: Optional[str] = Field(default=None, description="ELNOT identifier for the seeker emitter", examples=["ACTIVE_ARRAY", "PD_SEEKER"])
-    seeker_DIEQP: Optional[str] = Field(default=None, description="DIEQP code for the seeker", examples=["DE54321", "DE98765"])
+
+    # ===== Flat-checklist fields (spec §3.3) =====
+    # Airframe group — Components + Performance
+    body_length_m: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="airframe",
+        description="Missile body length, meters.",
+        examples=[10.6],
+    )
+    body_diameter_m: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="airframe",
+        description="Missile body diameter, meters.",
+        examples=[0.5],
+    )
+    total_mass_kg: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="airframe",
+        description="Total missile mass at launch, kilograms.",
+        examples=[2300.0],
+    )
+    missile_photo: Optional[bool] = profile_field(
+        sections=["components", "performance"], subgroup="airframe",
+        description="Whether a photo of the missile is available in source documents.",
+    )
+
+    # Seeker group — Components + Performance
+    seeker_type: Optional[str] = profile_field(
+        sections=["components", "performance"], subgroup="seeker",
+        description="Seeker type (e.g. 'semi-active radar', 'IR', 'inertial+command').",
+        examples=["semi-active radar"],
+    )
+
+    # Booster group — Components + Performance
+    booster_time_sec: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="booster",
+        description="Booster burn duration, seconds.",
+        examples=[5.0],
+    )
+    booster_thrust: Optional[str] = profile_field(
+        sections=["components", "performance"], subgroup="booster",
+        description="Booster thrust (string — units may vary in source documents).",
+        examples=["50 kN"],
+    )
+    booster_mass_kg: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="booster",
+        description="Booster section mass, kilograms.",
+        examples=[200.0],
+    )
+
+    # Sustain group — Components + Performance
+    sustain_time_sec: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="sustain",
+        description="Sustain motor burn duration, seconds.",
+        examples=[60.0],
+    )
+    sustain_thrust: Optional[str] = profile_field(
+        sections=["components", "performance"], subgroup="sustain",
+        description="Sustain motor thrust (string — units may vary).",
+        examples=["10 kN"],
+    )
+    sustain_mass_kg: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="sustain",
+        description="Sustain motor section mass, kilograms.",
+        examples=[100.0],
+    )
+
+    # Ejector group — Components + Performance
+    ejector_time_sec: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="ejector",
+        description="Ejector charge burn duration, seconds.",
+        examples=[0.2],
+    )
+    ejector_thrust: Optional[str] = profile_field(
+        sections=["components", "performance"], subgroup="ejector",
+        description="Ejector charge thrust (string — units may vary).",
+    )
+    ejector_mass_kg: Optional[float] = profile_field(
+        sections=["components", "performance"], subgroup="ejector",
+        description="Ejector charge mass, kilograms.",
+    )
+
+    # Engagement envelope — Performance only
+    min_intercept_km: Optional[float] = profile_field(
+        sections=["performance"], subgroup="engagement",
+        description="Minimum intercept range, kilometers.",
+        examples=[3.0],
+    )
+    max_intercept_km: Optional[float] = profile_field(
+        sections=["performance"], subgroup="engagement",
+        description="Maximum intercept range, kilometers.",
+        examples=[150.0],
+    )
+    min_altitude_km: Optional[float] = profile_field(
+        sections=["performance"], subgroup="engagement",
+        description="Minimum engagement altitude, kilometers.",
+        examples=[0.05],
+    )
+    max_altitude_km: Optional[float] = profile_field(
+        sections=["performance"], subgroup="engagement",
+        description="Maximum engagement altitude, kilometers.",
+        examples=[30.0],
+    )
+    max_launch_angle_deg: Optional[float] = profile_field(
+        sections=["performance"], subgroup="engagement",
+        description="Maximum launch elevation angle from vertical, degrees.",
+        examples=[60.0],
+    )
+
+    # Kinematics — Performance only
+    average_speed_mps: Optional[float] = profile_field(
+        sections=["performance"], subgroup="kinematics",
+        description="Average flight speed, meters per second.",
+    )
+    max_speed_mps: Optional[float] = profile_field(
+        sections=["performance"], subgroup="kinematics",
+        description="Maximum flight speed, meters per second.",
+        examples=[1100.0],
+    )
+    max_flyout_time_sec: Optional[float] = profile_field(
+        sections=["performance"], subgroup="kinematics",
+        description="Maximum flyout duration to engagement, seconds.",
+    )
+    flight_time_sec: Optional[float] = profile_field(
+        sections=["performance"], subgroup="kinematics",
+        description="Nominal flight duration, seconds.",
+    )
+    coast_time_sec: Optional[float] = profile_field(
+        sections=["performance"], subgroup="kinematics",
+        description="Coast (unpowered) phase duration, seconds.",
+    )
+    total_burn_time_sec: Optional[float] = profile_field(
+        sections=["performance"], subgroup="kinematics",
+        description="Total powered burn duration across all motors, seconds.",
+    )
+    intra_salvo_time_sec: Optional[float] = profile_field(
+        sections=["performance"], subgroup="kinematics",
+        description="Inter-shot interval within a salvo, seconds.",
+    )
+
+    # Guidance — Performance only
+    guidance_type: Optional[str] = profile_field(
+        sections=["performance"], subgroup="guidance",
+        description="Guidance approach (e.g. 'command', 'inertial+command+terminal-active').",
+        examples=["command + terminal-SARH"],
+    )
+
+    # Classification — Performance only
+    emitter_function: Optional[str] = profile_field(
+        sections=["performance"], subgroup="classification",
+        description="Primary emitter function for the missile's seeker / data link.",
+    )
+
+    # Identity adjuncts
+    nomenclature: Optional[str] = identity_field(
+        description="Military designation or NATO reporting name.",
+        examples=["MIM-104F"],
+    )
+    name: Optional[str] = identity_field(
+        description=(
+            "Secondary alias / common name. The missile schema's secondary "
+            "alias field; rendered after nomenclature on the entity header."
+        ),
+    )
+
+    # System metadata
+    dieqp: Optional[str] = metadata_field(
+        description="Digital Intelligence Equipment Parameters cross-reference identifier.",
+    )
+    asrd: Optional[str] = metadata_field(
+        description="ASRD identifier — IC source-of-record reference.",
+    )
+    system_status: Optional[str] = metadata_field(
+        description="Operational status.",
+        examples=["in service"],
+    )
+    responsible_agency: Optional[str] = metadata_field(
+        description="Agency or organization that owns the parametric record.",
+    )
+    review_cycle: Optional[str] = metadata_field(
+        description="Review cadence for the parametric record.",
+    )
+    next_review_date: Optional[str] = metadata_field(
+        description="Next scheduled review date for the record (YYYY-MM-DD).",
+    )
+
     guidance_method: Optional["GuidanceMethodEntity"] = edge(
         label="HAS_GUIDANCE",
         description="Guidance method used by this missile system.",
