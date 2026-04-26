@@ -492,29 +492,163 @@ class RadarSystemEntity(BaseModel):
     model_config = ConfigDict(ontology_name="RADAR_SYSTEM", graph_id_fields=['system_name'], identity_scope="global", dodaf_parent="MilitarySystem", is_entity=True)
 
     system_name: str = Field(..., description="Common name of the radar system", examples=['Tombstone', 'Clam Shell'])
-    nomenclature: Optional[str] = Field(default=None, description="Military AN/ or NATO reporting nomenclature", examples=['AN/MPQ-65'])
-    ELNOT: Optional[str] = Field(default=None, description="Electronic Intelligence Notation identifier", examples=['TOMBSTONE'])
-    DIEQP: Optional[str] = Field(default=None, description="Defense Intelligence Equipment identifier code", examples=["DE12345", "DE67890"])
-    radar_type: Optional[str] = Field(default=None, description="Functional category of the radar", json_schema_extra={"enum": ["SEARCH", "FIRE_CONTROL", "TRACKING", "WEATHER", "SAR", "GMTI", "MULTI_FUNCTION", "AESA", "PESA", "MPAR"]})
-    emitter_function: Optional[str] = Field(default=None, description="Primary emitter function or role", examples=['Surveillance and target acquisition'])
-    system_status: Optional[str] = Field(default=None, description="Current lifecycle status", json_schema_extra={"enum": ["DEVELOPMENTAL", "OPERATIONAL", "RETIRED", "PROTOTYPE"]})
-    responsible_agency: Optional[str] = Field(default=None, description="Organization responsible for system management", examples=['PEO IEW&S'])
-    nominal_frequency: Optional[str] = Field(default=None, description="Nominal operating frequency or center frequency", examples=['9.4 GHz'])
-    frequency_limits: Optional[str] = Field(default=None, description="Frequency range limits (min-max)", examples=['8.5-10.5 GHz'])
-    radar_waveform: Optional[str] = Field(default=None, description="Primary waveform type used", examples=['Pulse Doppler LFM chirp'])
-    nominal_PRI: Optional[str] = Field(default=None, description="Nominal pulse repetition interval", examples=['500 us'])
-    PRI_limits: Optional[str] = Field(default=None, description="PRI range limits (min-max)", examples=['200-1000 us'])
-    PRF_limits: Optional[str] = Field(default=None, description="Pulse repetition frequency range limits", examples=['1000-5000 Hz'])
-    nominal_pulse_duration: Optional[str] = Field(default=None, description="Nominal pulse width or duration", examples=['10 us'])
-    pulse_duration_limits: Optional[str] = Field(default=None, description="Pulse duration range limits (min-max)", examples=['1-100 us'])
-    ERP: Optional[str] = Field(default=None, description="Effective radiated power", examples=['1.2 MW'])
-    tx_peak_power: Optional[str] = Field(default=None, description="Transmitter peak power output", examples=['150 kW'])
-    duty_cycle: Optional[float] = Field(default=None, description="Transmitter duty cycle (0.0 to 1.0)", examples=[0.05])
-    gain: Optional[float] = Field(default=None, description="Antenna gain in dBi", examples=[38.0])
-    scan_type: Optional[str] = Field(default=None, description="Antenna scan mode", examples=['Electronic beam steering'])
-    scan_period: Optional[str] = Field(default=None, description="Time for one complete scan cycle", examples=['6 s'])
-    detection_to_designate_time: Optional[str] = Field(default=None, description="Time from detection to target designation", examples=['4 s'])
-    designation_to_launch_time: Optional[str] = Field(default=None, description="Time from designation to missile launch", examples=['8 s'])
+
+    # ===== Flat-checklist fields (spec §3.3) =====
+    # Waveform group — RF Parameters only
+    nominal_rf_mhz: Optional[float] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Nominal radio frequency in MHz at which the radar transmits.",
+        examples=[3000.0, 9300.0],
+    )
+    frequency_excursion_mhz: Optional[float] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Total instantaneous frequency excursion during a coherent processing interval, in MHz.",
+        examples=[5.0, 50.0],
+    )
+    nominal_pri_usec: Optional[float] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Pulse repetition interval in microseconds.",
+        examples=[1000.0],
+    )
+    nominal_pd_usec: Optional[float] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Pulse duration in microseconds.",
+        examples=[1.0],
+    )
+    inter_pulse: Optional[str] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Inter-pulse modulation pattern.",
+        examples=["staggered PRI", "fixed"],
+    )
+    pulses_per_dwell: Optional[int] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Pulses per coherent dwell.",
+        examples=[16],
+    )
+    dwell_time: Optional[float] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Coherent dwell time, seconds.",
+        examples=[0.05],
+    )
+    intra_pulse_mop: Optional[str] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Intra-pulse modulation on pulse.",
+        examples=["LFM", "BPSK"],
+    )
+    num_bits_in_code: Optional[int] = profile_field(
+        sections=["rf_parameters"], subgroup="waveform",
+        description="Number of bits in the phase-code (when phase-coded MOP).",
+        examples=[13],
+    )
+
+    # Antenna group — RF Parameters and Components
+    antenna_dim_az_m: Optional[float] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="Antenna aperture, azimuth dimension, meters.",
+        examples=[6.0],
+    )
+    antenna_dim_el_m: Optional[float] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="Antenna aperture, elevation dimension, meters.",
+        examples=[2.0],
+    )
+    beamwidth_az_deg: Optional[float] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="One-way 3 dB azimuth beamwidth, degrees.",
+        examples=[1.5],
+    )
+    beamwidth_el_deg: Optional[float] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="One-way 3 dB elevation beamwidth, degrees.",
+        examples=[2.0],
+    )
+    gain_dbi: Optional[float] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="Antenna gain, dBi.",
+        examples=[35.0],
+    )
+    antenna_photo: Optional[bool] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="Whether a photo of the antenna is available in source documents.",
+    )
+    spoiled: Optional[bool] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="Whether the antenna pattern is spoiled (broadened) for surveillance.",
+    )
+    coverage_limits_el_deg: Optional[str] = profile_field(
+        sections=["rf_parameters", "components"], subgroup="antenna",
+        description="Elevation coverage limits, degrees (e.g. '0–60').",
+        examples=["0–60"],
+    )
+
+    # Transmit group — RF Parameters and Performance
+    tx_peak_power_kw: Optional[float] = profile_field(
+        sections=["rf_parameters", "performance"], subgroup="transmit",
+        description="Transmitter peak power, kilowatts.",
+        examples=[600.0],
+    )
+    erp_dbw: Optional[float] = profile_field(
+        sections=["rf_parameters", "performance"], subgroup="transmit",
+        description="Effective radiated power, dBW.",
+        examples=[88.0],
+    )
+
+    # Scan group — RF Parameters and Performance
+    scan_type: Optional[str] = profile_field(
+        sections=["rf_parameters", "performance"], subgroup="scan",
+        description="Scan mechanism / mode (e.g. 'mechanical', 'phased-array', 'electronic').",
+        examples=["phased-array"],
+    )
+    scan_period_sec: Optional[float] = profile_field(
+        sections=["rf_parameters", "performance"], subgroup="scan",
+        description="Scan revisit / repeat period, seconds.",
+        examples=[10.0],
+    )
+
+    # Classification group — RF Parameters
+    emitter_function: Optional[str] = profile_field(
+        sections=["rf_parameters"], subgroup="classification",
+        description="Primary emitter function (e.g. 'acquisition', 'tracking', 'engagement').",
+        examples=["tracking"],
+    )
+
+    # Identity adjuncts
+    nomenclature: Optional[str] = identity_field(
+        description=(
+            "Official military nomenclature — formal alphanumeric designator "
+            "(JETDS for US, GRAU index for Russian). Distinct from system_name."
+        ),
+        examples=["AN/MPQ-65", "5N63S", "30N6E"],
+    )
+
+    # System metadata
+    elnot: Optional[str] = metadata_field(
+        description="Emitter library number (ELNOT) — IC enumeration.",
+        examples=["E0123"],
+    )
+    dieqp: Optional[str] = metadata_field(
+        description="Digital Intelligence Equipment Parameters cross-reference identifier.",
+    )
+    asrd: Optional[str] = metadata_field(
+        description="ASRD identifier — IC source-of-record reference.",
+    )
+    system_status: Optional[str] = metadata_field(
+        description="Operational status (e.g. 'in service', 'retired', 'in development').",
+        examples=["in service"],
+    )
+    responsible_agency: Optional[str] = metadata_field(
+        description="Agency or organization that owns the parametric record.",
+        examples=["NASIC"],
+    )
+    review_cycle: Optional[str] = metadata_field(
+        description="Review cadence for the parametric record.",
+        examples=["annual"],
+    )
+    next_review_date: Optional[str] = metadata_field(
+        description="Next scheduled review date for the record (YYYY-MM-DD).",
+        examples=["2027-04-01"],
+    )
+
     platform: Optional["PlatformEntity"] = edge(
         label="INSTALLED_ON",
         description="Platform on which this radar system is installed.",

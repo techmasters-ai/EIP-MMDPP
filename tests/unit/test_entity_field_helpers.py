@@ -53,3 +53,35 @@ def test_identity_field_marks_identity():
     extra = info.json_schema_extra or {}
     assert extra["identity_field"] is True
     assert extra["profile_sections"] == []
+
+
+def test_radar_system_entity_every_field_is_bucketed():
+    """Every domain field on canonical RadarSystemEntity falls into
+    profile-mapped / system_metadata / identity / system_field
+    (spec §3.3 four-bucket contract)."""
+    from ontology_bundles.air_defense_v3.entities import RadarSystemEntity
+
+    graph_id_fields = set(
+        RadarSystemEntity.model_config.get("graph_id_fields", []) or []
+    )
+
+    misclassified = []
+    for fname, finfo in RadarSystemEntity.model_fields.items():
+        if fname in graph_id_fields:
+            continue
+        extra = finfo.json_schema_extra or {}
+        if not isinstance(extra, dict):
+            extra = {}
+        is_profile = bool(extra.get("profile_sections"))
+        is_metadata = extra.get("system_metadata") is True
+        is_identity = extra.get("identity_field") is True
+        is_system = extra.get("system_field") is True
+        is_edge = bool(extra.get("edge_label"))
+        if not (is_profile or is_metadata or is_identity or is_system or is_edge):
+            misclassified.append(fname)
+
+    assert not misclassified, (
+        f"RadarSystemEntity fields not in any of the four buckets "
+        f"(profile-mapped / system_metadata / identity / system_field) "
+        f"or edges: {misclassified}"
+    )
