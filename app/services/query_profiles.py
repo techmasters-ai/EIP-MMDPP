@@ -28,6 +28,33 @@ from app.schemas.query_profiles import (
     QueryProfileTraversal,
 )
 from app.services.ontology_templates import load_ontology, load_repository_ontology
+from ontology_bundles.air_defense_v3.entities import (
+    MissileSystemEntity,
+    RadarSystemEntity,
+)
+
+
+# Service-side dispatch from entity_type string → canonical Pydantic
+# class. Used by _project_field_groups to introspect which class's
+# json_schema_extra to walk for a given resolved root. Kept in sync
+# with app.schemas.query_profiles._CANONICAL_ROOT_ENTITY_TYPES via the
+# contract test in tests/unit/test_query_profiles.py.
+_CANONICAL_BY_ENTITY_TYPE: dict[str, type] = {
+    "RADAR_SYSTEM": RadarSystemEntity,
+    "MISSILE_SYSTEM": MissileSystemEntity,
+}
+
+
+def _canonical_class_for(entity_type: str):
+    cls = _CANONICAL_BY_ENTITY_TYPE.get(entity_type)
+    if cls is None:
+        raise ValueError(
+            f"No canonical Pydantic class registered for entity_type={entity_type!r}; "
+            "section_properties profiles only run against types listed in "
+            "_CANONICAL_BY_ENTITY_TYPE."
+        )
+    return cls
+
 
 _REL_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

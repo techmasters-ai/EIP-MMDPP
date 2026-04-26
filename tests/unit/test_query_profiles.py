@@ -238,3 +238,12 @@ class TestOntologyCacheInvalidation:
         finally:
             mod._invalidation_hooks[:] = original_hooks
 
+
+
+def test_canonical_root_entity_types_in_sync_with_dispatch():
+    """Schema layer's _CANONICAL_ROOT_ENTITY_TYPES must match service
+    layer's _CANONICAL_BY_ENTITY_TYPE keys. Single source of truth in
+    the schema (no circular import); contract test enforces parity."""
+    from app.schemas.query_profiles import _CANONICAL_ROOT_ENTITY_TYPES
+    from app.services.query_profiles import _CANONICAL_BY_ENTITY_TYPE
+    assert set(_CANONICAL_BY_ENTITY_TYPE.keys()) == _CANONICAL_ROOT_ENTITY_TYPES
