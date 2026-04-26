@@ -65,15 +65,27 @@ class QueryProfileFieldGroup(APIModel):
     fields: list[QueryProfileFieldEntry]
 
 
+# Module-local single source of truth for which canonical entity classes
+# section_properties profiles can target. Kept in sync with
+# _CANONICAL_BY_ENTITY_TYPE in app.services.query_profiles via a
+# contract test (Task 15) — the schema layer must not import from the
+# service layer (would create a circular dep).
+_CANONICAL_ROOT_ENTITY_TYPES: frozenset[str] = frozenset({
+    "RADAR_SYSTEM", "MISSILE_SYSTEM",
+})
+
+
 class QueryProfileDefinition(APIModel):
     id: str = Field(..., min_length=1, max_length=100)
     label: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    kind: Literal["section", "dossier"] = "section"
+    kind: Literal["section", "section_properties", "dossier"] = "section"
     exposed: bool = True
     root_entity_types: list[str] = Field(default_factory=list)
     target_entity_types: list[str] = Field(default_factory=list)
     traversals: list[QueryProfileTraversal] = Field(default_factory=list)
+    profile_sections: list[str] = Field(default_factory=list)
+    include_associated_systems: bool = False
     section_profile_ids: list[str] = Field(default_factory=list)
     placeholder_query: Optional[str] = None
 
@@ -88,6 +100,20 @@ class QueryProfileDefinition(APIModel):
             raise ValueError("Section profiles require at least one traversal")
         if self.kind == "dossier" and not self.section_profile_ids:
             raise ValueError("Dossier profiles require at least one section_profile_id")
+        if self.kind == "section_properties":
+            if not self.profile_sections:
+                raise ValueError(
+                    "section_properties profiles require non-empty profile_sections"
+                )
+            unknown = [
+                t for t in self.root_entity_types
+                if t not in _CANONICAL_ROOT_ENTITY_TYPES
+            ]
+            if unknown:
+                raise ValueError(
+                    f"section_properties profiles' root_entity_types must be "
+                    f"in {sorted(_CANONICAL_ROOT_ENTITY_TYPES)}; got unknown: {unknown}"
+                )
         return self
 
 

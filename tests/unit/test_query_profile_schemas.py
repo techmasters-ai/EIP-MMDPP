@@ -1,4 +1,6 @@
 """Schemas added by the flat-schema profile refactor (spec §6)."""
+import pytest
+from pydantic import ValidationError
 
 
 def test_query_profile_field_entry_minimal():
@@ -58,3 +60,33 @@ def test_dossier_section_carries_kind_discriminator():
     assert sec.kind == "section_properties"
     assert sec.field_groups == []
     assert sec.items == []
+
+
+def test_section_properties_requires_profile_sections():
+    from app.schemas.query_profiles import QueryProfileDefinition
+    with pytest.raises(ValidationError, match="profile_sections"):
+        QueryProfileDefinition(
+            id="bad", label="Bad", kind="section_properties",
+            root_entity_types=["RADAR_SYSTEM"],
+            profile_sections=[],
+        )
+
+
+def test_section_properties_root_must_be_canonical():
+    from app.schemas.query_profiles import QueryProfileDefinition
+    with pytest.raises(ValidationError, match="root_entity_types"):
+        QueryProfileDefinition(
+            id="bad", label="Bad", kind="section_properties",
+            root_entity_types=["NONSENSE_TYPE"],
+            profile_sections=["rf_parameters"],
+        )
+
+
+def test_section_properties_valid():
+    from app.schemas.query_profiles import QueryProfileDefinition
+    p = QueryProfileDefinition(
+        id="ok", label="OK", kind="section_properties",
+        root_entity_types=["RADAR_SYSTEM"],
+        profile_sections=["rf_parameters"],
+    )
+    assert p.kind == "section_properties"
