@@ -7,11 +7,15 @@ import {
   searchQueryProfileDossier,
   searchQueryProfileSection,
   type QueryProfileDefinition,
+  type QueryProfileSectionResponse,
+  type QueryProfileDossierResponse,
   type QueryStrategy,
   type ModalityFilter,
   type QueryResultItem,
 } from "../api/client";
 import { GraphView, toGraphElements } from "./GraphView";
+import { FieldGroupTable } from "./FieldGroupTable";
+import { DossierSectionList } from "./DossierSectionList";
 import type cytoscape from "cytoscape";
 
 interface RetrievalModePreset {
@@ -744,6 +748,8 @@ export function QueryPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
+  const [sectionResponse, setSectionResponse] = useState<QueryProfileSectionResponse | null>(null);
+  const [dossierResponse, setDossierResponse] = useState<QueryProfileDossierResponse | null>(null);
 
   const allModes = useMemo(() => [...BASE_MODES, ...profileModes], [profileModes]);
 
@@ -821,6 +827,8 @@ export function QueryPage() {
     setResults(null);
     setTotalResults(0);
     setElapsed(null);
+    setSectionResponse(null);
+    setDossierResponse(null);
     const t0 = performance.now();
 
     try {
@@ -834,21 +842,20 @@ export function QueryPage() {
             evidence_top_k: 3,
             top_k: topK,
           });
-          const flattened = res.sections.flatMap((section) =>
-            section.items.map((item) =>
-              mapGraphProfileItemToResult(item, {
-                profile_id: res.profile_id,
-                profile_label: res.profile_label,
-                registry_id: res.registry_id,
-                section_id: section.profile_id,
-                section_label: section.profile_label,
-                resolved_root: res.resolved_root,
-                root_aliases: res.aliases,
-              }),
-            ),
-          );
-          setResults(flattened);
-          setTotalResults(flattened.length);
+          setDossierResponse(res);
+          setTotalResults(res.total ?? 0);
+          setElapsed(Math.round(performance.now() - t0));
+        } else if (selected.profileKind === "section_properties") {
+          const res = await searchQueryProfileSection({
+            profile_id: selected.profileId,
+            query_text: queryText.trim(),
+            include_aliases: true,
+            include_evidence: true,
+            evidence_top_k: 3,
+            top_k: topK,
+          });
+          setSectionResponse(res);
+          setTotalResults(res.total ?? 0);
           setElapsed(Math.round(performance.now() - t0));
         } else {
           const res = await searchQueryProfileSection({
@@ -1061,6 +1068,47 @@ export function QueryPage() {
       </div>
 
       {error && <div className="alert alert-error" style={{ marginTop: "1rem" }}>{error}</div>}
+
+      {sectionResponse && (
+        <div className="results">
+          <div className="flex-center gap-sm" style={{ marginBottom: "0.5rem" }}>
+            <span className="text-sm text-muted">
+              {sectionResponse.profile_label}
+              {" \u2014 "}
+              {sectionResponse.resolved_root.name}
+              {totalResults > 0
+                ? ` \u2014 ${totalResults} field${totalResults !== 1 ? "s" : ""}`
+                : ""}
+              {elapsed != null && ` \u2014 ${elapsed}ms`}
+            </span>
+          </div>
+          <FieldGroupTable groups={sectionResponse.field_groups} />
+          {sectionResponse.related_systems.length > 0 && (
+            <div className="related-systems mt-md">
+              <strong>Related systems:</strong>{" "}
+              {sectionResponse.related_systems.map((s) => (
+                <span key={s.node_id ?? s.name} className="chip">
+                  {s.entity_type} / {s.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {dossierResponse && (
+        <div className="results">
+          <div className="flex-center gap-sm" style={{ marginBottom: "0.5rem" }}>
+            <span className="text-sm text-muted">
+              {dossierResponse.profile_label}
+              {" \u2014 "}
+              {dossierResponse.resolved_root.name}
+              {elapsed != null && ` \u2014 ${elapsed}ms`}
+            </span>
+          </div>
+          <DossierSectionList sections={dossierResponse.sections} />
+        </div>
+      )}
 
       {results !== null && (
         <div className="results">

@@ -637,6 +637,7 @@ export interface QueryProfileDossierResponse {
   resolved_root: GraphProfileEntityResult;
   aliases: string[];
   sections: QueryProfileDossierSection[];
+  total?: number;
 }
 
 export async function listQueryProfileRegistries(): Promise<QueryProfileRegistry[]> {
