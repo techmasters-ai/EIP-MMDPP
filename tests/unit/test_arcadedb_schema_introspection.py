@@ -24,7 +24,7 @@ def test_entity_vertex_classes_cover_ALL_ENTITIES():
     # (Components remain in ALL_ENTITIES even when is_entity=False.)
     assert "PLATFORM" in names
     assert "RADAR_SYSTEM" in names
-    assert "MODULATION" in names  # demoted-to-component in Chunk B, still present
+    assert "MISSILE_SYSTEM" in names  # canonical system class retained post-flat-schema refactor
 
 
 def test_relationship_types_list_is_non_empty():

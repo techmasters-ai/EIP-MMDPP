@@ -26,7 +26,7 @@ class TestLoadOntology:
         names = [et["name"] for et in ontology["entity_types"]]
         assert "EQUIPMENT_SYSTEM" in names
         assert "COMPONENT" in names
-        assert "STANDARD" in names
+        assert "RADAR_SYSTEM" in names
 
     def test_relationship_types_present(self):
         from app.services.ontology_templates import load_ontology
@@ -35,7 +35,7 @@ class TestLoadOntology:
         names = [rt["name"] for rt in ontology["relationship_types"]]
         assert "PART_OF" in names
         assert "CONTAINS" in names
-        assert "SPECIFIED_BY" in names
+        assert "INSTALLED_ON" in names
 
 
 class TestPropertyEnrichment:
