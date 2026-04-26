@@ -355,3 +355,27 @@ async def test_fetch_section_items_property_branch():
     groups = await _fetch_section_items(graph_store, resolved, request, profile)
     assert len(groups) >= 1
     assert any(f.name == "gain_dbi" for g in groups for f in g.fields)
+
+
+def test_starter_profiles_use_section_properties():
+    from app.services.query_profiles import build_default_registry_template
+
+    template = build_default_registry_template()
+    profiles = {p.id: p for p in template.profiles}
+
+    for sid in ("system_rf_parameters", "system_components", "system_performance"):
+        assert profiles[sid].kind == "section_properties", (
+            f"Expected {sid} to be kind=section_properties (post-refactor)"
+        )
+
+    components = profiles["system_components"]
+    assert components.include_associated_systems is True
+
+    rf = profiles["system_rf_parameters"]
+    assert rf.profile_sections == ["rf_parameters"]
+
+    dossier = profiles["system_dossier"]
+    assert dossier.kind == "dossier"
+    assert dossier.section_profile_ids == [
+        "system_rf_parameters", "system_components", "system_performance",
+    ]

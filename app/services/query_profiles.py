@@ -256,131 +256,65 @@ def build_default_registry_template() -> QueryProfileRegistryCreate:
     rf_rels = _filter_known(_CURRENT_RF_REL_TYPES, relationship_names)
     performance_rels = _filter_known(_CURRENT_PERFORMANCE_REL_TYPES, relationship_names)
 
+    canonical_root_types = ["RADAR_SYSTEM", "MISSILE_SYSTEM"]
+
     profiles = [
         QueryProfileDefinition(
-            id="system_dossier",
-            label="System Dossier",
+            id="system_rf_parameters",
+            label="System RF Parameters",
             description=(
-                "Resolve a military system and return the configured exact graph sections "
-                "for components, RF parameters, and performance characteristics."
+                "Frequency, antenna, scan, modulation, and other RF descriptors "
+                "of the resolved system."
             ),
-            kind="dossier",
+            kind="section_properties",
             exposed=True,
-            root_entity_types=root_types,
-            section_profile_ids=[
-                "system_components",
-                "system_rf_parameters",
-                "system_performance",
-            ],
-            placeholder_query="e.g. AN/MPQ-65 or PAC-3 MSE",
+            root_entity_types=canonical_root_types,
+            profile_sections=["rf_parameters"],
+            placeholder_query="e.g. Fan Song",
         ),
         QueryProfileDefinition(
             id="system_components",
             label="System Components",
-            description="Traverse subsystem/component structure and part hierarchy.",
-            kind="section",
+            description=(
+                "Antenna, propulsion, seeker, ejector, body, and other physical "
+                "components of the resolved system."
+            ),
+            kind="section_properties",
             exposed=True,
-            root_entity_types=root_types,
-            target_entity_types=[],
-            traversals=[
-                QueryProfileTraversal(
-                    steps=[
-                        QueryProfileStep(
-                            direction="out",
-                            rel_types=structure_rels or _CURRENT_STRUCTURE_REL_TYPES,
-                            min_hops=1,
-                            max_hops=3,
-                        )
-                    ]
-                ),
-                QueryProfileTraversal(
-                    steps=[
-                        QueryProfileStep(
-                            direction="in",
-                            rel_types=part_rels or _CURRENT_PART_REL_TYPES,
-                            min_hops=1,
-                            max_hops=3,
-                        )
-                    ]
-                ),
-            ],
-            placeholder_query="e.g. AN/MPQ-65",
-        ),
-        QueryProfileDefinition(
-            id="system_rf_parameters",
-            label="System RF Parameters",
-            description="Find band, waveform, emitter, receiver, seeker, and RF specification nodes.",
-            kind="section",
-            exposed=True,
-            root_entity_types=root_types,
-            target_entity_types=rf_types,
-            traversals=[
-                QueryProfileTraversal(
-                    steps=[
-                        QueryProfileStep(
-                            direction="out",
-                            rel_types=rf_rels or _CURRENT_RF_REL_TYPES,
-                            min_hops=1,
-                            max_hops=2,
-                        )
-                    ]
-                ),
-                QueryProfileTraversal(
-                    steps=[
-                        QueryProfileStep(
-                            direction="out",
-                            rel_types=structure_rels or _CURRENT_STRUCTURE_REL_TYPES,
-                            min_hops=1,
-                            max_hops=1,
-                        ),
-                        QueryProfileStep(
-                            direction="out",
-                            rel_types=rf_rels or _CURRENT_RF_REL_TYPES,
-                            min_hops=1,
-                            max_hops=2,
-                        ),
-                    ]
-                ),
-            ],
-            placeholder_query="e.g. AN/MPQ-65",
+            root_entity_types=canonical_root_types,
+            profile_sections=["components"],
+            include_associated_systems=True,
+            placeholder_query="e.g. SA-2",
         ),
         QueryProfileDefinition(
             id="system_performance",
             label="System Performance",
-            description="Find performance, capability, engagement, guidance, and specification nodes.",
-            kind="section",
+            description=(
+                "Engagement envelope, kinematics, transmit power, and propulsion "
+                "timing for the resolved system."
+            ),
+            kind="section_properties",
             exposed=True,
-            root_entity_types=root_types,
-            target_entity_types=performance_types,
-            traversals=[
-                QueryProfileTraversal(
-                    steps=[
-                        QueryProfileStep(
-                            direction="out",
-                            rel_types=performance_rels or _CURRENT_PERFORMANCE_REL_TYPES,
-                            min_hops=1,
-                            max_hops=2,
-                        )
-                    ]
-                ),
-                QueryProfileTraversal(
-                    steps=[
-                        QueryProfileStep(
-                            direction="out",
-                            rel_types=structure_rels or _CURRENT_STRUCTURE_REL_TYPES,
-                            min_hops=1,
-                            max_hops=1,
-                        ),
-                        QueryProfileStep(
-                            direction="out",
-                            rel_types=performance_rels or _CURRENT_PERFORMANCE_REL_TYPES,
-                            min_hops=1,
-                            max_hops=2,
-                        ),
-                    ]
-                ),
+            root_entity_types=canonical_root_types,
+            profile_sections=["performance"],
+            placeholder_query="e.g. SA-2",
+        ),
+        QueryProfileDefinition(
+            id="system_dossier",
+            label="System Dossier",
+            description=(
+                "Composite report of RF parameters, components, and performance "
+                "for the resolved system."
+            ),
+            kind="dossier",
+            exposed=True,
+            root_entity_types=canonical_root_types,
+            section_profile_ids=[
+                "system_rf_parameters",
+                "system_components",
+                "system_performance",
             ],
-            placeholder_query="e.g. PAC-3 MSE",
+            placeholder_query="e.g. SA-2",
         ),
     ]
 
