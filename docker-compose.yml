@@ -253,6 +253,7 @@ services:
               capabilities: [gpu]
     volumes:
       - ./app:/app/app
+      - ./ontology_bundles:/app/ontology_bundles
       - model_cache:/root/.cache
 
   # ---------------------------------------------------------------------------
@@ -293,6 +294,7 @@ services:
         --concurrency=${WORKER_CONCURRENCY:-4}
     volumes:
       - ./app:/app/app
+      - ./ontology_bundles:/app/ontology_bundles
       - model_cache:/root/.cache
       - watch_dirs:/watch
     extra_hosts:
@@ -335,6 +337,7 @@ services:
         --hostname=worker-ingest@%h
     volumes:
       - ./app:/app/app
+      - ./ontology_bundles:/app/ontology_bundles
       - model_cache:/root/.cache
       - watch_dirs:/watch
     extra_hosts:
@@ -370,6 +373,7 @@ services:
         --hostname=worker-embed@%h
     volumes:
       - ./app:/app/app
+      - ./ontology_bundles:/app/ontology_bundles
       - model_cache:/root/.cache
     extra_hosts:
       - "ollama:host-gateway"
@@ -406,6 +410,7 @@ services:
         --hostname=worker-graph@%h
     volumes:
       - ./app:/app/app
+      - ./ontology_bundles:/app/ontology_bundles
       - model_cache:/root/.cache
     extra_hosts:
       - "ollama:host-gateway"
