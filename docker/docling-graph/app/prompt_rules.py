@@ -4,17 +4,12 @@
    stock ``get_delta_batch_prompt`` system string with
    ``ontology_bundles._shared.prompt_rules.DELTA_SYSTEM_PROMPT``.
 
-2. The semantic-guide budget expansion — the library's
-   ``build_compact_semantic_guide`` defaults to 250 chars per field +
-   4000 chars total, which **truncates carefully-crafted FORBIDDEN-values
-   blocks and unit-conversion instructions** mid-sentence and **drops
-   entire flat-checklist fields off the end** of the guide once the
-   total cap is hit. For RadarSystemEntity (~30 fields with rich
-   descriptions) this means fields like ``nominal_rf_mhz``,
-   ``scan_type``, ``antenna_dim_az_m``, ``beamwidth_az_deg`` etc. don't
-   appear in the prompt at all — the LLM has no guidance to populate
-   them. We override the defaults to give the full descriptions room
-   to breathe (1500/30000).
+2. The semantic-guide rewrite — the library's default guide truncates
+   fields too aggressively and also renders schema examples inline
+   (``e.g. 38.0``), which is harmful for numeric extraction. We expand
+   the budget but sanitize the LLM-facing schema first: numeric examples
+   are removed, typical-value ranges are stripped from numeric
+   descriptions, and long forbidden-identity lists are compressed.
 
 Both wrappers patch every downstream module that holds a local binding
 to the original function (``from X import Y`` captures at import time;
@@ -24,21 +19,149 @@ Install from the FastAPI startup path (``main.py``) — idempotent.
 """
 from __future__ import annotations
 
+import copy
 import logging
+import re
 from typing import Any, Callable
 
 from ontology_bundles._shared.prompt_rules import select_delta_system_prompt
+
+from app._numeric_candidates import (
+    extract_numeric_candidates,
+    render_candidate_block,
+)
 
 logger = logging.getLogger(__name__)
 
 _INSTALLED = False
 
-# Large enough to fit RadarSystemEntity's 30+ fields with their full
-# FORBIDDEN-values blocks, unit-conversion instructions, and enum
-# explanations. The library's defaults (250 / 4000) cause silent
-# truncation that drops half the flat-checklist fields off the prompt.
+# Large enough to fit RadarSystemEntity's 30+ fields after LLM-facing
+# sanitization. The library's defaults (250 / 4000) cause silent truncation
+# that drops half the flat-checklist fields off the prompt.
 _SEMANTIC_GUIDE_MAX_CHARS_PER_FIELD = 1500
 _SEMANTIC_GUIDE_MAX_TOTAL_CHARS = 30000
+
+_TYPICAL_NUMERIC_PHRASES = (
+    "typical",
+    "common radar bands",
+    "common barker",
+    "phased arrays",
+    "classical high-altitude",
+    "exo-atmospheric",
+)
+
+
+def _schema_allows_numeric(schema: Any) -> bool:
+    """Return True when a JSON-schema fragment permits number/integer."""
+    if not isinstance(schema, dict):
+        return False
+    schema_type = schema.get("type")
+    if schema_type in {"number", "integer"}:
+        return True
+    if isinstance(schema_type, list) and any(t in {"number", "integer"} for t in schema_type):
+        return True
+    for key in ("anyOf", "oneOf", "allOf"):
+        variants = schema.get(key)
+        if isinstance(variants, list) and any(_schema_allows_numeric(item) for item in variants):
+            return True
+    return False
+
+
+def _split_description_sentences(description: str) -> list[str]:
+    """Split on sentence boundaries while preserving decimal numbers."""
+    return [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+", description.strip())
+        if part.strip()
+    ]
+
+
+def _sanitize_numeric_description(description: str) -> str:
+    sentences = _split_description_sentences(description)
+    kept: list[str] = []
+    for sentence in sentences:
+        lowered = sentence.lower()
+        if any(phrase in lowered for phrase in _TYPICAL_NUMERIC_PHRASES):
+            continue
+        if lowered.startswith("higher gain ="):
+            continue
+        kept.append(sentence)
+
+    result = " ".join(kept).strip() or description.strip()
+    reminder = (
+        "Emit only a value directly stated by the source for this exact "
+        "field, or a mechanically converted value from an explicit source "
+        "value; otherwise emit null."
+    )
+    if reminder not in result:
+        result = f"{result} {reminder}"
+    return result
+
+
+def _compress_forbidden_identity_description(description: str) -> str:
+    if "FORBIDDEN values" not in description or len(description) <= 700:
+        return description
+
+    first_sentence = _split_description_sentences(description)[0]
+    lowered = description.lower()
+    if "weapon/missile systems, not radars" in lowered:
+        forbidden_summary = (
+            "Never emit weapon or missile systems, aircraft, platforms, or "
+            "target names as radar system_name. Examples of forbidden "
+            "associated names include SA-2, SA-3, Patriot, S-300/S-400, "
+            "U-2, SR-71, F-series aircraft, MiG aircraft, and Su aircraft. "
+            "If the text gives only an associated weapon/platform/target, "
+            "omit the radar entity; if it also states the radar's own name, "
+            "emit that radar name."
+        )
+    elif "radars, not missile/weapon systems" in lowered:
+        forbidden_summary = (
+            "Never emit radar names, aircraft, platforms, or target names "
+            "as missile system_name. Examples of forbidden associated names "
+            "include Fan Song, Spoon Rest, Flap Lid, Tombstone, AN/MPQ-65, "
+            "AN/SPY-1, U-2, SR-71, F-series aircraft, MiG aircraft, and Su "
+            "aircraft. If the text gives only an associated radar/platform/"
+            "target, omit the missile entity; if it also states the missile's "
+            "own name, emit that missile name."
+        )
+    else:
+        forbidden_summary = (
+            "Never emit associated systems, platforms, or targets as this "
+            "entity identity. Emit only the entity's own canonical name when "
+            "the current batch states it directly."
+        )
+    return f"{first_sentence} {forbidden_summary} Reject descriptive phrases."
+
+
+def sanitize_schema_for_llm(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return an LLM-facing schema copy with low-signal prompt noise removed.
+
+    This does not change the Pydantic model, validators, persisted output
+    schema, or downstream postprocessing. It only changes what the model sees
+    in the compact semantic guide and structured-output request.
+    """
+    sanitized = copy.deepcopy(schema)
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            if _schema_allows_numeric(node):
+                node.pop("examples", None)
+                description = node.get("description")
+                if isinstance(description, str):
+                    node["description"] = _sanitize_numeric_description(description)
+            else:
+                description = node.get("description")
+                if isinstance(description, str):
+                    node["description"] = _compress_forbidden_identity_description(description)
+
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(sanitized)
+    return sanitized
 
 
 def install() -> None:
@@ -65,6 +188,24 @@ def install() -> None:
         result = original(*args, **kwargs)
         if isinstance(result, dict) and "system" in result:
             result["system"] = select_delta_system_prompt(*args, **kwargs)
+        # Phase A item 5: inject numeric-candidate hint block after the
+        # batch-document section. Pre-extracted regex spans tell the LLM
+        # which numeric values appear verbatim, turning numeric extraction
+        # from "copy a number" into "classify a span" — much easier for
+        # general-purpose models.
+        if isinstance(result, dict) and "user" in result:
+            batch_md = kwargs.get("batch_markdown", "")
+            if isinstance(batch_md, str) and batch_md:
+                candidates = extract_numeric_candidates(batch_md)
+                block = render_candidate_block(candidates)
+                if block:
+                    user_text = result["user"]
+                    marker = "=== END BATCH DOCUMENT ==="
+                    if marker in user_text:
+                        before, after = user_text.split(marker, 1)
+                        result["user"] = before + marker + "\n\n" + block + after.lstrip("\n")
+                    else:
+                        result["user"] = user_text + "\n\n" + block
         return result
 
     wrapped.__wrapped__ = original  # type: ignore[attr-defined]
@@ -91,7 +232,7 @@ def install() -> None:
                       max_total_chars: int = _SEMANTIC_GUIDE_MAX_TOTAL_CHARS,
                       max_depth: int = 3) -> str:
         return original_guide(
-            schema,
+            sanitize_schema_for_llm(schema),
             max_chars_per_field=max_chars_per_field,
             max_total_chars=max_total_chars,
             max_depth=max_depth,

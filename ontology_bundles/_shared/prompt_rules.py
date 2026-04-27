@@ -417,7 +417,30 @@ Before returning JSON, ensure:
 * unsupported missile fields are `null`
 * no inferred enrichment is included
 * all evidence comes from the current batch only
-* output is strict valid JSON and nothing else"""
+* output is strict valid JSON and nothing else
+
+
+## Unit Policy (mechanical conversions only)
+
+Every numeric field is named with its target unit (e.g. `nominal_rf_mhz`,
+`tx_peak_power_kw`, `gain_dbi`, `body_length_m`). Apply mechanical conversion
+ONLY when the source value AND its unit are both explicit in the batch:
+
+* **Frequency:** `*_mhz` accepts MHz. `kHz → MHz`: divide by 1000. `GHz → MHz`: multiply by 1000.
+* **Power (peak):** `*_peak_power_kw` accepts kW. `W → kW`: divide by 1000. `MW → kW`: multiply by 1000.
+* **Power (effective radiated):** `erp_dbw` accepts dBW. `dBm → dBW`: subtract 30. Watts: emit `null` (log conversion is interpretive).
+* **Gain / loss:** `*_dbi` accepts dBi. `dBd → dBi`: add 2.15. dB without reference: emit `null`.
+* **Time / period:** `*_sec` accepts seconds. `ms → s`: divide by 1000. `min → s`: multiply by 60. `*_usec` accepts microseconds; ns → µs divide by 1000.
+* **Distance:** `*_km` accepts kilometres. `m → km`: divide by 1000. `nautical miles → km`: multiply by 1.852. `miles → km`: multiply by 1.609. `*_m` accepts metres; mm → m divide by 1000; cm → m divide by 100; ft → m multiply by 0.3048; in → m multiply by 0.0254.
+* **Mass:** `*_kg` accepts kilograms. `g → kg`: divide by 1000. `lb → kg`: divide by 2.205. `t → kg`: multiply by 1000.
+* **Speed:** `*_mps` accepts metres per second. `km/h → m/s`: divide by 3.6. `Mach → m/s`: multiply by ~340 at sea level.
+* **Angle:** `*_deg` accepts degrees. `rad → deg`: multiply by 57.2958. `mil (NATO) → deg`: divide by 17.778.
+
+Conversion guardrails:
+
+* If the source unit is missing, ambiguous, or implicit, emit `null`.
+* If the source value is a range ("2-5 km"), emit the upper bound only when the field name implies a maximum (`max_*`); otherwise emit `null`.
+* Never invent a value. Never copy a field's example annotation. Never compute from world knowledge."""
 
 
 RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT: str = DELTA_SYSTEM_PROMPT + """

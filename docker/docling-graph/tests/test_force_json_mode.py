@@ -1,10 +1,9 @@
 """Tests for DOCLING_GRAPH_FORCE_JSON_MODE kill switch.
 
-Validates that setting the env var flips force_json_mode True, which
-_patched_build_request then uses to bypass Ollama's constrained
-grammar (format=<schema>) and fall through to loose format="json".
-Required for mid-size models (gemma4:26b, gemma3:27b) where the
-schema-grammar sampler produces unterminated-string JSON parse errors.
+Validates that force_json_mode defaults on, and that setting the env var
+can still override it. _patched_build_request uses this to bypass
+Ollama's constrained grammar (format=<schema>) and fall through to loose
+format="json".
 """
 import importlib.util
 from pathlib import Path
@@ -24,11 +23,11 @@ def _load_service_config():
     return module
 
 
-def test_force_json_mode_default_false(monkeypatch):
+def test_force_json_mode_default_true(monkeypatch):
     monkeypatch.delenv("DOCLING_GRAPH_FORCE_JSON_MODE", raising=False)
     config = _load_service_config()
     settings = config.ServiceSettings()
-    assert settings.force_json_mode is False
+    assert settings.force_json_mode is True
 
 
 def test_force_json_mode_reads_env(monkeypatch):

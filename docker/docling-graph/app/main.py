@@ -114,8 +114,11 @@ def _patched_build_request(
                 details={"error": str(e), "schema_json_preview": (schema_json or "")[:200]},
                 cause=e,
             ) from e
+        from app.prompt_rules import sanitize_schema_for_llm
+
+        schema_for_llm = sanitize_schema_for_llm(schema_dict)
         normalized = normalize_schema_for_response_format(
-            schema_dict,
+            schema_for_llm,
             top_level=response_top_level,
             name=response_schema_name,
         )
@@ -133,7 +136,7 @@ def _patched_build_request(
             #      constrained decoding, also fall through to loose json.
             #   3. Otherwise send the raw schema.
             from app.config import settings as _service_settings
-            schema_str = json.dumps(schema_dict)
+            schema_str = json.dumps(schema_for_llm)
             threshold = _service_settings.structured_output_threshold_chars
             if _service_settings.force_json_mode:
                 _logger.info(
@@ -145,7 +148,7 @@ def _patched_build_request(
                 _logger.info("Schema too large for Ollama format= (%d chars), using format='json'", len(schema_str))
                 request["format"] = "json"
             else:
-                request["format"] = schema_dict
+                request["format"] = schema_for_llm
     else:
         request["response_format"] = {"type": "json_object"}
         if is_ollama:
