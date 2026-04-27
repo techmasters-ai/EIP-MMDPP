@@ -213,8 +213,20 @@ Key shape points:
   pattern. Per-pass `coerce_optional_float` validators copied from
   canonical for numeric fields.
 - **Description text** is hand-copied from existing canonical /
-  extraction-side schemas. Per-Session-1 acceptance: explicit
-  duplication preferred over a description-drift contract test.
+  extraction-side schemas, **with two sanitization rules applied at
+  copy time**:
+  a. Strip the FORBIDDEN-values block from `system_name`'s
+     description. Forbidden-name enforcement is delegated to
+     `validate_radar_system_name` (validator-side, not prompt-side),
+     so the description doesn't need the verbose list. Replace with
+     a one-sentence summary.
+  b. Strip "Typical X-band ground radars: ..." / "Common radar bands"
+     / similar typical-value-range prose from numeric field
+     descriptions (these confuse the model per Phase A diagnosis).
+  The description-quality assertions in §5.1 enforce both rules.
+  Per-Session-1 acceptance: explicit duplication preferred over a
+  description-drift contract test (description-prose drift outside
+  the two sanitization rules is accepted Session-1 cost).
 
 ### 4.5 Manifest changes
 
@@ -303,6 +315,11 @@ Zero code change in any of the following:
   worker-side merger aggregates `_field_evidence` across passes by
   `(instance_id, field_name)`, so a single `RADAR_SYSTEM` vertex ends
   up with `_field_evidence` keys spanning all groups.
+- **Evidence-gate post-processor logic** — the
+  `_postprocess_air_defense_radars` function body (the actual
+  validation / canonicalization logic) is preserved as-is; only the
+  `pass_name` dispatch in `_run_post_extraction_evidence_gate` needs
+  the cutover update enumerated in §4.8.
 - **`merge_and_resolve`** — already keys by `LogicalIdentity`
   (`system_name`). 5 sub-passes emitting the same `system_name="Fan
   Song"` collapse to one `MergedEntityRecord`. Property merge unions
@@ -317,26 +334,35 @@ must be updated as part of the manifest cutover. Missing any of these
 is a silent correctness regression, not a test failure.**
 
 - **`app/workers/pipeline.py::_DOMAIN_PASS_NAMES`** (around line 382) —
-  frozenset feeds `_classify_extraction_quality`. After cutover,
-  `radar_domain` no longer appears in `pass_outcomes`; a successful
-  radar extraction via the 5 sub-passes wouldn't match the `domain_hit`
-  check, and the pipeline run could be classified `degraded` /
-  `anomaly` even when the new passes returned HIT. Update to include
-  all 5 new pass names: `{"radar_identity", "radar_power_rf",
-  "radar_antenna", "radar_timing", "radar_modulation",
-  "missile_domain"}`. Verify `_classify_extraction_quality`'s OR-logic
-  treats *any* radar sub-pass returning HIT as a domain hit (not a
-  per-pass AND).
+  frozenset feeds `_classify_extraction_quality`. Current value:
+  `{"radar_domain", "missile_domain", "other_systems", "system_links"}`.
+  After cutover, `radar_domain` no longer appears in `pass_outcomes`;
+  a successful radar extraction via the 5 sub-passes wouldn't match
+  the `domain_hit` check, and the pipeline run could be classified
+  `degraded` / `anomaly` even when the new passes returned HIT.
+  **Replacement set:**
+  `{"radar_identity", "radar_power_rf", "radar_antenna",
+  "radar_timing", "radar_modulation", "missile_domain",
+  "system_links"}`. Note the replacement preserves `"system_links"`
+  (otherwise system-link-only HITs lose domain-hit credit) and drops
+  `"other_systems"` (no longer a manifest pass; dead in the existing
+  set). Verify `_classify_extraction_quality`'s OR-logic treats *any*
+  radar sub-pass returning HIT as a domain hit (not a per-pass AND).
 
 - **`docker/docling-graph/app/evidence_gate.py::_run_post_extraction_evidence_gate`**
   (around line 317) — dispatches to `_postprocess_air_defense_radars`
   only when `pass_name == "radar_domain"`. After cutover, none of the
   5 sub-passes match this string, so radar-side evidence-gate post-
   processing (status validation, identity sanity checks) is silently
-  bypassed. Update the dispatch to recognize the 5 new names. Confirm
-  the post-processor function is idempotent across multiple sub-pass
-  invocations on the same document (since 5 sub-passes will each
-  trigger it; merge dedup happens later).
+  bypassed. Update the dispatch to recognize the 5 new names.
+  **Idempotency contract:** each sub-pass invocation hands the post-
+  processor only that group's slice of fields. The post-processor
+  must (a) not assume all radar fields are present on a single record
+  — only the group's subset is — and (b) merge gracefully across
+  invocations on the same `system_name`. Verify `_postprocess_air_defense_radars`
+  satisfies both before cutover; if it currently asserts presence of
+  e.g. `gain_dbi` (an antenna-pass field) when called from the
+  identity pass, it'll false-fail.
 
 - **`docker/docling-graph/app/schemas.py`** (around line 55) — docstring
   example references `pass_name="radar_domain"`. Low-risk; update the
@@ -345,15 +371,33 @@ is a silent correctness regression, not a test failure.**
 
 **Test fixtures with hardcoded pass names:**
 
-- `tests/docker/docling-graph/test_extract_pass_endpoint.py`
-- `tests/docker/docling-graph/test_service_identity_gate.py`
+- `docker/docling-graph/tests/test_extract_pass_endpoint.py`
+- `docker/docling-graph/tests/test_service_identity_gate.py`
 
-Both pin `pass_name="radar_domain"` in their request fixtures. Either
-update fixtures to a sub-pass name (e.g. `radar_identity`) or document
-in a regression-fixture justification why the legacy name is preserved
-(e.g. these tests verify the legacy radar_domain.py module still loads
-even though it's not in the manifest). Default plan: update to
-`radar_identity`.
+Both pin `pass_name="radar_domain"` in their request fixtures. Default
+plan: update to `pass_name="radar_identity"`.
+
+**Special case:** `test_service_identity_gate.py` line 5 has
+`from ontology_bundles.air_defense_v3.extraction_schemas.radar_domain
+import RadarDomainPass`. This is a **class import**, not a pass-name
+literal. Because `radar_domain.py` is kept in source (legacy
+reference per §6 step 4), the import still resolves. **Keep the
+import as-is** — it explicitly verifies the legacy module still loads
+even though it's not in the manifest. Add a one-line comment marking
+the test as a legacy-loadability regression check.
+
+**Manifest-shape test that asserts the pass count:**
+
+- `tests/unit/test_ontology_bundles.py` (lines 5-19) hard-asserts
+  `len(m.passes) == 3` and the set
+  `{"radar_domain", "missile_domain", "system_links"}`. After cutover
+  this becomes 7 passes with a different set. **Update the test** to
+  assert the new shape: `len(m.passes) == 7` and the set
+  `{"radar_identity", "radar_power_rf", "radar_antenna",
+  "radar_timing", "radar_modulation", "missile_domain",
+  "system_links"}`. This is materially different from a generic
+  `radar_domain` synthetic-pass-name reference and is the most likely
+  test to break silently if missed.
 
 ## 5. Tests
 
@@ -476,12 +520,22 @@ In commit order. Main stays green at every step.
        dispatch
      - `docker/docling-graph/app/schemas.py` docstring example
    - Update **test fixtures** in
-     `tests/docker/docling-graph/test_extract_pass_endpoint.py` and
-     `tests/docker/docling-graph/test_service_identity_gate.py` from
+     `docker/docling-graph/tests/test_extract_pass_endpoint.py` and
+     `docker/docling-graph/tests/test_service_identity_gate.py` from
      `pass_name="radar_domain"` to `pass_name="radar_identity"`.
-   - Sweep remaining tests + dashboards for hardcoded `"radar_domain"`
-     literal references; update to either generic phrasing or
-     `radar_identity`.
+     (Keep the `from ...radar_domain import RadarDomainPass` line in
+     `test_service_identity_gate.py` as a legacy-loadability check;
+     add a one-line comment.)
+   - Update **manifest-shape assertions** in
+     `tests/unit/test_ontology_bundles.py` (lines 5-19) from
+     `len(m.passes) == 3` and the radar_domain/missile_domain/system_links
+     set to `len(m.passes) == 7` and the new 7-pass set.
+   - Sweep remaining tests for hardcoded `"radar_domain"` literal
+     references. Most occurrences in `tests/unit/test_extraction_merge.py`,
+     `test_pipeline_metrics.py`, `test_classify_extraction_quality.py`,
+     etc. use `"radar_domain"` as a **generic synthetic pass name** in
+     fixtures and **should be left as-is** unless they assert against
+     the live manifest.
    - Run the relevant unit + pipeline regression sweep; document any
      pre-existing unrelated failures.
 
