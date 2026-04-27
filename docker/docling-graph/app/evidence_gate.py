@@ -318,7 +318,7 @@ def apply_bundle_postprocessing(
 
     if pass_name in RADAR_PASS_NAMES:
         return _postprocess_air_defense_radars(pass_output, evidence_text)
-    if pass_name == "missile_domain":
+    if pass_name in MISSILE_PASS_NAMES:
         return _postprocess_air_defense_missiles(pass_output, evidence_text)
     if pass_name == "system_links":
         return _postprocess_air_defense_system_links(pass_output, evidence_text, upstream_entities)
@@ -604,6 +604,16 @@ EVIDENCE_GATE_MISSILE_FIELDS: tuple[str, ...] = (
     "sustain_time_sec", "sustain_mass_kg",
     # meta
     "confidence",
+)
+
+MISSILE_PASS_NAMES: tuple[str, ...] = (
+    "missile_domain",
+    "missile_identity",
+    "missile_kinematics",
+    "missile_guidance",
+    "missile_airframe",
+    "missile_speed_timing",
+    "missile_propulsion",
 )
 
 
