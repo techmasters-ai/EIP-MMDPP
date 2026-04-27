@@ -1,0 +1,27 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-27-missile-field-group-extraction.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Add MISSILE_FIELD_GROUPS partition to _field_groups.py + 5 contract tests", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Create _missile_shared.py (forbidden set, validators, sanitizer factory) + 8 tests", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Create missile_identity.py sub-pass module (10 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 4, "subject": "Task 4: Create missile_kinematics.py sub-pass module (6 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 5, "subject": "Task 5: Create missile_guidance.py sub-pass module (4 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 6, "subject": "Task 6: Create missile_airframe.py sub-pass module (4 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 7, "subject": "Task 7: Create missile_speed_timing.py sub-pass module (9 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 8, "subject": "Task 8: Create missile_propulsion.py sub-pass module (9 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 9, "subject": "Task 9: Description-quality contract test parametrized over 6 sub-passes", "status": "pending", "blockedBy": [3, 4, 5, 6, 7, 8]},
+    {"id": 10, "subject": "Task 10: Refactor _clear_unsupported_missile_properties (Branch A/B/C per Pre-flight P5) + drift-prevention test", "status": "pending"},
+    {"id": 11, "subject": "Task 11: Update apply_bundle_postprocessing dispatch + idempotency dict-shape probe", "status": "pending", "blockedBy": [10]},
+    {"id": 12, "subject": "Task 12: Update _DOMAIN_PASS_NAMES (Step 0 collision-guard required)", "status": "pending", "blockedBy": [11]},
+    {"id": 13, "subject": "Task 13: Bundle __init__.py exports for 6 missile sub-pass classes", "status": "pending", "blockedBy": [3, 4, 5, 6, 7, 8]},
+    {"id": 14, "subject": "Task 14: check_bundle() coverage validation passes with new sub-passes registered", "status": "pending", "blockedBy": [13]},
+    {"id": 15, "subject": "Task 15: Worker _parse_pass_response regression sweep with -k missile", "status": "pending", "blockedBy": [11, 12, 13]},
+    {"id": 16, "subject": "Task 16: Test-fixture pass-name updates (missile_domain → missile_identity); may defer to cutover", "status": "pending", "blockedBy": [11]},
+    {"id": 17, "subject": "Task 17: Manifest cutover (atomic commit) — missile_domain → 6 sub-passes", "status": "pending", "blockedBy": [9, 14, 15, 16]},
+    {"id": 18, "subject": "Task 18: Full unit + pipeline regression sweep against baseline", "status": "pending", "blockedBy": [17]},
+    {"id": 19, "subject": "Task 19: Smoke harness (3 cases: 5V55K kinematics, 5V28 speed, 9M82 airframe) — inlined full template", "status": "pending", "blockedBy": [17]},
+    {"id": 20, "subject": "Task 20: Container rebuild + service health check on port 8002", "status": "pending", "blockedBy": [18, 19]},
+    {"id": 21, "subject": "Task 21: End-to-end re-ingest verification + acceptance gate (≥2/3 smoke + field-specific vertex assert)", "status": "pending", "blockedBy": [20]}
+  ],
+  "lastUpdated": "2026-04-27T00:00:00Z"
+}
