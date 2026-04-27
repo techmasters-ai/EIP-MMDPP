@@ -715,3 +715,113 @@ In commit order. Main stays green at every step.
 - **Golden test harness with per-field recall/precision (Item #10)** —
   Session 3. Session 1's 3-case smoke is not a substitute, just an
   immediate-signal guardrail.
+
+## 10. Fallback track if field groups don't improve numerics
+
+If Session 1 lands correctly but the smoke harness extracts fewer than
+2 of 3 numeric values, stop prompt/schema tuning and move to a
+candidate-mapping architecture. This section is a **decision gate +
+sequencing**, not Session 1 scope.
+
+**Trigger conditions:**
+
+- Smoke harness result is 0/3 or 1/3 after verifying that
+  `_clear_unsupported_radar_properties` (per §4.8) is no longer
+  erasing valid values.
+- Or re-ingest still produces no numeric flat-checklist fields on the
+  FAN SONG vertex post-cutover.
+
+**Fallback sequence (each step is a separate session, not Session 1):**
+
+1. **Failure classification.** Inspect raw pass output vs.
+   postprocessed output for each smoke case. Decide whether the LLM
+   (a) didn't find Fan Song, (b) emitted the numeric field but
+   postprocessing dropped it, (c) ignored the numeric value entirely,
+   or (d) attached the value to the wrong field. The fix path
+   depends on which failure mode dominates.
+
+2. **Identity-fed parameter passes (Item #3).** Convert the four
+   radar parameter passes (`radar_power_rf`, `radar_antenna`,
+   `radar_timing`, `radar_modulation`) from `document_only` to
+   `document_plus_entity_refs`. Flow:
+   - `radar_identity` runs document-only, finds Fan Song
+   - parameter passes receive Fan Song as an upstream entity
+   - parameter passes extract only values for that already-known
+     identity, removing entity discovery from the numeric task
+
+3. **Group-scoped retry (Item #7).** If a parameter pass returns
+   Fan Song with all numeric fields null, retry once with a narrower
+   prompt:
+   ```
+   For Fan Song only, extract explicit RF/power values from this text.
+   Candidate values found: 600 kW, 3000 MHz.
+   Map each candidate to tx_peak_power_kw, erp_dbw, or nominal_rf_mhz.
+   ```
+   Bounded retry per pass; never recursive.
+
+4. **Switch numerics from generation to candidate-mapping.** Instead
+   of asking the LLM to produce numeric values, the deterministic
+   pre-extractor (already in
+   `docker/docling-graph/app/_numeric_candidates.py`) finds spans
+   like:
+   ```json
+   [
+     {"raw": "600 kW",
+      "window": "Fan Song transmitter peak power is 600 kW"},
+     {"raw": "3000 MHz",
+      "window": "Fan Song operates at 3000 MHz"}
+   ]
+   ```
+   and the LLM only chooses:
+   ```json
+   {"candidate": "600 kW", "field": "tx_peak_power_kw"}
+   ```
+   Code performs unit-aware normalization and conversion using the
+   shared `_numeric_evidence.py` helpers from §4.8.
+
+5. **Add deterministic field-label rules for common cases.** For
+   high-value fields where regex + local context beats the LLM:
+   - `gain|antenna gain` near `dBi` → `gain_dbi`
+   - `peak power|transmitter power` near `kW`/`MW`/`W` → `tx_peak_power_kw`
+   - `operates at|frequency|RF` near `MHz`/`GHz` → `nominal_rf_mhz`
+   The LLM becomes a fallback for ambiguous cases, not the primary
+   numeric extractor.
+
+6. **Persist evidence + diagnostics (Items #6, #9).** Once the
+   architecture stabilizes around candidate-mapping, layer on the
+   full per-field evidence-span verification system and per-pass
+   diagnostics persistence. These were deferred from Session 1
+   because they layer on whatever extraction shape exists; deferred
+   beyond Session 1 still applies until candidate-mapping is in.
+
+7. **Build the golden test harness (Item #10).** Per-field
+   recall/precision metrics across a labeled fixture set. Replaces
+   the 3-case smoke harness as the regression gate. Required before
+   any further model-swap experiments so the comparison is rigorous.
+
+8. **Try a stronger extraction model — last resort, after the
+   architecture changes above.** If candidate-mapping + identity-fed
+   passes + retry still fail, compare gemma4:31b against a
+   larger / commercial model on the golden harness. Model-swap is
+   not the first fallback because deterministic candidate-mapping
+   improves any model and gives a stable contract regardless of
+   which LLM is wired up.
+
+**Why this section exists:**
+
+- It prevents Session 1 from becoming an endless prompt-tuning loop.
+- It defines a clear decision gate: ≥2/3 smoke pass means continue
+  iterating field groups; <2/3 means switch architecture.
+- It keeps Session 1's implementation focused while documenting the
+  next move.
+- It explicitly orders the fallback work so Session 2 doesn't have
+  to re-brainstorm the path forward.
+
+**Why not include candidate-mapping in Session 1:** it's a different
+extraction contract (LLM emits `{"candidate": ..., "field": ...}`
+mappings instead of populated entity records). It touches more code
+than the field-group split (worker `_parse_pass_response`, the
+shared schema layer, the merge layer's property-fill logic). Doing
+both simultaneously would compound risk; landing field groups first
+gives a clean architectural baseline to add candidate-mapping onto
+if needed.
