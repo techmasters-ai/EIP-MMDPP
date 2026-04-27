@@ -45,8 +45,10 @@ passes — `radar_identity`, `radar_power_rf`, `radar_antenna`,
 the same `system_name` identity so the existing merge layer collapses
 partial records onto one vertex. Each sub-pass is its own
 `/extract-pass` call against a smaller schema (5-11 fields) with a
-focused semantic guide. No worker-side, merge, or vertex-persistence
-code changes.
+focused semantic guide. No merge or vertex-persistence code changes;
+one quality-classification pass-name set in `app/workers/pipeline.py`
+needs updating, plus several pass-name dispatches and post-processing
+checks in the docling-graph evidence gate. Full enumeration in §4.8.
 
 ## 3. Non-goals (Session 1)
 
@@ -280,6 +282,20 @@ passes:
     skip_if_no_upstream_endpoints: true
 ```
 
+**Upstream-ref dedupe requirement:** when `system_links`'s upstream
+references are built from the dependency passes' outputs, the builder
+**MUST dedupe by `(entity_type, normalized identity_values)`** across
+all 6 dependency pass outputs. Otherwise five partial `RADAR_SYSTEM`
+records with `system_name="Fan Song"` (one per radar sub-pass) would
+become five upstream refs in the LLM prompt, wasting tokens and
+encouraging duplicate emissions. The post-extraction normalizer in
+`evidence_gate.py:720` collapses duplicates server-side, but the
+prompt-side dedup is what saves token budget and keeps the LLM seeing
+"there are 2 radars in this doc" not "there are 10". Locate the
+upstream-ref builder in the orchestrator path that fires on
+`input_mode == "document_plus_entity_refs"` and confirm or add the
+dedup.
+
 `system_links` depends on **all 6** entity passes — not just
 `radar_identity` — so the relationship pass sees the fullest set of
 identities including any radar that appears only in a parameter table
@@ -349,8 +365,8 @@ is a silent correctness regression, not a test failure.**
   set). Verify `_classify_extraction_quality`'s OR-logic treats *any*
   radar sub-pass returning HIT as a domain hit (not a per-pass AND).
 
-- **`docker/docling-graph/app/evidence_gate.py::_run_post_extraction_evidence_gate`**
-  (around line 317) — dispatches to `_postprocess_air_defense_radars`
+- **`docker/docling-graph/app/evidence_gate.py::apply_bundle_postprocessing`**
+  (around line 307) — dispatches to `_postprocess_air_defense_radars`
   only when `pass_name == "radar_domain"`. After cutover, none of the
   5 sub-passes match this string, so radar-side evidence-gate post-
   processing (status validation, identity sanity checks) is silently
@@ -359,10 +375,30 @@ is a silent correctness regression, not a test failure.**
   processor only that group's slice of fields. The post-processor
   must (a) not assume all radar fields are present on a single record
   — only the group's subset is — and (b) merge gracefully across
-  invocations on the same `system_name`. Verify `_postprocess_air_defense_radars`
-  satisfies both before cutover; if it currently asserts presence of
-  e.g. `gain_dbi` (an antenna-pass field) when called from the
-  identity pass, it'll false-fail.
+  invocations on the same `system_name`.
+
+- **`docker/docling-graph/app/evidence_gate.py::_clear_unsupported_radar_properties`**
+  (around line 398) — **THIS IS A CORRECTNESS BLOCKER. Currently
+  unconditionally sets 18 numeric fields to `None`** (lines 419-442:
+  `erp_dbw`, `tx_peak_power_kw`, `gain_dbi`, `antenna_dim_*`,
+  `beamwidth_*`, `nominal_rf_mhz`, `nominal_pri_usec`, `nominal_pd_usec`,
+  `scan_period_sec`, `frequency_excursion_mhz`, `num_bits_in_code`,
+  `pulses_per_dwell`, plus `antenna_photo`, `spoiled`,
+  `coverage_limits_el_deg`, `confidence`). This was a "delete unsupported
+  guesses" rule from before Phase A's auto-evidence + numeric-candidate
+  system. Even a perfectly-extracted `gain_dbi=35.0` from a doc that
+  says "antenna gain is 35 dBi" gets nulled here before the response
+  leaves the service. **Refactor required as part of Session 1's
+  cutover commit:** verify each numeric value against `evidence_text`
+  via the same substring-match logic the auto-evidence resolver uses
+  (whitespace-collapsed casefold, with unit-aware variants from the
+  `_UNIT_HINTS_BY_SUFFIX` table in `docker/docling-graph/app/provenance.py`).
+  Keep values whose stringified form (or a unit-converted variant)
+  appears in `evidence_text`; null only the rest. The exact-text
+  branch (lines 401-417, for string fields like `nomenclature`) keeps
+  its current `_value_is_quoted_in_text` check — that path is correct.
+  Failing to fix this guarantees Session 1's smoke tests fail even
+  when the LLM extracts correctly.
 
 - **`docker/docling-graph/app/schemas.py`** (around line 55) — docstring
   example references `pass_name="radar_domain"`. Low-risk; update the
@@ -386,7 +422,7 @@ import as-is** — it explicitly verifies the legacy module still loads
 even though it's not in the manifest. Add a one-line comment marking
 the test as a legacy-loadability regression check.
 
-**Manifest-shape test that asserts the pass count:**
+**Manifest-shape and active-schema tests that must be updated:**
 
 - `tests/unit/test_ontology_bundles.py` (lines 5-19) hard-asserts
   `len(m.passes) == 3` and the set
@@ -395,9 +431,31 @@ the test as a legacy-loadability regression check.
   assert the new shape: `len(m.passes) == 7` and the set
   `{"radar_identity", "radar_power_rf", "radar_antenna",
   "radar_timing", "radar_modulation", "missile_domain",
-  "system_links"}`. This is materially different from a generic
-  `radar_domain` synthetic-pass-name reference and is the most likely
-  test to break silently if missed.
+  "system_links"}`.
+
+- `tests/unit/test_extraction_schemas.py` (line 8 + line 14) imports
+  `radar_domain, missile_domain, system_links` and parametrizes a
+  `PASS_MODULES` list containing `(radar_domain, "RadarDomainPass")`.
+  After cutover the active-schema parametrization should iterate the
+  5 new sub-pass modules + missile_domain + system_links. Update
+  imports + the `PASS_MODULES` list. The existing assertions
+  (parameterized `model_validate(...)` smoke tests on each pass
+  module) should pass on the new modules unchanged.
+
+- `tests/integration/test_pr1_scaffolding_smoke.py` (lines 36-45,
+  85-95 — both blocks contain `"reference", "radar_domain",
+  "missile_domain"` literal lists). Update the literal pass-name lists
+  to the new 7-pass shape, or rewrite the test to read from the
+  manifest dynamically.
+
+- `extraction_schemas/system_links.py` module docstring references
+  upstream passes by name. Low-risk; update if it mentions
+  `radar_domain` literally.
+
+These tests assert against **active schema shape**, not generic
+synthetic pass names. Distinct from the many `tests/unit/...` files
+that use `"radar_domain"` as a fixture-only string and should be left
+as-is.
 
 ## 5. Tests
 
@@ -482,14 +540,29 @@ Smoke request body **omits** `upstream_entities` for `document_only`
 passes. The endpoint earlier rejected `document_only` requests when the
 key was present, even with an empty list.
 
-**Model assumption:** the smoke harness's expected ranges
-(`tx_peak_power_kw [400, 800]`, `nominal_rf_mhz [2900, 3100]`,
-`gain_dbi [33, 37]`) are calibrated against `gemma4:31b` (the Phase A
-baseline model). If the live docling-graph service is rebuilt against
-a different `DOCLING_GRAPH_LLM_MODEL`, the thresholds may need
-recalibration — re-run the harness once on a known-good extraction
-under the new model and update the ranges to bracket the observed
-value rather than the source-text value verbatim.
+**DoclingDocument shape:** in the synthesized doc, each text element
+must use `"label": "text"`, **not** `"label": "paragraph"`. Existing
+fixtures and service-injected text use `"text"`; `"paragraph"` may be
+accepted by some Docling versions but the local fixture pattern is
+`"text"`. Using the wrong label leads to debugging document-shape
+issues instead of measuring extraction.
+
+**Range calibration policy:** expected ranges bracket the
+**source-text value with tolerance for unit-conversion rounding**, NOT
+the model's observed output:
+
+| Source text | Field | Expected range | Why these bounds |
+|---|---|---|---|
+| "600 kW" | `tx_peak_power_kw` | [400, 800] | ±33% to allow 600 / 600.0 / unit-conversion artefacts |
+| "3000 MHz" | `nominal_rf_mhz` | [2900, 3100] | ±3% — frequency literal expected verbatim |
+| "35 dBi" | `gain_dbi` | [33, 37] | ±6% — float-encoding tolerance |
+
+If a future model emits `3500 MHz` for a doc that says `3000 MHz`,
+the smoke test SHOULD fail. Recalibrating ranges to model output
+would mask that as a regression. The ranges are the ground-truth
+contract, not a model-fit metric. If a model legitimately can't hit
+these tolerances, that's a model-rejection signal, not a range-
+adjustment signal.
 
 ## 6. Rollout
 
