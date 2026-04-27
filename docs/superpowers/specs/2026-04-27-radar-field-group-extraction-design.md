@@ -345,7 +345,9 @@ missile_domain ──┘
 ```
 
 The orchestrator already supports parallel sibling execution via
-`depends_on`. No orchestrator code changes needed.
+`depends_on`. No scheduling change is expected, but the
+`system_links` upstream-ref builder must be verified and may need
+identity dedupe per §4.5.
 
 ### 4.7 Wiring preserved
 
@@ -689,7 +691,7 @@ In commit order. Main stays green at every step.
 | Risk | Mitigation |
 |---|---|
 | `system_links` upstream-refs builder reads `radar_domain` pass-name literal | Step 4 manifest sweep grep + targeted update before the cutover commit lands. |
-| App-code pass-name literals silently bypass new sub-passes (`_DOMAIN_PASS_NAMES`, evidence-gate dispatch) | §4.8 enumerates the 3 known touchpoints; step 4 explicitly updates each. Smoke test in step 6 catches any missed dispatch (radar-side evidence-gate would no-op silently otherwise). |
+| App-code pass-name literals silently bypass new sub-passes (`_DOMAIN_PASS_NAMES`, evidence-gate dispatch) | §4.8 enumerates the known touchpoints; step 4 explicitly updates each. Smoke test in step 6 catches any missed dispatch (radar-side evidence-gate would no-op silently otherwise). |
 | 5 parallel sub-passes overwhelm the Ollama backend (gemma4:31b can't do 5 concurrent) | If Ollama cannot handle sibling radar passes concurrently, cap worker/service concurrency or temporarily serialize `radar_*` passes via a depends_on chain (`radar_identity` → `radar_power_rf` → `radar_antenna` → ... ). Verify before step 6 by watching Ollama logs during a test ingest. |
 | Worker `_parse_pass_response` chokes on new pass names | The function is pass-name-agnostic and loads `template_class` via the manifest. Verify in step 4 regression sweep. |
 | Coverage checker / bundle-checker rejects the new manifest layout | Run `check_bundle()` after step 4 commit; expected 0 errors based on prior Phase 1 work. |
