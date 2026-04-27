@@ -316,7 +316,7 @@ def apply_bundle_postprocessing(
     if bundle_key != "air_defense_v3" or not isinstance(pass_output, dict):
         return pass_output, {}
 
-    if pass_name == "radar_domain":
+    if pass_name in RADAR_PASS_NAMES:
         return _postprocess_air_defense_radars(pass_output, evidence_text)
     if pass_name == "missile_domain":
         return _postprocess_air_defense_missiles(pass_output, evidence_text)
@@ -406,6 +406,15 @@ EVIDENCE_GATE_RADAR_FIELDS: tuple[str, ...] = (
     "scan_period_sec",
     "frequency_excursion_mhz", "num_bits_in_code", "pulses_per_dwell",
     "confidence",
+)
+
+RADAR_PASS_NAMES: tuple[str, ...] = (
+    "radar_domain",
+    "radar_identity",
+    "radar_power_rf",
+    "radar_antenna",
+    "radar_timing",
+    "radar_modulation",
 )
 
 
