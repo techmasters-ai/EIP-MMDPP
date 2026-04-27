@@ -587,10 +587,24 @@ def test_value_match_candidates_for_float_with_dbi_suffix():
 
 
 def test_value_match_candidates_for_int_with_mhz_suffix():
+    """Same-unit candidates only — no cross-unit alternates.
+
+    The helper does NOT generate '3000 GHz' as an alternate for '3000 MHz'
+    because '3000 GHz' is a different physical magnitude (3 THz vs 3 GHz);
+    matching across units without converting the value would silently
+    accept wrong values. If you need cross-unit support, convert at the
+    LLM-emission step or add explicit unit-conversion logic — do NOT
+    paper over it here. Tracked in the plan's "Out of scope" section.
+    """
     forms = value_match_candidates(3000, "nominal_rf_mhz")
     norm = [normalize_text(f) for f in forms]
     assert any("3000 mhz" in n for n in norm)
-    assert any("3000 ghz" in n for n in norm)  # unit alternates
+    # Negative assertion: no cross-unit alternates.
+    assert not any("3000 ghz" in n for n in norm), (
+        "value_match_candidates must not emit cross-unit alternates "
+        "without value conversion — see helper docstring."
+    )
+    assert not any("3000 khz" in n for n in norm)
 
 
 def test_value_is_supported_by_text_string_field():
@@ -696,10 +710,18 @@ def _field_unit_suffix(field_name: str) -> str:
 def value_match_candidates(value: Any, field_name: str) -> list[str]:
     """Generate likely string forms of a field value for substring matching.
 
-    Numeric values get whole-number, decimal, and unit-aware variants
+    Numeric values get whole-number, decimal, and same-unit-suffix variants
     derived from the field name's suffix convention (e.g. ``gain_dbi`` →
     "35", "35.0", "35 dBi", "35dBi"). String values pass through as-is
     after stripping. Booleans return [] (not useful for substring match).
+
+    IMPORTANT: only same-unit variants are generated — cross-unit
+    alternates like "3000 GHz" for value 3000 in field nominal_rf_mhz are
+    NEVER emitted, since matching them would silently accept physically
+    wrong values. If `_UNIT_HINTS_BY_SUFFIX[<suffix>]` contains a cross-
+    unit entry (e.g. "GHz" listed under "_mhz"), audit and remove it
+    before this helper is wired into the evidence gate. The contract test
+    `test_value_match_candidates_for_int_with_mhz_suffix` enforces this.
     """
     if value is None or isinstance(value, bool):
         return []
@@ -722,10 +744,22 @@ def value_match_candidates(value: Any, field_name: str) -> list[str]:
 def value_is_supported_by_text(
     value: Any, field_name: str, evidence_text: str,
 ) -> bool:
-    """Return True iff *value*'s stringified form (or a unit-aware
-    variant) appears as a substring of *evidence_text* (whitespace-
-    collapsed, casefold).
+    """Return True iff *value*'s stringified form appears in *evidence_text*.
 
+    "Stringified form" includes the field's expected unit suffix appended
+    to the value (e.g. "35 dBi" for value 35.0 in field gain_dbi). It does
+    NOT include cross-unit converted forms — "35 dBi" is generated, but
+    "37.15 dBd" is NOT. Same-magnitude-different-unit matches like
+    "3000 GHz" for value 3000 in field nominal_rf_mhz are explicitly
+    rejected (they would be physically wrong: 3000 GHz != 3000 MHz).
+
+    Cross-unit conversion (1.5 tonnes <-> 1500 kg, 43 km <-> 43000 m, etc.)
+    is OUT OF SCOPE for Session 1. If a doc states a value in a non-canonical
+    unit and the LLM doesn't normalize, this predicate returns False and the
+    caller will null the value. Tracked as Session 2 follow-up if false-
+    negatives become a real problem in production.
+
+    Whitespace is collapsed and case is folded before comparison.
     None / empty-string values are vacuously supported — the caller's
     null-check happens upstream of this predicate.
     """
@@ -759,6 +793,34 @@ from app._numeric_evidence import (
 # _normalize_text, _value_match_candidates definitions. Keep the rest
 # of build_auto_field_evidence unchanged.
 ```
+
+- [ ] **Step 4b: Update `tests/unit/test_auto_field_evidence.py` to register `_numeric_evidence` in sys.modules before loading provenance.**
+
+The existing test loads `provenance.py` by file path (lines 18, 27 — `_load("_dgp_provenance", _SERVICE_ROOT / "provenance.py")`). It does not establish `docker/docling-graph/app` as the importable package `app`. After Step 4, `provenance.py` does `from app._numeric_evidence import ...`, which will resolve to the repo-root `app/` package (the worker code) and ImportError, OR shadow the wrong module.
+
+Fix: load `_numeric_evidence` first via the same file-path loader and inject it under the `app._numeric_evidence` key in `sys.modules` so the subsequent `provenance.py` `from app._numeric_evidence import ...` resolves to it.
+
+Edit `tests/unit/test_auto_field_evidence.py` between lines 27 and 28 (before the `_provenance = _load(...)` call):
+
+```python
+# Pre-register the docling-graph _numeric_evidence module under the
+# 'app._numeric_evidence' key so the file-path-loaded provenance.py's
+# `from app._numeric_evidence import ...` resolves to the docling-graph
+# version, not the unrelated repo-root `app/` package.
+_numeric_evidence = _load(
+    "app._numeric_evidence", _SERVICE_ROOT / "_numeric_evidence.py"
+)
+sys.modules["app._numeric_evidence"] = _numeric_evidence
+
+_provenance = _load("_dgp_provenance", _SERVICE_ROOT / "provenance.py")
+```
+
+(`_load` already inserts into `sys.modules` under the name passed as `modname` — see line 22. Passing `"app._numeric_evidence"` as the modname does both the load and the registration in one call. The explicit second-line `sys.modules[...]` assignment is redundant but defensive against future `_load` refactors.)
+
+- [ ] **Step 4c: Run the existing auto-evidence test, expect green.**
+
+Run: `SKIP_COV=1 .venv/bin/pytest tests/unit/test_auto_field_evidence.py -v 2>&1 | tail -10`
+Expected: same number of passed tests as the P1 baseline. If ImportError fires, the `app._numeric_evidence` registration is in the wrong order or missing.
 
 - [ ] **Step 5: Verify no other module imports the deleted private names.**
 
@@ -1789,7 +1851,7 @@ This is the **CORRECTNESS BLOCKER from spec §4.8.** Currently the function unco
 
 - [ ] **Step 1: Write a regression test for the new behavior.**
 
-Add to `docker/docling-graph/tests/test_service_identity_gate.py` (or create a new test file `tests/test_clear_unsupported_radar_properties.py`):
+Create a new dedicated test file `docker/docling-graph/tests/test_clear_unsupported_radar_properties.py` (do NOT add to `test_service_identity_gate.py` — keep evidence-gate numeric clearing isolated so the test runs independently and the failure surface is unambiguous):
 
 ```python
 """Regression test for _clear_unsupported_radar_properties (spec §4.8).
@@ -2130,42 +2192,113 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 13: Verify or add upstream-ref dedupe in orchestrator
+### Task 13: Add upstream-ref dedupe (mandatory unit test)
 
 **Files:**
-- Modify (potentially): orchestrator path that fires for `input_mode="document_plus_entity_refs"` passes
+- Modify: `app/workers/pipeline.py::_extend_upstream_refs` (or call-site that aggregates across passes)
+- Modify: `tests/unit/test_pipeline_upstream_refs.py` (add the dedupe test)
 
 Per spec §4.5: "the upstream-ref builder MUST dedupe by `(entity_type, normalized identity_values)` across all 6 dependency pass outputs."
 
-- [ ] **Step 1: Locate the upstream-ref builder.**
+The existing `_extend_upstream_refs` accumulates refs into a `dict` keyed by ref-id (E001, E002, …). After radar's cutover, 5 sub-passes each emit a partial RADAR_SYSTEM record with `system_name="Fan Song"`; without dedupe, the relationship pass receives 5 distinct ref-ids for the same logical entity, which inflates prompt size, dilutes the relationship LLM's attention, and breaks downstream merge semantics. This is too important to leave to a smoke harness — write the test first.
 
-Run: `grep -rn "upstream_entities\|upstream_refs\|build_upstream" app/workers/ docker/docling-graph/app/ 2>/dev/null | grep -v __pycache__ | head -15`
+- [ ] **Step 1: Locate the dedupe site.**
 
-The builder is likely in `docker/docling-graph/app/main.py` (where `/extract-pass` is handled and upstream entities are processed) OR in `app/workers/pipeline.py::_run_pass` (where `upstream_entities` is computed from prior `PassResult`s before sending to the service).
+Run: `grep -rn "upstream_entities\|_extend_upstream_refs" app/workers/ docker/docling-graph/app/ 2>/dev/null | grep -v __pycache__ | head -15`
 
-- [ ] **Step 2: Inspect dedup behavior.**
+`_extend_upstream_refs` is the per-pass extender in `app/workers/pipeline.py:10`. It is called once per upstream pass; the dedupe must happen either inside `_extend_upstream_refs` (skip-if-already-seen) or at the loop site that calls it sequentially across passes.
 
-Read the builder. Look for any place where multiple `PassResult.template_instance.radar_systems` are concatenated. If there's no `seen` set keyed by `(entity_type, identity_tuple)`, that's where to add it.
+- [ ] **Step 2: Write the failing test.**
 
-- [ ] **Step 3: Write a unit test.**
-
-If the builder is testable in isolation, write a test like:
+Append to `tests/unit/test_pipeline_upstream_refs.py` (the file already imports `_extend_upstream_refs`, `SimpleNamespace`, `_FakePassResult`, and `ONTOLOGY` — reuse them):
 
 ```python
-def test_upstream_ref_builder_dedupes_by_identity():
-    """5 partial RADAR_SYSTEM records with system_name='Fan Song' from
-    5 different pass outputs collapse to 1 upstream ref."""
-    # Build 5 fake PassResult objects each with one radar entity
-    # named "Fan Song"; pass to the upstream-ref builder; assert the
-    # resulting upstream_entities list has length 1.
-    ...
+class TestExtendUpstreamRefsDedupe:
+    """After the radar field-group cutover, 5 sub-passes each emit a
+    partial RADAR_SYSTEM with system_name='Fan Song'. They must collapse
+    to a single upstream ref before the relationship pass sees them."""
+
+    def _pass_def(self, name: str, primary_types):
+        return SimpleNamespace(name=name, primary_entity_types=primary_types)
+
+    def test_five_partial_radars_collapse_to_one_upstream_ref(self):
+        refs: dict = {}
+        for pass_name in (
+            "radar_identity", "radar_power_rf", "radar_antenna",
+            "radar_timing", "radar_modulation",
+        ):
+            pass_result = _FakePassResult({
+                "RADAR_SYSTEM": [SimpleNamespace(system_name="Fan Song")],
+            })
+            _extend_upstream_refs(
+                refs, pass_result,
+                self._pass_def(pass_name, ["RADAR_SYSTEM"]),
+                ONTOLOGY,
+            )
+        # Exactly one ref for Fan Song, regardless of how many sub-passes
+        # emitted it.
+        fan_song_refs = [
+            r for r in refs.values()
+            if r.identity_values.get("system_name") == "Fan Song"
+        ]
+        assert len(fan_song_refs) == 1, (
+            f"expected 1 dedup'd ref for Fan Song; got {len(fan_song_refs)}: "
+            f"{fan_song_refs!r}"
+        )
+
+    def test_dedupe_is_per_identity_not_per_pass(self):
+        """Different system_names from different passes must NOT collapse."""
+        refs: dict = {}
+        _extend_upstream_refs(
+            refs,
+            _FakePassResult({"RADAR_SYSTEM": [SimpleNamespace(system_name="Fan Song")]}),
+            self._pass_def("radar_identity", ["RADAR_SYSTEM"]),
+            ONTOLOGY,
+        )
+        _extend_upstream_refs(
+            refs,
+            _FakePassResult({"RADAR_SYSTEM": [SimpleNamespace(system_name="Spoon Rest")]}),
+            self._pass_def("radar_power_rf", ["RADAR_SYSTEM"]),
+            ONTOLOGY,
+        )
+        names = {r.identity_values.get("system_name") for r in refs.values()}
+        assert names == {"Fan Song", "Spoon Rest"}
 ```
 
-If no isolated test path exists (the builder is inline in a larger function), add a comment marking the dedupe behavior and rely on the smoke harness in Chunk 4 to validate end-to-end.
+- [ ] **Step 3: Run, expect FAIL on the first test (no dedupe yet).**
 
-- [ ] **Step 4: Add or verify the dedupe.**
+Run: `SKIP_COV=1 .venv/bin/pytest tests/unit/test_pipeline_upstream_refs.py::TestExtendUpstreamRefsDedupe -v 2>&1 | tail -10`
+Expected: `test_five_partial_radars_collapse_to_one_upstream_ref` FAILS (5 refs, not 1) — that's the bug. `test_dedupe_is_per_identity_not_per_pass` may pass already (2 distinct names → 2 distinct refs is the no-dedupe default behavior).
 
-If missing, add a `seen: set[tuple[str, tuple[tuple[str, str], ...]]]` keyed by `(entity_type, sorted(identity_values.items()))`.
+- [ ] **Step 4: Implement dedupe in `_extend_upstream_refs`.**
+
+Add a check at the top of the per-entity loop: build the identity tuple `(entity_type, tuple(sorted(identity_values.items())))`, scan existing `refs.values()` for a match, and skip-if-seen. Or maintain an auxiliary `seen` set keyed alongside `refs` (passed in as another arg, or via a wrapper helper).
+
+- [ ] **Step 5: Run, expect both tests PASS.**
+
+Run: `SKIP_COV=1 .venv/bin/pytest tests/unit/test_pipeline_upstream_refs.py -v 2>&1 | tail -10`
+Expected: all tests pass (existing + 2 new).
+
+- [ ] **Step 6: Commit.**
+
+```bash
+git add app/workers/pipeline.py tests/unit/test_pipeline_upstream_refs.py
+git commit -m "$(cat <<'EOF'
+fix(workers): _extend_upstream_refs dedupes by identity across passes (spec §4.5)
+
+After the radar field-group cutover, 5 sub-passes each emit a partial
+RADAR_SYSTEM with the same system_name. Without dedupe, the downstream
+relationship pass (system_links) receives 5 distinct E### ref-ids for
+the same logical entity, inflating prompt size and breaking merge.
+
+Two new tests pin the contract: 5 partial radars from 5 sub-passes
+collapse to 1 ref; distinct system_names from different sub-passes do
+NOT collapse.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+EOF
+)"
+```
 
 - [ ] **Step 5: Run the relevant tests.**
 

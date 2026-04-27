@@ -1750,9 +1750,11 @@ def _clear_unsupported_missile_properties(item: dict, evidence_text: str) -> lis
 Add the regression test at `docker/docling-graph/tests/test_clear_unsupported_missile_properties.py` covering 5 cases parallel to the radar test:
 - supported numeric (e.g. `body_length_m=7.5` with evidence "length 7.5 m") preserved
 - unsupported numeric (`max_intercept_km=999.0` with evidence "max range 43 km") nulled
-- unit-aware variant (`total_mass_kg=1500.0` with evidence "1.5 tonnes") preserved (unit normalization in value_is_supported_by_text)
+- same-unit-suffix variant (`total_mass_kg=1500.0` with evidence "mass 1500 kg") preserved — same-unit suffix appended; the helper does NOT convert "1.5 tonnes" to 1500 kg, that would require real unit conversion which is out of scope (see helper docstring)
 - text-field preserved by exact-text branch (`guidance_type="semi-active"` with evidence "semi-active radar homing")
 - text-field nulled by exact-text branch (`seeker_type="active"` with evidence containing no "active")
+
+**Out of scope for Session 1:** Real cross-unit conversion (1.5 tonnes ↔ 1500 kg, 43 km ↔ 43000 m, etc.). The helper only matches the value's stringified form with the field's expected unit suffix appended. If a doc states a value in a non-canonical unit and the LLM doesn't normalize, the value gets nulled. Tracked as Session 2 follow-up if false-negatives become a real problem.
 
 - [ ] **Step 3: Run regression test, expect 5 passed.**
 
@@ -2031,20 +2033,27 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 13: Bundle `__init__.py` exports for sub-pass classes (additive)
+### Task 13: Bundle `__init__.py` exports for sub-pass classes (optional ergonomics)
 
 **Files:**
-- Modify: `ontology_bundles/air_defense_v3/extraction_schemas/__init__.py`
+- Modify (optional): `ontology_bundles/air_defense_v3/extraction_schemas/__init__.py`
 
-- [ ] **Step 1: Inspect current exports.**
+**Status:** Not required for correctness. The docling-graph bundle loader at `docker/docling-graph/app/bundles.py:53-70` resolves each pass via `importlib.import_module(f"ontology_bundles.{bundle_key}.{module_name}")` using the manifest's `module` field, then reads `template_class` directly off the module. It does NOT consult the bundle's `__init__.py` for re-exports. The radar plan's equivalent task is also optional.
 
-Run: `grep -nE "from .|import" ontology_bundles/air_defense_v3/extraction_schemas/__init__.py | head -30`
+If the post-radar-cutover `__init__.py` re-exports the radar sub-pass templates as a stylistic convention, mirror it for missile here. Otherwise, skip this task and remove it from `.tasks.json`.
 
-- [ ] **Step 2: Add the 6 missile sub-pass exports.**
+- [ ] **Step 1: Decide whether to skip.**
 
-Add imports for `MissileIdentityPass`, `MissileKinematicsPass`, `MissileGuidancePass`, `MissileAirframePass`, `MissileSpeedTimingPass`, `MissilePropulsionPass`. Follow whatever pattern the radar sub-pass exports established (post-radar-cutover); if there's a `__all__`, append to it.
+Run: `grep -nE "RadarIdentityPass|RadarPowerRfPass" ontology_bundles/air_defense_v3/extraction_schemas/__init__.py 2>/dev/null`
 
-- [ ] **Step 3: Verify importable.**
+- **If found:** the radar cutover added re-exports; mirror the convention for missile (continue to Step 2).
+- **If not found:** the radar cutover skipped this task; skip it for missile too. Mark Task 13 done with `git commit --allow-empty -m "chore(plan): skip Task 13 — bundle __init__.py re-exports not used"`.
+
+- [ ] **Step 2 (only if continuing): Add the 6 missile sub-pass exports.**
+
+Mirror whatever pattern the radar sub-pass exports established. If there's a `__all__`, append to it.
+
+- [ ] **Step 3 (only if continuing): Verify importable.**
 
 Run:
 ```bash
@@ -2058,14 +2067,17 @@ print('OK')
 ```
 Expected: `OK`.
 
-- [ ] **Step 4: Commit.**
+- [ ] **Step 4 (only if continuing): Commit.**
 
 ```bash
 git add ontology_bundles/air_defense_v3/extraction_schemas/__init__.py
-git commit -m "feat(extraction): export 6 missile sub-pass templates from bundle __init__
+git commit -m "chore(extraction): export 6 missile sub-pass templates from bundle __init__ (ergonomic)
 
-Additive: bundle now exports both missile_domain and the new sub-passes.
-Required by docling-graph's bundle-loading code path.
+Optional ergonomics — mirrors the radar __init__ convention. The
+docling-graph bundle loader (docker/docling-graph/app/bundles.py)
+imports submodules via importlib.import_module by manifest 'module'
+field; it does NOT consult __init__ for template_class lookup. So
+this re-export is for downstream callers' convenience only.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -2237,18 +2249,13 @@ Remove the `missile_domain` entry; add 6 new entries; update `system_links.depen
     depends_on: []
 ```
 
-Update `system_links.depends_on` to list all 11 entity passes (5 radar + 6 missile):
+Update **only** `system_links.depends_on` to list all 11 entity passes (5 radar + 6 missile). Every other field on the `system_links` entry — `required`, `kind`, `input_mode`, `module`, `template_class`, `primary_entity_types`, `bridge_entity_types`, `extracted_relationship_types`, `skip_if_no_upstream_endpoints`, `skip_justification` — must be left exactly as the post-radar-cutover manifest has them. Verify with `grep -A 14 "name: system_links" ontology_bundles/air_defense_v3/manifest.yaml` before editing.
+
+Patch the `depends_on` list only:
 
 ```yaml
   - name: system_links
-    required: false
-    kind: relationships
-    input_mode: document_plus_entity_refs
-    module: extraction_schemas.system_links
-    template_class: SystemLinksPass
-    primary_entity_types: []
-    bridge_entity_types: [RADAR_SYSTEM, MISSILE_SYSTEM]
-    extracted_relationship_types: [...]
+    # all other keys unchanged from current manifest
     depends_on:
       - radar_identity
       - radar_power_rf
@@ -2261,7 +2268,6 @@ Update `system_links.depends_on` to list all 11 entity passes (5 radar + 6 missi
       - missile_airframe
       - missile_speed_timing
       - missile_propulsion
-    skip_if_no_upstream_endpoints: true
 ```
 
 - [ ] **Step 2: Prune `missile_domain` from `_DOMAIN_PASS_NAMES`.**
