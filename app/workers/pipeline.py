@@ -382,9 +382,15 @@ def _build_element_uid_to_artifact_id(db, document_id: str) -> dict[str, str]:
 
 
 _DOMAIN_PASS_NAMES: frozenset[str] = frozenset({
+    # radar (post-radar-cutover)
     "radar_identity", "radar_power_rf", "radar_antenna",
     "radar_timing", "radar_modulation",
-    "missile_domain", "system_links",
+    # missile (additive — missile_domain still active until Chunk 4)
+    "missile_domain",
+    "missile_identity", "missile_kinematics", "missile_guidance",
+    "missile_airframe", "missile_speed_timing", "missile_propulsion",
+    # system_links — preserved from radar cutover; do NOT drop
+    "system_links",
 })
 
 
