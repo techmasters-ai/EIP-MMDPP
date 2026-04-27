@@ -417,25 +417,7 @@ Before returning JSON, ensure:
 * unsupported missile fields are `null`
 * no inferred enrichment is included
 * all evidence comes from the current batch only
-* output is strict valid JSON and nothing else
-
-
-## Per-Field Source Snippets (`field_provenance`)
-
-After populating the pass's primary entity list, also fill the
-`field_provenance` array at the top level of the pass output. For
-every field you populated on an entity for which you can quote a
-source, emit one `field_provenance` row containing:
-
-* `entity_index`: the 0-based position of the entity in the pass's primary entity list (e.g. `radar_systems[0]` → `entity_index: 0`)
-* `field_name`: the canonical field name on that entity (e.g. `gain_dbi`, `max_speed_mps`, `nominal_rf_mhz`)
-* `supporting_snippet`: an exact verbatim quote from the input text that established the field's value. The snippet must appear verbatim somewhere in the chunks provided. Do not paraphrase, summarize, or invent. Whitespace differences are acceptable; word substitution is not.
-
-If you cannot quote a source for a field, simply omit that field's
-row from `field_provenance` — never invent or paraphrase. An empty
-`field_provenance` array is acceptable when no field can be sourced
-verbatim. This applies only to the radar / missile primary-entity
-passes; relationship-only passes have no `field_provenance` field."""
+* output is strict valid JSON and nothing else"""
 
 
 RELATIONSHIPS_ONLY_DELTA_SYSTEM_PROMPT: str = DELTA_SYSTEM_PROMPT + """

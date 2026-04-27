@@ -347,8 +347,8 @@ from app.evidence_gate import (
     summarize_pass_output as _summarize_pass_output,
 )
 from app.provenance import (
+    build_auto_field_evidence,
     build_provenance_from_context,
-    resolve_field_provenance_uids,
     synthesize_provenance_from_pass_output,
 )
 from app.schemas import (
@@ -934,69 +934,81 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         diagnostics["path_counts"] = filtered_counts["path_counts"]
         context._delta_trace = diagnostics
 
-        # Phase 3: per-field provenance.
-        # Build ExtractionFieldProvenance rows from the template's
-        # field_provenance list. Resolve entity_index → instance_id by
-        # looking up the entity's identity values in provenance_rows.
-        # Snippet → element_uid resolution comes in Task 31.
+        # Phase 3 (post-LLM-quote refactor): deterministic per-field
+        # provenance. For each non-None populated field on each primary
+        # entity, substring-match the value against the DoclingDocument's
+        # text elements and attach matching chunks as evidence. No LLM
+        # involvement — robust against extraction salvage / model
+        # compliance issues. Falls back to batch-level attribution
+        # when no chunk literally contains the value's string form.
         field_provenance_rows: list[ExtractionFieldProvenance] = []
-        template_fp = getattr(template_instance, "field_provenance", None) or []
-        if template_fp:
-            primary_types = pass_def.get("primary_entity_types", []) or []
-            primary_type = primary_types[0] if primary_types else None
-            list_field_name: str | None = None
-            if primary_type:
-                try:
-                    list_field_name = _primary_list_field_name(template_cls, primary_type)
-                except ValueError:
-                    list_field_name = None
-            if list_field_name:
-                primary_entities = getattr(template_instance, list_field_name, []) or []
-                # Build identity → instance_id index from provenance_rows.
+        primary_types = pass_def.get("primary_entity_types", []) or []
+        primary_type = primary_types[0] if primary_types else None
+        list_field_name: str | None = None
+        if primary_type:
+            try:
+                list_field_name = _primary_list_field_name(template_cls, primary_type)
+            except ValueError:
+                list_field_name = None
+        if list_field_name:
+            primary_entities = getattr(template_instance, list_field_name, []) or []
+            if primary_entities:
+                # Build per-entity instance_id list aligned with primary_entities.
                 identity_to_instance: dict[tuple[str, str], str] = {}
                 for prow in provenance_rows:
                     iv = getattr(prow, "identity_values", {}) or {}
                     for k, v in iv.items():
                         if v:
                             identity_to_instance[(str(k), str(v))] = getattr(prow, "instance_id", "")
-                for fp_row in template_fp:
-                    idx = getattr(fp_row, "entity_index", -1)
-                    if not (0 <= idx < len(primary_entities)):
-                        continue
-                    entity = primary_entities[idx]
+                instance_ids: list[str] = []
+                for entity in primary_entities:
                     iv_dump = entity.model_dump() if hasattr(entity, "model_dump") else {}
-                    instance_id = ""
+                    found = ""
                     for k, v in iv_dump.items():
                         if v and (str(k), str(v)) in identity_to_instance:
-                            instance_id = identity_to_instance[(str(k), str(v))]
+                            found = identity_to_instance[(str(k), str(v))]
                             break
-                    field_name = getattr(fp_row, "field_name", "")
-                    value = getattr(entity, field_name, None) if field_name else None
-                    field_provenance_rows.append(ExtractionFieldProvenance(
-                        instance_id=instance_id,
-                        field_name=field_name,
-                        value=value,
-                        supporting_snippet=getattr(fp_row, "supporting_snippet", ""),
-                        element_uid=None,
-                    ))
+                    instance_ids.append(found)
 
-        # Resolve snippet → element_uid by substring-matching against
-        # the DoclingDocument's text elements. Mutates rows in place;
-        # rows with no chunk match keep element_uid=None and emit an
-        # unverified_source log row (spec §5.5, §5.13).
-        if field_provenance_rows:
-            input_chunks_for_resolver: list[tuple[str, str]] = []
-            doc = getattr(context, "docling_document", None)
-            if doc is not None:
-                for text_elem in (getattr(doc, "texts", []) or []):
-                    self_ref = getattr(text_elem, "self_ref", None)
-                    txt = getattr(text_elem, "text", None) or getattr(text_elem, "orig", None)
-                    if self_ref and txt:
-                        input_chunks_for_resolver.append((str(self_ref), str(txt)))
-            if input_chunks_for_resolver:
-                resolve_field_provenance_uids(
-                    field_provenance_rows, input_chunks_for_resolver,
+                # Skip system fields, edges, and identity adjuncts —
+                # these are bookkeeping or already part of the entity
+                # header, not parametric properties.
+                skip_fields: set[str] = {"confidence"}
+                if primary_entities:
+                    sample = primary_entities[0]
+                    for fname, finfo in sample.__class__.model_fields.items():
+                        extra = finfo.json_schema_extra or {}
+                        if not isinstance(extra, dict):
+                            continue
+                        if extra.get("system_field") is True:
+                            skip_fields.add(fname)
+                        if extra.get("edge_label"):
+                            skip_fields.add(fname)
+                        if extra.get("identity_field") is True:
+                            skip_fields.add(fname)
+                graph_id_fields = (
+                    primary_entities[0].__class__.model_config.get("graph_id_fields", []) or []
                 )
+                skip_fields.update(graph_id_fields)
+
+                # Collect input chunks (element_uid, text) once.
+                input_chunks_for_resolver: list[tuple[str, str]] = []
+                doc = getattr(context, "docling_document", None)
+                if doc is not None:
+                    for text_elem in (getattr(doc, "texts", []) or []):
+                        self_ref = getattr(text_elem, "self_ref", None)
+                        txt = getattr(text_elem, "text", None) or getattr(text_elem, "orig", None)
+                        if self_ref and txt:
+                            input_chunks_for_resolver.append((str(self_ref), str(txt)))
+
+                if input_chunks_for_resolver:
+                    field_provenance_rows = build_auto_field_evidence(
+                        primary_entities=primary_entities,
+                        instance_ids=instance_ids,
+                        input_chunks=input_chunks_for_resolver,
+                        skip_fields=skip_fields,
+                        provenance_cls=ExtractionFieldProvenance,
+                    )
 
         return ExtractPassResponse(
             bundle_key=body.bundle_key,

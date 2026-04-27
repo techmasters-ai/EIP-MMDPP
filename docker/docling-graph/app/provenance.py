@@ -331,48 +331,144 @@ def _normalize_text(text: str) -> str:
     return _WS_NORM.sub(" ", text).strip().casefold()
 
 
-def resolve_field_provenance_uids(
-    field_provenance: list[Any],
-    input_chunks: list[tuple[str, str]],
-) -> None:
-    """Resolve each row's element_uid by whitespace-collapsed
-    case-insensitive substring match against ``input_chunks``.
+def _value_match_candidates(value: Any, field_name: str) -> list[str]:
+    """Generate likely string forms of a field value for substring matching.
 
-    ``input_chunks`` is a list of (element_uid, text) tuples — one per
-    DoclingDocument chunk fed to the LLM.
-
-    Single match wins. Multi-match falls back to longest chunk text and
-    emits an ``ambiguous_snippet`` log row carrying all candidate uids.
-    No match keeps element_uid=None and emits an ``unverified_source``
-    log row (spec §5.5, §5.13). Mutates rows in place.
+    Numeric values get whole-number, decimal, and unit-aware variants
+    derived from the field name's suffix convention (e.g. ``gain_dbi`` →
+    "35", "35.0", "35 dBi", "35dBi"). String values pass through as-is
+    after stripping. Booleans return [] (not useful for substring match).
     """
-    for row in field_provenance:
-        snippet = getattr(row, "supporting_snippet", "") or ""
-        snippet_norm = _normalize_text(snippet)
-        if not snippet_norm:
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, str):
+        v = value.strip()
+        return [v] if v else []
+    if isinstance(value, (int, float)):
+        forms: list[str] = [str(value)]
+        if isinstance(value, float) and value == int(value):
+            forms.append(str(int(value)))
+        unit = _UNIT_HINTS_BY_SUFFIX.get(_field_unit_suffix(field_name))
+        if unit:
+            base = forms[-1]
+            forms.extend(f"{base} {unit}" for unit in unit)
+            forms.extend(f"{base}{unit}" for unit in unit)
+        return forms
+    return [str(value)]
+
+
+# Field-name suffix → list of human-readable unit candidates the
+# author may have written. Generated value form is paired with each.
+_UNIT_HINTS_BY_SUFFIX: dict[str, list[str]] = {
+    "_dbi": ["dBi", "dB"],
+    "_dbw": ["dBW", "dB"],
+    "_mhz": ["MHz", "GHz"],
+    "_khz": ["kHz"],
+    "_usec": ["μs", "us", "microseconds"],
+    "_sec": ["s", "seconds"],
+    "_kw": ["kW"],
+    "_mw": ["MW"],
+    "_km": ["km", "kilometers"],
+    "_m": ["m", "meters"],
+    "_kg": ["kg", "kilograms"],
+    "_mps": ["m/s", "mps"],
+    "_deg": ["°", "deg", "degrees"],
+}
+
+
+def _field_unit_suffix(field_name: str) -> str:
+    """Return the longest known unit suffix on a field name, or ''."""
+    for suffix in sorted(_UNIT_HINTS_BY_SUFFIX, key=len, reverse=True):
+        if field_name.endswith(suffix):
+            return suffix
+    return ""
+
+
+def _excerpt_around(text: str, needle_norm: str, max_chars: int = 240) -> str:
+    """Return a short window of *text* centred on the first match of
+    *needle_norm* (already normalized). Falls back to text[:max_chars]."""
+    norm = _normalize_text(text)
+    pos = norm.find(needle_norm)
+    if pos < 0:
+        return text[:max_chars].strip()
+    half = max_chars // 2
+    raw_start = max(0, pos - half)
+    raw_end = min(len(text), raw_start + max_chars)
+    return text[raw_start:raw_end].strip()
+
+
+def build_auto_field_evidence(
+    primary_entities: list[Any],
+    instance_ids: list[str],
+    input_chunks: list[tuple[str, str]],
+    skip_fields: set[str],
+    provenance_cls: type,
+) -> list[Any]:
+    """Deterministic per-field provenance — no LLM involvement.
+
+    For each non-None populated field on each primary entity, produce
+    one ExtractionFieldProvenance row per input chunk that contains
+    any string form of the field value (numeric+unit-aware variants).
+    When no chunk matches, falls back to attaching every input chunk
+    as a candidate so the field still has *some* provenance row.
+
+    Args:
+        primary_entities: the pass's primary entity list (e.g. the
+            populated radar_systems / missile_systems).
+        instance_ids: list aligned with primary_entities — i-th entry
+            is the resolved instance_id for primary_entities[i].
+        input_chunks: list of (element_uid, text) tuples — one per
+            DoclingDocument chunk fed to the LLM.
+        skip_fields: set of canonical field names to never treat as
+            extracted properties (system_field, edge_label, identity
+            tagged on json_schema_extra). The caller pre-computes this.
+        provenance_cls: ExtractionFieldProvenance class to instantiate.
+
+    Returns:
+        list of provenance rows, ordered by (entity_index, field_name)
+        for stable diffs.
+    """
+    out: list[Any] = []
+    for idx, entity in enumerate(primary_entities):
+        instance_id = instance_ids[idx] if idx < len(instance_ids) else ""
+        if not hasattr(entity, "model_fields"):
             continue
-        candidates: list[tuple[str, str]] = []
-        for euid, ctext in input_chunks:
-            if snippet_norm in _normalize_text(ctext or ""):
-                candidates.append((euid, ctext or ""))
-        if not candidates:
-            logger.info(
-                "unverified_source: no chunk match for snippet on %s.%s (snippet=%r)",
-                getattr(row, "instance_id", ""),
-                getattr(row, "field_name", ""),
-                snippet[:120],
-            )
-            continue
-        if len(candidates) == 1:
-            row.element_uid = candidates[0][0]
-            continue
-        candidates.sort(key=lambda c: -len(c[1]))
-        row.element_uid = candidates[0][0]
-        logger.info(
-            "ambiguous_snippet: %d chunks matched on %s.%s; picked %s (candidates=%s)",
-            len(candidates),
-            getattr(row, "instance_id", ""),
-            getattr(row, "field_name", ""),
-            candidates[0][0],
-            [c[0] for c in candidates],
-        )
+        for fname in entity.__class__.model_fields:
+            if fname in skip_fields:
+                continue
+            value = getattr(entity, fname, None)
+            if value is None or isinstance(value, bool):
+                continue
+            if isinstance(value, (list, tuple, set, dict)) and not value:
+                continue  # empty default-factory collections aren't extracted data
+            candidates = _value_match_candidates(value, fname)
+            if not candidates:
+                continue
+            normalized = [_normalize_text(c) for c in candidates if c]
+            normalized = [n for n in normalized if n]
+            matches: list[tuple[str, str, str]] = []  # (euid, snippet, ctext)
+            for euid, ctext in input_chunks:
+                if not ctext:
+                    continue
+                ctext_norm = _normalize_text(ctext)
+                hit = next((n for n in normalized if n in ctext_norm), None)
+                if hit is None:
+                    continue
+                snippet = _excerpt_around(ctext, hit)
+                matches.append((euid, snippet, ctext))
+            if not matches and input_chunks:
+                # Fall back to batch-level: every chunk a candidate.
+                for euid, ctext in input_chunks[:3]:
+                    if not ctext:
+                        continue
+                    snippet = ctext[:240].strip()
+                    matches.append((euid, snippet, ctext))
+            for euid, snippet, _ctext in matches:
+                out.append(provenance_cls(
+                    instance_id=instance_id,
+                    field_name=fname,
+                    value=value,
+                    supporting_snippet=snippet,
+                    element_uid=euid,
+                ))
+    return out
