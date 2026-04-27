@@ -5,14 +5,19 @@ from typing import get_args, get_origin, Union
 from pydantic import BaseModel
 
 from ontology_bundles.air_defense_v3.extraction_schemas import (
-    radar_domain, missile_domain, system_links,
+    radar_identity, radar_power_rf, radar_antenna, radar_timing, radar_modulation,
+    missile_domain, system_links,
 )
 
-# Post-C-1/C-2 + flat-checklist refactor: `reference` and `other_systems`
-# passes were deleted. The deterministic Docling anchor walker (D-3) now
-# emits SECTION/FIGURE/TABLE, and manifest.yaml declares 3 passes.
+# Post radar field-group split (spec §4.5): radar_domain was decomposed into
+# 5 sub-passes (radar_identity, radar_power_rf, radar_antenna, radar_timing,
+# radar_modulation). manifest.yaml now declares 7 passes total.
 PASS_MODULES = [
-    (radar_domain, "RadarDomainPass"),
+    (radar_identity, "RadarIdentityPass"),
+    (radar_power_rf, "RadarPowerRfPass"),
+    (radar_antenna, "RadarAntennaPass"),
+    (radar_timing, "RadarTimingPass"),
+    (radar_modulation, "RadarModulationPass"),
     (missile_domain, "MissileDomainPass"),
     (system_links, "SystemLinksPass"),
 ]

@@ -2,20 +2,22 @@
 import pytest
 
 
-def test_load_bundle_manifest_returns_four_passes():
-    """Happy path: parses manifest.yaml into a BundleManifest with 4 passes.
+def test_load_bundle_manifest_returns_seven_passes():
+    """Happy path: parses manifest.yaml into a BundleManifest with 7 passes.
 
-    Post-C-2: the `reference` pass was deleted (replaced by the
-    deterministic Docling anchor walker / derive_document_anchors
-    Celery task in D-3/D-4). Only domain passes + system_links remain.
+    Post radar field-group split (spec §4.5): radar_domain was decomposed
+    into 5 sub-passes (radar_identity, radar_power_rf, radar_antenna,
+    radar_timing, radar_modulation). missile_domain + system_links remain.
     """
     from app.services.ontology_bundles import load_bundle_manifest, BundleManifest
     m = load_bundle_manifest("air_defense_v3")
     assert isinstance(m, BundleManifest)
     assert m.bundle_key == "air_defense_v3"
-    assert len(m.passes) == 3
+    assert len(m.passes) == 7
     assert {p.name for p in m.passes} == {
-        "radar_domain", "missile_domain", "system_links",
+        "radar_identity", "radar_power_rf", "radar_antenna",
+        "radar_timing", "radar_modulation",
+        "missile_domain", "system_links",
     }
 
 
@@ -23,7 +25,7 @@ def test_load_bundle_manifest_populates_pass_metadata():
     """Pass metadata (kind, input_mode, primary/bridge/etc.) is parsed."""
     from app.services.ontology_bundles import load_bundle_manifest
     m = load_bundle_manifest("air_defense_v3")
-    radar = m.find_pass("radar_domain")
+    radar = m.find_pass("radar_identity")
     # Domain passes (radar/missile) are non-required so docs without matching
     # content don't fail the pipeline on empty LLM output.
     assert radar.required is False

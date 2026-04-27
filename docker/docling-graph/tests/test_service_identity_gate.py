@@ -3,6 +3,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+# Legacy-loadability check: radar_domain.py is kept in source even
+# after the field-group cutover. If this import breaks, that's a
+# regression even though the legacy module isn't in the manifest.
 from ontology_bundles.air_defense_v3.extraction_schemas.radar_domain import RadarDomainPass
 from ontology_bundles.air_defense_v3.extraction_schemas.missile_domain import MissileDomainPass
 from ontology_bundles.air_defense_v3.extraction_schemas.system_links import SystemLinksPass
@@ -136,7 +139,7 @@ def test_apply_bundle_postprocessing_rewrites_air_defense_fields_from_evidence()
 
     radar_output, radar_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
         "air_defense_v3",
-        "radar_domain",
+        "radar_identity",
         {
             "radar_systems": [
                 {"system_name": "Fan Song", "emitter_function": "TRACKING", "system_status": "OPERATIONAL"},
@@ -193,7 +196,7 @@ def test_radar_postprocess_clears_unsupported_specs_and_recovers_spoon_rest():
 
     radar_output, radar_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
         "air_defense_v3",
-        "radar_domain",
+        "radar_identity",
         {
             "radar_systems": [
                 {

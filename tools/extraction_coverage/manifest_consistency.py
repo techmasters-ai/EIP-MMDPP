@@ -49,21 +49,43 @@ def check_manifest_self_consistency(
                     f"document_plus_entity_refs but no depends_on"
                 )
 
-    # 4. entities are disjoint across passes EXCEPT for declared bridge entities
+    # 4. entities are disjoint across passes EXCEPT for declared bridge
+    #    entities OR field-group siblings (entities/document_only passes
+    #    that emit the same primary entity type and rely on
+    #    merge_and_resolve to collapse partial records by shared
+    #    graph_id_fields). Per radar field-group spec §4.5 the 5 radar
+    #    sub-passes all emit RADAR_SYSTEM[] with system_name identity;
+    #    that is by-design, not a manifest bug.
     entity_owners: dict[str, list[str]] = {}
     bridge_set: set[str] = set()
+    pass_by_name: dict[str, dict] = {}
     for p in passes:
         name = p.get("name")
+        if name:
+            pass_by_name[name] = p
         for ent in p.get("primary_entity_types") or []:
             entity_owners.setdefault(ent, []).append(name)
         for ent in p.get("bridge_entity_types") or []:
             bridge_set.add(ent)
     for ent, owners in sorted(entity_owners.items()):
-        if len(owners) > 1 and ent not in bridge_set:
-            errors.append(
-                f"{bundle_key}: entity {ent!r} is primary in multiple passes "
-                f"({', '.join(owners)}) but not declared as a bridge"
-            )
+        if len(owners) <= 1 or ent in bridge_set:
+            continue
+        # Field-group sibling carve-out: all sharing passes must be
+        # `kind == entities` and `input_mode == document_only`.
+        # merge_and_resolve handles cross-pass collapse via shared
+        # graph_id_fields on the record models.
+        sharers = [pass_by_name.get(o, {}) for o in owners]
+        all_field_group_kind = all(
+            s.get("kind") == "entities"
+            and s.get("input_mode") == "document_only"
+            for s in sharers
+        )
+        if all_field_group_kind:
+            continue
+        errors.append(
+            f"{bundle_key}: entity {ent!r} is primary in multiple passes "
+            f"({', '.join(owners)}) but not declared as a bridge"
+        )
 
     # 5. Every template_class / module path is importable (smoke import)
     for p in passes:

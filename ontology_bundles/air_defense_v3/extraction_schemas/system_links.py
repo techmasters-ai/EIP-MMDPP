@@ -90,7 +90,7 @@ class SystemLinkRelationship(BaseModel):
         description=(
             "Upstream ref id of the edge source — a short token like "
             "'E001', 'E002' that refers to an entity previously emitted "
-            "by an earlier pass (radar_domain, missile_domain). The "
+            "by an earlier pass (radar_identity, missile_domain). The "
             "catalog of available ref ids is provided in the prompt's "
             "'Upstream entities:' preamble. Emit only ref ids that "
             "appear in that list — the merge layer rejects unknown ids."
@@ -142,7 +142,7 @@ class SystemLinksPass(BaseModel):
     ``Field`` (not ``edge()``) because its items are DTOs, not entities.
 
     is_entity=True per docling-graph-docs.md §Template Basics → Root
-    Document Model (line 18859). See radar_domain.py for full rationale.
+    Document Model (line 18859). See radar_identity.py for full rationale.
     graph_id_fields=[] because the DTO-emitting pass-root has no natural
     identity; the walker skips it at at_pass_root=True.
     """

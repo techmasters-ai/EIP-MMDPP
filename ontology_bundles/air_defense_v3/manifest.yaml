@@ -5,20 +5,56 @@ ontology_version: "3.0.0"
 extraction_profile_version: "1.0.0"
 
 passes:
-  - name: radar_domain
-    # Non-required: mixed-corpus documents (e.g. handwritten notes, non-radar
-    # papers) legitimately have no radar content. When the LLM returns empty
-    # output for this pass, that's a true negative, not a pipeline failure.
-    #
-    # Flat checklist-aligned schema (RADAR MDE Checklist): only RADAR_SYSTEM is
-    # emitted; all antenna / RF / modulation / parametric fields are properties
-    # on that single entity. Kind is ``entities`` not ``entities_and_relationships``
-    # because the schema has no typed HAS_* edges.
+  - name: radar_identity
     required: false
     kind: entities
     input_mode: document_only
-    module: extraction_schemas.radar_domain
-    template_class: RadarDomainPass
+    module: extraction_schemas.radar_identity
+    template_class: RadarIdentityPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_power_rf
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_power_rf
+    template_class: RadarPowerRfPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_antenna
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_antenna
+    template_class: RadarAntennaPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_timing
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_timing
+    template_class: RadarTimingPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_modulation
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_modulation
+    template_class: RadarModulationPass
     primary_entity_types: [RADAR_SYSTEM]
     bridge_entity_types: []
     extracted_relationship_types: []
@@ -50,7 +86,13 @@ passes:
     primary_entity_types: []
     bridge_entity_types: []
     extracted_relationship_types: [ASSOCIATED_WITH, CUES]
-    depends_on: [radar_domain, missile_domain]
+    depends_on:
+      - radar_identity
+      - radar_power_rf
+      - radar_antenna
+      - radar_timing
+      - radar_modulation
+      - missile_domain
     skip_if_no_upstream_endpoints: true
     skip_justification: >
       When none of the upstream domain passes produce any linkable system

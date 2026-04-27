@@ -8,8 +8,8 @@ HIT.
 
 Three states:
 
-- ``ok``       — at least one domain pass (radar / missile /
-                 other_systems / system_links) achieved HIT.
+- ``ok``       — at least one domain pass (radar (any sub-pass) /
+                 missile / system_links) achieved HIT.
 - ``degraded`` — no domain HIT, but SECTION vertices and TextChunks
                  both exist. Real document processed through
                  derive_document_anchors and chunking, but nothing
@@ -40,9 +40,8 @@ def test_ok_when_any_domain_pass_hits():
     """Any domain pass in HIT state → 'ok' regardless of graph signals."""
     assert _classify_extraction_quality(
         {
-            "radar_domain": _outcome("HIT"),
+            "radar_identity": _outcome("HIT"),
             "missile_domain": _outcome("EMPTY"),
-            "other_systems": _outcome("EMPTY"),
             "system_links": _outcome("EMPTY"),
         },
         section_count=0,
@@ -51,7 +50,7 @@ def test_ok_when_any_domain_pass_hits():
 
     # Radar hit dominates even when graph signals are zero.
     assert _classify_extraction_quality(
-        {"radar_domain": _outcome("HIT")},
+        {"radar_identity": _outcome("HIT")},
         section_count=0,
         text_chunk_count=0,
     ) == "ok"
@@ -61,9 +60,8 @@ def test_degraded_when_sections_and_chunks_present_but_no_domain_hit():
     """Graph signals (SECTION + TextChunk) > 0 AND no domain HIT → 'degraded'."""
     assert _classify_extraction_quality(
         {
-            "radar_domain": _outcome("EMPTY"),
+            "radar_identity": _outcome("EMPTY"),
             "missile_domain": _outcome("BRIDGES_ONLY"),
-            "other_systems": _outcome("EMPTY"),
             "system_links": _outcome("EMPTY"),
         },
         section_count=5,
@@ -72,7 +70,7 @@ def test_degraded_when_sections_and_chunks_present_but_no_domain_hit():
 
     # Minimum positive signal on both counts is enough.
     assert _classify_extraction_quality(
-        {"radar_domain": _outcome("DEGRADED")},
+        {"radar_identity": _outcome("DEGRADED")},
         section_count=1,
         text_chunk_count=1,
     ) == "degraded"
@@ -80,7 +78,7 @@ def test_degraded_when_sections_and_chunks_present_but_no_domain_hit():
     # FAILED / SKIPPED domain outcomes don't disqualify degraded status.
     assert _classify_extraction_quality(
         {
-            "radar_domain": _outcome(None, execution_status="FAILED"),
+            "radar_identity": _outcome(None, execution_status="FAILED"),
             "missile_domain": _outcome(None, execution_status="SKIPPED"),
         },
         section_count=3,
@@ -92,21 +90,21 @@ def test_anomaly_when_no_domain_hit_and_no_graph_signal():
     """No domain HIT AND (section_count == 0 OR text_chunk_count == 0) → 'anomaly'."""
     # Both signals zero.
     assert _classify_extraction_quality(
-        {"radar_domain": _outcome("EMPTY")},
+        {"radar_identity": _outcome("EMPTY")},
         section_count=0,
         text_chunk_count=0,
     ) == "anomaly"
 
     # Only sections present — chunks missing.
     assert _classify_extraction_quality(
-        {"radar_domain": _outcome("EMPTY")},
+        {"radar_identity": _outcome("EMPTY")},
         section_count=5,
         text_chunk_count=0,
     ) == "anomaly"
 
     # Only chunks present — sections missing.
     assert _classify_extraction_quality(
-        {"radar_domain": _outcome("EMPTY")},
+        {"radar_identity": _outcome("EMPTY")},
         section_count=0,
         text_chunk_count=5,
     ) == "anomaly"
@@ -138,9 +136,8 @@ def test_classifier_result_included_in_pipeline_run_metrics_blob(monkeypatch):
     monkeypatch.setattr(
         "app.workers.pipeline._build_pass_outcomes_rollup",
         lambda *_args, **_kw: {
-            "radar_domain": _outcome("EMPTY"),
+            "radar_identity": _outcome("EMPTY"),
             "missile_domain": _outcome("EMPTY"),
-            "other_systems": _outcome("EMPTY"),
             "system_links": _outcome("EMPTY"),
         },
     )
