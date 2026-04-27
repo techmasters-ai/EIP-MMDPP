@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,7 +7,20 @@ from ontology_bundles.air_defense_v3.extraction_schemas.radar_domain import Rada
 from ontology_bundles.air_defense_v3.extraction_schemas.missile_domain import MissileDomainPass
 from ontology_bundles.air_defense_v3.extraction_schemas.system_links import SystemLinksPass
 
-_MODULE_PATH = Path(__file__).resolve().parent.parent / "app" / "evidence_gate.py"
+_SERVICE_APP_ROOT = Path(__file__).resolve().parent.parent / "app"
+
+# Pre-register the docling-graph-side `app._numeric_evidence` so the file-path
+# loaded `evidence_gate.py` can resolve `from app._numeric_evidence import ...`
+# without falling back to the (separate) root `app/` package.
+_NUM_EV_SPEC = importlib.util.spec_from_file_location(
+    "app._numeric_evidence", _SERVICE_APP_ROOT / "_numeric_evidence.py"
+)
+_NUM_EV_MOD = importlib.util.module_from_spec(_NUM_EV_SPEC)
+sys.modules["app._numeric_evidence"] = _NUM_EV_MOD
+assert _NUM_EV_SPEC.loader is not None
+_NUM_EV_SPEC.loader.exec_module(_NUM_EV_MOD)
+
+_MODULE_PATH = _SERVICE_APP_ROOT / "evidence_gate.py"
 _SPEC = importlib.util.spec_from_file_location("docling_graph_evidence_gate", _MODULE_PATH)
 _EVIDENCE_GATE = importlib.util.module_from_spec(_SPEC)
 assert _SPEC.loader is not None

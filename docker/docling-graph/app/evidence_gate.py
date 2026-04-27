@@ -5,6 +5,8 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 
+from app._numeric_evidence import value_is_supported_by_text
+
 _EVIDENCE_WS_RE = re.compile(r"\s+")
 _EVIDENCE_BOUNDARY_CLASS = r"A-Z0-9"
 _EVIDENCE_STRING_KEYS = frozenset({"text", "orig", "content", "caption"})
@@ -395,49 +397,50 @@ def _find_explicit_radar_nomenclature(system_name: Any, evidence_text: str) -> s
     return None
 
 
-def _clear_unsupported_radar_properties(item: dict[str, Any], evidence_text: str) -> list[str]:
+EVIDENCE_GATE_RADAR_FIELDS: tuple[str, ...] = (
+    "erp_dbw", "tx_peak_power_kw", "gain_dbi",
+    "antenna_photo", "antenna_dim_az_m", "antenna_dim_el_m",
+    "beamwidth_az_deg", "beamwidth_el_deg", "spoiled",
+    "coverage_limits_el_deg",
+    "nominal_rf_mhz", "nominal_pri_usec", "nominal_pd_usec",
+    "scan_period_sec",
+    "frequency_excursion_mhz", "num_bits_in_code", "pulses_per_dwell",
+    "confidence",
+)
+
+
+def _clear_unsupported_radar_properties(
+    item: dict[str, Any], evidence_text: str,
+) -> list[str]:
+    """Null radar properties whose values aren't supported by batch text.
+
+    Spec §4.8 refactor. Previously unconditionally nulled 18 numeric
+    fields; now uses value_is_supported_by_text to preserve values
+    that appear in evidence_text (with same-unit-suffix variants).
+    """
     cleared: list[str] = []
 
+    # Text fields use the existing exact-quote check.
     exact_text_fields = (
-        "nomenclature",
-        "elnot",
-        "dieqp",
-        "asrd",
-        "responsible_agency",
-        "review_cycle",
-        "next_review_date",
-        "dwell_time",
-        "scan_type",
-        "intra_pulse_mop",
-        "inter_pulse",
+        "nomenclature", "elnot", "dieqp", "asrd",
+        "responsible_agency", "review_cycle", "next_review_date",
+        "dwell_time", "scan_type", "intra_pulse_mop", "inter_pulse",
     )
     for field_name in exact_text_fields:
-        if item.get(field_name) is not None and not _value_is_quoted_in_text(item.get(field_name), evidence_text):
+        value = item.get(field_name)
+        if value is not None and not _value_is_quoted_in_text(value, evidence_text):
             item[field_name] = None
             cleared.append(field_name)
 
-    strict_null_fields = (
-        "erp_dbw",
-        "tx_peak_power_kw",
-        "gain_dbi",
-        "antenna_photo",
-        "antenna_dim_az_m",
-        "antenna_dim_el_m",
-        "beamwidth_az_deg",
-        "beamwidth_el_deg",
-        "spoiled",
-        "coverage_limits_el_deg",
-        "nominal_rf_mhz",
-        "nominal_pri_usec",
-        "nominal_pd_usec",
-        "scan_period_sec",
-        "frequency_excursion_mhz",
-        "num_bits_in_code",
-        "pulses_per_dwell",
-        "confidence",
-    )
-    for field_name in strict_null_fields:
-        if item.get(field_name) is not None:
+    # Numeric (and the bool / coverage-limits) fields are preserved when
+    # value_is_supported_by_text accepts them; nulled otherwise. The
+    # tuple lives at module scope (above) so the Step 4b drift test
+    # can compare it for set equality against the field-group definitions.
+    for field_name in EVIDENCE_GATE_RADAR_FIELDS:
+        value = item.get(field_name)
+        if value is None:
+            continue
+        if not value_is_supported_by_text(value, field_name, evidence_text):
             item[field_name] = None
             cleared.append(field_name)
 
