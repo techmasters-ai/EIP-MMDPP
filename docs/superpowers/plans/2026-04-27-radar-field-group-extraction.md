@@ -676,12 +676,17 @@ _WS_NORM = re.compile(r"\s+")
 
 
 # Field-name suffix → list of human-readable unit candidates the
-# author may have written. Generated value form is paired with each.
+# author may have written FOR THE SAME PHYSICAL MAGNITUDE. NEVER
+# include cross-magnitude prefixes here (e.g. "GHz" is NOT a hint for
+# "_mhz" — 3000 GHz != 3000 MHz; including it would silently accept
+# physically wrong values). The pre-refactor provenance.py:365 has
+# this exact bug — the extraction MUST drop "GHz" from "_mhz" rather
+# than preserve it. Same-magnitude case-variant hints are fine.
 _UNIT_HINTS_BY_SUFFIX: dict[str, list[str]] = {
     "_dbi": ["dBi", "dB"],
     "_dbw": ["dBW", "dB"],
-    "_mhz": ["MHz", "GHz"],
-    "_khz": ["kHz"],
+    "_mhz": ["MHz", "Mhz", "mhz"],   # was ["MHz", "GHz"] — DROP "GHz" (cross-magnitude bug)
+    "_khz": ["kHz", "khz"],
     "_usec": ["μs", "us", "microseconds"],
     "_sec": ["s", "seconds"],
     "_kw": ["kW"],
@@ -862,7 +867,10 @@ Expected: All passed (any pre-existing xfail is fine; no new failures).
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add docker/docling-graph/app/_numeric_evidence.py docker/docling-graph/app/provenance.py tests/unit/test_numeric_evidence.py
+git add docker/docling-graph/app/_numeric_evidence.py \
+        docker/docling-graph/app/provenance.py \
+        tests/unit/test_numeric_evidence.py \
+        tests/unit/test_auto_field_evidence.py
 git commit -m "$(cat <<'EOF'
 refactor(docling-graph): extract _numeric_evidence.py shared helper (spec §4.8)
 
@@ -1962,18 +1970,11 @@ def _clear_unsupported_radar_properties(
             cleared.append(field_name)
 
     # Numeric (and the bool / coverage-limits) fields are preserved when
-    # value_is_supported_by_text accepts them; nulled otherwise.
-    evidence_gate_fields = (
-        "erp_dbw", "tx_peak_power_kw", "gain_dbi",
-        "antenna_photo", "antenna_dim_az_m", "antenna_dim_el_m",
-        "beamwidth_az_deg", "beamwidth_el_deg", "spoiled",
-        "coverage_limits_el_deg",
-        "nominal_rf_mhz", "nominal_pri_usec", "nominal_pd_usec",
-        "scan_period_sec",
-        "frequency_excursion_mhz", "num_bits_in_code", "pulses_per_dwell",
-        "confidence",
-    )
-    for field_name in evidence_gate_fields:
+    # value_is_supported_by_text accepts them; nulled otherwise. The
+    # tuple lives at module scope as EVIDENCE_GATE_RADAR_FIELDS so the
+    # drift-prevention test (Step 4b) can compare it for set equality
+    # against the field-group definitions.
+    for field_name in EVIDENCE_GATE_RADAR_FIELDS:
         value = item.get(field_name)
         if value is None:
             continue
@@ -1989,28 +1990,47 @@ def _clear_unsupported_radar_properties(
 Run: `cd docker/docling-graph && python -m pytest tests/test_clear_unsupported_radar_properties.py -v 2>&1 | tail -10`
 Expected: 5 passed.
 
-- [ ] **Step 4b: Add a drift-prevention assertion.**
+- [ ] **Step 4b: Expose `EVIDENCE_GATE_RADAR_FIELDS` as a module constant + add a drift-prevention assertion.**
 
-Append to `tests/test_clear_unsupported_radar_properties.py`:
+Substring matching on `inspect.getsource()` is too weak (passes on comments, doc-strings, dead code; can't catch extras). Instead, lift the tuple out of the function body into a module-level constant the test can compare against directly with set equality.
+
+Refactor `_clear_unsupported_radar_properties` in `evidence_gate.py` so the evidence-gated field list is module-level:
 
 ```python
-def test_evidence_gate_fields_matches_field_groups():
-    """Drift guard: the evidence_gate_fields tuple in
-    _clear_unsupported_radar_properties must equal the union of all
-    non-identity fields across the 4 numeric/parameter sub-pass groups
-    (power_rf, antenna, timing, modulation) plus 'confidence'. If a new
-    field is added to any group, this test must be updated alongside the
-    tuple — otherwise the new field is silently nulled forever.
+# At module scope in evidence_gate.py:
+EVIDENCE_GATE_RADAR_FIELDS: tuple[str, ...] = (
+    "erp_dbw", "tx_peak_power_kw", "gain_dbi",
+    "antenna_photo", "antenna_dim_az_m", "antenna_dim_el_m",
+    "beamwidth_az_deg", "beamwidth_el_deg", "spoiled",
+    "coverage_limits_el_deg",
+    "nominal_rf_mhz", "nominal_pri_usec", "nominal_pd_usec",
+    "scan_period_sec",
+    "frequency_excursion_mhz", "num_bits_in_code", "pulses_per_dwell",
+    "confidence",
+)
+
+def _clear_unsupported_radar_properties(item, evidence_text):
+    ...
+    for field_name in EVIDENCE_GATE_RADAR_FIELDS:
+        ...
+```
+
+Append to `docker/docling-graph/tests/test_clear_unsupported_radar_properties.py`:
+
+```python
+def test_evidence_gate_radar_fields_matches_field_groups():
+    """Drift guard: EVIDENCE_GATE_RADAR_FIELDS must equal the union of
+    all non-identity fields across the 4 numeric/parameter sub-pass
+    groups (power_rf, antenna, timing, modulation) plus 'confidence'.
+
+    Set equality (not substring match) — catches both missing fields
+    AND extra fields. If a new field is added to RADAR_FIELD_GROUPS
+    without updating the constant, this test fails immediately.
     """
-    import inspect
-    from app.evidence_gate import _clear_unsupported_radar_properties
+    from app.evidence_gate import EVIDENCE_GATE_RADAR_FIELDS
     from ontology_bundles.air_defense_v3.extraction_schemas._field_groups import (
         RADAR_FIELD_GROUPS,
     )
-
-    src = inspect.getsource(_clear_unsupported_radar_properties)
-    # Grep the literal tuple body — implementation detail, but stable.
-    assert "evidence_gate_fields = (" in src, "tuple name changed; update this test"
 
     expected = (
         set(RADAR_FIELD_GROUPS["radar_power_rf"])
@@ -2020,12 +2040,15 @@ def test_evidence_gate_fields_matches_field_groups():
     ) - {"system_name"}
     expected.add("confidence")
 
-    for field in expected:
-        assert f'"{field}"' in src, (
-            f"evidence_gate_fields tuple missing {field!r}; "
-            f"new field added to RADAR_FIELD_GROUPS without updating "
-            f"the gate. Numeric values for {field} would be nulled."
-        )
+    actual = set(EVIDENCE_GATE_RADAR_FIELDS)
+    missing = expected - actual
+    extra = actual - expected
+    assert missing == set() and extra == set(), (
+        f"EVIDENCE_GATE_RADAR_FIELDS drift detected.\n"
+        f"  missing from constant (would be silently nulled): {sorted(missing)}\n"
+        f"  extra in constant (not in any field group): {sorted(extra)}\n"
+        f"Update either RADAR_FIELD_GROUPS or the constant."
+    )
 ```
 
 Re-run: `cd docker/docling-graph && python -m pytest tests/test_clear_unsupported_radar_properties.py -v 2>&1 | tail -10`

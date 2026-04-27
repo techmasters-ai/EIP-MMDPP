@@ -21,15 +21,41 @@
 1. Radar plan (`2026-04-27-radar-field-group-extraction.md`) Tasks 1-21 are complete and committed.
 2. Radar smoke harness extracted **≥2/3 numeric values** (per spec §10 fallback gate). If radar smoke is <2/3, mirroring the split for missile would not move numerics either — switch to spec §10 fallback architecture (candidate-mapping) before touching missile.
 
-Verify both before continuing:
+Verify both with **direct evidence**, not commit-message grep:
+
+- [ ] **Step 1: Confirm the radar cutover landed.**
 
 ```bash
-git log --oneline | grep -E "manifest cutover.*radar_domain|smoke harness.*radar" | head -5
+git log --oneline | grep -E "manifest cutover.*radar_domain|radar_domain.*5 sub-passes" | head -3
 ```
 
-If the cutover commit is missing, **stop**; complete the radar plan first.
+Expected: at least one matching commit. If empty, **stop** — complete the radar plan first.
 
-If the smoke harness exists but the most recent run was <2/3, **stop** and re-run it. If still <2/3, switch to spec §10 fallback instead of starting this plan.
+- [ ] **Step 2: Re-run the radar smoke harness against the live service.**
+
+The recorded outcome from the radar plan's Task 21 documentation commit is a snapshot, not a live signal. Always re-run before starting missile work, since the docling-graph image, ontology bundles, or Ollama model weights may have changed since the radar session.
+
+```bash
+docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep docling-graph
+# If not Up: ./manage.sh --start ; sleep 30
+
+SKIP_COV=1 .venv/bin/pytest tests/integration/test_radar_field_groups_smoke.py \
+  -v -m integration 2>&1 | tee /tmp/missile-prereq-radar-smoke.txt | tail -15
+```
+
+Count the result line:
+
+```bash
+grep -E "passed|failed" /tmp/missile-prereq-radar-smoke.txt | tail -1
+```
+
+- **3/3 passed** → continue to Pre-flight checklist below.
+- **2/3 passed** → continue, but record which case failed; the missile session may surface the same failure mode.
+- **0/3 or 1/3 passed (or all skipped due to docling-graph offline)** → **STOP.** If the service is down, restart it and re-run; do NOT proceed with the service offline. If the service is up but smoke is <2/3, switch to spec §10 fallback architecture (candidate-mapping) instead of starting this plan. Document the failed result and stop.
+
+- [ ] **Step 3: Cross-check against the radar plan's recorded outcome.**
+
+Open `docs/superpowers/plans/2026-04-27-radar-field-group-extraction.md` and search for the Task 21 documentation section. The recorded outcome should match what Step 2 just produced. If they disagree by more than one case (e.g. recorded 3/3 but live 0/3), something regressed since the radar session — investigate before proceeding.
 
 ---
 
@@ -1691,52 +1717,78 @@ If no other code path silently nulls missile numerics, this task is verification
 
 - [ ] **Step 2: Implement chosen branch (Branch A — refactor).**
 
-If Branch B or C applied, jump ahead to Step 3b (Branch B/C verification artifact). For Branch A, edit `_clear_unsupported_missile_properties` so its body is structurally identical to the post-refactor radar function. Two parts: (a) the explicit `evidence_gate_fields` tuple, (b) the per-field verification loop. Inlined here so the implementer doesn't have to open the radar plan to copy the loop body.
+If Branch B or C applied, jump ahead to Step 3b (Branch B/C verification artifact). For Branch A, the missile function is structurally MORE complex than the radar version — read `evidence_gate.py:583-660` carefully before editing:
+
+- It calls `_mechanically_supported_missile_fields(evidence_text)` which extracts patterns like `"WEIGHT: 2300 LBS"` → `total_mass_kg=1043.1` via lb→kg conversion (line 579). **This deterministic conversion path must be preserved** — without it, the function loses doc-extracted weight conversions that the LLM cannot itself perform.
+- It applies the mechanical override for 4 fields (`min_intercept_km`, `max_intercept_km`, `max_altitude_km`, `total_mass_kg`) at line 643: if the field is in `supported_numeric`, the function OVERWRITES the LLM's value with the mechanical conversion; otherwise it nulls the LLM's value.
+- It unconditionally nulls 3 fields regardless of evidence (`min_altitude_km`, `max_launch_angle_deg`, `missile_photo`, lines 650-658). Session 1 keeps this behavior — relaxing it is Session 2 work.
+
+The refactor REPLACES the strict-null branch (lines 618-639) with the new evidence-verification loop, while leaving the mechanical-support path and the unconditional-null branch INTACT:
 
 ```python
 from app._numeric_evidence import value_is_supported_by_text
 
+# Module-level constant for the drift-prevention test (Step 4).
+EVIDENCE_GATE_MISSILE_FIELDS: tuple[str, ...] = (
+    # missile_airframe numerics
+    "body_length_m", "body_diameter_m",
+    # missile_speed_timing numerics
+    "average_speed_mps", "max_speed_mps",
+    "max_flyout_time_sec", "flight_time_sec", "coast_time_sec",
+    "intra_salvo_time_sec", "total_burn_time_sec", "ejector_time_sec",
+    # missile_propulsion numerics
+    "ejector_mass_kg", "booster_time_sec", "booster_mass_kg",
+    "sustain_time_sec", "sustain_mass_kg",
+    # meta
+    "confidence",
+)
+
 def _clear_unsupported_missile_properties(item: dict, evidence_text: str) -> list[str]:
-    """Mirror of _clear_unsupported_radar_properties (spec §4.8 pattern).
+    """Spec §4.8 pattern adapted for missile (mechanical-support path preserved).
 
-    Preserves any numeric/bool field whose value (or a unit-aware
-    variant) appears in evidence_text. Values without textual support
-    are nulled. Same predicate the auto-evidence resolver uses — single
-    source of truth.
-
-    Note on group coverage:
-    - missile_identity: no numerics, no entries here.
-    - missile_guidance: only the bool missile_photo is gate-relevant
-      (string fields stay handled by the unchanged exact-text branch).
-    - missile_kinematics, missile_airframe, missile_speed_timing,
-      missile_propulsion: all numeric fields enumerated below.
-    - confidence: meta, gated identically.
+    Refactor scope (Session 1):
+    - PRESERVE: _mechanically_supported_missile_fields() pattern extraction
+      and the override path for min_intercept_km / max_intercept_km /
+      max_altitude_km / total_mass_kg (existing behavior).
+    - PRESERVE: unconditional-null branch for min_altitude_km /
+      max_launch_angle_deg / missile_photo (Session 1 keeps existing
+      behavior; relaxing these is Session 2).
+    - PRESERVE: exact-text branch for string fields and the
+      _enum_is_explicit branches for guidance_type / seeker_type.
+    - REPLACE: the strict_null_fields tuple loop (lines 618-639). The
+      previous code unconditionally nulled these. New code preserves
+      values whose stringified form appears in evidence_text via
+      value_is_supported_by_text — same predicate the auto-evidence
+      resolver uses.
     """
     cleared: list[str] = []
+    supported_numeric = _mechanically_supported_missile_fields(evidence_text)
 
-    # Existing exact-text branch for string fields stays unchanged here
-    # (mirror radar's _value_is_quoted_in_text loop body if present).
-    # ... preserved ...
-
-    evidence_gate_fields = (
-        # missile_kinematics numerics
-        "min_intercept_km", "max_intercept_km",
-        "min_altitude_km", "max_altitude_km", "max_launch_angle_deg",
-        # missile_airframe numerics
-        "body_length_m", "body_diameter_m", "total_mass_kg",
-        # missile_speed_timing numerics
-        "average_speed_mps", "max_speed_mps",
-        "max_flyout_time_sec", "flight_time_sec", "coast_time_sec",
-        "intra_salvo_time_sec", "total_burn_time_sec", "ejector_time_sec",
-        # missile_propulsion numerics
-        "ejector_mass_kg", "booster_time_sec", "booster_mass_kg",
-        "sustain_time_sec", "sustain_mass_kg",
-        # missile_guidance bool
-        "missile_photo",
-        # meta
-        "confidence",
+    # PRESERVED: exact-text branch for string fields (existing).
+    exact_text_fields = (
+        "nomenclature", "name", "dieqp", "emitter_function", "asrd",
+        "responsible_agency", "review_cycle", "next_review_date",
+        "ejector_thrust", "booster_thrust", "sustain_thrust",
     )
-    for field_name in evidence_gate_fields:
+    for field_name in exact_text_fields:
+        if item.get(field_name) is not None and not _value_is_quoted_in_text(item.get(field_name), evidence_text):
+            item[field_name] = None
+            cleared.append(field_name)
+
+    # PRESERVED: enum-explicit branches for guidance_type / seeker_type
+    # (existing — copy lines 608-614 verbatim).
+    if item.get("guidance_type") is not None and not _enum_is_explicit(item.get("guidance_type"), evidence_text, _GUIDANCE_TYPE_PATTERNS):
+        item["guidance_type"] = None
+        cleared.append("guidance_type")
+    if item.get("seeker_type") is not None and not _enum_is_explicit(item.get("seeker_type"), evidence_text, _SEEKER_TYPE_PATTERNS):
+        item["seeker_type"] = None
+        cleared.append("seeker_type")
+
+    # REPLACED (was strict_null_fields tuple loop, lines 618-639):
+    # Now preserves values that appear in evidence_text. Note the
+    # mechanical-override fields are NOT in this tuple — they're handled
+    # below in the override branch.
+    for field_name in EVIDENCE_GATE_MISSILE_FIELDS:
         value = item.get(field_name)
         if value is None:
             continue
@@ -1744,17 +1796,41 @@ def _clear_unsupported_missile_properties(item: dict, evidence_text: str) -> lis
             item[field_name] = None
             cleared.append(field_name)
 
+    # PRESERVED: mechanical-support override for 4 numerics (existing
+    # line 643 logic). Mechanical conversion takes priority over the
+    # LLM's value when available; otherwise the LLM value is checked
+    # against evidence text just like the EVIDENCE_GATE_MISSILE_FIELDS
+    # branch above.
+    for field_name in ("min_intercept_km", "max_intercept_km", "max_altitude_km", "total_mass_kg"):
+        if field_name in supported_numeric:
+            item[field_name] = supported_numeric[field_name]
+        elif item.get(field_name) is not None:
+            value = item[field_name]
+            if not value_is_supported_by_text(value, field_name, evidence_text):
+                item[field_name] = None
+                cleared.append(field_name)
+
+    # PRESERVED: unconditional-null for fields whose Session 1 contract
+    # is "always null" (existing lines 650-658). Session 2 may relax
+    # these to evidence-verified.
+    for field_name in ("min_altitude_km", "max_launch_angle_deg", "missile_photo"):
+        if item.get(field_name) is not None:
+            item[field_name] = None
+            cleared.append(field_name)
+
     return cleared
 ```
 
-Add the regression test at `docker/docling-graph/tests/test_clear_unsupported_missile_properties.py` covering 5 cases parallel to the radar test:
+Add the regression test at `docker/docling-graph/tests/test_clear_unsupported_missile_properties.py` covering 7 cases:
 - supported numeric (e.g. `body_length_m=7.5` with evidence "length 7.5 m") preserved
-- unsupported numeric (`max_intercept_km=999.0` with evidence "max range 43 km") nulled
-- same-unit-suffix variant (`total_mass_kg=1500.0` with evidence "mass 1500 kg") preserved — same-unit suffix appended; the helper does NOT convert "1.5 tonnes" to 1500 kg, that would require real unit conversion which is out of scope (see helper docstring)
-- text-field preserved by exact-text branch (`guidance_type="semi-active"` with evidence "semi-active radar homing")
-- text-field nulled by exact-text branch (`seeker_type="active"` with evidence containing no "active")
+- unsupported numeric (`body_length_m=999.0` with evidence "length 7.5 m") nulled
+- mechanical-override path (`item={"total_mass_kg": 9999}`, evidence "WEIGHT: 2300 LBS") → overridden to ~1043.1 (LLM value discarded in favor of mechanical conversion)
+- mechanical-override absent + LLM value supported (`max_intercept_km=43.0`, evidence "max range 43 km") → preserved
+- mechanical-override absent + LLM value unsupported (`max_intercept_km=999.0`, evidence "max range 43 km") → nulled
+- text-field preserved by exact-text branch (`nomenclature="5V55K"` with evidence "5V55K missile")
+- unconditional-null (`max_launch_angle_deg=85.0` with evidence "launch angle 85 degrees") → nulled regardless of evidence (Session 1 contract)
 
-**Out of scope for Session 1:** Real cross-unit conversion (1.5 tonnes ↔ 1500 kg, 43 km ↔ 43000 m, etc.). The helper only matches the value's stringified form with the field's expected unit suffix appended. If a doc states a value in a non-canonical unit and the LLM doesn't normalize, the value gets nulled. Tracked as Session 2 follow-up if false-negatives become a real problem.
+**Out of scope for Session 1:** Real cross-unit conversion (1.5 tonnes ↔ 1500 kg, 43 km ↔ 43000 m, etc.) beyond the existing `_mechanically_supported_missile_fields()` regex. Relaxing the unconditional-null fields (`min_altitude_km`, `max_launch_angle_deg`, `missile_photo`) is also Session 2 work. The helper only matches the value's stringified form with the field's expected unit suffix appended.
 
 - [ ] **Step 3: Run regression test, expect 5 passed.**
 
@@ -1776,40 +1852,56 @@ Expected: all passed.
 Append to `docker/docling-graph/tests/test_clear_unsupported_missile_properties.py`:
 
 ```python
-def test_evidence_gate_fields_matches_field_groups():
-    """Drift guard: the evidence_gate_fields tuple in
-    _clear_unsupported_missile_properties must equal the union of all
-    numeric/bool non-identity fields across the 4 numeric/parameter
-    sub-pass groups (kinematics, airframe, speed_timing, propulsion)
-    plus 'missile_photo' (the only gate-relevant guidance field) plus
-    'confidence' meta. If a new numeric field is added to any group,
-    this test must be updated alongside the tuple — otherwise the new
-    field is silently nulled forever.
+def test_evidence_gate_missile_fields_matches_field_groups():
+    """Drift guard: EVIDENCE_GATE_MISSILE_FIELDS (module constant
+    introduced by Step 2) must equal the evidence-verified subset of
+    MISSILE_FIELD_GROUPS plus 'confidence' meta.
+
+    Set equality (not substring match) — catches missing AND extra fields.
+
+    Excluded from the constant on purpose:
+    - missile_kinematics fields except `min_altitude_km`/`max_launch_angle_deg`:
+      `min_intercept_km`, `max_intercept_km`, `max_altitude_km` go through
+      the mechanical-override path; `min_altitude_km` and
+      `max_launch_angle_deg` are unconditionally nulled per Session 1
+      contract.
+    - missile_airframe `total_mass_kg`: also mechanical-override path.
+    - missile_guidance string fields (`guidance_type`, `seeker_type`):
+      handled by the enum-explicit branch.
+    - `missile_photo`: unconditionally nulled per Session 1 contract.
     """
-    import inspect
-    from app.evidence_gate import _clear_unsupported_missile_properties
+    from app.evidence_gate import EVIDENCE_GATE_MISSILE_FIELDS
     from ontology_bundles.air_defense_v3.extraction_schemas._field_groups import (
         MISSILE_FIELD_GROUPS,
     )
 
-    src = inspect.getsource(_clear_unsupported_missile_properties)
-    assert "evidence_gate_fields = (" in src, "tuple name changed; update this test"
-
+    # Fields routed through evidence verification (not mechanical override
+    # and not unconditional null).
     expected = (
-        set(MISSILE_FIELD_GROUPS["missile_kinematics"])
-        | set(MISSILE_FIELD_GROUPS["missile_airframe"])
+        set(MISSILE_FIELD_GROUPS["missile_airframe"])
         | set(MISSILE_FIELD_GROUPS["missile_speed_timing"])
         | set(MISSILE_FIELD_GROUPS["missile_propulsion"])
     ) - {"system_name"}
-    expected.add("missile_photo")  # only gate-relevant guidance field
-    expected.add("confidence")     # meta
+    # missile_airframe.total_mass_kg goes through mechanical-override
+    # branch, not EVIDENCE_GATE_MISSILE_FIELDS.
+    expected.discard("total_mass_kg")
+    # missile_propulsion string thrust fields are handled by the
+    # exact-text branch, not the evidence-gate loop.
+    expected.discard("ejector_thrust")
+    expected.discard("booster_thrust")
+    expected.discard("sustain_thrust")
+    expected.add("confidence")
 
-    for field in expected:
-        assert f'"{field}"' in src, (
-            f"evidence_gate_fields tuple missing {field!r}; "
-            f"new field added to MISSILE_FIELD_GROUPS without updating "
-            f"the gate. Numeric values for {field} would be nulled."
-        )
+    actual = set(EVIDENCE_GATE_MISSILE_FIELDS)
+    missing = expected - actual
+    extra = actual - expected
+    assert missing == set() and extra == set(), (
+        f"EVIDENCE_GATE_MISSILE_FIELDS drift detected.\n"
+        f"  missing from constant (would be silently nulled): {sorted(missing)}\n"
+        f"  extra in constant (not in any field group's verification subset): {sorted(extra)}\n"
+        f"Update either MISSILE_FIELD_GROUPS or the constant or this test's"
+        f" exclusion list (mechanical-override / unconditional-null fields)."
+    )
 ```
 
 Re-run: `cd docker/docling-graph && python -m pytest tests/test_clear_unsupported_missile_properties.py -v 2>&1 | tail -10`
@@ -2090,11 +2182,20 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Run the bundle checker.**
 
-Run: `.venv/bin/python -c "from app.bundles.checker import check_bundle; result = check_bundle('air_defense_v3'); print('errors:', len(result.errors)); print('warnings:', len(result.warnings))"`
+The actual checker lives at `tools/extraction_coverage/rules.py:421` (NOT `app.bundles.checker`, which doesn't exist). Signature: `check_bundle(bundle_path: Path) -> tuple[list[str], list[str]]` returning `(errors, warnings)` lists.
 
-(If the import path is different, find it: `grep -rn "def check_bundle" --include="*.py" .`)
+```bash
+.venv/bin/python -c "
+from tools.extraction_coverage.rules import check_bundle
+from pathlib import Path
+errors, warnings = check_bundle(Path('ontology_bundles/air_defense_v3'))
+print(f'errors={len(errors)} warnings={len(warnings)}')
+for e in errors: print(' E:', e)
+for w in warnings[:5]: print(' W:', w)
+"
+```
 
-Expected: errors == 0. Warnings about both `missile_domain` and the new sub-passes existing simultaneously are acceptable in this additive phase.
+Expected: `errors=0`. Warnings about both `missile_domain` and the new sub-passes existing simultaneously are acceptable in this additive phase.
 
 - [ ] **Step 2: No commit (verification only).**
 
