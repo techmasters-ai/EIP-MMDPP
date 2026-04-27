@@ -309,10 +309,22 @@ def test_extraction_views_subset_of_canonical_with_validator_parity():
                         f"{obj.__name__}.{fname} type drift: "
                         f"{ev_finfo.annotation!r} vs {cn_finfo.annotation!r}"
                     )
-                if ev_finfo.description != cn_finfo.description:
-                    offenders.append(
-                        f"{obj.__name__}.{fname} description drift"
-                    )
+                # Description equality intentionally NOT checked: extraction
+                # views serve LLM prompts (which need lean, sanitized text per
+                # spec §4.4 of the radar field-group refactor), while canonical
+                # entities serve human readers / OpenAPI / downstream tools
+                # (which keep richer prose). The two audiences disagree on
+                # appropriate description content; enforcing byte-equal text
+                # would block the field-group refactor's sanitization rules
+                # (FORBIDDEN-block leakage, "typical X-Y" range examples,
+                # numeric examples on numeric fields). Sanitization is
+                # positively enforced by the per-bundle description-quality
+                # contract tests (e.g.
+                # tests/unit/test_radar_field_groups_contract.py's
+                # test_record_descriptions_well_formed and
+                # test_system_name_description_excludes_forbidden_tokens).
+                # Type / validator / graph_id_fields parity (the actually
+                # load-bearing checks) remain enforced above and below.
                 # Shared-validator parity.
                 ev_vs = {
                     v.info.fields: v.func.__qualname__
