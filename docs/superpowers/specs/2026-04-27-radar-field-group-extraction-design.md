@@ -134,6 +134,10 @@ explicit:
   caller's list-field name and per-class text-field set. Defaults the
   forbidden-identities argument to `RADAR_FORBIDDEN_SYSTEM_NAMES` so
   sub-pass modules don't have to import the constant directly.
+  **The returned validator runs both `sanitize_entity_list` and
+  `dedupe_entities_by_identity`**, mirroring the legacy
+  `_sanitize_and_dedupe_root_entities` body in `radar_domain.py`.
+  Sanitize-only factories silently break duplicate-emission handling.
 
 ### 4.4 Per-sub-pass module shape
 
@@ -306,23 +310,92 @@ Zero code change in any of the following:
 - **`_import_graph_phase_nodes`** — writes `_field_evidence` JSON
   property on the vertex. Already merges across passes; works as-is.
 
+### 4.8 Touchpoints requiring code change
+
+**Three pass-name literals in app code reference `"radar_domain"` and
+must be updated as part of the manifest cutover. Missing any of these
+is a silent correctness regression, not a test failure.**
+
+- **`app/workers/pipeline.py::_DOMAIN_PASS_NAMES`** (around line 382) —
+  frozenset feeds `_classify_extraction_quality`. After cutover,
+  `radar_domain` no longer appears in `pass_outcomes`; a successful
+  radar extraction via the 5 sub-passes wouldn't match the `domain_hit`
+  check, and the pipeline run could be classified `degraded` /
+  `anomaly` even when the new passes returned HIT. Update to include
+  all 5 new pass names: `{"radar_identity", "radar_power_rf",
+  "radar_antenna", "radar_timing", "radar_modulation",
+  "missile_domain"}`. Verify `_classify_extraction_quality`'s OR-logic
+  treats *any* radar sub-pass returning HIT as a domain hit (not a
+  per-pass AND).
+
+- **`docker/docling-graph/app/evidence_gate.py::_run_post_extraction_evidence_gate`**
+  (around line 317) — dispatches to `_postprocess_air_defense_radars`
+  only when `pass_name == "radar_domain"`. After cutover, none of the
+  5 sub-passes match this string, so radar-side evidence-gate post-
+  processing (status validation, identity sanity checks) is silently
+  bypassed. Update the dispatch to recognize the 5 new names. Confirm
+  the post-processor function is idempotent across multiple sub-pass
+  invocations on the same document (since 5 sub-passes will each
+  trigger it; merge dedup happens later).
+
+- **`docker/docling-graph/app/schemas.py`** (around line 55) — docstring
+  example references `pass_name="radar_domain"`. Low-risk; update the
+  example to a current pass name (`radar_identity` is a fine
+  representative).
+
+**Test fixtures with hardcoded pass names:**
+
+- `tests/docker/docling-graph/test_extract_pass_endpoint.py`
+- `tests/docker/docling-graph/test_service_identity_gate.py`
+
+Both pin `pass_name="radar_domain"` in their request fixtures. Either
+update fixtures to a sub-pass name (e.g. `radar_identity`) or document
+in a regression-fixture justification why the legacy name is preserved
+(e.g. these tests verify the legacy radar_domain.py module still loads
+even though it's not in the manifest). Default plan: update to
+`radar_identity`.
+
 ## 5. Tests
 
 ### 5.1 Contract tests — `tests/unit/test_radar_field_groups_contract.py`
+
+**Import target for assertions 2-5:**
+`ontology_bundles.air_defense_v3.extraction_schemas.radar_domain.RadarSystemEntity`
+(the extraction-side schema). Field names in `RADAR_FIELD_GROUPS` match
+the extraction-side schema's flat-checklist fields (`tx_peak_power_kw`,
+`nominal_pri_usec`, etc.); the canonical `entities.RadarSystemEntity`
+is a superset that also includes structural / system fields outside
+extraction scope. The contract is about partitioning the **extraction
+schema's** fields, not the canonical entity's fields. Importing the
+canonical instead would cause spurious failures from non-extraction
+fields not appearing in any group.
 
 Group-membership assertions (5):
 
 1. **`test_every_group_includes_system_name`** — every group's field
    list contains `system_name`.
-2. **`test_every_listed_field_exists_on_canonical`** — every name in
-   `RADAR_FIELD_GROUPS` resolves on `RadarSystemEntity.model_fields`.
+2. **`test_every_listed_field_exists_on_canonical`** (where "canonical"
+   here means the extraction-side schema per the import target above) —
+   every name in `RADAR_FIELD_GROUPS` resolves on
+   `RadarSystemEntity.model_fields`.
 3. **`test_no_non_identity_field_in_multiple_groups`** — no field
    except `system_name` appears in more than one group.
 4. **`test_every_flat_checklist_field_appears_exactly_once`** — every
-   profile-mapped, identity, or system_metadata field on canonical is
-   in exactly one group; no field listed in groups is missing from
-   canonical. Includes `RadarSystemEntity.model_config["graph_id_fields"]`
-   in the expected set so `system_name` reconciles cleanly.
+   non-`system_field` field on the extraction-side `RadarSystemEntity`
+   is in exactly one group; no field listed in groups is missing from
+   the schema. **Expected-set formula:**
+   ```python
+   expected = {
+       fname for fname, finfo in RadarSystemEntity.model_fields.items()
+       if not (
+           isinstance(finfo.json_schema_extra, dict)
+           and finfo.json_schema_extra.get("system_field") is True
+       )
+   }
+   expected |= set(RadarSystemEntity.model_config.get("graph_id_fields", []) or [])
+   ```
+   The grouped set is the union of all 5 group field-lists. Test
+   asserts `expected == grouped`.
 5. **`test_system_fields_are_excluded`** — fields tagged
    `system_field=True` (e.g. `confidence`) appear in no group.
 
@@ -365,6 +438,15 @@ Smoke request body **omits** `upstream_entities` for `document_only`
 passes. The endpoint earlier rejected `document_only` requests when the
 key was present, even with an empty list.
 
+**Model assumption:** the smoke harness's expected ranges
+(`tx_peak_power_kw [400, 800]`, `nominal_rf_mhz [2900, 3100]`,
+`gain_dbi [33, 37]`) are calibrated against `gemma4:31b` (the Phase A
+baseline model). If the live docling-graph service is rebuilt against
+a different `DOCLING_GRAPH_LLM_MODEL`, the thresholds may need
+recalibration — re-run the harness once on a known-good extraction
+under the new model and update the ranges to bracket the observed
+value rather than the source-text value verbatim.
+
 ## 6. Rollout
 
 In commit order. Main stays green at every step.
@@ -388,8 +470,18 @@ In commit order. Main stays green at every step.
    - Update `system_links.depends_on` to list all 6 entity passes.
    - Mark `extraction_schemas/radar_domain.py` legacy in module
      docstring (leave file in source).
-   - Sweep tests + dashboards for hardcoded `"radar_domain"` literal
-     references; update to either generic phrasing or `radar_identity`.
+   - Update the **3 app-code touchpoints** enumerated in §4.8:
+     - `app/workers/pipeline.py::_DOMAIN_PASS_NAMES`
+     - `docker/docling-graph/app/evidence_gate.py::_run_post_extraction_evidence_gate`
+       dispatch
+     - `docker/docling-graph/app/schemas.py` docstring example
+   - Update **test fixtures** in
+     `tests/docker/docling-graph/test_extract_pass_endpoint.py` and
+     `tests/docker/docling-graph/test_service_identity_gate.py` from
+     `pass_name="radar_domain"` to `pass_name="radar_identity"`.
+   - Sweep remaining tests + dashboards for hardcoded `"radar_domain"`
+     literal references; update to either generic phrasing or
+     `radar_identity`.
    - Run the relevant unit + pipeline regression sweep; document any
      pre-existing unrelated failures.
 
@@ -419,6 +511,7 @@ In commit order. Main stays green at every step.
 | Risk | Mitigation |
 |---|---|
 | `system_links` upstream-refs builder reads `radar_domain` pass-name literal | Step 4 manifest sweep grep + targeted update before the cutover commit lands. |
+| App-code pass-name literals silently bypass new sub-passes (`_DOMAIN_PASS_NAMES`, evidence-gate dispatch) | §4.8 enumerates the 3 known touchpoints; step 4 explicitly updates each. Smoke test in step 6 catches any missed dispatch (radar-side evidence-gate would no-op silently otherwise). |
 | 5 parallel sub-passes overwhelm the Ollama backend (gemma4:31b can't do 5 concurrent) | If Ollama cannot handle sibling radar passes concurrently, cap worker/service concurrency or temporarily serialize `radar_*` passes via a depends_on chain (`radar_identity` → `radar_power_rf` → `radar_antenna` → ... ). Verify before step 6 by watching Ollama logs during a test ingest. |
 | Worker `_parse_pass_response` chokes on new pass names | The function is pass-name-agnostic and loads `template_class` via the manifest. Verify in step 4 regression sweep. |
 | Coverage checker / bundle-checker rejects the new manifest layout | Run `check_bundle()` after step 4 commit; expected 0 errors based on prior Phase 1 work. |
