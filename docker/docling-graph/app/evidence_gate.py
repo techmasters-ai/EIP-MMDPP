@@ -592,12 +592,45 @@ def _mechanically_supported_missile_fields(evidence_text: str) -> dict[str, floa
     return supported
 
 
+EVIDENCE_GATE_MISSILE_FIELDS: tuple[str, ...] = (
+    # missile_airframe numerics
+    "body_length_m", "body_diameter_m",
+    # missile_speed_timing numerics
+    "average_speed_mps", "max_speed_mps",
+    "max_flyout_time_sec", "flight_time_sec", "coast_time_sec",
+    "intra_salvo_time_sec", "total_burn_time_sec", "ejector_time_sec",
+    # missile_propulsion numerics
+    "ejector_mass_kg", "booster_time_sec", "booster_mass_kg",
+    "sustain_time_sec", "sustain_mass_kg",
+    # meta
+    "confidence",
+)
+
+
 def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: str) -> list[str]:
+    """Spec §4.8 pattern adapted for missile (mechanical-support path preserved).
+
+    Refactor scope (Session 1):
+    - PRESERVE: _mechanically_supported_missile_fields() pattern extraction
+      and the override path for min_intercept_km / max_intercept_km /
+      max_altitude_km / total_mass_kg (existing behavior).
+    - PRESERVE: unconditional-null branch for min_altitude_km /
+      max_launch_angle_deg / missile_photo (Session 1 keeps existing
+      behavior; relaxing these is Session 2).
+    - PRESERVE: exact-text branch for string fields and the
+      _enum_is_explicit branches for guidance_type / seeker_type.
+    - REPLACE: the strict_null_fields tuple loop. The previous code
+      unconditionally nulled these. New code preserves values whose
+      stringified form appears in evidence_text via
+      value_is_supported_by_text — same predicate the auto-evidence
+      resolver uses.
+    """
     cleared: list[str] = []
     supported_numeric = _mechanically_supported_missile_fields(evidence_text)
 
-    # String properties must either appear verbatim in the source text or
-    # be expressed by an explicit guidance/seeker phrase. Otherwise they
+    # PRESERVED: exact-text branch for string fields. String properties
+    # must either appear verbatim in the source text or be expressed by
+    # an explicit guidance/seeker phrase (handled below). Otherwise they
     # are unsupported and must be null.
     exact_text_fields = (
         "nomenclature",
@@ -617,6 +650,7 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
             item[field_name] = None
             cleared.append(field_name)
 
+    # PRESERVED: enum-explicit branches for guidance_type / seeker_type.
     if item.get("guidance_type") is not None and not _enum_is_explicit(item.get("guidance_type"), evidence_text, _GUIDANCE_TYPE_PATTERNS):
         item["guidance_type"] = None
         cleared.append("guidance_type")
@@ -625,40 +659,32 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
         item["seeker_type"] = None
         cleared.append("seeker_type")
 
-    # These fields require explicit dedicated measurements in the source.
-    # If the source does not provide the exact measurement type, leave null.
-    strict_null_fields = (
-        "body_length_m",
-        "body_diameter_m",
-        "average_speed_mps",
-        "max_speed_mps",
-        "max_flyout_time_sec",
-        "flight_time_sec",
-        "coast_time_sec",
-        "intra_salvo_time_sec",
-        "total_burn_time_sec",
-        "ejector_time_sec",
-        "ejector_mass_kg",
-        "booster_time_sec",
-        "booster_mass_kg",
-        "sustain_time_sec",
-        "sustain_mass_kg",
-        "confidence",
-    )
-    for field_name in strict_null_fields:
-        if item.get(field_name) is not None:
+    # REPLACED (was strict_null_fields tuple loop): preserves values that
+    # appear in evidence_text via the shared value_is_supported_by_text
+    # predicate. Same predicate the auto-evidence resolver and the radar
+    # postprocessor use — single source of truth.
+    for field_name in EVIDENCE_GATE_MISSILE_FIELDS:
+        value = item.get(field_name)
+        if value is None:
+            continue
+        if not value_is_supported_by_text(value, field_name, evidence_text):
             item[field_name] = None
             cleared.append(field_name)
 
-    # Numeric fields that can be supported only via a narrow mechanical
-    # conversion from explicit source text.
+    # PRESERVED: mechanical-support override for 4 numerics. Mechanical
+    # conversion takes priority over the LLM's value when available;
+    # otherwise fall back to the same evidence-verification predicate.
     for field_name in ("min_intercept_km", "max_intercept_km", "max_altitude_km", "total_mass_kg"):
         if field_name in supported_numeric:
             item[field_name] = supported_numeric[field_name]
         elif item.get(field_name) is not None:
-            item[field_name] = None
-            cleared.append(field_name)
+            value = item[field_name]
+            if not value_is_supported_by_text(value, field_name, evidence_text):
+                item[field_name] = None
+                cleared.append(field_name)
 
+    # PRESERVED: unconditional-null for fields whose Session 1 contract
+    # is "always null" (Session 2 may relax).
     if item.get("min_altitude_km") is not None:
         item["min_altitude_km"] = None
         cleared.append("min_altitude_km")

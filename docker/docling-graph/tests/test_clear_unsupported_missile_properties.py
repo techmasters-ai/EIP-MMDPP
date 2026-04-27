@@ -1,0 +1,137 @@
+"""Regression test for _clear_unsupported_missile_properties (spec §4.8 missile pattern).
+
+The function preserves three behaviors after this refactor:
+1. Mechanical-support extraction ("WEIGHT: X LBS" → total_mass_kg via lb→kg).
+2. Mechanical override for 4 fields (min/max_intercept_km, max_altitude_km, total_mass_kg).
+3. Unconditional-null for 3 fields (min_altitude_km, max_launch_angle_deg, missile_photo).
+
+The CHANGED behavior: the strict_null_fields tuple loop is replaced with
+value_is_supported_by_text verification — values that appear in evidence
+are preserved instead of unconditionally nulled.
+"""
+import importlib.util
+import pathlib
+import sys
+
+_SERVICE_ROOT = pathlib.Path(__file__).resolve().parent.parent / "app"
+
+
+def _load(modname, path):
+    spec = importlib.util.spec_from_file_location(modname, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[modname] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Pre-register _numeric_evidence under app._numeric_evidence so the
+# file-path-loaded evidence_gate.py's `from app._numeric_evidence import ...`
+# resolves to it (mirrors radar's pattern in test_clear_unsupported_radar_properties.py).
+_load("app._numeric_evidence", _SERVICE_ROOT / "_numeric_evidence.py")
+_eg = _load("_dgp_evidence_gate", _SERVICE_ROOT / "evidence_gate.py")
+_clear = _eg._clear_unsupported_missile_properties
+
+
+def test_supported_numeric_is_preserved():
+    """body_length_m=7.5 with evidence "length 7.5 m" → preserved."""
+    item = {"system_name": "5V55K", "body_length_m": 7.5}
+    evidence = "The 5V55K missile body length is 7.5 m."
+    cleared = _clear(item, evidence)
+    assert "body_length_m" not in cleared, f"should preserve; cleared={cleared}"
+    assert item["body_length_m"] == 7.5
+
+
+def test_unsupported_numeric_is_nulled():
+    """body_length_m=999.0 with evidence "length 7.5 m" → nulled."""
+    item = {"system_name": "5V55K", "body_length_m": 999.0}
+    evidence = "The 5V55K missile body length is 7.5 m."
+    cleared = _clear(item, evidence)
+    assert "body_length_m" in cleared
+    assert item["body_length_m"] is None
+
+
+def test_mechanical_override_path():
+    """LLM emits total_mass_kg=9999, evidence has "WEIGHT: 2300 LBS" → mechanical override wins."""
+    item = {"system_name": "5V55K", "total_mass_kg": 9999.0}
+    evidence = "WEIGHT: 2300 LBS"
+    cleared = _clear(item, evidence)
+    # Mechanical conversion: 2300 / 2.205 ≈ 1043.1
+    assert item["total_mass_kg"] is not None
+    assert 1040 <= item["total_mass_kg"] <= 1046, (
+        f"expected ~1043.1 from mechanical conversion; got {item['total_mass_kg']}"
+    )
+
+
+def test_mechanical_override_absent_supported():
+    """No mechanical extract; LLM value supported in evidence → preserved via verification branch."""
+    item = {"system_name": "5V55K", "max_intercept_km": 43.0}
+    evidence = "5V55K maximum intercept range is 43 km."
+    cleared = _clear(item, evidence)
+    assert "max_intercept_km" not in cleared, f"should preserve; cleared={cleared}"
+    assert item["max_intercept_km"] == 43.0
+
+
+def test_mechanical_override_absent_unsupported():
+    """No mechanical extract; LLM value NOT in evidence → nulled."""
+    item = {"system_name": "5V55K", "max_intercept_km": 999.0}
+    evidence = "5V55K maximum intercept range is 43 km."
+    cleared = _clear(item, evidence)
+    assert "max_intercept_km" in cleared
+    assert item["max_intercept_km"] is None
+
+
+def test_text_field_preserved_by_exact_branch():
+    """nomenclature stated verbatim → preserved."""
+    item = {"system_name": "5V55K", "nomenclature": "5V55K"}
+    evidence = "5V55K (formal designation 5V55K) is a Soviet SAM."
+    cleared = _clear(item, evidence)
+    assert "nomenclature" not in cleared
+    assert item["nomenclature"] == "5V55K"
+
+
+def test_unconditional_null_field():
+    """max_launch_angle_deg always nulls regardless of evidence (Session 1 contract)."""
+    item = {"system_name": "5V55K", "max_launch_angle_deg": 85.0}
+    evidence = "5V55K maximum launch angle is 85 degrees."
+    cleared = _clear(item, evidence)
+    assert "max_launch_angle_deg" in cleared
+    assert item["max_launch_angle_deg"] is None
+
+
+def test_evidence_gate_missile_fields_matches_field_groups():
+    """Drift guard: EVIDENCE_GATE_MISSILE_FIELDS must equal the
+    evidence-verified subset of MISSILE_FIELD_GROUPS plus 'confidence'.
+
+    Excluded from the constant on purpose:
+    - missile_kinematics: most go through mechanical-override (min/max_intercept_km,
+      max_altitude_km), and min_altitude_km/max_launch_angle_deg are
+      unconditionally nulled.
+    - missile_airframe `total_mass_kg`: mechanical-override path.
+    - missile_guidance string fields (guidance_type, seeker_type): enum-explicit branch.
+    - `missile_photo`: unconditionally nulled per Session 1 contract.
+    - missile_propulsion string thrusts: exact-text branch.
+    """
+    EVIDENCE_GATE_MISSILE_FIELDS = _eg.EVIDENCE_GATE_MISSILE_FIELDS
+    from ontology_bundles.air_defense_v3.extraction_schemas._field_groups import (
+        MISSILE_FIELD_GROUPS,
+    )
+
+    expected = (
+        set(MISSILE_FIELD_GROUPS["missile_airframe"])
+        | set(MISSILE_FIELD_GROUPS["missile_speed_timing"])
+        | set(MISSILE_FIELD_GROUPS["missile_propulsion"])
+    ) - {"system_name"}
+    expected.discard("total_mass_kg")
+    expected.discard("ejector_thrust")
+    expected.discard("booster_thrust")
+    expected.discard("sustain_thrust")
+    expected.add("confidence")
+
+    actual = set(EVIDENCE_GATE_MISSILE_FIELDS)
+    missing = expected - actual
+    extra = actual - expected
+    assert missing == set() and extra == set(), (
+        f"EVIDENCE_GATE_MISSILE_FIELDS drift detected.\n"
+        f"  missing from constant (would be silently nulled): {sorted(missing)}\n"
+        f"  extra in constant (not in any field group's verification subset): {sorted(extra)}\n"
+    )
