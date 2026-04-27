@@ -1937,10 +1937,23 @@ Expected: failures on `test_supported_numeric_is_preserved` and `test_supported_
 
 - [ ] **Step 3: Refactor the function.**
 
-Modify `docker/docling-graph/app/evidence_gate.py`. Add the import at the top:
+Modify `docker/docling-graph/app/evidence_gate.py`. Two edits, both at module scope: (a) add the helper import, (b) define `EVIDENCE_GATE_RADAR_FIELDS` as a module-level tuple — Step 4b's drift test imports this constant directly, so it must be module-level from the start. Defining it inside the function body and "lifting it later" would require Step 4 to use a local tuple and then refactor again, which fragments the diff and can't actually pass Step 4b's import.
 
 ```python
+# Add at the top of evidence_gate.py (with the other imports):
 from app._numeric_evidence import value_is_supported_by_text
+
+# Add at module scope (above the function — so the function can reference it):
+EVIDENCE_GATE_RADAR_FIELDS: tuple[str, ...] = (
+    "erp_dbw", "tx_peak_power_kw", "gain_dbi",
+    "antenna_photo", "antenna_dim_az_m", "antenna_dim_el_m",
+    "beamwidth_az_deg", "beamwidth_el_deg", "spoiled",
+    "coverage_limits_el_deg",
+    "nominal_rf_mhz", "nominal_pri_usec", "nominal_pd_usec",
+    "scan_period_sec",
+    "frequency_excursion_mhz", "num_bits_in_code", "pulses_per_dwell",
+    "confidence",
+)
 ```
 
 Replace the body of `_clear_unsupported_radar_properties` (lines 398-444):
@@ -1953,7 +1966,7 @@ def _clear_unsupported_radar_properties(
 
     Spec §4.8 refactor. Previously unconditionally nulled 18 numeric
     fields; now uses value_is_supported_by_text to preserve values
-    that appear in evidence_text (with unit-aware variants).
+    that appear in evidence_text (with same-unit-suffix variants).
     """
     cleared: list[str] = []
 
@@ -1971,9 +1984,8 @@ def _clear_unsupported_radar_properties(
 
     # Numeric (and the bool / coverage-limits) fields are preserved when
     # value_is_supported_by_text accepts them; nulled otherwise. The
-    # tuple lives at module scope as EVIDENCE_GATE_RADAR_FIELDS so the
-    # drift-prevention test (Step 4b) can compare it for set equality
-    # against the field-group definitions.
+    # tuple lives at module scope (above) so the Step 4b drift test
+    # can compare it for set equality against the field-group definitions.
     for field_name in EVIDENCE_GATE_RADAR_FIELDS:
         value = item.get(field_name)
         if value is None:
@@ -1988,32 +2000,11 @@ def _clear_unsupported_radar_properties(
 - [ ] **Step 4: Run test, expect PASS.**
 
 Run: `cd docker/docling-graph && python -m pytest tests/test_clear_unsupported_radar_properties.py -v 2>&1 | tail -10`
-Expected: 5 passed.
+Expected: 5 passed (the 5 regression cases written in Step 1; the drift-prevention test is added in Step 4b).
 
-- [ ] **Step 4b: Expose `EVIDENCE_GATE_RADAR_FIELDS` as a module constant + add a drift-prevention assertion.**
+- [ ] **Step 4b: Add the drift-prevention assertion.**
 
-Substring matching on `inspect.getsource()` is too weak (passes on comments, doc-strings, dead code; can't catch extras). Instead, lift the tuple out of the function body into a module-level constant the test can compare against directly with set equality.
-
-Refactor `_clear_unsupported_radar_properties` in `evidence_gate.py` so the evidence-gated field list is module-level:
-
-```python
-# At module scope in evidence_gate.py:
-EVIDENCE_GATE_RADAR_FIELDS: tuple[str, ...] = (
-    "erp_dbw", "tx_peak_power_kw", "gain_dbi",
-    "antenna_photo", "antenna_dim_az_m", "antenna_dim_el_m",
-    "beamwidth_az_deg", "beamwidth_el_deg", "spoiled",
-    "coverage_limits_el_deg",
-    "nominal_rf_mhz", "nominal_pri_usec", "nominal_pd_usec",
-    "scan_period_sec",
-    "frequency_excursion_mhz", "num_bits_in_code", "pulses_per_dwell",
-    "confidence",
-)
-
-def _clear_unsupported_radar_properties(item, evidence_text):
-    ...
-    for field_name in EVIDENCE_GATE_RADAR_FIELDS:
-        ...
-```
+The module constant `EVIDENCE_GATE_RADAR_FIELDS` is already at module scope from Step 3 — this step only adds the test that imports and asserts against it. Substring matching on `inspect.getsource()` would be too weak (passes on comments, doc-strings, dead code; can't catch extras); set equality against the module constant catches both directions.
 
 Append to `docker/docling-graph/tests/test_clear_unsupported_radar_properties.py`:
 
@@ -2348,10 +2339,10 @@ Then at the top of the per-entity loop in `_extend_upstream_refs`, build that ke
 
 Do NOT use raw `tuple(sorted(identity_values.items()))` — that's case- and whitespace-sensitive, which fails the `test_dedupe_normalizes_whitespace_and_case` assertion above.
 
-- [ ] **Step 5: Run, expect both tests PASS.**
+- [ ] **Step 5: Run, expect all three new tests PASS.**
 
 Run: `SKIP_COV=1 .venv/bin/pytest tests/unit/test_pipeline_upstream_refs.py -v 2>&1 | tail -10`
-Expected: all tests pass (existing + 2 new).
+Expected: all tests pass (existing + 3 new: `test_five_partial_radars_collapse_to_one_upstream_ref`, `test_dedupe_is_per_identity_not_per_pass`, `test_dedupe_normalizes_whitespace_and_case`).
 
 - [ ] **Step 6: Commit.**
 
@@ -2365,9 +2356,12 @@ RADAR_SYSTEM with the same system_name. Without dedupe, the downstream
 relationship pass (system_links) receives 5 distinct E### ref-ids for
 the same logical entity, inflating prompt size and breaking merge.
 
-Two new tests pin the contract: 5 partial radars from 5 sub-passes
-collapse to 1 ref; distinct system_names from different sub-passes do
-NOT collapse.
+Three new tests pin the contract: (a) 5 partial radars from 5 sub-passes
+collapse to 1 ref; (b) distinct system_names from different sub-passes
+do NOT collapse; (c) whitespace/case variants of the same system_name
+("Fan Song" / "  Fan  Song  " / "fan song") collapse to 1 ref —
+spec §4.5's "normalized identity_values" contract. Implementation uses
+canonicalize_identity_text + casefold for the dedupe key.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF

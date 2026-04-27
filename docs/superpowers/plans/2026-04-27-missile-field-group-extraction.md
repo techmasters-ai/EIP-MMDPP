@@ -2098,7 +2098,7 @@ Run: `grep -n "_DOMAIN_PASS_NAMES\|domain_hit" app/workers/pipeline.py | head`
 
 - [ ] **Step 2: Update the frozenset.**
 
-Assuming Step 0 confirmed the post-radar-cutover state (5 radar sub-pass names, no `radar_domain`), add the 6 missile sub-pass names alongside `missile_domain` (additive — `missile_domain` is still active until Chunk 4):
+Assuming Step 0 confirmed the post-radar-cutover state (5 radar sub-pass names + `missile_domain` + `system_links`, no `radar_domain`), add the 6 missile sub-pass names alongside `missile_domain` (additive — `missile_domain` is still active until Chunk 4). **Keep `system_links` in the set** — radar's cutover preserved it, so this missile change must too. Dropping it would silently break the relationship pass's domain-hit signal.
 
 ```python
 _DOMAIN_PASS_NAMES = frozenset({
@@ -2109,10 +2109,12 @@ _DOMAIN_PASS_NAMES = frozenset({
     "missile_domain",
     "missile_identity", "missile_kinematics", "missile_guidance",
     "missile_airframe", "missile_speed_timing", "missile_propulsion",
+    # system_links — preserved from radar cutover; do NOT drop
+    "system_links",
 })
 ```
 
-If Step 0 showed a different starting state, adjust the radar entries to match what's actually there.
+If Step 0 showed a different starting state (e.g. `system_links` missing — would mean the radar cutover dropped it accidentally, or this set never had it; either way investigate before continuing), adjust accordingly. Never copy this literal verbatim if the live state diverges from the comment.
 
 - [ ] **Step 3: Run pipeline tests.**
 
@@ -2276,6 +2278,7 @@ Tasks 17-21 flip the manifest, prune `missile_domain` from `_DOMAIN_PASS_NAMES`,
 - Modify: `app/workers/pipeline.py` (prune `missile_domain` from `_DOMAIN_PASS_NAMES`)
 - Modify: `tests/unit/test_ontology_bundles.py` (manifest-shape assertion: 12 passes)
 - Modify: `tests/unit/test_extraction_schemas.py` (PASS_MODULES — add 6 missile sub-passes, drop missile_domain)
+- Modify: `tests/unit/test_classify_extraction_quality.py` (after the radar cutover, every test fixture in this file uses `"missile_domain"` as the active missile domain key alongside `"radar_identity"`. Pruning `missile_domain` from `_DOMAIN_PASS_NAMES` would flip those tests from `ok`/`degraded` to `anomaly` because `missile_domain` is no longer a recognized domain pass. Replace `"missile_domain"` keys with `"missile_identity"` (or any of the new sub-pass names — `missile_identity` is the closest semantic stand-in for "the missile domain hit"). Update the module docstring at line 12 to reference missile sub-passes instead of `missile_domain`.)
 - Modify: `tests/integration/test_pr1_scaffolding_smoke.py` (literal pass-name lists)
 - Modify: `ontology_bundles/air_defense_v3/extraction_schemas/system_links.py` (docstring; if needed)
 - Stage if Task 16 was deferred: `docker/docling-graph/tests/test_*.py`. If you stashed Task 16's fixture changes per its decision rule, `git stash pop` them now and they land in this atomic commit.
@@ -2382,7 +2385,19 @@ Patch the `depends_on` list only:
 
 - [ ] **Step 2: Prune `missile_domain` from `_DOMAIN_PASS_NAMES`.**
 
-In `app/workers/pipeline.py`, remove `"missile_domain"` from the frozenset. The 6 new sub-pass names stay.
+In `app/workers/pipeline.py`, remove `"missile_domain"` from the frozenset. **Keep everything else** — the 5 radar sub-pass names, the 6 new missile sub-pass names, and `system_links` all stay. Post-cutover the set should be exactly:
+
+```python
+_DOMAIN_PASS_NAMES = frozenset({
+    "radar_identity", "radar_power_rf", "radar_antenna",
+    "radar_timing", "radar_modulation",
+    "missile_identity", "missile_kinematics", "missile_guidance",
+    "missile_airframe", "missile_speed_timing", "missile_propulsion",
+    "system_links",
+})
+```
+
+Verify after the edit: `grep -n -A 15 "_DOMAIN_PASS_NAMES" app/workers/pipeline.py` should show 12 names. If `system_links` is missing, you accidentally dropped it — restore it before continuing.
 
 - [ ] **Step 3: Update `tests/unit/test_ontology_bundles.py`.**
 
@@ -2391,6 +2406,20 @@ Update the manifest-shape assertion: 12 passes total (5 radar + 6 missile + 1 sy
 - [ ] **Step 4: Update `tests/unit/test_extraction_schemas.py`.**
 
 `PASS_MODULES` should iterate the new 6 missile sub-passes; remove the `missile_domain` entry.
+
+- [ ] **Step 4b: Update `tests/unit/test_classify_extraction_quality.py`.**
+
+After the radar cutover (radar Task 17 Step 3b), this file's fixtures use `"radar_identity"` and `"missile_domain"`. After Step 2 above prunes `"missile_domain"` from `_DOMAIN_PASS_NAMES`, every test fixture's `"missile_domain"` key is no longer recognized as a domain pass and the classifier returns `"anomaly"` instead of `"ok"`/`"degraded"`.
+
+Two edits per fixture:
+1. Replace `"missile_domain"` keys with `"missile_identity"` (closest semantic stand-in for "the missile domain hit").
+2. Update the module docstring at line 12 to reference missile sub-passes (e.g. `radar (any sub-pass) / missile (any sub-pass) / system_links`).
+
+After edits, run:
+```bash
+SKIP_COV=1 .venv/bin/pytest tests/unit/test_classify_extraction_quality.py -v 2>&1 | tail -15
+```
+Expected: all passed (same count as the P1 baseline).
 
 - [ ] **Step 5: Update `tests/integration/test_pr1_scaffolding_smoke.py`.**
 
@@ -2430,6 +2459,7 @@ git add ontology_bundles/air_defense_v3/manifest.yaml \
         app/workers/pipeline.py \
         tests/unit/test_ontology_bundles.py \
         tests/unit/test_extraction_schemas.py \
+        tests/unit/test_classify_extraction_quality.py \
         tests/integration/test_pr1_scaffolding_smoke.py \
         ontology_bundles/air_defense_v3/extraction_schemas/system_links.py \
         docker/docling-graph/tests/test_extract_pass_endpoint.py \
