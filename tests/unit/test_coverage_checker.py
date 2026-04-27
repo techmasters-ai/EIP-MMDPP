@@ -556,6 +556,33 @@ def test_manifest_self_consistency_field_group_siblings_allowed_to_share_primary
     )
 
 
+def test_manifest_self_consistency_field_group_siblings_missile_variant():
+    """Same carve-out, exercised against MISSILE_SYSTEM siblings.
+
+    The rule is entity-type-agnostic — it walks `entity_owners` for any
+    entity type that appears in multiple `primary_entity_types`. This
+    test locks in that universality so a future contributor can't
+    accidentally specialize the rule for RADAR_SYSTEM only.
+
+    The live missile bundle (post-cutover commit a2cc74e) already
+    exercises this path through `check_bundle()`, but explicit unit
+    coverage protects against regressions.
+    """
+    manifest = _make_manifest(passes=[
+        _make_pass(name="missile_identity", primary=["MISSILE_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+        _make_pass(name="missile_kinematics", primary=["MISSILE_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+        _make_pass(name="missile_propulsion", primary=["MISSILE_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+    ])
+    coverage = _make_coverage()
+    errors = check_manifest_self_consistency(manifest, coverage, bundle_key="test_bundle")
+    assert not any("MISSILE_SYSTEM" in e and "multiple passes" in e for e in errors), (
+        f"missile field-group siblings should share primary_entity_types without error; got: {errors}"
+    )
+
+
 def test_manifest_self_consistency_carve_out_rejects_mixed_kind():
     """Carve-out applies ONLY when ALL sharing passes are kind=entities.
 
