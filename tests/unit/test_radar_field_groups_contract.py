@@ -69,3 +69,90 @@ def test_system_fields_are_excluded():
     for group, fields in RADAR_FIELD_GROUPS.items():
         for f in fields:
             assert f not in system_fields, f"{group}: includes system field {f}"
+
+
+from typing import get_args, get_origin
+
+from ontology_bundles.air_defense_v3.extraction_schemas import (
+    radar_identity, radar_power_rf, radar_antenna, radar_timing, radar_modulation,
+)
+
+
+def _allows_numeric(annotation) -> bool:
+    """Recursive numeric-allowance check via typing.get_origin/get_args."""
+    if annotation in (float, int):
+        return True
+    return any(_allows_numeric(arg) for arg in get_args(annotation))
+
+
+def _record_class(module):
+    from pydantic import BaseModel
+    return next(
+        c for c in vars(module).values()
+        if isinstance(c, type)
+        and issubclass(c, BaseModel)
+        and isinstance(c.model_config, dict)
+        and c.model_config.get("ontology_name") == "RADAR_SYSTEM"
+    )
+
+
+# Tokens that should NEVER appear in any sub-pass description. Catches
+# verbatim FORBIDDEN-block leakage even when the canonical text doesn't
+# carry the literal "forbidden values" header.
+_FORBIDDEN_NAME_TOKENS = (
+    "missile", "weapon", "aircraft", "platform",
+    "sa-2", "sa-5", "fragment", "bomber",
+)
+
+
+@pytest.mark.parametrize("module", [
+    radar_identity, radar_power_rf, radar_antenna, radar_timing, radar_modulation,
+])
+def test_record_descriptions_well_formed(module):
+    record_cls = _record_class(module)
+    for fname, finfo in record_cls.model_fields.items():
+        desc = (finfo.description or "").strip()
+        assert desc, f"{record_cls.__name__}.{fname}: empty description"
+
+        if _allows_numeric(finfo.annotation):
+            assert not finfo.examples, (
+                f"{record_cls.__name__}.{fname}: numeric field has examples "
+                f"{finfo.examples} — strip per spec §4.4 sanitization (b)"
+            )
+
+        lower = desc.lower()
+        for banned in ("typical", "common radar bands", "forbidden values"):
+            assert banned not in lower, (
+                f"{record_cls.__name__}.{fname}: description contains "
+                f"{banned!r} — strip per spec §4.4 sanitization"
+            )
+
+
+@pytest.mark.parametrize("module", [
+    radar_identity, radar_power_rf, radar_antenna, radar_timing, radar_modulation,
+])
+def test_system_name_description_excludes_forbidden_tokens(module):
+    """Catch verbatim FORBIDDEN-block leakage on the identity field.
+
+    The legitimate system_name description tells the LLM never to emit
+    weapon/missile/aircraft/platform names; that single instructive
+    sentence is allowed. What's NOT allowed is leaking the FORBIDDEN
+    list itself (e.g. an enumerated dump of "SA-2, SA-5, ..."). We
+    guard against that by checking for forbidden-name *tokens* outside
+    the one whitelisted instructive sentence.
+    """
+    record_cls = _record_class(module)
+    desc = (record_cls.model_fields["system_name"].description or "").lower()
+
+    # Strip the one whitelisted instructive sentence so its mention of
+    # "weapon, missile, aircraft, platform" doesn't trip the check.
+    whitelisted = "never emit weapon, missile, aircraft, or platform names"
+    cleaned = desc.replace(whitelisted, "")
+
+    for token in _FORBIDDEN_NAME_TOKENS:
+        assert token not in cleaned, (
+            f"{record_cls.__name__}.system_name description leaked "
+            f"forbidden-name token {token!r} outside the whitelisted "
+            f"instructive sentence — strip the FORBIDDEN-values block "
+            f"per spec §4.4 sanitization rule (a)."
+        )
