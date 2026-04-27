@@ -80,6 +80,37 @@ def test_mechanical_override_absent_unsupported():
     assert item["max_intercept_km"] is None
 
 
+def test_cross_unit_tonnes_to_kg():
+    """Cross-unit conversion (Option A from cross-unit-conversion-followup-todo.md).
+
+    The missile postprocessor's mechanical-override path for total_mass_kg
+    falls through to value_is_supported_by_text when no "WEIGHT: X LBS"
+    match exists. After Option A, "1.5 tonnes" in source text is now a
+    valid alternate for total_mass_kg=1500 — the cross-unit candidate
+    "1.5 tonnes" appears in candidate list.
+    """
+    item = {"system_name": "5V55K", "total_mass_kg": 1500.0}
+    evidence = "5V55K total launch weight 1.5 tonnes"
+    cleared = _clear(item, evidence)
+    assert "total_mass_kg" not in cleared, (
+        f"total_mass_kg=1500 should be preserved when source says '1.5 tonnes'; "
+        f"cleared={cleared}"
+    )
+    assert item["total_mass_kg"] == 1500.0
+
+
+def test_cross_unit_meters_to_kilometers():
+    """Cross-unit case for missile range fields stated in meters."""
+    item = {"system_name": "5V55K", "max_intercept_km": 43.0}
+    evidence = "5V55K maximum intercept range is 43000 m"
+    cleared = _clear(item, evidence)
+    assert "max_intercept_km" not in cleared, (
+        f"max_intercept_km=43 should be preserved when source says '43000 m'; "
+        f"cleared={cleared}"
+    )
+    assert item["max_intercept_km"] == 43.0
+
+
 def test_text_field_preserved_by_exact_branch():
     """nomenclature stated verbatim → preserved."""
     item = {"system_name": "5V55K", "nomenclature": "5V55K"}

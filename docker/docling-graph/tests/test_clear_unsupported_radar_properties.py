@@ -50,6 +50,35 @@ def test_supported_value_with_unit_suffix():
     assert "nominal_rf_mhz" not in cleared
 
 
+def test_supported_value_cross_unit_GHz_to_MHz():
+    """Cross-unit conversion (Option A from cross-unit-conversion-followup-todo.md).
+
+    Tombstone harder-test case: source says "10 GHz", LLM emits
+    nominal_rf_mhz=10000.0. The §4.8 evidence gate must preserve it
+    via the new cross-unit candidate "10 GHz".
+    """
+    item = {"system_name": "Tombstone", "nominal_rf_mhz": 10000.0}
+    evidence = "Tombstone operates at a nominal carrier frequency of 10 GHz"
+    cleared = _clear(item, evidence)
+    assert "nominal_rf_mhz" not in cleared, (
+        f"nominal_rf_mhz=10000 should be preserved when source says '10 GHz'; "
+        f"cleared={cleared}"
+    )
+    assert item["nominal_rf_mhz"] == 10000.0
+
+
+def test_supported_value_cross_unit_megawatts_to_kW():
+    """Tombstone harder-test case: '1.4 megawatts' → tx_peak_power_kw=1400."""
+    item = {"system_name": "Tombstone", "tx_peak_power_kw": 1400.0}
+    evidence = "reported peak transmitter output of 1.4 megawatts"
+    cleared = _clear(item, evidence)
+    assert "tx_peak_power_kw" not in cleared, (
+        f"tx_peak_power_kw=1400 should be preserved when source says '1.4 megawatts'; "
+        f"cleared={cleared}"
+    )
+    assert item["tx_peak_power_kw"] == 1400.0
+
+
 def test_text_field_branch_unchanged():
     """Text-field clearing must still work — the exact-quote check is preserved."""
     item = {"system_name": "Fan Song", "nomenclature": "5N62E"}
