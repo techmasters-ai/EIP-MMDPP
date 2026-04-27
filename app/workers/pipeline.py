@@ -379,7 +379,10 @@ def _build_element_uid_to_artifact_id(db, document_id: str) -> dict[str, str]:
 
 
 _DOMAIN_PASS_NAMES: frozenset[str] = frozenset({
-    "radar_domain", "missile_domain", "other_systems", "system_links",
+    "radar_domain",
+    "radar_identity", "radar_power_rf", "radar_antenna",
+    "radar_timing", "radar_modulation",
+    "missile_domain", "system_links",
 })
 
 
