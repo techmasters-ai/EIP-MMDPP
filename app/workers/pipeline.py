@@ -99,6 +99,9 @@ from app.services.ontology_bundles import load_bundle_manifest  # noqa: E402
 from app.services.ontology_templates import load_ontology  # noqa: E402
 from app.db.session import get_graph_store  # noqa: E402
 from app.db.session import get_sync_session  # noqa: E402
+from ontology_bundles.air_defense_v3.validators import (  # noqa: E402
+    canonicalize_identity_text,
+)
 
 
 # --- Custom exception types for the single-pass dispatcher (spec §5.5 + §6.5) ---
@@ -2666,6 +2669,25 @@ def _is_valid_upstream_ref(ref, ontology: dict) -> bool:
     return True
 
 
+def _normalized_identity_key(entity_type: str, identity_values: dict) -> tuple:
+    """Build the dedupe key matching the merge layer's identity contract.
+
+    Spec §4.5: dedupe by (entity_type, normalized identity_values). Uses
+    canonicalize_identity_text() (collapses whitespace, drops null
+    sentinels) plus .casefold() for case-insensitive matching — same
+    canonicalizer the merge layer applies. Non-string values pass through
+    unchanged so non-text identity fields don't get mangled.
+    """
+    normalized: dict = {}
+    for k, v in identity_values.items():
+        if isinstance(v, str):
+            canon = canonicalize_identity_text(v)
+            normalized[k] = canon.casefold() if canon else None
+        else:
+            normalized[k] = v
+    return (entity_type, tuple(sorted(normalized.items())))
+
+
 def _extend_upstream_refs(
     upstream_refs: dict, pass_result, pass_def, ontology
 ) -> None:
@@ -2682,6 +2704,14 @@ def _extend_upstream_refs(
     ``display_label`` is built from the merged scratch so prompts and UIs
     see the richest name even when no single instance had everything.
 
+    **Cross-pass dedupe (spec §4.5, plan Task 13):** after the radar
+    field-group cutover, 5 sub-passes each emit a partial RADAR_SYSTEM
+    with the same system_name. A ``seen`` set built from existing
+    ``upstream_refs`` at function entry — keyed on
+    ``(entity_type, normalized identity_values)`` via
+    ``_normalized_identity_key`` — collapses the duplicates so the
+    relationship pass receives a single ref-id per logical entity.
+
     Ref ids follow a SINGLE monotonic counter across all
     primary_entity_types (no per-type restart) and are only allocated
     AFTER ``_is_valid_upstream_ref`` accepts the ref — so invalid
@@ -2695,6 +2725,16 @@ def _extend_upstream_refs(
 
     if not hasattr(pass_result, "iter_entities_of_type"):
         return
+
+    # Build dedupe set from refs already collected by previous passes so
+    # cross-pass duplicates (e.g. all 5 radar sub-passes naming "Fan Song")
+    # collapse to one ref. The same set is updated as this pass emits new
+    # refs to also catch within-pass case/whitespace variants.
+    seen: set[tuple] = {
+        _normalized_identity_key(r.entity_type, r.identity_values)
+        for r in upstream_refs.values()
+        if hasattr(r, "entity_type") and hasattr(r, "identity_values")
+    }
 
     # Phase 1: collect all yielded instances into scratch accumulators
     # keyed on (entity_type, ontology-ordered identity tuple). Dedup key is
@@ -2744,13 +2784,17 @@ def _extend_upstream_refs(
 
     # Phase 2: emit refs in allocation order; ref id counter advances only
     # after a successful _is_valid_upstream_ref gate, preserving the
-    # no-gaps contract.
+    # no-gaps contract. Cross-pass / within-pass case+whitespace duplicates
+    # are skipped via the ``seen`` set (spec §4.5).
     counter = len(upstream_refs) + 1
     for key in allocation_order:
         acc = accumulators[key]
         entity_type = acc["entity_type"]
         identity_values = acc["identity_values"]
         scratch = acc["scratch"]
+        dedupe_key = _normalized_identity_key(entity_type, identity_values)
+        if dedupe_key in seen:
+            continue  # Already represented by a prior pass / earlier in this pass.
         display_label = build_display_label(
             entity_type, identity_values, scratch,
         )
@@ -2763,6 +2807,7 @@ def _extend_upstream_refs(
         if not _is_valid_upstream_ref(ref, ontology):
             continue  # Drop refs with missing/empty identity.
         upstream_refs[f"E{counter:03d}"] = ref
+        seen.add(dedupe_key)
         counter += 1
 
 

@@ -585,3 +585,83 @@ def test_apply_post_merge_yield_updates_writes_rejections_by_reason_per_pass(mon
     # Sanity: the existing relationship-count update still fires.
     assert row_links.relationships_rejected == 2
     assert row_radar.relationships_rejected == 1
+
+
+class TestExtendUpstreamRefsDedupe:
+    """After the radar field-group cutover, 5 sub-passes each emit a
+    partial RADAR_SYSTEM with system_name='Fan Song'. They must collapse
+    to a single upstream ref before the relationship pass sees them."""
+
+    def _pass_def(self, name: str, primary_types):
+        return SimpleNamespace(name=name, primary_entity_types=primary_types)
+
+    def test_five_partial_radars_collapse_to_one_upstream_ref(self):
+        refs: dict = {}
+        for pass_name in (
+            "radar_identity", "radar_power_rf", "radar_antenna",
+            "radar_timing", "radar_modulation",
+        ):
+            pass_result = _FakePassResult({
+                "RADAR_SYSTEM": [SimpleNamespace(system_name="Fan Song")],
+            })
+            _extend_upstream_refs(
+                refs, pass_result,
+                self._pass_def(pass_name, ["RADAR_SYSTEM"]),
+                ONTOLOGY,
+            )
+        # Exactly one ref for Fan Song, regardless of how many sub-passes
+        # emitted it.
+        fan_song_refs = [
+            r for r in refs.values()
+            if r.identity_values.get("system_name") == "Fan Song"
+        ]
+        assert len(fan_song_refs) == 1, (
+            f"expected 1 dedup'd ref for Fan Song; got {len(fan_song_refs)}: "
+            f"{fan_song_refs!r}"
+        )
+
+    def test_dedupe_is_per_identity_not_per_pass(self):
+        """Different system_names from different passes must NOT collapse."""
+        refs: dict = {}
+        _extend_upstream_refs(
+            refs,
+            _FakePassResult({"RADAR_SYSTEM": [SimpleNamespace(system_name="Fan Song")]}),
+            self._pass_def("radar_identity", ["RADAR_SYSTEM"]),
+            ONTOLOGY,
+        )
+        _extend_upstream_refs(
+            refs,
+            _FakePassResult({"RADAR_SYSTEM": [SimpleNamespace(system_name="Spoon Rest")]}),
+            self._pass_def("radar_power_rf", ["RADAR_SYSTEM"]),
+            ONTOLOGY,
+        )
+        names = {r.identity_values.get("system_name") for r in refs.values()}
+        assert names == {"Fan Song", "Spoon Rest"}
+
+    def test_dedupe_normalizes_whitespace_and_case(self):
+        """Spec §4.5: dedupe by `(entity_type, normalized identity_values)`.
+
+        The same entity emitted with whitespace/case variation across
+        sub-passes ("Fan Song" / "  Fan  Song  " / "fan song") must
+        collapse to a single ref. Without normalization, the relationship
+        pass would receive 3 distinct E### ref-ids for the same entity.
+        """
+        refs: dict = {}
+        for variant in ("Fan Song", "  Fan  Song  ", "fan song"):
+            _extend_upstream_refs(
+                refs,
+                _FakePassResult({"RADAR_SYSTEM": [SimpleNamespace(system_name=variant)]}),
+                self._pass_def("radar_identity", ["RADAR_SYSTEM"]),
+                ONTOLOGY,
+            )
+        # Exactly one ref. The retained identity_values may carry either
+        # the canonical form or the first-seen form — either is fine, as
+        # long as count == 1.
+        radar_refs = [
+            r for r in refs.values()
+            if getattr(r, "entity_type", None) == "RADAR_SYSTEM"
+        ]
+        assert len(radar_refs) == 1, (
+            f"expected 1 dedup'd ref across whitespace/case variants; "
+            f"got {len(radar_refs)}: {radar_refs!r}"
+        )
