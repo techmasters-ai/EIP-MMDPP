@@ -1,0 +1,27 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-27-radar-field-group-extraction.md",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Create _field_groups.py with RADAR_FIELD_GROUPS partition + contract test", "status": "pending"},
+    {"id": 2, "subject": "Task 2: Create _radar_shared.py (forbidden set, validators, sanitizer factory) + tests", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Extract _numeric_evidence.py shared helper from provenance.py + tests", "status": "pending", "blockedBy": [2]},
+    {"id": 4, "subject": "Task 4: Create radar_identity.py sub-pass module (11 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 5, "subject": "Task 5: Create radar_power_rf.py sub-pass module (4 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 6, "subject": "Task 6: Create radar_antenna.py sub-pass module (9 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 7, "subject": "Task 7: Create radar_timing.py sub-pass module (5 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 8, "subject": "Task 8: Create radar_modulation.py sub-pass module (6 fields)", "status": "pending", "blockedBy": [2]},
+    {"id": 9, "subject": "Task 9: Description-quality contract test parametrized over 5 sub-passes", "status": "pending", "blockedBy": [4, 5, 6, 7, 8]},
+    {"id": 10, "subject": "Task 10: Refactor _clear_unsupported_radar_properties to verify numerics against evidence (spec §4.8)", "status": "pending", "blockedBy": [3]},
+    {"id": 11, "subject": "Task 11: Update apply_bundle_postprocessing dispatch to recognize new sub-pass names (additive)", "status": "pending", "blockedBy": [10]},
+    {"id": 12, "subject": "Task 12: Update _DOMAIN_PASS_NAMES frozenset to union old + new (additive)", "status": "pending", "blockedBy": [11]},
+    {"id": 13, "subject": "Task 13: Bundle __init__.py exports for sub-pass classes (additive)", "status": "pending", "blockedBy": [4, 5, 6, 7, 8]},
+    {"id": 14, "subject": "Task 14: check_bundle() coverage validation passes with new sub-passes registered", "status": "pending", "blockedBy": [13]},
+    {"id": 15, "subject": "Task 15: Worker _parse_pass_response regression sweep with -k radar", "status": "pending", "blockedBy": [11, 12, 13]},
+    {"id": 16, "subject": "Task 16: Test-fixture pass-name updates (radar_domain → radar_identity); may defer to cutover", "status": "pending", "blockedBy": [11]},
+    {"id": 17, "subject": "Task 17: Manifest cutover (atomic commit) — radar_domain → 5 sub-passes", "status": "pending", "blockedBy": [9, 14, 15, 16]},
+    {"id": 18, "subject": "Task 18: Full unit + pipeline regression sweep against baseline", "status": "pending", "blockedBy": [17]},
+    {"id": 19, "subject": "Task 19: Smoke harness (3 known-failing cases: Fan Song 35 dBi, 600 kW, 3000 MHz)", "status": "pending", "blockedBy": [17]},
+    {"id": 20, "subject": "Task 20: Container rebuild + service health check before E2E re-ingest", "status": "pending", "blockedBy": [18, 19]},
+    {"id": 21, "subject": "Task 21: End-to-end re-ingest verification + acceptance gate (≥2/3 smoke pass)", "status": "pending", "blockedBy": [20]}
+  ],
+  "lastUpdated": "2026-04-27T00:00:00Z"
+}
