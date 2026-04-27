@@ -1,4 +1,20 @@
-"""Radar domain pass — flat, checklist-aligned schema.
+"""**LEGACY** — Not in the active manifest as of the
+2026-04-27 radar field-group refactor. Replaced by:
+
+- radar_identity.py
+- radar_power_rf.py
+- radar_antenna.py
+- radar_timing.py
+- radar_modulation.py
+
+This module is kept in source as a reference for description text and
+for legacy-loadability tests (e.g. test_service_identity_gate.py).
+Do not add manifest entries pointing here. Will be removed in a
+future cleanup once the new structure has been operationally proven.
+
+---
+
+Radar domain pass — flat, checklist-aligned schema.
 
 Scope aligned to the `(U) RADAR MDE Checklist.xlsx` deliverable: every
 extracted field corresponds 1:1 to a Data Element on that checklist.
