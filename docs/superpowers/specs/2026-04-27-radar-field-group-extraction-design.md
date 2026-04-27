@@ -45,10 +45,25 @@ passes — `radar_identity`, `radar_power_rf`, `radar_antenna`,
 the same `system_name` identity so the existing merge layer collapses
 partial records onto one vertex. Each sub-pass is its own
 `/extract-pass` call against a smaller schema (5-11 fields) with a
-focused semantic guide. No merge or vertex-persistence code changes;
-one quality-classification pass-name set in `app/workers/pipeline.py`
-needs updating, plus several pass-name dispatches and post-processing
-checks in the docling-graph evidence gate. Full enumeration in §4.8.
+focused semantic guide.
+
+**Code-change scope:**
+- **No merge / import / vertex-persistence changes** in the worker
+  layer (`extraction_merge.py`, `_import_graph_phase_nodes`, ArcadeDB
+  upsert path).
+- **Worker quality-classification:** one frozenset in
+  `app/workers/pipeline.py::_DOMAIN_PASS_NAMES` needs updating
+  (§4.8).
+- **docling-graph evidence-gate:** several pass-name dispatches in
+  `apply_bundle_postprocessing` plus a refactor of
+  `_clear_unsupported_radar_properties` to verify numeric values
+  against batch evidence text instead of nulling them unconditionally
+  (§4.8).
+- **Orchestrator (potentially):** the upstream-ref builder for
+  `system_links` may need a dedupe step if it doesn't already collapse
+  duplicate identities across dependency-pass outputs (§4.5).
+
+Full enumeration of touchpoints in §4.8.
 
 ## 3. Non-goals (Session 1)
 
@@ -57,7 +72,15 @@ checks in the docling-graph evidence gate. Full enumeration in §4.8.
 - Do **not** introduce identity-fed parameter passes (Item #3). All
   sub-passes remain `document_only` for Session 1.
 - Do **not** add group-scoped retry (Item #7).
-- Do **not** add evidence-span verification (Item #6).
+- Do **not** build the **full per-field evidence-span verification
+  system** that Item #6 will eventually add (post-extraction
+  validation that every persisted field's snippet appears in its
+  source chunk, with mismatch logging and rejection thresholds).
+  However, Session 1 **does require a lightweight evidence-text
+  presence check** inside `_clear_unsupported_radar_properties` so
+  explicit numeric values aren't nulled when they appear in the
+  batch (§4.8). That narrow check is in-scope for correctness; the
+  full Item #6 system is deferred.
 - Do **not** persist per-pass diagnostics beyond what's already logged
   (Item #9).
 - Do **not** build a full per-field recall/precision golden harness
@@ -128,18 +151,25 @@ explicit:
   `sanitize_entity_list` should normalize. **Note**: this set is the
   **superset** across sub-passes; each `make_root_sanitizer` call passes
   the subset relevant to its record class.
-- `validate_radar_system_name(value)` — `field_validator("system_name",
-  mode="before")` body. Centralized so identity validation is
-  consistent across sub-passes.
+- `validate_radar_system_name(value)` —
+  `field_validator("system_name", mode="before")` body. **Scope:
+  normalization + non-empty-identity check only** (whitespace strip,
+  canonicalize via `canonicalize_identity_text`, reject empty / None).
+  Does **not** enforce the forbidden-names list — that authority lives
+  exclusively in `make_root_sanitizer` / `sanitize_entity_list`.
+  Splitting concerns this way keeps a single source of truth for
+  forbidden-name enforcement and prevents the two layers from drifting.
 - `make_root_sanitizer(list_field, optional_text_fields)` — factory
   returning a `model_validator(mode="before")` body wired with the
-  caller's list-field name and per-class text-field set. Defaults the
-  forbidden-identities argument to `RADAR_FORBIDDEN_SYSTEM_NAMES` so
-  sub-pass modules don't have to import the constant directly.
-  **The returned validator runs both `sanitize_entity_list` and
-  `dedupe_entities_by_identity`**, mirroring the legacy
-  `_sanitize_and_dedupe_root_entities` body in `radar_domain.py`.
-  Sanitize-only factories silently break duplicate-emission handling.
+  caller's list-field name and per-class text-field set. **The single
+  authority for forbidden-name enforcement** — internally calls
+  `sanitize_entity_list(forbidden_identities=RADAR_FORBIDDEN_SYSTEM_NAMES,
+  ...)` so sub-pass modules don't have to import the forbidden-set
+  constant directly. **The returned validator runs both
+  `sanitize_entity_list` and `dedupe_entities_by_identity`**,
+  mirroring the legacy `_sanitize_and_dedupe_root_entities` body in
+  `radar_domain.py`. Sanitize-only factories silently break duplicate-
+  emission handling.
 
 ### 4.4 Per-sub-pass module shape
 
@@ -219,9 +249,9 @@ Key shape points:
   copy time**:
   a. Strip the FORBIDDEN-values block from `system_name`'s
      description. Forbidden-name enforcement is delegated to
-     `validate_radar_system_name` (validator-side, not prompt-side),
-     so the description doesn't need the verbose list. Replace with
-     a one-sentence summary.
+     `make_root_sanitizer` / `sanitize_entity_list` (validator-side,
+     not prompt-side), so the description doesn't need the verbose
+     list. Replace with a one-sentence summary.
   b. Strip "Typical X-band ground radars: ..." / "Common radar bands"
      / similar typical-value-range prose from numeric field
      descriptions (these confuse the model per Phase A diagnosis).
@@ -332,10 +362,18 @@ Zero code change in any of the following:
   `(instance_id, field_name)`, so a single `RADAR_SYSTEM` vertex ends
   up with `_field_evidence` keys spanning all groups.
 - **Evidence-gate post-processor logic** — the
-  `_postprocess_air_defense_radars` function body (the actual
-  validation / canonicalization logic) is preserved as-is; only the
-  `pass_name` dispatch in `_run_post_extraction_evidence_gate` needs
-  the cutover update enumerated in §4.8.
+  `_postprocess_air_defense_radars` function body's identity
+  sanitization, status validation, and exact-text-field clearing
+  logic (lines 401-417) are preserved as-is. Only two things change
+  per §4.8:
+    1. The `pass_name` dispatch in `apply_bundle_postprocessing`
+       expands to recognize the 5 new sub-pass names.
+    2. `_clear_unsupported_radar_properties`'s strict-null branch
+       (lines 419-442) is refactored to verify each numeric value
+       against batch evidence text via shared substring-matching
+       helpers (§4.8 details). Without that refactor, every
+       numeric extraction is nulled before the response leaves the
+       service.
 - **`merge_and_resolve`** — already keys by `LogicalIdentity`
   (`system_name`). 5 sub-passes emitting the same `system_name="Fan
   Song"` collapse to one `MergedEntityRecord`. Property merge unions
@@ -345,9 +383,8 @@ Zero code change in any of the following:
 
 ### 4.8 Touchpoints requiring code change
 
-**Three pass-name literals in app code reference `"radar_domain"` and
-must be updated as part of the manifest cutover. Missing any of these
-is a silent correctness regression, not a test failure.**
+**Pass-name literals + radar numeric-postprocessing refactor.** Missing
+any of these is a silent correctness regression, not a test failure.
 
 - **`app/workers/pipeline.py::_DOMAIN_PASS_NAMES`** (around line 382) —
   frozenset feeds `_classify_extraction_quality`. Current value:
@@ -388,17 +425,27 @@ is a silent correctness regression, not a test failure.**
   guesses" rule from before Phase A's auto-evidence + numeric-candidate
   system. Even a perfectly-extracted `gain_dbi=35.0` from a doc that
   says "antenna gain is 35 dBi" gets nulled here before the response
-  leaves the service. **Refactor required as part of Session 1's
-  cutover commit:** verify each numeric value against `evidence_text`
-  via the same substring-match logic the auto-evidence resolver uses
-  (whitespace-collapsed casefold, with unit-aware variants from the
-  `_UNIT_HINTS_BY_SUFFIX` table in `docker/docling-graph/app/provenance.py`).
-  Keep values whose stringified form (or a unit-converted variant)
-  appears in `evidence_text`; null only the rest. The exact-text
-  branch (lines 401-417, for string fields like `nomenclature`) keeps
-  its current `_value_is_quoted_in_text` check — that path is correct.
-  Failing to fix this guarantees Session 1's smoke tests fail even
-  when the LLM extracts correctly.
+  leaves the service.
+
+  **Refactor required as part of Session 1's cutover commit:** verify
+  each numeric value against `evidence_text` via substring match with
+  unit-aware variants. The exact-text branch (lines 401-417, for
+  string fields like `nomenclature`) keeps its current
+  `_value_is_quoted_in_text` check — that path is correct. Failing to
+  fix this guarantees Session 1's smoke tests fail even when the LLM
+  extracts correctly.
+
+  **Implementation: extract a shared helper, do not duplicate.** The
+  unit-variant matching logic already exists in
+  `docker/docling-graph/app/provenance.py::_value_match_candidates`
+  (with `_UNIT_HINTS_BY_SUFFIX` and `_normalize_text`). Refactor those
+  helpers into a shared module — proposed location:
+  `docker/docling-graph/app/_numeric_evidence.py` — and have BOTH
+  `provenance.build_auto_field_evidence` AND the new
+  `_clear_unsupported_radar_properties` consume the same
+  `value_is_supported_by_text(value, field_name, evidence_text)`
+  predicate. Two consumers, one source of truth. Avoid copy-pasting
+  the unit table or the normalization regex.
 
 - **`docker/docling-graph/app/schemas.py`** (around line 55) — docstring
   example references `pass_name="radar_domain"`. Low-risk; update the
@@ -587,11 +634,15 @@ In commit order. Main stays green at every step.
    - Update `system_links.depends_on` to list all 6 entity passes.
    - Mark `extraction_schemas/radar_domain.py` legacy in module
      docstring (leave file in source).
-   - Update the **3 app-code touchpoints** enumerated in §4.8:
-     - `app/workers/pipeline.py::_DOMAIN_PASS_NAMES`
-     - `docker/docling-graph/app/evidence_gate.py::_run_post_extraction_evidence_gate`
-       dispatch
+   - Update the **app-code touchpoints** enumerated in §4.8:
+     - `app/workers/pipeline.py::_DOMAIN_PASS_NAMES` (frozenset update)
+     - `docker/docling-graph/app/evidence_gate.py::apply_bundle_postprocessing`
+       (pass-name dispatch — recognize 5 new sub-pass names)
+     - `docker/docling-graph/app/evidence_gate.py::_clear_unsupported_radar_properties`
+       (refactor numeric-field clearing to honor batch evidence text)
      - `docker/docling-graph/app/schemas.py` docstring example
+     - Possibly the orchestrator's upstream-ref builder for
+       `system_links` (dedupe by identity if not already)
    - Update **test fixtures** in
      `docker/docling-graph/tests/test_extract_pass_endpoint.py` and
      `docker/docling-graph/tests/test_service_identity_gate.py` from
