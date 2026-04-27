@@ -1,6 +1,13 @@
 # Cross-Unit Conversion — Follow-up TODO
 
-> **Status:** Not yet started. Documented Session 1 limitation surfaced by the radar field-group harder test on 2026-04-27. To be promoted to a real plan when prioritized — likely after the missile field-group plan lands and the candidate-mapping architecture is on the table (spec §10 fallback territory).
+> **Status: OPTION A COMPLETE (2026-04-27).**
+>
+> Implementation: commit `6fa8f80` (`feat(docling-graph): cross-unit conversion in numeric evidence helper (Option A)`).
+> Integration tests: commit `d9c7cf0` (`test(extraction): cross-unit smoke harnesses for radar + missile`).
+>
+> Live verification: 4/4 radar + 2/2 missile cross-unit smoke tests pass. The two original failure cases from the radar harder-test investigation (Tombstone's `nominal_rf_mhz=10000` from "10 GHz" and `tx_peak_power_kw=1400` from "1.4 megawatts") now populate end-to-end.
+>
+> **Remaining out-of-scope** (would need Option C or schema changes, not Option A): logarithmic conversions (dBW ↔ dBm, dBi ↔ dBd), Mach ↔ m/s (requires altitude/temp), generalized lbs ↔ kg (already handled case-specifically by `_mechanically_supported_missile_fields()`).
 
 **Surfaced by:** harder-test run against the rebuilt docling-graph after the radar manifest cutover (commits a88c353 + 833c7eb). Result was 21/23 probes passed with 2 documented-limitation hits, both cross-unit:
 
@@ -113,31 +120,38 @@ The radar spec §10 fallback architecture (deterministic candidate-mapping) is e
 
 ---
 
-## TODO list (mechanical for Option A — promote to real plan when ready)
+## TODO list (Option A — DONE 2026-04-27)
 
 ### Foundation
-- [ ] Add a `_UNIT_CONVERSIONS_BY_SUFFIX: dict[str, list[tuple[str, float]]]` table in `_numeric_evidence.py`. Each entry maps a canonical suffix to a list of `(other_unit_text, scale_factor_to_canonical)` tuples. Example: `"_mhz": [("GHz", 1000.0), ("kHz", 0.001)]`.
-- [ ] Extend `value_match_candidates(value, field_name)` to also generate cross-unit candidates: for each `(unit_text, scale)` in the field's conversion table, emit `f"{value/scale:g} {unit_text}"` and `f"{value/scale:g}{unit_text}"` (with `:g` formatting to avoid trailing zeros).
-- [ ] **Update the docstring's "out of scope" note** to reflect that cross-unit conversion is now in scope (with the conversion table as the contract).
+- [x] Add a `_UNIT_CONVERSIONS_BY_SUFFIX: dict[str, list[tuple[str, float]]]` table in `_numeric_evidence.py`. **Landed in 6fa8f80.** Covers frequency / power / length / mass / speed / time / angle.
+- [x] Extend `value_match_candidates(value, field_name)` to also generate cross-unit candidates. **Landed in 6fa8f80.** Uses `:.10g` formatting (better than `:g` — avoids scientific notation for large magnitudes).
+- [x] Update the docstring's "out of scope" note. **Landed in 6fa8f80.** Now reads "Cross-unit conversion (Option A) implemented; logarithmic / Mach conversions remain out of scope."
 
-### Tests
-- [ ] **Promote the existing `test_value_match_candidates_for_int_with_mhz_suffix` negative assertion** to a positive assertion: `"10 GHz"` SHOULD now appear as a candidate for value 10000 in field `nominal_rf_mhz`.
-- [ ] Add `test_value_is_supported_by_text_cross_unit_frequency_GHz`: value 10000.0 in nominal_rf_mhz, evidence "operates at 10 GHz" → True.
-- [ ] Add `test_value_is_supported_by_text_cross_unit_power_megawatts`: value 1400.0 in tx_peak_power_kw, evidence "1.4 megawatts" → True.
-- [ ] Add `test_value_is_supported_by_text_cross_unit_negative`: value 999.0 in nominal_rf_mhz, evidence "operates at 10 GHz" → False (still rejects unrelated values).
-- [ ] Update `_clear_unsupported_radar_properties` regression tests to include the cross-unit case (was previously excluded "out of scope").
+### Tests (all in 6fa8f80)
+- [x] Promote `test_value_match_candidates_for_int_with_mhz_suffix` to assert positive cross-unit candidates ("3 GHz", "3000000 kHz") while keeping the same-magnitude-wrong-unit negative assertions ("3000 GHz", "3000 kHz" still forbidden).
+- [x] `test_value_is_supported_by_text_cross_unit_frequency_GHz`: value 10000.0 + evidence "10 GHz" → True.
+- [x] `test_value_is_supported_by_text_cross_unit_power_megawatts`: value 1400.0 + evidence "1.4 megawatts" → True.
+- [x] `test_value_is_supported_by_text_cross_unit_mass_tonnes`: value 1500.0 + evidence "1.5 tonnes" → True.
+- [x] `test_value_is_supported_by_text_cross_unit_negative`: assertions for 999/9999/88 in different fields with cross-unit evidence — all False (no false positives).
+- [x] Update `_clear_unsupported_radar_properties` regression with 2 cross-unit cases (Tombstone GHz + megawatts).
+- [x] Update `_clear_unsupported_missile_properties` regression with 2 cross-unit cases (tonnes + meters→km).
 
-### Verification harness
-- [ ] Re-run the harder-test text against the rebuilt docling-graph; expect Tombstone's `nominal_rf_mhz=10000.0` and `tx_peak_power_kw=1400.0` to now populate.
-- [ ] Add the harder-test text as a permanent integration test (`tests/integration/test_radar_cross_unit_smoke.py`) so the regression is locked in.
+### Verification harness (in d9c7cf0)
+- [x] Re-ran the harder-test text against the rebuilt docling-graph — Tombstone's `nominal_rf_mhz=10000.0` and `tx_peak_power_kw=1400.0` now populate. **Confirmed live, 23/23 probes pass (was 21/23 before Option A).**
+- [x] Added `tests/integration/test_radar_cross_unit_smoke.py` — 4 cases, all passing live.
 
-### Cross-bundle
-- [ ] Confirm the missile bundle inherits the conversion automatically (same `_numeric_evidence.py` is used by both bundles' postprocessors). Add a missile-flavored test case (e.g., `total_mass_kg=1500.0` from "1.5 tonnes").
+### Cross-bundle (in d9c7cf0)
+- [x] Confirmed missile bundle inherits the conversion automatically (same `_numeric_evidence.py` is used by both postprocessors).
+- [x] Added `tests/integration/test_missile_cross_unit_smoke.py` — 2 cases (`total_mass_kg=1500` from "1.5 tonnes", `max_intercept_km=43` from "43000 m"), both passing live.
 
-### Out of scope for Option A (defer to Option C / Session 3+)
+### Still out of scope (for a future Option C / Session 3+)
 - [ ] Mach-number → m/s conversion (requires altitude/temp assumption)
-- [ ] Imperial units → metric (lbs → kg already done by missile's `_mechanically_supported_missile_fields`; no need to duplicate at the `_numeric_evidence` layer unless we want it generalized)
-- [ ] Compound units like "km/h" handled via existing `_mps` suffix vs need for a `_kmh` table entry
+- [ ] Imperial units → metric: lbs → kg already done case-specifically by missile's `_mechanically_supported_missile_fields`; not generalized at `_numeric_evidence` layer unless need arises.
+- [ ] Compound units like "km/h" — currently handled via the `_mps` suffix's `("km/h", 1/3.6)` entry. If field-name conventions change to include `_kmh`, would need a new entry.
+- [ ] Logarithmic-domain conversions (dBW ↔ dBm, dBi ↔ dBd) — fundamentally need offset additions, not scale factors. Different mechanism than Option A's table-driven design.
+
+### Bare-number false-positive (orthogonal limitation noted but not fixed)
+- [ ] `value_is_supported_by_text(3000, "nominal_rf_mhz", "operates at 3000 GHz")` returns True because the bare number "3000" matches "3000" in the evidence regardless of unit context. This is a pre-existing limitation of substring matching, not introduced by Option A. Tightening would break legitimate bare-number matches for fields like `num_bits_in_code` and `pulses_per_dwell`. Track for future investigation if false-positive rates climb in production.
 
 ---
 
