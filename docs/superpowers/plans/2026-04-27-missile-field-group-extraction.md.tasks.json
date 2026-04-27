@@ -1,27 +1,28 @@
 {
   "planPath": "docs/superpowers/plans/2026-04-27-missile-field-group-extraction.md",
   "tasks": [
-    {"id": 1, "subject": "Task 1: Add MISSILE_FIELD_GROUPS partition to _field_groups.py + 5 contract tests", "status": "pending"},
-    {"id": 2, "subject": "Task 2: Create _missile_shared.py (forbidden set, validators, sanitizer factory) + 8 tests", "status": "pending", "blockedBy": [1]},
-    {"id": 3, "subject": "Task 3: Create missile_identity.py sub-pass module (10 fields)", "status": "pending", "blockedBy": [2]},
-    {"id": 4, "subject": "Task 4: Create missile_kinematics.py sub-pass module (6 fields)", "status": "pending", "blockedBy": [2]},
-    {"id": 5, "subject": "Task 5: Create missile_guidance.py sub-pass module (4 fields)", "status": "pending", "blockedBy": [2]},
-    {"id": 6, "subject": "Task 6: Create missile_airframe.py sub-pass module (4 fields)", "status": "pending", "blockedBy": [2]},
-    {"id": 7, "subject": "Task 7: Create missile_speed_timing.py sub-pass module (9 fields)", "status": "pending", "blockedBy": [2]},
-    {"id": 8, "subject": "Task 8: Create missile_propulsion.py sub-pass module (9 fields)", "status": "pending", "blockedBy": [2]},
-    {"id": 9, "subject": "Task 9: Description-quality contract test parametrized over 6 sub-passes", "status": "pending", "blockedBy": [3, 4, 5, 6, 7, 8]},
-    {"id": 10, "subject": "Task 10: Refactor _clear_unsupported_missile_properties (Branch A/B/C per Pre-flight P5) + drift-prevention test", "status": "pending"},
-    {"id": 11, "subject": "Task 11: Update apply_bundle_postprocessing dispatch + idempotency dict-shape probe", "status": "pending", "blockedBy": [10]},
-    {"id": 12, "subject": "Task 12: Update _DOMAIN_PASS_NAMES (Step 0 collision-guard required)", "status": "pending", "blockedBy": [11]},
-    {"id": 13, "subject": "Task 13: Bundle __init__.py exports for 6 missile sub-pass classes", "status": "pending", "blockedBy": [3, 4, 5, 6, 7, 8]},
-    {"id": 14, "subject": "Task 14: check_bundle() coverage validation passes with new sub-passes registered", "status": "pending", "blockedBy": [13]},
-    {"id": 15, "subject": "Task 15: Worker _parse_pass_response regression sweep with -k missile", "status": "pending", "blockedBy": [11, 12, 13]},
-    {"id": 16, "subject": "Task 16: Test-fixture pass-name updates (missile_domain → missile_identity); may defer to cutover", "status": "pending", "blockedBy": [11]},
-    {"id": 17, "subject": "Task 17: Manifest cutover (atomic commit) — missile_domain → 6 sub-passes", "status": "pending", "blockedBy": [9, 14, 15, 16]},
-    {"id": 18, "subject": "Task 18: Full unit + pipeline regression sweep against baseline", "status": "pending", "blockedBy": [17]},
-    {"id": 19, "subject": "Task 19: Smoke harness (3 cases: 5V55K kinematics, 5V28 speed, 9M82 airframe) — inlined full template", "status": "pending", "blockedBy": [17]},
-    {"id": 20, "subject": "Task 20: Container rebuild + service health check on port 8002", "status": "pending", "blockedBy": [18, 19]},
-    {"id": 21, "subject": "Task 21: End-to-end re-ingest verification + acceptance gate (≥2/3 smoke + field-specific vertex assert)", "status": "pending", "blockedBy": [20]}
+    {"id": 1, "subject": "Task 1: Add MISSILE_FIELD_GROUPS partition to _field_groups.py + 5 contract tests", "status": "completed", "completedSha": "f22e14f"},
+    {"id": 2, "subject": "Task 2: Create _missile_shared.py (forbidden set, validators, sanitizer factory) + 8 tests", "status": "completed", "completedSha": "683bfaa", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: Create missile_identity.py sub-pass module (10 fields)", "status": "completed", "completedSha": "5d17598", "blockedBy": [2]},
+    {"id": 4, "subject": "Task 4: Create missile_kinematics.py sub-pass module (6 fields)", "status": "completed", "completedSha": "810105e", "blockedBy": [2]},
+    {"id": 5, "subject": "Task 5: Create missile_guidance.py sub-pass module (4 fields)", "status": "completed", "completedSha": "3f95f69", "blockedBy": [2]},
+    {"id": 6, "subject": "Task 6: Create missile_airframe.py sub-pass module (4 fields)", "status": "completed", "completedSha": "8134d5f", "blockedBy": [2]},
+    {"id": 7, "subject": "Task 7: Create missile_speed_timing.py sub-pass module (9 fields)", "status": "completed", "completedSha": "027f282", "blockedBy": [2]},
+    {"id": 8, "subject": "Task 8: Create missile_propulsion.py sub-pass module (9 fields)", "status": "completed", "completedSha": "7da8a98", "blockedBy": [2]},
+    {"id": 9, "subject": "Task 9: Description-quality contract test parametrized over 6 sub-passes", "status": "completed", "completedSha": "bffd5b8", "blockedBy": [3, 4, 5, 6, 7, 8]},
+    {"id": 10, "subject": "Task 10: Refactor _clear_unsupported_missile_properties (Branch A/B/C per Pre-flight P5) + drift-prevention test", "status": "completed", "completedSha": "bee0cc9", "notes": "Branch A applied. Mechanical-support path + unconditional-null branch + exact-text branch + enum-explicit branches all PRESERVED. Only the strict_null_fields tuple loop replaced with evidence-verification. Added small enhancement to mechanical-override fallback: when no mechanical extract AND LLM value present, now verifies via value_is_supported_by_text instead of unconditional null."
+    {"id": 11, "subject": "Task 11: Update apply_bundle_postprocessing dispatch + idempotency dict-shape probe", "status": "completed", "completedSha": "a3cb679", "blockedBy": [10]},
+    {"id": 12, "subject": "Task 12: Update _DOMAIN_PASS_NAMES (Step 0 collision-guard required)", "status": "completed", "completedSha": "d811254", "blockedBy": [11]},
+    {"id": 13, "subject": "Task 13: Bundle __init__.py exports for 6 missile sub-pass classes", "status": "skipped", "completedSha": "5242d3f", "blockedBy": [3, 4, 5, 6, 7, 8], "notes": "Skipped per plan decision rule — radar cutover did not add __init__.py re-exports (grep returned empty). Bundle loader uses importlib.import_module by manifest module field, doesn't consult __init__. Empty commit records the decision."},
+    {"id": 14, "subject": "Task 14: check_bundle() coverage validation passes with new sub-passes registered", "status": "completed", "completedSha": null, "blockedBy": [13], "notes": "Verification only. check_bundle: errors=0 warnings=0 — clean."},
+    {"id": 15, "subject": "Task 15: Worker _parse_pass_response regression sweep with -k missile", "status": "completed", "completedSha": null, "blockedBy": [11, 12, 13], "notes": "Verification only. 33 passed, 1243 deselected — all missile/postprocess tests green."},
+    {"id": 16, "subject": "Task 16: Test-fixture pass-name updates (missile_domain → missile_identity); may defer to cutover", "status": "completed", "completedSha": "beb9755", "blockedBy": [11], "notes": "Implementer found that test_extract_pass_endpoint.py had ZERO missile_domain fixtures (radar Task 17 already updated them). Only test_service_identity_gate.py needed updates: 3 pass_name literals at lines 153, 299, 387 + legacy-loadability comment above MissileDomainPass import. Service test 10/10 passed; 8 unrelated pre-existing failures in test_extract_pass_endpoint.py (MagicMock→dict pydantic validation) confirmed unchanged."
+    {"id": 17, "subject": "Task 17: Manifest cutover (atomic commit) — missile_domain → 6 sub-passes", "status": "completed", "completedSha": "a2cc74e", "blockedBy": [9, 14, 15, 16], "notes": "Atomic cutover landed. Active extraction shape: 12 passes (5 radar + 6 missile + system_links). check_bundle: errors=0 warnings=0 — carve-out from manifest_consistency rule 4 accepts missile siblings identically to radar. Full regression: 1298 passed, baseline preserved. Deviations: system_links.py docstring had missile_domain reference (replaced); test_pr1_scaffolding_smoke.py kept missile_domain in on-disk file-list (legitimate per Task 15 legacy-reference)."
+    {"id": 18, "subject": "Task 18: Full unit + pipeline regression sweep against baseline", "status": "completed", "completedSha": null, "blockedBy": [17], "notes": "Verification-only (no commit). Task 17's atomic cutover already ran the full sweep: 1298 passed, 3 skipped, 3 xfailed — same as pre-cutover baseline."},
+    {"id": 19, "subject": "Task 19: Smoke harness (3 cases: 5V55K kinematics, 5V28 speed, 9M82 airframe) — inlined full template", "status": "completed", "completedSha": "0c8b200", "blockedBy": [17]},
+    {"id": 20, "subject": "Task 20: Container rebuild + service health check on port 8002", "status": "completed", "completedSha": null, "blockedBy": [18, 19], "notes": "Operational task (no commit). Rebuilt docling-graph image (sha256:62b6b7cf...), restarted docling-graph + worker-graph, /health returned 200. Install patches loaded: prompt_rules + resolver_patch."},
+    {"id": 21, "subject": "Task 21: End-to-end re-ingest verification + acceptance gate (≥2/3 smoke + field-specific vertex assert)", "status": "completed", "completedSha": null, "blockedBy": [20], "notes": "Smoke harness against rebuilt docling-graph: 3/3 PASSED (perfect score, exceeds ≥2/3 acceptance gate). Cases: max_intercept_km ∈ [30, 60] for '43 km' / 5V55K; max_speed_mps ∈ [800, 1500] for '1200 m/s' / 5V28; body_length_m ∈ [4, 9] for '7.5 m' / 9M82. Architectural hypothesis validated for missile (parallel to radar). Plan's acceptance criterion met — both refactors delivered."
   ],
-  "lastUpdated": "2026-04-27T00:00:00Z"
+  "lastUpdated": "2026-04-27T23:30:00Z",
+  "smokeHarnessResult": "3/3 passed"
 }
