@@ -24,6 +24,15 @@ def _load(modname: str, path: pathlib.Path):
     return mod
 
 
+# Pre-register the docling-graph _numeric_evidence module under the
+# 'app._numeric_evidence' key so the file-path-loaded provenance.py's
+# `from app._numeric_evidence import ...` resolves to the docling-graph
+# version, not the unrelated repo-root `app/` package.
+_numeric_evidence = _load(
+    "app._numeric_evidence", _SERVICE_ROOT / "_numeric_evidence.py"
+)
+sys.modules["app._numeric_evidence"] = _numeric_evidence
+
 _provenance = _load("_dgp_provenance", _SERVICE_ROOT / "provenance.py")
 _schemas = _load("_dgp_schemas", _SERVICE_ROOT / "schemas.py")
 

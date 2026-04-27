@@ -33,13 +33,15 @@ like an uppercase ontology name is treated as an entity.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 
-_WS_NORM = re.compile(r"\s+")
+from app._numeric_evidence import (
+    normalize_text as _normalize_text,
+    value_match_candidates as _value_match_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -324,64 +326,6 @@ def build_provenance_from_context(
             )
         )
     return out
-
-
-def _normalize_text(text: str) -> str:
-    """Whitespace-collapsed casefold for fuzzy substring matching."""
-    return _WS_NORM.sub(" ", text).strip().casefold()
-
-
-def _value_match_candidates(value: Any, field_name: str) -> list[str]:
-    """Generate likely string forms of a field value for substring matching.
-
-    Numeric values get whole-number, decimal, and unit-aware variants
-    derived from the field name's suffix convention (e.g. ``gain_dbi`` →
-    "35", "35.0", "35 dBi", "35dBi"). String values pass through as-is
-    after stripping. Booleans return [] (not useful for substring match).
-    """
-    if value is None or isinstance(value, bool):
-        return []
-    if isinstance(value, str):
-        v = value.strip()
-        return [v] if v else []
-    if isinstance(value, (int, float)):
-        forms: list[str] = [str(value)]
-        if isinstance(value, float) and value == int(value):
-            forms.append(str(int(value)))
-        unit = _UNIT_HINTS_BY_SUFFIX.get(_field_unit_suffix(field_name))
-        if unit:
-            base = forms[-1]
-            forms.extend(f"{base} {unit}" for unit in unit)
-            forms.extend(f"{base}{unit}" for unit in unit)
-        return forms
-    return [str(value)]
-
-
-# Field-name suffix → list of human-readable unit candidates the
-# author may have written. Generated value form is paired with each.
-_UNIT_HINTS_BY_SUFFIX: dict[str, list[str]] = {
-    "_dbi": ["dBi", "dB"],
-    "_dbw": ["dBW", "dB"],
-    "_mhz": ["MHz", "GHz"],
-    "_khz": ["kHz"],
-    "_usec": ["μs", "us", "microseconds"],
-    "_sec": ["s", "seconds"],
-    "_kw": ["kW"],
-    "_mw": ["MW"],
-    "_km": ["km", "kilometers"],
-    "_m": ["m", "meters"],
-    "_kg": ["kg", "kilograms"],
-    "_mps": ["m/s", "mps"],
-    "_deg": ["°", "deg", "degrees"],
-}
-
-
-def _field_unit_suffix(field_name: str) -> str:
-    """Return the longest known unit suffix on a field name, or ''."""
-    for suffix in sorted(_UNIT_HINTS_BY_SUFFIX, key=len, reverse=True):
-        if field_name.endswith(suffix):
-            return suffix
-    return ""
 
 
 def _excerpt_around(text: str, needle_norm: str, max_chars: int = 240) -> str:
