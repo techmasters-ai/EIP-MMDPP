@@ -67,8 +67,9 @@ def _make_pass(
     input_mode="document_only",
     module="extraction_schemas.radar_domain",
     template_class="RadarDomainPass",
+    kind=None,
 ):
-    return {
+    out = {
         "name": name,
         "primary_entity_types": primary or [],
         "bridge_entity_types": bridge or [],
@@ -78,6 +79,9 @@ def _make_pass(
         "module": module,
         "template_class": template_class,
     }
+    if kind is not None:
+        out["kind"] = kind
+    return out
 
 
 def _make_coverage(extract=None, derive=None, rel_extract=None):
@@ -526,6 +530,92 @@ def test_manifest_self_consistency_bridge_entity_allowed_in_multiple_passes():
     errors = check_manifest_self_consistency(manifest, coverage, bundle_key="test_bundle")
     # No "multiple passes" error about PLATFORM
     assert not any("PLATFORM" in e and "multiple passes" in e for e in errors)
+
+
+def test_manifest_self_consistency_field_group_siblings_allowed_to_share_primary():
+    """Carve-out for the field-group sibling pattern (radar/missile sub-passes).
+
+    When 5 sub-passes split a single legacy entity-extraction pass, all 5
+    declare the same primary_entity_types and rely on merge_and_resolve
+    to collapse partial records by graph_id_fields. Bundle-checker rule 4
+    must permit this when ALL sharing passes are kind=entities AND
+    input_mode=document_only — that's the field-group sibling shape.
+    """
+    manifest = _make_manifest(passes=[
+        _make_pass(name="radar_identity", primary=["RADAR_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+        _make_pass(name="radar_power_rf", primary=["RADAR_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+        _make_pass(name="radar_antenna", primary=["RADAR_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+    ])
+    coverage = _make_coverage()
+    errors = check_manifest_self_consistency(manifest, coverage, bundle_key="test_bundle")
+    assert not any("RADAR_SYSTEM" in e and "multiple passes" in e for e in errors), (
+        f"field-group siblings should share primary_entity_types without error; got: {errors}"
+    )
+
+
+def test_manifest_self_consistency_carve_out_rejects_mixed_kind():
+    """Carve-out applies ONLY when ALL sharing passes are kind=entities.
+
+    If one sharing pass has a different kind (or omits kind), rule 4
+    fires as before. This guards the carve-out against the broader
+    "accidental ownership conflict" failure mode it was designed to
+    catch.
+    """
+    manifest = _make_manifest(passes=[
+        _make_pass(name="pass1", primary=["RADAR_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+        # Different kind → carve-out should NOT apply
+        _make_pass(name="pass2", primary=["RADAR_SYSTEM"],
+                   kind="relationships", input_mode="document_only"),
+    ])
+    coverage = _make_coverage()
+    errors = check_manifest_self_consistency(manifest, coverage, bundle_key="test_bundle")
+    assert any("RADAR_SYSTEM" in e and "multiple passes" in e for e in errors), (
+        f"carve-out should NOT apply when kinds differ; got: {errors}"
+    )
+
+
+def test_manifest_self_consistency_carve_out_rejects_mixed_input_mode():
+    """Carve-out applies ONLY when ALL sharing passes are input_mode=document_only.
+
+    A pass with input_mode=document_plus_entity_refs sharing a primary
+    is the relationship-pass-into-entity-pool pattern — not a
+    field-group sibling. Rule 4 should still fire.
+    """
+    manifest = _make_manifest(passes=[
+        _make_pass(name="pass1", primary=["RADAR_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+        # Different input_mode → carve-out should NOT apply
+        _make_pass(name="pass2", primary=["RADAR_SYSTEM"],
+                   kind="entities", input_mode="document_plus_entity_refs",
+                   depends_on=["pass1"]),  # depends_on required for document_plus_entity_refs
+    ])
+    coverage = _make_coverage()
+    errors = check_manifest_self_consistency(manifest, coverage, bundle_key="test_bundle")
+    assert any("RADAR_SYSTEM" in e and "multiple passes" in e for e in errors), (
+        f"carve-out should NOT apply when input_modes differ; got: {errors}"
+    )
+
+
+def test_manifest_self_consistency_carve_out_rejects_missing_kind():
+    """A pass that omits `kind` falls through the carve-out — preserves
+    backward-compat behavior for manifests that haven't migrated to the
+    explicit `kind` field yet (the existing
+    test_manifest_self_consistency_disjoint_entities_enforced still
+    passes because its fixtures don't set kind)."""
+    manifest = _make_manifest(passes=[
+        _make_pass(name="pass1", primary=["RADAR_SYSTEM"]),  # no kind set
+        _make_pass(name="pass2", primary=["RADAR_SYSTEM"],
+                   kind="entities", input_mode="document_only"),
+    ])
+    coverage = _make_coverage()
+    errors = check_manifest_self_consistency(manifest, coverage, bundle_key="test_bundle")
+    assert any("RADAR_SYSTEM" in e and "multiple passes" in e for e in errors), (
+        f"carve-out should NOT apply when any sharing pass omits kind; got: {errors}"
+    )
 
 
 def test_manifest_self_consistency_document_plus_entity_refs_needs_depends_on_fails():
