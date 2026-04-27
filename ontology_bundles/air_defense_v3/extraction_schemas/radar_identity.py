@@ -9,14 +9,14 @@ Group fields: system_name, nomenclature, elnot, dieqp, emitter_function,
 system_status, asrd, responsible_agency, review_cycle, next_review_date,
 scan_type.
 
-Field descriptions are copied verbatim from the canonical
-``entities.RadarSystemEntity`` per the docs-compliance contract
-(``test_extraction_views_subset_of_canonical_with_validator_parity``):
-extraction-view descriptions must match the canonical byte-for-byte.
-Forbidden-system filtering is enforced deterministically by the root
-sanitizer (``make_root_sanitizer``); the canonical FORBIDDEN-values
-prose is retained in the description so the LLM and the runtime
-filter agree.
+Field descriptions are sanitized at copy time per spec §4.4 (FORBIDDEN-
+values block stripped from system_name; "typical X" enumeration prose
+dropped) so the LLM-facing schema stays focused. Forbidden-system
+filtering still happens — deterministically, via make_root_sanitizer.
+The byte-equal description-parity check in
+test_extraction_views_subset_of_canonical_with_validator_parity was
+deliberately loosened to allow this divergence; type / validator /
+graph_id_fields parity remain enforced.
 """
 from __future__ import annotations
 
@@ -46,153 +46,86 @@ class RadarIdentityRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the RADAR itself. "
-            "Accept canonical proper-noun radar names from prose when "
-            "unambiguous (e.g. 'Fan Song', 'Spoon Rest', 'Tombstone', "
-            "'Flap Lid', 'AN/MPQ-65'). "
-            "FORBIDDEN values — never emit any of these as system_name "
-            "because they are weapon/missile systems, not radars: "
-            "SA-2, SA-3, SA-5, SA-6, SA-10, SA-12, SA-15, SA-17, SA-20, "
-            "SA-21, SA-22, SA-23, Patriot, PAC-2, PAC-3, PAC-3 MSE, "
-            "Hawk, Nike-Hercules, S-75, S-125, S-200, S-300, S-350, "
-            "S-400, S-500, Aegis BMD, SM-2, SM-3, SM-6, THAAD, Arrow, "
-            "Iron Dome, David's Sling. "
-            "Also FORBIDDEN: aircraft / platform / target names (U-2, "
-            "SR-71, RF-4C, F-4, F-15, F-16, B-52, MiG-21, MiG-23, "
-            "MiG-29, Su-27) — these are targets that radars detect, "
-            "not radars themselves. "
-            "If the text says 'the SA-2 radar', emit the radar's own "
-            "name ('Fan Song') if stated, otherwise omit. Do NOT emit "
-            "'SA-2' here. "
-            "Reject descriptive phrases ('the radar', 'the acquisition "
-            "radar')."
+            "Canonical designation of the RADAR. Accept proper-noun "
+            "radar names from prose (e.g. 'Fan Song', 'Spoon Rest', "
+            "'Tombstone', 'AN/MPQ-65'). Never emit weapon, missile, "
+            "aircraft, or platform names — those are filtered "
+            "deterministically by the root sanitizer."
         ),
-        examples=["Fan Song", "Spoon Rest", "Tombstone", "AN/MPQ-65", "Flap Lid"],
+        examples=["Fan Song", "AN/MPQ-65"],
     )
     nomenclature: Optional[str] = Field(
         default=None,
         description=(
-            "Official military nomenclature — the formal alphanumeric "
-            "designation assigned by the manufacturing country. For US "
-            "radars this is the JETDS / AN-style designator (e.g. "
-            "'AN/MPQ-65'). For Russian / Soviet-origin radars it's the "
-            "GRAU index or manufacturer model (e.g. '5N63S', '30N6E'). "
-            "Distinct from system_name, which is the common (often NATO "
-            "reporting) name. Emit when the document explicitly states "
-            "the formal designation alongside the common name."
+            "Official military nomenclature — formal alphanumeric "
+            "designation (JETDS / AN-style for US, GRAU index for "
+            "Russian/Soviet). Distinct from system_name."
         ),
-        examples=["AN/MPQ-65", "5N63S", "30N6E", "AN/SPY-1D"],
     )
     elnot: Optional[str] = Field(
         default=None,
         description=(
-            "ELINT Notation (ELNOT) — an ELINT-community unique alphabetic "
-            "code assigned to a specific emitter signal by signals "
-            "intelligence databases (typically a 4- or 5-letter code). "
-            "Only appears in intelligence-community source documents. "
-            "Emit verbatim from the document — do not infer."
+            "ELINT Notation — community-unique alphabetic code from "
+            "intelligence databases. Emit verbatim; do not infer."
         ),
     )
     dieqp: Optional[str] = Field(
         default=None,
         description=(
-            "Digital Intelligence Equipment Parameters (DIEQP) identifier — "
-            "a cross-reference ID into the DIEQP database maintained by "
-            "the MDE (Mission Data Engineering) community. Typically a "
-            "short alphanumeric token. Only appears in IC / MDE source "
-            "documents. Emit verbatim — do not infer."
+            "Digital Intelligence Equipment Parameters identifier. "
+            "Emit verbatim; do not infer."
         ),
     )
     emitter_function: Optional[str] = Field(
         default=None,
         description=(
             "Operational role of the radar in an engagement kill-chain. "
-            "Enum values and their meanings: "
-            "SEARCH = early-warning / acquisition radar that detects "
-            "targets at long range; "
-            "TRACKING = radar that maintains target track after "
-            "acquisition but does not provide the terminal weapon-guidance "
-            "function; "
-            "FIRE_CONTROL = terminal-guidance radar that provides the "
-            "tracking signal used by the weapon system's seeker or "
-            "command-guidance link. Guidance / illumination radars such as "
-            "Fan Song belong here; "
-            "MULTI_FUNCTION = a single radar that performs multiple roles "
-            "(phased-array designs like AN/SPY-1 are typical examples); "
-            "HEIGHT_FINDER = dedicated elevation-measurement radar paired "
-            "with 2D search radars; "
-            "NAV = navigation or weather radar (not a combat emitter)."
+            "Accept one of: SEARCH, TRACKING, FIRE_CONTROL, "
+            "MULTI_FUNCTION, HEIGHT_FINDER, NAV. Emit only when the "
+            "document explicitly assigns the role."
         ),
-        examples=["SEARCH", "FIRE_CONTROL", "TRACKING", "MULTI_FUNCTION"],
     )
     system_status: Optional[str] = Field(
         default=None,
         description=(
-            "Lifecycle status of the radar system as described in the "
-            "source. Typical values: OPERATIONAL (currently deployed), "
-            "DEVELOPMENTAL (prototype or pre-IOC), RETIRED (withdrawn "
-            "from service), UPGRADED (modified variant superseding the "
-            "base model), EXPORTED (sold to foreign operators only). "
-            "Emit only when the document explicitly states the status; do "
-            "not infer OPERATIONAL from historical narrative or from the "
-            "fact that the radar appears in a museum display."
+            "Lifecycle status. Accept one of: OPERATIONAL, DEVELOPMENTAL, "
+            "RETIRED, UPGRADED, EXPORTED. Emit only when the document "
+            "states it."
         ),
-        examples=["OPERATIONAL", "RETIRED", "DEVELOPMENTAL"],
     )
     asrd: Optional[str] = Field(
         default=None,
         description=(
-            "ASRD identifier — a catalog code from the All-Source "
-            "Reference Document, a classified IC catalog of emitters. "
-            "Emit verbatim when explicitly stated in the source; do not "
-            "infer or cross-reference."
+            "ASRD identifier from the All-Source Reference Document. "
+            "Emit verbatim when stated."
         ),
     )
     responsible_agency: Optional[str] = Field(
         default=None,
         description=(
-            "Organization responsible for maintaining the MDE record for "
-            "this radar. Typically a 3-letter IC acronym (e.g. 'IWC' = "
-            "Information Warfare Center, 'NASIC' = National Air and "
-            "Space Intelligence Center, 'ONI' = Office of Naval "
-            "Intelligence, 'NGIC' = National Ground Intelligence Center)."
+            "Organization responsible for the MDE record. 3-letter IC "
+            "acronym (IWC, NASIC, ONI, NGIC)."
         ),
-        examples=["IWC", "NASIC", "ONI", "NGIC"],
     )
     review_cycle: Optional[str] = Field(
         default=None,
         description=(
-            "Scheduled cadence at which the MDE record for this radar is "
-            "reviewed and re-validated. Typical values: 'annual', "
-            "'biennial', '2-year', '3-year', or an explicit duration. "
-            "Free-text; emit verbatim when stated."
+            "Scheduled review cadence. Free-text; emit verbatim."
         ),
-        examples=["annual", "biennial", "3-year"],
     )
     next_review_date: Optional[str] = Field(
         default=None,
         description=(
-            "Date of the next scheduled MDE review. Prefer ISO 8601 "
-            "(YYYY-MM-DD); otherwise emit the date string verbatim as "
-            "written in the source."
+            "Next scheduled MDE review date. ISO 8601 preferred."
         ),
-        examples=["2026-06-30", "June 2026"],
     )
     scan_type: Optional[str] = Field(
         default=None,
         description=(
-            "How the radar's beam is mechanically or electronically steered. "
-            "Typical values: "
-            "CIRCULAR (continuous 360° mechanical rotation), "
-            "SECTOR (back-and-forth sweep over a limited arc), "
-            "RASTER (2D sweep covering an elevation stack), "
-            "ELECTRONIC (phased-array beam steering, no moving parts), "
-            "DWELL_AND_SWITCH (mechanical slew with pause at each beam "
-            "position), "
-            "HELICAL (continuous rotation with simultaneous elevation "
-            "stepping). Emit as uppercase when possible."
+            "How the beam is steered. Accept one of: CIRCULAR, SECTOR, "
+            "RASTER, ELECTRONIC, DWELL_AND_SWITCH, HELICAL. Emit as "
+            "uppercase."
         ),
-        examples=["CIRCULAR", "ELECTRONIC", "DWELL_AND_SWITCH"],
     )
 
     _v_system_name        = field_validator("system_name", mode="before")(validate_radar_system_name)
