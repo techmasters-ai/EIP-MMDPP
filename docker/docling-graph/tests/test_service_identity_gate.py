@@ -7,6 +7,9 @@ from types import SimpleNamespace
 # after the field-group cutover. If this import breaks, that's a
 # regression even though the legacy module isn't in the manifest.
 from ontology_bundles.air_defense_v3.extraction_schemas.radar_domain import RadarDomainPass
+# Legacy-loadability check: missile_domain.py is kept in source even
+# after the field-group cutover. If this import breaks, that's a
+# regression even though the legacy module isn't in the manifest.
 from ontology_bundles.air_defense_v3.extraction_schemas.missile_domain import MissileDomainPass
 from ontology_bundles.air_defense_v3.extraction_schemas.system_links import SystemLinksPass
 
@@ -150,7 +153,7 @@ def test_apply_bundle_postprocessing_rewrites_air_defense_fields_from_evidence()
     )
     missile_output, missile_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
         "air_defense_v3",
-        "missile_domain",
+        "missile_identity",
         {
             "missile_systems": [
                 {"system_name": "SA-2", "min_intercept_km": 5.0, "max_intercept_km": 19.0, "system_status": "OPERATIONAL"}
@@ -296,7 +299,7 @@ def test_missile_postprocess_clears_recurring_sa2_hallucinated_properties():
 
     missile_output, missile_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
         "air_defense_v3",
-        "missile_domain",
+        "missile_identity",
         {
             "missile_systems": [
                 {
@@ -384,7 +387,7 @@ def test_status_is_not_inferred_from_operation_or_in_use_language():
 
     missile_output, missile_stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
         "air_defense_v3",
-        "missile_domain",
+        "missile_identity",
         {
             "missile_systems": [
                 {"system_name": "SA-2", "system_status": "OPERATIONAL"}
