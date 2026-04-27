@@ -60,18 +60,67 @@ passes:
     extracted_relationship_types: []
     depends_on: []
 
-  - name: missile_domain
-    # Non-required: a radar-only or non-missile document shouldn't fail the
-    # pipeline just because there's nothing to extract for this domain.
-    #
-    # Flat checklist-aligned schema (MISSILE MDE Checklist): only MISSILE_SYSTEM
-    # is emitted; guidance / seeker / propulsion stages are flat properties on
-    # that single entity. No typed edges.
+  - name: missile_identity
     required: false
     kind: entities
     input_mode: document_only
-    module: extraction_schemas.missile_domain
-    template_class: MissileDomainPass
+    module: extraction_schemas.missile_identity
+    template_class: MissileIdentityPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_kinematics
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_kinematics
+    template_class: MissileKinematicsPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_guidance
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_guidance
+    template_class: MissileGuidancePass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_airframe
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_airframe
+    template_class: MissileAirframePass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_speed_timing
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_speed_timing
+    template_class: MissileSpeedTimingPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_propulsion
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_propulsion
+    template_class: MissilePropulsionPass
     primary_entity_types: [MISSILE_SYSTEM]
     bridge_entity_types: []
     extracted_relationship_types: []
@@ -92,7 +141,12 @@ passes:
       - radar_antenna
       - radar_timing
       - radar_modulation
-      - missile_domain
+      - missile_identity
+      - missile_kinematics
+      - missile_guidance
+      - missile_airframe
+      - missile_speed_timing
+      - missile_propulsion
     skip_if_no_upstream_endpoints: true
     skip_justification: >
       When none of the upstream domain passes produce any linkable system

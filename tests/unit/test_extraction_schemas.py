@@ -6,19 +6,29 @@ from pydantic import BaseModel
 
 from ontology_bundles.air_defense_v3.extraction_schemas import (
     radar_identity, radar_power_rf, radar_antenna, radar_timing, radar_modulation,
-    missile_domain, system_links,
+    missile_identity, missile_kinematics, missile_guidance,
+    missile_airframe, missile_speed_timing, missile_propulsion,
+    system_links,
 )
 
-# Post radar field-group split (spec §4.5): radar_domain was decomposed into
-# 5 sub-passes (radar_identity, radar_power_rf, radar_antenna, radar_timing,
-# radar_modulation). manifest.yaml now declares 7 passes total.
+# Post radar+missile field-group split (spec §4.5): radar_domain was decomposed
+# into 5 sub-passes (radar_identity, radar_power_rf, radar_antenna,
+# radar_timing, radar_modulation) and missile_domain was decomposed into 6
+# sub-passes (missile_identity, missile_kinematics, missile_guidance,
+# missile_airframe, missile_speed_timing, missile_propulsion). manifest.yaml
+# now declares 12 passes total.
 PASS_MODULES = [
     (radar_identity, "RadarIdentityPass"),
     (radar_power_rf, "RadarPowerRfPass"),
     (radar_antenna, "RadarAntennaPass"),
     (radar_timing, "RadarTimingPass"),
     (radar_modulation, "RadarModulationPass"),
-    (missile_domain, "MissileDomainPass"),
+    (missile_identity, "MissileIdentityPass"),
+    (missile_kinematics, "MissileKinematicsPass"),
+    (missile_guidance, "MissileGuidancePass"),
+    (missile_airframe, "MissileAirframePass"),
+    (missile_speed_timing, "MissileSpeedTimingPass"),
+    (missile_propulsion, "MissilePropulsionPass"),
     (system_links, "SystemLinksPass"),
 ]
 

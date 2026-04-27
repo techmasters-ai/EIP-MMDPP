@@ -385,8 +385,7 @@ _DOMAIN_PASS_NAMES: frozenset[str] = frozenset({
     # radar (post-radar-cutover)
     "radar_identity", "radar_power_rf", "radar_antenna",
     "radar_timing", "radar_modulation",
-    # missile (additive — missile_domain still active until Chunk 4)
-    "missile_domain",
+    # missile (post-missile-cutover — 6 sub-passes replace missile_domain)
     "missile_identity", "missile_kinematics", "missile_guidance",
     "missile_airframe", "missile_speed_timing", "missile_propulsion",
     # system_links — preserved from radar cutover; do NOT drop

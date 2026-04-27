@@ -2,22 +2,27 @@
 import pytest
 
 
-def test_load_bundle_manifest_returns_seven_passes():
-    """Happy path: parses manifest.yaml into a BundleManifest with 7 passes.
+def test_load_bundle_manifest_returns_twelve_passes():
+    """Happy path: parses manifest.yaml into a BundleManifest with 12 passes.
 
-    Post radar field-group split (spec §4.5): radar_domain was decomposed
-    into 5 sub-passes (radar_identity, radar_power_rf, radar_antenna,
-    radar_timing, radar_modulation). missile_domain + system_links remain.
+    Post radar+missile field-group split (spec §4.5): radar_domain was
+    decomposed into 5 sub-passes (radar_identity, radar_power_rf,
+    radar_antenna, radar_timing, radar_modulation) and missile_domain
+    was decomposed into 6 sub-passes (missile_identity,
+    missile_kinematics, missile_guidance, missile_airframe,
+    missile_speed_timing, missile_propulsion). system_links remains.
     """
     from app.services.ontology_bundles import load_bundle_manifest, BundleManifest
     m = load_bundle_manifest("air_defense_v3")
     assert isinstance(m, BundleManifest)
     assert m.bundle_key == "air_defense_v3"
-    assert len(m.passes) == 7
+    assert len(m.passes) == 12
     assert {p.name for p in m.passes} == {
         "radar_identity", "radar_power_rf", "radar_antenna",
         "radar_timing", "radar_modulation",
-        "missile_domain", "system_links",
+        "missile_identity", "missile_kinematics", "missile_guidance",
+        "missile_airframe", "missile_speed_timing", "missile_propulsion",
+        "system_links",
     }
 
 

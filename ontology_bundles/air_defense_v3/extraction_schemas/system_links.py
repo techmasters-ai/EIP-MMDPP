@@ -90,7 +90,7 @@ class SystemLinkRelationship(BaseModel):
         description=(
             "Upstream ref id of the edge source — a short token like "
             "'E001', 'E002' that refers to an entity previously emitted "
-            "by an earlier pass (radar_identity, missile_domain). The "
+            "by an earlier pass (radar_identity, missile_identity). The "
             "catalog of available ref ids is provided in the prompt's "
             "'Upstream entities:' preamble. Emit only ref ids that "
             "appear in that list — the merge layer rejects unknown ids."

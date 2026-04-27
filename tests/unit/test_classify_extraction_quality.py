@@ -9,7 +9,7 @@ HIT.
 Three states:
 
 - ``ok``       — at least one domain pass (radar (any sub-pass) /
-                 missile / system_links) achieved HIT.
+                 missile (any sub-pass) / system_links) achieved HIT.
 - ``degraded`` — no domain HIT, but SECTION vertices and TextChunks
                  both exist. Real document processed through
                  derive_document_anchors and chunking, but nothing
@@ -41,7 +41,7 @@ def test_ok_when_any_domain_pass_hits():
     assert _classify_extraction_quality(
         {
             "radar_identity": _outcome("HIT"),
-            "missile_domain": _outcome("EMPTY"),
+            "missile_identity": _outcome("EMPTY"),
             "system_links": _outcome("EMPTY"),
         },
         section_count=0,
@@ -61,7 +61,7 @@ def test_degraded_when_sections_and_chunks_present_but_no_domain_hit():
     assert _classify_extraction_quality(
         {
             "radar_identity": _outcome("EMPTY"),
-            "missile_domain": _outcome("BRIDGES_ONLY"),
+            "missile_identity": _outcome("BRIDGES_ONLY"),
             "system_links": _outcome("EMPTY"),
         },
         section_count=5,
@@ -79,7 +79,7 @@ def test_degraded_when_sections_and_chunks_present_but_no_domain_hit():
     assert _classify_extraction_quality(
         {
             "radar_identity": _outcome(None, execution_status="FAILED"),
-            "missile_domain": _outcome(None, execution_status="SKIPPED"),
+            "missile_identity": _outcome(None, execution_status="SKIPPED"),
         },
         section_count=3,
         text_chunk_count=10,
@@ -137,7 +137,7 @@ def test_classifier_result_included_in_pipeline_run_metrics_blob(monkeypatch):
         "app.workers.pipeline._build_pass_outcomes_rollup",
         lambda *_args, **_kw: {
             "radar_identity": _outcome("EMPTY"),
-            "missile_domain": _outcome("EMPTY"),
+            "missile_identity": _outcome("EMPTY"),
             "system_links": _outcome("EMPTY"),
         },
     )

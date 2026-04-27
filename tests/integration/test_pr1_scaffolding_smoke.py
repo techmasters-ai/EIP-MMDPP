@@ -83,14 +83,16 @@ def test_load_ontology_returns_bundle_ontology():
     assert any(e.get("name") == "RADAR_SYSTEM" for e in ont["entity_types"])
 
 
-def test_load_bundle_manifest_has_seven_passes():
+def test_load_bundle_manifest_has_twelve_passes():
     from app.services.ontology_bundles import load_bundle_manifest
     m = load_bundle_manifest("air_defense_v3")
-    assert len(m.passes) == 7
+    assert len(m.passes) == 12
     assert {p.name for p in m.passes} == {
         "radar_identity", "radar_power_rf", "radar_antenna",
         "radar_timing", "radar_modulation",
-        "missile_domain", "system_links",
+        "missile_identity", "missile_kinematics", "missile_guidance",
+        "missile_airframe", "missile_speed_timing", "missile_propulsion",
+        "system_links",
     }
 
 
