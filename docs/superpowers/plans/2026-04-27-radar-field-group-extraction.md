@@ -2286,6 +2286,34 @@ class TestExtendUpstreamRefsDedupe:
         )
         names = {r.identity_values.get("system_name") for r in refs.values()}
         assert names == {"Fan Song", "Spoon Rest"}
+
+    def test_dedupe_normalizes_whitespace_and_case(self):
+        """Spec §4.5: dedupe by `(entity_type, normalized identity_values)`.
+
+        The same entity emitted with whitespace/case variation across
+        sub-passes ("Fan Song" / "  Fan  Song  " / "fan song") must
+        collapse to a single ref. Without normalization, the relationship
+        pass would receive 3 distinct E### ref-ids for the same entity.
+        """
+        refs: dict = {}
+        for variant in ("Fan Song", "  Fan  Song  ", "fan song"):
+            _extend_upstream_refs(
+                refs,
+                _FakePassResult({"RADAR_SYSTEM": [SimpleNamespace(system_name=variant)]}),
+                self._pass_def("radar_identity", ["RADAR_SYSTEM"]),
+                ONTOLOGY,
+            )
+        # Exactly one ref. The retained identity_values may carry either
+        # the canonical form or the first-seen form — either is fine, as
+        # long as count == 1.
+        radar_refs = [
+            r for r in refs.values()
+            if getattr(r, "entity_type", None) == "RADAR_SYSTEM"
+        ]
+        assert len(radar_refs) == 1, (
+            f"expected 1 dedup'd ref across whitespace/case variants; "
+            f"got {len(radar_refs)}: {radar_refs!r}"
+        )
 ```
 
 - [ ] **Step 3: Run, expect FAIL on the first test (no dedupe yet).**
@@ -2295,7 +2323,30 @@ Expected: `test_five_partial_radars_collapse_to_one_upstream_ref` FAILS (5 refs,
 
 - [ ] **Step 4: Implement dedupe in `_extend_upstream_refs`.**
 
-Add a check at the top of the per-entity loop: build the identity tuple `(entity_type, tuple(sorted(identity_values.items())))`, scan existing `refs.values()` for a match, and skip-if-seen. Or maintain an auxiliary `seen` set keyed alongside `refs` (passed in as another arg, or via a wrapper helper).
+Spec §4.5 says dedupe by `(entity_type, normalized identity_values)`. Use the same canonicalizer the merge layer uses for identity comparison — `canonicalize_identity_text` from `ontology_bundles/air_defense_v3/validators.py:153` — applied to each string identity value, then casefold for case-insensitive matching:
+
+```python
+from ontology_bundles.air_defense_v3.validators import canonicalize_identity_text
+
+def _normalized_identity_key(entity_type: str, identity_values: dict) -> tuple:
+    """Build the dedupe key matching the merge layer's identity contract.
+
+    canonicalize_identity_text() collapses whitespace; .casefold() handles
+    case folding. Non-string values pass through unchanged.
+    """
+    normalized = {}
+    for k, v in identity_values.items():
+        if isinstance(v, str):
+            canon = canonicalize_identity_text(v)
+            normalized[k] = canon.casefold() if canon else None
+        else:
+            normalized[k] = v
+    return (entity_type, tuple(sorted(normalized.items())))
+```
+
+Then at the top of the per-entity loop in `_extend_upstream_refs`, build that key for the candidate entity, scan existing `refs.values()` for a match (computing each ref's key the same way), and skip-if-seen. Alternatively maintain an auxiliary `seen: set` set populated in lockstep with `refs` so the lookup is O(1).
+
+Do NOT use raw `tuple(sorted(identity_values.items()))` — that's case- and whitespace-sensitive, which fails the `test_dedupe_normalizes_whitespace_and_case` assertion above.
 
 - [ ] **Step 5: Run, expect both tests PASS.**
 
@@ -2476,8 +2527,9 @@ Tasks 17-21 flip the manifest, prune `_DOMAIN_PASS_NAMES`, update manifest-shape
 **Files:**
 - Modify: `ontology_bundles/air_defense_v3/manifest.yaml`
 - Modify: `app/workers/pipeline.py:381-383` (prune `radar_domain`)
-- Modify: `tests/unit/test_ontology_bundles.py:5-19` (manifest-shape assertion)
+- Modify: `tests/unit/test_ontology_bundles.py:5-19` (manifest-shape assertion + `find_pass` call site at lines 22-37)
 - Modify: `tests/unit/test_extraction_schemas.py:8,14` (PASS_MODULES)
+- Modify: `tests/unit/test_classify_extraction_quality.py` (every test fixture passes `"radar_domain"` as a domain pass key — after pruning, those tests would flip from `ok`/`degraded` to `anomaly` because `radar_domain` is no longer in `_DOMAIN_PASS_NAMES`. Update test cases to use `"radar_identity"` (or any other current sub-pass name) and clean up the docstring at line 12 / data references to `other_systems` which is also stale.)
 - Modify: `tests/integration/test_pr1_scaffolding_smoke.py:36-45,85-95`
 - Modify: `ontology_bundles/air_defense_v3/extraction_schemas/system_links.py` (docstring; if needed)
 - Stage if Task 16 was deferred: `docker/docling-graph/tests/test_extract_pass_endpoint.py`, `docker/docling-graph/tests/test_service_identity_gate.py` (`pass_name` fixture swap from `radar_domain` → `radar_identity`). If you stashed Task 16's fixture changes per its decision rule, `git stash pop` them now and they land in this atomic commit.
@@ -2600,20 +2652,42 @@ _DOMAIN_PASS_NAMES = frozenset({
 
 - [ ] **Step 3: Update `tests/unit/test_ontology_bundles.py`.**
 
-Modify lines 5-19 (the manifest-shape assertion):
+The existing test (`test_load_bundle_manifest_returns_four_passes`, lines 5–19) uses the worker-side loader `app.services.ontology_bundles.load_bundle_manifest("air_defense_v3")` and asserts on `m.passes` directly. Keep that pattern — there is no `manifest.py` module in the bundle, only `manifest.yaml`. The test asserts 3 passes today; after cutover it should assert 7.
+
+Update the existing test in place (rename optional, but the assertion needs updating):
 
 ```python
-def test_manifest_pass_count_and_names():
-    from ontology_bundles.air_defense_v3 import manifest as m_module
-    m = m_module.MANIFEST  # or whatever the entry symbol is
+def test_load_bundle_manifest_returns_seven_passes():
+    """Post-radar-cutover: 5 radar sub-passes + missile_domain + system_links."""
+    from app.services.ontology_bundles import load_bundle_manifest, BundleManifest
+    m = load_bundle_manifest("air_defense_v3")
+    assert isinstance(m, BundleManifest)
+    assert m.bundle_key == "air_defense_v3"
     assert len(m.passes) == 7
-    pass_names = {p.name for p in m.passes}
-    assert pass_names == {
+    assert {p.name for p in m.passes} == {
         "radar_identity", "radar_power_rf", "radar_antenna",
         "radar_timing", "radar_modulation",
         "missile_domain", "system_links",
     }
 ```
+
+The companion `test_load_bundle_manifest_populates_pass_metadata` test (lines 22–37) currently calls `m.find_pass("radar_domain")`. Update that call site to `m.find_pass("radar_identity")` (or any of the new sub-pass names) and adjust the asserted properties to match the new pass entry. The `system_links` `required is True` assertion stays valid.
+
+- [ ] **Step 3b: Update `tests/unit/test_classify_extraction_quality.py`.**
+
+Every test in this file passes `"radar_domain"` as a domain pass key in the `_classify_extraction_quality()` fixture dicts (lines 43, 54, 64, 75, 83, 95, 102, 109, 141, …). After Step 2 prunes `radar_domain` from `_DOMAIN_PASS_NAMES`, those keys are no longer recognized as domain passes — the classifier returns `"anomaly"` instead of `"ok"`/`"degraded"`, and every test in the file fails.
+
+Two edits per test fixture:
+1. Replace `"radar_domain"` keys with `"radar_identity"` (or any of the new sub-pass names — `radar_identity` is the closest semantic stand-in for "the radar domain hit").
+2. Drop `"other_systems"` keys entirely. The pre-existing pruning of `other_systems` from `_DOMAIN_PASS_NAMES` already happened (radar Task 12 commit message notes "drops dead 'other_systems' entry"); the classifier tests retain the stale name in fixture data.
+
+Also update the module docstring at line 12: replace `radar / missile / other_systems / system_links` with `radar (any sub-pass) / missile / system_links`.
+
+After edits, run:
+```bash
+SKIP_COV=1 .venv/bin/pytest tests/unit/test_classify_extraction_quality.py -v 2>&1 | tail -15
+```
+Expected: all passed (same count as the P1 baseline).
 
 - [ ] **Step 4: Update `tests/unit/test_extraction_schemas.py`.**
 
@@ -2692,6 +2766,7 @@ git add ontology_bundles/air_defense_v3/manifest.yaml \
         app/workers/pipeline.py \
         tests/unit/test_ontology_bundles.py \
         tests/unit/test_extraction_schemas.py \
+        tests/unit/test_classify_extraction_quality.py \
         tests/integration/test_pr1_scaffolding_smoke.py \
         ontology_bundles/air_defense_v3/extraction_schemas/system_links.py \
         docker/docling-graph/tests/test_extract_pass_endpoint.py \

@@ -1832,10 +1832,10 @@ Add the regression test at `docker/docling-graph/tests/test_clear_unsupported_mi
 
 **Out of scope for Session 1:** Real cross-unit conversion (1.5 tonnes ↔ 1500 kg, 43 km ↔ 43000 m, etc.) beyond the existing `_mechanically_supported_missile_fields()` regex. Relaxing the unconditional-null fields (`min_altitude_km`, `max_launch_angle_deg`, `missile_photo`) is also Session 2 work. The helper only matches the value's stringified form with the field's expected unit suffix appended.
 
-- [ ] **Step 3: Run regression test, expect 5 passed.**
+- [ ] **Step 3: Run regression test, expect 7 passed.**
 
 Run: `cd docker/docling-graph && python -m pytest tests/test_clear_unsupported_missile_properties.py -v 2>&1 | tail -10`
-Expected (Branch A): 5 passed.
+Expected (Branch A): 7 passed (the 7 cases enumerated above; the drift-prevention test is added in Step 4 and brings the total to 8 there).
 
 - [ ] **Step 3b: Branch B/C — write verification artifact instead.**
 
@@ -1905,7 +1905,7 @@ def test_evidence_gate_missile_fields_matches_field_groups():
 ```
 
 Re-run: `cd docker/docling-graph && python -m pytest tests/test_clear_unsupported_missile_properties.py -v 2>&1 | tail -10`
-Expected (Branch A): 6 passed.
+Expected (Branch A): 8 passed (7 regression cases from Step 3 + 1 drift-prevention test).
 
 - [ ] **Step 5: Run the full evidence-gate tests to confirm no regression.**
 
@@ -1930,9 +1930,18 @@ value_is_supported_by_text predicate from _numeric_evidence.py (already
 extracted during the radar refactor). Same predicate the auto-evidence
 resolver uses — single source of truth.
 
-Drift-prevention test asserts the evidence_gate_fields tuple matches
-the union of the 4 numeric missile sub-pass groups plus missile_photo
-and confidence — schema additions can't silently null new fields.
+Drift-prevention test asserts the EVIDENCE_GATE_MISSILE_FIELDS module
+constant equals the evidence-verified subset only: missile_airframe
+and missile_speed_timing numerics, plus missile_propulsion non-thrust
+numerics, plus 'confidence' meta. Explicitly excluded:
+- mechanical-override fields (min/max_intercept_km, max_altitude_km,
+  total_mass_kg) — handled by _mechanically_supported_missile_fields
+- string thrust fields (ejector/booster/sustain_thrust) — handled by
+  the exact-text branch
+- unconditional-null fields (min_altitude_km, max_launch_angle_deg,
+  missile_photo) — Session 1 contract keeps them always-null
+Set equality (not substring match) — schema additions can't silently
+null new fields, and stale entries can't accumulate.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
