@@ -52,7 +52,7 @@ class EntityRef(BaseModel):
 class ExtractPassRequest(BaseModel):
     """Request body for POST /extract-pass. Spec §5.9 wire contract."""
     bundle_key: str = Field(..., description="Bundle identifier, e.g. 'air_defense_v3'")
-    pass_name: str = Field(..., description="Pass name from the bundle manifest, e.g. 'radar_domain'")
+    pass_name: str = Field(..., description="Pass name from the bundle manifest, e.g. 'radar_identity'")
     docling_document_json: dict[str, Any] = Field(
         ..., description="Full DoclingDocument JSON"
     )
