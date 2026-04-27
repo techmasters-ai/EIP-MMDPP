@@ -951,7 +951,16 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             except ValueError:
                 list_field_name = None
         if list_field_name:
-            primary_entities = getattr(template_instance, list_field_name, []) or []
+            # Re-validate the FILTERED pass_output back into a template
+            # instance so auto-evidence sees the same field values that
+            # will be persisted on the vertex (post identity-gate +
+            # bundle postprocess). Falls back to the unfiltered
+            # template_instance if re-validation fails.
+            try:
+                filtered_template = template_cls.model_validate(pass_output)
+                primary_entities = getattr(filtered_template, list_field_name, []) or []
+            except Exception:
+                primary_entities = getattr(template_instance, list_field_name, []) or []
             if primary_entities:
                 # Build per-entity instance_id list aligned with primary_entities.
                 identity_to_instance: dict[tuple[str, str], str] = {}
