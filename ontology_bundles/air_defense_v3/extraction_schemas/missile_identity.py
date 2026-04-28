@@ -42,8 +42,15 @@ class MissileIdentityRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the MISSILE. Accept proper-noun "
-            "missile names from prose (e.g. '5V55K', '9M82', 'AIM-120'). "
+            "Canonical designation of the MISSILE — the SHORTEST "
+            "canonical token from prose (e.g. '5V55K', '9M82', 'AIM-120', "
+            "'MIM-104', 'RIM-174'). When the document gives a formal "
+            "designation PLUS a common/NATO name PLUS a block/variant "
+            "(e.g. 'MIM-104F Patriot Advanced Capability-3 (PAC-3)'), "
+            "put ONLY the primary identifier here ('MIM-104F' or "
+            "'PAC-3'); move the formal designation to `nomenclature` "
+            "and the common/NATO reporting name to `name` — DO NOT "
+            "compress them all into system_name. "
             "Never emit radar, weapon-system, aircraft, or platform "
             "names — those are filtered deterministically by the root "
             "sanitizer."
@@ -68,7 +75,12 @@ class MissileIdentityRecord(BaseModel):
         default=None,
         description=(
             "Common or NATO reporting name when distinct from system_name. "
-            "Free-text; emit verbatim."
+            "Examples: 'Guideline' (SA-2 / S-75), 'Goa' (SA-3 / S-125), "
+            "'Gainful' (SA-6 / 2K12), 'Gammon' (SA-5 / S-200), 'Grumble' "
+            "(SA-10 / S-300), 'Patriot' (MIM-104), 'Standard' (SM-2/SM-6). "
+            "Free-text; emit verbatim from the source. Emit only when the "
+            "source explicitly states a distinct common/NATO name (do not "
+            "synthesize one)."
         ),
     )
     emitter_function: Optional[str] = Field(
@@ -81,9 +93,27 @@ class MissileIdentityRecord(BaseModel):
     system_status: Optional[str] = Field(
         default=None,
         description=(
-            "Lifecycle status. Accept one of: OPERATIONAL, DEVELOPMENTAL, "
-            "RETIRED, UPGRADED, EXPORTED. Emit only when the document "
-            "states it."
+            "Lifecycle status. "
+            "REQUIRED EMISSION: when the document contains any of "
+            "these phrases (or close variants), emit the corresponding "
+            "enum value — these phrases ARE explicit status assignments: "
+            "'operational' / 'in service' / 'deployed' / 'fielded' / "
+            "'active' / 'integrated into' / 'in operational use' / "
+            "'in production' / 'currently fielded' / 'in active "
+            "service' / 'employed by' / 'used by' (when paired with a "
+            "current operator) / 'paired with' (when paired with an "
+            "operational radar/platform) → OPERATIONAL; "
+            "'developmental' / 'under development' / 'prototype' / "
+            "'in testing' / 'pre-production' → DEVELOPMENTAL; "
+            "'retired' / 'decommissioned' / 'phased out' / 'no longer "
+            "in service' / 'withdrawn from service' → RETIRED; "
+            "'upgraded' / 'modernized' / 'block upgrade' / 'service "
+            "life extension' → UPGRADED; "
+            "'exported' / 'foreign sales' / 'export variant' / 'foreign "
+            "military sales' / 'FMS' → EXPORTED. "
+            "Allowed enum values: OPERATIONAL, DEVELOPMENTAL, RETIRED, "
+            "UPGRADED, EXPORTED. Do NOT infer status from age, era, "
+            "or other indirect cues."
         ),
     )
     asrd: Optional[str] = Field(

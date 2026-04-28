@@ -31,23 +31,66 @@ class MissileGuidanceRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the MISSILE. Accept proper-noun "
-            "missile names. Never emit radar, weapon-system, aircraft, "
-            "or platform names — those are filtered deterministically."
+            "Canonical designation of the MISSILE — the SHORTEST "
+            "canonical token from prose (e.g. '5V55K', '9M82', "
+            "'AIM-120', 'PAC-3', 'SM-6'). When the document gives a "
+            "formal designation PLUS a common/NATO name PLUS a "
+            "block/variant (e.g. 'MIM-104F Patriot Advanced "
+            "Capability-3 (PAC-3)'), emit ONLY the primary identifier "
+            "('PAC-3' or 'MIM-104F'); DO NOT compress them all into "
+            "system_name. CRITICAL: this name MUST match the "
+            "system_name used by `missile_identity` for the same "
+            "missile, so all field-group passes deduplicate onto one "
+            "MISSILE_SYSTEM vertex during merge. Never emit radar, "
+            "weapon-system, aircraft, or platform names — those are "
+            "filtered deterministically."
         ),
         examples=["5V55K", "AIM-120"],
     )
     guidance_type: Optional[str] = Field(
         default=None,
         description=(
-            "Guidance scheme. Free-text; emit verbatim from the source."
+            "Guidance scheme — how the missile is steered to the target. "
+            "REQUIRED EMISSION: when the document contains any of "
+            "these phrases (or close variants), emit the phrase "
+            "verbatim from the source — these phrases ARE explicit "
+            "guidance assignments: "
+            "'command guidance' / 'CLOS' / 'command-to-line-of-sight'; "
+            "'semi-active radar homing' / 'SARH'; "
+            "'active radar homing' / 'ARH'; "
+            "'track-via-missile' / 'TVM'; "
+            "'inertial guidance' / 'inertial + mid-course update' / "
+            "'inertial with mid-course'; "
+            "'beam-rider' / 'beam riding'; "
+            "'infrared homing' / 'IR homing'; "
+            "'imaging infrared' / 'IIR'; "
+            "'passive radar homing' / 'PRH'; "
+            "'home-on-jam' / 'HOJ'. "
+            "Free-text — preserve the source's exact phrasing. "
+            "If multiple schemes are stated (e.g. 'SARH with terminal "
+            "ARH'), emit them as a single string. Do NOT infer "
+            "guidance from indirect cues."
         ),
     )
     seeker_type: Optional[str] = Field(
         default=None,
         description=(
-            "Seeker type (e.g. semi-active radar homing, infrared). "
-            "Free-text; emit verbatim from the source."
+            "Seeker type — the missile's terminal-phase sensor. "
+            "REQUIRED EMISSION: when the document contains any of "
+            "these phrases (or close variants), emit the phrase "
+            "verbatim from the source: "
+            "'semi-active radar homing' / 'SARH seeker'; "
+            "'active radar homing' / 'ARH seeker'; "
+            "'X-band active seeker'; 'Ka-band millimeter-wave seeker' / "
+            "'mmW seeker'; "
+            "'infrared (IR)' / 'IR seeker'; "
+            "'imaging infrared (IIR)' / 'IIR seeker'; "
+            "'dual-mode IR/RF' / 'dual-mode seeker'; "
+            "'passive radar homing'; "
+            "'electro-optical' / 'EO seeker'. "
+            "Free-text — preserve the source's exact phrasing. Do NOT "
+            "infer the seeker from guidance prose alone unless the "
+            "document uses one of these seeker-specific phrases."
         ),
     )
     # Optional[bool] uses Pydantic's native bool parsing — same pattern

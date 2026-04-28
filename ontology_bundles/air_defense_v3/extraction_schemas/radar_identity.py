@@ -46,11 +46,15 @@ class RadarIdentityRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the RADAR. Accept proper-noun "
-            "radar names from prose (e.g. 'Fan Song', 'Spoon Rest', "
-            "'Tombstone', 'AN/MPQ-65'). Never emit weapon, missile, "
-            "aircraft, or platform names — those are filtered "
-            "deterministically by the root sanitizer."
+            "Canonical designation of the RADAR — the SHORTEST canonical "
+            "token from prose (e.g. 'Fan Song', 'Spoon Rest', "
+            "'Tombstone', 'AN/MPQ-65'). When the document gives both a "
+            "formal designation AND a common/NATO name, put ONLY the "
+            "primary identifier here; move the formal designation to "
+            "`nomenclature` and the common name to `name` (for missiles) "
+            "— DO NOT compress them all into system_name. Never emit "
+            "weapon, missile, aircraft, or platform names — those are "
+            "filtered deterministically by the root sanitizer."
         ),
         examples=["Fan Song", "AN/MPQ-65"],
     )
@@ -80,17 +84,51 @@ class RadarIdentityRecord(BaseModel):
         default=None,
         description=(
             "Operational role of the radar in an engagement kill-chain. "
-            "Accept one of: SEARCH, TRACKING, FIRE_CONTROL, "
-            "MULTI_FUNCTION, HEIGHT_FINDER, NAV. Emit only when the "
-            "document explicitly assigns the role."
+            "REQUIRED EMISSION: when the document contains any of "
+            "these phrases (or close variants), emit the corresponding "
+            "enum value — these phrases ARE explicit role assignments, "
+            "not interpretation: "
+            "'search radar' / 'early warning radar' / 'acquisition "
+            "radar' / 'EW radar' → SEARCH; "
+            "'tracking radar' → TRACKING; "
+            "'fire-control radar' / 'engagement radar' / 'missile "
+            "guidance radar' / 'illuminator' → FIRE_CONTROL; "
+            "'multi-function radar' / 'multifunction' / 'MFR' / "
+            "'AMDR' / 'air and missile defense radar' / 'air defense "
+            "and surveillance radar' → MULTI_FUNCTION; "
+            "'height finder' / 'height-finding radar' → HEIGHT_FINDER; "
+            "'navigation radar' / 'marine navigation' → NAV. "
+            "If multiple roles appear (e.g. 'multi-function fire-"
+            "control radar'), prefer the more specific one — here "
+            "FIRE_CONTROL. "
+            "Allowed enum values: SEARCH, TRACKING, FIRE_CONTROL, "
+            "MULTI_FUNCTION, HEIGHT_FINDER, NAV. Do NOT invent a role "
+            "from indirect cues."
         ),
     )
     system_status: Optional[str] = Field(
         default=None,
         description=(
-            "Lifecycle status. Accept one of: OPERATIONAL, DEVELOPMENTAL, "
-            "RETIRED, UPGRADED, EXPORTED. Emit only when the document "
-            "states it."
+            "Lifecycle status. "
+            "REQUIRED EMISSION: when the document contains any of "
+            "these phrases (or close variants), emit the corresponding "
+            "enum value — these phrases ARE explicit status assignments: "
+            "'operational' / 'in service' / 'deployed' / 'fielded' / "
+            "'active' / 'integrated into' / 'in operational use' / "
+            "'in production' / 'currently fielded' / 'in active "
+            "service' / 'employed by' / 'used by' (when paired with a "
+            "current operator) → OPERATIONAL; "
+            "'developmental' / 'under development' / 'prototype' / "
+            "'in testing' / 'pre-production' → DEVELOPMENTAL; "
+            "'retired' / 'decommissioned' / 'phased out' / 'no longer "
+            "in service' / 'withdrawn from service' → RETIRED; "
+            "'upgraded' / 'modernized' / 'block upgrade' / 'service "
+            "life extension' → UPGRADED; "
+            "'exported' / 'foreign sales' / 'export variant' / 'foreign "
+            "military sales' / 'FMS' → EXPORTED. "
+            "Allowed enum values: OPERATIONAL, DEVELOPMENTAL, RETIRED, "
+            "UPGRADED, EXPORTED. Do NOT infer status from age, era, "
+            "or other indirect cues."
         ),
     )
     asrd: Optional[str] = Field(
@@ -123,8 +161,17 @@ class RadarIdentityRecord(BaseModel):
         default=None,
         description=(
             "How the beam is steered. Accept one of: CIRCULAR, SECTOR, "
-            "RASTER, ELECTRONIC, DWELL_AND_SWITCH, HELICAL. Emit as "
-            "uppercase."
+            "RASTER, ELECTRONIC, DWELL_AND_SWITCH, HELICAL. "
+            "Map prose to enum: 'mechanical rotation' / 'rotating "
+            "antenna' / '360-degree scan' / 'rotating dish' → "
+            "CIRCULAR; 'sector scan' / 'limited-arc' → SECTOR; "
+            "'raster scan' / 'TV-style scan' → RASTER; "
+            "'electronically scanned' / 'phased-array' / 'phased "
+            "array' / 'AESA' / 'PESA' / 'ESA' / 'active "
+            "electronically scanned array' / 'passive electronically "
+            "scanned array' → ELECTRONIC; 'dwell-and-switch' / "
+            "'step scan' → DWELL_AND_SWITCH; 'helical scan' / "
+            "'spiral scan' → HELICAL. Emit as uppercase."
         ),
     )
 

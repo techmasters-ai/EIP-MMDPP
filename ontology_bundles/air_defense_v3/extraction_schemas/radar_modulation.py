@@ -48,14 +48,30 @@ class RadarModulationRecord(BaseModel):
         default=None,
         description=(
             "Intra-pulse modulation type. Accept one of: CW, LFM_CHIRP, "
-            "NLFM, BARKER_CODE, POLYPHASE, BIPHASE. Emit as uppercase."
+            "NLFM, BARKER_CODE, POLYPHASE, BIPHASE. "
+            "Map prose to enum: 'continuous wave' / 'CW' → CW; "
+            "'linear FM' / 'linear frequency modulation' / 'LFM' / "
+            "'linear chirp' / 'chirp' → LFM_CHIRP; 'nonlinear FM' / "
+            "'nonlinear frequency modulation' / 'NLFM' → NLFM; "
+            "'Barker code' / 'Barker-coded pulse' → BARKER_CODE; "
+            "'polyphase code' / 'Frank code' / 'P1 code' / 'P2 code' / "
+            "'P3 code' / 'P4 code' → POLYPHASE; 'biphase code' / "
+            "'phase-shift keying' / 'PSK' / 'BPSK' → BIPHASE. "
+            "Emit as uppercase."
         ),
     )
     inter_pulse: Optional[str] = Field(
         default=None,
         description=(
             "Inter-pulse modulation type. Accept one of: CONSTANT_PRI, "
-            "PRI_STAGGER, PRI_JITTER, FREQ_AGILE. Emit as uppercase."
+            "PRI_STAGGER, PRI_JITTER, FREQ_AGILE. "
+            "Map prose to enum: 'constant PRI' / 'fixed PRI' / "
+            "'fixed pulse repetition interval' / 'fixed repetition "
+            "rate' → CONSTANT_PRI; 'staggered PRI' / 'PRI stagger' / "
+            "'pulse stagger' → PRI_STAGGER; 'jittered PRI' / 'PRI "
+            "jitter' / 'random PRI' → PRI_JITTER; 'frequency-agile' / "
+            "'frequency hopping' / 'frequency-agile pulse' / 'agile "
+            "frequency' → FREQ_AGILE. Emit as uppercase."
         ),
     )
     frequency_excursion_mhz: Optional[float] = Field(

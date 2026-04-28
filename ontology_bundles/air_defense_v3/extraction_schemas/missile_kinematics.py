@@ -36,9 +36,19 @@ class MissileKinematicsRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the MISSILE. Accept proper-noun "
-            "missile names. Never emit radar, weapon-system, aircraft, "
-            "or platform names — those are filtered deterministically."
+            "Canonical designation of the MISSILE — the SHORTEST "
+            "canonical token from prose (e.g. '5V55K', '9M82', "
+            "'AIM-120', 'PAC-3', 'SM-6'). When the document gives a "
+            "formal designation PLUS a common/NATO name PLUS a "
+            "block/variant (e.g. 'MIM-104F Patriot Advanced "
+            "Capability-3 (PAC-3)'), emit ONLY the primary identifier "
+            "('PAC-3' or 'MIM-104F'); DO NOT compress them all into "
+            "system_name. CRITICAL: this name MUST match the "
+            "system_name used by `missile_identity` for the same "
+            "missile, so all field-group passes deduplicate onto one "
+            "MISSILE_SYSTEM vertex during merge. Never emit radar, "
+            "weapon-system, aircraft, or platform names — those are "
+            "filtered deterministically."
         ),
         examples=["5V55K", "AIM-120"],
     )

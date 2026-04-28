@@ -70,8 +70,10 @@ class RadarTimingRecord(BaseModel):
     dwell_time: Optional[str] = Field(
         default=None,
         description=(
-            "Time spent at a single beam position. Free-text; emit "
-            "verbatim from the source."
+            "Time spent at a single beam position. Free-text — preserve "
+            "the source's units. Examples: '10 ms', '1 second', '500 "
+            "microseconds', '50 µs', '0.1 sec'. Emit verbatim from the "
+            "source when stated explicitly."
         ),
     )
 

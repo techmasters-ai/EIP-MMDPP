@@ -38,17 +38,31 @@ class MissilePropulsionRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the MISSILE. Accept proper-noun "
-            "missile names. Never emit radar, weapon-system, aircraft, "
-            "or platform names — those are filtered deterministically."
+            "Canonical designation of the MISSILE — the SHORTEST "
+            "canonical token from prose (e.g. '5V55K', '9M82', "
+            "'AIM-120', 'PAC-3', 'SM-6'). When the document gives a "
+            "formal designation PLUS a common/NATO name PLUS a "
+            "block/variant (e.g. 'MIM-104F Patriot Advanced "
+            "Capability-3 (PAC-3)'), emit ONLY the primary identifier "
+            "('PAC-3' or 'MIM-104F'); DO NOT compress them all into "
+            "system_name. CRITICAL: this name MUST match the "
+            "system_name used by `missile_identity` for the same "
+            "missile, so all field-group passes deduplicate onto one "
+            "MISSILE_SYSTEM vertex during merge. Never emit radar, "
+            "weapon-system, aircraft, or platform names — those are "
+            "filtered deterministically."
         ),
         examples=["5V55K", "AIM-120"],
     )
     ejector_thrust: Optional[str] = Field(
         default=None,
         description=(
-            "Ejector-stage thrust description. Free-text; emit verbatim "
-            "from the source."
+            "Ejector-stage thrust description (the cold-launch / "
+            "soft-launch impulse before the main motor ignites). "
+            "Free-text — preserve the source's units. Examples: "
+            "'5 kN initial impulse', '1500 lbf', '20 kg·s impulse', "
+            "'cold-gas ejector'. Emit verbatim from the source when "
+            "stated explicitly."
         ),
     )
     ejector_mass_kg: Optional[float] = Field(
@@ -69,7 +83,12 @@ class MissilePropulsionRecord(BaseModel):
     booster_thrust: Optional[str] = Field(
         default=None,
         description=(
-            "Booster-stage thrust description. Free-text; emit verbatim."
+            "Booster-stage thrust description (the high-impulse first "
+            "stage that accelerates the missile off the rail/launcher). "
+            "Free-text — preserve the source's units. Examples: "
+            "'100 kN', '290 kN over a 6-second burn', '50,000 lbf', "
+            "'225 kN peak'. Emit verbatim from the source when stated "
+            "explicitly."
         ),
     )
     booster_mass_kg: Optional[float] = Field(
@@ -89,7 +108,12 @@ class MissilePropulsionRecord(BaseModel):
     sustain_thrust: Optional[str] = Field(
         default=None,
         description=(
-            "Sustainer-stage thrust description. Free-text; emit verbatim."
+            "Sustainer-stage thrust description (the lower-impulse "
+            "second stage that maintains cruise speed after booster "
+            "burnout). Free-text — preserve the source's units. "
+            "Examples: '20 kN sustained', '5,000 lbf cruise thrust', "
+            "'dual-pulse Mark 104 sustainer', '40 kN extended-cruise'. "
+            "Emit verbatim from the source when stated explicitly."
         ),
     )
     sustain_mass_kg: Optional[float] = Field(
