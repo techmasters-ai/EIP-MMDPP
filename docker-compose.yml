@@ -159,10 +159,10 @@ services:
       # registry (llama3.3:70b). Must be >= DOCLING_GRAPH_LLM_MAX_TOKENS.
       DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS: ${DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS:-32000}
       DOCLING_GRAPH_LLM_CONTEXT_LIMIT: ${DOCLING_GRAPH_LLM_CONTEXT_LIMIT:-131072}
-      DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-7200}
+      DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-72000}
       # Concurrent chunk batches per /extract-pass (config_builder.py:44).
       # Effective parallelism is min(this, OLLAMA_NUM_PARALLEL on the LLM host).
-      DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-8}
+      DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-5}
       # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
       DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
       # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,
@@ -201,6 +201,10 @@ services:
     #           capabilities: [gpu]
     extra_hosts:
       - "ollama:host-gateway"
+    volumes:
+      # Bind-mount the live ontology bundles so schema/manifest edits don't
+      # require an image rebuild — same pattern as api / worker services.
+      - ./ontology_bundles:/app/ontology_bundles
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s

@@ -122,11 +122,13 @@ class Settings(BaseSettings):
     docling_graph_concurrency: int = 2
     # Per-call HTTP timeout for docling-graph /extract-pass. Each pass fans
     # out to many small LLM calls inside docling-graph; total wall-time scales
-    # with doc size. 7200s (2h) accommodates 90+ page parameter-heavy PDFs.
+    # with doc size. 72000s (20h) accommodates field-rich passes on 90+ page
+    # PDFs where schema-grammar constrained decoding can run multi-hour per
+    # pass on mid-size models like gemma4:31b.
     # Note: DOCLING_GRAPH_LLM_TIMEOUT is consumed by the separate docling-graph
     # service — update via docker-compose.yml fallback and
     # docker/docling-graph/app/config_builder.py.
-    docling_graph_timeout: int = 7200
+    docling_graph_timeout: int = 72000
     # Max attempts per extraction pass (spec §6.5). Default 3 means 1 initial
     # call + 2 retries before giving up.
     pass_max_retries: int = 3
