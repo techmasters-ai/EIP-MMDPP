@@ -1,10 +1,40 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-18
+**Last updated:** 2026-04-27
 
 ---
 
 ## Open Items
+
+### Frontend / UX
+
+**#73. Render LaTeX in image-description hover popovers**
+**Status:** Open. Small, isolated frontend change.
+**Files:** `frontend/src/components/QueryPage.tsx` (lines ~656–680), `frontend/src/components/DoclingViewer.tsx` (lines ~358–388), `frontend/package.json`
+
+**Observation:**
+Picture descriptions emitted by `derive_picture_descriptions` frequently contain inline LaTeX (e.g. `$\sigma_0$`, `$E = mc^2$`, equation blocks). Today they appear in two places:
+1. The native browser tooltip on result-tile images in `QueryPage.tsx` — set via the `alt=` / `title=` attributes — which can only render plain text. LaTeX shows literally as `$\sigma$`.
+2. The "AI Image Analysis" panel in `DoclingViewer.tsx` — rendered into a `<div>` with `whiteSpace: "pre-line"` — same plain-text limitation.
+
+`katex@^0.16.45` and `react-markdown@^9.0.3` are already in `frontend/package.json`, so no new heavy dependencies are needed.
+
+**What needs to be done:**
+1. Install `remark-math` + `rehype-katex` (peer deps of the existing katex install).
+2. Replace the native `title=` tooltip on result-tile images with a small custom hover popover (positioned `<div>`, toggled by `onMouseEnter`/`onMouseLeave`, dismissable on focus-out) that renders the description through `react-markdown` with `[remarkMath]` and `[rehypeKatex]` plugins.
+3. Apply the same renderer to the description block in `DoclingViewer.tsx`'s AI Image Analysis panel.
+4. Keep the plain-text description in `alt=` so screen readers still get something useful, and load `katex.min.css` once at app shell so equations get the standard typeset look.
+
+**Why this matters:**
+Several radar/missile parameter docs use inline math for cross-section, gain, beamwidth, and pulse-parameter formulae. Those are exactly the descriptions analysts hover to confirm an image relates to the surrounding parameters; rendering them as `$\sigma_0 = ...$` text defeats the purpose.
+
+**Acceptance:**
+- Hovering an image with `$E = mc^2$` in its description shows a typeset equation, not the raw source.
+- Block math (`$$...$$`) renders centered in the popover and the `DoclingViewer` panel.
+- Native browser tooltip (or alt attribute) still carries the plain-text version for accessibility.
+- No regression on images whose descriptions contain no math.
+
+---
 
 ### Infrastructure / Worker Queue Isolation (Deferred)
 

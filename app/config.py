@@ -120,13 +120,13 @@ class Settings(BaseSettings):
     # --- Docling-Graph service (entity/relationship extraction) ---
     docling_graph_base_url: str = "http://docling-graph:8002"
     docling_graph_concurrency: int = 2
-    # Per-call HTTP timeout for docling-graph /extract-pass. 30 min per LLM call;
-    # with pass_max_retries=3 inside _run_single_pass, worst case per pass = 90 min,
-    # which fits ~4 passes within the 8h graph_soft_time_limit.
+    # Per-call HTTP timeout for docling-graph /extract-pass. Each pass fans
+    # out to many small LLM calls inside docling-graph; total wall-time scales
+    # with doc size. 7200s (2h) accommodates 90+ page parameter-heavy PDFs.
     # Note: DOCLING_GRAPH_LLM_TIMEOUT is consumed by the separate docling-graph
     # service — update via docker-compose.yml fallback and
     # docker/docling-graph/app/config_builder.py.
-    docling_graph_timeout: int = 1800
+    docling_graph_timeout: int = 7200
     # Max attempts per extraction pass (spec §6.5). Default 3 means 1 initial
     # call + 2 retries before giving up.
     pass_max_retries: int = 3
