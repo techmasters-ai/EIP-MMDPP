@@ -117,38 +117,42 @@ def _patched_build_request(
         from app.prompt_rules import sanitize_schema_for_llm
 
         schema_for_llm = sanitize_schema_for_llm(schema_dict)
-        normalized = normalize_schema_for_response_format(
-            schema_for_llm,
-            top_level=response_top_level,
-            name=response_schema_name,
-        )
-        # OpenAI-style response_format uses the normalized envelope
-        request["response_format"] = {"type": "json_schema", "json_schema": normalized}
-        if is_ollama:
-            # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope.
-            # Three gates, checked in order:
-            #   1. DOCLING_GRAPH_FORCE_JSON_MODE — kill switch for mid-size
-            #      models (<=30B) that fail constrained grammar. When set,
-            #      always use loose `format="json"`. gemma4:26b in particular
-            #      truncates string values mid-generation under the grammar,
-            #      producing unterminated-string JSON parse errors.
-            #   2. Schema size > threshold — large schemas degrade
-            #      constrained decoding, also fall through to loose json.
-            #   3. Otherwise send the raw schema.
-            from app.config import settings as _service_settings
-            schema_str = json.dumps(schema_for_llm)
-            threshold = _service_settings.structured_output_threshold_chars
-            if _service_settings.force_json_mode:
-                _logger.info(
-                    "DOCLING_GRAPH_FORCE_JSON_MODE=true; using format='json' "
-                    "for %s (schema %d chars)", model_name, len(schema_str),
-                )
-                request["format"] = "json"
-            elif len(schema_str) > threshold:
-                _logger.info("Schema too large for Ollama format= (%d chars), using format='json'", len(schema_str))
-                request["format"] = "json"
-            else:
-                request["format"] = schema_for_llm
+        from app.config import settings as _service_settings
+        schema_str = json.dumps(schema_for_llm)
+        threshold = _service_settings.structured_output_threshold_chars
+        # When DOCLING_GRAPH_FORCE_JSON_MODE=true on an Ollama backend, skip
+        # response_format entirely. Otherwise LiteLLM honors response_format
+        # first and routes through its structured-output path, where mid-size
+        # models like gemma4:31b emit truncated/unterminated-string JSON that
+        # the parser rejects — defeating the whole point of FORCE_JSON_MODE.
+        # Pure loose Ollama `format="json"` is the goal here; Pydantic
+        # validates the response downstream so safety isn't relaxed.
+        if is_ollama and _service_settings.force_json_mode:
+            _logger.info(
+                "DOCLING_GRAPH_FORCE_JSON_MODE=true; using format='json' "
+                "(no response_format) for %s (schema %d chars)",
+                model_name, len(schema_str),
+            )
+            request["format"] = "json"
+        else:
+            normalized = normalize_schema_for_response_format(
+                schema_for_llm,
+                top_level=response_top_level,
+                name=response_schema_name,
+            )
+            # OpenAI-style response_format uses the normalized envelope
+            request["response_format"] = {"type": "json_schema", "json_schema": normalized}
+            if is_ollama:
+                # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope.
+                # Two remaining gates here (FORCE_JSON_MODE handled above):
+                #   1. Schema size > threshold — large schemas degrade
+                #      constrained decoding, fall through to loose json.
+                #   2. Otherwise send the raw schema.
+                if len(schema_str) > threshold:
+                    _logger.info("Schema too large for Ollama format= (%d chars), using format='json'", len(schema_str))
+                    request["format"] = "json"
+                else:
+                    request["format"] = schema_for_llm
     else:
         request["response_format"] = {"type": "json_object"}
         if is_ollama:
