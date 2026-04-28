@@ -915,6 +915,189 @@ def _resolve_relationship(
 
 
 # ---------------------------------------------------------------------------
+# Cross-pass identity canonicalization (Path B fix for cross-pass system_name
+# drift).
+#
+# Field-group passes are run independently. For the same physical entity,
+# two passes can emit different `system_name` values (e.g. one pass picks
+# "MIM-104F", another picks "PAC-3" from the same prose). The merge phase
+# below keys on `LogicalIdentity` (built from `graph_id_fields`), so distinct
+# `system_name` values produce distinct vertices even when they refer to the
+# same physical missile.
+#
+# This pass runs BEFORE merge_and_resolve's entity loop, detects entities
+# whose system_name and other identity-side fields strongly imply they refer
+# to the same physical entity, and mutates the instances to share a single
+# canonical `system_name`. After mutation, the existing identity-keyed merge
+# collapses them onto one vertex automatically.
+# ---------------------------------------------------------------------------
+
+
+_CANONICALIZE_MIN_TOKEN_LEN = 2  # tokens shorter than this don't count for matching
+
+
+def _identity_token_bag(model: Any, max_fields: int = 3) -> set[str]:
+    """Tokenize system_name + nomenclature + name (and similar identity-side
+    fields) into a UPPERCASE token set, dropping single-char tokens.
+    Used for deciding whether two entity instances refer to the same physical
+    entity."""
+    import re
+
+    parts: list[str] = []
+    for fname in ("system_name", "nomenclature", "name"):
+        v = getattr(model, fname, None)
+        if isinstance(v, str) and v:
+            parts.append(v)
+    if not parts:
+        return set()
+    text = " ".join(parts)
+    return {
+        t.upper()
+        for t in re.split(r"[^A-Za-z0-9]+", text)
+        if len(t) >= _CANONICALIZE_MIN_TOKEN_LEN
+    }
+
+
+def _likely_same_entity(a: Any, b: Any) -> bool:
+    """Return True iff `a` and `b` plausibly refer to the same physical entity.
+
+    Decision rule:
+      - Same `system_name` → trivially same.
+      - Otherwise: tokenize a's `system_name` (the bare canonical token), and
+        check whether ALL of those tokens appear in b's combined identity
+        token bag (system_name + nomenclature + name). Symmetric.
+
+    This catches the cross-pass drift case where:
+      • missile_identity emits system_name='MIM-104F' AND nomenclature='MIM-104F
+        Patriot Advanced Capability-3 (PAC-3)' AND name='Patriot'
+      • missile_airframe emits system_name='PAC-3' (no nomenclature/name)
+    The 'PAC-3' system_name's tokens {PAC} are a subset of MIM-104F's combined
+    token bag {MIM, 104F, PATRIOT, ADVANCED, CAPABILITY, PAC} → match.
+
+    It also correctly REJECTS unrelated systems: 'PAC-3' tokens {PAC} are not
+    a subset of 'SM-6' / 'RIM-174 Standard Missile 6 (SM-6) Block IA'.
+    """
+    a_name = getattr(a, "system_name", None)
+    b_name = getattr(b, "system_name", None)
+    if not isinstance(a_name, str) or not isinstance(b_name, str):
+        return False
+    if a_name == b_name:
+        return True
+
+    import re
+    a_only_tokens = {
+        t.upper()
+        for t in re.split(r"[^A-Za-z0-9]+", a_name)
+        if len(t) >= _CANONICALIZE_MIN_TOKEN_LEN
+    }
+    b_only_tokens = {
+        t.upper()
+        for t in re.split(r"[^A-Za-z0-9]+", b_name)
+        if len(t) >= _CANONICALIZE_MIN_TOKEN_LEN
+    }
+    if not a_only_tokens or not b_only_tokens:
+        return False
+
+    a_full = _identity_token_bag(a)
+    b_full = _identity_token_bag(b)
+
+    return a_only_tokens.issubset(b_full) or b_only_tokens.issubset(a_full)
+
+
+def _pick_canonical_name(names: Iterable[str]) -> str:
+    """Pick the canonical system_name from a set of variants.
+    Rule: shortest wins; ties broken by lex order. Empty set → empty string."""
+    candidates = sorted(set(n for n in names if isinstance(n, str) and n),
+                        key=lambda n: (len(n), n))
+    return candidates[0] if candidates else ""
+
+
+def canonicalize_cross_pass_identities(
+    pass_results: dict[str, "PassResult"],
+    ontology: dict,
+) -> int:
+    """Mutate entity instances in-place so cross-pass duplicates share a
+    single canonical `system_name`.
+
+    Returns the number of entity instances whose system_name was changed
+    (useful for logging / metrics).
+
+    Only acts on entity types whose graph_id_fields is exactly ['system_name'].
+    Other identity schemes (multi-field, content-hashed, etc.) are left alone.
+    """
+    rewrites = 0
+    for entity_def in ontology.get("entity_types", []):
+        entity_type = entity_def["name"]
+
+        # Gather all instances of this type, with provenance back to (pass, model).
+        all_instances: list[Any] = []
+        for pass_name, pass_result in pass_results.items():
+            for inst in pass_result.iter_entities_of_type(entity_type):
+                cfg = getattr(inst, "model_config", {}) or {}
+                id_fields = tuple(cfg.get("graph_id_fields") or ())
+                if id_fields != ("system_name",):
+                    continue
+                all_instances.append(inst)
+
+        if len(all_instances) <= 1:
+            continue
+
+        # Union-Find on similarity links.
+        n = len(all_instances)
+        parent = list(range(n))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x: int, y: int) -> None:
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                parent[rx] = ry
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if _likely_same_entity(all_instances[i], all_instances[j]):
+                    union(i, j)
+
+        # Group by component.
+        from collections import defaultdict
+        components: dict[int, list[int]] = defaultdict(list)
+        for i in range(n):
+            components[find(i)].append(i)
+
+        # For each multi-member component, pick canonical and rewrite.
+        for member_idxs in components.values():
+            if len(member_idxs) <= 1:
+                continue
+            names = [getattr(all_instances[i], "system_name", "") for i in member_idxs]
+            canonical = _pick_canonical_name(names)
+            if not canonical:
+                continue
+            for i in member_idxs:
+                inst = all_instances[i]
+                if getattr(inst, "system_name", None) != canonical:
+                    try:
+                        inst.system_name = canonical
+                        rewrites += 1
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning(
+                            "canonicalize: failed to mutate system_name on "
+                            "%s instance: %s", entity_type, exc,
+                        )
+
+    if rewrites:
+        logger.info(
+            "canonicalize_cross_pass_identities: rewrote %d system_name(s) "
+            "to collapse cross-pass duplicates",
+            rewrites,
+        )
+    return rewrites
+
+
+# ---------------------------------------------------------------------------
 # merge_and_resolve (spec §3.7)
 # ---------------------------------------------------------------------------
 
@@ -938,6 +1121,15 @@ def merge_and_resolve(
     4. Rejections counted per pass and per reason.
     5. confidence = 0.8 if rel.confidence is None. Explicit 0.0 preserved.
     """
+    # --- Phase 0: cross-pass identity canonicalization ---
+    # Field-group passes may emit different `system_name` values for the
+    # same physical entity (e.g. missile_identity emits 'MIM-104F' while
+    # missile_airframe emits 'PAC-3' from the same prose). Mutate
+    # instances so cross-pass duplicates share a canonical system_name
+    # before LogicalIdentity is built. See
+    # canonicalize_cross_pass_identities for the matching heuristic.
+    canonicalize_cross_pass_identities(pass_results, ontology)
+
     # --- Pass 1: merge entities ---
     entity_index: dict[LogicalIdentity, MergedEntityRecord] = {}
 
