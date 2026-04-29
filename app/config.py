@@ -136,7 +136,10 @@ class Settings(BaseSettings):
         return normalized
 
     @staticmethod
-    def _parse_url_pool(raw: str) -> list[str]:
+    @lru_cache(maxsize=16)
+    def _parse_url_pool(
+        raw: str, field_name: str = "OLLAMA_*_BASE_URLS",
+    ) -> list[str]:
         """Parse a JSON-array env value into list[str].
 
         Returns [] for blank/unset. Raises ValueError for malformed JSON
@@ -144,6 +147,17 @@ class Settings(BaseSettings):
         rather than silently falling through to the singular fallback.
         Logs a warning on duplicate URLs (OllamaPool dedupes internally,
         but the operator should know their config is wrong).
+
+        ``field_name`` is interpolated into error / log messages so the
+        operator sees the actual offending env var (e.g.
+        ``DOC_ANALYSIS_LLM_BASE_URLS``) rather than the wildcard.
+
+        Cached via ``lru_cache(maxsize=16)`` keyed on ``(raw, field_name)``
+        — pure function, side-effect is the duplicate-URL warning which
+        we want emitted exactly once per misconfiguration. The cache is
+        module-scoped, so it survives across ``Settings()`` instances and
+        keeps the warning from firing twice when both function and role
+        pools share the same JSON value.
         """
         s = (raw or "").strip()
         if not s:
@@ -152,7 +166,7 @@ class Settings(BaseSettings):
             parsed = json.loads(s)
         except json.JSONDecodeError as exc:
             raise ValueError(
-                f"OLLAMA_*_BASE_URLS env value is not valid JSON: {exc}; "
+                f"{field_name} env value is not valid JSON: {exc}; "
                 f"expected a JSON array like '[\"http://h1:11434\",...]', "
                 f"got: {s!r}"
             ) from exc
@@ -160,14 +174,14 @@ class Settings(BaseSettings):
             isinstance(x, str) for x in parsed
         ):
             raise ValueError(
-                f"OLLAMA_*_BASE_URLS must be a JSON array of strings; got: {parsed!r}"
+                f"{field_name} must be a JSON array of strings; got: {parsed!r}"
             )
         # Reject blank entries — they'd silently break the pool's
         # least-in-flight invariant (an empty URL would still get acquire'd
         # and posted to, raising httpx.UnsupportedProtocol on every request).
         if not all(x.strip() for x in parsed):
             raise ValueError(
-                f"OLLAMA_*_BASE_URLS contains blank entries; got: {parsed!r}"
+                f"{field_name} contains blank entries; got: {parsed!r}"
             )
         # Warn on duplicates — OllamaPool dedupes silently, but the operator
         # almost certainly meant distinct URLs (defeats fan-out otherwise).
@@ -177,9 +191,9 @@ class Settings(BaseSettings):
                 counts[x] = counts.get(x, 0) + 1
             dupes = sorted(x for x, c in counts.items() if c > 1)
             logger.warning(
-                "OLLAMA_*_BASE_URLS contains duplicate URLs %s; "
+                "%s contains duplicate URLs %s; "
                 "OllamaPool will dedupe but you likely meant distinct URLs.",
-                dupes,
+                field_name, dupes,
             )
         return parsed
 
@@ -189,7 +203,9 @@ class Settings(BaseSettings):
         Priority: ollama_llm_base_urls (plural JSON) > ollama_llm_base_url
         (singular) > ollama_base_url. Always returns a non-empty list.
         """
-        plural = self._parse_url_pool(self.ollama_llm_base_urls)
+        plural = self._parse_url_pool(
+            self.ollama_llm_base_urls, "OLLAMA_LLM_BASE_URLS",
+        )
         if plural:
             return plural
         if self.ollama_llm_base_url:
@@ -197,7 +213,9 @@ class Settings(BaseSettings):
         return [self.ollama_base_url]
 
     def get_ollama_vlm_urls(self) -> list[str]:
-        plural = self._parse_url_pool(self.ollama_vlm_base_urls)
+        plural = self._parse_url_pool(
+            self.ollama_vlm_base_urls, "OLLAMA_VLM_BASE_URLS",
+        )
         if plural:
             return plural
         if self.ollama_vlm_base_url:
@@ -205,7 +223,9 @@ class Settings(BaseSettings):
         return [self.ollama_base_url]
 
     def get_ollama_embedding_urls(self) -> list[str]:
-        plural = self._parse_url_pool(self.ollama_embedding_base_urls)
+        plural = self._parse_url_pool(
+            self.ollama_embedding_base_urls, "OLLAMA_EMBEDDING_BASE_URLS",
+        )
         if plural:
             return plural
         if self.ollama_embedding_base_url:
@@ -227,31 +247,41 @@ class Settings(BaseSettings):
     # cascade (function → role → singular → base) is realized by chaining
     # rather than re-implementing the singular/base fallback per function.
     def get_doc_analysis_llm_urls(self) -> list[str]:
-        plural = self._parse_url_pool(self.doc_analysis_llm_base_urls)
+        plural = self._parse_url_pool(
+            self.doc_analysis_llm_base_urls, "DOC_ANALYSIS_LLM_BASE_URLS",
+        )
         if plural:
             return plural
         return self.get_ollama_llm_urls()
 
     def get_translation_llm_urls(self) -> list[str]:
-        plural = self._parse_url_pool(self.translation_llm_base_urls)
+        plural = self._parse_url_pool(
+            self.translation_llm_base_urls, "TRANSLATION_LLM_BASE_URLS",
+        )
         if plural:
             return plural
         return self.get_ollama_llm_urls()
 
     def get_community_report_llm_urls(self) -> list[str]:
-        plural = self._parse_url_pool(self.community_report_llm_base_urls)
+        plural = self._parse_url_pool(
+            self.community_report_llm_base_urls, "COMMUNITY_REPORT_LLM_BASE_URLS",
+        )
         if plural:
             return plural
         return self.get_ollama_llm_urls()
 
     def get_picture_description_urls(self) -> list[str]:
-        plural = self._parse_url_pool(self.picture_description_base_urls)
+        plural = self._parse_url_pool(
+            self.picture_description_base_urls, "PICTURE_DESCRIPTION_BASE_URLS",
+        )
         if plural:
             return plural
         return self.get_ollama_vlm_urls()
 
     def get_text_embedding_urls(self) -> list[str]:
-        plural = self._parse_url_pool(self.text_embedding_base_urls)
+        plural = self._parse_url_pool(
+            self.text_embedding_base_urls, "TEXT_EMBEDDING_BASE_URLS",
+        )
         if plural:
             return plural
         return self.get_ollama_embedding_urls()
