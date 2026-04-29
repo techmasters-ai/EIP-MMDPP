@@ -201,10 +201,10 @@ def _ollama_translate(
     think: str | bool | None = None,
 ) -> str | None:
     """Single-element translation via pool client."""
-    from app.services.ollama_clients import get_llm_client
+    from app.services.ollama_clients import get_translation_client
 
     try:
-        pool_client = get_llm_client()
+        pool_client = get_translation_client()
         return pool_client.chat(
             messages=[
                 {"role": "system", "content": prompt},
