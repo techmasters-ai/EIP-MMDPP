@@ -1,8 +1,12 @@
+import json
+import logging
 from functools import lru_cache
 from typing import Literal
 
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -123,8 +127,9 @@ class Settings(BaseSettings):
         Returns [] for blank/unset. Raises ValueError for malformed JSON
         or non-array values so misconfiguration fails loudly at startup
         rather than silently falling through to the singular fallback.
+        Logs a warning on duplicate URLs (OllamaPool dedupes internally,
+        but the operator should know their config is wrong).
         """
-        import json
         s = (raw or "").strip()
         if not s:
             return []
@@ -148,6 +153,18 @@ class Settings(BaseSettings):
         if not all(x.strip() for x in parsed):
             raise ValueError(
                 f"OLLAMA_*_BASE_URLS contains blank entries; got: {parsed!r}"
+            )
+        # Warn on duplicates — OllamaPool dedupes silently, but the operator
+        # almost certainly meant distinct URLs (defeats fan-out otherwise).
+        if len(set(parsed)) != len(parsed):
+            counts: dict[str, int] = {}
+            for x in parsed:
+                counts[x] = counts.get(x, 0) + 1
+            dupes = sorted(x for x, c in counts.items() if c > 1)
+            logger.warning(
+                "OLLAMA_*_BASE_URLS contains duplicate URLs %s; "
+                "OllamaPool will dedupe but you likely meant distinct URLs.",
+                dupes,
             )
         return parsed
 
