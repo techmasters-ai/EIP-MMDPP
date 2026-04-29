@@ -60,6 +60,12 @@ except ModuleNotFoundError:  # pragma: no cover - test-host fallback only
 import litellm as _litellm
 
 _logger = logging.getLogger("docling_graph.llm_clients.litellm.patch")
+if not _logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    _logger.addHandler(_h)
+    _logger.setLevel(logging.INFO)
+    _logger.propagate = False
 
 
 def _patched_build_request(
@@ -291,33 +297,34 @@ def _apply_litellm_client_patches():
 
     # Fix slow legacy-fallback path on force_json_mode runs.
     #
-    # The upstream LLMBackend._call_prompt catches a ClientError from the
-    # primary LLM call and "retries with legacy prompt-schema mode": it
-    # appends the FULL JSON Schema as text into prompt["user"] and
-    # re-issues the call. On large field-group schemas with
-    # force_json_mode=true, the schema embedding inflates the prompt by
-    # several KB and the retry takes 5-30× longer than the primary call,
-    # serializing all subsequent batches behind the bloated retry on the
-    # affected Ollama slot.
+    # When the primary structured-output extraction call fails (e.g., a
+    # truncated/unterminated JSON from gemma4 + JSON Schema), upstream
+    # LlmBackend rebuilds a "legacy" prompt with the FULL JSON Schema
+    # embedded between "=== TARGET SCHEMA ===" markers and re-calls the
+    # client through _get_json_response(structured_output=False). On large
+    # field-group schemas the schema embedding inflates the prompt by
+    # several KB; the retry then takes 5-30× longer than the primary call
+    # and serializes downstream batches behind it on the affected Ollama
+    # slot.
     #
-    # Fix: when DOCLING_GRAPH_FORCE_JSON_MODE=true, intercept
-    # _call_with_optional_max_tokens with structured_output_override=False
-    # (i.e., a legacy retry) and strip the "=== TARGET SCHEMA ===\n...\n
-    # === END SCHEMA ===\n\n" tail before passing to the underlying client.
-    # Since force_json_mode already sends format="json" via _build_request
-    # for the primary call, the legacy retry then becomes a clean re-issue
-    # of the same loose-JSON prompt — recovery without bloat.
+    # Fix: patch LlmBackend._get_json_response so that when
+    # DOCLING_GRAPH_FORCE_JSON_MODE=true and structured_output=False
+    # (legacy retry path), we strip the "=== TARGET SCHEMA ===" block from
+    # prompt["user"] before handing off to the client. Since
+    # force_json_mode already sends format="json" via _build_request, the
+    # retry becomes a clean re-issue of the same loose-JSON prompt —
+    # recovery without bloat.
     try:
         from app.config import settings as _service_settings
         from docling_graph.core.extractors.backends.llm_backend import LlmBackend
 
-        _orig_call_with_max_tokens = LlmBackend._call_with_optional_max_tokens
+        _orig_get_json_response = LlmBackend._get_json_response
 
-        def _patched_call_with_optional_max_tokens(
-            self, *args, prompt, schema_json, structured_output_override=None, **kwargs
+        def _patched_get_json_response(
+            self, prompt, schema_json, structured_output=True, *args, **kwargs
         ):
             if (
-                structured_output_override is False
+                structured_output is False
                 and _service_settings.force_json_mode
                 and isinstance(prompt, dict)
                 and isinstance(prompt.get("user"), str)
@@ -326,29 +333,31 @@ def _apply_litellm_client_patches():
                 marker = "\n\n=== TARGET SCHEMA ===\n"
                 idx = user.find(marker)
                 if idx != -1:
-                    stripped = user[:idx].rstrip()
+                    end_marker = "=== END SCHEMA ===\n"
+                    end_idx = user.find(end_marker, idx)
+                    if end_idx != -1:
+                        tail = user[end_idx + len(end_marker):]
+                        stripped = user[:idx].rstrip() + "\n\n" + tail.lstrip()
+                    else:
+                        stripped = user[:idx].rstrip()
                     prompt = {**prompt, "user": stripped}
                     _logger.info(
                         "force_json_mode: stripped %d-char schema embedding "
                         "from legacy retry prompt",
                         len(user) - len(stripped),
                     )
-            return _orig_call_with_max_tokens(
-                self, *args,
-                prompt=prompt,
-                schema_json=schema_json,
-                structured_output_override=structured_output_override,
-                **kwargs,
+            return _orig_get_json_response(
+                self, prompt, schema_json, structured_output, *args, **kwargs
             )
 
-        LlmBackend._call_with_optional_max_tokens = _patched_call_with_optional_max_tokens
+        LlmBackend._get_json_response = _patched_get_json_response
         _logger.info(
-            "LlmBackend patched: force_json_mode legacy retries no longer "
-            "embed schema in prompt"
+            "LlmBackend._get_json_response patched: force_json_mode legacy "
+            "retries no longer embed schema in prompt"
         )
     except (ImportError, AttributeError) as exc:
         _logger.warning(
-            "Could not patch LLMBackend legacy-retry path: %s", exc,
+            "Could not patch LlmBackend legacy-retry path: %s", exc,
         )
 
     # Fix TABLE_REF node ID collision: split("_")[0] yields "TABLE" for
