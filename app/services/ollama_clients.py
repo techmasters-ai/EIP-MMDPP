@@ -39,6 +39,10 @@ def get_vlm_client() -> OllamaChatClient:
 @lru_cache(maxsize=1)
 def get_embedding_client() -> OllamaEmbeddingClient:
     s = get_settings()
+    # Embeddings are a fast model class (BGE-large finishes a 128-input batch
+    # in well under 30s on a modest GPU); 120s here is a worst-case ceiling
+    # for cold-load + slow-host. No env knob yet — surface one if a deployment
+    # actually needs to tune embedding latency.
     return OllamaEmbeddingClient(
         pool=OllamaPool(urls=s.get_ollama_embedding_urls()),
         model=s.text_embedding_model,
