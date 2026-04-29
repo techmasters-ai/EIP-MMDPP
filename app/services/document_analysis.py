@@ -9,40 +9,9 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
-import httpx
-
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
-
-
-def _ollama_chat(
-    client: httpx.Client,
-    url: str,
-    model: str,
-    messages: list[dict],
-    *,
-    temperature: float = 0.1,
-    max_tokens: int,
-    timeout: float = 300,
-    think: str | bool | None = None,
-) -> str:
-    """Shared Ollama chat completion call. Returns stripped assistant content."""
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    if think is not None:
-        payload["think"] = think
-    resp = client.post(
-        url,
-        json=payload,
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 def extract_document_metadata(markdown: str, classification_text: str | None = None) -> dict:
@@ -57,33 +26,30 @@ def extract_document_metadata(markdown: str, classification_text: str | None = N
     for the other metadata fields.
     """
     settings = get_settings()
+    from app.services.ollama_clients import get_llm_client
+    client = get_llm_client()
     model = settings.doc_analysis_llm_model
-    timeout = settings.doc_analysis_timeout
-    url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
     think = settings.get_doc_analysis_llm_think()
+    timeout = settings.doc_analysis_timeout
 
-    # Shared client for connection reuse across parallel calls (httpx.Client is thread-safe)
-    client = httpx.Client(timeout=timeout)
-
-    max_tokens = settings.llm_max_tokens
-
-    def _llm_call(system_prompt: str, user_text: str) -> str:
-        return _ollama_chat(
-            client, url, model,
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}],
-            temperature=0.1, max_tokens=max_tokens, timeout=timeout, think=think,
-        )
-
-    # Truncate markdown to avoid exceeding context window
     max_chars = settings.ollama_num_ctx * 3
     doc_text = markdown[:max_chars] if len(markdown) > max_chars else markdown
-
-    # Classification uses original (pre-translation) text when available so
-    # marking strings are preserved exactly as they appear in the source document.
     raw_class_text = classification_text if classification_text is not None else markdown
     class_text = raw_class_text[:max_chars] if len(raw_class_text) > max_chars else raw_class_text
 
-    # Run all 4 prompts in parallel — they're independent
+    def _llm_call(system_prompt: str, user_text: str) -> str:
+        return client.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            model=model,
+            temperature=0.1,
+            max_tokens=settings.llm_max_tokens,
+            think=think,
+            timeout_s=float(timeout),  # role-specific: doc_analysis_timeout
+        )
+
     results: dict[str, str] = {}
     non_class_prompts = {
         "document_summary": settings.doc_analysis_summary_prompt,
@@ -91,25 +57,22 @@ def extract_document_metadata(markdown: str, classification_text: str | None = N
         "source_characterization": settings.doc_analysis_source_prompt,
     }
 
-    try:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures: dict = {
-                pool.submit(_llm_call, prompt, doc_text): key
-                for key, prompt in non_class_prompts.items()
-            }
-            # Classification runs against the original (un-translated) text
-            futures[pool.submit(_llm_call, settings.doc_analysis_classification_prompt, class_text)] = "classification"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures: dict = {
+            pool.submit(_llm_call, prompt, doc_text): key
+            for key, prompt in non_class_prompts.items()
+        }
+        # Classification runs against the original (un-translated) text
+        futures[pool.submit(_llm_call, settings.doc_analysis_classification_prompt, class_text)] = "classification"
 
-            for future in as_completed(futures):
-                key = futures[future]
-                try:
-                    results[key] = future.result()
-                    logger.info("Document metadata '%s' extracted", key)
-                except Exception as e:
-                    logger.warning("Document metadata '%s' failed: %s", key, e)
-                    results[key] = "Unknown" if key != "classification" else "UNCLASSIFIED"
-    finally:
-        client.close()
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+                logger.info("Document metadata '%s' extracted", key)
+            except Exception as e:
+                logger.warning("Document metadata '%s' failed: %s", key, e)
+                results[key] = "Unknown" if key != "classification" else "UNCLASSIFIED"
 
     # Normalize classification
     valid_classes = {"UNCLASSIFIED", "CUI", "FOUO", "SECRET", "TOP SECRET"}
@@ -203,7 +166,8 @@ def _describe_single_image(
 ) -> str | None:
     """Send a single image to the multimodal LLM for description."""
     try:
-        url = f"{settings.get_ollama_vlm_url()}/v1/chat/completions"
+        from app.services.ollama_clients import get_vlm_client
+        client = get_vlm_client()
         messages = [
             {
                 "role": "user",
@@ -216,16 +180,15 @@ def _describe_single_image(
                 ],
             }
         ]
-        # Use a per-call client (images are large payloads; keep-alive less beneficial)
-        with httpx.Client(timeout=timeout) as client:
-            content = _ollama_chat(
-                client, url, model, messages,
-                temperature=0.2,
-                max_tokens=settings.llm_max_tokens,
-                timeout=timeout,
-                think=settings.get_picture_description_think(),
-            )
-        logger.debug("Picture description (%d chars): %.100s...", len(content), content)
+        content = client.chat(
+            messages=messages,
+            model=model,
+            temperature=0.2,
+            max_tokens=settings.llm_max_tokens,
+            think=settings.get_picture_description_think(),
+            timeout_s=float(timeout),  # picture_description_timeout per call
+        )
+        logger.debug("Picture description (%d chars): %.100s...", len(content) if content else 0, content or "")
         return content
     except Exception as e:
         logger.warning("Picture description failed: %s", e)
