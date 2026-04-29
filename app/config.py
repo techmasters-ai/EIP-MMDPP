@@ -98,6 +98,21 @@ class Settings(BaseSettings):
     ollama_llm_base_urls: str = ""
     ollama_vlm_base_urls: str = ""
     ollama_embedding_base_urls: str = ""
+    # Per-function URL pools (Chunk 6, NEW). Each function gets its own
+    # pool so the operator can route different LLM functions to different
+    # banks of Ollama instances. When set, function-specific takes
+    # precedence over role-level pools above. Cascade depth is 4-tier
+    # for chat functions and embedding/vlm:
+    #   DOC_ANALYSIS_LLM_BASE_URLS     > OLLAMA_LLM_BASE_URLS > OLLAMA_LLM_BASE_URL > OLLAMA_BASE_URL
+    #   TRANSLATION_LLM_BASE_URLS      > OLLAMA_LLM_BASE_URLS > OLLAMA_LLM_BASE_URL > OLLAMA_BASE_URL
+    #   COMMUNITY_REPORT_LLM_BASE_URLS > OLLAMA_LLM_BASE_URLS > OLLAMA_LLM_BASE_URL > OLLAMA_BASE_URL
+    #   PICTURE_DESCRIPTION_BASE_URLS  > OLLAMA_VLM_BASE_URLS > OLLAMA_VLM_BASE_URL > OLLAMA_BASE_URL
+    #   TEXT_EMBEDDING_BASE_URLS       > OLLAMA_EMBEDDING_BASE_URLS > OLLAMA_EMBEDDING_BASE_URL > OLLAMA_BASE_URL
+    doc_analysis_llm_base_urls: str = ""
+    translation_llm_base_urls: str = ""
+    community_report_llm_base_urls: str = ""
+    picture_description_base_urls: str = ""
+    text_embedding_base_urls: str = ""
     ollama_num_ctx: int = 16384
 
     @staticmethod
@@ -206,6 +221,40 @@ class Settings(BaseSettings):
 
     def get_ollama_embedding_url(self) -> str:
         return self.get_ollama_embedding_urls()[0]
+
+    # ----- Per-function pool helpers (Chunk 6) -----
+    # Each falls through to its role-level helper via composition; the 4-tier
+    # cascade (function → role → singular → base) is realized by chaining
+    # rather than re-implementing the singular/base fallback per function.
+    def get_doc_analysis_llm_urls(self) -> list[str]:
+        plural = self._parse_url_pool(self.doc_analysis_llm_base_urls)
+        if plural:
+            return plural
+        return self.get_ollama_llm_urls()
+
+    def get_translation_llm_urls(self) -> list[str]:
+        plural = self._parse_url_pool(self.translation_llm_base_urls)
+        if plural:
+            return plural
+        return self.get_ollama_llm_urls()
+
+    def get_community_report_llm_urls(self) -> list[str]:
+        plural = self._parse_url_pool(self.community_report_llm_base_urls)
+        if plural:
+            return plural
+        return self.get_ollama_llm_urls()
+
+    def get_picture_description_urls(self) -> list[str]:
+        plural = self._parse_url_pool(self.picture_description_base_urls)
+        if plural:
+            return plural
+        return self.get_ollama_vlm_urls()
+
+    def get_text_embedding_urls(self) -> list[str]:
+        plural = self._parse_url_pool(self.text_embedding_base_urls)
+        if plural:
+            return plural
+        return self.get_ollama_embedding_urls()
 
     llm_max_tokens: int = 64000
 
