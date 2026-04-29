@@ -42,24 +42,19 @@ except ModuleNotFoundError:  # pragma: no cover - test-host fallback only
     nx = _FallbackNetworkX()
 
 # ---------------------------------------------------------------------------
-# Monkey-patch docling-graph's LiteLLMClient to fix two defects:
+# We bypass LiteLLM entirely via PipelineConfig(llm_client=OllamaChatClient(...))
+# (see app.config_builder.build_pipeline_config + app.ollama_clients).
+# OllamaChatClient also absorbs the legacy-fallback schema-strip behavior
+# in-process via _maybe_strip_legacy_schema, so no upstream LlmBackend
+# patches are required for that either.
 #
-# 1. _build_request() runs a support-filter that strips Ollama-native params
-#    (format, think) before the request reaches litellm.completion().
-#    Fix: preserve these params through the filter for Ollama providers.
-#
-# 2. _call_api() only reads message.content — empty for thinking models like
-#    gpt-oss:120b where reasoning goes to message.thinking and content can
-#    be empty.  Fix: richer error with diagnostic fields, no silent failure.
-#
-# 3. For Ollama: send format=<schema> (structured) or format="json" (fallback),
-#    stream=False for reliable structured output, and apply per-request
-#    DOCLING_GRAPH_LLM_THINK when configured. Most models use true/false;
-#    gpt-oss also supports low/medium/high.
+# Only one upstream patch remains:
+#   - NodeIDRegistry: fixes a class-name parsing bug in the library's
+#     collision detection (TABLE_REF_<fingerprint> being misread as TABLE).
+#     Unrelated to LLM call paths.
 # ---------------------------------------------------------------------------
-import litellm as _litellm
 
-_logger = logging.getLogger("docling_graph.llm_clients.litellm.patch")
+_logger = logging.getLogger("docling_graph.patches")
 if not _logger.handlers:
     _h = logging.StreamHandler()
     _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
@@ -68,338 +63,44 @@ if not _logger.handlers:
     _logger.propagate = False
 
 
-def _patched_build_request(
-    self,
-    messages,
-    schema_json=None,
-    structured_output=True,
-    response_top_level="object",
-    response_schema_name="extraction_result",
-):
-    from docling_graph.llm_clients.schema_utils import normalize_schema_for_response_format
-    from docling_graph.exceptions import ClientError
+# Fix TABLE_REF node ID collision: split("_")[0] yields "TABLE" for
+# "TABLE_REF_<fingerprint>", causing false collision. Use rsplit so the
+# class name is parsed correctly regardless of how many underscores it has.
+try:
+    from docling_graph.core.converters.node_id_registry import NodeIDRegistry
 
-    gen = self.generation
-    max_tokens = gen.max_tokens or self._max_output_tokens
-    model_name = self.model_config.litellm_model
+    _original_get_node_id = NodeIDRegistry.get_node_id
 
-    request = {
-        "model": model_name,
-        "messages": messages,
-        "temperature": gen.temperature,
-        "max_tokens": max_tokens,
-        "timeout": self.timeout,
-        "drop_params": True,
-        "stream": False,
-    }
+    def _patched_get_node_id(self, model_instance, auto_register=True):
+        fingerprint = self._generate_fingerprint(model_instance)
+        class_name = model_instance.__class__.__name__
 
-    connection = self.connection
-    api_key = connection.api_key.get_secret_value() if connection.api_key else None
-    if api_key:
-        request["api_key"] = api_key
-    if connection.base_url:
-        request["api_base"] = connection.base_url
-    if connection.organization:
-        request["organization"] = connection.organization
-    if connection.headers:
-        request["headers"] = dict(connection.headers)
+        if fingerprint in self.fingerprint_to_id:
+            existing_id = self.fingerprint_to_id[fingerprint]
+            existing_class = existing_id.rsplit("_", 1)[0] if "_" in existing_id else existing_id
+            if existing_class != class_name:
+                raise ValueError(
+                    f"Node ID collision: fingerprint {fingerprint} maps to both "
+                    f"{existing_id} (class: {existing_class}) and {class_name}_... (new class)"
+                )
+            return existing_id
 
-    provider_id = str(getattr(self._config, "provider_id", "") or "").lower()
-    is_ollama = (
-        provider_id == "ollama"
-        or str(model_name).startswith("ollama/")
-        or ("11434" in str(request.get("api_base", "")))
-    )
+        if class_name not in self.seen_classes:
+            self.seen_classes[class_name] = set()
 
-    if structured_output:
-        try:
-            schema_dict = json.loads(schema_json or "{}")
-        except json.JSONDecodeError as e:
-            raise ClientError(
-                "Invalid schema_json passed for structured output.",
-                details={"error": str(e), "schema_json_preview": (schema_json or "")[:200]},
-                cause=e,
-            ) from e
-        from app.prompt_rules import sanitize_schema_for_llm
+        node_id = f"{class_name}_{fingerprint}"
 
-        schema_for_llm = sanitize_schema_for_llm(schema_dict)
-        from app.config import settings as _service_settings
-        schema_str = json.dumps(schema_for_llm)
-        threshold = _service_settings.structured_output_threshold_chars
-        # When DOCLING_GRAPH_FORCE_JSON_MODE=true on an Ollama backend, skip
-        # response_format entirely. Otherwise LiteLLM honors response_format
-        # first and routes through its structured-output path, where mid-size
-        # models like gemma4:31b emit truncated/unterminated-string JSON that
-        # the parser rejects — defeating the whole point of FORCE_JSON_MODE.
-        # Pure loose Ollama `format="json"` is the goal here; Pydantic
-        # validates the response downstream so safety isn't relaxed.
-        if is_ollama and _service_settings.force_json_mode:
-            _logger.info(
-                "DOCLING_GRAPH_FORCE_JSON_MODE=true; using format='json' "
-                "(no response_format) for %s (schema %d chars)",
-                model_name, len(schema_str),
-            )
-            request["format"] = "json"
-        else:
-            normalized = normalize_schema_for_response_format(
-                schema_for_llm,
-                top_level=response_top_level,
-                name=response_schema_name,
-            )
-            # OpenAI-style response_format uses the normalized envelope
-            request["response_format"] = {"type": "json_schema", "json_schema": normalized}
-            if is_ollama:
-                # Ollama format= wants the RAW JSON Schema, not the OpenAI envelope.
-                # Two remaining gates here (FORCE_JSON_MODE handled above):
-                #   1. Schema size > threshold — large schemas degrade
-                #      constrained decoding, fall through to loose json.
-                #   2. Otherwise send the raw schema.
-                if len(schema_str) > threshold:
-                    _logger.info("Schema too large for Ollama format= (%d chars), using format='json'", len(schema_str))
-                    request["format"] = "json"
-                else:
-                    request["format"] = schema_for_llm
-    else:
-        request["response_format"] = {"type": "json_object"}
-        if is_ollama:
-            request["format"] = "json"
+        if auto_register:
+            self.fingerprint_to_id[fingerprint] = node_id
+            self.id_to_fingerprint[node_id] = fingerprint
+            self.seen_classes[class_name].add(fingerprint)
 
-    if gen.top_p is not None:
-        request["top_p"] = gen.top_p
-    if gen.top_k is not None:
-        request["top_k"] = gen.top_k
-    if gen.frequency_penalty is not None:
-        request["frequency_penalty"] = gen.frequency_penalty
-    if gen.presence_penalty is not None:
-        request["presence_penalty"] = gen.presence_penalty
-    if gen.seed is not None:
-        request["seed"] = gen.seed
-    if gen.stop is not None:
-        request["stop"] = gen.stop
+        return node_id
 
-    think_value = os.environ.get("DOCLING_GRAPH_LLM_THINK", "").strip().lower()
-    if think_value in {"false", "off", "disabled"}:
-        request["think"] = False
-    elif think_value in {"true", "on", "enabled"}:
-        request["think"] = True
-    elif is_ollama and "gpt-oss" in str(model_name).lower() and think_value in {"low", "medium", "high"}:
-        request["think"] = think_value
-
-    supported_fn = getattr(_litellm, "get_supported_openai_params", None)
-    if callable(supported_fn):
-        try:
-            supported = supported_fn(model=model_name)
-            if supported:
-                required = {
-                    "model", "messages", "api_base", "api_key", "headers",
-                    "organization", "timeout", "drop_params", "response_format",
-                    "stream",
-                }
-                provider_required = set()
-                if is_ollama:
-                    provider_required.update({"format", "think"})
-                allowed = required | provider_required | set(supported)
-                request = {k: v for k, v in request.items() if k in allowed}
-        except Exception:
-            _logger.debug("LiteLLM supported params lookup failed for %s", model_name)
-
-    return request
-
-
-def _patched_call_api(self, messages, **params):
-    from docling_graph.exceptions import ClientError
-
-    try:
-        request = self._build_request(messages, **params)
-        response = _litellm.completion(**request)
-
-        if hasattr(response, "model_dump"):
-            response_dict = response.model_dump()
-        elif isinstance(response, dict):
-            response_dict = response
-        else:
-            try:
-                response_dict = dict(response)
-            except Exception:
-                response_dict = {"raw": str(response)}
-
-        choices = response_dict.get("choices", []) or []
-        if not choices:
-            raise ClientError("LiteLLM returned no choices", details={"model": self.model})
-
-        message = choices[0].get("message", {}) or {}
-        content = message.get("content")
-        reasoning_content = message.get("reasoning_content")
-        thinking = message.get("thinking")
-        top_reasoning = response_dict.get("reasoning_content")
-        top_thinking = response_dict.get("thinking")
-
-        metadata = {
-            "finish_reason": choices[0].get("finish_reason"),
-            "model": response_dict.get("model", self.model),
-            "usage": response_dict.get("usage"),
-            "has_content": bool(content),
-            "has_reasoning_content": bool(reasoning_content or top_reasoning),
-            "has_thinking": bool(thinking or top_thinking),
-        }
-
-        if content:
-            return str(content), metadata
-
-        raise ClientError(
-            "LiteLLM returned empty content",
-            details={
-                "model": self.model,
-                "finish_reason": choices[0].get("finish_reason"),
-                "message_keys": sorted(message.keys()),
-                "message_preview": str(message)[:1000],
-                "has_reasoning_content": bool(reasoning_content or top_reasoning),
-                "has_thinking": bool(thinking or top_thinking),
-                "reasoning_preview": str(
-                    reasoning_content or top_reasoning or thinking or top_thinking or ""
-                )[:500],
-                "request_keys": sorted(list(request.keys())),
-            },
-        )
-    except Exception as e:
-        if isinstance(e, ClientError):
-            raise
-        if params.get("structured_output", True):
-            self.last_call_diagnostics.update({
-                "structured_failed": True,
-                "fallback_error_class": type(e).__name__,
-            })
-            raise ClientError(
-                "Structured output request failed.",
-                details={
-                    "model": self.model,
-                    "provider": self._config.provider_id,
-                    "error": str(e),
-                },
-                cause=e,
-            ) from e
-        raise ClientError(
-            f"LiteLLM API call failed: {type(e).__name__}",
-            details={"model": self.model, "error": str(e)},
-            cause=e,
-        ) from e
-
-
-def _apply_litellm_client_patches():
-    """Apply patches to LiteLLMClient after docling_graph is imported."""
-    try:
-        from docling_graph.llm_clients.litellm import LiteLLMClient
-        LiteLLMClient._build_request = _patched_build_request
-        LiteLLMClient._call_api = _patched_call_api
-        _logger.info("LiteLLMClient patched for Ollama structured output support")
-    except ImportError:
-        _logger.warning("Could not patch LiteLLMClient — docling_graph.llm_clients.litellm not available")
-
-    # Fix slow legacy-fallback path on force_json_mode runs.
-    #
-    # When the primary structured-output extraction call fails (e.g., a
-    # truncated/unterminated JSON from gemma4 + JSON Schema), upstream
-    # LlmBackend rebuilds a "legacy" prompt with the FULL JSON Schema
-    # embedded between "=== TARGET SCHEMA ===" markers and re-calls the
-    # client through _get_json_response(structured_output=False). On large
-    # field-group schemas the schema embedding inflates the prompt by
-    # several KB; the retry then takes 5-30× longer than the primary call
-    # and serializes downstream batches behind it on the affected Ollama
-    # slot.
-    #
-    # Fix: patch LlmBackend._get_json_response so that when
-    # DOCLING_GRAPH_FORCE_JSON_MODE=true and structured_output=False
-    # (legacy retry path), we strip the "=== TARGET SCHEMA ===" block from
-    # prompt["user"] before handing off to the client. Since
-    # force_json_mode already sends format="json" via _build_request, the
-    # retry becomes a clean re-issue of the same loose-JSON prompt —
-    # recovery without bloat.
-    try:
-        from app.config import settings as _service_settings
-        from docling_graph.core.extractors.backends.llm_backend import LlmBackend
-
-        _orig_get_json_response = LlmBackend._get_json_response
-
-        def _patched_get_json_response(
-            self, prompt, schema_json, structured_output=True, *args, **kwargs
-        ):
-            if (
-                structured_output is False
-                and _service_settings.force_json_mode
-                and isinstance(prompt, dict)
-                and isinstance(prompt.get("user"), str)
-            ):
-                user = prompt["user"]
-                marker = "\n\n=== TARGET SCHEMA ===\n"
-                idx = user.find(marker)
-                if idx != -1:
-                    end_marker = "=== END SCHEMA ===\n"
-                    end_idx = user.find(end_marker, idx)
-                    if end_idx != -1:
-                        tail = user[end_idx + len(end_marker):]
-                        stripped = user[:idx].rstrip() + "\n\n" + tail.lstrip()
-                    else:
-                        stripped = user[:idx].rstrip()
-                    prompt = {**prompt, "user": stripped}
-                    _logger.info(
-                        "force_json_mode: stripped %d-char schema embedding "
-                        "from legacy retry prompt",
-                        len(user) - len(stripped),
-                    )
-            return _orig_get_json_response(
-                self, prompt, schema_json, structured_output, *args, **kwargs
-            )
-
-        LlmBackend._get_json_response = _patched_get_json_response
-        _logger.info(
-            "LlmBackend._get_json_response patched: force_json_mode legacy "
-            "retries no longer embed schema in prompt"
-        )
-    except (ImportError, AttributeError) as exc:
-        _logger.warning(
-            "Could not patch LlmBackend legacy-retry path: %s", exc,
-        )
-
-    # Fix TABLE_REF node ID collision: split("_")[0] yields "TABLE" for
-    # "TABLE_REF_<fingerprint>", causing false collision.  Use rsplit.
-    try:
-        from docling_graph.core.converters.node_id_registry import NodeIDRegistry
-
-        _original_get_node_id = NodeIDRegistry.get_node_id
-
-        def _patched_get_node_id(self, model_instance, auto_register=True):
-            fingerprint = self._generate_fingerprint(model_instance)
-            class_name = model_instance.__class__.__name__
-
-            if fingerprint in self.fingerprint_to_id:
-                existing_id = self.fingerprint_to_id[fingerprint]
-                existing_class = existing_id.rsplit("_", 1)[0] if "_" in existing_id else existing_id
-                if existing_class != class_name:
-                    raise ValueError(
-                        f"Node ID collision: fingerprint {fingerprint} maps to both "
-                        f"{existing_id} (class: {existing_class}) and {class_name}_... (new class)"
-                    )
-                return existing_id
-
-            if class_name not in self.seen_classes:
-                self.seen_classes[class_name] = set()
-
-            node_id = f"{class_name}_{fingerprint}"
-
-            if auto_register:
-                self.fingerprint_to_id[fingerprint] = node_id
-                self.id_to_fingerprint[node_id] = fingerprint
-                self.seen_classes[class_name].add(fingerprint)
-
-            return node_id
-
-        NodeIDRegistry.get_node_id = _patched_get_node_id
-        _logger.info("NodeIDRegistry patched for underscore class name collision fix")
-    except ImportError:
-        _logger.warning("Could not patch NodeIDRegistry")
-
-
-_apply_litellm_client_patches()
+    NodeIDRegistry.get_node_id = _patched_get_node_id
+    _logger.info("NodeIDRegistry patched for underscore class name collision fix")
+except ImportError:
+    _logger.warning("Could not patch NodeIDRegistry")
 
 # Delta system-prompt rewrite. Replaces Rules 2-4 in get_delta_batch_prompt
 # so the LLM accepts BOTH structure-backed evidence AND explicit named
