@@ -15,7 +15,7 @@ from app.ollama_pool_client import OllamaChatClient, OllamaPool
 
 
 @lru_cache(maxsize=1)
-def get_docling_llm_client() -> OllamaChatClient:
+def get_docling_graph_client() -> OllamaChatClient:
     """Return the process-cached OllamaChatClient for docling-graph extraction.
 
     First call constructs the pool from DoclingGraphSettings + service-level
@@ -26,7 +26,7 @@ def get_docling_llm_client() -> OllamaChatClient:
     Limitations:
       The following values are read on first call and frozen for the
       lifetime of the process — env-var changes after import won't take
-      effect without an explicit `get_docling_llm_client.cache_clear()`
+      effect without an explicit `get_docling_graph_client.cache_clear()`
       (or a service restart):
         - force_json_mode
         - structured_output_threshold_chars
@@ -35,7 +35,7 @@ def get_docling_llm_client() -> OllamaChatClient:
           temperature, max_tokens, top_p / top_k / seed / stop / etc.,
           and the URL pool from get_ollama_llm_urls())
 
-      Tests rebuild via `get_docling_llm_client.cache_clear()` after
+      Tests rebuild via `get_docling_graph_client.cache_clear()` after
       patching env. Operators rotating Ollama endpoints in production
       must restart the docling-graph service to pick up new URLs.
     """

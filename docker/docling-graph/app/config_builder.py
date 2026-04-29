@@ -97,6 +97,11 @@ class DoclingGraphSettings(BaseSettings):
     ollama_llm_base_url: str = ""
     # Plural pool — raw JSON-array string. Parsed in get_ollama_llm_urls().
     ollama_llm_base_urls: str = ""
+    # Per-function pool for graph extraction (Chunk 6, NEW). When set,
+    # overrides OLLAMA_LLM_BASE_URLS for THIS service only — other
+    # LLM-using functions (doc analysis, translation, etc.) consume
+    # their own *_LLM_BASE_URLS via the api-side Settings.
+    docling_graph_llm_base_urls: str = ""
     # For models missing from LiteLLM's metadata registry (e.g. ollama/llama3.3:70b)
     # the library's resolve_effective_model_config falls back to
     # _DEFAULT_MAX_OUTPUT_TOKENS=4092, then refuses any max_tokens above that.
@@ -109,29 +114,33 @@ class DoclingGraphSettings(BaseSettings):
     docling_graph_backend: str = "llm"
 
     def get_ollama_llm_urls(self) -> list[str]:
-        """Parse priority: ollama_llm_base_urls (plural JSON) >
-        ollama_llm_base_url (singular) > ollama_base_url. Always non-empty.
+        """Parse priority (4-tier):
+          docling_graph_llm_base_urls (function-specific JSON)
+          > ollama_llm_base_urls (role-level JSON)
+          > ollama_llm_base_url (singular)
+          > ollama_base_url (base).
+        Always returns a non-empty list.
         """
         import json
-        s = (self.ollama_llm_base_urls or "").strip()
-        if s:
+        for raw in (self.docling_graph_llm_base_urls, self.ollama_llm_base_urls):
+            s = (raw or "").strip()
+            if not s:
+                continue
             try:
                 parsed = json.loads(s)
             except json.JSONDecodeError as exc:
                 raise ValueError(
-                    f"OLLAMA_LLM_BASE_URLS is not valid JSON: {exc}; "
-                    f"got: {s!r}"
+                    f"Pool URL env var is not valid JSON: {exc}; got: {s!r}"
                 ) from exc
             if not isinstance(parsed, list) or not all(
                 isinstance(x, str) for x in parsed
             ):
                 raise ValueError(
-                    f"OLLAMA_LLM_BASE_URLS must be a JSON array of strings; "
-                    f"got: {parsed!r}"
+                    f"Pool URL env var must be a JSON array of strings; got: {parsed!r}"
                 )
             if not all(x.strip() for x in parsed):
                 raise ValueError(
-                    f"OLLAMA_LLM_BASE_URLS contains blank entries; got: {parsed!r}"
+                    f"Pool URL env var contains blank entries; got: {parsed!r}"
                 )
             if parsed:
                 return parsed
@@ -167,7 +176,7 @@ def build_pipeline_config(
     extract_pass handler reads that file back and surfaces it in the
     response's ``diagnostics`` field.
 
-    The local ``from app.ollama_clients import get_docling_llm_client``
+    The local ``from app.ollama_clients import get_docling_graph_client``
     is wrapped in try/except ImportError so unit tests that exercise this
     function from the host venv still work. In the host venv, ``app``
     resolves to the api-side package, so the import fails — we leave
@@ -193,8 +202,8 @@ def build_pipeline_config(
     # selection already lives inside the factory; tests pass without them.
     # See followups.md #23.
     try:
-        from app.ollama_clients import get_docling_llm_client
-        llm_client: Any | None = get_docling_llm_client()
+        from app.ollama_clients import get_docling_graph_client
+        llm_client: Any | None = get_docling_graph_client()
     except ImportError:
         llm_client = None
 

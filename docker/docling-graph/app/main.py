@@ -177,7 +177,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Docling-Graph Extraction Service", version="2.0.0", lifespan=lifespan)
 
 
-from app.ollama_clients import get_docling_llm_client
+from app.ollama_clients import get_docling_graph_client
 
 
 @app.get("/debug/routing-metrics", tags=["diagnostics"])
@@ -194,7 +194,7 @@ def debug_routing_metrics():
     aren't used inside docling-graph.
 
     NOTE: pool URL list is cached per-process (see
-    app.ollama_clients.get_docling_llm_client). Restart docling-graph to
+    app.ollama_clients.get_docling_graph_client). Restart docling-graph to
     refresh after rotating OLLAMA_LLM_BASE_URLS — only the gate (DEBUG_ENDPOINTS
     env) is read per request; the URLs themselves are frozen at first call.
     """
@@ -203,7 +203,7 @@ def debug_routing_metrics():
     ):
         raise HTTPException(status_code=404, detail="Not Found")
     try:
-        client = get_docling_llm_client()
+        client = get_docling_graph_client()
         return {"llm": client.pool.routing_metrics}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
