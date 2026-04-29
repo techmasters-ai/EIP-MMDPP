@@ -22,11 +22,27 @@ def get_docling_llm_client() -> OllamaChatClient:
     settings (force_json_mode, structured_output_threshold_chars). Subsequent
     calls return the same instance. lru_cache.cache_clear() is exposed so
     tests can rebuild against patched env.
+
+    Limitations:
+      The following values are read on first call and frozen for the
+      lifetime of the process — env-var changes after import won't take
+      effect without an explicit `get_docling_llm_client.cache_clear()`
+      (or a service restart):
+        - force_json_mode
+        - structured_output_threshold_chars
+        - DOCLING_GRAPH_LLM_THINK
+        - every field on DoclingGraphSettings (model, timeout,
+          temperature, max_tokens, top_p / top_k / seed / stop / etc.,
+          and the URL pool from get_ollama_llm_urls())
+
+      Tests rebuild via `get_docling_llm_client.cache_clear()` after
+      patching env. Operators rotating Ollama endpoints in production
+      must restart the docling-graph service to pick up new URLs.
     """
     from app.config import settings as _service_settings
     from app.prompt_rules import sanitize_schema_for_llm
     from docling_graph.exceptions import ClientError
-    from app.llm_json import parse_llm_json_loose  # mirror of app/services/llm_json.py
+    from app.llm_json import parse_llm_json_loose
 
     settings = DoclingGraphSettings()
     pool = OllamaPool(urls=settings.get_ollama_llm_urls())
