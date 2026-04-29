@@ -185,6 +185,38 @@ OLLAMA_LLM_BASE_URLS=["http://10.0.1.121:11434","http://10.0.1.122:11434","http:
 
 Priority order per role: plural pool > singular `OLLAMA_*_BASE_URL` > `OLLAMA_BASE_URL`. Existing `.env` files keep working unchanged — pools are opt-in.
 
+#### Per-function pool URLs (NEW in Chunk 6)
+
+For finer-grained control, each LLM-using function can specify its own pool. When set, the function-specific pool overrides the role-level pool above.
+
+| Function Variable                 | Falls back to (in order)                                                                       |
+|-----------------------------------|------------------------------------------------------------------------------------------------|
+| `DOCLING_GRAPH_LLM_BASE_URLS`     | `OLLAMA_LLM_BASE_URLS` → `OLLAMA_LLM_BASE_URL` → `OLLAMA_BASE_URL`                             |
+| `DOC_ANALYSIS_LLM_BASE_URLS`      | `OLLAMA_LLM_BASE_URLS` → `OLLAMA_LLM_BASE_URL` → `OLLAMA_BASE_URL`                             |
+| `TRANSLATION_LLM_BASE_URLS`       | `OLLAMA_LLM_BASE_URLS` → `OLLAMA_LLM_BASE_URL` → `OLLAMA_BASE_URL`                             |
+| `COMMUNITY_REPORT_LLM_BASE_URLS`  | `OLLAMA_LLM_BASE_URLS` → `OLLAMA_LLM_BASE_URL` → `OLLAMA_BASE_URL` (also used by global-query) |
+| `PICTURE_DESCRIPTION_BASE_URLS`   | `OLLAMA_VLM_BASE_URLS` → `OLLAMA_VLM_BASE_URL` → `OLLAMA_BASE_URL`                             |
+| `TEXT_EMBEDDING_BASE_URLS`        | `OLLAMA_EMBEDDING_BASE_URLS` → `OLLAMA_EMBEDDING_BASE_URL` → `OLLAMA_BASE_URL`                 |
+
+Common patterns:
+
+```bash
+# Pattern 1: single bank for everything (default — leave the per-function vars empty)
+OLLAMA_LLM_BASE_URLS=["http://10.0.1.121:11434","http://10.0.1.122:11434"]
+
+# Pattern 2: graph extraction on bank A (gemma4:31b), other chat functions on bank B (gpt-oss:120b)
+DOCLING_GRAPH_LLM_BASE_URLS=["http://gemma-host-1:11434","http://gemma-host-2:11434"]
+OLLAMA_LLM_BASE_URLS=["http://gpt-oss-host-1:11434","http://gpt-oss-host-2:11434"]
+
+# Pattern 3: every function pinned to its own host
+DOCLING_GRAPH_LLM_BASE_URLS=["http://gemma-bank:11434"]
+DOC_ANALYSIS_LLM_BASE_URLS=["http://gpt-oss:11434"]
+TRANSLATION_LLM_BASE_URLS=["http://llama:11434"]
+COMMUNITY_REPORT_LLM_BASE_URLS=["http://gpt-oss:11434"]
+PICTURE_DESCRIPTION_BASE_URLS=["http://gemma-vlm:11434"]
+TEXT_EMBEDDING_BASE_URLS=["http://bge-host:11434"]
+```
+
 For diagnostics on docling-graph extraction fan-out, set `DOCLING_GRAPH_DEBUG_ENDPOINTS=true` and query `GET /debug/routing-metrics` on port 8002. Returns per-URL request counts. Default-off to avoid leaking backend URLs on the published port; disable again after diagnosis.
 
 Per-request thinking is configured separately per application:
