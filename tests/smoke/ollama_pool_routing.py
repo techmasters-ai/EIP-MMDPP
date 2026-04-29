@@ -63,8 +63,10 @@ def main() -> None:
     distribution = {url: _hits[int(url.rsplit(":", 1)[1])] for url in urls}
     print("Distribution:", distribution)
     counts = sorted(distribution.values())
-    # Least-in-flight isn't perfectly even, but with uniform service times
-    # the spread should be small. Allow up to 2x the lowest.
+    # Allow [2..8] per URL; uniform service time should give ~4 each, but
+    # thread scheduling jitter on under-resourced CI can skew. Ideal balance
+    # would be exactly 4-4-4-4; we're leaving a 2x slack window above and
+    # below that to keep the smoke from flaking on slow runners.
     assert counts[0] >= 2, f"Some URL got <2 requests: {counts}"
     assert counts[-1] <= 8, f"Some URL got >8 requests: {counts}"
     assert sum(counts) == 16
