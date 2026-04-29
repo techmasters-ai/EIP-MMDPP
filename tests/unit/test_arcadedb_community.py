@@ -282,24 +282,13 @@ async def test_call_llm_for_report_parses_json_response():
     """Valid JSON response is parsed into {title, summary}."""
     from app.services.arcadedb_community import _call_llm_for_report
 
-    fake_response = MagicMock()
-    fake_response.json.return_value = {
-        "choices": [{"message": {
-            "content": '{"title": "Radar Cluster", "summary": "Details here."}',
-        }}],
-    }
-    fake_response.raise_for_status = MagicMock()
-
     fake_client = MagicMock()
-    fake_client.post = AsyncMock(return_value=fake_response)
+    fake_client.chat.return_value = (
+        '{"title": "Radar Cluster", "summary": "Details here."}'
+    )
 
-    class _CM:
-        async def __aenter__(self_inner):
-            return fake_client
-        async def __aexit__(self_inner, *exc):
-            return False
-
-    with patch("httpx.AsyncClient", return_value=_CM()):
+    with patch("app.services.ollama_clients.get_llm_client",
+               return_value=fake_client):
         result = await _call_llm_for_report("prompt", "gpt-oss:20b")
 
     assert result == {"title": "Radar Cluster", "summary": "Details here."}
@@ -310,24 +299,11 @@ async def test_call_llm_for_report_line_fallback_when_json_missing():
     """Non-JSON output falls back to first-line-as-title parsing."""
     from app.services.arcadedb_community import _call_llm_for_report
 
-    fake_response = MagicMock()
-    fake_response.json.return_value = {
-        "choices": [{"message": {
-            "content": "Radar Cluster\nBody paragraph.",
-        }}],
-    }
-    fake_response.raise_for_status = MagicMock()
-
     fake_client = MagicMock()
-    fake_client.post = AsyncMock(return_value=fake_response)
+    fake_client.chat.return_value = "Radar Cluster\nBody paragraph."
 
-    class _CM:
-        async def __aenter__(self_inner):
-            return fake_client
-        async def __aexit__(self_inner, *exc):
-            return False
-
-    with patch("httpx.AsyncClient", return_value=_CM()):
+    with patch("app.services.ollama_clients.get_llm_client",
+               return_value=fake_client):
         result = await _call_llm_for_report("prompt", "gpt-oss:20b")
 
     assert result["title"] == "Radar Cluster"
@@ -336,28 +312,22 @@ async def test_call_llm_for_report_line_fallback_when_json_missing():
 
 @pytest.mark.asyncio
 async def test_call_llm_for_report_reads_reasoning_content_when_content_empty():
-    """gpt-oss with COMMUNITY_REPORT_LLM_THINK=high puts the answer in reasoning_content."""
+    """gpt-oss with COMMUNITY_REPORT_LLM_THINK=high puts the answer in reasoning_content.
+
+    The pool client's `chat()` already falls back to reasoning_content when
+    content is empty (see OllamaChatClient._post_chat_with_retry). So from
+    _call_llm_for_report's perspective, the reasoning text simply arrives as
+    the chat() return value.
+    """
     from app.services.arcadedb_community import _call_llm_for_report
 
-    fake_response = MagicMock()
-    fake_response.json.return_value = {
-        "choices": [{"message": {
-            "content": "",
-            "reasoning_content": '{"title": "From Reasoning", "summary": "body"}',
-        }}],
-    }
-    fake_response.raise_for_status = MagicMock()
-
     fake_client = MagicMock()
-    fake_client.post = AsyncMock(return_value=fake_response)
+    fake_client.chat.return_value = (
+        '{"title": "From Reasoning", "summary": "body"}'
+    )
 
-    class _CM:
-        async def __aenter__(self_inner):
-            return fake_client
-        async def __aexit__(self_inner, *exc):
-            return False
-
-    with patch("httpx.AsyncClient", return_value=_CM()):
+    with patch("app.services.ollama_clients.get_llm_client",
+               return_value=fake_client):
         result = await _call_llm_for_report("prompt", "gpt-oss:20b")
 
     assert result == {"title": "From Reasoning", "summary": "body"}

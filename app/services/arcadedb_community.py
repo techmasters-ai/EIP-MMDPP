@@ -8,7 +8,6 @@ import json
 import logging
 from typing import Any
 
-import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -226,46 +225,39 @@ async def _generate_community_report(
 
 
 async def _call_llm_for_report(prompt: str, model: str) -> dict[str, str]:
-    """Call Ollama chat API to generate a community report.
-
-    Expects JSON output ``{"title": "...", "summary": "..."}``; falls back to
-    line-based parsing when the model doesn't return valid JSON.
-    """
+    """Call Ollama via pool client; expects JSON {title, summary}."""
     from app.config import get_settings
     from app.services.llm_json import parse_llm_json_loose
+    from app.services.ollama_clients import get_llm_client
 
     settings = get_settings()
-    url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
-    timeout = settings.doc_analysis_timeout
+    client = get_llm_client()
     think = settings.get_community_report_llm_think()
+    # Community reports historically used doc_analysis_timeout; keep that
+    # for v1 to avoid a behavior change. If we add a dedicated
+    # community_report_timeout later, swap it in here.
+    timeout = settings.doc_analysis_timeout
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a knowledge-graph analyst. "
-                        "Respond with a single JSON object containing "
-                        '"title" (short, descriptive) and "summary" '
-                        "(2-4 paragraphs). Do not include any other text."
-                    ),
-                },
+    def _sync_call() -> str:
+        return client.chat(
+            messages=[
+                {"role": "system", "content": (
+                    "You are a knowledge-graph analyst. "
+                    "Respond with a single JSON object containing "
+                    '"title" (short, descriptive) and "summary" '
+                    "(2-4 paragraphs). Do not include any other text."
+                )},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.1,
-            "max_tokens": settings.llm_max_tokens,
-        }
-        if think is not None:
-            payload["think"] = think
-        resp = await client.post(
-            url,
-            json=payload,
+            model=model,
+            temperature=0.1,
+            max_tokens=settings.llm_max_tokens,
+            think=think,
+            force_json=True,
+            timeout_s=float(timeout),
         )
-        resp.raise_for_status()
-        message = resp.json()["choices"][0]["message"]
-        content = (message.get("content") or message.get("reasoning_content") or "").strip()
+
+    content = await asyncio.to_thread(_sync_call)
 
     parsed = parse_llm_json_loose(content)
     if isinstance(parsed, dict) and parsed.get("title") and parsed.get("summary"):
