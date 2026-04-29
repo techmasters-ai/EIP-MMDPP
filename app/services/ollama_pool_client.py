@@ -29,6 +29,24 @@ from typing import Any, Callable, Iterator, Literal, Mapping, Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+# Attach a stream handler when the host process hasn't configured logging.
+# Without this, _maybe_strip_legacy_schema and _post_chat_with_retry log
+# silently in production (the api and docling-graph processes don't call
+# logging.basicConfig), leaving us blind to schema-strip / retry behavior.
+# Mirrors the pattern at docker/docling-graph/app/main.py:57-63.
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+# Ollama format-mode literal — used for `format="json"` in request bodies.
+# Extracted as a module-level constant so the four occurrences below stay
+# in sync if Ollama ever introduces a new mode.
+_FORMAT_JSON = "json"
 
 
 class OllamaPool:
@@ -116,9 +134,6 @@ class OllamaPool:
             self._inflight[url] = max(0, self._inflight[url] - 1)
 
 
-from typing import Callable, Optional
-
-
 class OllamaChatClient:
     """Implements docling_graph's LLMClientProtocol against an Ollama backend
     (or a pool of Ollama backends).
@@ -201,10 +216,22 @@ class OllamaChatClient:
         # for concurrent .post() calls.
         self._http = httpx.Client(timeout=timeout_s)
 
+    def close(self) -> None:
+        """Close the underlying httpx.Client. Safe to call multiple times.
+
+        Prefer explicit close() (or `with contextlib.closing(client):`) over
+        relying on __del__ — interpreter shutdown order is undefined and
+        connections may leak silently if __del__ doesn't run.
+        """
+        self._http.close()
+
     def __del__(self) -> None:
         try:
             self._http.close()
+            logger.debug("OllamaChatClient.__del__ closed http client")
         except Exception:
+            # __del__ runs at interpreter shutdown; swallowing here avoids
+            # noisy tracebacks. Use close() for deterministic cleanup.
             pass
 
     # ----- LLMClientProtocol surface -----
@@ -350,7 +377,7 @@ class OllamaChatClient:
         if eff_think is not None:
             body["think"] = eff_think
         if force_json:
-            body["format"] = "json"
+            body["format"] = _FORMAT_JSON
         # Merge default extras then per-call extras (per-call wins).
         for k, v in self._default_extra.items():
             if v is not None and k not in body:
@@ -416,15 +443,15 @@ class OllamaChatClient:
 
         # Decide format=
         if not structured_output or not schema_json:
-            body["format"] = "json"
+            body["format"] = _FORMAT_JSON
             return body
         if self._force_json_mode:
-            body["format"] = "json"
+            body["format"] = _FORMAT_JSON
             return body
         try:
             schema_dict = json.loads(schema_json)
         except json.JSONDecodeError:
-            body["format"] = "json"
+            body["format"] = _FORMAT_JSON
             return body
         if self._schema_transform:
             schema_dict = self._schema_transform(schema_dict)
@@ -433,7 +460,7 @@ class OllamaChatClient:
             self._threshold is not None
             and len(schema_serialized) > self._threshold
         ):
-            body["format"] = "json"
+            body["format"] = _FORMAT_JSON
         else:
             body["format"] = schema_dict
         return body
@@ -550,6 +577,9 @@ class OllamaChatClient:
                     "OllamaChatClient: %s on %s (attempt %d/2): %s",
                     type(exc).__name__, url, attempt + 1, exc,
                 )
+                # Guards acquire() from raising on attempt 2 — must run before
+                # next iteration. Once every URL is excluded, retrying would
+                # call pool.acquire(exclude=all_urls), which raises RuntimeError.
                 if len(excluded) >= len(self.pool.urls):
                     break
             except httpx.HTTPStatusError as exc:
@@ -597,12 +627,23 @@ class OllamaEmbeddingClient:
     ) -> None:
         self.pool = pool
         self.model = model
+        # Symmetric with OllamaChatClient — populated after each successful
+        # embed() POST with {url, elapsed_s, model, batch_size}. Useful for
+        # routing diagnostics and slow-host detection.
+        self.last_call_diagnostics: dict | None = None
         self._http = httpx.Client(timeout=timeout_s)
+
+    def close(self) -> None:
+        """Close the underlying httpx.Client. Safe to call multiple times."""
+        self._http.close()
 
     def __del__(self) -> None:
         try:
             self._http.close()
+            logger.debug("OllamaEmbeddingClient.__del__ closed http client")
         except Exception:
+            # __del__ runs at interpreter shutdown; swallowing here avoids
+            # noisy tracebacks. Use close() for deterministic cleanup.
             pass
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -613,6 +654,7 @@ class OllamaEmbeddingClient:
         last_exc: Exception | None = None
         for _ in range(2):
             url = self.pool.acquire(exclude=excluded)
+            t0 = time.time()
             try:
                 resp = self._http.post(
                     f"{url}/v1/embeddings",
@@ -621,6 +663,12 @@ class OllamaEmbeddingClient:
                 resp.raise_for_status()
                 data = resp.json().get("data", [])
                 items = sorted(data, key=lambda x: x.get("index", 0))
+                self.last_call_diagnostics = {
+                    "url": url,
+                    "elapsed_s": time.time() - t0,
+                    "model": self.model,
+                    "batch_size": len(texts),
+                }
                 return [item["embedding"] for item in items]
             except (
                 httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError,
