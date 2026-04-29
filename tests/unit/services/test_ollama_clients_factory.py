@@ -46,6 +46,19 @@ def test_each_factory_uses_function_specific_pool(monkeypatch):
     assert ollama_clients.get_text_embedding_client().pool.urls == ["http://te:11434"]
 
 
+def test_community_report_client_uses_dedicated_timeout(monkeypatch):
+    """get_community_report_client() reads community_report_timeout, not
+    doc_analysis_timeout. Default value matches doc_analysis_timeout
+    (both 1500s) so the historical behavior is preserved when neither
+    env var is set."""
+    monkeypatch.setenv("OLLAMA_LLM_BASE_URLS", '["http://h:11434"]')
+    monkeypatch.setenv("DOC_ANALYSIS_TIMEOUT", "999")
+    monkeypatch.setenv("COMMUNITY_REPORT_TIMEOUT", "777")
+    client = ollama_clients.get_community_report_client()
+    # OllamaChatClient stores its default timeout as `_default_timeout`.
+    assert client._default_timeout == 777.0
+
+
 def test_factories_pin_to_role_specific_models(monkeypatch):
     """Per-function factories use the role's model setting at construction."""
     monkeypatch.setenv("DOC_ANALYSIS_LLM_MODEL", "gpt-oss:120b")

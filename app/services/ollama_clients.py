@@ -9,9 +9,24 @@ extraction on a gemma4:31b bank, embeddings on a CPU node.
 
 Each factory is @lru_cache(maxsize=1); the first call constructs the
 client, subsequent calls return it. Tests must call `<factory>.cache_clear()`
-to rebuild against patched env. Env values frozen at first call:
-function-specific URLs, role-level URLs, model name, timeout, and any
-per-function `*_THINK` setting.
+to rebuild against patched env.
+
+Limitations:
+  The following values are read on first call and frozen for the
+  lifetime of the process — env-var changes after import won't take
+  effect without an explicit `<factory>.cache_clear()` (or a process
+  restart):
+    - The function-specific URL pool (e.g. DOC_ANALYSIS_LLM_BASE_URLS)
+      AND its role-level fallback (e.g. OLLAMA_LLM_BASE_URLS) AND the
+      singular fallback (e.g. OLLAMA_LLM_BASE_URL) — whichever the
+      cascade resolves to at first call is what stays.
+    - Model name (e.g. `doc_analysis_llm_model`).
+    - Timeout (e.g. `doc_analysis_timeout`, `community_report_timeout`).
+    - Any per-function `*_THINK` setting via Settings.
+
+  Tests rebuild via `<factory>.cache_clear()` after patching env.
+  Operators rotating Ollama endpoints in production must restart the
+  api / worker service to pick up new URLs.
 """
 from __future__ import annotations
 
@@ -55,7 +70,7 @@ def get_community_report_client() -> OllamaChatClient:
     return OllamaChatClient(
         pool=OllamaPool(urls=s.get_community_report_llm_urls()),
         model=s.community_report_llm_model,
-        timeout_s=float(s.doc_analysis_timeout),  # historical reuse
+        timeout_s=float(s.community_report_timeout),
         max_tokens=s.llm_max_tokens,
     )
 

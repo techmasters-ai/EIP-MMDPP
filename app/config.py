@@ -387,6 +387,11 @@ class Settings(BaseSettings):
     doc_analysis_llm_model: str = "gpt-oss:120b"
     doc_analysis_llm_think: str = ""  # true|false for most models; low|medium|high only for gpt-oss
     doc_analysis_timeout: int = 1500  # HTTP client timeout for individual LLM calls
+    # Per-call HTTP timeout for community-report + global-synthesis chats
+    # (built by get_community_report_client). Defaults to the same value
+    # as doc_analysis_timeout to preserve historical behavior; set
+    # COMMUNITY_REPORT_TIMEOUT to decouple from doc-analysis tuning.
+    community_report_timeout: int = 1500
     # Celery soft/hard time limits for derive_document_metadata. Previously derived
     # inline as doc_analysis_timeout+60/+120; now explicit so env controls directly.
     doc_analysis_soft_time_limit: int = 1800
