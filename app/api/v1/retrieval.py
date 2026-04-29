@@ -1174,10 +1174,10 @@ async def _synthesize_global_answer(
 ) -> str:
     """Call LLM to synthesize a single answer from community reports."""
     from app.config import get_settings
-    from app.services.ollama_clients import get_llm_client
+    from app.services.ollama_clients import get_community_report_client
 
     settings = get_settings()
-    client = get_llm_client()
+    client = get_community_report_client()
 
     template = settings.community_global_synthesis_prompt or _DEFAULT_GLOBAL_SYNTHESIS_PROMPT
 
