@@ -476,6 +476,35 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Docling-Graph Extraction Service", version="2.0.0", lifespan=lifespan)
 
 
+from app.ollama_clients import get_docling_llm_client
+
+
+@app.get("/debug/routing-metrics", tags=["diagnostics"])
+def debug_routing_metrics():
+    """Return per-URL request counts for the in-process LLM pool.
+
+    Gated behind DOCLING_GRAPH_DEBUG_ENDPOINTS=true (default off) — this
+    endpoint exposes backend Ollama URLs in its response, which is a small
+    leak on a port that's published in compose. Enable only when running
+    Gate 5 validation (Chunk 4).
+
+    Used by Chunk 4's Gate 5 to verify fan-out across all configured Ollama
+    URLs. Returns {} for the LLM role only in v1; VLM/embedding pools
+    aren't used inside docling-graph.
+    """
+    import os
+    from fastapi import HTTPException
+    if os.environ.get("DOCLING_GRAPH_DEBUG_ENDPOINTS", "false").lower() not in (
+        "true", "1", "yes", "on"
+    ):
+        raise HTTPException(status_code=404, detail="Not Found")
+    try:
+        client = get_docling_llm_client()
+        return {"llm": client.pool.routing_metrics}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def _render_upstream_entities_preamble(upstream_entities: list | None) -> str:
     """Render a plain-text preamble listing upstream entity refs for the LLM.
 
