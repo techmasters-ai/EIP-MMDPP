@@ -544,9 +544,9 @@ class OllamaChatClient:
                     "structured_failed": False,
                     "fallback_used": False,
                 }
-                logger.debug(
-                    "OllamaChatClient: ok url=%s elapsed=%.2fs len(content)=%d",
-                    url, time.time() - t0, len(content),
+                logger.info(
+                    "OllamaChatClient: ok url=%s model=%s elapsed=%.2fs len(content)=%d",
+                    url, body.get("model", self.model), time.time() - t0, len(content),
                 )
                 if content:
                     return content
@@ -669,6 +669,10 @@ class OllamaEmbeddingClient:
                     "model": self.model,
                     "batch_size": len(texts),
                 }
+                logger.info(
+                    "OllamaEmbeddingClient: ok url=%s model=%s batch_size=%d elapsed=%.2fs",
+                    url, self.model, len(texts), time.time() - t0,
+                )
                 return [item["embedding"] for item in items]
             except (
                 httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError,

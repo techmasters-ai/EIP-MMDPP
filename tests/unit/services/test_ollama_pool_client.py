@@ -578,3 +578,55 @@ def test_embedding_client_preserves_input_order():
     with patch("httpx.Client.post", return_value=fake):
         out = client.embed(["a", "b"])
     assert out == [[1.0], [9.0]]
+
+
+# ----- Task 6.5b: success-URL INFO logging (per-call observability) -----
+
+
+def test_chat_logs_success_url_at_info(caplog):
+    # The pool client logger sets propagate=False, so caplog's root handler
+    # never sees its records. Attach caplog's handler directly to the named
+    # logger for the duration of the test.
+    import logging as _logging
+    pool_logger = _logging.getLogger("app.services.ollama_pool_client")
+    prev_level = pool_logger.level
+    pool_logger.setLevel(_logging.INFO)
+    pool_logger.addHandler(caplog.handler)
+    try:
+        pool = OllamaPool(urls=["http://only"])
+        client = OllamaChatClient(pool=pool, model="m")
+        fake = MagicMock()
+        fake.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        fake.raise_for_status.return_value = None
+        with patch("httpx.Client.post", return_value=fake):
+            client.chat(messages=[{"role": "user", "content": "x"}])
+    finally:
+        pool_logger.removeHandler(caplog.handler)
+        pool_logger.setLevel(prev_level)
+    assert any(
+        "OllamaChatClient: ok" in rec.message and "http://only" in rec.message
+        for rec in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_embedding_logs_success_url_at_info(caplog):
+    import logging as _logging
+    pool_logger = _logging.getLogger("app.services.ollama_pool_client")
+    prev_level = pool_logger.level
+    pool_logger.setLevel(_logging.INFO)
+    pool_logger.addHandler(caplog.handler)
+    try:
+        pool = OllamaPool(urls=["http://only"])
+        client = OllamaEmbeddingClient(pool=pool, model="bge-m3")
+        fake = MagicMock()
+        fake.json.return_value = {"data": [{"index": 0, "embedding": [0.1]}]}
+        fake.raise_for_status.return_value = None
+        with patch("httpx.Client.post", return_value=fake):
+            client.embed(["hello"])
+    finally:
+        pool_logger.removeHandler(caplog.handler)
+        pool_logger.setLevel(prev_level)
+    assert any(
+        "OllamaEmbeddingClient: ok" in rec.message and "http://only" in rec.message
+        for rec in caplog.records
+    ), [r.message for r in caplog.records]
