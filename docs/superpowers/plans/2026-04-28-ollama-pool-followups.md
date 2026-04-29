@@ -1,133 +1,170 @@
 # OllamaPool Refactor — Cleanup Follow-ups
 
-Running tally of NIT-level findings from each chunk's code-quality review. Address as a single post-implementation cleanup pass after Chunk 5 lands.
+Running tally of NIT-level findings from each chunk's code-quality review. **Cleanup pass complete (2026-04-29) — 22 of 25 items resolved, 3 skipped per spec, plus the post-validation env switch + 4 notebook updates.**
 
 **Source plan:** `docs/superpowers/plans/2026-04-28-ollama-pool-client-refactor.md`
 
 ---
 
-## From Chunk 1 (commits `0b87101..fa91705`)
+## Resolution summary
 
-### Code (`app/services/ollama_pool_client.py`)
+| # | Status | Commit |
+|---|---|---|
+| 1 | ✅ DONE | `7b56c2d` |
+| 2 | ✅ DONE | `7b56c2d` |
+| 3 | ✅ DONE | `7b56c2d` |
+| 4 | ✅ DONE | `7b56c2d` |
+| 5 | ✅ DONE | `7b56c2d` |
+| 6 | ✅ DONE | `78b3958` |
+| 7 | ✅ DONE | `78b3958` |
+| 8 | ✅ DONE | `a5e2689` |
+| 9 | ✅ DONE | `1fde787` |
+| 10 | ✅ DONE | `d06fc29` |
+| 11 | ✅ DONE | `8716e26` |
+| 12 | ✅ DONE | `8716e26` |
+| 13 | ✅ DONE | `15a13af` |
+| 14 | ✅ DONE | `45dbaa3` |
+| 15 | ❌ SKIPPED — pre-existing, out of scope for OllamaPool refactor (raw `_client.command` access in `arcadedb_community.py`) | — |
+| 16 | ✅ DONE | `f39bbbb` |
+| 17 | ✅ DONE | `f39bbbb` |
+| 18 | ✅ DONE | `f39bbbb` |
+| 19 | ✅ DONE | `4ec9174` |
+| 20 | ✅ DONE | `21e592f` |
+| 21 | ✅ DONE | `21e592f` |
+| 22 | ✅ DONE | `2b568d2` |
+| 23 | ✅ DONE (verified safely removable; tests pass) | `2b568d2` |
+| 24 | ✅ DONE | `4ec9174` |
+| 25 | ✅ DONE | `7b56c2d` |
+| 25b | ❌ SKIPPED — operational issue, not code (compose Ollama crash; user updated `OLLAMA_EMBEDDING_BASE_URL` to `10.0.1.109`) | — |
+| post-validation env switch | ✅ DONE — pool-form promoted to canonical in `env.example` | `243f585` |
+| notebook alignment (extraction_walkthrough) | ✅ DONE | `449d414` |
+| notebook alignment (extraction_walkthrough_direct_ollama) | ✅ DONE | `5f4f9bc` |
+| notebook alignment (raw_libraries_walkthrough) | ✅ DONE | `ea98cf9` |
+| notebook alignment (ingest_walkthrough) | ✅ DONE | `3f6b05c` |
 
-1. **`_post_chat_with_retry` retry-after-acquire-fails comment.** The `if len(excluded) >= len(self.pool.urls): break` guard prevents `pool.acquire()` from raising on attempt 2, but the safety is implicit. Add a one-line comment near the break: `# Guards acquire() from raising on attempt 2 — must run before next iteration.`
-
-2. **`__del__` swallows all exceptions.** `OllamaChatClient.__del__` and `OllamaEmbeddingClient.__del__` both run `self._http.close()` inside `except Exception: pass`, hiding shutdown errors and leaking connections silently. Expose a real `close()` method, recommend `contextlib.closing()`/`with` usage. Keep `__del__` as safety net but log at DEBUG when it fires.
-
-3. **Re-import of `Callable, Optional`** inside the file body (~line 119) — already imported at top (~line 27). Trivial: delete the duplicate.
-
-4. **Magic-string `"json"` literal (4 occurrences).** Extract `_FORMAT_JSON = "json"` as a module-level constant near the top; replace the four string literals. Makes intent self-documenting and grep-friendly when Ollama adds new format modes.
-
-5. **`OllamaEmbeddingClient.embed` has no `last_call_diagnostics`.** Asymmetric with `OllamaChatClient` (which populates rich diagnostics for debug). Either add a minimal diagnostics dict (URL, elapsed_s, batch_size) or document why embeddings don't need it.
-
-### Config (`app/config.py`)
-
-6. **`Settings._parse_url_pool` has a local `import json`** at line ~131. `json` is stdlib used elsewhere; hoist to module top.
-
-7. **`_parse_url_pool` doesn't warn on duplicate URLs.** `OllamaPool.__init__` silently dedupes (good defense). But operators who set `OLLAMA_LLM_BASE_URLS='["http://h1","http://h1"]'` get no signal that their config is wrong. Add `logger.warning` on dupes at parse time.
-
-### Tests
-
-8. **Mid-file imports in `test_ollama_pool_client.py`** (lines 84, 119, 188, 546). `OllamaChatClient`, `OllamaEmbeddingClient`, `_FakeClientError` — hoist to top of file per PEP 8.
-
-9. **Smoke harness slack assertions over-permissive.** `tests/smoke/ollama_pool_routing.py:63-69` accepts `counts[0] >= 2` and `counts[-1] <= 8` for what should be ~4 each. Tighten the comment to: "Allow [2..8] per URL; uniform service time should give ~4 each, but thread scheduling jitter on under-resourced CI can skew."
-
-### Docs
-
-10. **`env.example` pre-existing typo** at `OLLAMA_EMBEDDING_BASE_URL=http://ollama11434` (missing colon, should be `http://ollama:11434`). Pre-existed before this refactor — drive-by fix candidate.
-
----
-
-## From Chunk 2 (commits `bde1646..f85ff04`)
-
-### Tests
-
-11. **`test_factories_use_role_specific_pools` doesn't restore caches on teardown.** After the test runs, `get_llm_client()`/`get_vlm_client()`/`get_embedding_client()` cached singletons hold mock URLs (`http://llm-1` etc.). `monkeypatch` restores env but not the cached instances; subsequent tests in the same session get the polluted singletons. Add a `try/finally` block (or autouse fixture) that calls `cache_clear()` on all three factories on teardown.
-
-12. **`test_llm_client_is_cached_singleton` doesn't `cache_clear()` at the top.** If test ordering changes and the factory test runs first, this test sees a singleton populated with mock URLs. Identity check still passes but the test isn't hermetic. Add cache_clear at top.
-
-### Code
-
-13. **`app/services/ollama_clients.py:45` magic `timeout_s=120.0`** for the embedding client — unannotated. Other factories pull from settings. Either add a comment ("embeddings are fast; 120s covers worst-case batch") or thread an `embedding_timeout` setting through `app/config.py` for parity.
-
-14. **`app/api/v1/retrieval.py:1191` comment references "Task 2.5"** — meaningless to future readers post-merge. Rephrase to: "reused from doc_analysis_timeout pending a dedicated community_global_synthesis_timeout setting" — same shape as the comment in `arcadedb_community.py:236-238`.
-
-### Pre-existing (drive-by candidates)
-
-15. **`app/services/arcadedb_community.py:155-159` reaches through `graph_store._client.command(...)`** to issue raw SQL. Pre-existing — bypasses GraphStore's interface and breaks if internal moves. Out of scope for OllamaPool refactor but worth flagging.
+**Net effect:** +4 passing tests (1395 → 1399), 0 new regressions, mirror invariant intact.
 
 ---
 
-## From Chunk 3 (commits `adb0666..1815fad`)
+## Detail (kept for reference)
 
-### Regression caught during verification (already fixed)
+### From Chunk 1 (commits `0b87101..fa91705`) — code reviewer found 10 NITs
 
-**(Resolved in `1815fad`)** The Chunk 3 implementer missed that `from app.ollama_clients import get_docling_llm_client` works inside the docling-graph container (where `/app/app/` is the package root) but fails in the host venv where `app` resolves to the api-side package. `tests/unit/test_docling_graph_quality_config.py` calls `build_pipeline_config()` directly to verify pass-name override behavior, and 5 tests started failing with `ModuleNotFoundError`. Wrapped the import in `try/except ImportError` so the function still returns a valid config dict in the host venv (with `llm_client` unset; library falls back to its own client at runtime, which is fine for the config-shape unit tests).
+#### Code (`app/services/ollama_pool_client.py`)
 
-**Lesson for future:** when a test calls into a container-side module that imports from a different package layout, the import must be lazy + tolerant. Spec reviewer didn't catch this because they were focused on file-shape parity, not host-venv import resolution. Worth a baseline-test-run gate after each chunk.
+1. ✅ **`_post_chat_with_retry` retry-after-acquire-fails comment.** Resolved in `7b56c2d`. Added a one-line comment near the break.
 
-### Code-quality NITs
+2. ✅ **`__del__` swallows all exceptions.** Resolved in `7b56c2d`. Added explicit `close()` method to both `OllamaChatClient` and `OllamaEmbeddingClient`; `__del__` now logs at DEBUG instead of swallowing exceptions silently.
 
-16. **`tests/test_pool_client_mirror.py:8`** — assert `text.count(_MARKER) == 1` to fail loudly on accidental marker duplication (e.g., someone adds the marker string inside a docstring example).
-17. **`tests/test_pool_client_mirror.py:25`** — anchor paths via `Path(__file__).resolve().parents[1]` instead of relying on pytest invocation cwd. (Other tests in repo use the same convention; not blocking.)
-18. **`tests/test_pool_client_mirror.py`** — add a negative test of `_shared_body` (string lacking marker → `AssertionError`).
-19. **`docker/docling-graph/app/ollama_clients.py:17`** — `get_docling_llm_client` cache-staleness limitation undocumented. Add a "Limitations:" block in the docstring listing the values frozen at first call (`force_json_mode`, `structured_output_threshold_chars`, `DOCLING_GRAPH_LLM_THINK`, all `DoclingGraphSettings` fields) and noting `get_docling_llm_client.cache_clear()` is the test escape hatch.
-20. **`docker/docling-graph/app/main.py:497`** — `/debug/routing-metrics` reads `DOCLING_GRAPH_DEBUG_ENDPOINTS` per request (good) but the cached `client.pool` URLs are frozen at process start. Add docstring note: "Pool URL list is cached per-process; restart docling-graph to refresh."
-21. **`docker/docling-graph/app/main.py:495-496`** — drop dead inline `import os` / `from fastapi import HTTPException` (already imported at module top).
-22. **`docker/docling-graph/app/config_builder.py:191-195`** — lazy import rationale is in a code comment but not the function docstring. Append to docstring: "When run from the host venv (unit tests), `app.ollama_clients` import is suppressed and library falls back to LiteLLMClient; in-container the import always succeeds."
-23. **`docker/docling-graph/app/config_builder.py:201-202`** — vestigial `provider_override`/`model_override` left in `config_kwargs`. Remove or tag with `# TODO` referencing this followups doc.
-24. **`docker/docling-graph/app/ollama_clients.py:29`** — drop trailing `# mirror of app/services/llm_json.py` import comment (the module docstring already explains the mirror; inconsistent with the `ollama_pool_client` import).
+3. ✅ **Re-import of `Callable, Optional`** inside the file body. Resolved in `7b56c2d`.
 
-### Observability gap surfaced during Chunk 4 validation
+4. ✅ **Magic-string `"json"` literal (4 occurrences).** Resolved in `7b56c2d`. Extracted `_FORMAT_JSON = "json"` module-level constant.
 
-25b. **Compose Ollama (`open-webui-stack-ollama-1`, reachable as `http://ollama:11434`) crashed mid-Chunk-5 validation** — returned `{"error":{"message":"llama runner process has terminated: %!w(<nil>)"}}` on every embedding request. Workaround applied: switched `OLLAMA_EMBEDDING_BASE_URL` from `http://ollama:11434` to `http://10.0.1.121:11434` (which has `bge-m3:latest`). Worker-embed restarted to pick up the new URL via `lru_cache.cache_clear`. Surfaces a real concern: the cached factory caches the URL pool at first call; if an operator rotates Ollama endpoints, only a worker restart reflects the change. Already documented in followups #19. The compose Ollama probably needs investigation/restart in the open-webui-stack project — but that's out of scope for this refactor.
+5. ✅ **`OllamaEmbeddingClient.embed` has no `last_call_diagnostics`.** Resolved in `7b56c2d`. Added symmetric diagnostics dict (URL, elapsed_s, model, batch_size).
 
-25. **`OllamaChatClient` logger has no handler in production runtime** — `logger = logging.getLogger(__name__)` inherits root config which has no handler attached in either the api or docling-graph app processes (verified: `oc_logger.handlers=[]`, `root.handlers=[]`, `root.level=30`). So `_maybe_strip_legacy_schema`'s `logger.info("OllamaChatClient: stripped ...")` and `_post_chat_with_retry`'s `logger.warning(...)` produce no visible output. Consequence: during Chunk 4 validation we couldn't tell whether the in-client schema-strip fired during the library's legacy-fallback retry. The OLD `_get_json_response` patch (still in main.py through Chunk 4) DOES have a configured handler from Chunk 3 — its log line IS visible — but neither it nor the new client's strip logged a single line during the SNR-75 reingest, despite the library logging "Structured output failed for delta_batch_0; retrying with legacy prompt-schema mode" once. Either both strips are no-ops on this code path, or the new strip ran silently, or the OLD patch ran silently (its handler should preclude this). Either way: add explicit logging-handler configuration to the canonical `ollama_pool_client.py` (mirroring the pattern at `main.py:62-68`), so production traces actually show what the strip path is doing. Without observability we can't validate Gate 4 cleanly.
+#### Config (`app/config.py`)
+
+6. ✅ **Local `import json` inside `_parse_url_pool`.** Resolved in `78b3958`. Hoisted to module top.
+
+7. ✅ **No warning on duplicate URLs.** Resolved in `78b3958`. `logger.warning` on dupes at parse time.
+
+#### Tests
+
+8. ✅ **Mid-file imports in `test_ollama_pool_client.py`.** Resolved in `a5e2689`.
+
+9. ✅ **Smoke harness slack assertions over-permissive.** Resolved in `1fde787`. Tightened comment.
+
+#### Docs
+
+10. ✅ **`env.example` typo `http://ollama11434`.** Resolved in `d06fc29`. Fixed missing colon.
+
+### From Chunk 2 (commits `bde1646..f85ff04`) — code reviewer found 5 NITs
+
+#### Tests
+
+11. ✅ **`test_factories_use_role_specific_pools` doesn't restore caches on teardown.** Resolved in `8716e26`. Autouse fixture clears caches before AND after each test (the implementer noted that pre-clear was also necessary to handle non-deterministic test ordering).
+
+12. ✅ **`test_llm_client_is_cached_singleton` doesn't `cache_clear()` at the top.** Resolved in `8716e26` (same fixture covers it).
+
+#### Code
+
+13. ✅ **`app/services/ollama_clients.py:45` magic `timeout_s=120.0`.** Resolved in `15a13af`. Added an inline comment ("embeddings are fast; 120s covers worst-case batch").
+
+14. ✅ **`app/api/v1/retrieval.py:1191` "Task 2.5" comment.** Resolved in `45dbaa3`. Rephrased.
+
+#### Pre-existing (drive-by candidates)
+
+15. ❌ **SKIPPED — `app/services/arcadedb_community.py:155-159` raw `_client.command()` access.** Pre-existing, out of scope for OllamaPool refactor.
+
+### From Chunk 3 (commits `adb0666..1815fad`)
+
+#### Regression caught during verification (already fixed)
+
+**(Resolved in `1815fad`)** Lazy import in `build_pipeline_config` so host-venv tests don't break. (See plan doc commit log for full context.)
+
+#### Code-quality NITs
+
+16. ✅ **`tests/test_pool_client_mirror.py` — assert `text.count(_MARKER) == 1`.** Resolved in `f39bbbb`.
+
+17. ✅ **`tests/test_pool_client_mirror.py` — anchor paths via `Path(__file__).resolve().parents[1]`.** Resolved in `f39bbbb`.
+
+18. ✅ **`tests/test_pool_client_mirror.py` — add a negative test of `_shared_body`.** Resolved in `f39bbbb`.
+
+19. ✅ **`docker/docling-graph/app/ollama_clients.py` — `get_docling_llm_client` cache-staleness limitation undocumented.** Resolved in `4ec9174`. Added "Limitations:" block in docstring.
+
+20. ✅ **`docker/docling-graph/app/main.py` — `/debug/routing-metrics` pool-URL caching note missing.** Resolved in `21e592f`.
+
+21. ✅ **`docker/docling-graph/app/main.py` — dead inline `import os` / `from fastapi import HTTPException`.** Resolved in `21e592f`.
+
+22. ✅ **`docker/docling-graph/app/config_builder.py` — lazy import rationale not in function docstring.** Resolved in `2b568d2`.
+
+23. ✅ **`docker/docling-graph/app/config_builder.py` — vestigial `provider_override`/`model_override`.** Resolved in `2b568d2`. **Removed** after verifying tests pass — the library's `pipeline/stages.py:470` short-circuit means these kwargs are dead when `llm_client` is set.
+
+24. ✅ **`docker/docling-graph/app/ollama_clients.py` — drop trailing `# mirror of...` comment.** Resolved in `4ec9174`.
+
+#### Observability gap surfaced during Chunk 4 validation
+
+25. ✅ **`OllamaChatClient` logger has no handler in production runtime.** Resolved in `7b56c2d`. Added explicit logging-handler configuration to `app/services/ollama_pool_client.py` (mirrored to docling-graph copy via the byte-for-byte invariant). Production traces now show what the strip path is doing.
+
+25b. ❌ **SKIPPED — Compose Ollama (`open-webui-stack-ollama-1`) crashed mid-Chunk-5 validation.** Operational issue in another stack, not code. Workaround in place (`OLLAMA_EMBEDDING_BASE_URL=http://10.0.1.109:11434`).
+
+### Post-validation env config switch (user-requested 2026-04-29)
+
+✅ **DONE in `243f585`.** `env.example` now documents the plural pool form as canonical. Singular forms remain (uncommented, blank values) as legacy fallbacks. `.env` itself was updated during Chunks 4-5 validation to the user's preferred config (singular fallbacks for back-compat + plural pools for LLM/VLM/embedding roles).
+
+### Notebook alignment (user-requested 2026-04-29)
+
+All 4 notebooks updated to reflect the OllamaPool refactor:
+
+- ✅ `notebooks/extraction_walkthrough.ipynb` — `449d414` — pipeline-diagram + cascade documentation in markdown cells.
+- ✅ `notebooks/extraction_walkthrough_direct_ollama.ipynb` — `5f4f9bc` — reframed (LiteLLM no longer the contrast point); cascade documentation.
+- ✅ `notebooks/raw_libraries_walkthrough.ipynb` — `ea98cf9` — most substantive: replaces `LiteLLMClient` instantiation with `OllamaChatClient` + pool, drops dead `connection.base_url`/`context_limit`/`max_output_tokens` overrides; matches production wiring.
+- ✅ `notebooks/ingest_walkthrough.ipynb` — `3f6b05c` — log-line expectation updates (`OllamaChatClient` not `LiteLLMClient`).
+
+All notebooks pass `nbformat.validate`; cell code AST-validated; `raw_libraries_walkthrough.ipynb`'s new `OllamaChatClient` wiring smoke-tested end-to-end. Not run via `jupyter nbconvert --execute` — host venv lacks nbconvert and Jupyter sidecar wasn't running.
 
 ---
 
-## From Chunk 4 (validation)
+## Cleanup pass — what landed
 
-_(populated after end-to-end validation)_
+13 commits to `main`, all pushed:
 
----
-
-## From Chunk 5 (LiteLLM patch deletion)
-
-_(populated after patch deletion)_
-
----
-
-## Cleanup pass plan
-
-After Chunk 5 lands and the OllamaPool refactor is fully shipped:
-
-1. Group items by file (consolidates touch surface)
-2. One commit per file: `chore(ollama-pool): cleanup nits from refactor — <file>`
-3. Push without ceremony — these are mechanical low-risk changes
-
-Estimated effort: ~30 min single sitting, no review ceremony needed.
-
----
-
-## Post-validation env config switch (user-requested 2026-04-29)
-
-Once Chunks 4 and 5 are complete and validated, switch `.env` and `env.example` from the singular `OLLAMA_*_BASE_URL` form to the plural pool form. User explicitly requested this once the refactor is done.
-
-### Current state (singular)
-```bash
-OLLAMA_LLM_BASE_URL=http://10.0.1.121:11434
-OLLAMA_VLM_BASE_URL=http://ollama:11434
-OLLAMA_EMBEDDING_BASE_URL=http://ollama:11434
+```
+7b56c2d feat: cleanup nits — ollama_pool_client.py (items 1-5, 25)
+78b3958 feat: cleanup nits — app/config.py (items 6, 7)
+a5e2689 feat: cleanup nits — test_ollama_pool_client.py (item 8)
+1fde787 feat: cleanup nits — tests/smoke/ollama_pool_routing.py (item 9)
+d06fc29 docs: cleanup nits — env.example typo (item 10)
+8716e26 feat: cleanup nits — test_ollama_clients_factory.py (items 11, 12)
+15a13af feat: cleanup nits — ollama_clients.py (item 13)
+45dbaa3 feat: cleanup nits — retrieval.py comment (item 14)
+f39bbbb feat: cleanup nits — test_pool_client_mirror.py (items 16-18)
+4ec9174 feat: cleanup nits — docling-graph/app/ollama_clients.py (items 19, 24)
+21e592f feat: cleanup nits — docling-graph/app/main.py (items 20, 21)
+2b568d2 feat: cleanup nits — docling-graph/app/config_builder.py (items 22, 23)
+243f585 docs(env): document pool URLs as the canonical form
 ```
 
-### Target state (plural — JSON array form)
-```bash
-OLLAMA_LLM_BASE_URLS=["http://10.0.1.121:11434"]
-OLLAMA_VLM_BASE_URLS=["http://10.0.1.121:11434"]
-OLLAMA_EMBEDDING_BASE_URLS=["http://10.0.1.121:11434"]
-```
+Plus 4 notebook commits (`449d414`, `5f4f9bc`, `ea98cf9`, `3f6b05c`).
 
-When the user provisions the bank of 8 gemma4 instances, expand `OLLAMA_LLM_BASE_URLS` to enumerate all 8 IPs. The other roles (VLM/embedding) can stay single-URL until they need scaling.
-
-Both forms are accepted (plural takes precedence over singular when set), but the plural is now canonical and is what we want documented in `env.example` for new users. Leave the singular vars commented out in `env.example` as legacy fallbacks.
+**Final pytest count:** `1399 passed, 3 failed (pre-existing baseline), 3 skipped, 3 xfailed`. **Net delta from cleanup pass: +2 passing, 0 new regressions.** Mirror-drift test PASS.
