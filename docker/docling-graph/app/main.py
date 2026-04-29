@@ -289,6 +289,68 @@ def _apply_litellm_client_patches():
     except ImportError:
         _logger.warning("Could not patch LiteLLMClient — docling_graph.llm_clients.litellm not available")
 
+    # Fix slow legacy-fallback path on force_json_mode runs.
+    #
+    # The upstream LLMBackend._call_prompt catches a ClientError from the
+    # primary LLM call and "retries with legacy prompt-schema mode": it
+    # appends the FULL JSON Schema as text into prompt["user"] and
+    # re-issues the call. On large field-group schemas with
+    # force_json_mode=true, the schema embedding inflates the prompt by
+    # several KB and the retry takes 5-30× longer than the primary call,
+    # serializing all subsequent batches behind the bloated retry on the
+    # affected Ollama slot.
+    #
+    # Fix: when DOCLING_GRAPH_FORCE_JSON_MODE=true, intercept
+    # _call_with_optional_max_tokens with structured_output_override=False
+    # (i.e., a legacy retry) and strip the "=== TARGET SCHEMA ===\n...\n
+    # === END SCHEMA ===\n\n" tail before passing to the underlying client.
+    # Since force_json_mode already sends format="json" via _build_request
+    # for the primary call, the legacy retry then becomes a clean re-issue
+    # of the same loose-JSON prompt — recovery without bloat.
+    try:
+        from app.config import settings as _service_settings
+        from docling_graph.core.extractors.backends.llm_backend import LlmBackend
+
+        _orig_call_with_max_tokens = LlmBackend._call_with_optional_max_tokens
+
+        def _patched_call_with_optional_max_tokens(
+            self, *args, prompt, schema_json, structured_output_override=None, **kwargs
+        ):
+            if (
+                structured_output_override is False
+                and _service_settings.force_json_mode
+                and isinstance(prompt, dict)
+                and isinstance(prompt.get("user"), str)
+            ):
+                user = prompt["user"]
+                marker = "\n\n=== TARGET SCHEMA ===\n"
+                idx = user.find(marker)
+                if idx != -1:
+                    stripped = user[:idx].rstrip()
+                    prompt = {**prompt, "user": stripped}
+                    _logger.info(
+                        "force_json_mode: stripped %d-char schema embedding "
+                        "from legacy retry prompt",
+                        len(user) - len(stripped),
+                    )
+            return _orig_call_with_max_tokens(
+                self, *args,
+                prompt=prompt,
+                schema_json=schema_json,
+                structured_output_override=structured_output_override,
+                **kwargs,
+            )
+
+        LlmBackend._call_with_optional_max_tokens = _patched_call_with_optional_max_tokens
+        _logger.info(
+            "LlmBackend patched: force_json_mode legacy retries no longer "
+            "embed schema in prompt"
+        )
+    except (ImportError, AttributeError) as exc:
+        _logger.warning(
+            "Could not patch LLMBackend legacy-retry path: %s", exc,
+        )
+
     # Fix TABLE_REF node ID collision: split("_")[0] yields "TABLE" for
     # "TABLE_REF_<fingerprint>", causing false collision.  Use rsplit.
     try:
