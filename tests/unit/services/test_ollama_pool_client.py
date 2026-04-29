@@ -4,7 +4,9 @@ Pool tests cover acquire/release semantics, least-in-flight selection,
 and counter integrity under concurrent acquire (proxy for thread-safety).
 HTTP behavior is covered separately in test_ollama_pool_client_http.py.
 """
+import contextlib
 import json
+import logging
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +18,29 @@ from app.services.ollama_pool_client import (
     OllamaEmbeddingClient,
     OllamaPool,
 )
+
+
+@contextlib.contextmanager
+def _attach_caplog_to_pool_logger(caplog):
+    """Attach caplog's handler to app.services.ollama_pool_client's logger.
+
+    The pool client logger sets propagate=False (so its INFO logs don't
+    duplicate up to the root logger when the host process configures
+    logging itself), which means caplog's root-level handler never sees
+    its records. Tests that need to assert on its log lines must attach
+    caplog.handler directly to that named logger for the duration of the
+    test. This helper handles attach + restore so individual tests stay
+    a single `with` block.
+    """
+    pool_logger = logging.getLogger("app.services.ollama_pool_client")
+    prev_level = pool_logger.level
+    pool_logger.setLevel(logging.INFO)
+    pool_logger.addHandler(caplog.handler)
+    try:
+        yield
+    finally:
+        pool_logger.removeHandler(caplog.handler)
+        pool_logger.setLevel(prev_level)
 
 
 class _FakeClientError(Exception):
@@ -584,15 +609,7 @@ def test_embedding_client_preserves_input_order():
 
 
 def test_chat_logs_success_url_at_info(caplog):
-    # The pool client logger sets propagate=False, so caplog's root handler
-    # never sees its records. Attach caplog's handler directly to the named
-    # logger for the duration of the test.
-    import logging as _logging
-    pool_logger = _logging.getLogger("app.services.ollama_pool_client")
-    prev_level = pool_logger.level
-    pool_logger.setLevel(_logging.INFO)
-    pool_logger.addHandler(caplog.handler)
-    try:
+    with _attach_caplog_to_pool_logger(caplog):
         pool = OllamaPool(urls=["http://only"])
         client = OllamaChatClient(pool=pool, model="m")
         fake = MagicMock()
@@ -600,9 +617,6 @@ def test_chat_logs_success_url_at_info(caplog):
         fake.raise_for_status.return_value = None
         with patch("httpx.Client.post", return_value=fake):
             client.chat(messages=[{"role": "user", "content": "x"}])
-    finally:
-        pool_logger.removeHandler(caplog.handler)
-        pool_logger.setLevel(prev_level)
     assert any(
         "OllamaChatClient: ok" in rec.message and "http://only" in rec.message
         for rec in caplog.records
@@ -610,12 +624,7 @@ def test_chat_logs_success_url_at_info(caplog):
 
 
 def test_embedding_logs_success_url_at_info(caplog):
-    import logging as _logging
-    pool_logger = _logging.getLogger("app.services.ollama_pool_client")
-    prev_level = pool_logger.level
-    pool_logger.setLevel(_logging.INFO)
-    pool_logger.addHandler(caplog.handler)
-    try:
+    with _attach_caplog_to_pool_logger(caplog):
         pool = OllamaPool(urls=["http://only"])
         client = OllamaEmbeddingClient(pool=pool, model="bge-m3")
         fake = MagicMock()
@@ -623,9 +632,6 @@ def test_embedding_logs_success_url_at_info(caplog):
         fake.raise_for_status.return_value = None
         with patch("httpx.Client.post", return_value=fake):
             client.embed(["hello"])
-    finally:
-        pool_logger.removeHandler(caplog.handler)
-        pool_logger.setLevel(prev_level)
     assert any(
         "OllamaEmbeddingClient: ok" in rec.message and "http://only" in rec.message
         for rec in caplog.records
