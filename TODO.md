@@ -1,6 +1,6 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-28
+**Last updated:** 2026-04-29
 
 ---
 
@@ -180,6 +180,54 @@ Globally-accurate routing eliminates the "process A piles onto URL X while proce
 - Adds one container to monitor + deploy + debug
 - Adds one HTTP hop (~1–3ms) on the hot path of every LLM call
 - Creates a single point of failure unless replicated; replication needs shared in-flight state (Redis-backed counters as Option 2 between in-process and sidecar)
+
+---
+
+### Infrastructure / LLM Provider Support (Deferred)
+
+**#75. Add vLLM as a peer provider to the OllamaPool**
+**Status:** Open. Builds on the per-function pool refactor (`docs/superpowers/plans/2026-04-28-ollama-pool-client-refactor.md` Chunks 1–6).
+
+**Observation:**
+The current pool client speaks only Ollama's wire format. vLLM serves the same OpenAI-compatible `/v1/chat/completions` and `/v1/embeddings` endpoints, but its structured-output and JSON-mode payloads differ:
+
+- **Schema-constrained output:** Ollama uses `format=<schema_dict>`; vLLM uses `extra_body={"guided_json": <schema>, "guided_decoding_backend": "outlines"}`.
+- **JSON mode:** Ollama uses `format="json"`; vLLM uses `response_format={"type": "json_object"}`.
+- **`think` parameter:** Ollama-only (gpt-oss low/medium/high); vLLM models reject it.
+- **Auth:** vLLM typically requires `Authorization: Bearer <key>`; Ollama doesn't.
+
+The `OllamaPool` routing core (least-in-flight + round-robin tie-break + retry) is provider-agnostic and reused as-is. The per-function factory pattern from Chunk 6 is the natural extension point: each function picks its provider via env, the factory dispatches.
+
+**What needs to be done:**
+
+1. **Refactor (1 commit, ~2 hours):** Extract `BaseChatClient` and `BaseEmbeddingClient` from the current Ollama clients with `_post_chat_with_retry` + retry/diagnostics shared, leave `_build_chat_body` abstract. Both clients become ~50 lines each and the new vLLM clients only need to implement the body-builder.
+2. **`app/services/vllm_client.py` (~150 lines, 1 day):** `VLLMChatClient` + `VLLMEmbeddingClient` implementing the same `LLMClientProtocol`. Differences from Ollama: `extra_body.guided_json` for structured output, `response_format` for JSON mode, Bearer auth header from `VLLM_API_KEY`, no `think` (`_coerce_think` becomes a no-op for vLLM).
+3. **Settings + factory dispatch (~0.5 day):**
+   - New env vars: `LLM_PROVIDER_DEFAULT` (process-wide ollama|vllm fallback), `VLLM_API_KEY`, plus per-function `<FUNCTION>_LLM_PROVIDER` env vars (parallel to per-function URL pools — `DOC_ANALYSIS_LLM_PROVIDER`, `TRANSLATION_LLM_PROVIDER`, `COMMUNITY_REPORT_LLM_PROVIDER`, `PICTURE_DESCRIPTION_PROVIDER`, `TEXT_EMBEDDING_PROVIDER`, `DOCLING_GRAPH_LLM_PROVIDER`).
+   - Factory cascade: per-function provider → `LLM_PROVIDER_DEFAULT` → `"ollama"`. URL list cascade unchanged (vLLM consumes `<FUNCTION>_LLM_BASE_URLS` the same way).
+   - Each `get_<func>_client()` factory dispatches: `if provider == "vllm": return VLLMChatClient(...) else: return OllamaChatClient(...)`.
+4. **docling-graph mirror (~0.5 day):** Mirror `vllm_client.py` into `docker/docling-graph/app/`, add to `tests/test_pool_client_mirror.py`'s known pairs, update `get_docling_graph_client` factory to dispatch on `DOCLING_GRAPH_LLM_PROVIDER`.
+5. **Tests (~bundled into 1+2 above):** Body-shape tests for `VLLMChatClient` mirroring the Ollama suite; factory-dispatch tests; cascade tests for `<FUNCTION>_LLM_PROVIDER`.
+6. **Docs (~1–2 hours):** `env.example` and `README.md` section on provider selection + 2-3 common heterogeneous-provider patterns (e.g., extraction on vLLM, doc analysis on Ollama).
+7. **End-to-end validation (~0.5 day, requires a real vLLM instance):** Heterogeneous reingest where graph extraction routes to vLLM and doc analysis routes to Ollama. Same gate structure as Chunk 6's heterogeneous-config validation.
+
+**When to do it:**
+Trigger when:
+- An operator wants to deploy a vLLM instance (e.g., for a model not well-supported by Ollama, or for higher throughput)
+- A specific LLM function gets pinned to vLLM (e.g., gpt-oss:120b on vLLM for doc analysis while gemma4:31b stays on Ollama for extraction)
+
+Until then, the OllamaPool design serves the existing single-provider deployment.
+
+**Estimated lift:** ~2.5 days (single implementer). The routing core, per-function factory pattern, settings cascade, mirror invariant, and observability hooks all already exist — this chunk is mechanical extension.
+
+**Why this matters:**
+- Different LLMs have different strengths. vLLM excels at high-throughput batched inference for fixed-model workloads; Ollama wins on flexibility (model swapping, easier model management). Letting each function pick its provider matches each function to its best backend without forcing a global choice.
+- vLLM's structured-output backend (outlines/lm-format-enforcer) is more reliable than Ollama's `format=<schema>` for some model+schema combinations. If we hit gemma4:31b "Unterminated string" issues again on a future schema, vLLM is the natural escape hatch.
+
+**Out of scope for v1:**
+- Mixed-provider pool (some URLs in a single pool are Ollama, others vLLM). Requires per-URL provider tagging in `OllamaPool` — real design work, ~half day on top. Strongly recommend separate pools per provider; you almost certainly run homogeneous banks.
+- Streaming. Neither current client streams; both providers support it but we've decided we don't need it.
+- OpenAI / Anthropic clients (same pattern would apply; defer until needed).
 
 ---
 
