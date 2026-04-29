@@ -92,7 +92,11 @@ class DoclingGraphSettings(BaseSettings):
     # the DOCLING_GRAPH_LLM_MAX_TOKENS env var.
     docling_graph_llm_max_tokens: int | None = 32000
     docling_graph_llm_timeout: int = 1800  # 30 min per LLM call
-    ollama_llm_base_url: str = "http://ollama:11434"
+    # Singular / fallback URLs (back-compat with existing .env files).
+    ollama_base_url: str = "http://ollama:11434"
+    ollama_llm_base_url: str = ""
+    # Plural pool — raw JSON-array string. Parsed in get_ollama_llm_urls().
+    ollama_llm_base_urls: str = ""
     # For models missing from LiteLLM's metadata registry (e.g. ollama/llama3.3:70b)
     # the library's resolve_effective_model_config falls back to
     # _DEFAULT_MAX_OUTPUT_TOKENS=4092, then refuses any max_tokens above that.
@@ -103,6 +107,37 @@ class DoclingGraphSettings(BaseSettings):
 
     # Backend: "llm" or "vlm"
     docling_graph_backend: str = "llm"
+
+    def get_ollama_llm_urls(self) -> list[str]:
+        """Parse priority: ollama_llm_base_urls (plural JSON) >
+        ollama_llm_base_url (singular) > ollama_base_url. Always non-empty.
+        """
+        import json
+        s = (self.ollama_llm_base_urls or "").strip()
+        if s:
+            try:
+                parsed = json.loads(s)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"OLLAMA_LLM_BASE_URLS is not valid JSON: {exc}; "
+                    f"got: {s!r}"
+                ) from exc
+            if not isinstance(parsed, list) or not all(
+                isinstance(x, str) for x in parsed
+            ):
+                raise ValueError(
+                    f"OLLAMA_LLM_BASE_URLS must be a JSON array of strings; "
+                    f"got: {parsed!r}"
+                )
+            if not all(x.strip() for x in parsed):
+                raise ValueError(
+                    f"OLLAMA_LLM_BASE_URLS contains blank entries; got: {parsed!r}"
+                )
+            if parsed:
+                return parsed
+        if self.ollama_llm_base_url:
+            return [self.ollama_llm_base_url]
+        return [self.ollama_base_url]
 
 
 # Per-pass overrides for the quality gate. ``system_links`` is the
@@ -133,6 +168,7 @@ def build_pipeline_config(
     response's ``diagnostics`` field.
     """
     from docling_graph import PipelineConfig
+    from app.ollama_clients import get_docling_llm_client
 
     settings = DoclingGraphSettings()
 
@@ -140,8 +176,18 @@ def build_pipeline_config(
     if pass_name in _QUALITY_MIN_INSTANCES_PER_PASS:
         quality_min_instances = _QUALITY_MIN_INSTANCES_PER_PASS[pass_name]
 
+    # Build via the process-cached factory in app/ollama_clients.py. All
+    # generation knobs (top_p / top_k / seed / stop / etc.), the schema
+    # transform, force_json_mode, structured_output_threshold_chars, and
+    # ClientError + parse_json_fn wiring live inside that factory — this
+    # function is just a one-line consumer. provider_override / model_override
+    # below become vestigial when llm_client is set (pipeline/stages.py:470
+    # short-circuits) but are kept to avoid touching the rest of the kwargs.
+    llm_client = get_docling_llm_client()
+
     config_kwargs: dict[str, Any] = {
         "source": source,
+        "llm_client": llm_client,
         "backend": settings.docling_graph_backend,
         "inference": "local",
         "provider_override": settings.docling_graph_llm_provider,
@@ -178,9 +224,6 @@ def build_pipeline_config(
             },
             "reliability": {
                 "timeout_s": settings.docling_graph_llm_timeout,
-            },
-            "connection": {
-                "base_url": settings.ollama_llm_base_url,
             },
             "context_limit": settings.docling_graph_llm_context_limit,
             "max_output_tokens": settings.docling_graph_llm_max_output_tokens,

@@ -168,6 +168,9 @@ services:
       # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,
       # LiteLLM reads OLLAMA_API_BASE / OLLAMA_BASE_URL
       OLLAMA_LLM_BASE_URL: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
+      # Pool URLs — JSON-array string. When set, takes precedence over
+      # the singular OLLAMA_LLM_BASE_URL above.
+      OLLAMA_LLM_BASE_URLS: ${OLLAMA_LLM_BASE_URLS:-}
       OLLAMA_BASE_URL: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OLLAMA_API_BASE: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-16384}
