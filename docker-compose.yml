@@ -162,7 +162,7 @@ services:
       DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-72000}
       # Concurrent chunk batches per /extract-pass (config_builder.py:44).
       # Effective parallelism is min(this, OLLAMA_NUM_PARALLEL on the LLM host).
-      DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-5}
+      DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-3}
       # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
       DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
       # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,
