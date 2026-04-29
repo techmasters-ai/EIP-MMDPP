@@ -5,6 +5,7 @@ Uses pydantic_settings.BaseSettings for type-safe env var parsing.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Type
 
@@ -120,9 +121,14 @@ class DoclingGraphSettings(BaseSettings):
           > ollama_llm_base_url (singular)
           > ollama_base_url (base).
         Always returns a non-empty list.
+
+        Error messages name the actual offending env var so an operator
+        hitting a malformed JSON value can tell which variable to fix.
         """
-        import json
-        for raw in (self.docling_graph_llm_base_urls, self.ollama_llm_base_urls):
+        for env_name, raw in (
+            ("DOCLING_GRAPH_LLM_BASE_URLS", self.docling_graph_llm_base_urls),
+            ("OLLAMA_LLM_BASE_URLS", self.ollama_llm_base_urls),
+        ):
             s = (raw or "").strip()
             if not s:
                 continue
@@ -130,17 +136,17 @@ class DoclingGraphSettings(BaseSettings):
                 parsed = json.loads(s)
             except json.JSONDecodeError as exc:
                 raise ValueError(
-                    f"Pool URL env var is not valid JSON: {exc}; got: {s!r}"
+                    f"{env_name} is not valid JSON: {exc}; got: {s!r}"
                 ) from exc
             if not isinstance(parsed, list) or not all(
                 isinstance(x, str) for x in parsed
             ):
                 raise ValueError(
-                    f"Pool URL env var must be a JSON array of strings; got: {parsed!r}"
+                    f"{env_name} must be a JSON array of strings; got: {parsed!r}"
                 )
             if not all(x.strip() for x in parsed):
                 raise ValueError(
-                    f"Pool URL env var contains blank entries; got: {parsed!r}"
+                    f"{env_name} contains blank entries; got: {parsed!r}"
                 )
             if parsed:
                 return parsed
