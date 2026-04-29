@@ -535,7 +535,7 @@ class OllamaChatClient:
                 }
                 logger.info(
                     "OllamaChatClient: ok url=%s model=%s elapsed=%.2fs len(content)=%d",
-                    url, body.get("model", self.model), time.time() - t0, len(content),
+                    url, body["model"], time.time() - t0, len(content),
                 )
                 if content:
                     return content
