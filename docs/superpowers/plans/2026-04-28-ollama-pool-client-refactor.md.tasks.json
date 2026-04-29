@@ -1,0 +1,52 @@
+{
+  "planPath": "docs/superpowers/plans/2026-04-28-ollama-pool-client-refactor.md",
+  "tasks": [
+    {
+      "id": 59,
+      "subject": "Chunk 1: Pool client + settings (Tasks 1.1-1.8)",
+      "status": "completed"
+    },
+    {
+      "id": 60,
+      "subject": "Chunk 2: Migrate api-side call sites (Tasks 2.1-2.8)",
+      "status": "completed",
+      "blockedBy": [
+        59
+      ]
+    },
+    {
+      "id": 61,
+      "subject": "Chunk 3: Wire OllamaChatClient into docling-graph (Tasks 3.1-3.3)",
+      "status": "completed",
+      "blockedBy": [
+        59
+      ]
+    },
+    {
+      "id": 62,
+      "subject": "Chunk 4: End-to-end validation (Tasks 4.1-4.3)",
+      "status": "completed",
+      "blockedBy": [
+        60,
+        61
+      ]
+    },
+    {
+      "id": 63,
+      "subject": "Chunk 5: Delete LiteLLM patches (POST-VALIDATION; Tasks 5.1-5.2)",
+      "status": "completed",
+      "blockedBy": [
+        62
+      ]
+    },
+    {
+      "id": 64,
+      "subject": "Chunk 6: Per-function URL pools (Tasks 6.1-6.6)",
+      "status": "completed",
+      "blockedBy": [
+        63
+      ]
+    }
+  ],
+  "lastUpdated": "2026-04-29T22:55:37.743699+00:00"
+}

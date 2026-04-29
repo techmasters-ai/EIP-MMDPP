@@ -145,6 +145,26 @@ All notebooks pass `nbformat.validate`; cell code AST-validated; `raw_libraries_
 
 ---
 
+## From Chunk 6 (commits `5e01aca..9b0c593`)
+
+### Code-quality NITs (defer to a later cleanup pass)
+
+26. **`app/config.py:226-257`** — per-function helpers re-parse role-level JSON via `_parse_url_pool` on every call (cheap, but the duplicate-URL warning will log twice when both function and role pools are configured). Either `lru_cache` the parser or accept the log noise.
+27. **`app/config.py:139-184`** — `_parse_url_pool` error messages say "OLLAMA_*_BASE_URLS env value is not valid JSON" with a wildcard, hiding the actual offending env var name (e.g. `DOC_ANALYSIS_LLM_BASE_URLS`). Add a `field_name: str` parameter so the exception names the var.
+28. **`app/services/ollama_clients.py:58`** — `get_community_report_client` reuses `s.doc_analysis_timeout` with a `# historical reuse` comment. Factory caches at first call, so adding a dedicated `community_report_timeout` later requires `cache_clear()`. Either add the setting now (defaulting to `doc_analysis_timeout`), or tag with TODO.
+29. **`app/services/ollama_clients.py:1-15`** — module docstring mentions "Env values frozen at first call" but per-factory docstrings don't. The docling-graph mirror's "Limitations" block is more thorough. Copy that block into the canonical's module-level docstring.
+30. **`docker/docling-graph/app/config_builder.py:116-149`** — the `for raw in (...)` loop conflates two distinct env vars under a generic `"Pool URL env var ..."` error string. Operator hitting a malformed `DOCLING_GRAPH_LLM_BASE_URLS` can't tell which JSON failed. Restructure as `for env_name, raw in (("DOCLING_GRAPH_LLM_BASE_URLS", ...), ("OLLAMA_LLM_BASE_URLS", ...))` and interpolate `env_name`. Also move `import json` to module top.
+31. **`app/services/ollama_pool_client.py:549` (canonical) + mirror** — `body.get("model", self.model)` is unreachable in practice (every code path that reaches `_post_chat_with_retry` sets `body["model"]`). The fallback hides bugs. Use `body["model"]` (KeyError) or assert at top of `_post_chat_with_retry`.
+32. **`tests/unit/services/test_ollama_pool_client.py:586-632`** — `test_chat_logs_success_url_at_info` and `test_embedding_logs_success_url_at_info` repeat the same 6-line caplog-handler attach/restore boilerplate. Extract a `@contextmanager` fixture into `conftest.py`.
+33. **`tests/unit/services/test_ollama_clients_factory.py:13-26`** — `get_settings.cache_clear()` runs alongside factory clears; order matters subtly. Add a one-line comment so a reader doesn't wonder.
+34. **`docker-compose.yml:160-200`** — `docling-graph` service explicitly passes `DOCLING_GRAPH_LLM_BASE_URLS` + `OLLAMA_LLM_BASE_URLS` as shell-overridable. `api`/`worker` services rely solely on `env_file: .env` for the new per-function vars. An operator who exports a var (rather than editing `.env`) will be surprised the api/worker containers don't see it. Either add explicit passthroughs or document the `env_file`-only behavior.
+
+### Operational issue surfaced during Chunk 6 validation (NOT a code bug)
+
+35. **VRAM contention on 10.0.1.109 between `gemma4:31b` and `bge-m3:latest`** — recurring throughout Chunks 4-6 validation. `gemma4:31b` is loaded with `keep_alive=-1` (permanent, `expires_at: 2318`), pinning ~90GB of VRAM. `bge-m3:latest` then can't co-load and crashes with `llama runner process has terminated: %!w(<nil>)`. Pattern observed: any extraction run that hits 109 reloads gemma4; immediately after, bge-m3 dies; queries (Text Basic / Multi-Modal) return zero results because the query-time embedding fails 500. Workaround: `curl -X POST http://10.0.1.109:11434/api/generate -d '{"model":"gemma4:31b","keep_alive":0,"prompt":""}'` unloads gemma4; bge-m3 reloads; queries work again. Permanent fixes: (a) move embeddings to a dedicated small-GPU/CPU host that doesn't carry chat models; (b) remove `keep_alive=-1` from gemma4 calls so Ollama can evict it under VRAM pressure; (c) ensure 109 has enough VRAM for both gemma4 (90GB) + bge-m3 (~2GB) simultaneously (~100GB total). Out of scope for this refactor — this is host-capacity tuning. Documented here so future ops sees the playbook.
+
+---
+
 ## Cleanup pass — what landed
 
 13 commits to `main`, all pushed:
