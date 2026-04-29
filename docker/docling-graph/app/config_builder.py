@@ -166,6 +166,14 @@ def build_pipeline_config(
     batch_errors, quality_gate verdict, identity_filter stats, etc. The
     extract_pass handler reads that file back and surfaces it in the
     response's ``diagnostics`` field.
+
+    The local ``from app.ollama_clients import get_docling_llm_client``
+    is wrapped in try/except ImportError so unit tests that exercise this
+    function from the host venv still work. In the host venv, ``app``
+    resolves to the api-side package, so the import fails — we leave
+    ``llm_client`` unset and the library falls back to its own LiteLLMClient.
+    Tests of this function only inspect config-dict shape, so the fallback
+    is harmless. In-container the import always succeeds.
     """
     from docling_graph import PipelineConfig
 
@@ -180,14 +188,10 @@ def build_pipeline_config(
     # transform, force_json_mode, structured_output_threshold_chars, and
     # ClientError + parse_json_fn wiring live inside that factory — this
     # function is just a one-line consumer. provider_override / model_override
-    # below become vestigial when llm_client is set (pipeline/stages.py:470
-    # short-circuits) but are kept to avoid touching the rest of the kwargs.
-    #
-    # The import is local + try/except so unit tests of build_pipeline_config
-    # can run from the host venv (where `app` resolves to the api-side
-    # package, not the docling-graph one). When the factory isn't importable
-    # we leave llm_client unset; the library falls back to building its own
-    # LiteLLMClient and the test only inspects config-dict shape anyway.
+    # used to be threaded into config_kwargs too, but pipeline/stages.py:470
+    # short-circuits on llm_client and the library's own provider/model
+    # selection already lives inside the factory; tests pass without them.
+    # See followups.md #23.
     try:
         from app.ollama_clients import get_docling_llm_client
         llm_client: Any | None = get_docling_llm_client()
@@ -198,8 +202,6 @@ def build_pipeline_config(
         "source": source,
         "backend": settings.docling_graph_backend,
         "inference": "local",
-        "provider_override": settings.docling_graph_llm_provider,
-        "model_override": settings.docling_graph_llm_model,
         "extraction_contract": settings.docling_graph_extraction_contract,
         "processing_mode": settings.docling_graph_processing_mode,
         "use_chunking": settings.docling_graph_use_chunking,
