@@ -14,6 +14,9 @@ from app.services import ollama_clients
 def _clear_caches():
     """Clear all factory caches before AND after each test so polluted
     singletons don't leak across tests in the file."""
+    # Order matters: factory caches capture Settings at first call, so we
+    # must clear get_settings AND every factory's lru_cache (in either order)
+    # both before and after each test to keep tests hermetic.
     def _clear():
         get_settings.cache_clear()
         ollama_clients.get_doc_analysis_client.cache_clear()
