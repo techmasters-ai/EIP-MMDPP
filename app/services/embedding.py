@@ -43,8 +43,8 @@ def embed_texts(texts: list[str], batch_size: int = 64, *, query: bool = False) 
         else:
             texts = [f"Represent this sentence: {t}" for t in texts]
 
-    from app.services.ollama_clients import get_embedding_client
-    client = get_embedding_client()
+    from app.services.ollama_clients import get_text_embedding_client
+    client = get_text_embedding_client()
     all_embeddings: list[list[float]] = []
 
     # Process in batches
