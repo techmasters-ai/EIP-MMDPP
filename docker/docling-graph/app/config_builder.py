@@ -168,7 +168,6 @@ def build_pipeline_config(
     response's ``diagnostics`` field.
     """
     from docling_graph import PipelineConfig
-    from app.ollama_clients import get_docling_llm_client
 
     settings = DoclingGraphSettings()
 
@@ -183,11 +182,20 @@ def build_pipeline_config(
     # function is just a one-line consumer. provider_override / model_override
     # below become vestigial when llm_client is set (pipeline/stages.py:470
     # short-circuits) but are kept to avoid touching the rest of the kwargs.
-    llm_client = get_docling_llm_client()
+    #
+    # The import is local + try/except so unit tests of build_pipeline_config
+    # can run from the host venv (where `app` resolves to the api-side
+    # package, not the docling-graph one). When the factory isn't importable
+    # we leave llm_client unset; the library falls back to building its own
+    # LiteLLMClient and the test only inspects config-dict shape anyway.
+    try:
+        from app.ollama_clients import get_docling_llm_client
+        llm_client: Any | None = get_docling_llm_client()
+    except ImportError:
+        llm_client = None
 
     config_kwargs: dict[str, Any] = {
         "source": source,
-        "llm_client": llm_client,
         "backend": settings.docling_graph_backend,
         "inference": "local",
         "provider_override": settings.docling_graph_llm_provider,
@@ -230,6 +238,9 @@ def build_pipeline_config(
         },
         "dump_to_disk": False,
     }
+
+    if llm_client is not None:
+        config_kwargs["llm_client"] = llm_client
 
     if template_class is not None:
         config_kwargs["template"] = template_class
