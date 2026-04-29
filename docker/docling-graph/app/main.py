@@ -192,9 +192,12 @@ def debug_routing_metrics():
     Used by Chunk 4's Gate 5 to verify fan-out across all configured Ollama
     URLs. Returns {} for the LLM role only in v1; VLM/embedding pools
     aren't used inside docling-graph.
+
+    NOTE: pool URL list is cached per-process (see
+    app.ollama_clients.get_docling_llm_client). Restart docling-graph to
+    refresh after rotating OLLAMA_LLM_BASE_URLS — only the gate (DEBUG_ENDPOINTS
+    env) is read per request; the URLs themselves are frozen at first call.
     """
-    import os
-    from fastapi import HTTPException
     if os.environ.get("DOCLING_GRAPH_DEBUG_ENDPOINTS", "false").lower() not in (
         "true", "1", "yes", "on"
     ):
