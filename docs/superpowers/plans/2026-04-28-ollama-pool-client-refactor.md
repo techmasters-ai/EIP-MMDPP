@@ -3,6 +3,7 @@
 > **For agentic workers:** REQUIRED: Use superpowers-extended-cc:subagent-driven-development (if subagents available) or superpowers-extended-cc:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Revision history:**
+- **v8 (2026-04-29, post-seventh-review — Chunk-6-only fixes):** Addressed reviewer findings on the Chunk 6 fleshed-out plan. **High:** Gates 6.C / 6.D were not verifiable — current client only logs URLs at WARNING (failure path) and `OllamaEmbeddingClient.embed()` had no success URL log at all. Added new Task 6.5b that promotes the success log to INFO with `url=...` field on both chat and embedding clients (with parity tests + mirror-drift sync). Updated Gates 6.C / 6.D with concrete grep commands against the new log lines. **Medium:** P1 audit grep was too narrow — couldn't catch module-qualified calls (`ollama_clients.get_llm_client(...)`) or `get_docling_llm_client`. Replaced with a comprehensive `rg` over both production and test trees and a separate test-patch sweep section. **Medium:** Task 6.4 Step 5 overstated what the host-venv test proves — that test swallows the `app.ollama_clients` ImportError and would NOT catch a renamed symbol inside the container. Added explicit `docker exec ... python -c "from app.ollama_clients import get_docling_graph_client"` smoke check. **Medium:** Test mock-path sweep was implicit; made it an explicit Step 7 with the comprehensive `rg tests --type py` invocation, and called out two known stale targets (`test_document_analysis.py:14` and `test_arcadedb_community.py:290`). **Low:** Task 6.1 wording said "6 fields" but only added 5 (the 6th is `DOCLING_GRAPH_LLM_BASE_URLS` in Task 6.4) — renamed to "api-side 5 per-function fields" with explicit pointer to Task 6.4. **Low:** Task 6.3 Step 8 said "six commits — one per file" but listed 5 — fixed to 5 migration commits + optional 6th test-sweep commit only if Steps 1-5's per-file commits don't cover all the patches.
 - **v7 (2026-04-28, post-sixth-review):** Fixed invalid `docker compose -e` syntax in Gate 5 (the `-e` flag exists on `compose run/exec`, not on `up`) — switched to shell env interpolation `DOCLING_GRAPH_DEBUG_ENDPOINTS=true docker compose up -d ...`. Added `docker-compose.yml` to Task 3.2b commit (the compose env passthrough was being modified without being staged). Reordered Task 3.2b Step 2 to (a) verify the endpoint returns 404 with the flag off (default), then (b) enable the flag and verify a real metrics dict comes back. Replaced the last "validator" reference in the P3 helper output. Initialized `_rr_cursor=-1` so the first tied acquisition picks `urls[0]` (cosmetic — fan-out worked either way). Added `test_default_extra_params_on_get_json_response` to cover the extraction path that actually uses `get_json_response()`.
 - **v6 (2026-04-28, post-fifth-review):** Fixed API port in Task 4.1 reingest call (`${API_PORT:-8003}`, not the local `.env` override of 8005). Fixed commit commands in Tasks 3.1 and 3.2 to stage all modified files (mirror `llm_json.py` + the canonical's marker line; `docker-compose.yml` alongside `config_builder.py`). Replaced fragile exact-count assertions with "all tests in file pass" guidance — Task 1.2 / 1.3 / 1.4 / 1.5 expected counts were drifting as new tests landed each review pass. Added the missing `test_chat_per_call_model_override` and `test_chat_force_json_sets_format_json` tests Task 2.2 was assuming. Added focused coverage for the load-bearing chat-body knobs that were unit-test gaps: `schema_transform` applied before `format=<schema>`, `structured_output_threshold_chars` forces `format="json"` for oversized schemas, `force_json_mode=True` overrides structured calls, `default_extra_params` passes through (`top_p`/`seed`/etc.), `think="low"` gpt-oss vs non-gpt-oss gating, malformed `resp.json()` envelope wrapped as `ClientError`. Corrected Chunk 1 file map: docling mirror is created in Chunk 3 (Task 3.1), not Chunk 1. Updated P3 wording away from "validator". Gated `/debug/routing-metrics` behind a `DOCLING_GRAPH_DEBUG_ENDPOINTS` env flag (default off) so the published port doesn't leak backend URLs in production.
 - **v5 (2026-04-28, post-fourth-review):** Deleted leftover stale v3 `list[str]` getter block in Task 1.5 (would have called `list(json_string)` → list-of-chars). Added missing `OLLAMA_LLM_BASE_URLS` passthrough to docker-compose.yml docling-graph environment block (Task 3.2 Step 0). Fixed `/debug/routing-metrics` URL in Gate 5: port is `${DOCLING_GRAPH_PORT:-8002}`, not `8005`. Added missing `import json, httpx` at top of test_ollama_pool_client.py (Task 1.1 Step 1). Broadened retry catch from `(ConnectError, ReadTimeout, WriteTimeout)` to `(httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)`. Wrapped `resp.json()` envelope decode in try/except so malformed Ollama responses go through the ClientError path. Replaced `self._urls.index(u)` inside the lock with a precomputed `_url_index` dict. Simplified `build_pipeline_config` to a one-liner `llm_client = get_docling_llm_client()` (the dead `default_extra_params` block was leftover from v3). Reject blank entries inside parsed pools. Updated P3 preflight + Risks table wording away from the validator/`list[str]` story.
@@ -3078,19 +3079,42 @@ TEXT_EMBEDDING_BASE_URLS       → OLLAMA_EMBEDDING_BASE_URLS → OLLAMA_EMBEDDI
   Run: `SKIP_COV=1 .venv/bin/pytest tests/unit tests/pipeline tests/test_pool_client_mirror.py -q 2>&1 | tail -3`
   Expected: `1399 passed, 3 failed, 3 skipped, 3 xfailed` (the 3 baseline failures are pre-existing: `test_docling_graph_client_defaults`, `test_default_quality_min_instances_is_three`, `test_system_name_description_excludes_forbidden_tokens[radar_identity]`). Don't regress this.
 
-- [ ] **P1: Audit all `get_llm_client()` / `get_vlm_client()` / `get_embedding_client()` callers.**
+- [ ] **P1: Audit ALL callers of the role-level factories AND the docling-graph factory.**
 
-  Run:
+  The role-level names (`get_llm_client`, `get_vlm_client`, `get_embedding_client`) and the docling-graph name (`get_docling_llm_client`) are ALL being renamed/removed. Catch every reference, including module-qualified ones (`ollama_clients.get_llm_client(...)`) and string references in tests/fixtures:
+
   ```bash
-  grep -rn -E "get_(llm|vlm|embedding)_client\(\)" /home/josh/development/EIP-MMDPP/app /home/josh/development/EIP-MMDPP/docker --include="*.py" | grep -v "ollama_clients.py" | grep -v "test_"
+  cd /home/josh/development/EIP-MMDPP
+
+  echo "=== Production callers (must be migrated in Task 6.3 / 6.4) ==="
+  rg -nE 'get_(llm|vlm|embedding)_client\b|get_docling_llm_client\b|ollama_clients\.get_' \
+    app docker --type py | grep -v 'ollama_clients\.py' | grep -v 'test_' | grep -v '\.tasks\.json'
+
+  echo
+  echo "=== Test patch targets / mock paths (must be updated in Task 6.3 Step 9) ==="
+  rg -nE 'get_(llm|vlm|embedding)_client\b|get_docling_llm_client\b' tests --type py
   ```
-  Expected: 6 production call sites (doc_analysis × 2, translation, community, retrieval/global synthesis, embedding) + 1 docling-graph factory. Capture the list — Task 6.3 must migrate every one.
+
+  Expected production matches (capture exact list before starting Task 6.3):
+  - `app/services/document_analysis.py` — 2 call sites
+  - `app/services/translation.py` — 1
+  - `app/services/arcadedb_community.py` — 1
+  - `app/api/v1/retrieval.py` — 1 (`_synthesize_global_answer`)
+  - `app/services/embedding.py` — 1
+  - `docker/docling-graph/app/main.py` — 1 (`get_docling_llm_client`)
+  - `docker/docling-graph/app/config_builder.py` — 1 (`get_docling_llm_client`)
+
+  Plus an unknown number of test patch targets (mock-path strings like `'app.services.document_analysis.get_llm_client'`) — typically 5-10 across the test suite.
+
+  If any new caller has been added since this plan was written, ADD it to your task scope and migrate it. Anything you miss will fail loudly at next process boot since Task 6.2 deliberately removes the old factory names (no shims).
 
 - [ ] **P2: Confirm stack is up.**
 
   Run: `docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -E "api|arcadedb|postgres|worker-graph|docling-graph"` — all 5 must be `Up (healthy)`.
 
-### Task 6.1: Settings — add 6 per-function URL fields + 6 helpers with 4-tier cascade
+### Task 6.1: api-side Settings — add 5 per-function URL fields + 5 helpers with 4-tier cascade
+
+(Note: this task covers the **5 api-side** functions. The 6th per-function pool — `DOCLING_GRAPH_LLM_BASE_URLS` for docling-graph extraction — is added in **Task 6.4** because it lives in the docling-graph container's `DoclingGraphSettings`, not the api-side `Settings`. Cascade pattern is identical between the two.)
 
 **Files:**
 - Modify: `app/config.py` (add fields next to existing `ollama_llm_base_urls`; add helpers next to existing `get_ollama_*_urls()`)
@@ -3577,21 +3601,37 @@ TEXT_EMBEDDING_BASE_URLS       → OLLAMA_EMBEDDING_BASE_URLS → OLLAMA_EMBEDDI
 
   Run: `SKIP_COV=1 .venv/bin/pytest tests/unit -k embedding -q`
 
-- [ ] **Step 7: Final sweep — run the full suite.**
+- [ ] **Step 7: Sweep the test suite for stale `get_llm_client` / `get_vlm_client` / `get_embedding_client` patch targets.**
+
+  Many test files mock the pool client at the import path used by the production code under test. Examples that are known stale today:
+
+  - `tests/unit/test_document_analysis.py:14` patches `app.services.document_analysis.get_llm_client`
+  - `tests/unit/test_arcadedb_community.py:290` patches `app.services.arcadedb_community.get_llm_client`
+
+  After Task 6.2 deletes the old factories, EVERY mock-patch string referencing them MUST be updated to the new function-specific name. Run a comprehensive sweep:
+
+  ```bash
+  cd /home/josh/development/EIP-MMDPP
+  rg -nE 'get_(llm|vlm|embedding)_client\b' tests --type py
+  ```
+
+  For each match: update the patch path to the new function name (`get_doc_analysis_client`, `get_translation_client`, etc.). Match the production migration's choice of factory — e.g. if `app/services/document_analysis.py` now uses `get_doc_analysis_client`, the test patches `app.services.document_analysis.get_doc_analysis_client`.
 
   Run: `SKIP_COV=1 .venv/bin/pytest tests/unit tests/pipeline tests/test_pool_client_mirror.py -q 2>&1 | tail -3`
   Expected: same `1399+ passed, 3 failed (pre-existing), 3 skipped, 3 xfailed` baseline. No NEW failures.
 
-- [ ] **Step 8: Commit each migration as its own commit (six commits — one per file). Push after each.**
+- [ ] **Step 8: Commit each migration as its own commit. Push after each.**
 
-  Suggested messages:
-  ```
-  refactor(doc-analysis): use per-function get_doc_analysis_client + get_picture_description_client
-  refactor(translation): use get_translation_client
-  refactor(community): use get_community_report_client
-  refactor(retrieval): use get_community_report_client for global synthesis
-  refactor(embedding): use get_text_embedding_client
-  ```
+  Five migration commits + one test-sweep commit (six total):
+
+  1. `refactor(doc-analysis): use per-function get_doc_analysis_client + get_picture_description_client` (covers `app/services/document_analysis.py` — both sites — plus the patch updates in `tests/unit/test_document_analysis.py`)
+  2. `refactor(translation): use get_translation_client` (covers `app/services/translation.py` plus its mock patches)
+  3. `refactor(community): use get_community_report_client` (covers `app/services/arcadedb_community.py` plus mocks in `tests/unit/test_arcadedb_community.py`)
+  4. `refactor(retrieval): use get_community_report_client for global synthesis` (covers `app/api/v1/retrieval.py::_synthesize_global_answer`)
+  5. `refactor(embedding): use get_text_embedding_client` (covers `app/services/embedding.py` plus its mocks)
+  6. `chore(tests): sweep remaining patch targets for new per-function factory names` (only if Step 7's grep surfaces patch sites NOT covered by commits 1-5)
+
+  If commit #6 ends up empty (Steps 1-5 caught all the patches in their respective files), drop it.
 
 ### Task 6.4: Mirror into docling-graph + add `DOCLING_GRAPH_LLM_BASE_URLS`
 
@@ -3687,11 +3727,45 @@ TEXT_EMBEDDING_BASE_URLS       → OLLAMA_EMBEDDING_BASE_URLS → OLLAMA_EMBEDDI
 
   Expected: `NodeIDRegistry patched ...` log line, no errors, debug endpoint returns the new pool's URLs (zeros initially).
 
-- [ ] **Step 5: Run host-venv unit tests to confirm `test_docling_graph_quality_config.py` still passes (it imports `build_pipeline_config` lazily — the rename shouldn't break it).**
+- [ ] **Step 5: Verify the rename inside the running docling-graph container.**
+
+  `tests/unit/test_docling_graph_quality_config.py` runs in the host venv and `build_pipeline_config` swallows the `ImportError` from `app.ollama_clients` (see `config_builder.py:160`-ish), so that host-side test will NOT prove the renamed `get_docling_graph_client` symbol exists or works inside the docling-graph package. The test is still useful (it confirms `build_pipeline_config` still constructs a valid config dict in the host venv), but it's not a substitute for in-container verification.
+
+  Run BOTH:
 
   ```bash
+  # 1. Host-venv unit suite — config-shape validation (lazy import path)
   SKIP_COV=1 .venv/bin/pytest tests/unit/test_docling_graph_quality_config.py -q
   ```
+
+  Expected: same passing count as baseline.
+
+  ```bash
+  # 2. Container smoke check — proves the rename inside the container
+  docker exec eip-mmdpp-docling-graph-1 python -c "
+  from app.ollama_clients import get_docling_graph_client
+  client = get_docling_graph_client()
+  print('model:', client.model)
+  print('pool urls:', client.pool.urls)
+  print('routing_metrics:', client.pool.routing_metrics)
+  print('OK')
+  "
+  ```
+
+  Expected: prints model name, list of pool URLs, empty `routing_metrics` dict, then `OK`. If `ImportError: cannot import name 'get_docling_graph_client'` — the rename didn't land in the container; rebuild docling-graph and retry.
+
+  ```bash
+  # 3. Confirm the OLD name is gone (in-container)
+  docker exec eip-mmdpp-docling-graph-1 python -c "
+  try:
+      from app.ollama_clients import get_docling_llm_client
+      print('FAIL: old name still importable')
+  except ImportError:
+      print('OK: old name removed')
+  "
+  ```
+
+  Expected: `OK: old name removed`. Catches the case where the rename added the new symbol but left the old one as a vestigial alias.
 
 - [ ] **Step 6: Commit (one commit covering all four files since they're tightly coupled by the rename).**
 
@@ -3771,10 +3845,91 @@ TEXT_EMBEDDING_BASE_URLS       → OLLAMA_EMBEDDING_BASE_URLS → OLLAMA_EMBEDDI
   git commit -m "docs: document per-function URL pools (DOCLING_GRAPH_LLM_BASE_URLS et al.)"
   ```
 
+### Task 6.5b: Add success-URL logging to client (api-side observability for Task 6.6)
+
+The current client only logs URLs at WARNING level (on retry/failure) — there's no INFO-level proof of which URL handled a successful call. The api-side `/debug/routing-metrics` endpoint doesn't exist (only docling-graph has it), and adding a Redis-backed counter is overkill for v1. Cheapest reliable fix: add a single INFO log line per successful chat/embedding call so worker-graph and worker-embed logs show exactly which URL got each request. This makes Gates 6.C / 6.D in Task 6.6 grep-verifiable.
+
+**Files:**
+- Modify: `app/services/ollama_pool_client.py` (canonical) — add INFO log on success in both `OllamaChatClient._post_chat_with_retry` and `OllamaEmbeddingClient.embed`
+- Modify: `docker/docling-graph/app/ollama_pool_client.py` (mirror — mirror-drift test enforces parity)
+- Modify: `tests/unit/services/test_ollama_pool_client.py` (assert the log line fires on success)
+
+- [ ] **Step 1: Add a focused unit test for the success log.**
+
+  ```python
+  def test_chat_logs_success_url_at_info(caplog):
+      pool = OllamaPool(urls=["http://only"])
+      client = OllamaChatClient(pool=pool, model="m")
+      fake = MagicMock()
+      fake.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+      fake.raise_for_status.return_value = None
+      with caplog.at_level("INFO", logger="app.services.ollama_pool_client"):
+          with patch("httpx.Client.post", return_value=fake):
+              client.chat(messages=[{"role": "user", "content": "x"}])
+      assert any(
+          "OllamaChatClient: ok" in rec.message and "http://only" in rec.message
+          for rec in caplog.records
+      ), [r.message for r in caplog.records]
+
+
+  def test_embedding_logs_success_url_at_info(caplog):
+      pool = OllamaPool(urls=["http://only"])
+      client = OllamaEmbeddingClient(pool=pool, model="bge-m3")
+      fake = MagicMock()
+      fake.json.return_value = {"data": [{"index": 0, "embedding": [0.1]}]}
+      fake.raise_for_status.return_value = None
+      with caplog.at_level("INFO", logger="app.services.ollama_pool_client"):
+          with patch("httpx.Client.post", return_value=fake):
+              client.embed(["hello"])
+      assert any(
+          "OllamaEmbeddingClient: ok" in rec.message and "http://only" in rec.message
+          for rec in caplog.records
+      ), [r.message for r in caplog.records]
+  ```
+
+- [ ] **Step 2: Confirm fail.**
+
+  Run: `SKIP_COV=1 .venv/bin/pytest tests/unit/services/test_ollama_pool_client.py::test_chat_logs_success_url_at_info tests/unit/services/test_ollama_pool_client.py::test_embedding_logs_success_url_at_info -q`
+
+- [ ] **Step 3: Implement.**
+
+  In `OllamaChatClient._post_chat_with_retry` (the success branch — locate the existing `logger.debug("OllamaChatClient: ok ...")` line if present, OR the spot just before `return content`), promote it to INFO:
+
+  ```python
+  logger.info(
+      "OllamaChatClient: ok url=%s model=%s elapsed=%.2fs len(content)=%d",
+      url, self.model, time.time() - t0, len(content),
+  )
+  ```
+
+  In `OllamaEmbeddingClient.embed`, after the successful `resp.json()` parse and just before `return [item["embedding"] for item in items]`, add:
+
+  ```python
+  logger.info(
+      "OllamaEmbeddingClient: ok url=%s model=%s batch_size=%d elapsed=%.2fs",
+      url, self.model, len(texts), time.time() - t0,
+  )
+  ```
+
+  (Ensure `t0 = time.time()` is captured at the start of each retry attempt.)
+
+  Both files (canonical + docling-graph mirror) must change identically below the marker. The mirror-drift test at `tests/test_pool_client_mirror.py` enforces this.
+
+- [ ] **Step 4: Confirm pass.**
+
+  Run: `SKIP_COV=1 .venv/bin/pytest tests/unit/services/test_ollama_pool_client.py tests/test_pool_client_mirror.py -q`
+
+- [ ] **Step 5: Commit.**
+
+  ```bash
+  git add app/services/ollama_pool_client.py docker/docling-graph/app/ollama_pool_client.py tests/unit/services/test_ollama_pool_client.py
+  git commit -m "feat(ollama-pool): INFO-log per-call success URL for routing observability"
+  ```
+
 ### Task 6.6: End-to-end validation — heterogeneous config
 
 **Files:**
-- None modified — this is a validation pass.
+- None modified — this is a validation pass. (Task 6.5b above adds the observability hooks needed to make Gates 6.C / 6.D grep-verifiable.)
 
 - [ ] **Step 1: Set up a heterogeneous config in `.env`.**
 
@@ -3823,11 +3978,33 @@ TEXT_EMBEDDING_BASE_URLS       → OLLAMA_EMBEDDING_BASE_URLS → OLLAMA_EMBEDDI
 
 - [ ] **Gate 6.B:** No api-side function (doc analysis, translation, community, embedding) leaked into the docling-graph routing-metrics. The `/debug/routing-metrics` endpoint reports only the docling-graph LLM pool, so this gate is mostly self-evident; double-check by inspecting the endpoint's response shape and ensuring it shows ONLY `"llm"` (not `"vlm"` or `"embedding"` keys).
 
-- [ ] **Gate 6.C:** Doc analysis ran via `get_doc_analysis_client()` — i.e., it inherited from `OLLAMA_LLM_BASE_URLS` (1 URL) since `DOC_ANALYSIS_LLM_BASE_URLS` was unset in this test. Verify by adding a temporary log line OR by inspecting the worker logs to confirm doc analysis hit `10.0.1.121` not `10.0.1.109`.
+- [ ] **Gate 6.C:** Doc analysis routed to `10.0.1.121` only (inherited from `OLLAMA_LLM_BASE_URLS` since `DOC_ANALYSIS_LLM_BASE_URLS` is unset in this test). Verifiable now thanks to Task 6.5b's success-URL log:
 
-  (For automated proof, you could expose a similar `/debug/routing-metrics` on the api side too — but that's not in scope for v1; manual inspection is fine.)
+  ```bash
+  # All doc-analysis calls during this run should be on 10.0.1.121 (the role-level pool URL)
+  docker logs eip-mmdpp-worker-graph-1 --since 60m 2>&1 \
+      | grep "OllamaChatClient: ok" | grep -oE "url=http://[^ ]+" | sort -u
+  ```
 
-- [ ] **Gate 6.D:** Embedding ran on `10.0.1.109` only. Worker-embed logs should show `POST http://10.0.1.109:11434/v1/embeddings` and zero references to `10.0.1.121`.
+  Expected: only `url=http://10.0.1.121:11434` appears in the matches. If `10.0.1.109` shows up, doc analysis leaked into the docling-graph pool — investigate.
+
+  (Note: worker-graph also runs translation, community reports, picture description — the grep may also match those. Cross-check by also grepping `model=` to filter to `gemma4:31b` for doc-analysis-vs-graph-extraction; the `model=` field in the log line lets you separate by function. If models are identical across functions, narrow the time window to before/after the doc-analysis stage finishes — `extraction-status` API gives you the exact stage timestamps.)
+
+- [ ] **Gate 6.D:** Embedding ran on `10.0.1.109` only. Verifiable via Task 6.5b's success log on `OllamaEmbeddingClient`:
+
+  ```bash
+  docker logs eip-mmdpp-worker-embed-1 --since 60m 2>&1 \
+      | grep "OllamaEmbeddingClient: ok" | grep -oE "url=http://[^ ]+" | sort -u
+  ```
+
+  Expected: only `url=http://10.0.1.109:11434`. Bonus check via httpx's own INFO logging:
+
+  ```bash
+  docker logs eip-mmdpp-worker-embed-1 --since 60m 2>&1 \
+      | grep -E "POST http://[^ ]+/v1/embeddings" | grep -oE "http://[^ ]+/v1/embeddings" | sort -u
+  ```
+
+  Same expectation — only `http://10.0.1.109:11434/v1/embeddings`. If both greps return zero matches, the worker may not be running embeddings yet (run not started or stuck).
 
 - [ ] **Step 5: Disable the debug endpoint after validation passes.**
 
