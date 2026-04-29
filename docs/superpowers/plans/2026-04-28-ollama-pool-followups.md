@@ -1,6 +1,6 @@
 # OllamaPool Refactor — Cleanup Follow-ups
 
-Running tally of NIT-level findings from each chunk's code-quality review. **Cleanup pass complete (2026-04-29) — 22 of 25 items resolved, 3 skipped per spec, plus the post-validation env switch + 4 notebook updates.**
+Running tally of NIT-level findings from each chunk's code-quality review. **Cleanup pass complete (2026-04-29) — 22 of 25 items resolved, 3 skipped per spec, plus the post-validation env switch + 4 notebook updates. Chunk 6 cleanup pass (2026-04-29 follow-up) — items 26-34 resolved, item 35 documented as operational (no code change).**
 
 **Source plan:** `docs/superpowers/plans/2026-04-28-ollama-pool-client-refactor.md`
 
@@ -36,13 +36,23 @@ Running tally of NIT-level findings from each chunk's code-quality review. **Cle
 | 24 | ✅ DONE | `4ec9174` |
 | 25 | ✅ DONE | `7b56c2d` |
 | 25b | ❌ SKIPPED — operational issue, not code (compose Ollama crash; user updated `OLLAMA_EMBEDDING_BASE_URL` to `10.0.1.109`) | — |
+| 26 | ✅ DONE — `_parse_url_pool` cached via `@lru_cache(maxsize=16)` keyed on `(raw, field_name)` | `804d699` |
+| 27 | ✅ DONE — `field_name` parameter threaded through all 8 callers; error/log messages name the actual env var | `804d699` |
+| 28 | ✅ DONE — added `community_report_timeout: int = 1500` setting (same default as `doc_analysis_timeout`); `get_community_report_client` now reads it; documented in `env.example`; added unit test | `4aeb05f` |
+| 29 | ✅ DONE — module-level "Limitations:" block copied into `app/services/ollama_clients.py` docstring | `4aeb05f` |
+| 30 | ✅ DONE — `get_ollama_llm_urls()` iterates `(env_name, raw)` tuples; error messages name the actual env var; `import json` hoisted to module top | `95a129b` |
+| 31 | ✅ DONE — `body.get("model", self.model)` → `body["model"]` in success log; canonical + mirror; mirror-drift PASS | `86b31ed` |
+| 32 | ✅ DONE — extracted `_attach_caplog_to_pool_logger` `@contextmanager` helper local to the test file; both tests refactored to a single `with` block | `5921714` |
+| 33 | ✅ DONE — added one-line "Order matters:" comment above `_clear_caches` fixture body | `19ec982` |
+| 34 | ✅ DONE — added explicit env-var passthroughs (`OLLAMA_LLM_BASE_URLS`, `OLLAMA_VLM_BASE_URLS`, `OLLAMA_EMBEDDING_BASE_URLS`, plus all 5 per-function vars) to api / worker / worker-ingest / worker-embed / worker-graph services; symmetric with docling-graph | `d048152` |
+| 35 | ❌ SKIPPED — operational issue (gemma4:31b + bge-m3 VRAM contention on 10.0.1.109), kept as documentation. See section below for the workaround playbook. | — |
 | post-validation env switch | ✅ DONE — pool-form promoted to canonical in `env.example` | `243f585` |
 | notebook alignment (extraction_walkthrough) | ✅ DONE | `449d414` |
 | notebook alignment (extraction_walkthrough_direct_ollama) | ✅ DONE | `5f4f9bc` |
 | notebook alignment (raw_libraries_walkthrough) | ✅ DONE | `ea98cf9` |
 | notebook alignment (ingest_walkthrough) | ✅ DONE | `3f6b05c` |
 
-**Net effect:** +4 passing tests (1395 → 1399), 0 new regressions, mirror invariant intact.
+**Net effect:** Earlier cleanup pass: +4 tests (1395 → 1399). Chunk 6 cleanup pass (items 26-34): +1 test (1414 → 1415, baseline drift between passes is unrelated test additions; the Chunk 6 cleanup added one new test, `test_community_report_client_uses_dedicated_timeout`). 0 new regressions across both passes, mirror invariant intact.
 
 ---
 
@@ -147,17 +157,17 @@ All notebooks pass `nbformat.validate`; cell code AST-validated; `raw_libraries_
 
 ## From Chunk 6 (commits `5e01aca..9b0c593`)
 
-### Code-quality NITs (defer to a later cleanup pass)
+### Code-quality NITs (resolved in Chunk 6 cleanup pass — 2026-04-29)
 
-26. **`app/config.py:226-257`** — per-function helpers re-parse role-level JSON via `_parse_url_pool` on every call (cheap, but the duplicate-URL warning will log twice when both function and role pools are configured). Either `lru_cache` the parser or accept the log noise.
-27. **`app/config.py:139-184`** — `_parse_url_pool` error messages say "OLLAMA_*_BASE_URLS env value is not valid JSON" with a wildcard, hiding the actual offending env var name (e.g. `DOC_ANALYSIS_LLM_BASE_URLS`). Add a `field_name: str` parameter so the exception names the var.
-28. **`app/services/ollama_clients.py:58`** — `get_community_report_client` reuses `s.doc_analysis_timeout` with a `# historical reuse` comment. Factory caches at first call, so adding a dedicated `community_report_timeout` later requires `cache_clear()`. Either add the setting now (defaulting to `doc_analysis_timeout`), or tag with TODO.
-29. **`app/services/ollama_clients.py:1-15`** — module docstring mentions "Env values frozen at first call" but per-factory docstrings don't. The docling-graph mirror's "Limitations" block is more thorough. Copy that block into the canonical's module-level docstring.
-30. **`docker/docling-graph/app/config_builder.py:116-149`** — the `for raw in (...)` loop conflates two distinct env vars under a generic `"Pool URL env var ..."` error string. Operator hitting a malformed `DOCLING_GRAPH_LLM_BASE_URLS` can't tell which JSON failed. Restructure as `for env_name, raw in (("DOCLING_GRAPH_LLM_BASE_URLS", ...), ("OLLAMA_LLM_BASE_URLS", ...))` and interpolate `env_name`. Also move `import json` to module top.
-31. **`app/services/ollama_pool_client.py:549` (canonical) + mirror** — `body.get("model", self.model)` is unreachable in practice (every code path that reaches `_post_chat_with_retry` sets `body["model"]`). The fallback hides bugs. Use `body["model"]` (KeyError) or assert at top of `_post_chat_with_retry`.
-32. **`tests/unit/services/test_ollama_pool_client.py:586-632`** — `test_chat_logs_success_url_at_info` and `test_embedding_logs_success_url_at_info` repeat the same 6-line caplog-handler attach/restore boilerplate. Extract a `@contextmanager` fixture into `conftest.py`.
-33. **`tests/unit/services/test_ollama_clients_factory.py:13-26`** — `get_settings.cache_clear()` runs alongside factory clears; order matters subtly. Add a one-line comment so a reader doesn't wonder.
-34. **`docker-compose.yml:160-200`** — `docling-graph` service explicitly passes `DOCLING_GRAPH_LLM_BASE_URLS` + `OLLAMA_LLM_BASE_URLS` as shell-overridable. `api`/`worker` services rely solely on `env_file: .env` for the new per-function vars. An operator who exports a var (rather than editing `.env`) will be surprised the api/worker containers don't see it. Either add explicit passthroughs or document the `env_file`-only behavior.
+26. ✅ **`app/config.py:226-257`** — per-function helpers re-parse role-level JSON via `_parse_url_pool` on every call (cheap, but the duplicate-URL warning would log twice when both function and role pools are configured). **Resolved in `804d699`**: `_parse_url_pool` is now `@lru_cache(maxsize=16)` keyed on `(raw, field_name)`. Pure function; cache survives across `Settings()` instances and ensures the duplicate-URL warning fires exactly once per misconfiguration.
+27. ✅ **`app/config.py:139-184`** — `_parse_url_pool` error messages said "OLLAMA_*_BASE_URLS env value is not valid JSON" with a wildcard, hiding the actual offending env var name. **Resolved in `804d699`**: added a `field_name: str = "OLLAMA_*_BASE_URLS"` parameter (kept the wildcard as default for back-compat); all 8 callers now pass the actual env var name (`OLLAMA_LLM_BASE_URLS`, `DOC_ANALYSIS_LLM_BASE_URLS`, etc.); the warning log uses `field_name` too.
+28. ✅ **`app/services/ollama_clients.py:58`** — `get_community_report_client` reused `s.doc_analysis_timeout` with a `# historical reuse` comment. **Resolved in `4aeb05f`**: added `community_report_timeout: int = 1500` to `Settings` (same default as `doc_analysis_timeout`, so behavior is preserved); factory now reads `s.community_report_timeout`; documented in `env.example`; new unit test pins the timeout to the new setting.
+29. ✅ **`app/services/ollama_clients.py:1-15`** — module docstring lacked the "Limitations" block. **Resolved in `4aeb05f`**: copied the docling-graph mirror's "Limitations:" block into the canonical's module-level docstring (covers URL pool freeze + role + singular fallback freeze, model name, timeout, `*_THINK`, and `<factory>.cache_clear()` as the test escape hatch).
+30. ✅ **`docker/docling-graph/app/config_builder.py:116-149`** — the `for raw in (...)` loop conflated two distinct env vars under a generic `"Pool URL env var ..."` error string. **Resolved in `95a129b`**: restructured as `for env_name, raw in (("DOCLING_GRAPH_LLM_BASE_URLS", ...), ("OLLAMA_LLM_BASE_URLS", ...))`; all three error messages (JSON parse, non-array, blank entries) interpolate `env_name`; `import json` hoisted to module top.
+31. ✅ **`app/services/ollama_pool_client.py:549` (canonical) + mirror** — `body.get("model", self.model)` was unreachable in practice. **Resolved in `86b31ed`**: replaced with `body["model"]` in both canonical and mirror; mirror-drift test PASS.
+32. ✅ **`tests/unit/services/test_ollama_pool_client.py:586-632`** — `test_chat_logs_success_url_at_info` and `test_embedding_logs_success_url_at_info` repeated the same 6-line caplog-handler boilerplate. **Resolved in `5921714`**: extracted a module-local `_attach_caplog_to_pool_logger` `@contextlib.contextmanager` helper; both tests now use a single `with` block. Kept local to the file (no `conftest.py`) since no other test file needs this.
+33. ✅ **`tests/unit/services/test_ollama_clients_factory.py:13-26`** — fixture clears caches before AND after; order/intent unclear without a comment. **Resolved in `19ec982`**: added the requested one-line "Order matters:" comment above the `_clear` body.
+34. ✅ **`docker-compose.yml:160-200`** — `api`/`worker` services relied solely on `env_file: .env` for the new per-function vars; shell exports were silently ignored. **Resolved in `d048152` (Option A)**: added explicit `OLLAMA_LLM_BASE_URLS`, `OLLAMA_VLM_BASE_URLS`, `OLLAMA_EMBEDDING_BASE_URLS`, `DOC_ANALYSIS_LLM_BASE_URLS`, `TRANSLATION_LLM_BASE_URLS`, `COMMUNITY_REPORT_LLM_BASE_URLS`, `PICTURE_DESCRIPTION_BASE_URLS`, `TEXT_EMBEDDING_BASE_URLS` passthroughs to api / worker / worker-ingest / worker-embed / worker-graph services. Symmetric with docling-graph; operators using `export VAR=val docker compose up` now get the expected override.
 
 ### Operational issue surfaced during Chunk 6 validation (NOT a code bug)
 
@@ -186,5 +196,23 @@ f39bbbb feat: cleanup nits — test_pool_client_mirror.py (items 16-18)
 ```
 
 Plus 4 notebook commits (`449d414`, `5f4f9bc`, `ea98cf9`, `3f6b05c`).
+
+## Chunk 6 cleanup pass — what landed (2026-04-29 follow-up)
+
+7 commits to `main`, all pushed:
+
+```
+804d699 chore(ollama-pool): cleanup nits 26-34 — app/config.py (items 26, 27)
+4aeb05f chore(ollama-pool): cleanup nits 26-34 — app/services/ollama_clients.py (items 28, 29)
+95a129b chore(ollama-pool): cleanup nits 26-34 — docker/docling-graph/app/config_builder.py (item 30)
+86b31ed chore(ollama-pool): cleanup nits 26-34 — app/services/ollama_pool_client.py (item 31, canonical + mirror)
+5921714 chore(ollama-pool): cleanup nits 26-34 — tests/unit/services/test_ollama_pool_client.py (item 32)
+19ec982 chore(ollama-pool): cleanup nits 26-34 — tests/unit/services/test_ollama_clients_factory.py (item 33)
+d048152 chore(ollama-pool): cleanup nits 26-34 — docker-compose.yml (item 34)
+```
+
+**Final pytest count:** `1415 passed, 3 failed (pre-existing baseline), 3 skipped, 3 xfailed`. **Net delta from Chunk 6 cleanup pass: +1 passing test (the new `test_community_report_client_uses_dedicated_timeout`), 0 new regressions.** Mirror-drift test PASS.
+
+**Item 35 left as documentation-only** — the VRAM-contention playbook stays in §35 for ops reference. Permanent fix is a host-capacity decision (move embeddings to a dedicated host, drop `keep_alive=-1`, or grow VRAM); not a code change.
 
 **Final pytest count:** `1399 passed, 3 failed (pre-existing baseline), 3 skipped, 3 xfailed`. **Net delta from cleanup pass: +2 passing, 0 new regressions.** Mirror-drift test PASS.
