@@ -582,3 +582,54 @@ class OllamaChatClient:
                 },
             ) from last_exc
         raise last_exc
+
+
+class OllamaEmbeddingClient:
+    """Pool-backed embedding client. Calls /v1/embeddings on the picked URL
+    and returns the embedding vectors (sorted by input index)."""
+
+    def __init__(
+        self,
+        pool: OllamaPool,
+        model: str,
+        *,
+        timeout_s: float = 120.0,
+    ) -> None:
+        self.pool = pool
+        self.model = model
+        self._http = httpx.Client(timeout=timeout_s)
+
+    def __del__(self) -> None:
+        try:
+            self._http.close()
+        except Exception:
+            pass
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed `texts` in one call. Returns vectors in the same order as the
+        input. Caller is responsible for batching if texts is too large for
+        a single request."""
+        excluded: set[str] = set()
+        last_exc: Exception | None = None
+        for _ in range(2):
+            url = self.pool.acquire(exclude=excluded)
+            try:
+                resp = self._http.post(
+                    f"{url}/v1/embeddings",
+                    json={"model": self.model, "input": texts},
+                )
+                resp.raise_for_status()
+                data = resp.json().get("data", [])
+                items = sorted(data, key=lambda x: x.get("index", 0))
+                return [item["embedding"] for item in items]
+            except (
+                httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError,
+            ) as exc:
+                last_exc = exc
+                excluded.add(url)
+                if len(excluded) >= len(self.pool.urls):
+                    break
+            finally:
+                self.pool.release(url)
+        assert last_exc is not None
+        raise last_exc

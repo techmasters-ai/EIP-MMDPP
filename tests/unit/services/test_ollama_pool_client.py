@@ -541,3 +541,42 @@ def test_malformed_response_envelope_wraps_as_client_error():
     with patch("httpx.Client.post", return_value=fake):
         with pytest.raises(_FakeClientError, match="malformed JSON envelope"):
             client.get_json_response(prompt="hi", schema_json="{}")
+
+
+from app.services.ollama_pool_client import OllamaEmbeddingClient
+
+
+def test_embedding_client_calls_v1_embeddings():
+    pool = OllamaPool(urls=["http://only"])
+    client = OllamaEmbeddingClient(pool=pool, model="bge-m3")
+    fake = MagicMock()
+    fake.json.return_value = {
+        "data": [
+            {"index": 0, "embedding": [0.1, 0.2]},
+            {"index": 1, "embedding": [0.3, 0.4]},
+        ]
+    }
+    fake.raise_for_status.return_value = None
+    with patch("httpx.Client.post", return_value=fake) as mock_post:
+        out = client.embed(["hello", "world"])
+    assert out == [[0.1, 0.2], [0.3, 0.4]]
+    assert mock_post.call_args.args[0] == "http://only/v1/embeddings"
+    body = mock_post.call_args.kwargs["json"]
+    assert body == {"model": "bge-m3", "input": ["hello", "world"]}
+
+
+def test_embedding_client_preserves_input_order():
+    pool = OllamaPool(urls=["http://only"])
+    client = OllamaEmbeddingClient(pool=pool, model="bge-m3")
+    fake = MagicMock()
+    # Server returns out-of-order; client must sort by index.
+    fake.json.return_value = {
+        "data": [
+            {"index": 1, "embedding": [9.0]},
+            {"index": 0, "embedding": [1.0]},
+        ]
+    }
+    fake.raise_for_status.return_value = None
+    with patch("httpx.Client.post", return_value=fake):
+        out = client.embed(["a", "b"])
+    assert out == [[1.0], [9.0]]
