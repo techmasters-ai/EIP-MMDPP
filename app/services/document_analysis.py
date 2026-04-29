@@ -26,8 +26,8 @@ def extract_document_metadata(markdown: str, classification_text: str | None = N
     for the other metadata fields.
     """
     settings = get_settings()
-    from app.services.ollama_clients import get_llm_client
-    client = get_llm_client()
+    from app.services.ollama_clients import get_doc_analysis_client
+    client = get_doc_analysis_client()
     model = settings.doc_analysis_llm_model
     think = settings.get_doc_analysis_llm_think()
     timeout = settings.doc_analysis_timeout
@@ -166,8 +166,8 @@ def _describe_single_image(
 ) -> str | None:
     """Send a single image to the multimodal LLM for description."""
     try:
-        from app.services.ollama_clients import get_vlm_client
-        client = get_vlm_client()
+        from app.services.ollama_clients import get_picture_description_client
+        client = get_picture_description_client()
         messages = [
             {
                 "role": "user",

@@ -11,7 +11,7 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 class TestExtractDocumentMetadata:
-    @patch("app.services.ollama_clients.get_llm_client")
+    @patch("app.services.ollama_clients.get_doc_analysis_client")
     @patch("app.services.document_analysis.get_settings")
     def test_returns_all_keys(self, mock_settings, mock_get_client):
         """Should return summary, date, classification, source, generated_at."""
@@ -40,7 +40,7 @@ class TestExtractDocumentMetadata:
         assert "source_characterization" in result
         assert "generated_at" in result
 
-    @patch("app.services.ollama_clients.get_llm_client")
+    @patch("app.services.ollama_clients.get_doc_analysis_client")
     @patch("app.services.document_analysis.get_settings")
     def test_classification_normalization(self, mock_settings, mock_get_client):
         """Invalid classification strings should default to UNCLASSIFIED."""
@@ -64,7 +64,7 @@ class TestExtractDocumentMetadata:
         result = extract_document_metadata("text")
         assert result["classification"] == "UNCLASSIFIED"
 
-    @patch("app.services.ollama_clients.get_llm_client")
+    @patch("app.services.ollama_clients.get_doc_analysis_client")
     @patch("app.services.document_analysis.get_settings")
     def test_valid_classification_preserved(self, mock_settings, mock_get_client):
         """Valid classification (e.g. SECRET) should be preserved."""
@@ -88,7 +88,7 @@ class TestExtractDocumentMetadata:
         result = extract_document_metadata("classified text")
         assert result["classification"] == "SECRET"
 
-    @patch("app.services.ollama_clients.get_llm_client")
+    @patch("app.services.ollama_clients.get_doc_analysis_client")
     @patch("app.services.document_analysis.get_settings")
     def test_truncates_long_text(self, mock_settings, mock_get_client):
         """Text longer than ollama_num_ctx * 3 should be truncated."""
@@ -124,7 +124,7 @@ class TestExtractDocumentMetadata:
         for text in captured_texts:
             assert len(text) <= 30
 
-    @patch("app.services.ollama_clients.get_llm_client")
+    @patch("app.services.ollama_clients.get_doc_analysis_client")
     @patch("app.services.document_analysis.get_settings")
     def test_llm_failure_returns_defaults(self, mock_settings, mock_get_client):
         """If LLM calls fail, fallback values should be used."""
@@ -220,7 +220,7 @@ class TestDescribePictures:
 # ---------------------------------------------------------------------------
 
 class TestDescribeSingleImage:
-    @patch("app.services.ollama_clients.get_vlm_client")
+    @patch("app.services.ollama_clients.get_picture_description_client")
     def test_returns_content_on_success(self, mock_get_client):
         client_inst = MagicMock()
         client_inst.chat.return_value = "This is a missile diagram."
@@ -234,7 +234,7 @@ class TestDescribeSingleImage:
         result = _describe_single_image("base64data", "prompt", "gemma3:27b", 60, s)
         assert result == "This is a missile diagram."
 
-    @patch("app.services.ollama_clients.get_vlm_client")
+    @patch("app.services.ollama_clients.get_picture_description_client")
     def test_returns_none_on_failure(self, mock_get_client):
         client_inst = MagicMock()
         client_inst.chat.side_effect = Exception("timeout")
