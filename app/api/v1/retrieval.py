@@ -1173,10 +1173,11 @@ async def _synthesize_global_answer(
     reports: list[dict],
 ) -> str:
     """Call LLM to synthesize a single answer from community reports."""
-    import httpx
-
     from app.config import get_settings
+    from app.services.ollama_clients import get_llm_client
+
     settings = get_settings()
+    client = get_llm_client()
 
     template = settings.community_global_synthesis_prompt or _DEFAULT_GLOBAL_SYNTHESIS_PROMPT
 
@@ -1187,30 +1188,20 @@ async def _synthesize_global_answer(
     )
     prompt = template.replace("{query}", query).replace("{reports}", reports_text)
 
-    url = f"{settings.get_ollama_llm_url()}/v1/chat/completions"
-    model = settings.community_report_llm_model
-    timeout = settings.doc_analysis_timeout
-    think = settings.get_community_report_llm_think()
+    timeout = settings.doc_analysis_timeout  # historical reuse; see Task 2.5
+
+    def _sync_call() -> str:
+        return client.chat(
+            messages=[{"role": "user", "content": prompt}],
+            model=settings.community_report_llm_model,
+            temperature=0.2,
+            max_tokens=settings.llm_max_tokens,
+            think=settings.get_community_report_llm_think(),
+            timeout_s=float(timeout),
+        )
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.2,
-                "max_tokens": settings.llm_max_tokens,
-            }
-            if think is not None:
-                payload["think"] = think
-            resp = await client.post(
-                url,
-                json=payload,
-            )
-            resp.raise_for_status()
-            message = resp.json()["choices"][0]["message"]
-            content = (message.get("content") or message.get("reasoning_content") or "").strip()
+        content = await asyncio.to_thread(_sync_call)
         return content or _fallback_concatenated_reports(reports)
     except Exception as exc:
         logger.warning("Global synthesis LLM call failed: %s; returning concatenated reports", exc)
