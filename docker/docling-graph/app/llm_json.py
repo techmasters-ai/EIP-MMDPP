@@ -1,18 +1,7 @@
-"""Tolerant JSON parser for LLM output.
+"""Tolerant JSON parser (docling-graph mirror).
 
-Tries multiple recovery strategies in order of reliability:
-  1. Direct json.loads (clean responses)
-  2. Strip <think> tags and answer prefixes, retry
-  3. Fenced ```json code block extraction
-  4. Last balanced JSON object/array via bracket-matching
-  5. json_repair as last resort for truncated output
-
-Used by the DRIFT primer monkey-patch and available for other
-services that need to parse structured JSON from LLMs.
-
-MIRROR: docker/docling-graph/app/llm_json.py. The two files are
-byte-for-byte identical below the SHARED CODE marker; the docstring is the
-only difference. tests/test_pool_client_mirror.py enforces this invariant.
+MIRRORED FROM app/services/llm_json.py — keep byte-for-byte identical
+below the SHARED CODE marker.
 """
 # === SHARED CODE BELOW THIS LINE ===
 import json
