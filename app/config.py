@@ -80,10 +80,20 @@ class Settings(BaseSettings):
     llm_provider: str = "ollama"
 
     # Ollama connection
+    # Singular fallbacks (kept for back-compat with existing .env files).
     ollama_base_url: str = "http://localhost:11434"
     ollama_llm_base_url: str = ""   # chat/reasoning models — falls back to ollama_base_url
     ollama_vlm_base_url: str = ""   # vision/image models — falls back to ollama_base_url
     ollama_embedding_base_url: str = ""  # embedding models — falls back to ollama_base_url
+    # Plural pools — JSON arrays as raw strings, e.g.
+    # '["http://host1:11434","http://host2:11434"]'.
+    # Stored as `str` (not `list[str]`) because pydantic-settings raises
+    # SettingsError on blank-string values for list[str] before any
+    # validator runs. Parsed in the get_ollama_*_urls() helpers below.
+    # When set, these take precedence over the singular variants.
+    ollama_llm_base_urls: str = ""
+    ollama_vlm_base_urls: str = ""
+    ollama_embedding_base_urls: str = ""
     ollama_num_ctx: int = 16384
 
     @staticmethod
@@ -106,14 +116,79 @@ class Settings(BaseSettings):
             return None
         return normalized
 
+    @staticmethod
+    def _parse_url_pool(raw: str) -> list[str]:
+        """Parse a JSON-array env value into list[str].
+
+        Returns [] for blank/unset. Raises ValueError for malformed JSON
+        or non-array values so misconfiguration fails loudly at startup
+        rather than silently falling through to the singular fallback.
+        """
+        import json
+        s = (raw or "").strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"OLLAMA_*_BASE_URLS env value is not valid JSON: {exc}; "
+                f"expected a JSON array like '[\"http://h1:11434\",...]', "
+                f"got: {s!r}"
+            ) from exc
+        if not isinstance(parsed, list) or not all(
+            isinstance(x, str) for x in parsed
+        ):
+            raise ValueError(
+                f"OLLAMA_*_BASE_URLS must be a JSON array of strings; got: {parsed!r}"
+            )
+        # Reject blank entries — they'd silently break the pool's
+        # least-in-flight invariant (an empty URL would still get acquire'd
+        # and posted to, raising httpx.UnsupportedProtocol on every request).
+        if not all(x.strip() for x in parsed):
+            raise ValueError(
+                f"OLLAMA_*_BASE_URLS contains blank entries; got: {parsed!r}"
+            )
+        return parsed
+
+    def get_ollama_llm_urls(self) -> list[str]:
+        """Return the LLM (chat/reasoning) URL pool.
+
+        Priority: ollama_llm_base_urls (plural JSON) > ollama_llm_base_url
+        (singular) > ollama_base_url. Always returns a non-empty list.
+        """
+        plural = self._parse_url_pool(self.ollama_llm_base_urls)
+        if plural:
+            return plural
+        if self.ollama_llm_base_url:
+            return [self.ollama_llm_base_url]
+        return [self.ollama_base_url]
+
+    def get_ollama_vlm_urls(self) -> list[str]:
+        plural = self._parse_url_pool(self.ollama_vlm_base_urls)
+        if plural:
+            return plural
+        if self.ollama_vlm_base_url:
+            return [self.ollama_vlm_base_url]
+        return [self.ollama_base_url]
+
+    def get_ollama_embedding_urls(self) -> list[str]:
+        plural = self._parse_url_pool(self.ollama_embedding_base_urls)
+        if plural:
+            return plural
+        if self.ollama_embedding_base_url:
+            return [self.ollama_embedding_base_url]
+        return [self.ollama_base_url]
+
+    # Back-compat singular getters: return urls[0] from the new pools.
     def get_ollama_llm_url(self) -> str:
-        return self.ollama_llm_base_url or self.ollama_base_url
+        return self.get_ollama_llm_urls()[0]
 
     def get_ollama_vlm_url(self) -> str:
-        return self.ollama_vlm_base_url or self.ollama_base_url
+        return self.get_ollama_vlm_urls()[0]
 
     def get_ollama_embedding_url(self) -> str:
-        return self.ollama_embedding_base_url or self.ollama_base_url
+        return self.get_ollama_embedding_urls()[0]
 
     llm_max_tokens: int = 64000
 
