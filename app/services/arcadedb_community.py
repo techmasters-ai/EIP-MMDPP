@@ -228,10 +228,10 @@ async def _call_llm_for_report(prompt: str, model: str) -> dict[str, str]:
     """Call Ollama via pool client; expects JSON {title, summary}."""
     from app.config import get_settings
     from app.services.llm_json import parse_llm_json_loose
-    from app.services.ollama_clients import get_llm_client
+    from app.services.ollama_clients import get_community_report_client
 
     settings = get_settings()
-    client = get_llm_client()
+    client = get_community_report_client()
     think = settings.get_community_report_llm_think()
     # Community reports historically used doc_analysis_timeout; keep that
     # for v1 to avoid a behavior change. If we add a dedicated

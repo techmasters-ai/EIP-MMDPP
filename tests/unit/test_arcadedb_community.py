@@ -287,7 +287,7 @@ async def test_call_llm_for_report_parses_json_response():
         '{"title": "Radar Cluster", "summary": "Details here."}'
     )
 
-    with patch("app.services.ollama_clients.get_llm_client",
+    with patch("app.services.ollama_clients.get_community_report_client",
                return_value=fake_client):
         result = await _call_llm_for_report("prompt", "gpt-oss:20b")
 
@@ -302,7 +302,7 @@ async def test_call_llm_for_report_line_fallback_when_json_missing():
     fake_client = MagicMock()
     fake_client.chat.return_value = "Radar Cluster\nBody paragraph."
 
-    with patch("app.services.ollama_clients.get_llm_client",
+    with patch("app.services.ollama_clients.get_community_report_client",
                return_value=fake_client):
         result = await _call_llm_for_report("prompt", "gpt-oss:20b")
 
@@ -326,7 +326,7 @@ async def test_call_llm_for_report_reads_reasoning_content_when_content_empty():
         '{"title": "From Reasoning", "summary": "body"}'
     )
 
-    with patch("app.services.ollama_clients.get_llm_client",
+    with patch("app.services.ollama_clients.get_community_report_client",
                return_value=fake_client):
         result = await _call_llm_for_report("prompt", "gpt-oss:20b")
 
