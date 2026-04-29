@@ -11,7 +11,17 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from app.services.ollama_pool_client import OllamaPool
+from app.services.ollama_pool_client import (
+    OllamaChatClient,
+    OllamaEmbeddingClient,
+    OllamaPool,
+)
+
+
+class _FakeClientError(Exception):
+    def __init__(self, msg, details=None):
+        super().__init__(msg)
+        self.details = details
 
 
 def test_pool_picks_lowest_inflight():
@@ -79,9 +89,6 @@ def test_pool_with_single_url_always_picks_it():
         url = pool.acquire()
         assert url == "http://only"
         pool.release(url)
-
-
-from app.services.ollama_pool_client import OllamaChatClient
 
 
 def test_chat_client_satisfies_protocol_attrs():
@@ -183,12 +190,6 @@ def test_chat_client_format_json_when_structured_output_false():
 
 # ----- Tests for the v3 additions: ClientError wrapping, empty-content
 #       rejection, legacy schema strip, parse_json_fn injection. -----
-
-
-class _FakeClientError(Exception):
-    def __init__(self, msg, details=None):
-        super().__init__(msg)
-        self.details = details
 
 
 def test_get_json_response_wraps_parse_failure_as_client_error():
@@ -541,9 +542,6 @@ def test_malformed_response_envelope_wraps_as_client_error():
     with patch("httpx.Client.post", return_value=fake):
         with pytest.raises(_FakeClientError, match="malformed JSON envelope"):
             client.get_json_response(prompt="hi", schema_json="{}")
-
-
-from app.services.ollama_pool_client import OllamaEmbeddingClient
 
 
 def test_embedding_client_calls_v1_embeddings():
