@@ -1,6 +1,6 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-27
+**Last updated:** 2026-04-28
 
 ---
 
@@ -148,6 +148,38 @@ Keeps prose extraction on the fast LLM+delta path while giving the image/handwri
 - `cw_radar.jpg` and `Fan_Song_Radar.jpeg` produce non-empty ontology entities end-to-end.
 - The two `chinese_handwritten_notes*.pdf` docs either extract real entities or are explicitly marked "no-extract" (e.g. by a hint that says "image-only, no target domain content").
 - No regression on the LLM/delta path for prose PDFs.
+
+---
+
+### Infrastructure / Ollama Routing (Deferred)
+
+**#74. Centralize Ollama pool routing in a sidecar service**
+**Status:** Open. Deferred to follow up on the in-process pool client refactor (`docs/superpowers/plans/2026-04-28-ollama-pool-client-refactor.md`).
+
+**Observation:**
+The OllamaPool client refactor (planned 2026-04-28) ships an in-process pool that lives inside every consumer container (api, worker, worker-graph, worker-ingest, worker-embed, docling-graph). Each process maintains its own least-in-flight counters. Round-robin tie-breaking handles the "all processes pick URL[0] on cold start" pathology, but the design has a structural blind spot: process A can't see process B's in-flight calls. With ~6 LLM-calling processes and 8+ Ollama instances, fan-out is good enough on paper, but the routing accuracy degrades as we add worker processes or as bursts overlap across containers.
+
+**What needs to be done:**
+Build a standalone `ollama-pool` Docker service:
+1. New container at `docker/ollama-pool/` (Dockerfile + FastAPI app + requirements.txt).
+2. Service exposes Ollama-compatible endpoints under role-prefixed paths: `/llm/v1/chat/completions`, `/vlm/v1/chat/completions`, `/embed/v1/embeddings`. Each path has its own backend pool driven by a separate env var (e.g. `OLLAMA_POOL_LLM_BACKENDS`, `OLLAMA_POOL_VLM_BACKENDS`, `OLLAMA_POOL_EMBED_BACKENDS`).
+3. Service owns the existing `OllamaPool` routing core (already factored out by the in-process refactor — port unchanged). Single process = globally accurate least-in-flight + round-robin tie-break.
+4. Health check + graceful shutdown + per-role metrics endpoint (`/metrics` or `/v1/diagnostics` showing per-backend served counts).
+5. Add to `docker-compose.yml` with healthcheck and `depends_on` from api/workers/docling-graph.
+6. Migrate consumer config: `OLLAMA_LLM_BASE_URLS=["http://ollama-pool:8001/llm"]` (single URL pointing at the sidecar). The `OllamaChatClient` still works unchanged — it's now a single-URL "pool" with the actual fan-out happening downstream.
+
+**When to do it:**
+Trigger on observed pathology — production traces showing one Ollama instance with sustained queue depth while others idle, OR scaling past ~20 LLM-calling worker processes (process-local blindness compounds with process count). Until then, in-process pool + `routing_metrics` instrumentation is enough.
+
+**Estimated lift:** ~2.5–3 days (single implementer).
+
+**Why this matters:**
+Globally-accurate routing eliminates the "process A piles onto URL X while process B does the same independently" failure mode. Also lets ops swap routing strategies (least-busy → token-aware → sticky-by-document) without redeploying the app code in 6 containers — only the sidecar.
+
+**Tradeoffs to weigh at trigger time:**
+- Adds one container to monitor + deploy + debug
+- Adds one HTTP hop (~1–3ms) on the hot path of every LLM call
+- Creates a single point of failure unless replicated; replication needs shared in-flight state (Redis-backed counters as Option 2 between in-process and sidecar)
 
 ---
 
