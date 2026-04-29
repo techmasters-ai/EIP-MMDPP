@@ -3,6 +3,7 @@
 > **For agentic workers:** REQUIRED: Use superpowers-extended-cc:subagent-driven-development (if subagents available) or superpowers-extended-cc:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Revision history:**
+- **v10 (2026-04-29, post-ninth-review — last polish before implementation):** Final cleanups, all minor: P1 stale-step-reference (`Step 9` → `Step 7`); Task 6.3 Step 7's patch-target instruction reworded to "patch the import path actually looked up by the code AFTER migration" with explicit guidance on module-scope vs in-function imports; Task 6.5b says **replace** the existing DEBUG success log (not "promote") to avoid leaving both lines emitting; Task 6.6 Step 1 env snippet now includes the model vars (`DOC_ANALYSIS_LLM_MODEL`, `DOCLING_GRAPH_LLM_MODEL`, etc.) so the validation recipe is self-contained. Reviewer rated v9 implementable; v10 is final polish.
 - **v9 (2026-04-29, post-eighth-review — Chunk-6-only fixes):** **High:** Resolved contradiction between Task 6.5b (which modifies `app/services/ollama_pool_client.py` + mirror) and the "Files Chunk 6 must NOT touch" section. Reworded that section to "must NOT touch (routing-behavior-wise)" and explicitly carve out Task 6.5b's logging-only edits as allowed. **Medium:** Task 6.3 Step 1 still contained the old narrow grep (`from app.services.ollama_clients import (get_llm_client|...)`) which misses module-qualified calls and `get_docling_llm_client`. Replaced with the comprehensive `rg` from P1. **Medium:** Task 6.5b's success log used `self.model` for the chat client; switched to `body.get("model", self.model)` so per-call model overrides via `chat(model=...)` are visible in the log (Gates 6.C/6.D's filter rely on this). Embedding client keeps `self.model` (no per-call override exists today). **Medium:** Gate 6.C grep was ambiguous when functions share a model; added a concrete `grep "model=gpt-oss:120b"` filter and noted the test config should set `DOC_ANALYSIS_LLM_MODEL` distinct from `DOCLING_GRAPH_LLM_MODEL` so the disambiguation works cleanly. Also documented the time-window-narrowing fallback for same-model configs. **Low:** Task 6.4 Step 5 expected output reworded — `routing_metrics` is a dict keyed by URLs with zero counts at startup, not literally `{}`. **Low:** Risk-table mitigation reworded to reflect Step 1's now-comprehensive audit.
 - **v8 (2026-04-29, post-seventh-review — Chunk-6-only fixes):** Addressed reviewer findings on the Chunk 6 fleshed-out plan. **High:** Gates 6.C / 6.D were not verifiable — current client only logs URLs at WARNING (failure path) and `OllamaEmbeddingClient.embed()` had no success URL log at all. Added new Task 6.5b that promotes the success log to INFO with `url=...` field on both chat and embedding clients (with parity tests + mirror-drift sync). Updated Gates 6.C / 6.D with concrete grep commands against the new log lines. **Medium:** P1 audit grep was too narrow — couldn't catch module-qualified calls (`ollama_clients.get_llm_client(...)`) or `get_docling_llm_client`. Replaced with a comprehensive `rg` over both production and test trees and a separate test-patch sweep section. **Medium:** Task 6.4 Step 5 overstated what the host-venv test proves — that test swallows the `app.ollama_clients` ImportError and would NOT catch a renamed symbol inside the container. Added explicit `docker exec ... python -c "from app.ollama_clients import get_docling_graph_client"` smoke check. **Medium:** Test mock-path sweep was implicit; made it an explicit Step 7 with the comprehensive `rg tests --type py` invocation, and called out two known stale targets (`test_document_analysis.py:14` and `test_arcadedb_community.py:290`). **Low:** Task 6.1 wording said "6 fields" but only added 5 (the 6th is `DOCLING_GRAPH_LLM_BASE_URLS` in Task 6.4) — renamed to "api-side 5 per-function fields" with explicit pointer to Task 6.4. **Low:** Task 6.3 Step 8 said "six commits — one per file" but listed 5 — fixed to 5 migration commits + optional 6th test-sweep commit only if Steps 1-5's per-file commits don't cover all the patches.
 - **v7 (2026-04-28, post-sixth-review):** Fixed invalid `docker compose -e` syntax in Gate 5 (the `-e` flag exists on `compose run/exec`, not on `up`) — switched to shell env interpolation `DOCLING_GRAPH_DEBUG_ENDPOINTS=true docker compose up -d ...`. Added `docker-compose.yml` to Task 3.2b commit (the compose env passthrough was being modified without being staged). Reordered Task 3.2b Step 2 to (a) verify the endpoint returns 404 with the flag off (default), then (b) enable the flag and verify a real metrics dict comes back. Replaced the last "validator" reference in the P3 helper output. Initialized `_rr_cursor=-1` so the first tied acquisition picks `urls[0]` (cosmetic — fan-out worked either way). Added `test_default_extra_params_on_get_json_response` to cover the extraction path that actually uses `get_json_response()`.
@@ -3092,7 +3093,7 @@ TEXT_EMBEDDING_BASE_URLS       → OLLAMA_EMBEDDING_BASE_URLS → OLLAMA_EMBEDDI
     app docker --type py | grep -v 'ollama_clients\.py' | grep -v 'test_' | grep -v '\.tasks\.json'
 
   echo
-  echo "=== Test patch targets / mock paths (must be updated in Task 6.3 Step 9) ==="
+  echo "=== Test patch targets / mock paths (must be updated in Task 6.3 Step 7) ==="
   rg -nE 'get_(llm|vlm|embedding)_client\b|get_docling_llm_client\b' tests --type py
   ```
 
@@ -3624,7 +3625,12 @@ TEXT_EMBEDDING_BASE_URLS       → OLLAMA_EMBEDDING_BASE_URLS → OLLAMA_EMBEDDI
   rg -nE 'get_(llm|vlm|embedding)_client\b' tests --type py
   ```
 
-  For each match: update the patch path to the new function name (`get_doc_analysis_client`, `get_translation_client`, etc.). Match the production migration's choice of factory — e.g. if `app/services/document_analysis.py` now uses `get_doc_analysis_client`, the test patches `app.services.document_analysis.get_doc_analysis_client`.
+  **For each match: patch the import path actually looked up by the code AFTER migration**, not whatever path was patched before. The right path depends on where the import landed in the production code:
+
+  - If the production code imports the factory at module scope (e.g. `from app.services.ollama_clients import get_doc_analysis_client` at the top of `document_analysis.py`), patch `app.services.document_analysis.get_doc_analysis_client`.
+  - If the production code imports the factory **inside a function** (e.g. `def extract(): from app.services.ollama_clients import get_doc_analysis_client; ...`), the local lookup binds in the source module — patch `app.services.ollama_clients.get_doc_analysis_client` instead.
+
+  Look at where the migration actually placed the import (Task 6.3 Steps 2-6), THEN update each test's patch path to match. Both styles work; consistency between production and test is what matters. If you change the import location during migration, update the test in the same commit.
 
   Run: `SKIP_COV=1 .venv/bin/pytest tests/unit tests/pipeline tests/test_pool_client_mirror.py -q 2>&1 | tail -3`
   Expected: same `1399+ passed, 3 failed (pre-existing), 3 skipped, 3 xfailed` baseline. No NEW failures.
@@ -3902,7 +3908,7 @@ The current client only logs URLs at WARNING level (on retry/failure) — there'
 
 - [ ] **Step 3: Implement.**
 
-  In `OllamaChatClient._post_chat_with_retry` (the success branch — locate the existing `logger.debug("OllamaChatClient: ok ...")` line if present, OR the spot just before `return content`), promote it to INFO and read `body["model"]` so per-call model overrides via `chat(model=...)` are visible in the log (the grep filters in Gates 6.C/6.D rely on this):
+  In `OllamaChatClient._post_chat_with_retry` (the success branch — locate the existing `logger.debug("OllamaChatClient: ok ...")` line, which exists today after Chunk 1's cleanup pass), **replace that DEBUG line entirely with the INFO version below** (don't keep both — duplicate logs would clutter the worker output and could double-count if a future tool grep-counts them). The INFO version reads `body["model"]` so per-call model overrides via `chat(model=...)` are visible in the log (the grep filters in Gates 6.C/6.D rely on this):
 
   ```python
   logger.info(
@@ -3944,13 +3950,14 @@ The current client only logs URLs at WARNING level (on retry/failure) — there'
 
 - [ ] **Step 1: Set up a heterogeneous config in `.env`.**
 
-  Pick TWO Ollama URLs that both have `gemma4:31b` and `bge-m3:latest` available (the ones used in Chunk 4 — `10.0.1.121` and `10.0.1.109` — qualify). Set:
+  Pick TWO Ollama URLs that both have `gemma4:31b`, `gpt-oss:120b` (or whatever doc-analysis model you choose), and `bge-m3:latest` available (the hosts used in Chunk 4 — `10.0.1.121` and `10.0.1.109` — qualify if loaded). Set the URL pools AND **distinct models per function** so the Gate 6.C / 6.D log greps disambiguate cleanly:
 
   ```bash
-  # Role-level fallback — doc analysis, translation, community will inherit
+  # --- Pool URLs ---
+  # Role-level fallback — doc analysis, translation, community inherit from this
   OLLAMA_LLM_BASE_URLS=["http://10.0.1.121:11434"]
 
-  # Function-specific — graph extraction routed to a 2-URL pool (the test)
+  # Function-specific — graph extraction routed to a 2-URL pool (THE test)
   DOCLING_GRAPH_LLM_BASE_URLS=["http://10.0.1.121:11434","http://10.0.1.109:11434"]
 
   # Embedding stays on a single URL (per user policy: not 121)
@@ -3958,7 +3965,17 @@ The current client only logs URLs at WARNING level (on retry/failure) — there'
 
   # Picture-description VLM cascade — fall through to OLLAMA_VLM_BASE_URLS
   OLLAMA_VLM_BASE_URLS=["http://10.0.1.121:11434"]
+
+  # --- Models (distinct per function so log greps disambiguate) ---
+  DOC_ANALYSIS_LLM_MODEL=gpt-oss:120b
+  DOCLING_GRAPH_LLM_MODEL=gemma4:31b
+  TRANSLATION_MODEL=llama3.3:70b
+  COMMUNITY_REPORT_LLM_MODEL=llama3.2
+  PICTURE_DESCRIPTION_MODEL=gemma3:27b
+  TEXT_EMBEDDING_MODEL=bge-m3:latest
   ```
+
+  If the chosen models aren't loaded on both `10.0.1.121` and `10.0.1.109`, either pull them first (`curl -X POST <host>/api/pull -d '{"name":"<model>"}'`) OR pick different distinct-model assignments. The validation only requires that doc-analysis and graph-extraction use DIFFERENT models so the worker-graph log filter in Gate 6.C is unambiguous.
 
 - [ ] **Step 2: Restart all services so each reads the new env.**
 
