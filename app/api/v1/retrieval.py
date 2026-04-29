@@ -1188,7 +1188,7 @@ async def _synthesize_global_answer(
     )
     prompt = template.replace("{query}", query).replace("{reports}", reports_text)
 
-    timeout = settings.doc_analysis_timeout  # historical reuse; see Task 2.5
+    timeout = settings.doc_analysis_timeout  # reused from doc_analysis_timeout pending a dedicated community_global_synthesis_timeout setting
 
     def _sync_call() -> str:
         return client.chat(
