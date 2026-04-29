@@ -12,26 +12,11 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 
-import httpx
 import numpy as np
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
-
-# Thread-local HTTP client for Ollama embedding calls (Celery workers are
-# multi-threaded and httpx.Client is not thread-safe for concurrent use).
-import threading
-
-_thread_local = threading.local()
-
-
-def _get_http_client() -> httpx.Client:
-    client = getattr(_thread_local, "http_client", None)
-    if client is None:
-        client = httpx.Client(timeout=120.0)
-        _thread_local.http_client = client
-    return client
 
 
 def embed_texts(texts: list[str], batch_size: int = 64, *, query: bool = False) -> list[list[float]]:
@@ -58,22 +43,14 @@ def embed_texts(texts: list[str], batch_size: int = 64, *, query: bool = False) 
         else:
             texts = [f"Represent this sentence: {t}" for t in texts]
 
-    client = _get_http_client()
-    api_url = f"{settings.get_ollama_embedding_url()}/v1/embeddings"
+    from app.services.ollama_clients import get_embedding_client
+    client = get_embedding_client()
     all_embeddings: list[list[float]] = []
 
     # Process in batches
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
-        resp = client.post(
-            api_url,
-            json={"model": settings.text_embedding_model, "input": batch},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        # Sort by index to maintain order
-        items = sorted(data["data"], key=lambda x: x["index"])
-        all_embeddings.extend(item["embedding"] for item in items)
+        all_embeddings.extend(client.embed(batch))
 
     # L2-normalize
     arr = np.array(all_embeddings)
