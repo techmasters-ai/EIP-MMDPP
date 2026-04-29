@@ -167,6 +167,26 @@ The three `OLLAMA_*_BASE_URL` variables allow pointing different model types at 
 | `OLLAMA_VLM_BASE_URL` | `OLLAMA_BASE_URL` | Picture description (gemma3, llava, etc.) |
 | `OLLAMA_EMBEDDING_BASE_URL` | `OLLAMA_BASE_URL` | BGE text embeddings |
 
+#### Pool URLs (NEW)
+
+To scale across multiple Ollama instances (e.g., a bank of 8 gemma4:31b servers), each role accepts a JSON-array env var. When set, the corresponding pool load-balances using least-in-flight routing with round-robin tie-break (one retry on a different instance for connection/timeout errors).
+
+| Pool Variable | Used by |
+|---|---|
+| `OLLAMA_LLM_BASE_URLS` | All chat/reasoning calls (doc analysis, translation, community reports, global synthesis, docling-graph extraction) |
+| `OLLAMA_VLM_BASE_URLS` | Picture description |
+| `OLLAMA_EMBEDDING_BASE_URLS` | BGE text embeddings |
+
+Example:
+
+```bash
+OLLAMA_LLM_BASE_URLS=["http://10.0.1.121:11434","http://10.0.1.122:11434","http://10.0.1.123:11434","http://10.0.1.124:11434"]
+```
+
+Priority order per role: plural pool > singular `OLLAMA_*_BASE_URL` > `OLLAMA_BASE_URL`. Existing `.env` files keep working unchanged — pools are opt-in.
+
+For diagnostics on docling-graph extraction fan-out, set `DOCLING_GRAPH_DEBUG_ENDPOINTS=true` and query `GET /debug/routing-metrics` on port 8002. Returns per-URL request counts. Default-off to avoid leaking backend URLs on the published port; disable again after diagnosis.
+
 Per-request thinking is configured separately per application:
 
 | Think Variable | Used by |
