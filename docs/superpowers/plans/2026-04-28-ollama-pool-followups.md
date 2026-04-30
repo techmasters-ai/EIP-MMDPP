@@ -104,7 +104,7 @@ Running tally of NIT-level findings from each chunk's code-quality review. **Cle
 
 #### Pre-existing (drive-by candidates)
 
-15. ❌ **SKIPPED — `app/services/arcadedb_community.py:155-159` raw `_client.command()` access.** Pre-existing, out of scope for OllamaPool refactor.
+15. ❌ **SKIPPED in OllamaPool refactor — promoted to `TODO.md #76`.** Pre-existing tech debt: `app/services/arcadedb_community.py:155-159` accesses private `graph_store._client.command(...)`. Tracked as a standalone item to address with the next `arcadedb_community.py` change or `GraphStore` rework.
 
 ### From Chunk 3 (commits `adb0666..1815fad`)
 

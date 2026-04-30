@@ -1,6 +1,6 @@
 # TODO — Remaining Work
 
-**Last updated:** 2026-04-29
+**Last updated:** 2026-04-30
 
 ---
 
@@ -228,6 +228,38 @@ Until then, the OllamaPool design serves the existing single-provider deployment
 - Mixed-provider pool (some URLs in a single pool are Ollama, others vLLM). Requires per-URL provider tagging in `OllamaPool` — real design work, ~half day on top. Strongly recommend separate pools per provider; you almost certainly run homogeneous banks.
 - Streaming. Neither current client streams; both providers support it but we've decided we don't need it.
 - OpenAI / Anthropic clients (same pattern would apply; defer until needed).
+
+---
+
+### Code Quality / Tech Debt (Deferred)
+
+**#76. Replace private `graph_store._client.command(...)` access with a public `GraphStore` method**
+**Status:** Open. Pre-existing tech debt surfaced during the OllamaPool refactor's code review (followups item #15). Not a bug — code works correctly today.
+
+**Observation:**
+`app/services/arcadedb_community.py:155-159` reaches through the private attributes `graph_store._client` and `graph_store._database` to execute raw SQL when cleaning up stale community reports:
+```python
+await graph_store._client.command(
+    graph_store._database, "sql",
+    "DELETE VERTEX FROM CommunityReport WHERE community_id = :cid",
+    {"cid": stale_cid},
+)
+```
+The leading underscore marks both attributes as private by Python convention. This caller bypasses `GraphStore`'s public API and depends on the private interface. If `GraphStore`'s internals ever change (e.g., migrate from the HTTP client to gRPC, or wrap the client differently), this caller breaks silently.
+
+**What needs to be done:**
+1. Add a public method to `GraphStore` for the operation. Options:
+   - `delete_vertex_by_predicate(class_name: str, where: str, params: dict)` — narrow, captures the specific use case
+   - `execute_command(language: str, command: str, params: dict)` — broad, leaks the underlying SDK semantics back to callers
+2. Migrate `arcadedb_community.py:155-159` to the new method.
+3. (Optional) `grep -rn "graph_store\._" app/` to find any other callers reaching through private attributes; migrate them too.
+
+**When to do it:**
+Bundle with the next change to `app/services/arcadedb_community.py` for ANY reason, OR when `GraphStore`'s internals get reworked (a refactor away from the ArcadeDB HTTP client toward gRPC has been discussed). Don't do it standalone — too small a change to justify its own review cycle.
+
+**Estimated lift:** ~30 minutes if `GraphStore` already has a similar public method to extend; ~1 hour if a new public method is needed end-to-end including a unit test.
+
+**Why this matters:** encapsulation hygiene. Private-attribute access points are landmines for future refactors of `GraphStore` — any rename or restructure has to either preserve the exact attribute names verbatim or coordinate the change with every external caller.
 
 ---
 
