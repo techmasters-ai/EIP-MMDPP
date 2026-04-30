@@ -305,6 +305,131 @@ def test_every_rejection_reason_has_a_test():
     assert not missing, f"Missing test fixtures for: {missing}"
 
 
+# --- Regression: nested-dict properties shape (the production ontology shape) ---
+
+
+# Production ontologies (from `load_bundle_ontology(...)`) emit
+# `entity_types[].properties` as a JSON-Schema-style nested dict:
+#   {"type": "object", "properties": {<field>: {<schema>}, ...}}
+#
+# extraction_merge.py historically iterated `entity_def.get("properties", [])`
+# directly, which on this shape yielded the OUTER keys ("type", "properties")
+# — not the actual flat-field names — so getattr() on every property returned
+# None and the merged entity record was written with zero flat fields. The
+# bug was silent for months because the test fixtures here all used the
+# alternate flat-list shape (`"properties": ["system_name", ...]`).
+#
+# Fix: walk one level into `["properties"]["properties"].keys()` to get the
+# real flat-field names; fall through to the flat-list form for back-compat.
+# These two tests guard both shapes.
+
+
+PROD_SHAPE_ONTOLOGY = {
+    "entity_types": [
+        {
+            "name": "RADAR_SYSTEM",
+            "identity_fields": ["system_name"],
+            "identity_scope": "global",
+            "properties": {
+                "type": "object",
+                "properties": {
+                    "system_name": {"type": "string"},
+                    "peak_power_kw": {"type": "number"},
+                    "antenna_gain_dbi": {"type": "number"},
+                    "frequency_min_mhz": {"type": "number"},
+                    "scan_type": {"type": "string"},
+                },
+            },
+        },
+    ],
+    "validation_matrix": [],
+}
+
+
+def test_merge_populates_flat_fields_from_nested_dict_properties():
+    """Production ontology shape: each extracted instance's flat-field
+    values must land on the merged record's properties dict.
+
+    Before fix `app/services/extraction_merge.py:1147`: iterated the outer
+    keys of the JSON-Schema dict, so `getattr(instance, "type")` /
+    `getattr(instance, "properties")` returned None and the merged
+    properties were always empty. After fix: nested `["properties"]
+    ["properties"].keys()` yields the actual flat-field names.
+    """
+    pass_result = _make_pass_result(
+        pass_name="radar_power_rf",
+        entities=[(
+            "RADAR_SYSTEM",
+            {"system_name": "AN/MPQ-65"},
+            {
+                "peak_power_kw": 750.0,
+                "antenna_gain_dbi": 35.0,
+                "frequency_min_mhz": 5500.0,
+                "scan_type": "phased-array",
+            },
+        )],
+        relationships=[],
+    )
+    merged = merge_and_resolve(
+        pass_results={"radar_power_rf": pass_result},
+        manifest=_fake_manifest(["radar_power_rf"]),
+        ontology=PROD_SHAPE_ONTOLOGY,
+        document_id="doc-1",
+        pipeline_run_id="run-1",
+    )
+
+    assert len(merged.entities) == 1
+    assert merged.entities, "merge produced no entities"
+    record = merged.entities[0]
+    # Identity field is present (this worked before the fix too because
+    # it goes through _build_logical_identity, which already used the
+    # right ontology lookup path).
+    assert record.properties.get("system_name") == "AN/MPQ-65"
+    # Flat-field values that were always None pre-fix.
+    assert record.properties.get("peak_power_kw") == 750.0
+    assert record.properties.get("antenna_gain_dbi") == 35.0
+    assert record.properties.get("frequency_min_mhz") == 5500.0
+    assert record.properties.get("scan_type") == "phased-array"
+
+
+def test_merge_populates_flat_fields_from_flat_list_properties():
+    """Back-compat: older ontology shape uses a flat list of property
+    names. Both forms should work."""
+    flat_list_ontology = {
+        "entity_types": [
+            {
+                "name": "RADAR_SYSTEM",
+                "identity_fields": ["system_name"],
+                "identity_scope": "global",
+                "properties": ["system_name", "peak_power_kw", "scan_type"],
+            },
+        ],
+        "validation_matrix": [],
+    }
+    pass_result = _make_pass_result(
+        pass_name="radar_power_rf",
+        entities=[(
+            "RADAR_SYSTEM",
+            {"system_name": "AN/MPQ-65"},
+            {"peak_power_kw": 750.0, "scan_type": "phased-array"},
+        )],
+        relationships=[],
+    )
+    merged = merge_and_resolve(
+        pass_results={"radar_power_rf": pass_result},
+        manifest=_fake_manifest(["radar_power_rf"]),
+        ontology=flat_list_ontology,
+        document_id="doc-1",
+        pipeline_run_id="run-1",
+    )
+
+    assert merged.entities, "merge produced no entities"
+    record = merged.entities[0]
+    assert record.properties.get("system_name") == "AN/MPQ-65"
+    assert record.properties.get("peak_power_kw") == 750.0
+    assert record.properties.get("scan_type") == "phased-array"
+
+
 # --- Merge key properties --------------------------------------------------
 
 def test_merge_bridge_entity_collapses_across_passes():
