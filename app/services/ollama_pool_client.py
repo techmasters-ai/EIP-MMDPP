@@ -29,6 +29,55 @@ from typing import Any, Callable, Iterator, Literal, Mapping, Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _build_keepalive_http_client(timeout_s: float) -> httpx.Client:
+    """Build an httpx.Client with TCP keepalive + a sane read-timeout split.
+
+    Why: with a single blanket timeout (DOCLING_GRAPH_LLM_TIMEOUT can be 20h),
+    a silently-dropped TCP connection hangs the read for hours. This client
+    splits the timeouts so a dead socket surfaces in minutes:
+
+      * connect=10s    — DNS + TCP handshake should complete fast
+      * write=60s      — POST body upload
+      * pool=30s       — wait for a free connection slot
+      * read=min(timeout_s, 1800s) — gemma4's longest legitimate single-batch
+        generation we've observed is ~25min (legacy retry on field-rich
+        schemas); 30min comfortably exceeds that and lets a hung read
+        surface as ReadTimeout (retried by OllamaPool on a different URL).
+
+    Plus TCP keepalive at the socket level so the kernel detects truly-
+    dead connections in TCP_KEEPIDLE + KEEPCNT*KEEPINTVL = 60 + 6*15 =
+    ~150s, well before the read timeout. Both signals trigger
+    OllamaChatClient._post_with_retry's retry-on-different-URL path
+    instead of hanging silently.
+    """
+    socket_options: list[tuple[int, int, int]] = []
+    try:
+        import socket as _sock
+        socket_options = [
+            (_sock.SOL_SOCKET, _sock.SO_KEEPALIVE, 1),
+            (_sock.IPPROTO_TCP, _sock.TCP_KEEPIDLE, 60),    # idle 60s before first probe
+            (_sock.IPPROTO_TCP, _sock.TCP_KEEPINTVL, 15),   # 15s between probes
+            (_sock.IPPROTO_TCP, _sock.TCP_KEEPCNT, 6),      # 6 probes -> ~150s detection
+        ]
+    except (ImportError, AttributeError):
+        try:
+            import socket as _sock
+            socket_options = [(_sock.SOL_SOCKET, _sock.SO_KEEPALIVE, 1)]
+        except ImportError:
+            socket_options = []
+    transport = httpx.HTTPTransport(socket_options=socket_options) \
+        if socket_options else None
+    return httpx.Client(
+        timeout=httpx.Timeout(
+            connect=10.0,
+            read=min(float(timeout_s), 1800.0),
+            write=60.0,
+            pool=30.0,
+        ),
+        transport=transport,
+    )
 # Attach a stream handler when the host process hasn't configured logging.
 # Without this, _maybe_strip_legacy_schema and _post_chat_with_retry log
 # silently in production (the api and docling-graph processes don't call
@@ -212,9 +261,10 @@ class OllamaChatClient:
         self._legacy_marker_start = legacy_strip_marker_start
         self._legacy_marker_end = legacy_strip_marker_end
         self.last_call_diagnostics: dict | None = None
-        # One httpx.Client per OllamaChatClient. httpx.Client is thread-safe
-        # for concurrent .post() calls.
-        self._http = httpx.Client(timeout=timeout_s)
+        # One httpx.Client per OllamaChatClient with TCP keepalive + a saner
+        # read-timeout split (see _build_keepalive_http_client docstring).
+        # httpx.Client is thread-safe for concurrent .post() calls.
+        self._http = _build_keepalive_http_client(timeout_s)
 
     def close(self) -> None:
         """Close the underlying httpx.Client. Safe to call multiple times.
@@ -573,9 +623,17 @@ class OllamaChatClient:
             ) as exc:
                 last_exc = exc
                 excluded.add(url)
-                logger.warning(
-                    "OllamaChatClient: %s on %s (attempt %d/2): %s",
-                    type(exc).__name__, url, attempt + 1, exc,
+                # ERROR not WARNING — silent socket drops (the
+                # OLLAMA_POOL_TCP_DROP class) need to surface loudly so an
+                # operator monitoring logs sees one entry per drop, not just
+                # buried INFO routine. The retry-on-different-URL still happens;
+                # this is purely visibility.
+                logger.error(
+                    "OLLAMA_POOL_CONN_FAILURE exc_type=%s url=%s model=%s "
+                    "elapsed_s=%.1f attempt=%d/2 exc_msg=%s — retrying on "
+                    "remaining pool URLs.",
+                    type(exc).__name__, url, self.model,
+                    time.time() - t0, attempt + 1, exc,
                 )
                 # Guards acquire() from raising on attempt 2 — must run before
                 # next iteration. Once every URL is excluded, retrying would
@@ -602,6 +660,15 @@ class OllamaChatClient:
             finally:
                 self.pool.release(url)
         assert last_exc is not None
+        # All pool URLs failed transport-wise. Loud surface BEFORE raising so
+        # the failure is visible even if the caller swallows the exception
+        # downstream.
+        logger.error(
+            "OLLAMA_POOL_ALL_FAILED model=%s tried_urls=%s last_exc_type=%s "
+            "last_exc_msg=%s — every pool URL dropped or timed out.",
+            self.model, sorted(excluded),
+            type(last_exc).__name__, last_exc,
+        )
         if self._client_error_cls is not None:
             raise self._client_error_cls(
                 f"All pool URLs failed: {type(last_exc).__name__}: {last_exc}",
@@ -631,7 +698,8 @@ class OllamaEmbeddingClient:
         # embed() POST with {url, elapsed_s, model, batch_size}. Useful for
         # routing diagnostics and slow-host detection.
         self.last_call_diagnostics: dict | None = None
-        self._http = httpx.Client(timeout=timeout_s)
+        # Same TCP-keepalive + read-timeout-split treatment as the chat client.
+        self._http = _build_keepalive_http_client(timeout_s)
 
     def close(self) -> None:
         """Close the underlying httpx.Client. Safe to call multiple times."""
@@ -679,9 +747,22 @@ class OllamaEmbeddingClient:
             ) as exc:
                 last_exc = exc
                 excluded.add(url)
+                # ERROR not silent — embedding-side connection drops also
+                # need loud surface so an operator sees per-drop entries.
+                logger.error(
+                    "OLLAMA_EMBED_CONN_FAILURE exc_type=%s url=%s model=%s "
+                    "batch=%d exc_msg=%s — retrying on remaining pool URLs.",
+                    type(exc).__name__, url, self.model, len(texts), exc,
+                )
                 if len(excluded) >= len(self.pool.urls):
                     break
             finally:
                 self.pool.release(url)
         assert last_exc is not None
+        logger.error(
+            "OLLAMA_EMBED_ALL_FAILED model=%s tried_urls=%s last_exc_type=%s "
+            "last_exc_msg=%s — every embedding pool URL dropped or timed out.",
+            self.model, sorted(excluded),
+            type(last_exc).__name__, last_exc,
+        )
         raise last_exc
