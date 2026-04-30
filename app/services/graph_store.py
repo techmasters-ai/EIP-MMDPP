@@ -70,6 +70,11 @@ class GraphEntityResult:
     score: float | None = None
     score_type: str | None = None  # "vector", "fulltext", or "ingestion"
     properties: dict[str, Any] = field(default_factory=dict)
+    # Mirrors app/schemas/graph_store.py::GraphEntityResult.relationship_types.
+    # Populated by get_associated_systems() so query-profile endpoints
+    # (dossier / components / performance) can render the relationship-type
+    # tags on related-system nodes. Default-empty matches the schema model.
+    relationship_types: list[str] = field(default_factory=list)
 
 
 @dataclass
