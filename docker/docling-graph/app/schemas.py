@@ -74,6 +74,20 @@ class ExtractPassRequest(BaseModel):
             "callers omit this field and inherit the service default."
         ),
     )
+    llm_batch_token_size: Optional[int] = Field(
+        default=None,
+        description=(
+            "Per-request override for chunk_batches_by_token_limit's max_batch_tokens. "
+            "When None (default), uses the service-wide DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE "
+            "(currently 1024). Larger batches mean fewer LLM calls (faster) but more "
+            "text the model must attend to AND emit valid JSON for (potentially worse "
+            "JSON-failure rate). Used by the extraction_walkthrough notebook to A/B "
+            "batch sizing against the same input. Production worker callers omit this "
+            "field and inherit the service default. Note: history shows 2048 was "
+            "tried and rolled back to 1024 due to Ollama-local instability — see "
+            "config_builder.py:42-44."
+        ),
+    )
 
 
 class ExtractionProvenance(BaseModel):

@@ -184,6 +184,9 @@ services:
       # format="json" replaces the constraint; Pydantic validates
       # downstream so schema enforcement is preserved.
       DOCLING_GRAPH_FORCE_JSON_MODE: ${DOCLING_GRAPH_FORCE_JSON_MODE:-false}
+      # TODO #81: input sanitization (URL/nav-list filter). Currently
+      # disabled by default — re-enable after the parent/$ref-rewriting fix.
+      DOCLING_GRAPH_SANITIZE_INPUT: ${DOCLING_GRAPH_SANITIZE_INPUT:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       HF_TOKEN: ${HF_TOKEN:-}

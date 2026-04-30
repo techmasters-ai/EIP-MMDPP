@@ -79,6 +79,16 @@ class DoclingGraphSettings(BaseSettings):
     # Structured output
     docling_graph_structured_output: bool = True
     docling_graph_structured_sparse_check: bool = True
+    # TODO #81: when True, /extract-pass blanks the text content of web-cruft
+    # elements (ad-tracking URLs, navigation link lists, standalone bare URLs)
+    # in texts[] before chunking. The element stays in place — only its
+    # `text` / `orig` content is replaced with "" — so $refs from body /
+    # pictures / tables / groups remain valid and the hierarchy validator
+    # passes. The chunker treats empty texts as zero-token contributions
+    # so they vanish from the LLM's view of the markdown. Image captions
+    # (label='caption') are always preserved. Toggle via the env var
+    # DOCLING_GRAPH_SANITIZE_INPUT (false to disable).
+    docling_graph_sanitize_input: bool = True
 
     # LLM overrides.
     # Temperature=0.1 (library default) — tried temperature=0 per Ollama
@@ -163,6 +173,19 @@ _QUALITY_MIN_INSTANCES_PER_PASS: dict[str, int] = {
     "system_links": 1,
 }
 
+# Per-pass overrides for the library's structured-output sparse-check (TODO #80).
+# llm_backend.py:_is_sparse_structured_result computes
+# `non_empty_values / schema_leaf_fields < 0.40` and triggers a 25-min
+# legacy-mode retry. For identity-only passes (radar_identity, missile_identity)
+# most fields are legitimately unknown for any given system — populating
+# system_name + nomenclature only is the EXPECTED shape, not under-extraction.
+# Disable the heuristic for those passes so a correct sparse output isn't
+# wastefully retried.
+_STRUCTURED_SPARSE_CHECK_PER_PASS: dict[str, bool] = {
+    "radar_identity": False,
+    "missile_identity": False,
+}
+
 
 def build_pipeline_config(
     source: str,
@@ -170,6 +193,7 @@ def build_pipeline_config(
     pass_name: str | None = None,
     debug_dir: str | None = None,
     temperature_override: float | None = None,
+    llm_batch_token_size_override: int | None = None,
 ) -> Any:
     """Build a PipelineConfig from environment variables.
 
@@ -199,6 +223,13 @@ def build_pipeline_config(
     if pass_name in _QUALITY_MIN_INSTANCES_PER_PASS:
         quality_min_instances = _QUALITY_MIN_INSTANCES_PER_PASS[pass_name]
 
+    # TODO #80: identity-only passes don't have relationships and most fields
+    # are legitimately unknown — opt them out of the library's sparse-check
+    # retry so we don't burn 25min on a "correct" output.
+    structured_sparse_check_effective = settings.docling_graph_structured_sparse_check
+    if pass_name in _STRUCTURED_SPARSE_CHECK_PER_PASS:
+        structured_sparse_check_effective = _STRUCTURED_SPARSE_CHECK_PER_PASS[pass_name]
+
     # Build via the process-cached factory in app/ollama_clients.py. All
     # generation knobs (top_p / top_k / seed / stop / etc.), the schema
     # transform, force_json_mode, structured_output_threshold_chars, and
@@ -222,7 +253,11 @@ def build_pipeline_config(
         "processing_mode": settings.docling_graph_processing_mode,
         "use_chunking": settings.docling_graph_use_chunking,
         "chunk_max_tokens": settings.docling_graph_chunk_max_tokens,
-        "llm_batch_token_size": settings.docling_graph_llm_batch_token_size,
+        "llm_batch_token_size": (
+            llm_batch_token_size_override
+            if llm_batch_token_size_override is not None
+            else settings.docling_graph_llm_batch_token_size
+        ),
         "parallel_workers": settings.docling_graph_parallel_workers,
         "staged_pass_retries": settings.docling_graph_batch_split_max_retries,
         "delta_resolvers_enabled": settings.docling_graph_resolvers_enabled,
@@ -242,7 +277,7 @@ def build_pipeline_config(
         "gleaning_enabled": settings.docling_graph_gleaning_enabled,
         "gleaning_max_passes": settings.docling_graph_gleaning_max_passes,
         "structured_output": settings.docling_graph_structured_output,
-        "structured_sparse_check": settings.docling_graph_structured_sparse_check,
+        "structured_sparse_check": structured_sparse_check_effective,
         "llm_overrides": {
             "generation": {
                 "temperature": (

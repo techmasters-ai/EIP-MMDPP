@@ -117,7 +117,7 @@ _install_resolver_patch()
 
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app._field_provenance_helpers import _primary_list_field_name
-from app.config_builder import build_pipeline_config
+from app.config_builder import build_pipeline_config, DoclingGraphSettings
 from app.evidence_gate import (
     apply_bundle_postprocessing as _apply_bundle_postprocessing,
     collect_batch_evidence_text as _collect_batch_evidence_text,
@@ -209,6 +209,126 @@ def debug_routing_metrics():
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+_AD_TRACKING_DOMAINS = (
+    "adroll.com",
+    "adrta.com",
+    "doubleclick.net",
+    "googletagmanager.com",
+    "googletagservices.com",
+    "googleadservices.com",
+    "google-analytics.com",
+    "googlesyndication.com",
+    "facebook.com/tr",
+    "amazon-adsystem.com",
+    "adservice.google",
+    "scorecardresearch.com",
+)
+
+# Standalone URL or markdown link with no surrounding prose. Captures patterns
+# like "[Foo](https://...)" or just "https://example.com/path" with optional
+# surrounding whitespace. Leading list markers ("- ", "* ") are tolerated so
+# entire navigation/sidebar lists collapse cleanly.
+_PURE_LINK_LINE = __import__("re").compile(
+    r"^\s*[-*]?\s*"
+    r"(?:\[[^\]]*\]\([^)]+\)|https?://\S+|<https?://\S+>)"
+    r"\s*$",
+    flags=__import__("re").IGNORECASE | __import__("re").MULTILINE,
+)
+
+
+def _looks_like_nav_or_tracking(text: str) -> bool:
+    """Return True if the entire text is web cruft we should drop pre-extraction.
+
+    Heuristics (conservative — false negatives preferred over false positives):
+      1. Text contains an ad-tracking domain (high-confidence drop).
+      2. Text is ONLY one or more pure markdown links / bare URLs, with no
+         meaningful prose interspersed (sidebar nav, link lists, "Related"
+         columns, "Share on X" rows, etc.).
+
+    Image-description prose (label='caption' on the element, or descriptive
+    sentences) does NOT match these patterns and is kept — the user explicitly
+    wants those preserved.
+    """
+    import re as _re
+
+    if not isinstance(text, str) or not text.strip():
+        return False
+
+    # Rule 1: ad/tracking domain anywhere in the text — drop unconditionally.
+    lowered = text.lower()
+    for dom in _AD_TRACKING_DOMAINS:
+        if dom in lowered:
+            return True
+
+    # Rule 2: every non-blank line is a pure link / bare URL (nav list).
+    nonblank = [ln for ln in text.splitlines() if ln.strip()]
+    if not nonblank:
+        return False
+    if all(_PURE_LINK_LINE.match(ln) for ln in nonblank):
+        return True
+
+    return False
+
+
+def _sanitize_docling_document(doc: dict, stats: dict) -> dict:
+    """Blank the text content of ad-tracking / navigation-list elements.
+
+    **Key design decision (2026-04-30):** does NOT remove elements from
+    texts[]. Removing an element shifts all subsequent indices, but the
+    DoclingDocument format has many cross-references to text indices —
+    `body.children` (handled), but ALSO `pictures[].children`,
+    `tables[].children`, `groups[].children`, `furniture.children`, and
+    `parent` back-references on every containee. The library's hierarchy
+    validator (Pipeline stage 'Input Normalization') walks every $ref and
+    fails if a parent and a child disagree about who their counterpart is.
+
+    Instead, this implementation REPLACES the noisy text element's
+    `text` and `orig` fields with empty strings, leaving the element +
+    all its $refs in place. The HybridChunker treats empty/whitespace
+    texts as zero-token contributions, so they vanish from the markdown
+    fed to the LLM without disturbing the document hierarchy.
+
+    KEEPS image captions (label='caption') unconditionally — user wants
+    image-description prose preserved.
+    """
+    texts_in = list(doc.get("texts") or [])
+    stats["texts_in"] = len(texts_in)
+
+    new_texts: list = []
+    blanked = 0
+    for t in texts_in:
+        if not isinstance(t, dict):
+            new_texts.append(t)
+            continue
+        label = (t.get("label") or "").lower()
+        if label == "caption":
+            # Protected — image-description prose stays.
+            new_texts.append(t)
+            continue
+        text_str = t.get("text") or t.get("orig") or ""
+        if _looks_like_nav_or_tracking(text_str):
+            # Element stays in texts[]; only its content is blanked. All
+            # $refs from body.children / pictures[].children / etc. remain
+            # valid and point to a now-empty text element.
+            blanked_t = dict(t)
+            blanked_t["text"] = ""
+            blanked_t["orig"] = ""
+            new_texts.append(blanked_t)
+            blanked += 1
+            continue
+        new_texts.append(t)
+
+    stats["texts_dropped"] = blanked  # field name kept for compatibility;
+                                      # semantically "blanked", not removed.
+
+    if blanked == 0:
+        return doc  # nothing changed; avoid the copy
+
+    new_doc = dict(doc)
+    new_doc["texts"] = new_texts
+    return new_doc
+
+
 def _render_upstream_entities_preamble(upstream_entities: list | None) -> str:
     """Render a plain-text preamble listing upstream entity refs for the LLM.
 
@@ -252,6 +372,7 @@ def run_extraction_pass(
     upstream_entities: list | None = None,
     pass_name: str | None = None,
     temperature: float | None = None,
+    llm_batch_token_size: int | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -287,6 +408,25 @@ def run_extraction_pass(
             and not doc.get("pictures")
             and not doc.get("tables")
         )
+
+    # TODO #81: strip web cruft (ad-tracking URLs, navigation link lists,
+    # standalone URL paragraphs) from the DoclingDocument's texts[] array
+    # before chunking. KEEPS image-description prose (label="caption") and
+    # all real document content (radar tables, parameters, prose). Opt out
+    # via DOCLING_GRAPH_SANITIZE_INPUT=false. Filtered count is recorded in
+    # diagnostics so an operator can verify the heuristic isn't too aggressive.
+    sanitize_stats: dict[str, int] = {"texts_in": 0, "texts_dropped": 0}
+    _settings_for_sanitize = DoclingGraphSettings()
+    if getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
+        docling_document_json = _sanitize_docling_document(
+            docling_document_json, sanitize_stats
+        )
+        if sanitize_stats["texts_dropped"] > 0:
+            logger.info(
+                "GRAPH_EXTRACTION_SANITIZED pass=%s texts_in=%d texts_dropped=%d "
+                "(filtered web-cruft texts before chunking; image captions preserved)",
+                pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
+            )
 
     if _is_empty(docling_document_json):
         logger.warning(
@@ -376,6 +516,7 @@ def run_extraction_pass(
             pass_name=pass_name,
             debug_dir=debug_dir,
             temperature_override=temperature,
+            llm_batch_token_size_override=llm_batch_token_size,
         )
 
         # Capture the library's print() + logging output to stdout/stderr during
@@ -496,6 +637,12 @@ def run_extraction_pass(
 
         captured_log = library_log_buf.getvalue()
         trace["library_log"] = captured_log
+        # TODO #81: surface sanitize stats so the notebook outcome tracker
+        # and an operator can see how aggressive the cruft filter was.
+        trace["input_sanitize"] = {
+            "texts_in": sanitize_stats.get("texts_in", 0),
+            "texts_dropped": sanitize_stats.get("texts_dropped", 0),
+        }
         if pipeline_error is not None:
             trace["pipeline_error"] = {
                 "type": type(pipeline_error).__name__,
@@ -672,6 +819,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.upstream_entities,
                     body.pass_name,
                     body.temperature,
+                    body.llm_batch_token_size,
                 )
             except Exception as exc:
                 logger.exception(
