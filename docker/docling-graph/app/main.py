@@ -664,14 +664,57 @@ def run_extraction_pass(
             ("LiteLLMClient returned empty", "litellm_returned_empty"),
             ("retrying legacy", "retrying_legacy"),
         )
+        any_library_warning = False
         for signature, tag in library_warning_signatures:
             occurrences = captured_log.count(signature)
             if occurrences > 0:
+                any_library_warning = True
                 logger.error(
                     "GRAPH_EXTRACTION_LIBRARY_WARNING pass=%s tag=%s count=%d "
                     "signature=%r — library soft-failed silently; pass_output "
                     "will be empty or partial.",
                     pass_name, tag, occurrences, signature,
+                )
+
+        # When the pass exhibited any failure indicator (run_pipeline raised,
+        # OR a library warning fired), embed the library's per-batch trace
+        # files in the response so an operator can inspect the EXACT prompt
+        # + LLM output that caused the failure. Without this, the trace
+        # files get cleaned up by the finally block below and there's no
+        # forensic surface for debugging failed batches. Only embeds on
+        # failures to keep response size bounded for the success path.
+        had_failure = pipeline_error is not None or any_library_warning
+        if had_failure:
+            batch_traces: dict[str, dict] = {}
+            debug_subdir = os.path.join(debug_dir, "debug")
+            search_dirs = [debug_subdir, debug_dir]
+            for d in search_dirs:
+                if not os.path.isdir(d):
+                    continue
+                try:
+                    for fname in sorted(os.listdir(d)):
+                        if not fname.startswith("delta_batch_"):
+                            continue
+                        if not fname.endswith(".json"):
+                            continue
+                        fpath = os.path.join(d, fname)
+                        try:
+                            with open(fpath, encoding="utf-8") as bf:
+                                batch_traces[fname] = json.load(bf)
+                        except Exception as bexc:
+                            batch_traces[fname] = {"_load_error": str(bexc)}
+                except Exception as exc:
+                    logger.warning(
+                        "extract-pass: failed to enumerate batch traces in %s: %s",
+                        d, exc,
+                    )
+            if batch_traces:
+                trace["failed_batch_traces"] = batch_traces
+                logger.info(
+                    "extract-pass: embedded %d batch trace(s) in diagnostics "
+                    "for forensic inspection (pass=%s, document_id=%s)",
+                    len(batch_traces), pass_name,
+                    getattr(context, "_document_id_for_logging", "?"),
                 )
 
         try:
@@ -1025,10 +1068,21 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             diagnostics=getattr(context, "_delta_trace", None),
         )
     finally:
+        # Pull chunk/batch counts off the response's diagnostics so an operator
+        # tailing the docker log can see per-pass extraction shape (how the
+        # doc was chunked, how those chunks were batched into LLM calls)
+        # without round-tripping back to the notebook.
+        _diag = locals().get("context", None)
+        _diag = getattr(_diag, "_delta_trace", None) if _diag is not None else None
+        _chunks = (_diag or {}).get("chunk_count", -1) if isinstance(_diag, dict) else -1
+        _batches = (_diag or {}).get("batch_count", -1) if isinstance(_diag, dict) else -1
+        _sanitize = (_diag or {}).get("input_sanitize", {}) if isinstance(_diag, dict) else {}
+        _texts_dropped = (_sanitize or {}).get("texts_dropped", -1) if isinstance(_sanitize, dict) else -1
         logger.info(
-            "extract-pass: END bundle=%s pass=%s document_id=%s node_count=%d edge_count=%d",
+            "extract-pass: END bundle=%s pass=%s document_id=%s "
+            "chunks=%s batches=%s node_count=%d edge_count=%d sanitize_dropped=%s",
             body.bundle_key, body.pass_name, body.document_id,
-            node_count_for_log, edge_count_for_log,
+            _chunks, _batches, node_count_for_log, edge_count_for_log, _texts_dropped,
         )
         # Loud surface for soft-failed extractions: when the run_pipeline
         # path was caught and stubbed, OR when extraction completed but

@@ -379,6 +379,36 @@ Bundle with the next `docker/docling-graph/app/main.py` change. Standalone is fi
 
 ---
 
+**#82. Apply TCP keepalive + read-timeout-split hardening to the ArcadeDB httpx client**
+**Status:** Open. Defense-in-depth follow-up to commit `49c2e43` (OllamaPool TCP keepalive fix).
+**Files:** `app/services/arcadedb_client.py:110` (`_async_client`), `app/services/arcadedb_client.py:126` (`_sync_client`)
+
+**Observation:**
+On 2026-04-30 a /extract-pass call hung 35+ minutes against a healthy Ollama because docling-graph's `httpx.Client` had no `SO_KEEPALIVE` set and a single 20-hour blanket timeout — when a NAT/firewall/conntrack table aged out the idle TCP state mid-generation, the kernel never noticed the connection was dead. The fix in `49c2e43` added `_build_keepalive_http_client()` (TCP_KEEPIDLE=60, KEEPINTVL=15, KEEPCNT=6 → ~150s dead-socket detection; `httpx.Timeout(connect=10s, read=min(timeout_s, 1800s), write=60s, pool=30s)`) to both `OllamaChatClient` and `OllamaEmbeddingClient`.
+
+The same hazard class technically exists on `arcadedb_client.py`'s two long-lived `httpx.Client` instances. They speak HTTP+SQL to ArcadeDB on the docker network, so the practical risk is dramatically lower:
+- ArcadeDB queries typically complete in <1s — the socket rarely sits idle long enough for a middle-box to drop state
+- Both endpoints are inside the same docker network, so no NAT/firewall idle timeout sits between them
+- ArcadeDB itself doesn't have a multi-minute idle generation phase like Ollama+gemma4 at `stream:false`
+
+But "low risk" ≠ "no risk." If a future deployment moves ArcadeDB out-of-cluster, or if `nf_conntrack_tcp_timeout_established` gets shortened, the same silent-stuck-connection failure could happen with no signal to the worker.
+
+**What needs to be done:**
+1. Hoist `_build_keepalive_http_client()` from `app/services/ollama_pool_client.py` to a shared utility (`app/services/_http_keepalive.py` or similar) — both pool clients and the ArcadeDB client should consume the same helper so any future tuning propagates.
+2. There's an async variant needed too (`httpx.AsyncClient` for `_async_client`). Add `_build_keepalive_async_http_client()` mirroring the sync version (httpx accepts the same `transport=` and `timeout=` shapes).
+3. Replace `httpx.AsyncClient(...)` and `httpx.Client(...)` constructions in `arcadedb_client.py` with the new helpers.
+4. Update the existing `tests/test_pool_client_mirror.py` (or add a new unit test) to assert the helper produces the expected `socket_options` and `httpx.Timeout` shape.
+
+**When to do it:**
+Bundle with the next significant change to `arcadedb_client.py`, OR proactively as part of TODO #79's production-readiness pass — observability/SLO design will surface the question of "what happens when an ArcadeDB connection silently dies?" naturally.
+
+**Estimated lift:** ~2 hours (helper extraction + async variant + 4 call-site updates + test).
+
+**Why this matters:**
+A worker hung on a dead ArcadeDB socket is invisible: no error log, no task timeout, no retry. With keepalive, the OS detects within ~150s and the SQLAlchemy/httpx stack surfaces a connection error that Celery's existing retry logic catches. It's a small change with disproportionate failure-mode coverage.
+
+---
+
 ## Completed Items (Reference)
 
 ### Gaps/Bugs Fixed
