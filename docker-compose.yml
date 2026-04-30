@@ -292,9 +292,6 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    profiles:
-      - ""
-      - default
     depends_on:
       api:
         condition: service_started
