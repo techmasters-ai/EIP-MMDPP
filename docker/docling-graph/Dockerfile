@@ -75,6 +75,7 @@ COPY --from=fips-bypass /tmp/fips_disabled /usr/local/lib/fips_disabled
 RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get update \
     && LD_PRELOAD=/usr/local/lib/libfips_bypass.so apt-get install -y --no-install-recommends \
     curl \
+    patch \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
