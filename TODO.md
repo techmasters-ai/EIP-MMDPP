@@ -263,6 +263,122 @@ Bundle with the next change to `app/services/arcadedb_community.py` for ANY reas
 
 ---
 
+### Production Readiness (Decision Needed)
+
+**#79. Scope and execute production-readiness pass for the platform**
+**Status:** Open. **Blocks on two decisions from product/eng leadership before brainstorming starts.**
+
+**Observation:**
+The user asked "I want this production ready" on 2026-04-30 during the post-OllamaPool-refactor monitoring run. That's a substantial scope expansion beyond the soft-fail cleanup of #77/#78. Off-the-cuff, the production-readiness surface for this stack spans at minimum:
+
+- **Hard-failure handling.** Many failures today soft-fall to stub contexts, empty translations, or `WARNING` log lines (see #77, #78, plus the full list of stub paths in `docker/docling-graph/app/main.py` and the warning paths in `app/services/translation.py`). Production needs explicit policy: which failures are recoverable, which fail the run, which raise paging alerts.
+- **Data-integrity gates.** Silent translation drops, empty extraction results, NULL flat fields on RADAR_SYSTEM/MISSILE_SYSTEM (the merge bug class — see commit `3296bf1`) — all these escape today's tests. Need post-stage assertions (e.g., "no doc completes derive_ontology_graph with zero entities AND zero relationships" → either a real error or a recorded skip-reason).
+- **Observability.** Today: stdout logs and a `/debug/routing-metrics` endpoint behind an env flag. Production needs structured logs, per-stage error counters, percentile latency histograms, GPU-utilization fan-out per Ollama host, queue-depth dashboards, and on-call alerts with runbooks.
+- **Open critical-path TODO items that block production.** At minimum: #28 (`scan_watch_directories` queue isolation — hides as chain breakage under load), #74 (sidecar pool — process-local routing blindness compounds with worker count), #76 (private `graph_store._client` access — refactor landmine), #77/#78 (soft-fail cleanup), plus the full `## Open Items` list reviewed for production-criticality.
+- **Test coverage on live integration paths.** `tests/conftest.py:212` globally stubs `GraphStore`, so backend/query-profile tests don't exercise concrete ArcadeDB alias/chunk/vector behavior. Production needs a real-ArcadeDB integration-test tier (separate suite, runs in CI against a containerized ArcadeDB).
+- **Deployment / runtime hardening.** Secrets out of `.env` and into a vault, no hardcoded URLs in compose, healthchecks on all services (currently only some), graceful shutdown verified across worker pools, backup/restore tested end-to-end (#32 added the scheduler — has the restore path been verified?).
+- **Compliance posture.** This dataset includes CUI / FCI markers on remote hosts (`10.0.1.121` SSH banner). Production needs a documented authorization scope, audit logging, access controls on the API, and possibly an air-gapped deployment path.
+- **SLOs.** Define ingest-rate target, query-latency p50/p95, retrieval-recall floor, and uptime target. Today none of these exist as committed numbers. Without SLOs, "production ready" is ambiguous.
+
+**Decisions needed before brainstorming starts:**
+
+1. **Deployment target and audience.** Drives what "production ready" actually means.
+   - Single-tenant on-prem for the SA-2 use case?
+   - Multi-tenant SaaS?
+   - Air-gapped CUI environment?
+   - Hybrid (gov + commercial)?
+
+   These choices have very different scopes for compliance, secrets handling, multi-tenancy isolation, and deployment automation.
+
+2. **Trigger and timeline.** Determines scope-cutting posture.
+   - Hard date or stakeholder ask? → cut scope ruthlessly to a v1, defer hardening to v1.5.
+   - "Next major milestone, scope it properly"? → full hardening pass over 4–8 weeks.
+   - "Continuous" (production is the new working mode)? → ongoing program, prioritize by severity.
+
+**What needs to be done (blocked on the two decisions above):**
+
+1. Get answers to decisions 1 and 2 from the user.
+2. Run a focused production-readiness audit: current state vs. typical bar for the chosen deployment target. Output: gaps list with severity (P0/P1/P2/P3) and rough effort estimate per gap.
+3. Invoke the brainstorming skill on the audit output to scope the v1 production cut. Likely produces 1–3 sub-project specs (data integrity + observability is one spec; deployment hardening is another; compliance is a third).
+4. Each sub-project gets its own spec → plan → implementation cycle (per the brainstorming skill's decomposition guidance).
+
+**Why this matters:**
+The platform has solid bones (ArcadeDB migration done, OllamaPool refactor shipped, merge bug fixed) but several "hides degradation silently" paths and zero committed SLOs. Calling it "production ready" without resolving those is the kind of declaration that gets reversed by the first incident. Scoping it properly up front avoids that.
+
+**Estimated lift:** Cannot estimate until decisions 1 and 2 are answered. Audit step alone is ~1 day. Full hardening pass for a single-tenant on-prem deployment could be 2–4 weeks; for an air-gapped CUI environment, 2–3× that.
+
+**When to revisit:** As soon as the user is ready to answer decisions 1 and 2.
+
+---
+
+### Pipeline / Soft-Fail Cleanup (Deferred)
+
+**#77. Bump `TRANSLATION_TIMEOUT` to match worst-case graph-extraction queueing**
+**Status:** Open. Surfaced during the 2026-04-30 fresh-ingest monitoring run.
+**Files:** `.env` (line 160), `app/config.py:414`
+
+**Observation:**
+During the 2026-04-30 21-doc reingest, three translation calls hard-timed out with the pattern:
+```
+[WARNING] OllamaChatClient: ReadTimeout on http://10.0.1.109:11434 (attempt 2/2): timed out
+[WARNING] Translation failed: timed out
+translate batch N: input=2138 chars, output=0 chars, has_boundary=False
+```
+The translation call returns `output=0 chars` (silent translation drop) and the document continues on un-translated for that batch. `TRANSLATION_TIMEOUT=180` in `.env`, but graph-extraction calls on the same host (.109) take 191–368s end-to-end (gemma4:31b at `OLLAMA_NUM_PARALLEL=4`). When the pool routes a translation request to .109 behind even one in-flight extraction call, the translation can't complete inside 180s. The retry to a different URL counts as `attempt 2/2`, but if that URL is ALSO busy the second attempt times out the same way.
+
+**What needs to be done:**
+1. Bump `TRANSLATION_TIMEOUT=180` → `600` in `.env`. 600s comfortably exceeds the observed worst-case extraction call (368s) plus headroom.
+2. Bump the default in `app/config.py:414` (`translation_timeout: int = 180`) → `600` so a fresh checkout doesn't reproduce the bug.
+3. (Optional) Lower the floor: instead of bumping the timeout, dedicate a separate URL pool for translation that doesn't share with graph-extraction. This is what we already do for embeddings (.122 isolated). Pattern: add `OLLAMA_TRANSLATION_BASE_URLS` env var; route translation there. Avoids head-of-line blocking entirely. Larger change but eliminates the contention class.
+4. Apply on next worker restart — env change only takes effect when the worker process restarts. Don't restart mid-ingest.
+
+**Why this matters:**
+Each timeout silently drops a batch of element translations. The doc proceeds with the original-language text in those elements, which:
+- breaks downstream search recall (translated text was supposed to be the bridge between non-English source and English-trained embeddings),
+- leaves a non-deterministic gap that won't show up as a hard failure,
+- isn't caught by any existing regression test (the warning is `WARNING`, not `ERROR`).
+
+**Estimated lift:** ~5 minutes for option 1+2; ~2 hours for option 3.
+
+---
+
+**#78. Short-circuit `extract-pass` for tiny-markdown DoclingDocuments**
+**Status:** Open. Surfaced during the 2026-04-30 fresh-ingest monitoring run.
+**Files:** `docker/docling-graph/app/main.py:281` (existing `_is_empty()` short-circuit), same file ~line 290-329 (where the new short-circuit slots in)
+
+**Observation:**
+During the 2026-04-30 reingest, three `/extract-pass` calls hit the soft-fail path with markdown_length=166 (twice) and 12662 (once):
+```
+2026-04-30 03:30:54 [INFO] OllamaChatClient: ok url=http://10.0.1.121:11434 model=gemma4:31b elapsed=58.93s len(content)=14
+Warning: No valid JSON returned from LLM for DoclingDocument
+[Extraction] Error extracting from DoclingDocument: Failed to extract data from DoclingDocument
+Details: markdown_length=166
+run_pipeline raised PipelineError: Pipeline failed at stage 'Extraction'
+```
+The 166-char markdown chunk is too short for gemma4:31b to find structured entities, so the model returns ~14 chars (likely `{}` or `null`), the docling-graph library's parser rejects it, and our wrapper at `docker/docling-graph/app/main.py:418` catches the `PipelineError` and returns a stub context with diagnostic marker — soft-fail, doc moves on.
+
+The 58-second LLM round-trip on a 166-char input is pure waste: there's nothing meaningful to extract from a chunk that small, the model knows it, the parser knows it, but we still pay the latency + GPU time AND the worker counts it as an Extraction stage error in observability.
+
+The existing `_is_empty()` short-circuit at line 281 only catches docs with NO body content / no texts / no pictures / no tables. It does not catch docs that have content but whose total markdown is too small to be worth a graph-extraction LLM call.
+
+**What needs to be done:**
+1. Add a `_is_too_small()` check parallel to `_is_empty()`. Compute total markdown length (sum of `texts[].text` lengths plus table/picture caption lengths). If below a threshold (e.g., 256 chars), short-circuit just like `_is_empty()` does — return `_EmptySourceContext` with a `_delta_trace` reason of `"markdown_too_small_for_extraction"` and the actual length.
+2. Threshold should be configurable via env var (`DOCLING_GRAPH_MIN_MARKDOWN_CHARS`, default 256) so it's tunable without a code change.
+3. Add a unit test in `docker/docling-graph/tests/` covering: 100-char doc → short-circuit; 1000-char doc → calls run_pipeline as before.
+4. Verify the 12662-char case is unrelated — that one is a real failure (large enough that the model SHOULD extract entities), which means investigating why gemma4:31b returned 14 chars on a 12.6KB input. Probably a separate bug — file as a follow-up if so.
+
+**Why this matters:**
+- Eliminates ~60s of GPU time per tiny chunk that we KNOW won't yield extractable entities.
+- Cleans up the soft-fail noise in observability — only true extraction failures (mid-size and large docs that fail) remain in the error log.
+- Reduces worker queue pressure on the slow-pool host (.109) where these calls are accumulating.
+
+**When to do it:**
+Bundle with the next `docker/docling-graph/app/main.py` change. Standalone is fine if no other docling-graph work is queued.
+
+**Estimated lift:** ~2 hours including the unit test + env-var wiring.
+
+---
+
 ## Completed Items (Reference)
 
 ### Gaps/Bugs Fixed
