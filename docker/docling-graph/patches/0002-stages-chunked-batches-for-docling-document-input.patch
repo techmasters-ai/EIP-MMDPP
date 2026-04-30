@@ -1,13 +1,40 @@
 --- a/docling_graph/pipeline/stages.py	2026-04-30 17:59:02.267422910 -0500
-+++ b/docling_graph/pipeline/stages.py	2026-04-30 17:59:23.966368434 -0500
-@@ -756,33 +756,91 @@
++++ b/docling_graph/pipeline/stages.py	2026-04-30 18:25:23.523627585 -0500
+@@ -756,33 +756,90 @@
              )
  
          try:
 -            # Convert entire document to markdown and extract in a single call
 -            logger.info(f"[{self.name()}] Converting DoclingDocument to markdown")
 -            markdown_text = context.docling_document.export_to_markdown()
--
++            # PATCH 2026-04-30: route delta-contract DoclingDocument inputs
++            # through the proper chunked-batches path. The original single-
++            # blob path bypassed chunking entirely, sending the whole
++            # markdown in ONE LLM call (~23K tokens) regardless of
++            # contract -- defeating delta's documented multi-batch flow.
++            # Empirically: chunk_count=1, batch_count=1 vs the chunker's
++            # 60-chunk / 28-batch view of the same doc. Result: entity
++            # NAMES extracted but per-entity numeric parameters lost.
++            #
++            # Diagnostic prints use plain print() (not logger.info) because
++            # docling_graph.pipeline.stages logger has no handler attached
++            # by default; the Tee in app/main.py captures stdout into
++            # library_log_buf and surfaces it in response.diagnostics.
++            extractor_contract = getattr(context.extractor, "_extraction_contract", None)
++            has_chunk_batches = hasattr(backend, "extract_from_chunk_batches")
++            has_chunker = getattr(doc_processor, "chunker", None) is not None
++            can_chunk_batch = (
++                extractor_contract == "delta"
++                and has_chunk_batches
++                and has_chunker
++            )
++            print(
++                f"[{self.name()}] PATCH GATE: contract={extractor_contract!r} "
++                f"has_chunk_batches={has_chunk_batches} has_chunker={has_chunker} "
++                f"=> can_chunk_batch={can_chunk_batch}",
++                flush=True,
++            )
+ 
 -            # Emit one docling_conversion event so the step appears in trace (conversion was pre-done)
 -            if context.trace_data:
 -                context.trace_data.emit(
@@ -18,45 +45,22 @@
 -                        "text_content": markdown_text or "",
 -                        "metadata": {"source": "docling_document"},
 -                    },
--                )
++            if can_chunk_batch:
++                print(
++                    f"[{self.name()}] Using CHUNKED-BATCHES path "
++                    f"(matches documented delta flow).",
++                    flush=True,
+                 )
 -
 -            extracted_model = backend.extract_from_markdown(
 -                markdown=markdown_text,
 -                template=context.template,
 -                context="DoclingDocument",
 -                is_partial=False,
-+            # PATCH 2026-04-30: when extraction_contract == "delta" AND backend
-+            # supports extract_from_chunk_batches AND a chunker is available,
-+            # use the proper CHUNKED path (matches the documented delta flow at
-+            # docs/extraction/delta-extraction.md: "Chunking -> Batch planning
-+            # -> Per-batch LLM"). The original single-blob path -- export the
-+            # whole DoclingDocument to markdown and run one extract_from_markdown
-+            # call -- bypasses chunking entirely, sending the full ~23K-token
-+            # markdown in ONE LLM call regardless of contract. That defeats
-+            # delta's whole purpose: token-bounded batching with merge by
-+            # identity. Empirically observed: chunk_count=1, batch_count=1 even
-+            # when the chunker would produce 28 batches over 60 chunks. Result:
-+            # entity NAMES found but per-entity numeric parameters lost
-+            # (gemma4:31b attention diluted across 23K tokens). Single-blob
-+            # path is preserved as the fallback for direct/staged contracts.
-+            extractor_contract = getattr(context.extractor, "_extraction_contract", None)
-+            can_chunk_batch = (
-+                extractor_contract == "delta"
-+                and hasattr(backend, "extract_from_chunk_batches")
-+                and getattr(doc_processor, "chunker", None) is not None
-             )
- 
-+            if can_chunk_batch:
-+                logger.info(
-+                    f"[{self.name()}] Using CHUNKED-BATCHES path "
-+                    f"(extraction_contract='delta', chunker available) -- "
-+                    f"matches documented delta flow."
-+                )
+-            )
 +                chunks, chunk_metadata = doc_processor.extract_chunks_with_metadata(
 +                    context.docling_document
 +                )
-+                # Emit per-chunk trace events so timeline shows chunking work
-+                # was performed (mirrors the file-input path).
 +                if context.trace_data:
 +                    for cmeta, chunk_text in zip(chunk_metadata, chunks, strict=False):
 +                        context.trace_data.emit(
@@ -77,16 +81,11 @@
 +                )
 +                markdown_length_for_error = sum(len(c) for c in chunks)
 +            else:
-+                # Direct / staged contracts (or no chunker): single-blob path.
-+                logger.info(
-+                    f"[{self.name()}] Using SINGLE-BLOB path "
-+                    f"(extraction_contract={extractor_contract!r}, "
-+                    f"has_chunk_batches={hasattr(backend, 'extract_from_chunk_batches')}, "
-+                    f"has_chunker={getattr(doc_processor, 'chunker', None) is not None})."
++                print(
++                    f"[{self.name()}] Using SINGLE-BLOB path (legacy fallback).",
++                    flush=True,
 +                )
 +                markdown_text = context.docling_document.export_to_markdown()
-+
-+                # Emit one docling_conversion event so the step appears in trace (conversion was pre-done)
 +                if context.trace_data:
 +                    context.trace_data.emit(
 +                        "page_markdown_extracted",
@@ -97,7 +96,6 @@
 +                            "metadata": {"source": "docling_document"},
 +                        },
 +                    )
-+
 +                extracted_model = backend.extract_from_markdown(
 +                    markdown=markdown_text,
 +                    template=context.template,
@@ -105,7 +103,7 @@
 +                    is_partial=False,
 +                )
 +                markdown_length_for_error = len(markdown_text)
-+
+ 
              if not extracted_model:
                  raise ExtractionError(
                      "Failed to extract data from DoclingDocument",
