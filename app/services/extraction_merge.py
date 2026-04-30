@@ -1143,10 +1143,20 @@ def merge_and_resolve(
                 if identity is None:
                     continue
 
-                # Extract properties from the instance
+                # Extract properties from the instance.
+                # entity_def["properties"] is a JSON-Schema-style dict
+                # ({"type":"object","properties":{<field>:{<schema>}, ...}})
+                # — NOT a flat list of property names. Pull the nested
+                # property keys; if the ontology ever ships a flat
+                # list[str] (older shape), fall through to that.
+                _props_node = entity_def.get("properties", [])
+                if isinstance(_props_node, dict):
+                    _prop_names = list(_props_node.get("properties", {}).keys())
+                else:
+                    _prop_names = list(_props_node)
                 props = {
                     p: getattr(instance, p, None)
-                    for p in entity_def.get("properties", [])
+                    for p in _prop_names
                 }
                 props = {k: v for k, v in props.items() if v is not None}
 
