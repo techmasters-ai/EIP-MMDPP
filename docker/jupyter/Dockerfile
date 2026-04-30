@@ -67,6 +67,4 @@ CMD ["jupyter", "lab", \
      "--no-browser", \
      "--allow-root", \
      "--ServerApp.token=", \
-     "--ServerApp.password=", \
-     "--ServerApp.iopub_data_rate_limit=1000000000", \
-     "--ServerApp.rate_limit_window=3.0"]
+     "--ServerApp.password="]
