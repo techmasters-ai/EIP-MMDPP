@@ -93,13 +93,23 @@ COPY docker/docling-graph/repo /app/repo
 COPY docker/docling-graph/patches /app/patches
 COPY ontology_bundles /app/ontology_bundles
 
-# Apply local patches to the vendored docling-graph library so they survive
-# any future repo/ refresh. Applied with -p1 so the leading "a/" / "b/"
-# components in the unified diff resolve under /app/repo.
+# Apply local patches to the vendored docling-graph library, then install
+# the patched source as an editable package so Python imports from /app/repo
+# instead of the un-patched site-packages copy that pip install pulled
+# earlier. Without this final pip install -e step, the patches existed in
+# /app/repo but Python loaded the unpatched docling_graph from
+# /usr/local/lib/python3.11/site-packages/, making every patch silently
+# inactive. Verified with:
+#     python -c "import inspect, docling_graph.pipeline.stages as s; \
+#                print(inspect.getsourcefile(s))"
+# After this step the import resolves to /app/repo/docling_graph/...
+# Applied with -p1 so the leading "a/" / "b/" components in the unified
+# diff resolve under /app/repo.
 RUN cd /app/repo && for p in /app/patches/*.patch; do \
         echo "Applying patch: $p"; \
         patch -p1 < "$p"; \
-    done
+    done \
+    && pip install --no-cache-dir --no-deps -e /app/repo
 
 EXPOSE 8002
 
