@@ -64,6 +64,16 @@ class ExtractPassRequest(BaseModel):
         default=None,
         description="UUID of the document being processed (for logging correlation)",
     )
+    temperature: Optional[float] = Field(
+        default=None,
+        description=(
+            "Per-request temperature override for the extraction LLM call. "
+            "When None (default), uses the service-wide DOCLING_GRAPH_LLM_TEMPERATURE "
+            "(currently 0.1). Used by the extraction_walkthrough notebook to A/B "
+            "different temperatures against the same input. Production worker "
+            "callers omit this field and inherit the service default."
+        ),
+    )
 
 
 class ExtractionProvenance(BaseModel):

@@ -142,10 +142,18 @@ def translate_elements(
                 model, prompt, elements[idx]["content_text"],
                 temperature=0.1, max_tokens=max_tokens, timeout=timeout, think=think,
             )
+            input_chars = len(elements[idx]["content_text"])
+            output_chars = len(translated) if translated else 0
             logger.info("translate batch %d (single idx=%d): input=%d chars, output=%d chars, changed=%s",
-                        batch_num, idx, len(elements[idx]["content_text"]),
-                        len(translated) if translated else 0,
+                        batch_num, idx, input_chars, output_chars,
                         bool(translated and translated.strip() != elements[idx]["content_text"]))
+            if input_chars > 0 and output_chars == 0:
+                logger.error(
+                    "TRANSLATION_SILENT_DROP batch=%d idx=%d input_chars=%d output_chars=0 — "
+                    "non-empty source but empty translation; element kept as-is, search "
+                    "recall degraded.",
+                    batch_num, idx, input_chars,
+                )
             if translated:
                 result[idx] = translated.strip()
         else:
@@ -154,10 +162,18 @@ def translate_elements(
                 model, prompt, combined,
                 temperature=0.1, max_tokens=max_tokens, timeout=timeout, think=think,
             )
+            input_chars = len(combined)
+            output_chars = len(translated) if translated else 0
             logger.info("translate batch %d (%d elements): input=%d chars, output=%d chars, has_boundary=%s",
-                        batch_num, len(batch_indices), len(combined),
-                        len(translated) if translated else 0,
+                        batch_num, len(batch_indices), input_chars, output_chars,
                         bool(translated and _BOUNDARY_STRIPPED in translated))
+            if input_chars > 0 and output_chars == 0:
+                logger.error(
+                    "TRANSLATION_SILENT_DROP batch=%d batch_size=%d input_chars=%d "
+                    "output_chars=0 — non-empty source but empty translation; %d elements "
+                    "kept as-is, search recall degraded.",
+                    batch_num, len(batch_indices), input_chars, len(batch_indices),
+                )
 
             if translated and _BOUNDARY_STRIPPED in translated:
                 parts = translated.split(_BOUNDARY_STRIPPED)
@@ -217,5 +233,14 @@ def _ollama_translate(
             timeout_s=float(timeout),  # role-specific: translation_timeout
         )
     except Exception as e:
-        logger.warning("Translation failed: %s", e)
+        # ERROR not WARNING — every silent translation drop degrades downstream
+        # search recall (translated text is the bridge between non-English
+        # source and English-trained embeddings). Surface enough context that
+        # an operator can find the offending element + retry strategy.
+        logger.error(
+            "TRANSLATION_FAILED model=%s timeout_s=%s exc_type=%s exc_msg=%s "
+            "input_chars=%d — element will be kept as original-language text; "
+            "downstream embedding/search will be degraded for this batch.",
+            model, timeout, type(e).__name__, str(e), len(text),
+        )
         return None

@@ -169,6 +169,7 @@ def build_pipeline_config(
     template_class: Type[BaseModel] | None,
     pass_name: str | None = None,
     debug_dir: str | None = None,
+    temperature_override: float | None = None,
 ) -> Any:
     """Build a PipelineConfig from environment variables.
 
@@ -244,7 +245,11 @@ def build_pipeline_config(
         "structured_sparse_check": settings.docling_graph_structured_sparse_check,
         "llm_overrides": {
             "generation": {
-                "temperature": settings.docling_graph_llm_temperature,
+                "temperature": (
+                    temperature_override
+                    if temperature_override is not None
+                    else settings.docling_graph_llm_temperature
+                ),
                 "max_tokens": settings.docling_graph_llm_max_tokens,
             },
             "reliability": {

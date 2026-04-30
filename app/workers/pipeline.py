@@ -2419,9 +2419,42 @@ def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
         raise PassTerminal(f"HTTP {response.status_code}: {response.text[:200]}")
 
     try:
-        return response.json()
+        payload = response.json()
     except ValueError as exc:
         raise PassRetryable(f"partial/malformed response: {exc}") from exc
+
+    # Worker-side loud surface for service-level soft-fails. The docling-graph
+    # service returns 200 even when run_pipeline raised internally (it stubs
+    # the context to keep the pass from hard-failing the worker retry loop).
+    # That stub flows through the worker as if the pass succeeded with empty
+    # output — silent degradation. Detect via diagnostics.pipeline_error and
+    # zero-yield metadata, and emit ERROR with the document/pass identifiers
+    # so an operator grepping logs sees one entry per degraded pass.
+    diagnostics = (payload or {}).get("diagnostics") or {}
+    pipeline_err = diagnostics.get("pipeline_error") if isinstance(diagnostics, dict) else None
+    metadata = (payload or {}).get("metadata") or {}
+    node_count = metadata.get("node_count", 0) or 0
+    edge_count = metadata.get("edge_count", 0) or 0
+    bundle_key = request_body.get("bundle_key", "?")
+    pass_name = request_body.get("pass_name", "?")
+    document_id = request_body.get("document_id", "?")
+    if pipeline_err:
+        logger.error(
+            "EXTRACT_PASS_PIPELINE_ERROR bundle=%s pass=%s document_id=%s "
+            "error_type=%s error_msg=%s — service stubbed the response; this "
+            "pass's pass_output is empty.",
+            bundle_key, pass_name, document_id,
+            pipeline_err.get("type", "?"), pipeline_err.get("message", "?"),
+        )
+    elif node_count == 0 and edge_count == 0:
+        logger.error(
+            "EXTRACT_PASS_ZERO_YIELD bundle=%s pass=%s document_id=%s "
+            "node_count=0 edge_count=0 — pass succeeded but produced no "
+            "entities/edges; review docling-graph logs for library warnings.",
+            bundle_key, pass_name, document_id,
+        )
+
+    return payload
 
 
 def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":

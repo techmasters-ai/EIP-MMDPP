@@ -251,6 +251,7 @@ def run_extraction_pass(
     template_cls: type,
     upstream_entities: list | None = None,
     pass_name: str | None = None,
+    temperature: float | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -374,6 +375,7 @@ def run_extraction_pass(
             template_class=template_cls,
             pass_name=pass_name,
             debug_dir=debug_dir,
+            temperature_override=temperature,
         )
 
         # Capture the library's print() + logging output to stdout/stderr during
@@ -414,10 +416,15 @@ def run_extraction_pass(
             # notebook + worker see why the library bailed via the captured
             # log + pipeline_error marker in _delta_trace.
             pipeline_error = exc
-            logger.warning(
-                "run_pipeline raised %s: %s — returning stub context with "
-                "diagnostic marker so the pass doesn't hard-fail.",
-                type(exc).__name__, exc,
+            logger.error(
+                "GRAPH_EXTRACTION_FAILED pass=%s exc_type=%s exc_msg=%s "
+                "markdown_chars=%d library_log_tail=%r — soft-failing to stub "
+                "context; downstream pass_output will be empty.",
+                pass_name,
+                type(exc).__name__,
+                str(exc),
+                len(json.dumps(docling_document_json)) if isinstance(docling_document_json, dict) else 0,
+                library_log_buf.getvalue()[-500:],
             )
             import networkx as _nx
 
@@ -487,12 +494,39 @@ def run_extraction_pass(
         if trace is None:
             trace = {}
 
-        trace["library_log"] = library_log_buf.getvalue()
+        captured_log = library_log_buf.getvalue()
+        trace["library_log"] = captured_log
         if pipeline_error is not None:
             trace["pipeline_error"] = {
                 "type": type(pipeline_error).__name__,
                 "message": str(pipeline_error),
             }
+
+        # Promote silent library-level warnings to ERROR so the service log
+        # surfaces every failure mode the upstream library prints to stdout
+        # (these otherwise stay buried inside captured_log and never reach
+        # uvicorn's structured logger). Counts emitted alongside the message
+        # let an operator grep for `GRAPH_EXTRACTION_LIBRARY_WARNING`
+        # without re-deriving the underlying soft-fail pattern.
+        library_warning_signatures = (
+            ("Quality gate failed", "quality_gate_failed"),
+            ("No valid JSON returned from LLM", "no_valid_json"),
+            ("Warning: Structured output appears sparse", "structured_output_sparse"),
+            ("Warning: Structured output failed", "structured_output_failed"),
+            ("falling back to direct", "falling_back_to_direct"),
+            ("LiteLLMClient returned empty", "litellm_returned_empty"),
+            ("retrying legacy", "retrying_legacy"),
+        )
+        for signature, tag in library_warning_signatures:
+            occurrences = captured_log.count(signature)
+            if occurrences > 0:
+                logger.error(
+                    "GRAPH_EXTRACTION_LIBRARY_WARNING pass=%s tag=%s count=%d "
+                    "signature=%r — library soft-failed silently; pass_output "
+                    "will be empty or partial.",
+                    pass_name, tag, occurrences, signature,
+                )
+
         try:
             context._delta_trace = trace
         except AttributeError:
@@ -637,6 +671,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     template_cls,
                     body.upstream_entities,
                     body.pass_name,
+                    body.temperature,
                 )
             except Exception as exc:
                 logger.exception(
@@ -847,3 +882,28 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             body.bundle_key, body.pass_name, body.document_id,
             node_count_for_log, edge_count_for_log,
         )
+        # Loud surface for soft-failed extractions: when the run_pipeline
+        # path was caught and stubbed, OR when extraction completed but
+        # produced zero nodes and zero edges, emit a single ERROR line per
+        # pass so an operator grepping logs sees one entry per bad pass
+        # (the per-failure-mode WARNING_LIBRARY emits add the *why*).
+        try:
+            ctx_diag = locals().get("context", None)
+            diag = getattr(ctx_diag, "_delta_trace", None) if ctx_diag is not None else None
+            pipeline_err = (diag or {}).get("pipeline_error") if isinstance(diag, dict) else None
+            zero_yield = (
+                node_count_for_log == 0
+                and edge_count_for_log == 0
+                and node_count_for_log != -1
+            )
+            if pipeline_err or zero_yield:
+                logger.error(
+                    "GRAPH_EXTRACTION_PASS_DEGRADED bundle=%s pass=%s document_id=%s "
+                    "node_count=%d edge_count=%d pipeline_error=%s — pass returned "
+                    "200 but yielded no usable extraction.",
+                    body.bundle_key, body.pass_name, body.document_id,
+                    node_count_for_log, edge_count_for_log,
+                    bool(pipeline_err),
+                )
+        except Exception as _diag_exc:
+            logger.warning("post-pass diagnostics emit failed: %s", _diag_exc)
