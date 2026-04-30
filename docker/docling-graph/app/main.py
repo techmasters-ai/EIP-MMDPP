@@ -663,6 +663,11 @@ def run_extraction_pass(
             ("falling back to direct", "falling_back_to_direct"),
             ("LiteLLMClient returned empty", "litellm_returned_empty"),
             ("retrying legacy", "retrying_legacy"),
+            # Patched by us at orchestrator.py:518 — surfaces silent
+            # deadlocks in the parallel-batch dispatcher. Only fires when
+            # parallel_workers > 1 AND a future hangs past the per-batch
+            # ceiling (DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS, default 1h).
+            ("BATCH_HARD_TIMEOUT", "batch_hard_timeout"),
         )
         any_library_warning = False
         for signature, tag in library_warning_signatures:

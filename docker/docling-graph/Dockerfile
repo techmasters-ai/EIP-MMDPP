@@ -89,7 +89,16 @@ RUN LD_PRELOAD=/usr/local/lib/libfips_bypass.so pip install --no-cache-dir --upg
 
 COPY docker/docling-graph/app /app/app
 COPY docker/docling-graph/repo /app/repo
+COPY docker/docling-graph/patches /app/patches
 COPY ontology_bundles /app/ontology_bundles
+
+# Apply local patches to the vendored docling-graph library so they survive
+# any future repo/ refresh. Applied with -p1 so the leading "a/" / "b/"
+# components in the unified diff resolve under /app/repo.
+RUN cd /app/repo && for p in /app/patches/*.patch; do \
+        echo "Applying patch: $p"; \
+        patch -p1 < "$p"; \
+    done
 
 EXPOSE 8002
 

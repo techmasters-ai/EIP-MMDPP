@@ -1,0 +1,90 @@
+--- a/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-04-30 17:09:55.970817886 -0500
++++ b/docling_graph/core/extractors/contracts/delta/orchestrator.py	2026-04-30 17:10:17.414767637 -0500
+@@ -516,6 +516,24 @@
+         split_failures = 0
+ 
+         if self._config.parallel_workers > 1 and len(batch_plan) > 1:
++            # PATCH 2026-04-30: eliminate silent deadlock when an
++            # httpx.post() hangs inside _run_one_batch with no exception
++            # raised. Without timeouts on as_completed() AND
++            # future.result(), a hung future causes the for-loop to block
++            # forever AND ThreadPoolExecutor.__exit__ -> shutdown(wait=True)
++            # to block forever, freezing the entire pass with zero log
++            # output. The per-batch ceiling here MUST be >= the OllamaPool
++            # client's read-timeout (1800s/30min) so legitimate slow LLM
++            # generations get to surface naturally as ReadTimeout (which
++            # _run_one_batch handles via its existing failed_batches path)
++            # before this watchdog fires. Default 3600s (1h); overridable
++            # via DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS env var.
++            import os as _os_for_timeout
++            _per_batch_timeout = float(
++                _os_for_timeout.environ.get("DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS", "3600")
++            )
++            from concurrent.futures import TimeoutError as _FuturesTimeoutError
++
+             with ThreadPoolExecutor(max_workers=self._config.parallel_workers) as pool:
+                 futures = {
+                     pool.submit(
+@@ -529,15 +547,53 @@
+                     ): i
+                     for i, batch in enumerate(batch_plan)
+                 }
+-                for future in as_completed(futures):
+-                    original_batch_idx = futures[future]
+-                    batch_idx, graph_dict, errors, elapsed = future.result()
+-                    batch_timings.append({"batch_index": batch_idx, "elapsed_seconds": elapsed})
+-                    if graph_dict is not None:
+-                        successful_results.append(graph_dict)
+-                        effective_batch_plan.append(batch_plan[original_batch_idx])
+-                    elif errors:
+-                        failed_batches.append((batch_idx, batch_plan[original_batch_idx], errors))
++                _hung_batch_idxs: list[int] = []
++                try:
++                    for future in as_completed(futures, timeout=_per_batch_timeout):
++                        original_batch_idx = futures[future]
++                        batch_idx, graph_dict, errors, elapsed = future.result(
++                            timeout=_per_batch_timeout
++                        )
++                        batch_timings.append(
++                            {"batch_index": batch_idx, "elapsed_seconds": elapsed}
++                        )
++                        if graph_dict is not None:
++                            successful_results.append(graph_dict)
++                            effective_batch_plan.append(batch_plan[original_batch_idx])
++                        elif errors:
++                            failed_batches.append(
++                                (batch_idx, batch_plan[original_batch_idx], errors)
++                            )
++                except _FuturesTimeoutError as _to_exc:
++                    # Surface the deadlock loudly. Identify which futures
++                    # never completed and add them to failed_batches so
++                    # split-retry / quality_gate can react. Cancel the
++                    # hung futures so shutdown(wait=True) doesn't itself
++                    # block on the same hangs.
++                    for _f, _i in futures.items():
++                        if not _f.done():
++                            _hung_batch_idxs.append(_i)
++                            _f.cancel()
++                            failed_batches.append(
++                                (
++                                    _i,
++                                    batch_plan[_i],
++                                    [
++                                        f"BATCH_HARD_TIMEOUT after "
++                                        f"{_per_batch_timeout:.0f}s - future never "
++                                        f"completed; possible httpx hang inside "
++                                        f"_run_one_batch (orchestrator.py "
++                                        f"silent-deadlock class).",
++                                    ],
++                                )
++                            )
++                    print(
++                        f"Warning: BATCH_HARD_TIMEOUT - {len(_hung_batch_idxs)} of "
++                        f"{len(futures)} futures did not complete within "
++                        f"{_per_batch_timeout:.0f}s; hung batch_idxs="
++                        f"{sorted(_hung_batch_idxs)}",
++                        flush=True,
++                    )
+         else:
+             for i, batch in enumerate(batch_plan):
+                 batch_idx, graph_dict, errors, elapsed = self._run_one_batch(
