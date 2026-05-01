@@ -964,6 +964,34 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         body.bundle_key, body.pass_name, pass_def.get("input_mode"),
         body.document_id, upstream_ref_count,
     )
+    # Log the effective extraction-relevant config at pass start so each
+    # pass's behavior is reproducible from the logs alone (no need to
+    # cross-reference docker-compose / env / config_builder defaults to
+    # work out which knob was active for a given run). One line per pass;
+    # operators can grep `extract-pass: CONFIG` to audit drift.
+    try:
+        from app.config import settings as _service_settings
+        _dg_settings = DoclingGraphSettings()
+        logger.info(
+            "extract-pass: CONFIG pass=%s force_json_mode=%s "
+            "max_tokens=%s parallel_workers=%s gleaning_enabled=%s "
+            "gleaning_max_passes=%s sanitize_input=%s "
+            "structured_output_threshold_chars=%s",
+            body.pass_name,
+            getattr(_service_settings, "force_json_mode", "?"),
+            _dg_settings.docling_graph_llm_max_tokens,
+            _dg_settings.docling_graph_parallel_workers,
+            _dg_settings.docling_graph_gleaning_enabled,
+            _dg_settings.docling_graph_gleaning_max_passes,
+            getattr(_dg_settings, "docling_graph_sanitize_input", "?"),
+            getattr(_service_settings, "structured_output_threshold_chars", "?"),
+        )
+    except Exception as _cfg_log_exc:
+        logger.warning(
+            "extract-pass: failed to log effective config (%s); "
+            "continuing pass without config snapshot.",
+            _cfg_log_exc,
+        )
     # Sentinels: -1 means extraction did not complete (failure path).
     node_count_for_log = -1
     edge_count_for_log = -1

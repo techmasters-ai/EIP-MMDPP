@@ -774,6 +774,13 @@ class OllamaChatClient:
         if not require_content:
             # Caller is non-strict (app-side chat()). Pass the truncated
             # content through without an extra round-trip.
+            logger.info(
+                "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+                "first_content_len=%d first_max_tokens=%d retry_ran=False "
+                "retry_content_len=0 retry_finish_reason=n/a "
+                "final=truncated_no_retry_caller_non_strict",
+                url, body["model"], len(content_first), current_cap,
+            )
             return payload, False
 
         # Always-bump retry on require_content=True. The earlier spin-skip
@@ -797,11 +804,18 @@ class OllamaChatClient:
         if not retry_choices:
             # Retry returned no choices — fall back to the original payload
             # so the caller can decide what to do with it.
+            logger.info(
+                "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+                "first_content_len=%d first_max_tokens=%d retry_ran=True "
+                "retry_content_len=0 retry_finish_reason=n/a "
+                "final=retry_no_choices",
+                url, body["model"], len(content_first), current_cap,
+            )
             return payload, True
         retry_finish = retry_choices[0].get("finish_reason")
+        retry_msg = retry_choices[0].get("message", {}) or {}
+        retry_content = (retry_msg.get("content") or "").strip()
         if retry_finish == "length":
-            retry_msg = retry_choices[0].get("message", {}) or {}
-            retry_content = (retry_msg.get("content") or "").strip()
             logger.error(
                 "OllamaChatClient: TRUNCATION_PERSISTS_AFTER_RETRY url=%s "
                 "model=%s len(content)=%d max_tokens=%d — the bumped retry "
@@ -811,7 +825,32 @@ class OllamaChatClient:
                 "(may still be partial).",
                 url, body["model"], len(retry_content), bumped_body["max_tokens"],
             )
+            logger.info(
+                "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+                "first_content_len=%d first_max_tokens=%d retry_ran=True "
+                "retry_content_len=%d retry_finish_reason=length "
+                "final=persisted_truncation",
+                url, body["model"], len(content_first), current_cap,
+                len(retry_content),
+            )
             return retry_payload, True
+        # Retry succeeded (finish_reason != "length"). Distinguish cases
+        # so an operator can tell from the log whether the retry recovered
+        # real content or a clean empty terminator. Both are useful — the
+        # latter avoids a downstream ClientError that would have fired
+        # had we returned the truncated empty original. Keeping these
+        # signals separate is the empirical evidence that justified
+        # reverting spin-skip on 2026-05-01.
+        outcome_label = (
+            "recovered_content" if retry_content else "recovered_clean_empty"
+        )
+        logger.info(
+            "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+            "first_content_len=%d first_max_tokens=%d retry_ran=True "
+            "retry_content_len=%d retry_finish_reason=%s final=%s",
+            url, body["model"], len(content_first), current_cap,
+            len(retry_content), retry_finish, outcome_label,
+        )
         return retry_payload, False
 
     def _post_chat_with_retry(
