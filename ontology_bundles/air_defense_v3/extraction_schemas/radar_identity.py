@@ -46,16 +46,15 @@ class RadarIdentityRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the RADAR system. Emit a named radar "
-            "only when the source explicitly identifies one in prose, tables, "
-            "captions, or component descriptions. Prefer the shortest stable "
-            "radar identifier from the source (e.g. 'Fan Song', 'Spoon Rest', "
-            "'Tombstone', 'AN/MPQ-65'). When the document gives both a formal "
-            "designation and a common/NATO reporting name, put the primary "
-            "radar identifier here and put the formal alphanumeric designation "
-            "in `nomenclature` when distinct. Never emit weapon, missile, "
-            "aircraft, or platform names. Omit generic phrases such as "
-            "'the radar'."
+            "Canonical designation of the RADAR — the SHORTEST canonical "
+            "token from prose (e.g. 'Fan Song', 'Spoon Rest', "
+            "'Tombstone', 'AN/MPQ-65'). When the document gives both a "
+            "formal designation AND a common/NATO name, put ONLY the "
+            "primary identifier here; move the formal designation to "
+            "`nomenclature` and the common name to `name` (for missiles) "
+            "— DO NOT compress them all into system_name. Never emit "
+            "weapon, missile, aircraft, or platform names — those are "
+            "filtered deterministically by the root sanitizer."
         ),
         examples=["Fan Song", "AN/MPQ-65"],
     )
@@ -198,12 +197,9 @@ class RadarIdentityPass(BaseModel):
         label="CONTAINS",
         description=(
             "Top-level radar systems with identity + administrative "
-            "metadata extracted from this batch. If the batch contains no "
-            "named radar systems, return an empty list."
+            "metadata extracted from this batch."
         ),
-        examples=[
-            [{"system_name": "Fan Song"}, {"system_name": "Spoon Rest"}],
-        ],
+        examples=[["Fan Song", "Spoon Rest"]],
         default_factory=list,
     )
 
