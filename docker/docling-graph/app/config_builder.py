@@ -99,13 +99,15 @@ class DoclingGraphSettings(BaseSettings):
     # Bound extraction generations so JSON-mode pathological chunks cannot
     # stream for tens of minutes. Typical per-batch graph outputs observed in
     # the recall harness are comfortably below this (largest seen ~1270
-    # tokens). 4096 keeps spin-pathology cost low (~240s per spin chunk vs.
-    # ~480s at 8192). Legitimate truncations are recovered via the bumped
-    # retry in _stream_with_truncation_retry; spin (content=0) cases are
-    # skipped via TRUNCATION_SPIN_SKIPPING_RETRY. The 600s per-call wall-
-    # time cap and orchestrator-level BATCH_HARD_TIMEOUT remain the
-    # upper-bound safeguards.
+    # tokens). 4096 keeps first-attempt spin-pathology cost low while
+    # legitimate truncations are recovered via bounded bumped retries in
+    # _stream_with_truncation_retry. Empirically, content=0 truncations are
+    # often recoverable, so they are retried; the 600s per-call wall-time cap
+    # and orchestrator-level BATCH_HARD_TIMEOUT remain upper-bound safeguards.
     docling_graph_llm_max_tokens: int | None = 4096
+    # Upper bound for bounded truncation recovery. The first call still uses
+    # docling_graph_llm_max_tokens; retries double up to this ceiling.
+    docling_graph_llm_truncation_retry_max_tokens: int | None = 16384
     docling_graph_llm_timeout: int = 1800  # 30 min per LLM call
     # Singular / fallback URLs (back-compat with existing .env files).
     ollama_base_url: str = "http://ollama:11434"
@@ -246,6 +248,12 @@ def build_pipeline_config(
     try:
         from app.ollama_clients import get_docling_graph_client
         llm_client: Any | None = get_docling_graph_client()
+        if temperature_override is not None and hasattr(
+            llm_client, "with_runtime_defaults"
+        ):
+            llm_client = llm_client.with_runtime_defaults(
+                temperature=temperature_override,
+            )
     except ImportError:
         llm_client = None
 

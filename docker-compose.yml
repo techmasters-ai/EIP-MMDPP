@@ -156,6 +156,9 @@ services:
       # general app LLM. This prevents JSON-mode pathological chunks from
       # streaming for tens of minutes.
       DOCLING_GRAPH_LLM_MAX_TOKENS: ${DOCLING_GRAPH_LLM_MAX_TOKENS:-4096}
+      # Bounded truncation recovery: first retry is 2x max_tokens; a second
+      # retry can continue up to this ceiling when 8192 still truncates.
+      DOCLING_GRAPH_LLM_TRUNCATION_RETRY_MAX_TOKENS: ${DOCLING_GRAPH_LLM_TRUNCATION_RETRY_MAX_TOKENS:-16384}
       # Override LiteLLM's 4092-token fallback for ollama/* models not in its
       # registry (llama3.3:70b). Must be >= DOCLING_GRAPH_LLM_MAX_TOKENS.
       DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS: ${DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS:-4096}

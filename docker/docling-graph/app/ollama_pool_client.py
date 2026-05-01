@@ -252,6 +252,7 @@ class OllamaChatClient:
         structured_output_threshold_chars: int | None = None,
         force_json_mode: bool = False,
         default_extra_params: dict[str, Any] | None = None,
+        truncation_retry_max_tokens: int | None = None,
         client_error_cls: type[Exception] | None = None,
         parse_json_fn: Callable[[str], Any] | None = None,
         legacy_strip_marker_start: str = "\n\n=== TARGET SCHEMA ===\n",
@@ -268,6 +269,7 @@ class OllamaChatClient:
         self._threshold = structured_output_threshold_chars
         self._force_json_mode = force_json_mode
         self._default_extra: dict[str, Any] = dict(default_extra_params or {})
+        self._truncation_retry_max_tokens = truncation_retry_max_tokens
         # Optional ClientError class — when set, parse / HTTP / empty-content
         # failures are wrapped as instances of this class so the upstream
         # LlmBackend's structured-output fallback path triggers correctly.
@@ -290,6 +292,49 @@ class OllamaChatClient:
         # per-request client so a stalled reader can be abandoned without
         # closing transport state underneath other concurrent calls.
         self._http = _build_keepalive_http_client(timeout_s)
+
+    def with_runtime_defaults(
+        self,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        truncation_retry_max_tokens: int | None = None,
+    ) -> "OllamaChatClient":
+        """Return a client sharing this pool with per-request generation knobs.
+
+        docling-graph ignores ``llm_overrides`` when a concrete ``llm_client``
+        is injected. The service uses this to keep the process-wide pool while
+        still honoring notebook/API overrides such as temperature.
+        """
+        return OllamaChatClient(
+            pool=self.pool,
+            model=self.model,
+            timeout_s=self._default_timeout,
+            temperature=(
+                temperature
+                if temperature is not None
+                else self._default_temperature
+            ),
+            max_tokens=(
+                max_tokens
+                if max_tokens is not None
+                else self._default_max_tokens
+            ),
+            think=self._default_think,
+            schema_transform=self._schema_transform,
+            structured_output_threshold_chars=self._threshold,
+            force_json_mode=self._force_json_mode,
+            default_extra_params=self._default_extra,
+            truncation_retry_max_tokens=(
+                truncation_retry_max_tokens
+                if truncation_retry_max_tokens is not None
+                else self._truncation_retry_max_tokens
+            ),
+            client_error_cls=self._client_error_cls,
+            parse_json_fn=self._parse_json,
+            legacy_strip_marker_start=self._legacy_marker_start,
+            legacy_strip_marker_end=self._legacy_marker_end,
+        )
 
     def close(self) -> None:
         """Close the underlying httpx.Client. Safe to call multiple times.
@@ -792,66 +837,91 @@ class OllamaChatClient:
         # finish a structured terminator instead of running out mid-state.
         # Skipping that retry caused permanent batch losses (ClientError)
         # that the bumped retry would otherwise have prevented.
-        bumped_body = dict(body)
-        bumped_body["max_tokens"] = current_cap * 2
-        logger.info(
-            "OllamaChatClient: retrying with max_tokens=%d to recover "
-            "potentially-truncated content (url=%s model=%s).",
-            bumped_body["max_tokens"], url, body["model"],
-        )
-        retry_payload = self._stream_chat_with_watchdog(url, bumped_body)
-        retry_choices = retry_payload.get("choices") or []
-        if not retry_choices:
-            # Retry returned no choices — fall back to the original payload
-            # so the caller can decide what to do with it.
+        max_retry_cap = self._truncation_retry_max_tokens
+        next_cap = current_cap * 2
+        last_payload = payload
+        last_content_len = len(content_first)
+        while True:
+            if max_retry_cap is not None:
+                next_cap = min(next_cap, max_retry_cap)
+            if next_cap <= current_cap:
+                logger.error(
+                    "OllamaChatClient: TRUNCATION_RETRY_CAP_EXHAUSTED url=%s "
+                    "model=%s first_max_tokens=%d retry_max_tokens=%d "
+                    "last_content_len=%d — returning known-partial content.",
+                    url, body["model"], body.get("max_tokens") or 4096,
+                    current_cap, last_content_len,
+                )
+                return last_payload, True
+
+            bumped_body = dict(body)
+            bumped_body["max_tokens"] = next_cap
             logger.info(
-                "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
-                "first_content_len=%d first_max_tokens=%d retry_ran=True "
-                "retry_content_len=0 retry_finish_reason=n/a "
-                "final=retry_no_choices",
-                url, body["model"], len(content_first), current_cap,
+                "OllamaChatClient: retrying with max_tokens=%d to recover "
+                "potentially-truncated content (url=%s model=%s).",
+                bumped_body["max_tokens"], url, body["model"],
             )
-            return payload, True
-        retry_finish = retry_choices[0].get("finish_reason")
-        retry_msg = retry_choices[0].get("message", {}) or {}
-        retry_content = (retry_msg.get("content") or "").strip()
-        if retry_finish == "length":
-            logger.error(
-                "OllamaChatClient: TRUNCATION_PERSISTS_AFTER_RETRY url=%s "
-                "model=%s len(content)=%d max_tokens=%d — the bumped retry "
-                "also truncated. Consider raising "
-                "DOCLING_GRAPH_LLM_MAX_TOKENS for this model+prompt class, "
-                "or chunking smaller. Returning the bumped-retry content "
-                "(may still be partial).",
-                url, body["model"], len(retry_content), bumped_body["max_tokens"],
+            retry_payload = self._stream_chat_with_watchdog(url, bumped_body)
+            retry_choices = retry_payload.get("choices") or []
+            if not retry_choices:
+                logger.info(
+                    "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+                    "first_content_len=%d first_max_tokens=%d retry_ran=True "
+                    "retry_content_len=0 retry_finish_reason=n/a "
+                    "retry_max_tokens=%d final=retry_no_choices",
+                    url, body["model"], len(content_first), current_cap,
+                    bumped_body["max_tokens"],
+                )
+                return payload, True
+
+            retry_finish = retry_choices[0].get("finish_reason")
+            retry_msg = retry_choices[0].get("message", {}) or {}
+            retry_content = (retry_msg.get("content") or "").strip()
+            if retry_finish != "length":
+                outcome_label = (
+                    "recovered_content" if retry_content else "recovered_clean_empty"
+                )
+                logger.info(
+                    "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+                    "first_content_len=%d first_max_tokens=%d retry_ran=True "
+                    "retry_content_len=%d retry_finish_reason=%s "
+                    "retry_max_tokens=%d final=%s",
+                    url, body["model"], len(content_first), current_cap,
+                    len(retry_content), retry_finish, bumped_body["max_tokens"],
+                    outcome_label,
+                )
+                return retry_payload, False
+
+            last_payload = retry_payload
+            last_content_len = len(retry_content)
+            if max_retry_cap is None or bumped_body["max_tokens"] >= max_retry_cap:
+                logger.error(
+                    "OllamaChatClient: TRUNCATION_PERSISTS_AFTER_RETRY url=%s "
+                    "model=%s len(content)=%d max_tokens=%d — the bumped retry "
+                    "also truncated. Consider raising "
+                    "DOCLING_GRAPH_LLM_TRUNCATION_RETRY_MAX_TOKENS for this "
+                    "model+prompt class, or chunking smaller. Returning the "
+                    "bumped-retry content (may still be partial).",
+                    url, body["model"], len(retry_content), bumped_body["max_tokens"],
+                )
+                logger.info(
+                    "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+                    "first_content_len=%d first_max_tokens=%d retry_ran=True "
+                    "retry_content_len=%d retry_finish_reason=length "
+                    "retry_max_tokens=%d final=persisted_truncation",
+                    url, body["model"], len(content_first), current_cap,
+                    len(retry_content), bumped_body["max_tokens"],
+                )
+                return retry_payload, True
+
+            logger.warning(
+                "OllamaChatClient: TRUNCATION_PERSISTS_RETRYING url=%s "
+                "model=%s len(content)=%d max_tokens=%d next_max_tokens=%d",
+                url, body["model"], len(retry_content),
+                bumped_body["max_tokens"], min(bumped_body["max_tokens"] * 2, max_retry_cap),
             )
-            logger.info(
-                "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
-                "first_content_len=%d first_max_tokens=%d retry_ran=True "
-                "retry_content_len=%d retry_finish_reason=length "
-                "final=persisted_truncation",
-                url, body["model"], len(content_first), current_cap,
-                len(retry_content),
-            )
-            return retry_payload, True
-        # Retry succeeded (finish_reason != "length"). Distinguish cases
-        # so an operator can tell from the log whether the retry recovered
-        # real content or a clean empty terminator. Both are useful — the
-        # latter avoids a downstream ClientError that would have fired
-        # had we returned the truncated empty original. Keeping these
-        # signals separate is the empirical evidence that justified
-        # reverting spin-skip on 2026-05-01.
-        outcome_label = (
-            "recovered_content" if retry_content else "recovered_clean_empty"
-        )
-        logger.info(
-            "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
-            "first_content_len=%d first_max_tokens=%d retry_ran=True "
-            "retry_content_len=%d retry_finish_reason=%s final=%s",
-            url, body["model"], len(content_first), current_cap,
-            len(retry_content), retry_finish, outcome_label,
-        )
-        return retry_payload, False
+            current_cap = bumped_body["max_tokens"]
+            next_cap = current_cap * 2
 
     def _post_chat_with_retry(
         self,

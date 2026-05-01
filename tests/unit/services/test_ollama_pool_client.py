@@ -652,6 +652,46 @@ def test_default_extra_params_on_get_json_response():
     assert body["top_p"] == 0.9
 
 
+def test_with_runtime_defaults_overrides_temperature_but_shares_pool():
+    pool = OllamaPool(urls=["http://only"])
+    base = OllamaChatClient(pool=pool, model="m", temperature=0.1)
+    client = base.with_runtime_defaults(temperature=0.0)
+    fake_payload = {"choices": [{"message": {"content": "{}"}}]}
+    with patch.object(OllamaChatClient, "_stream_chat_with_watchdog", return_value=fake_payload) as mock_post:
+        client.get_json_response(
+            prompt="hi", schema_json="{}", structured_output=False,
+        )
+    body = mock_post.call_args.args[1]
+    assert client.pool is pool
+    assert body["temperature"] == 0.0
+
+
+def test_truncation_retry_can_escalate_to_configured_cap():
+    pool = OllamaPool(urls=["http://only"])
+    client = OllamaChatClient(
+        pool=pool,
+        model="m",
+        max_tokens=4096,
+        truncation_retry_max_tokens=16384,
+    )
+    payloads = [
+        {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]},
+        {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]},
+        {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]},
+    ]
+    with patch.object(
+        OllamaChatClient,
+        "_stream_chat_with_watchdog",
+        side_effect=payloads,
+    ) as mock_post:
+        content = client.get_json_response(
+            prompt="hi", schema_json="{}", structured_output=False,
+        )
+    caps = [call.args[1]["max_tokens"] for call in mock_post.call_args_list]
+    assert caps == [4096, 8192, 16384]
+    assert content == {}
+
+
 def test_think_low_passed_for_gpt_oss():
     pool = OllamaPool(urls=["http://only"])
     client = OllamaChatClient(pool=pool, model="gpt-oss:120b", think="low")

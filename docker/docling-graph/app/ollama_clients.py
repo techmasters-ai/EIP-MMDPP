@@ -67,6 +67,9 @@ def get_docling_graph_client() -> OllamaChatClient:
         force_json_mode=_service_settings.force_json_mode,
         structured_output_threshold_chars=_service_settings.structured_output_threshold_chars,
         default_extra_params=default_extra_params,
+        truncation_retry_max_tokens=(
+            settings.docling_graph_llm_truncation_retry_max_tokens
+        ),
         client_error_cls=ClientError,
         parse_json_fn=parse_llm_json_loose,
     )

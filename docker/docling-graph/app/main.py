@@ -974,17 +974,33 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         _dg_settings = DoclingGraphSettings()
         logger.info(
             "extract-pass: CONFIG pass=%s force_json_mode=%s "
-            "max_tokens=%s parallel_workers=%s gleaning_enabled=%s "
+            "temperature=%s max_tokens=%s truncation_retry_max_tokens=%s "
+            "max_output_tokens=%s context_limit=%s batch_token_size=%s "
+            "parallel_workers=%s gleaning_enabled=%s "
             "gleaning_max_passes=%s sanitize_input=%s "
-            "structured_output_threshold_chars=%s",
+            "structured_output_threshold_chars=%s llm_urls=%s",
             body.pass_name,
             getattr(_service_settings, "force_json_mode", "?"),
+            (
+                body.temperature
+                if body.temperature is not None
+                else _dg_settings.docling_graph_llm_temperature
+            ),
             _dg_settings.docling_graph_llm_max_tokens,
+            _dg_settings.docling_graph_llm_truncation_retry_max_tokens,
+            _dg_settings.docling_graph_llm_max_output_tokens,
+            _dg_settings.docling_graph_llm_context_limit,
+            (
+                body.llm_batch_token_size
+                if body.llm_batch_token_size is not None
+                else _dg_settings.docling_graph_llm_batch_token_size
+            ),
             _dg_settings.docling_graph_parallel_workers,
             _dg_settings.docling_graph_gleaning_enabled,
             _dg_settings.docling_graph_gleaning_max_passes,
             getattr(_dg_settings, "docling_graph_sanitize_input", "?"),
             getattr(_service_settings, "structured_output_threshold_chars", "?"),
+            _dg_settings.get_ollama_llm_urls(),
         )
     except Exception as _cfg_log_exc:
         logger.warning(
