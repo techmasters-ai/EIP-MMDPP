@@ -379,6 +379,43 @@ Bundle with the next `docker/docling-graph/app/main.py` change. Standalone is fi
 
 ---
 
+**#80. Sanitizer Rule 3 — drop encoded blobs (base64 + percent-encoded URL fragments)** — **DONE 2026-05-01**
+**Files:** `docker/docling-graph/app/main.py:_contains_encoded_blob`, `_looks_like_nav_or_tracking`. Test: `docker/docling-graph/tests/test_sanitizer.py`.
+
+**Why:** A 2026-05-01 batch dump from the radar_identity pass showed Rule 1 (ad-tracking domain) catching only the *first* fragment of a tracker URL after docling fragmented it on a line break. The continuation fragments (bare percent-encoded params like `0%26kv7%3DBA%26kv10%3D%5BISP%5D%26kv11%3D...`) and trailing base64 ad-payload tokens (`adroll_ad_payload=__HIA9QBkwHFA8HIA70AAZ1...`) lacked the `adroll.com` substring and slipped through, costing 60–180s of GPU time per such fragment to confirm "no entities."
+
+**What landed:**
+1. New `_contains_encoded_blob(text)` predicate with two sub-rules, both gated on a 64-char length floor:
+   - **3a (base64):** match `[A-Za-z0-9+/_-]{64,}={0,2}`; require either explicit padding (`+`/`/`/`=`) or mixed-case + digit composition. Excludes hex hashes, UUIDs, and all-lowercase identifiers.
+   - **3b (percent-encoded):** any whitespace-delimited token ≥ 64 chars with ≥ 6 `%XX` triplets.
+2. Wired as Rule 3 in `_looks_like_nav_or_tracking()`; preserves `label='caption'` unconditionally per existing design.
+3. Standalone false-positive guard verified against: SHA-256 hex hashes, UUIDs, short serial numbers (`RP-12345-A6B7C8-D9E0F1`), all-decimal runs, prose with embedded short encoded URLs, sentences with embedded UUIDs.
+4. Unit test `tests/test_sanitizer.py` covers all three rules + the in-place blanking behavior. (Test infra requires running inside the docling-graph container; standalone Rule 3 verification ran on the host with all 10 cases passing.)
+
+**Verification command (inside container after rebuild):**
+```
+docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_sanitizer.py -v
+```
+
+**Rebuild required:** `docker-compose build docling-graph && docker-compose up -d docling-graph`.
+
+---
+
+**#81. Surface sanitize stats in notebook outcome tracker** — **DONE 2026-05-01**
+**Files:** `docker/docling-graph/app/main.py:660` (the `# TODO #81` marker is now removed). `notebooks/extraction_walkthrough.ipynb` cells `call-helper` (outcome tracker) and `section-inspect-markdown` + adjacent code cell (§2b).
+
+**Why:** `trace["input_sanitize"]` was already being written into the response diagnostics, but the notebook outcome tracker didn't read it, so an operator couldn't see how aggressive the cruft filter was on a per-pass basis. With Rule 3 added (#80) the sanitizer drop rate becomes a primary signal for whether crud-removal is doing its job — surfacing it in the same table as `json_failed`, `quality_gate_fail`, etc. makes that visible.
+
+**What landed:**
+1. `_record_extraction_outcome()` now reads `diag["input_sanitize"]` and stores `texts_in` / `texts_dropped` on each outcome record.
+2. `print_outcome_summary()` adds a `sanit` column showing `dropped/in` per pass plus a corpus-wide aggregate line: `sanitize_dropped / texts_in (all passes): X/Y = Z.Z%`.
+3. §2b (`inspect_doc_markdown`) now applies a local mirror of `_sanitize_docling_document` before chunking, so the rendered markdown is byte-identical to what the LLM receives post-sanitizer. A header line shows the per-doc `texts_dropped/texts_in` ratio. Pass `apply_sanitizer=False` to inspect the raw pre-sanitizer view for diff comparison.
+4. §2b markdown text updated to spell out the three sanitizer rules explicitly so notebook readers see what the filter is doing without reading `main.py`.
+
+**Note:** the §2b sanitizer mirror is a code copy — the source of truth is `main.py`. Leave a "keep in sync" comment so future edits don't drift.
+
+---
+
 **#82. Apply TCP keepalive + read-timeout-split hardening to the ArcadeDB httpx client**
 **Status:** Open. Defense-in-depth follow-up to commit `49c2e43` (OllamaPool TCP keepalive fix).
 **Files:** `app/services/arcadedb_client.py:110` (`_async_client`), `app/services/arcadedb_client.py:126` (`_sync_client`)

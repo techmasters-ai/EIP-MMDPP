@@ -141,6 +141,24 @@ from app.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+# uvicorn doesn't configure handlers for app-level loggers, so logger.info /
+# .warning / .error from this module would be silently dropped (matches the
+# pattern in app/ollama_pool_client.py and docling_graph/patches.py). Attach
+# our own StreamHandler at INFO so all our loud-ERROR tags
+# (GRAPH_EXTRACTION_FAILED, _PASS_DEGRADED, _LIBRARY_WARNING, _SANITIZED,
+# EXTRACT_PASS_PIPELINE_ERROR, _ZERO_YIELD, "extract-pass: START/END", etc.)
+# actually reach docker stdout. Idempotent — only adds the handler once.
+if not any(
+    isinstance(h, logging.StreamHandler) and getattr(h, "_eip_main_handler", False)
+    for h in logger.handlers
+):
+    _main_handler = logging.StreamHandler()
+    _main_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    setattr(_main_handler, "_eip_main_handler", True)
+    logger.addHandler(_main_handler)
+    logger.setLevel(logging.INFO)
 
 MAX_CONCURRENT = int(os.environ.get("DOCLING_GRAPH_MAX_CONCURRENT_EXTRACTIONS", "2"))
 
@@ -235,6 +253,56 @@ _PURE_LINK_LINE = __import__("re").compile(
     flags=__import__("re").IGNORECASE | __import__("re").MULTILINE,
 )
 
+# Long unbroken token in the base64 alphabet (incl. URL-safe variants).
+# Matched on whitespace-delimited tokens so prose with embedded short tokens
+# (UUIDs, hex hashes, semvers) is never accidentally classified as a blob.
+_BASE64_TOKEN = __import__("re").compile(r"[A-Za-z0-9+/_-]{64,}={0,2}")
+
+# Single %XX triplet. Counted per whitespace-delimited token so a sentence
+# with an occasional encoded URL doesn't false-trigger.
+_PERCENT_TRIPLET = __import__("re").compile(r"%[0-9A-Fa-f]{2}")
+
+
+def _contains_encoded_blob(text: str) -> bool:
+    """True if any whitespace-delimited token looks like an obfuscated blob.
+
+    Two sub-rules, both gated on a length floor of 64 chars to avoid
+    misclassifying short identifiers:
+
+    (a) **base64** — a long unbroken token in the base64 alphabet that has
+        either explicit padding (``+``, ``/``, ``=``) OR mixed-case + digit
+        composition. Catches ad-tracker payloads (``adroll_ad_payload=...``)
+        and inline ``data:image/...;base64,...`` embeds. Excludes hex
+        hashes (no uppercase, no padding), UUIDs (too short, dashed), and
+        all-lowercase identifiers.
+
+    (b) **percent-encoded URL fragment** — a long token containing six or
+        more ``%XX`` triplets. Catches the residue of a tracker URL after
+        docling has split it on a line break (the leading hostname, which
+        Rule 1 would have matched, is now in a sibling text element while
+        the continuation is just bare percent-encoded params).
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    # (a) base64 candidates anywhere in the text.
+    for m in _BASE64_TOKEN.finditer(text):
+        tok = m.group(0)
+        has_padding = ("=" in tok) or ("+" in tok) or ("/" in tok)
+        has_mixed = (
+            any(c.isupper() for c in tok)
+            and any(c.islower() for c in tok)
+            and any(c.isdigit() for c in tok)
+        )
+        if has_padding or has_mixed:
+            return True
+    # (b) percent-encoded fragment per whitespace-delimited token.
+    for tok in text.split():
+        if len(tok) < 64:
+            continue
+        if len(_PERCENT_TRIPLET.findall(tok)) >= 6:
+            return True
+    return False
+
 
 def _looks_like_nav_or_tracking(text: str) -> bool:
     """Return True if the entire text is web cruft we should drop pre-extraction.
@@ -244,13 +312,15 @@ def _looks_like_nav_or_tracking(text: str) -> bool:
       2. Text is ONLY one or more pure markdown links / bare URLs, with no
          meaningful prose interspersed (sidebar nav, link lists, "Related"
          columns, "Share on X" rows, etc.).
+      3. Text contains an obfuscated/encoded blob — either a base64 payload
+         (ad payloads, embedded data URIs) or a long percent-encoded URL
+         fragment (tracker-URL continuations that lost their hostname when
+         docling split the URL on a line break).
 
     Image-description prose (label='caption' on the element, or descriptive
     sentences) does NOT match these patterns and is kept — the user explicitly
     wants those preserved.
     """
-    import re as _re
-
     if not isinstance(text, str) or not text.strip():
         return False
 
@@ -265,6 +335,12 @@ def _looks_like_nav_or_tracking(text: str) -> bool:
     if not nonblank:
         return False
     if all(_PURE_LINK_LINE.match(ln) for ln in nonblank):
+        return True
+
+    # Rule 3: contains an encoded blob (base64 payload OR long percent-encoded
+    # URL fragment). Catches the residue that slipped past Rule 1's hostname
+    # check after docling fragmented a tracker URL across line breaks.
+    if _contains_encoded_blob(text):
         return True
 
     return False
@@ -409,12 +485,14 @@ def run_extraction_pass(
             and not doc.get("tables")
         )
 
-    # TODO #81: strip web cruft (ad-tracking URLs, navigation link lists,
-    # standalone URL paragraphs) from the DoclingDocument's texts[] array
-    # before chunking. KEEPS image-description prose (label="caption") and
-    # all real document content (radar tables, parameters, prose). Opt out
-    # via DOCLING_GRAPH_SANITIZE_INPUT=false. Filtered count is recorded in
-    # diagnostics so an operator can verify the heuristic isn't too aggressive.
+    # Pre-extraction sanitizer: blank web cruft (ad-tracking URLs, navigation
+    # link lists, encoded blobs — see _looks_like_nav_or_tracking for the
+    # full rule set) from the DoclingDocument's texts[] array before chunking.
+    # KEEPS image-description prose (label="caption") and all real document
+    # content. Opt out via DOCLING_GRAPH_SANITIZE_INPUT=false. The blanked
+    # count is recorded in diagnostics so an operator can verify the
+    # heuristic isn't too aggressive (surfaced in the notebook outcome
+    # tracker's `sanit` column).
     sanitize_stats: dict[str, int] = {"texts_in": 0, "texts_dropped": 0}
     _settings_for_sanitize = DoclingGraphSettings()
     if getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
@@ -637,8 +715,9 @@ def run_extraction_pass(
 
         captured_log = library_log_buf.getvalue()
         trace["library_log"] = captured_log
-        # TODO #81: surface sanitize stats so the notebook outcome tracker
-        # and an operator can see how aggressive the cruft filter was.
+        # Sanitize stats are exposed in the response diagnostics so the
+        # notebook outcome tracker and operator log lines can show how
+        # aggressive the cruft filter was on each pass.
         trace["input_sanitize"] = {
             "texts_in": sanitize_stats.get("texts_in", 0),
             "texts_dropped": sanitize_stats.get("texts_dropped", 0),
