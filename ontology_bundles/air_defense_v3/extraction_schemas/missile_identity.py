@@ -42,18 +42,19 @@ class MissileIdentityRecord(BaseModel):
     system_name: str = Field(
         ...,
         description=(
-            "Canonical designation of the MISSILE — the SHORTEST "
-            "canonical token from prose (e.g. '5V55K', '9M82', 'AIM-120', "
-            "'MIM-104', 'RIM-174'). When the document gives a formal "
-            "designation PLUS a common/NATO name PLUS a block/variant "
-            "(e.g. 'MIM-104F Patriot Advanced Capability-3 (PAC-3)'), "
-            "put ONLY the primary identifier here ('MIM-104F' or "
-            "'PAC-3'); move the formal designation to `nomenclature` "
-            "and the common/NATO reporting name to `name` — DO NOT "
-            "compress them all into system_name. "
-            "Never emit radar, weapon-system, aircraft, or platform "
-            "names — those are filtered deterministically by the root "
-            "sanitizer."
+            "Canonical designation of the MISSILE / SAM / interceptor — the "
+            "SHORTEST canonical token from prose (e.g. '5V55K', '9M82', "
+            "'AIM-120', 'MIM-104', 'PAC-3', 'RIM-174'). When the document "
+            "gives a formal designation PLUS a common/NATO name PLUS a "
+            "block/variant (e.g. 'MIM-104F Patriot Advanced Capability-3 "
+            "(PAC-3)'), put ONLY the primary missile identifier here "
+            "('MIM-104F' or 'PAC-3'); move the formal designation to "
+            "`nomenclature` and the common/NATO reporting name to `name` "
+            "when distinct — DO NOT compress multiple aliases into "
+            "system_name. Never emit radar, aircraft, launcher, battery, "
+            "target, or platform names — those are filtered deterministically "
+            "by the root sanitizer. Reject generic phrases such as "
+            "'the missile' or 'the interceptor'."
         ),
         examples=["5V55K", "AIM-120"],
     )
@@ -164,9 +165,12 @@ class MissileIdentityPass(BaseModel):
         label="CONTAINS",
         description=(
             "Top-level missile systems with identity + administrative "
-            "metadata extracted from this batch."
+            "metadata extracted from this batch. If the batch contains no "
+            "named missile systems, return an empty list."
         ),
-        examples=[["5V55K", "9M82"]],
+        examples=[
+            [{"system_name": "5V55K"}, {"system_name": "9M82"}],
+        ],
         default_factory=list,
     )
 

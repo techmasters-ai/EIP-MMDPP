@@ -49,12 +49,13 @@ class RadarIdentityRecord(BaseModel):
             "Canonical designation of the RADAR — the SHORTEST canonical "
             "token from prose (e.g. 'Fan Song', 'Spoon Rest', "
             "'Tombstone', 'AN/MPQ-65'). When the document gives both a "
-            "formal designation AND a common/NATO name, put ONLY the "
-            "primary identifier here; move the formal designation to "
-            "`nomenclature` and the common name to `name` (for missiles) "
-            "— DO NOT compress them all into system_name. Never emit "
-            "weapon, missile, aircraft, or platform names — those are "
-            "filtered deterministically by the root sanitizer."
+            "formal designation AND a common/NATO reporting name, put ONLY "
+            "the primary radar identifier here; move the formal alphanumeric "
+            "designation to `nomenclature` when distinct — DO NOT compress "
+            "multiple aliases into system_name. Never emit weapon, missile, "
+            "aircraft, or platform names — those are filtered "
+            "deterministically by the root sanitizer. Reject generic phrases "
+            "such as 'the radar' or 'the acquisition radar'."
         ),
         examples=["Fan Song", "AN/MPQ-65"],
     )
@@ -197,9 +198,12 @@ class RadarIdentityPass(BaseModel):
         label="CONTAINS",
         description=(
             "Top-level radar systems with identity + administrative "
-            "metadata extracted from this batch."
+            "metadata extracted from this batch. If the batch contains no "
+            "named radar systems, return an empty list."
         ),
-        examples=[["Fan Song", "Spoon Rest"]],
+        examples=[
+            [{"system_name": "Fan Song"}, {"system_name": "Spoon Rest"}],
+        ],
         default_factory=list,
     )
 
