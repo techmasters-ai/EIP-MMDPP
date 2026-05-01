@@ -41,16 +41,24 @@ def _build_keepalive_http_client(timeout_s: float) -> httpx.Client:
       * connect=10s    — DNS + TCP handshake should complete fast
       * write=60s      — POST body upload
       * pool=30s       — wait for a free connection slot
-      * read=min(timeout_s, 1800s) — gemma4's longest legitimate single-batch
-        generation we've observed is ~25min (legacy retry on field-rich
-        schemas); 30min comfortably exceeds that and lets a hung read
-        surface as ReadTimeout (retried by OllamaPool on a different URL).
+      * read=min(timeout_s, 600s) — application-level "no bytes at all" cap.
+        gemma4's longest legitimate single-batch generation we've observed
+        is ~377s (content-heavy radar batch, 4kB JSON output); 600s is a
+        safe ceiling. Tightened from 1800s on 2026-05-01 after the Ollama
+        silent-request-loss class hung an extract-pass for 14+min before
+        any timeout fired — see OLLAMA_REQUEST_LOSS_DETECTION below.
 
     Plus TCP keepalive at the socket level so the kernel detects truly-
     dead connections in TCP_KEEPIDLE + KEEPCNT*KEEPINTVL = 60 + 6*15 =
     ~150s, well before the read timeout. Both signals trigger
     OllamaChatClient._post_with_retry's retry-on-different-URL path
     instead of hanging silently.
+
+    Defense-in-depth: actual /v1/chat/completions calls run in streaming
+    mode via _stream_chat_with_watchdog, which applies a per-recv
+    no-progress timeout of 120s — catches Ollama's silent-request-loss
+    class (peer alive at TCP, request abandoned at app layer) without
+    waiting for the 600s ceiling.
     """
     socket_options: list[tuple[int, int, int]] = []
     try:
@@ -72,12 +80,23 @@ def _build_keepalive_http_client(timeout_s: float) -> httpx.Client:
     return httpx.Client(
         timeout=httpx.Timeout(
             connect=10.0,
-            read=min(float(timeout_s), 1800.0),
+            read=min(float(timeout_s), 600.0),
             write=60.0,
             pool=30.0,
         ),
         transport=transport,
     )
+
+
+# Per-recv watchdog applied to streaming /v1/chat/completions calls. If
+# Ollama goes silent for this long mid-response (or never sends a byte after
+# accepting the request — the silent-request-loss class), httpx raises
+# ReadTimeout from inside _stream_chat_with_watchdog and the retry path
+# engages on a different pool URL. Sized > the longest legitimate gap
+# between SSE chunks we observe in practice (~tens of seconds for hard
+# constrained-decode prompts) but well below the connection-level 600s
+# ceiling.
+_STREAM_NO_PROGRESS_SECONDS = 120.0
 # Attach a stream handler when the host process hasn't configured logging.
 # Without this, _maybe_strip_legacy_schema and _post_chat_with_retry log
 # silently in production (the api and docling-graph processes don't call
@@ -515,6 +534,90 @@ class OllamaChatClient:
             body["format"] = schema_dict
         return body
 
+    def _stream_chat_with_watchdog(
+        self,
+        url: str,
+        body: dict[str, Any],
+        *,
+        no_progress_seconds: float = _STREAM_NO_PROGRESS_SECONDS,
+    ) -> dict[str, Any]:
+        """Stream a /v1/chat/completions response with a per-recv watchdog.
+
+        Switches the request to ``stream=True`` and iterates SSE chunks via
+        httpx.stream(). The httpx ``read`` timeout is set per-call to
+        ``no_progress_seconds`` so each recv() must return data within that
+        window — if Ollama goes silent (silent-request-loss or mid-stream
+        stall), httpx raises ``ReadTimeout`` and the caller's retry path
+        engages on a different pool URL.
+
+        Returns a synthesized non-streaming-shaped dict so the existing
+        choices/message/content parser in _post_chat_with_retry doesn't
+        change.
+        """
+        streamed = dict(body)
+        streamed["stream"] = True
+        watchdog = httpx.Timeout(
+            connect=10.0,
+            read=no_progress_seconds,
+            write=60.0,
+            pool=30.0,
+        )
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        finish_reason: str | None = None
+        with self._http.stream(
+            "POST",
+            f"{url}/v1/chat/completions",
+            json=streamed,
+            timeout=watchdog,
+        ) as resp:
+            if resp.is_error:
+                err_body = resp.read().decode("utf-8", errors="replace")
+                # Construct a fake non-streaming response shape on the resp
+                # object so HTTPStatusError carries the body for diagnostics.
+                resp._content = err_body.encode("utf-8")  # noqa: SLF001
+                raise httpx.HTTPStatusError(
+                    f"HTTP {resp.status_code}",
+                    request=resp.request,
+                    response=resp,
+                )
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                data = line[6:].strip() if line.startswith("data: ") else line.strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                ct = delta.get("content")
+                if ct:
+                    content_parts.append(ct)
+                rc = delta.get("reasoning_content") or delta.get("thinking")
+                if rc:
+                    reasoning_parts.append(rc)
+                fr = choices[0].get("finish_reason")
+                if fr:
+                    finish_reason = fr
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(content_parts),
+        }
+        if reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
+        return {
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }],
+        }
+
     def _post_chat_with_retry(
         self,
         body: dict[str, Any],
@@ -531,37 +634,23 @@ class OllamaChatClient:
         `require_content=False` (app-side `chat()`) falls back to
         `reasoning_content` if `content` is empty (preserves current behavior
         for community reports + global synthesis on thinking models).
+
+        Uses streaming (_stream_chat_with_watchdog) so the per-recv 120s
+        watchdog catches Ollama's silent-request-loss class (peer alive at
+        TCP, request abandoned at app layer).
         """
         excluded: set[str] = set()
         last_exc: Exception | None = None
-        eff_timeout = timeout_s if timeout_s is not None else self._default_timeout
+        # The streaming watchdog enforces per-recv timeouts, so the caller's
+        # timeout_s is no longer plumbed into the httpx call. The orchestrator-
+        # level BATCH_HARD_TIMEOUT (default 3600s) remains the upper bound on
+        # total batch wall-time.
+        del timeout_s  # unused after the streaming switch
         for attempt in range(2):
             url = self.pool.acquire(exclude=excluded)
             t0 = time.time()
             try:
-                resp = self._http.post(
-                    f"{url}/v1/chat/completions",
-                    json=body,
-                    timeout=eff_timeout,
-                )
-                resp.raise_for_status()
-                try:
-                    payload = resp.json()
-                except (json.JSONDecodeError, ValueError) as exc:
-                    diag = {
-                        "url": url, "model": self.model, "provider": self.provider,
-                        "elapsed_s": time.time() - t0,
-                        "structured_failed": True, "fallback_used": False,
-                        "error": f"malformed response envelope: {exc}",
-                        "raw_response": resp.text[:1000],
-                    }
-                    self.last_call_diagnostics = diag
-                    if self._client_error_cls is not None:
-                        raise self._client_error_cls(
-                            "Ollama returned malformed JSON envelope",
-                            details=diag,
-                        ) from exc
-                    raise
+                payload = self._stream_chat_with_watchdog(url, body)
                 choices = payload.get("choices") or []
                 if not choices:
                     diag = {
