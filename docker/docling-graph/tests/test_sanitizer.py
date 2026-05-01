@@ -114,6 +114,53 @@ def test_caption_is_preserved_unconditionally(dg_app_module):
     assert out["texts"][0]["text"].startswith("Figure 1:")
 
 
+def test_sanitize_blanks_tracker_hyperlink_with_innocent_text(dg_app_module):
+    """Regression for the 2026-05-01 AdRoll case: docling stores the link URL
+    in a separate `hyperlink` annotation. Rule 1 has to match against
+    text + hyperlink combined and clear the hyperlink alongside text/orig,
+    or the chunker re-renders [text](tracker URL) and the cruft survives."""
+    m = dg_app_module
+    doc = {
+        "texts": [
+            {
+                "label": "list_item",
+                "text": "Ready to win bigger; faster and smarter with AI?",
+                "orig": "Ready to win bigger; faster and smarter with AI?",
+                "hyperlink": (
+                    "http://d.adroll.com/click/?adroll_insertion_id="
+                    "48760b031b457241b2fc010a98a6d01c&adroll_pixalate_click_url=..."
+                ),
+            },
+        ],
+    }
+    stats: dict = {}
+    out = m._sanitize_docling_document(doc, stats)
+    assert stats["texts_dropped"] == 1
+    assert out["texts"][0]["text"] == ""
+    assert out["texts"][0]["orig"] == ""
+    assert out["texts"][0]["hyperlink"] is None
+
+
+def test_sanitize_keeps_innocent_text_with_innocent_hyperlink(dg_app_module):
+    """Confirm a real radar reference link with a non-tracker URL is preserved."""
+    m = dg_app_module
+    doc = {
+        "texts": [
+            {
+                "label": "list_item",
+                "text": "Tombstone air-defense radar specs",
+                "orig": "Tombstone air-defense radar specs",
+                "hyperlink": "https://example.mil/tombstone-spec.pdf",
+            },
+        ],
+    }
+    stats: dict = {}
+    out = m._sanitize_docling_document(doc, stats)
+    assert stats["texts_dropped"] == 0
+    assert out["texts"][0]["text"] == "Tombstone air-defense radar specs"
+    assert out["texts"][0]["hyperlink"] == "https://example.mil/tombstone-spec.pdf"
+
+
 def test_sanitize_blanks_in_place_with_base64(dg_app_module):
     m = dg_app_module
     doc = {

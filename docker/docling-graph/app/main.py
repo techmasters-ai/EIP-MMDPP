@@ -359,10 +359,21 @@ def _sanitize_docling_document(doc: dict, stats: dict) -> dict:
     fails if a parent and a child disagree about who their counterpart is.
 
     Instead, this implementation REPLACES the noisy text element's
-    `text` and `orig` fields with empty strings, leaving the element +
-    all its $refs in place. The HybridChunker treats empty/whitespace
-    texts as zero-token contributions, so they vanish from the markdown
-    fed to the LLM without disturbing the document hierarchy.
+    `text` and `orig` fields with empty strings AND clears the
+    `hyperlink` annotation, leaving the element + all its $refs in
+    place. The HybridChunker treats empty/whitespace texts as
+    zero-token contributions, so they vanish from the markdown fed to
+    the LLM without disturbing the document hierarchy.
+
+    **Hyperlink note (2026-05-01):** docling stores markdown link URLs
+    in a separate ``hyperlink`` annotation, not in ``text``. The chunker
+    re-renders ``[text](hyperlink)`` from both fields, so a tracker URL
+    survives in the chunked output even after we blank the visible text.
+    Rule 1 / Rule 3 therefore run against ``text + hyperlink`` combined,
+    and we clear ``hyperlink`` alongside ``text`` / ``orig`` when
+    blanking. This catches the AdRoll / doubleclick.net case where the
+    visible link text was innocent ("Ready to win bigger…") but the URL
+    pointed at a tracker.
 
     KEEPS image captions (label='caption') unconditionally — user wants
     image-description prose preserved.
@@ -382,13 +393,22 @@ def _sanitize_docling_document(doc: dict, stats: dict) -> dict:
             new_texts.append(t)
             continue
         text_str = t.get("text") or t.get("orig") or ""
-        if _looks_like_nav_or_tracking(text_str):
-            # Element stays in texts[]; only its content is blanked. All
-            # $refs from body.children / pictures[].children / etc. remain
-            # valid and point to a now-empty text element.
+        hyperlink = t.get("hyperlink") or ""
+        # Combine text + hyperlink for rule matching: the chunker
+        # re-renders `[text](hyperlink)` so tracker URLs that live in
+        # the annotation must trigger blanking even when the visible
+        # text is innocent.
+        combined = (text_str + "\n" + hyperlink) if hyperlink else text_str
+        if _looks_like_nav_or_tracking(combined):
+            # Element stays in texts[]; its content is blanked AND its
+            # hyperlink annotation cleared. All $refs from
+            # body.children / pictures[].children / etc. remain valid
+            # and point to a now-empty text element with no rendered URL.
             blanked_t = dict(t)
             blanked_t["text"] = ""
             blanked_t["orig"] = ""
+            if "hyperlink" in blanked_t:
+                blanked_t["hyperlink"] = None
             new_texts.append(blanked_t)
             blanked += 1
             continue
