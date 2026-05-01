@@ -7,7 +7,9 @@ HTTP behavior is covered separately in test_ollama_pool_client_http.py.
 import contextlib
 import json
 import logging
+import socket
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -196,6 +198,98 @@ def test_chat_client_no_retry_with_single_url():
     ):
         with pytest.raises(httpx.ConnectError):
             client.get_json_response(prompt="hi", schema_json="{}")
+
+
+def test_stream_watchdog_parses_chunked_sse_response():
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def chunk(payload: bytes) -> bytes:
+        return f"{len(payload):x}\r\n".encode() + payload + b"\r\n"
+
+    def serve_sse_response():
+        conn, _addr = server.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"Connection: keep-alive\r\n"
+                b"\r\n"
+            )
+            conn.sendall(chunk(
+                b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
+            ))
+            conn.sendall(chunk(
+                b'data: {"choices":[{"delta":{"content":"lo"},'
+                b'"finish_reason":"stop"}]}\n\n',
+            ))
+            conn.sendall(chunk(b"data: [DONE]\n\n"))
+            conn.sendall(b"0\r\n\r\n")
+
+    thread = threading.Thread(target=serve_sse_response, daemon=True)
+    thread.start()
+
+    pool = OllamaPool(urls=[f"http://127.0.0.1:{port}"])
+    client = OllamaChatClient(pool=pool, model="m")
+    try:
+        payload = client._stream_chat_with_watchdog(
+            f"http://127.0.0.1:{port}",
+            {"model": "m", "messages": [{"role": "user", "content": "x"}]},
+            no_progress_seconds=1.0,
+        )
+    finally:
+        client.close()
+        server.close()
+
+    choice = payload["choices"][0]
+    assert choice["message"]["content"] == "hello"
+    assert choice["finish_reason"] == "stop"
+
+
+def test_stream_watchdog_times_out_when_sse_headers_are_followed_by_silence():
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    stop = threading.Event()
+
+    def serve_silent_sse_response():
+        conn, _addr = server.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"Connection: keep-alive\r\n"
+                b"\r\n"
+            )
+            stop.wait(5.0)
+
+    thread = threading.Thread(target=serve_silent_sse_response, daemon=True)
+    thread.start()
+
+    pool = OllamaPool(urls=[f"http://127.0.0.1:{port}"])
+    client = OllamaChatClient(pool=pool, model="m")
+    started = time.monotonic()
+    try:
+        with pytest.raises(httpx.ReadTimeout, match="no SSE bytes from Ollama"):
+            client._stream_chat_with_watchdog(
+                f"http://127.0.0.1:{port}",
+                {"model": "m", "messages": [{"role": "user", "content": "x"}]},
+                no_progress_seconds=0.3,
+            )
+        assert time.monotonic() - started < 1.0
+    finally:
+        stop.set()
+        client.close()
+        server.close()
 
 
 def test_chat_client_format_schema_when_structured_output_true():

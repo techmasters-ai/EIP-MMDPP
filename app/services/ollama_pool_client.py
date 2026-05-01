@@ -280,9 +280,10 @@ class OllamaChatClient:
         self._legacy_marker_start = legacy_strip_marker_start
         self._legacy_marker_end = legacy_strip_marker_end
         self.last_call_diagnostics: dict | None = None
-        # One httpx.Client per OllamaChatClient with TCP keepalive + a saner
-        # read-timeout split (see _build_keepalive_http_client docstring).
-        # httpx.Client is thread-safe for concurrent .post() calls.
+        # Retained for deterministic close() behavior and any future
+        # non-streaming chat path. Streaming chat calls use a short-lived
+        # per-request client so a stalled reader can be abandoned without
+        # closing transport state underneath other concurrent calls.
         self._http = _build_keepalive_http_client(timeout_s)
 
     def close(self) -> None:
@@ -543,12 +544,12 @@ class OllamaChatClient:
     ) -> dict[str, Any]:
         """Stream a /v1/chat/completions response with a per-recv watchdog.
 
-        Switches the request to ``stream=True`` and iterates SSE chunks via
-        httpx.stream(). The httpx ``read`` timeout is set per-call to
-        ``no_progress_seconds`` so each recv() must return data within that
-        window — if Ollama goes silent (silent-request-loss or mid-stream
-        stall), httpx raises ``ReadTimeout`` and the caller's retry path
-        engages on a different pool URL.
+        Switches the request to ``stream=True`` and reads SSE bytes in a
+        daemon reader thread. This method monitors raw-byte progress itself,
+        so the caller is released after ``no_progress_seconds`` even if the
+        underlying httpcore read parks below Python and never raises its own
+        timeout. The raised ``ReadTimeout`` engages the caller's retry path
+        on a different pool URL.
 
         Returns a synthesized non-streaming-shaped dict so the existing
         choices/message/content parser in _post_chat_with_retry doesn't
@@ -558,52 +559,131 @@ class OllamaChatClient:
         streamed["stream"] = True
         watchdog = httpx.Timeout(
             connect=10.0,
-            read=no_progress_seconds,
+            # Keep httpx's native read timeout as a near-term fallback, but
+            # make the explicit watchdog below the first line of defense.
+            read=no_progress_seconds + 1.0,
             write=60.0,
             pool=30.0,
         )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         finish_reason: str | None = None
-        with self._http.stream(
-            "POST",
-            f"{url}/v1/chat/completions",
-            json=streamed,
-            timeout=watchdog,
-        ) as resp:
-            if resp.is_error:
-                err_body = resp.read().decode("utf-8", errors="replace")
-                # Construct a fake non-streaming response shape on the resp
-                # object so HTTPStatusError carries the body for diagnostics.
-                resp._content = err_body.encode("utf-8")  # noqa: SLF001
-                raise httpx.HTTPStatusError(
-                    f"HTTP {resp.status_code}",
-                    request=resp.request,
-                    response=resp,
+        stream_request: httpx.Request | None = None
+
+        def _read_timeout(cause: BaseException | None = None) -> httpx.ReadTimeout:
+            msg = (
+                "no SSE bytes from Ollama for "
+                f"{no_progress_seconds:.1f}s while streaming chat completion"
+            )
+            exc = httpx.ReadTimeout(msg, request=stream_request)
+            if cause is not None:
+                raise exc from cause
+            return exc
+
+        def _consume_sse_line(line: str) -> bool:
+            nonlocal finish_reason
+            if not line:
+                return False
+            data = line[6:].strip() if line.startswith("data: ") else line.strip()
+            if data == "[DONE]":
+                return True
+            try:
+                chunk = json.loads(data)
+            except (json.JSONDecodeError, ValueError):
+                return False
+            choices = chunk.get("choices") or []
+            if not choices:
+                return False
+            delta = choices[0].get("delta") or {}
+            ct = delta.get("content")
+            if ct:
+                content_parts.append(ct)
+            rc = delta.get("reasoning_content") or delta.get("thinking")
+            if rc:
+                reasoning_parts.append(rc)
+            fr = choices[0].get("finish_reason")
+            if fr:
+                finish_reason = fr
+            return False
+
+        stream_http = _build_keepalive_http_client(no_progress_seconds + 1.0)
+        stream_done = threading.Event()
+        progress_lock = threading.Lock()
+        last_byte_time = time.monotonic()
+        read_error: list[Exception] = []
+
+        def _mark_progress() -> None:
+            nonlocal last_byte_time
+            with progress_lock:
+                last_byte_time = time.monotonic()
+
+        def _read_stream() -> None:
+            nonlocal stream_request
+            pending = b""
+            saw_done = False
+            try:
+                with stream_http.stream(
+                    "POST",
+                    f"{url}/v1/chat/completions",
+                    json=streamed,
+                    timeout=watchdog,
+                ) as resp:
+                    stream_request = resp.request
+                    if resp.is_error:
+                        err_body = resp.read().decode("utf-8", errors="replace")
+                        # Construct a fake non-streaming response shape on the resp
+                        # object so HTTPStatusError carries the body for diagnostics.
+                        resp._content = err_body.encode("utf-8")  # noqa: SLF001
+                        raise httpx.HTTPStatusError(
+                            f"HTTP {resp.status_code}",
+                            request=resp.request,
+                            response=resp,
+                        )
+                    for chunk in resp.iter_raw():
+                        if not chunk:
+                            continue
+                        _mark_progress()
+                        pending += chunk
+                        while b"\n" in pending:
+                            line_bytes, pending = pending.split(b"\n", 1)
+                            line = line_bytes.rstrip(b"\r").decode(
+                                "utf-8", errors="replace",
+                            )
+                            if _consume_sse_line(line):
+                                saw_done = True
+                                break
+                        if saw_done:
+                            break
+                    if pending and not saw_done:
+                        line = pending.decode("utf-8", errors="replace")
+                        _consume_sse_line(line)
+            except Exception as exc:
+                read_error.append(exc)
+            finally:
+                stream_done.set()
+                stream_http.close()
+
+        reader = threading.Thread(
+            target=_read_stream,
+            name="ollama-stream-reader",
+            daemon=True,
+        )
+        reader.start()
+        poll_s = min(1.0, max(0.05, no_progress_seconds / 10.0))
+        while not stream_done.wait(poll_s):
+            with progress_lock:
+                elapsed = time.monotonic() - last_byte_time
+            if elapsed >= no_progress_seconds:
+                logger.error(
+                    "OLLAMA_STREAM_NO_PROGRESS url=%s model=%s "
+                    "elapsed_s=%.1f threshold_s=%.1f — closing stream "
+                    "so retry path can fail over.",
+                    url, body["model"], elapsed, no_progress_seconds,
                 )
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                data = line[6:].strip() if line.startswith("data: ") else line.strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                ct = delta.get("content")
-                if ct:
-                    content_parts.append(ct)
-                rc = delta.get("reasoning_content") or delta.get("thinking")
-                if rc:
-                    reasoning_parts.append(rc)
-                fr = choices[0].get("finish_reason")
-                if fr:
-                    finish_reason = fr
+                stream_http.close()
+                raise _read_timeout()
+        if read_error:
+            raise read_error[0]
         message: dict[str, Any] = {
             "role": "assistant",
             "content": "".join(content_parts),
