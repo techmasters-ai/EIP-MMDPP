@@ -68,13 +68,11 @@ class DoclingGraphSettings(BaseSettings):
     docling_graph_identity_filter_strict: bool = False
 
     # Gleaning.
-    # gleaning_max_passes=2 asks the LLM "what did you miss?" once after the
-    # primary extraction. Recovers entities/relationships that the first pass
-    # skipped (common on prose-heavy pages) without re-chunking or loosening
-    # the structured-output schema. Applies to delta + direct contracts per
-    # docling-graph-docs.md §Gleaning (not staged).
+    # Upstream treats gleaning_max_passes as a boolean gate in this code path:
+    # one follow-up "what did you miss?" pass is what actually runs. Keep the
+    # service setting boolean so the config does not imply N-pass behavior.
     docling_graph_gleaning_enabled: bool = True
-    docling_graph_gleaning_max_passes: int = 2
+    docling_graph_gleaning_max_passes: bool = True
 
     # Structured output
     docling_graph_structured_output: bool = True
@@ -98,10 +96,10 @@ class DoclingGraphSettings(BaseSettings):
     # at 0.0 returned empty JSON). A small amount of variance is needed for the
     # model to explore valid completions under the structured-output constraint.
     docling_graph_llm_temperature: float = 0.1
-    # 32000 fits llama3.3:70b's output ceiling. Drop to 4000 for
-    # llama3.1:8b (4092 cap) or raise to 64000+ for gpt-oss:120b via
-    # the DOCLING_GRAPH_LLM_MAX_TOKENS env var.
-    docling_graph_llm_max_tokens: int | None = 32000
+    # Bound extraction generations so JSON-mode pathological chunks cannot
+    # stream for tens of minutes. Typical per-batch graph outputs observed in
+    # the recall harness are comfortably below this.
+    docling_graph_llm_max_tokens: int | None = 2048
     docling_graph_llm_timeout: int = 1800  # 30 min per LLM call
     # Singular / fallback URLs (back-compat with existing .env files).
     ollama_base_url: str = "http://ollama:11434"
@@ -116,10 +114,10 @@ class DoclingGraphSettings(BaseSettings):
     # For models missing from LiteLLM's metadata registry (e.g. ollama/llama3.3:70b)
     # the library's resolve_effective_model_config falls back to
     # _DEFAULT_MAX_OUTPUT_TOKENS=4092, then refuses any max_tokens above that.
-    # We override explicitly so max_tokens=32000 is accepted. 131072 matches
+    # We override explicitly so max_tokens is accepted. 131072 matches
     # llama3.3:70b's full context length (input + output combined).
     docling_graph_llm_context_limit: int | None = 131072
-    docling_graph_llm_max_output_tokens: int | None = 32000
+    docling_graph_llm_max_output_tokens: int | None = 2048
 
     # Backend: "llm" or "vlm"
     docling_graph_backend: str = "llm"
@@ -275,7 +273,7 @@ def build_pipeline_config(
         "delta_identity_filter_enabled": settings.docling_graph_identity_filter_enabled,
         "delta_identity_filter_strict": settings.docling_graph_identity_filter_strict,
         "gleaning_enabled": settings.docling_graph_gleaning_enabled,
-        "gleaning_max_passes": settings.docling_graph_gleaning_max_passes,
+        "gleaning_max_passes": 1 if settings.docling_graph_gleaning_max_passes else 0,
         "structured_output": settings.docling_graph_structured_output,
         "structured_sparse_check": structured_sparse_check_effective,
         "llm_overrides": {

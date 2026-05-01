@@ -292,6 +292,54 @@ def test_stream_watchdog_times_out_when_sse_headers_are_followed_by_silence():
         server.close()
 
 
+def test_stream_watchdog_times_out_on_total_wall_clock_even_with_progress():
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    stop = threading.Event()
+
+    def chunk(data: bytes) -> bytes:
+        return f"{len(data):X}\r\n".encode() + data + b"\r\n"
+
+    def serve_slow_streaming_response():
+        conn, _addr = server.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"Connection: keep-alive\r\n"
+                b"\r\n"
+            )
+            while not stop.wait(0.05):
+                conn.sendall(chunk(
+                    b'data: {"choices":[{"delta":{"content":" "}}]}\n\n',
+                ))
+
+    thread = threading.Thread(target=serve_slow_streaming_response, daemon=True)
+    thread.start()
+
+    pool = OllamaPool(urls=[f"http://127.0.0.1:{port}"])
+    client = OllamaChatClient(pool=pool, model="m")
+    started = time.monotonic()
+    try:
+        with pytest.raises(httpx.ReadTimeout, match="wall-clock limit"):
+            client._stream_chat_with_watchdog(
+                f"http://127.0.0.1:{port}",
+                {"model": "m", "messages": [{"role": "user", "content": "x"}]},
+                no_progress_seconds=2.0,
+                max_wall_seconds=0.25,
+            )
+        assert time.monotonic() - started < 1.0
+    finally:
+        stop.set()
+        client.close()
+        server.close()
+
+
 def test_chat_client_format_schema_when_structured_output_true():
     pool = OllamaPool(urls=["http://only"])
     client = OllamaChatClient(pool=pool, model="m")

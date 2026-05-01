@@ -97,6 +97,11 @@ def _build_keepalive_http_client(timeout_s: float) -> httpx.Client:
 # constrained-decode prompts) but well below the connection-level 600s
 # ceiling.
 _STREAM_NO_PROGRESS_SECONDS = 120.0
+
+# Absolute wall-clock ceiling for one streamed chat completion. The
+# no-progress watchdog catches silent sockets; this catches pathological
+# generations that keep streaming low-value JSON forever.
+_STREAM_MAX_WALL_SECONDS = 600.0
 # Attach a stream handler when the host process hasn't configured logging.
 # Without this, _maybe_strip_legacy_schema and _post_chat_with_retry log
 # silently in production (the api and docling-graph processes don't call
@@ -541,6 +546,7 @@ class OllamaChatClient:
         body: dict[str, Any],
         *,
         no_progress_seconds: float = _STREAM_NO_PROGRESS_SECONDS,
+        max_wall_seconds: float = _STREAM_MAX_WALL_SECONDS,
     ) -> dict[str, Any]:
         """Stream a /v1/chat/completions response with a per-recv watchdog.
 
@@ -609,6 +615,7 @@ class OllamaChatClient:
         stream_http = _build_keepalive_http_client(no_progress_seconds + 1.0)
         stream_done = threading.Event()
         progress_lock = threading.Lock()
+        start_time = time.monotonic()
         last_byte_time = time.monotonic()
         read_error: list[Exception] = []
 
@@ -658,7 +665,12 @@ class OllamaChatClient:
                         line = pending.decode("utf-8", errors="replace")
                         _consume_sse_line(line)
             except Exception as exc:
-                read_error.append(exc)
+                # Some HTTP stacks close/reset immediately after the terminal
+                # chunk. If we already saw a finish_reason, we have a complete
+                # assistant message; do not turn post-finish socket noise into
+                # a failed extraction batch.
+                if finish_reason is None:
+                    read_error.append(exc)
             finally:
                 stream_done.set()
                 stream_http.close()
@@ -673,6 +685,20 @@ class OllamaChatClient:
         while not stream_done.wait(poll_s):
             with progress_lock:
                 elapsed = time.monotonic() - last_byte_time
+            wall_elapsed = time.monotonic() - start_time
+            if wall_elapsed >= max_wall_seconds:
+                logger.error(
+                    "OLLAMA_STREAM_WALL_TIMEOUT url=%s model=%s "
+                    "elapsed_s=%.1f threshold_s=%.1f — closing stream "
+                    "so structured-output fallback can engage.",
+                    url, body["model"], wall_elapsed, max_wall_seconds,
+                )
+                stream_http.close()
+                raise httpx.ReadTimeout(
+                    "streamed chat completion exceeded wall-clock limit "
+                    f"of {max_wall_seconds:.1f}s",
+                    request=stream_request,
+                )
             if elapsed >= no_progress_seconds:
                 logger.error(
                     "OLLAMA_STREAM_NO_PROGRESS url=%s model=%s "
