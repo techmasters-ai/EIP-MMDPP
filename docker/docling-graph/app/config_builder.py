@@ -42,7 +42,7 @@ class DoclingGraphSettings(BaseSettings):
     # "Ollama/Local: Variable performance → conservative batching." 1024 is the
     # upstream default; our previous 2048 was aggressive for Ollama.
     docling_graph_llm_batch_token_size: int = 1024
-    docling_graph_parallel_workers: int = 4
+    docling_graph_parallel_workers: int = 3
     docling_graph_batch_split_max_retries: int = 1
 
     # Delta resolvers
@@ -106,8 +106,10 @@ class DoclingGraphSettings(BaseSettings):
     # and orchestrator-level BATCH_HARD_TIMEOUT remain upper-bound safeguards.
     docling_graph_llm_max_tokens: int | None = 4096
     # Upper bound for bounded truncation recovery. The first call still uses
-    # docling_graph_llm_max_tokens; retries double up to this ceiling.
-    docling_graph_llm_truncation_retry_max_tokens: int | None = 16384
+    # docling_graph_llm_max_tokens; default caps at the first 2x retry because
+    # 16k retries added wall time without recall gain in Run 8. Raise this
+    # only for targeted diagnostics.
+    docling_graph_llm_truncation_retry_max_tokens: int | None = 8192
     docling_graph_llm_timeout: int = 1800  # 30 min per LLM call
     # Singular / fallback URLs (back-compat with existing .env files).
     ollama_base_url: str = "http://ollama:11434"
