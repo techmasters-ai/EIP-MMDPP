@@ -724,6 +724,87 @@ class OllamaChatClient:
             }],
         }
 
+    def _stream_with_truncation_retry(
+        self,
+        url: str,
+        body: dict[str, Any],
+        *,
+        require_content: bool,
+        t0: float,
+    ) -> tuple[dict[str, Any], bool]:
+        """Run a streaming chat call; if the model hit ``max_tokens`` (Ollama
+        ``finish_reason="length"``), log a TRUNCATION warning and one-shot
+        retry on the **same URL** with the cap doubled. Returns
+        ``(payload, truncation_persisted)`` — payload has the same shape
+        ``_stream_chat_with_watchdog`` produces; ``truncation_persisted`` is
+        True only when the bumped retry also got cut off, signaling that the
+        operator should raise ``DOCLING_GRAPH_LLM_MAX_TOKENS`` for this
+        model+prompt class.
+
+        Why one-shot only: if a chunk genuinely needs >2× the configured cap,
+        an unbounded retry loop is worse than a single ERROR log surfacing
+        the case to an operator. The ``finish_reason="length"`` ERROR is the
+        signal to act on.
+
+        Why same URL: truncation is a model+prompt deterministic property —
+        retrying on a different URL won't help (same model). URL-failover
+        is for transport-level errors and lives one layer up in
+        ``_post_chat_with_retry``.
+        """
+        payload = self._stream_chat_with_watchdog(url, body)
+        choices = payload.get("choices") or []
+        if not choices:
+            return payload, False
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason != "length":
+            return payload, False
+
+        # First call truncated. Always log; retry only when the caller
+        # actually needs the content (extraction path) and we haven't
+        # already bumped on this call.
+        message_first = choices[0].get("message", {}) or {}
+        content_first = (message_first.get("content") or "").strip()
+        current_cap = body.get("max_tokens") or 4096
+        logger.warning(
+            "OllamaChatClient: TRUNCATION_AT_NUM_PREDICT url=%s model=%s "
+            "elapsed=%.2fs len(content)=%d max_tokens=%d — output cap hit; "
+            "response may be incomplete.",
+            url, body["model"], time.time() - t0, len(content_first), current_cap,
+        )
+        if not require_content:
+            # Caller is non-strict (app-side chat()). Pass the truncated
+            # content through without an extra round-trip.
+            return payload, False
+
+        bumped_body = dict(body)
+        bumped_body["max_tokens"] = current_cap * 2
+        logger.info(
+            "OllamaChatClient: retrying with max_tokens=%d to recover "
+            "potentially-truncated content (url=%s model=%s).",
+            bumped_body["max_tokens"], url, body["model"],
+        )
+        retry_payload = self._stream_chat_with_watchdog(url, bumped_body)
+        retry_choices = retry_payload.get("choices") or []
+        if not retry_choices:
+            # Retry returned no choices — fall back to the original payload
+            # so the caller can decide what to do with it.
+            return payload, True
+        retry_finish = retry_choices[0].get("finish_reason")
+        if retry_finish == "length":
+            retry_msg = retry_choices[0].get("message", {}) or {}
+            retry_content = (retry_msg.get("content") or "").strip()
+            logger.error(
+                "OllamaChatClient: TRUNCATION_PERSISTS_AFTER_RETRY url=%s "
+                "model=%s len(content)=%d max_tokens=%d — the bumped retry "
+                "also truncated. Consider raising "
+                "DOCLING_GRAPH_LLM_MAX_TOKENS for this model+prompt class, "
+                "or chunking smaller. Returning the bumped-retry content "
+                "(may still be partial).",
+                url, body["model"], len(retry_content), bumped_body["max_tokens"],
+            )
+            return retry_payload, True
+        return retry_payload, False
+
     def _post_chat_with_retry(
         self,
         body: dict[str, Any],
@@ -756,7 +837,9 @@ class OllamaChatClient:
             url = self.pool.acquire(exclude=excluded)
             t0 = time.time()
             try:
-                payload = self._stream_chat_with_watchdog(url, body)
+                payload, _truncation_persisted = self._stream_with_truncation_retry(
+                    url, body, require_content=require_content, t0=t0,
+                )
                 choices = payload.get("choices") or []
                 if not choices:
                     diag = {
