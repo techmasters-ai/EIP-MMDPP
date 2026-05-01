@@ -111,9 +111,11 @@ except ImportError:
 # filter_entity_nodes_by_identity (delta_identity_filter_enabled=True).
 from app.prompt_rules import install as _install_prompt_rules
 from app.resolver_patch import install as _install_resolver_patch
+from app.gleaning_patch import install as _install_gleaning_patch
 
 _install_prompt_rules()
 _install_resolver_patch()
+_install_gleaning_patch()
 
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app._field_provenance_helpers import _primary_list_field_name
