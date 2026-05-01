@@ -369,11 +369,14 @@ def _sanitize_docling_document(doc: dict, stats: dict) -> dict:
     in a separate ``hyperlink`` annotation, not in ``text``. The chunker
     re-renders ``[text](hyperlink)`` from both fields, so a tracker URL
     survives in the chunked output even after we blank the visible text.
-    Rule 1 / Rule 3 therefore run against ``text + hyperlink`` combined,
-    and we clear ``hyperlink`` alongside ``text`` / ``orig`` when
-    blanking. This catches the AdRoll / doubleclick.net case where the
-    visible link text was innocent ("Ready to win bigger…") but the URL
-    pointed at a tracker.
+    To catch this we run the rule predicates against the **rendered**
+    form ``[text](hyperlink)`` — same shape the chunker emits — instead
+    of just the bare text. That makes Rule 2 (pure-link-line) match
+    nav items where docling split the markdown link into
+    text="FIFB-22" + hyperlink="https://...", and Rule 1 / Rule 3 see
+    the URL even when the visible text is innocent ("Ready to win
+    bigger…"). When blanking we clear ``hyperlink`` alongside
+    ``text`` / ``orig`` so the chunker has nothing to render.
 
     KEEPS image captions (label='caption') unconditionally — user wants
     image-description prose preserved.
@@ -394,12 +397,18 @@ def _sanitize_docling_document(doc: dict, stats: dict) -> dict:
             continue
         text_str = t.get("text") or t.get("orig") or ""
         hyperlink = t.get("hyperlink") or ""
-        # Combine text + hyperlink for rule matching: the chunker
-        # re-renders `[text](hyperlink)` so tracker URLs that live in
-        # the annotation must trigger blanking even when the visible
-        # text is innocent.
-        combined = (text_str + "\n" + hyperlink) if hyperlink else text_str
-        if _looks_like_nav_or_tracking(combined):
+        # Render the item the way the chunker's format_batch_markdown
+        # will: `[text](hyperlink)` when hyperlinked, bare text
+        # otherwise. Running rules against the rendered form catches
+        # Rule 2 cases where docling split the markdown link into
+        # text="FIFB-22" + hyperlink="https://..." separate fields —
+        # joined by newline they fail the pure-link-line check, but in
+        # rendered form they're a clean nav link.
+        if hyperlink:
+            rendered = f"[{text_str}]({hyperlink})"
+        else:
+            rendered = text_str
+        if _looks_like_nav_or_tracking(rendered):
             # Element stays in texts[]; its content is blanked AND its
             # hyperlink annotation cleared. All $refs from
             # body.children / pictures[].children / etc. remain valid

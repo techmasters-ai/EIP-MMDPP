@@ -114,6 +114,37 @@ def test_caption_is_preserved_unconditionally(dg_app_module):
     assert out["texts"][0]["text"].startswith("Figure 1:")
 
 
+def test_rule2_catches_nav_link_with_split_text_and_hyperlink(dg_app_module):
+    """Regression for the 2026-05-01 §2b dump: docling stored the FIFB-22
+    style nav link as text='FIFB-22' + hyperlink='https://...', not as
+    a single markdown-text element. Rule 2 must see the rendered form
+    `[FIFB-22](https://...)` to recognize it as a pure-link line."""
+    m = dg_app_module
+    doc = {
+        "texts": [
+            {
+                "label": "list_item",
+                "text": "FIFB-22",
+                "orig": "FIFB-22",
+                "hyperlink": "https://www.ausairpower.net/raptor.html",
+            },
+            {
+                "label": "list_item",
+                "text": "PACRIM WEPS",
+                "orig": "PACRIM WEPS",
+                "hyperlink": "https://www.ausairpower.net/region.html",
+            },
+        ],
+    }
+    stats: dict = {}
+    out = m._sanitize_docling_document(doc, stats)
+    assert stats["texts_dropped"] == 2
+    assert out["texts"][0]["text"] == ""
+    assert out["texts"][0]["hyperlink"] is None
+    assert out["texts"][1]["text"] == ""
+    assert out["texts"][1]["hyperlink"] is None
+
+
 def test_sanitize_blanks_tracker_hyperlink_with_innocent_text(dg_app_module):
     """Regression for the 2026-05-01 AdRoll case: docling stores the link URL
     in a separate `hyperlink` annotation. Rule 1 has to match against
