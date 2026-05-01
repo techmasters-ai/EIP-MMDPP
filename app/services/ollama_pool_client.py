@@ -776,29 +776,15 @@ class OllamaChatClient:
             # content through without an extra round-trip.
             return payload, False
 
-        # Spin-vs-legit distinction: when the model hits the cap with NO
-        # parseable content, that's the JSON-mode spin pathology — the
-        # model wandered through filler tokens until exhaustion. Bumping
-        # max_tokens and retrying just lets it spin longer; empirically
-        # the bumped retry also returns content=0 in this case. Skip the
-        # retry and let the library's structured-failed → legacy-fallback
-        # path engage immediately. Saves ~700s per spin chunk.
-        #
-        # When content > 0 the model produced real output and just needed
-        # more headroom; the bumped retry typically recovers (e.g.
-        # 86 chars → 2381 chars, 300 → 3170, 620 → 1797 in the
-        # 2026-05-01 radar_identity run).
-        if not content_first:
-            logger.warning(
-                "OllamaChatClient: TRUNCATION_SPIN_SKIPPING_RETRY url=%s "
-                "model=%s — finish_reason=length with content=0 indicates "
-                "JSON-mode spin pathology, not legitimate truncation. "
-                "Skipping bumped retry; library will fall back to legacy "
-                "mode if structured output is required.",
-                url, body["model"],
-            )
-            return payload, False
-
+        # Always-bump retry on require_content=True. The earlier spin-skip
+        # branch (skip retry when content=0) was reverted on 2026-05-01
+        # after a regression run showed it cost both recall (15 vs 30
+        # nodes) and wall-time (88 min vs 67 min). Some content=0 first
+        # calls were recoverable via the bumped retry — the model needed
+        # the extra token budget to produce a clean empty response or to
+        # finish a structured terminator instead of running out mid-state.
+        # Skipping that retry caused permanent batch losses (ClientError)
+        # that the bumped retry would otherwise have prevented.
         bumped_body = dict(body)
         bumped_body["max_tokens"] = current_cap * 2
         logger.info(
