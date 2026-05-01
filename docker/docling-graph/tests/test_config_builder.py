@@ -74,7 +74,7 @@ class TestConfigBuilderDefaults:
         build_pipeline_config(source="/tmp/test.json", template_class=None)
 
         generation = mock_pipeline_config.call_args[1]["llm_overrides"]["generation"]
-        assert generation["max_tokens"] == 4096
+        assert generation["max_tokens"] == 8192
 
 
 class TestConfigBuilderOverrides:

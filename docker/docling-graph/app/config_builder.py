@@ -98,11 +98,16 @@ class DoclingGraphSettings(BaseSettings):
     docling_graph_llm_temperature: float = 0.1
     # Bound extraction generations so JSON-mode pathological chunks cannot
     # stream for tens of minutes. Typical per-batch graph outputs observed in
-    # the recall harness are comfortably below this (largest seen ~1230
-    # tokens). 4096 gives ~3.3x headroom over the empirical max while still
-    # well below pathological-spin behavior; the 600s per-call wall-time
-    # cap is the actual safeguard against spins, this is belt-and-suspenders.
-    docling_graph_llm_max_tokens: int | None = 4096
+    # the recall harness are comfortably below this (largest seen ~1270
+    # tokens). 8192 gives ~6x headroom over the empirical max so dense-
+    # extraction chunks complete in ONE call without the bumped-retry round
+    # trip, while still bounded enough that spin pathology is killed at
+    # ~480s of wasted generation. Combined with TRUNCATION_SPIN_SKIPPING_RETRY
+    # in _stream_with_truncation_retry (skip bumped retry on content=0),
+    # this profile minimizes per-pass wall time without compromising recall.
+    # The 600s per-call wall-time cap and orchestrator-level
+    # BATCH_HARD_TIMEOUT remain the upper-bound safeguards.
+    docling_graph_llm_max_tokens: int | None = 8192
     docling_graph_llm_timeout: int = 1800  # 30 min per LLM call
     # Singular / fallback URLs (back-compat with existing .env files).
     ollama_base_url: str = "http://ollama:11434"
@@ -120,7 +125,7 @@ class DoclingGraphSettings(BaseSettings):
     # We override explicitly so max_tokens is accepted. 131072 matches
     # llama3.3:70b's full context length (input + output combined).
     docling_graph_llm_context_limit: int | None = 131072
-    docling_graph_llm_max_output_tokens: int | None = 4096
+    docling_graph_llm_max_output_tokens: int | None = 8192
 
     # Backend: "llm" or "vlm"
     docling_graph_backend: str = "llm"
