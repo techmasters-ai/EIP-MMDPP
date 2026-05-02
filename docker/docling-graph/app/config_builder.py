@@ -42,7 +42,7 @@ class DoclingGraphSettings(BaseSettings):
     # "Ollama/Local: Variable performance → conservative batching." 1024 is the
     # upstream default; our previous 2048 was aggressive for Ollama.
     docling_graph_llm_batch_token_size: int = 1024
-    docling_graph_parallel_workers: int = 3
+    docling_graph_parallel_workers: int = 4
     docling_graph_batch_split_max_retries: int = 1
 
     # Delta resolvers
