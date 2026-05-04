@@ -218,6 +218,49 @@ def filter_pass_output_by_batch_text(
     return filtered, stats, allowed_identities
 
 
+def collect_entity_identity_examples(
+    pass_output: dict[str, Any],
+    template_cls: type[BaseModel],
+    *,
+    limit_per_field: int = 30,
+) -> dict[str, list[dict[str, str]]]:
+    """Return graph identity values from entity lists for diagnostics."""
+    if not isinstance(pass_output, dict):
+        return {}
+
+    examples: dict[str, list[dict[str, str]]] = {}
+    for field_name, field_info in template_cls.model_fields.items():
+        raw_items = pass_output.get(field_name)
+        if not isinstance(raw_items, list):
+            continue
+        item_cls = _find_model_class(getattr(field_info, "annotation", None))
+        if item_cls is None:
+            continue
+        model_config = item_cls.model_config or {}
+        if not model_config.get("is_entity"):
+            continue
+        id_fields = tuple(model_config.get("graph_id_fields", []) or [])
+        if not id_fields:
+            continue
+
+        field_examples: list[dict[str, str]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            identity = {
+                field: str(item.get(field))
+                for field in id_fields
+                if item.get(field) not in (None, "")
+            }
+            if identity:
+                field_examples.append(identity)
+            if len(field_examples) >= limit_per_field:
+                break
+        if field_examples:
+            examples[field_name] = field_examples
+    return examples
+
+
 def filter_provenance_rows_by_allowed_identities(
     provenance_rows: list[Any],
     allowed_identities: dict[str, set[tuple[tuple[str, str], ...]]],

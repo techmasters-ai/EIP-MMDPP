@@ -28,7 +28,11 @@ from ontology_bundles._shared.prompt_rules import select_delta_system_prompt
 
 from app._numeric_candidates import (
     extract_numeric_candidates,
+    extract_flattened_table_rows,
+    extract_keyed_table_rows,
     render_candidate_block,
+    render_flattened_table_block,
+    render_keyed_table_block,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,7 +201,11 @@ def install() -> None:
             batch_md = kwargs.get("batch_markdown", "")
             if isinstance(batch_md, str) and batch_md:
                 candidates = extract_numeric_candidates(batch_md)
+                table_rows = extract_flattened_table_rows(batch_md)
+                keyed_rows = extract_keyed_table_rows(batch_md)
                 block = render_candidate_block(candidates)
+                block += render_keyed_table_block(keyed_rows)
+                block += render_flattened_table_block(table_rows)
                 if block:
                     user_text = result["user"]
                     marker = "=== END BATCH DOCUMENT ==="

@@ -117,11 +117,13 @@ _install_prompt_rules()
 _install_resolver_patch()
 _install_gleaning_patch()
 
+from app._table_pivot import synthesize_pivoted_table_texts
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app._field_provenance_helpers import _primary_list_field_name
 from app.config_builder import build_pipeline_config, DoclingGraphSettings
 from app.evidence_gate import (
     apply_bundle_postprocessing as _apply_bundle_postprocessing,
+    collect_entity_identity_examples as _collect_entity_identity_examples,
     collect_batch_evidence_text as _collect_batch_evidence_text,
     filter_pass_output_by_batch_text as _filter_pass_output_by_batch_text,
     filter_provenance_rows_by_allowed_identities as _filter_provenance_rows_by_allowed_identities,
@@ -163,6 +165,16 @@ if not any(
     logger.setLevel(logging.INFO)
 
 MAX_CONCURRENT = int(os.environ.get("DOCLING_GRAPH_MAX_CONCURRENT_EXTRACTIONS", "2"))
+
+
+def _json_for_log(value: Any, *, max_chars: int = 2000) -> str:
+    try:
+        text = json.dumps(value, sort_keys=True, default=str)
+    except Exception:
+        text = str(value)
+    if len(text) > max_chars:
+        return text[: max_chars - 3] + "..."
+    return text
 
 
 def _validate_library_surface() -> str:
@@ -536,6 +548,25 @@ def run_extraction_pass(
                 "(filtered web-cruft texts before chunking; image captions preserved)",
                 pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
             )
+
+    # Phase B (B1+B2 combined): pre-chunker pivoting of column-major tables.
+    # Detects DoclingDocument tables whose leftmost column is row labels and
+    # remaining columns are per-entity values, then synthesizes one row-major
+    # prose summary per data column and appends it to texts[]. The chunker
+    # walks the synthesized texts as ordinary paragraphs, so each per-entity
+    # summary lands in a single chunk with both its identifier and its full
+    # spec set — closing the cross-column attribution gap that prompt-only
+    # fixes (Option A) can't fully solve when the chunker splits the source
+    # table around the identifier row.
+    docling_document_json, _pivoted_count = synthesize_pivoted_table_texts(
+        docling_document_json
+    )
+    if _pivoted_count > 0:
+        logger.info(
+            "GRAPH_EXTRACTION_PIVOTED pass=%s synthesized=%d "
+            "(per-column row-major summaries appended for column-major tables)",
+            pass_name, _pivoted_count,
+        )
 
     if _is_empty(docling_document_json):
         logger.warning(
@@ -1011,6 +1042,9 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     # Sentinels: -1 means extraction did not complete (failure path).
     node_count_for_log = -1
     edge_count_for_log = -1
+    raw_node_count_for_log = -1
+    raw_edge_count_for_log = -1
+    service_dropped_for_log = -1
     try:
         async with semaphore:
             try:
@@ -1055,6 +1089,10 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             # wires template_instance through the docling-graph pipeline
             import networkx as nx
             pass_output = {"graph": nx.node_link_data(graph, edges="links")}
+        raw_pass_counts = _summarize_pass_output(pass_output, template_cls)
+        raw_node_count_for_log = raw_pass_counts["node_count"]
+        raw_edge_count_for_log = raw_pass_counts["edge_count"]
+        raw_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)
 
         # Phase 8 Task 51: per-entity-instance provenance payload. Nodes
         # whose element_uid cannot be resolved are dropped with WARNING
@@ -1107,6 +1145,11 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             body.upstream_entities,
         )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
+        filtered_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)
+        dropped_by_field = (service_filter_stats or {}).get("dropped_entities_by_field", {})
+        service_dropped_for_log = (
+            sum(dropped_by_field.values()) if isinstance(dropped_by_field, dict) else 0
+        )
         metadata.node_count = filtered_counts["node_count"]
         metadata.edge_count = filtered_counts["edge_count"]
         metadata.node_types = filtered_counts["node_types"]
@@ -1117,18 +1160,36 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             provenance_rows,
             allowed_identities,
         )
-        diagnostics = getattr(context, "_delta_trace", None) or {}
+        diagnostics = getattr(context, "_delta_trace", None)
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
         diagnostics["service_identity_gate"] = service_filter_stats or {
             "dropped_entities_by_field": {},
             "dropped_entity_examples": {},
         }
         diagnostics["service_identity_gate"]["evidence_text_nonempty"] = bool(evidence_text)
+        diagnostics["service_pre_filter_counts"] = raw_pass_counts
+        diagnostics["service_pre_filter_identity_examples"] = raw_identity_examples
         diagnostics["service_postprocess"] = postprocess_stats or {}
         diagnostics["service_post_filter_counts"] = filtered_counts
+        diagnostics["service_post_filter_identity_examples"] = filtered_identity_examples
         if "path_counts" in diagnostics:
             diagnostics["raw_path_counts"] = diagnostics.get("path_counts", {})
         diagnostics["path_counts"] = filtered_counts["path_counts"]
         context._delta_trace = diagnostics
+        if service_dropped_for_log > 0:
+            logger.info(
+                "extract-pass: IDENTITY_FILTER bundle=%s pass=%s document_id=%s "
+                "raw_node_count=%d filtered_node_count=%d dropped=%d "
+                "raw_examples=%s kept_examples=%s dropped_examples=%s",
+                body.bundle_key, body.pass_name, body.document_id,
+                raw_node_count_for_log, node_count_for_log, service_dropped_for_log,
+                _json_for_log(raw_identity_examples),
+                _json_for_log(filtered_identity_examples),
+                _json_for_log(
+                    (service_filter_stats or {}).get("dropped_entity_examples", {})
+                ),
+            )
 
         # Phase 3 (post-LLM-quote refactor): deterministic per-field
         # provenance. For each non-None populated field on each primary
@@ -1239,9 +1300,13 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         _texts_dropped = (_sanitize or {}).get("texts_dropped", -1) if isinstance(_sanitize, dict) else -1
         logger.info(
             "extract-pass: END bundle=%s pass=%s document_id=%s "
-            "chunks=%s batches=%s node_count=%d edge_count=%d sanitize_dropped=%s",
+            "chunks=%s batches=%s node_count=%d edge_count=%d "
+            "raw_node_count=%d raw_edge_count=%d service_identity_dropped=%d "
+            "sanitize_dropped=%s",
             body.bundle_key, body.pass_name, body.document_id,
-            _chunks, _batches, node_count_for_log, edge_count_for_log, _texts_dropped,
+            _chunks, _batches, node_count_for_log, edge_count_for_log,
+            raw_node_count_for_log, raw_edge_count_for_log,
+            service_dropped_for_log, _texts_dropped,
         )
         # Loud surface for soft-failed extractions: when the run_pipeline
         # path was caught and stubbed, OR when extraction completed but

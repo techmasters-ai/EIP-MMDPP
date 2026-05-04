@@ -1,23 +1,37 @@
 """Tests for LLM-facing schema sanitization used by prompt_rules."""
 
 import importlib.util
+import sys
 from pathlib import Path
 
 from ontology_bundles.air_defense_v3.extraction_schemas.radar_domain import RadarDomainPass
 
 
 _PROMPT_RULES_PATH = Path(__file__).resolve().parent.parent / "app" / "prompt_rules.py"
+_SERVICE_ROOT = _PROMPT_RULES_PATH.parent.parent
 
 
 def _load_prompt_rules():
+    saved_path = list(sys.path)
+    saved = {k: v for k, v in sys.modules.items() if k == "app" or k.startswith("app.")}
+    sys.path.insert(0, str(_SERVICE_ROOT))
+    for key in list(saved):
+        del sys.modules[key]
     spec = importlib.util.spec_from_file_location(
         "docling_graph_service_prompt_rules",
         _PROMPT_RULES_PATH,
     )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    try:
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for key in list(sys.modules):
+            if key == "app" or key.startswith("app."):
+                del sys.modules[key]
+        sys.modules.update(saved)
+        sys.path[:] = saved_path
 
 
 def _radar_props(schema):

@@ -360,6 +360,26 @@ Do not:
 * place missile speed into timeline fields
 * place propulsion-stage values into whole-missile fields unless the field semantics match exactly
 
+### 12a) Flattened table row attribution
+
+Docling may render source tables as flattened cells:
+
+`Column Name, 1 = header_or_unit. Column Name, 2 = row_value.`
+
+When this pattern appears:
+
+* cells with the same numeric suffix are the same source row
+* row `1` is often a header/unit row; use it to interpret later rows, not as an entity
+* choose the entity identity from the column that matches the active schema's identity requirement
+* assign row values to that same row's identity, not to nearby headings, captions, associated systems, NATO codes, radars, launchers, or aliases unless those are the schema's required identity
+* if a row has multiple designation columns, prefer the designation type required by the active pass/schema and place other directly stated designations in non-identity fields only when the schema has such a field
+* never copy a value from row `N` onto an entity named only in row `M`
+
+This rule applies to every schema, not only missile kinematics. Radar RF,
+radar timing, radar antenna, missile airframe, missile speed/timing,
+missile propulsion, and relationship passes must all preserve row-local
+attribution.
+
 ### 13) Status and role inference discipline
 
 * Do not infer `system_status` from historical narrative, publication date, museum context, archival context, or general knowledge
