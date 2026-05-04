@@ -120,6 +120,31 @@ def test_synthesize_appends_to_body_children_so_chunker_walks_them():
     assert refs == [f"#/texts/{i}" for i in range(3)]
 
 
+def test_synthesize_emits_full_text_item_schema():
+    """Synthesized texts must satisfy DoclingDocument's TextItem schema —
+    in particular orig + children + content_layer + label. The Pydantic
+    union picks TextItem only when these are all present; missing any
+    causes the whole DoclingDocument validation to fail and the pipeline
+    to soft-fail to empty pass_output."""
+    pivot = _load_pivot()
+    doc = _variants_table_doc()
+
+    out, n = pivot.synthesize_pivoted_table_texts(doc)
+
+    assert n == 3
+    for item in out["texts"]:
+        assert item.get("self_ref", "").startswith("#/texts/")
+        assert item.get("parent") == {"$ref": "#/body"}
+        assert item.get("children") == []
+        assert item.get("content_layer") == "body"
+        assert item.get("label") == "text"
+        assert item.get("prov") == []
+        assert item.get("text"), "text must be non-empty"
+        # orig mirrors text — DoclingDocument requires both fields and
+        # they should be identical for synthesized (non-rewritten) content.
+        assert item.get("orig") == item.get("text")
+
+
 def test_synthesize_skips_row_major_tables():
     pivot = _load_pivot()
     # A row-major financial-style table: column headers in row 0 (column_header

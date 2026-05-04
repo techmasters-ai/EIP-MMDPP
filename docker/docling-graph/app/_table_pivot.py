@@ -223,8 +223,6 @@ def synthesize_pivoted_table_texts(
         if not column_data:
             continue
 
-        prov = list(table.get("prov") or [])
-
         for col_offset in sorted(column_data):
             if appended >= max_synthesized:
                 return doc_json, appended
@@ -234,12 +232,21 @@ def synthesize_pivoted_table_texts(
             if not summary:
                 continue
             new_idx = len(texts)
+            # Shape mirrors the upstream-entities preamble item
+            # (main.py:619-628) so the DoclingDocument Pydantic union
+            # validates as TextItem instead of failing at every label
+            # variant. Empty prov[] is intentional — the synthesized
+            # summary has no source-document char range; using the
+            # source table's prov here breaks charspan invariants.
             text_item = {
                 "self_ref": f"#/texts/{new_idx}",
-                "parent": {"$ref": f"#/tables/{table_idx}"},
+                "parent": {"$ref": "#/body"},
+                "children": [],
+                "content_layer": "body",
                 "label": "text",
+                "prov": [],
+                "orig": summary,
                 "text": summary,
-                "prov": prov,
             }
             texts.append(text_item)
             body_children.append({"$ref": f"#/texts/{new_idx}"})
