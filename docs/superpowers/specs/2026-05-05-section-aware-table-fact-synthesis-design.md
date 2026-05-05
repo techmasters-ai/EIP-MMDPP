@@ -94,8 +94,9 @@ fields via `ALIAS_MAP[(label, section_ctx, active_pass)]`.
 DoclingDocument.tables[]
   ↓ detect_table_shape(table)                   # D1
   ↓ extract_label_rows(table, shape)            # row labels + per-column data
+  ↓ derive_entity_ids(rows)                     # one entity_id per data column from key-label rows
   ↓ detect_section_context(rows)                # D2
-  ↓ for each (entity_col, row, section_ctx):
+  ↓ for each (entity_col, entity_id, row, section_ctx):
       resolve_alias(label, section_ctx, pass)   # → schema_field | None
         ↓ coerce_value(cell_text, schema_field) # D3 + D4
         ↓ emit_fact(entity_id, schema_field, value, source_label)  # → TextItem
@@ -109,29 +110,79 @@ the D1–D4 scope; revisit if a 4th detection mode per dimension is ever shipped
 
 ## 5. Components
 
+### 5.0 Types
+
+All shapes used across the pipeline. Defined once here; referenced everywhere
+else. Stored at the top of `_table_facts.py`.
+
+```python
+from enum import Enum
+from typing import TypeAlias, TypedDict
+
+class Shape(str, Enum):
+    COLUMN_MAJOR = "column_major"
+    ROW_MAJOR = "row_major"
+    HYBRID = "hybrid"
+    OTHER = "other"
+
+# `section_ctx` is either a section keyword (e.g., "1st Stage") or None.
+SectionContext: TypeAlias = str | None
+
+# `(label_normalized, section_ctx, pass_name)` — keys into ALIAS_MAP.
+AliasKey: TypeAlias = tuple[str, SectionContext, str]
+
+class LabelRow(TypedDict):
+    row_idx: int
+    label_text: str        # raw, pre-normalization
+    label_col_span: int
+    data_cells: dict[int, str]  # entity_col → cell text (raw)
+
+class ParsedValue(TypedDict):
+    value: float | str
+    unit_inferred: str | None
+    conversion_factor: float    # 1.0 if no conversion applied
+    raw_text: str
+
+class FactStats(TypedDict):
+    tables_seen: int
+    tables_by_shape: dict[str, int]
+    # Includes a synthetic key "HYBRID_COLLISION" counting composite-id
+    # collisions (last-write-wins).
+    sections_detected: int      # count of distinct sections matched (embedded only)
+    facts_emitted: int
+    rows_skipped_unresolvable: int
+    values_skipped_unparseable: int
+    multi_value_emissions: int  # number of cells that produced ≥2 facts
+    truncated_at_cap: bool      # True if max_synthesized hit
+    idempotent_skip: bool       # True if doc was already synthesized
+
+# Constructors / helpers (free functions in _table_facts.py):
+def empty_fact_stats() -> FactStats: ...
+def fact_stats_as_dict(s: FactStats) -> dict: ...
+```
+
 ### 5.1 `_alias_map.py` — structured alias map
 
 ```python
 ALIAS_MAP: dict[AliasKey, str]
-# AliasKey = (label_normalized: str, section_ctx: str | None, pass_name: str)
 # Value: canonical schema field name (e.g., "booster_mass_kg")
 
 SECTION_KEYWORDS: tuple[str, ...]
-# "1st Stage", "2nd Stage", "Booster", "Sustainer", "Sustain", "Ejector", ...
+# ("1st Stage", "2nd Stage", "Booster", "Sustainer", "Sustain", "Ejector", ...)
 # Extensible per domain.
 
 UNIT_TABLE: dict[str, dict[str, float]]
-# Per-unit-class conversion factors keyed by canonical-field suffix.
-# {"_m": {"mm": 0.001, "cm": 0.01, "in": 0.0254, "ft": 0.3048, "km": 1000}, ...}
+# Per-unit-class conversion factors keyed by unit-class name.
+# {"length_m": {"mm": 0.001, "cm": 0.01, "in": 0.0254, "ft": 0.3048, "km": 1000.0, "m": 1.0}, ...}
 
 FIELD_SUFFIX_TO_UNIT_CLASS: dict[str, str]
 # {"_m": "length_m", "_kg": "mass_kg", "_sec": "time_sec", "_mps": "velocity_mps",
 #  "_km": "length_km", "_dbi": "gain_dbi", "_mhz": "frequency_mhz", ...}
 ```
 
-Keyed on the (label, section, pass) triple so pass- and section-conditionals
-are first-class. A drift-guard unit test asserts every entry has a corresponding
-§12b prose mention.
+Keyed on the `AliasKey` triple (label_normalized, section_ctx, pass_name) so
+pass- and section-conditionals are first-class. A drift-guard unit test asserts
+every entry has a corresponding §12b prose mention.
 
 ### 5.2 `detect_table_shape(table) → Shape` (D1)
 
@@ -148,23 +199,38 @@ Returns `COLUMN_MAJOR | ROW_MAJOR | HYBRID | OTHER`.
 
 ### 5.3 `extract_label_rows(table, shape) → list[LabelRow]`
 
-Normalizes column-major and row-major into the same intermediate shape:
-
-```python
-LabelRow = TypedDict({
-    "row_idx": int,
-    "label_text": str,
-    "label_col_span": int,
-    "data_cells": dict[int, str],  # entity_col → cell text
-})
-```
+Normalizes column-major and row-major into the same intermediate `LabelRow`
+shape (defined in §5.0):
 
 - **COLUMN_MAJOR:** today's logic in `_table_pivot.py` (leftmost label cols,
   remaining data cols).
 - **ROW_MAJOR:** transposed equivalent.
-- **HYBRID:** combine multi-row identity labels into a composite — e.g., row 0
-  `"Industry Designation"` + row 1 `"Missile Type"` produces `entity_id =
-  "S-75 1D"` (concatenated).
+- **HYBRID:** rows whose label belongs to the multi-row identity region (rows
+  0..K all in label column 0 with `row_header=True`, no data values) are still
+  emitted as `LabelRow`s — entity-id derivation in §5.3.5 consumes them.
+
+### 5.3.5 `derive_entity_ids(rows, shape) → dict[int, str]`
+
+Maps `entity_col → entity_id`. Identity comes from rows whose label matches the
+existing `_KEY_LABEL_PATTERNS` from `_table_pivot.py` (`"Missile Type"`,
+`"Industry Designation"`, `"Military Designation"`, `"NATO Designation"`,
+`"Variant"`, `"System Name"`, `"Designation"`, etc.).
+
+- **One key-label row** (typical column-major): `entity_id = data_cells[col]`.
+  E.g., `"Missile Type"` row col 2 = `"1D"` → `entity_id = "1D"`.
+- **Multiple key-label rows** (HYBRID composite): concatenate the key cells in
+  row order, separated by single space — `"Industry Designation"` row col 2 =
+  `"S-75"`, `"Missile Type"` row col 2 = `"1D"` → `entity_id = "S-75 1D"`. If
+  two columns produce the same composite, increment
+  `tables_by_shape["HYBRID_COLLISION"]` and last-write-wins (later column
+  overwrites earlier).
+- **No key-label row found**: column is unidentifiable; skip it entirely
+  (synthesizer emits no facts for that column). `rows_skipped_unresolvable`
+  is incremented by the number of would-have-been emissions for that column.
+- **Empty cell at the key-label row**: same as above — skip the column.
+
+This step runs once per table, before the main emission loop. Result feeds
+`emit_fact()`.
 
 ### 5.4 `detect_section_context(rows) → list[(LabelRow, SectionContext)]` (D2)
 
@@ -172,9 +238,11 @@ Two-strategy chain (in order):
 
 1. **Embedded:** substring scan of `label_text` against `SECTION_KEYWORDS`. If
    matched, that row's `section_ctx` is the matched keyword.
-2. **Header-row:** track most recent row whose `label_text` is a bare section
-   keyword AND whose `data_cells` are empty/header-like; subsequent rows inherit
-   that section until the next header-row or end-of-table.
+2. **Header-row:** track most recent row whose `label_text` *equals* a section
+   keyword (after normalization — see §5.5) AND whose `data_cells` are
+   empty/header-like (every cell either empty, repeats the label, or is the
+   single section keyword text); subsequent rows inherit that section until
+   the next header-row or end-of-table.
 
 Default: `None` if neither matches. Rows with `None` section context can still
 resolve aliases that don't require sectioning (e.g., `total_mass_kg`).
@@ -182,11 +250,68 @@ resolve aliases that don't require sectioning (e.g., `total_mass_kg`).
 **Conflict resolution:** embedded wins (most-specific signal). Header-row
 context applies only when the row has no embedded section keyword.
 
+**Header-row fixture example** (for the unit test in §8.1):
+
+```
+Row 0: "Missile Type"        | "1D"   | "13D"  | "13DM" | "13DA"   <- key label row
+Row 1: "Total Weight kg"     | "2163" | "2283" | "2283" | "2289"   <- no section
+Row 2: "1st Stage"           | ""     | ""     | ""     | ""        <- header-row marker
+Row 3: "Weight kg"           | "1135" | "1032" | "1032" | "1032"   <- inherits "1st Stage"
+Row 4: "Time sec"            | "4.0"  | "4.0"  | "4.0"  | "4.0"    <- inherits "1st Stage"
+Row 5: "2nd Stage"           | ""     | ""     | ""     | ""        <- new header-row marker
+Row 6: "Weight kg"           | "1028" | "1251" | "1251" | "1257"   <- inherits "2nd Stage"
+```
+
+Rows 3, 4 resolve `"Weight kg" + "1st Stage"` → `booster_mass_kg`,
+`"Time sec" + "1st Stage"` → `booster_time_sec`. Row 6 resolves
+`"Weight kg" + "2nd Stage"` → `sustain_mass_kg`. The SA-2 PDF embeds the
+section keyword in the label itself (`"1st Stage Weight kg"`), exercising the
+embedded path; the header-row path is exercised by corpora that put section
+markers as standalone rows.
+
 ### 5.5 `resolve_alias(label, section_ctx, active_pass) → str | None`
 
-Lookup `ALIAS_MAP[(normalize(label), section_ctx, active_pass)]`.
+Lookup `ALIAS_MAP[(normalize_label(label), section_ctx, active_pass)]`.
 
-- `normalize` collapses whitespace, lowercases, strips punctuation.
+**Normalization rules** (single function `normalize_label` exported from
+`_table_facts.py`, used by both the resolver AND the drift-guard test in §8.3
+so they assert the same thing):
+
+```python
+import re
+import unicodedata
+
+# Dash-class characters mapped to single ASCII hyphen for stable matching.
+_DASH_CLASS = re.compile(r"[‐-―−⁃﹘﹣－]")
+
+# Punctuation to strip after dash normalization. Keeps ASCII alphanumerics,
+# whitespace, and hyphens (dashes already collapsed). Specifically removes:
+# . , ; : ! ? ' " ` ( ) [ ] { } / \ | _ * + = & % @ # ^ ~ < >
+_PUNCT_TO_STRIP = re.compile(r"[\.\,\;\:\!\?\'\"\`\(\)\[\]\{\}\/\\\|_\*\+\=\&\%\@\#\^\~\<\>]")
+
+def normalize_label(text: str) -> str:
+    """Normalize a label string for ALIAS_MAP lookup and drift-guard checks.
+
+    1. Unicode NFKC fold (collapses fancy quotes, full-width digits, etc.).
+    2. Collapse all dash variants (en/em/figure/non-breaking-hyphen) → "-".
+    3. Strip punctuation per _PUNCT_TO_STRIP. Hyphens preserved (so
+       "SA-2" stays distinct from "SA 2").
+    4. Lowercase.
+    5. Collapse whitespace runs to single space; strip leading/trailing.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = _DASH_CLASS.sub("-", text)
+    text = _PUNCT_TO_STRIP.sub(" ", text)
+    text = text.lower()
+    text = " ".join(text.split())
+    return text
+```
+
+This same function is used in §8.3's drift guard so prose-side and label-side
+normalization always agree.
+
+**Lookup behavior:**
+
 - Returns `None` when no entry exists; the synthesizer skips that row.
 - Pass-conditional: `"Range"` returns `"max_intercept_km"` for
   `missile_kinematics` and `None` for other passes.
@@ -195,31 +320,50 @@ Lookup `ALIAS_MAP[(normalize(label), section_ctx, active_pass)]`.
 
 ### 5.6 `coerce_value(cell_text, schema_field) → list[ParsedValue]` (D3 + D4)
 
-```python
-ParsedValue = TypedDict({
-    "value": float | str,
-    "unit_inferred": str | None,
-    "conversion_factor": float,  # 1.0 if no conversion applied
-    "raw_text": str,
-})
-```
+`ParsedValue` defined in §5.0.
 
 **Numeric fields** (`*_kg`, `*_m`, `*_km`, `*_sec`, `*_mps`, `*_dbi`, `*_mhz`,
 `*_deg`, `*_kw`, `*_dbw`, etc.):
 
-1. Strip and normalize cell text.
-2. Detect multi-value patterns (`X/Y`, `X–Y`, `X to Y`, `X-Y`); each match
-   produces a separate `ParsedValue`. Default emits all values as facts.
-3. Parse number + unit from the cell. Unit comes from explicit cell content
-   (`"1135 kg"`) OR from the row label (`"Length mm"` → `"mm"`).
-4. Coerce via `UNIT_TABLE` keyed by schema-field suffix.
+1. Strip and normalize cell text (whitespace + dash collapse only — do NOT
+   apply full `normalize_label`; cell values may legitimately contain
+   punctuation like decimal points).
+2. Classify the cell into one of three multi-value patterns. **The
+   classification policy is explicit and the synthesizer must distinguish
+   them; this is not "default emit all":**
+
+   | Pattern | Examples | Emission policy |
+   |---|---|---|
+   | **Range** (single physical quantity, two endpoints) | `"4–6 sec"`, `"29–34 km"`, `"4 to 6"`, `"4-6"` | Emit ONE fact with the **midpoint** value (and `unit_inferred` set; `multi_value_emissions` does NOT increment for ranges). Annotate `raw_text` with the original range string. The model needs a single value per `(entity, field)`; emitting both endpoints would tell the LLM the missile has two booster burn times. Acceptable lossy compression. |
+   | **Discrete alternatives** (two distinct measurements with separator `/`) | `"1135/1028"`, `"100 / 120"` | Emit TWO facts, each as its own `ParsedValue`. Increment `multi_value_emissions`. Caller (`emit_fact`) emits TWO TextItems. The LLM sees two candidate values and chooses based on context. |
+   | **Single value** (no range, no alternative separator) | `"1135"`, `"4.0 sec"`, `"885 m/s"` | Emit ONE fact. |
+
+   **Range-vs-alternatives heuristic:**
+   - Separator is en-dash (`–`), em-dash (`—`), or the literal word `"to"` → range.
+   - Separator is forward slash (`/`) → alternatives.
+   - Separator is ASCII hyphen-minus (`-`): ambiguous. Disambiguate by
+     numeric ordering — if `X < Y`, treat as range; if `X >= Y`, treat as
+     alternatives. (`"100-120"` X<Y → range; `"1135-1028"` X>Y → alternatives.)
+   - More than two values (`"100/110/120"`): treat as alternatives, emit all.
+
+3. Parse number + unit from each value-fragment. Unit comes from explicit
+   cell content (`"1135 kg"`) OR from the row label (`"Length mm"` → `"mm"`).
+   When both are present and disagree, cell-content wins.
+4. Coerce via `UNIT_TABLE`. Schema-field suffix selects the unit class
+   (`*_kg` → `mass_kg`); the cell-extracted unit string selects the
+   conversion factor within that class.
 5. Return `[]` (skip) if cell empty, unit absent and no implied unit, unit
    unknown to `UNIT_TABLE`, or value won't parse as number.
 
 **String fields** (`*_thrust`, `system_name`): pass through verbatim, single-
-element list.
+element list. Multi-value detection does not apply.
 
-**Stop-words** (`"TBD"`, `"—"`, `"N/A"`, `"unknown"`, `""`): return `[]`.
+**Stop-words** (return `[]`):
+- Empty string `""`
+- ASCII dash variants: `"-"`, `"--"`
+- Unicode dashes: `"–"` (en), `"—"` (em), `"―"` (horizontal bar)
+- Words: `"TBD"`, `"N/A"`, `"NA"`, `"unknown"`, `"unk"`, `"none"` (case-insensitive)
+- Question/uncertainty markers: `"?"`, `"???"`
 
 ### 5.7 `emit_fact(entity_id, schema_field, value, source_label) → TextItem`
 
@@ -295,6 +439,34 @@ table[0]:
 
   Loop over 10 entity cols × ~5 propulsion-relevant rows = ~50 fact attempts.
   Realistic emission: ~30–40 (some cells empty / unparseable → skip).
+
+  --- Graceful-fail rows (illustrating the §5.6 unit-conversion + §7 skip paths) ---
+
+  ("Length mm", None, missile_propulsion)
+    → resolve_alias() → None [propulsion pass excludes airframe labels]
+    → SKIP, increment rows_skipped_unresolvable
+
+  ("Length mm", None, missile_airframe)  [a different pass on the same table]
+    → resolve_alias() → "body_length_m"
+    → coerce_value("10726", "body_length_m"):
+        unit class for "_m" = length_m; cell has no explicit unit;
+        row label "Length mm" implies "mm"; UNIT_TABLE["length_m"]["mm"] = 0.001
+        → [ParsedValue(value=10.726, unit_inferred="mm", conversion_factor=0.001, raw_text="10726")]
+    → emit_fact() → "1D — body_length_m = 10.726 [source: Length mm row of variants table]"
+
+  ("Diameter mm", None, missile_airframe)
+    cell text = "TBD"
+    → coerce_value() → [] (stop-word match)
+    → SKIP, increment values_skipped_unparseable
+
+  ("1st Stage Burn", "1st Stage", missile_propulsion)
+    cell text = "4–6 sec"
+    → resolve_alias() → "booster_time_sec"
+    → coerce_value("4-6 sec", "booster_time_sec"):
+        range pattern (4 < 6, en-dash variant); midpoint 5.0; unit "sec" matches
+        → [ParsedValue(value=5.0, unit_inferred="sec", conversion_factor=1.0, raw_text="4–6 sec")]
+    → emit_fact() → "1D — booster_time_sec = 5.0 [source: 1st Stage Burn row of variants table]"
+        (multi_value_emissions NOT incremented — range collapsed to midpoint)
 ```
 
 After synthesis the LLM sees these facts in whatever chunk the chunker places
@@ -401,28 +573,62 @@ def test_alias_map_entries_have_prompt_rule_mentions():
 ```python
 def test_synthesized_facts_appear_in_extract_pass_prompt():
     """End-to-end smoke test: synthesizer runs, facts land in the
-    user-message of the LLM prompt, schema field names are present."""
+    user-message of the LLM prompt, schema field names are present
+    in the exact emitted format."""
     # Mock OllamaChatClient.post to capture the rendered prompt.
-    # Run /extract-pass against a fixture DoclingDocument with a known table.
-    # Assert the captured user message contains
-    # "1D — booster_mass_kg = 1135"
+    # Run /extract-pass against a fixture DoclingDocument with the SA-2-shaped
+    # column-major table from §8.2 (10 entity cols × 15 spec rows, section
+    # keywords embedded), pass_name="missile_propulsion".
+    captured = mock_post.call_args.kwargs["messages"]
+    user_msg = next(m for m in captured if m["role"] == "user")["content"]
+
+    # Assert on the exact emit_fact format — catches both presence AND
+    # format drift (a planner choosing a weaker substring like
+    # "booster_mass_kg" without the entity_id or value would not catch
+    # an entity_id formatting regression).
+    assert "1D — booster_mass_kg = 1135 [source: 1st Stage Weight kg row of variants table]" in user_msg
+    assert "13DM — sustain_mass_kg = 1251 [source: 2nd Stage Weight kg row of variants table]" in user_msg
+    assert "13DM — booster_mass_kg = 1032 [source: 1st Stage Weight kg row of variants table]" in user_msg
 ```
 
 Catches integration regressions without requiring a live LLM. Runs in ~5s.
+The exact-string assertions above are the operative test of the §5.7 emit
+format — change the format and these tests fail loud.
 
 ### 8.5 End-to-end empirical validation (operator-driven, not CI)
 
 The §20 notebook cell at `T=1.0` is the headline test. After deploy:
 
-- **Acceptance:** `missile_propulsion` ✓ exact ≥ 6 (recovers at minimum the 6
-  variants where alias-only T=1.0 produced wrong values: 13DM, 13DA, 13DAM,
-  20D, 20DP, 20DSU, 5Ya23 — `booster_mass_kg`).
+- **Acceptance:** `missile_propulsion` ✓ exact ≥ 6 of the 7 listed variants
+  where alias-only T=1.0 produced wrong values for `booster_mass_kg`. The 7
+  listed: **13DM, 13DA, 13DAM, 20D, 20DP, 20DSU, 5Ya23**. Threshold is a
+  lower bound — 6, 7, or all 7 plus other GT entries pass; ≤ 5 fails. One
+  variant is permitted to remain wrong/null because of residual non-deterministic
+  LLM behavior even with deterministic facts in the prompt.
+- **No regression criterion** (also acceptance):
+  - `missile_kinematics` ✓ exact ≥ 4 (alias-only T=1.0 baseline = 4 — see §8.5
+    Baseline Reference below).
+  - `missile_airframe` ✓ exact ≥ 8 (baseline = 8).
+  - `missile_speed_timing` ✓ exact ≥ 6 (baseline = 6).
 - Wall-time delta ≤ +20% per pass (synthesized texts add some chunks but
-  shouldn't double the work).
+  shouldn't double the work). Measured against alias-only T=1.0 baseline on
+  the same Ollama-host topology — **the baseline must be re-measured if the
+  number of model hosts changes between baseline and validation runs.**
 
 Each `/extract-pass` call is ~25 minutes and depends on a live Ollama, which is
 unsuitable for CI. CI uses the prompt-content test in §8.4; the §20 run is the
 human-in-the-loop empirical check.
+
+**Baseline Reference:**
+The alias-only T=1.0 baseline values cited above (4 / 8 / 6 / 0 ✓ exact for
+kinematics/airframe/speed_timing/propulsion) come from the §20 GT scorecard
+run logged in the 2026-05-05 session: results paste of the alias-patch sweep
+(20 missile passes against the SA-2 PDF), entity counts 41/43/39/40
+respectively. Cached pass-output JSON files preserved at
+`/tmp/r21_alias_only_backup/` inside `eip-mmdpp-jupyter` for direct comparison
+during validation. If those files have been cleaned up before validation
+runs, re-derive the baseline by running §20 with the synthesizer disabled
+(comment out the §9.1 wire-up block) before judging the synthesizer's deltas.
 
 ## 9. Integration
 
@@ -482,10 +688,17 @@ docker compose build docling-graph && docker compose up -d docling-graph
 
 ### 9.4 Rollback
 
-Single-commit revert of the `main.py` integration block. The new files
-(`_table_facts.py`, `_alias_map.py`) stay on disk — unimported = inert. No
-stack-wide rebuild needed if we keep the B1+B2 import in `main.py` available
-during rollout (currently disabled).
+**Strategy: single-commit revert + container rebuild.** A commit reverting
+§9.1's diff restores the prior `main.py` (no `_table_facts` import, original
+B1+B2 block — currently the disabled state). The new files
+(`_table_facts.py`, `_alias_map.py`) stay on disk; unimported = inert.
+Container rebuild (`docker compose build docling-graph && docker compose up -d
+docling-graph`) is required because the import set changes.
+
+This is a clean rollback: one revert, one rebuild, no feature flags, no
+dual-import staging cruft. The rebuild adds ~30 seconds to the rollback
+sequence — acceptable given the operational simplicity. We are NOT staging
+both code paths under a feature flag.
 
 ### 9.5 Observability
 
@@ -502,25 +715,36 @@ pipeline's per-stage health remains traceable end-to-end.
 3. `_table_pivot.py` marked DEPRECATED but preserved with its test for one
    cycle.
 4. Operator-driven §20 cell at T=1.0 with the new synthesizer produces
-   `missile_propulsion ✓ exact ≥ 6` against the GT scorecard.
-5. Wall-time delta per pass ≤ +20% vs alias-only T=1.0 baseline (entity_count
-   neutral or improved).
-6. No regression on `missile_kinematics`, `missile_airframe`, or
-   `missile_speed_timing` ✓ exact counts (4, 8, 6 respectively at T=1.0 in the
-   alias-only baseline).
+   `missile_propulsion ✓ exact ≥ 6 of the 7 listed variants` (13DM, 13DA,
+   13DAM, 20D, 20DP, 20DSU, 5Ya23) per §8.5.
+5. Wall-time delta per pass ≤ +20% vs alias-only T=1.0 baseline measured on
+   the same Ollama-host topology (entity_count neutral or improved).
+6. No regression on `missile_kinematics ≥ 4`, `missile_airframe ≥ 8`,
+   `missile_speed_timing ≥ 6` ✓ exact counts (alias-only T=1.0 baseline cited
+   in §8.5 Baseline Reference).
 7. `IDENTITY_FILTER` drop counts remain in the same range (1–5 per pass) — the
    synthesizer should not produce noise that gets gated.
 
 ## 11. Implementation Order (suggested)
 
-1. `_alias_map.py` — structured data + drift-guard test (no logic, easy first
-   step).
-2. `_table_facts.py` skeleton — `detect_table_shape`, `extract_label_rows`
-   with unit tests.
-3. `detect_section_context` + `resolve_alias` with unit tests.
-4. `coerce_value` + `emit_fact` with unit tests (multi-value + unit conversion
+1. **Types module** (§5.0) — `Shape` enum, `LabelRow`, `ParsedValue`,
+   `FactStats`, `AliasKey`, `SectionContext` — declared first because every
+   subsequent step references them. Lives at the top of `_table_facts.py` (or
+   in a tiny `_table_facts_types.py` if circular imports demand it).
+2. `_alias_map.py` — structured data + `normalize_label` function + drift-guard
+   test. Pre-requisite for steps 4 and 5.
+3. `_table_facts.py` skeleton — `detect_table_shape`, `extract_label_rows`,
+   `derive_entity_ids` with unit tests.
+4. `detect_section_context` + `resolve_alias` with unit tests. Depends on (2)
+   for alias data.
+5. `coerce_value` + `emit_fact` with unit tests (multi-value + unit conversion
    are the most surface-area).
-5. Top-level `synthesize_table_facts` orchestrator + integration tests.
-6. `main.py` wire-up + prompt-content test.
-7. Deprecation marker on `_table_pivot.py`.
-8. Container rebuild, deploy, run §20, verify acceptance.
+6. Top-level `synthesize_table_facts` orchestrator + integration tests
+   (depends on 3–5).
+7. `main.py` wire-up + prompt-content test.
+8. Deprecation marker on `_table_pivot.py`.
+9. Container rebuild, deploy, run §20, verify acceptance.
+
+**Parallelizability:** once steps 1 and 2 land, steps 3, 4, and 5 can proceed
+in parallel since each is a self-contained pure function with its own unit
+tests. Steps 6–9 are sequential.
