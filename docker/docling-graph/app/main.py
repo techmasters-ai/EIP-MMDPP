@@ -117,7 +117,6 @@ _install_prompt_rules()
 _install_resolver_patch()
 _install_gleaning_patch()
 
-from app._table_pivot import synthesize_pivoted_table_texts
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app._field_provenance_helpers import _primary_list_field_name
 from app.config_builder import build_pipeline_config, DoclingGraphSettings
@@ -549,24 +548,12 @@ def run_extraction_pass(
                 pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
             )
 
-    # Phase B (B1+B2 combined): pre-chunker pivoting of column-major tables.
-    # Detects DoclingDocument tables whose leftmost column is row labels and
-    # remaining columns are per-entity values, then synthesizes one row-major
-    # prose summary per data column and appends it to texts[]. The chunker
-    # walks the synthesized texts as ordinary paragraphs, so each per-entity
-    # summary lands in a single chunk with both its identifier and its full
-    # spec set — closing the cross-column attribution gap that prompt-only
-    # fixes (Option A) can't fully solve when the chunker splits the source
-    # table around the identifier row.
-    docling_document_json, _pivoted_count = synthesize_pivoted_table_texts(
-        docling_document_json
-    )
-    if _pivoted_count > 0:
-        logger.info(
-            "GRAPH_EXTRACTION_PIVOTED pass=%s synthesized=%d "
-            "(per-column row-major summaries appended for column-major tables)",
-            pass_name, _pivoted_count,
-        )
+    # Phase B (B1+B2) was rolled back in Run 19 — synthesized per-column
+    # summaries flattened the variants table's nested section headers
+    # (1st Stage / 2nd Stage), causing missile_propulsion to lose 7 GT-correct
+    # booster_mass_kg / sustain_mass_kg attributions and introducing wrong
+    # values at T=1.0. The _table_pivot.py module + tests are preserved for
+    # potential future use with section-header-aware synthesis.
 
     if _is_empty(docling_document_json):
         logger.warning(

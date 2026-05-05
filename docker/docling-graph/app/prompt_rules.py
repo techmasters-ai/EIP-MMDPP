@@ -29,11 +29,16 @@ from ontology_bundles._shared.prompt_rules import select_delta_system_prompt
 from app._numeric_candidates import (
     extract_numeric_candidates,
     extract_flattened_table_rows,
-    extract_keyed_table_rows,
     render_candidate_block,
     render_flattened_table_block,
-    render_keyed_table_block,
 )
+# Note: extract_keyed_table_rows / render_keyed_table_block were removed
+# from this prompt path after Run 20 confirmed they cause a propulsion-pass
+# regression (R17 7 ✓ → 0 ✓ on booster_mass_kg / sustain_mass_kg). The
+# nested 1st Stage / 2nd Stage section structure of the variants table
+# produces ambiguous duplicate-label keyed hints (Weight=1135, Weight=1028)
+# that the model resolves to null. The functions remain in
+# `_numeric_candidates.py` for potential future section-header-aware use.
 
 logger = logging.getLogger(__name__)
 
@@ -202,9 +207,7 @@ def install() -> None:
             if isinstance(batch_md, str) and batch_md:
                 candidates = extract_numeric_candidates(batch_md)
                 table_rows = extract_flattened_table_rows(batch_md)
-                keyed_rows = extract_keyed_table_rows(batch_md)
                 block = render_candidate_block(candidates)
-                block += render_keyed_table_block(keyed_rows)
                 block += render_flattened_table_block(table_rows)
                 if block:
                     user_text = result["user"]
