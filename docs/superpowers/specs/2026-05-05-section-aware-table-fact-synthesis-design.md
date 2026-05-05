@@ -115,7 +115,13 @@ the D1–D4 scope; revisit if a 4th detection mode per dimension is ever shipped
 All shapes used across the pipeline. Defined once here; referenced everywhere
 else. Stored at the top of `_table_facts.py`.
 
+`LabelRow` is a `TypedDict` because it carries no behavior and has many fields;
+`ParsedValue` and `FactStats` are `@dataclass(frozen=True)` so they support
+methods (`.empty()`, `.as_dict()`) and positional construction used elsewhere
+in the spec.
+
 ```python
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import TypeAlias, TypedDict
 
@@ -137,29 +143,36 @@ class LabelRow(TypedDict):
     label_col_span: int
     data_cells: dict[int, str]  # entity_col → cell text (raw)
 
-class ParsedValue(TypedDict):
+@dataclass(frozen=True)
+class ParsedValue:
     value: float | str
     unit_inferred: str | None
-    conversion_factor: float    # 1.0 if no conversion applied
+    conversion_factor: float       # 1.0 if no conversion applied
     raw_text: str
 
-class FactStats(TypedDict):
-    tables_seen: int
-    tables_by_shape: dict[str, int]
-    # Includes a synthetic key "HYBRID_COLLISION" counting composite-id
-    # collisions (last-write-wins).
-    sections_detected: int      # count of distinct sections matched (embedded only)
-    facts_emitted: int
-    rows_skipped_unresolvable: int
-    values_skipped_unparseable: int
-    multi_value_emissions: int  # number of cells that produced ≥2 facts
-    truncated_at_cap: bool      # True if max_synthesized hit
-    idempotent_skip: bool       # True if doc was already synthesized
+@dataclass
+class FactStats:
+    tables_seen: int = 0
+    tables_by_shape: dict[str, int] = field(default_factory=dict)
+    sections_detected: int = 0     # distinct sections matched (embedded only)
+    facts_emitted: int = 0
+    rows_skipped_unresolvable: int = 0
+    values_skipped_unparseable: int = 0
+    multi_value_emissions: int = 0 # cells that produced ≥2 facts (alternatives, not ranges)
+    hybrid_collisions: int = 0     # composite-id collisions; last-write-wins
+    truncated_at_cap: bool = False # True if max_synthesized hit
+    idempotent_skip: bool = False  # True if doc was already synthesized
 
-# Constructors / helpers (free functions in _table_facts.py):
-def empty_fact_stats() -> FactStats: ...
-def fact_stats_as_dict(s: FactStats) -> dict: ...
+    @classmethod
+    def empty(cls) -> "FactStats":
+        return cls()
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 ```
+
+`tables_by_shape` is per-Shape-enum-value census only (no synthetic keys);
+`hybrid_collisions` is its own field for clean observability.
 
 ### 5.1 `_alias_map.py` — structured alias map
 
@@ -221,9 +234,8 @@ existing `_KEY_LABEL_PATTERNS` from `_table_pivot.py` (`"Missile Type"`,
 - **Multiple key-label rows** (HYBRID composite): concatenate the key cells in
   row order, separated by single space — `"Industry Designation"` row col 2 =
   `"S-75"`, `"Missile Type"` row col 2 = `"1D"` → `entity_id = "S-75 1D"`. If
-  two columns produce the same composite, increment
-  `tables_by_shape["HYBRID_COLLISION"]` and last-write-wins (later column
-  overwrites earlier).
+  two columns produce the same composite, increment `hybrid_collisions` and
+  last-write-wins (later column overwrites earlier).
 - **No key-label row found**: column is unidentifiable; skip it entirely
   (synthesizer emits no facts for that column). `rows_skipped_unresolvable`
   is incremented by the number of would-have-been emissions for that column.
@@ -503,7 +515,7 @@ never crashes, never blocks `/extract-pass`.
 | Row label not in `ALIAS_MAP` for active pass | Skip silently | `rows_skipped_unresolvable` | none |
 | Row label in map but section_ctx mismatches | Skip silently | `rows_skipped_unresolvable` | DEBUG |
 | Section detection conflict (embedded vs header-row) | Embedded wins | `sections_detected` (embedded only) | DEBUG |
-| HYBRID composite identity collision | Last one wins; previous overwritten | `tables_by_shape["HYBRID_COLLISION"]++` | WARNING |
+| HYBRID composite identity collision | Last one wins; previous overwritten | `hybrid_collisions++` | WARNING |
 | `max_synthesized` cap reached | Stop emission, return early | `truncated_at_cap=True` | WARNING |
 | Idempotence flag set on entry | Return doc unchanged | `idempotent_skip=True` | INFO |
 | Synthesizer raises any exception | Caller catches, logs WARNING, continues with original doc | n/a | WARNING + traceback |
@@ -554,19 +566,81 @@ breaks `/extract-pass`.
 
 ### 8.3 Drift guard (`test_alias_map.py`)
 
+A literal substring assertion (`normalize_label(label) in normalize_label(DELTA_SYSTEM_PROMPT)`)
+will not work for stage-conditional aliases — for example, the §12b prose says
+*"Under a `1st Stage` or `Booster` section, `Weight`/`Mass` maps to
+`booster_mass_kg`"* with the section keyword and the spec keyword in separate
+backtick-quoted tokens, not as the contiguous string `"1st stage weight"`. The
+ALIAS_MAP key for that entry would normalize to `"weight"` (label only,
+without section prefix; the section is the second key-tuple element). So we
+check label tokens and section keywords independently.
+
 ```python
-def test_alias_map_entries_have_prompt_rule_mentions():
-    """Every ALIAS_MAP entry's source label appears in §12b prose of
-    DELTA_SYSTEM_PROMPT. Catches drift between the structured map (synthesizer
-    SSoT) and the LLM-facing prose (LLM SSoT)."""
-    from app._alias_map import ALIAS_MAP, SECTION_KEYWORDS
-    from ontology_bundles._shared.prompt_rules import DELTA_SYSTEM_PROMPT
-    for (label, _section, _pass), _field in ALIAS_MAP.items():
-        assert _normalize(label) in _normalize(DELTA_SYSTEM_PROMPT), \
-            f"label {label!r} missing from §12b prose"
+import re
+from app._alias_map import ALIAS_MAP, SECTION_KEYWORDS
+from app._table_facts import normalize_label
+from ontology_bundles._shared.prompt_rules import DELTA_SYSTEM_PROMPT
+
+
+def test_alias_map_labels_appear_in_prompt_rule():
+    """Every ALIAS_MAP key's label_normalized appears as a token in §12b
+    prose. Catches drift where a new alias is added to the structured map
+    but the LLM never gets told about it."""
+    prose_normalized = normalize_label(DELTA_SYSTEM_PROMPT)
+    # Tokenize the normalized prose into whitespace-separated tokens.
+    prose_tokens = set(prose_normalized.split())
+
+    for (label_norm, _section, _pass), _field in ALIAS_MAP.items():
+        # Each space-separated token of the normalized label must appear
+        # as a token in the prose. "weight" and "kg" both must be present.
+        for token in label_norm.split():
+            assert token in prose_tokens, (
+                f"Token {token!r} from ALIAS_MAP label {label_norm!r} "
+                f"missing from §12b prose tokens. Either add it to §12b "
+                f"or drop it from ALIAS_MAP."
+            )
+
+
+def test_section_keywords_appear_in_prompt_rule():
+    """Every SECTION_KEYWORDS entry appears (as a contiguous phrase, since
+    they are short stable strings) in §12b prose."""
+    prose_normalized = normalize_label(DELTA_SYSTEM_PROMPT)
     for keyword in SECTION_KEYWORDS:
-        assert _normalize(keyword) in _normalize(DELTA_SYSTEM_PROMPT)
+        keyword_norm = normalize_label(keyword)
+        assert keyword_norm in prose_normalized, (
+            f"Section keyword {keyword!r} (normalized {keyword_norm!r}) "
+            f"missing from §12b prose. Add it to §12b before adding to "
+            f"SECTION_KEYWORDS."
+        )
+
+
+def test_alias_map_target_fields_exist_on_schemas():
+    """Every ALIAS_MAP value (target schema field) must exist as a field on
+    the schema for the corresponding pass. Catches drift where a schema is
+    refactored and the alias map points at a renamed/removed field."""
+    from app.bundles import load_pass_template
+    by_pass: dict[str, set[str]] = {}
+    for (_label, _section, pass_name), schema_field in ALIAS_MAP.items():
+        by_pass.setdefault(pass_name, set()).add(schema_field)
+    for pass_name, fields in by_pass.items():
+        template_cls = load_pass_template("air_defense_v3", pass_name)
+        # Walk the model recursively to collect every field name that exists
+        # on any nested entity. Same pattern used by auto-evidence.
+        actual_fields = _collect_all_field_names(template_cls)
+        missing = fields - actual_fields
+        assert not missing, (
+            f"ALIAS_MAP entries for pass {pass_name!r} reference fields "
+            f"{missing!r} that do not exist on the schema."
+        )
 ```
+
+The token-based label check tolerates the prose's natural grammar (separate
+backticked tokens for label and section) while still catching the cases that
+matter: a new alias whose label does not appear anywhere in the prose, or a
+typo (`"booster_mass_kg"` → `"booser_mass_kg"`). The section-keyword check
+uses the contiguous form because section keywords are short, stable
+multi-word phrases (`"1st Stage"`, `"2nd Stage"`) that should appear
+verbatim. The third test catches schema-side drift independently of §12b.
 
 ### 8.4 Prompt-content test (CI proxy for end-to-end)
 
