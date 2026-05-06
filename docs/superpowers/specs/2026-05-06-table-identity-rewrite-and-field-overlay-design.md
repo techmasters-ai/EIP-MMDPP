@@ -1,6 +1,6 @@
 # Table-Derived Identity Rewrite + Per-Cell Field Overlay (Mechanism A1)
 
-**Status:** Draft (in user review — r7)
+**Status:** Draft (in user review — r8)
 **Predecessor (parked):** `docs/superpowers/specs/2026-05-05-section-aware-table-fact-synthesis-design.md`
 **Reuses:** `docker/docling-graph/app/_table_facts.py` parser primitives (already on disk, 99 tests passing)
 **Related future work:** Mechanism B (per-variant prose binding accuracy for V-75-style docs) — separate spec
@@ -135,16 +135,71 @@ AFTER the table-derived rewrite, so table aliases take precedence.
 
 ### 4.3 Kill switch
 
-Single env var allows operator-controlled rollback without code change:
+Single env var allows operator-controlled rollback without code change.
+**The flag is read on BOTH the parser side and the worker side**, with
+the worker-side check being authoritative for what actually mutates
+`pass_results`. This matters because, with the per-pass-celery-tasks
+plan (§4.4) persisting `table_overlay` into `pipeline_pass_outputs.
+metadata_json`, an old already-emitted overlay can outlive a parser-side
+flag flip — a worker-side gate is the only way to guarantee the merge
+phase respects a freshly disabled kill switch on previously-cached
+overlays.
 
 ```yaml
-# docker-compose.yml docling-graph service env block
-DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
+# docker-compose.yml — must be set on BOTH services
+docling-graph:
+  environment:
+    DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
+
+worker / worker-graph:
+  environment:
+    DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
 ```
 
-When `false`, `extract_table_overlay` short-circuits to empty `TableOverlay`;
-worker-side overlay is a no-op. Restart docling-graph + worker (env var
-change) → fully reverted to pre-overlay behavior.
+Effects:
+
+- **Parser side (docling-graph).** When `false`, `extract_table_overlay`
+  short-circuits and returns an empty `TableOverlay`. Fresh extract-pass
+  responses carry no overlay payload. Behavior on fresh extractions is
+  bit-identical to pre-overlay.
+- **Worker side (`extraction_merge.py`).** When `false`, both
+  `_extract_doc_overlay(pass_results)` AND the `apply_field_overlay`
+  call site short-circuit to None / no-op, **regardless of whether
+  `pass_results[*].table_overlay` carries a non-empty payload from a
+  prior cached extraction**. Specifically:
+
+      def merge_and_resolve(...):
+          if not _table_overlay_enabled():
+              # kill-switch authoritative; ignore any cached overlay
+              # carried in pass_results from prior runs.
+              canonicalize_cross_pass_identities(
+                  pass_results, ontology,
+                  table_alias_map_by_entity_type=None,
+              )
+              # ... no Phase 0.5 ...
+              return _existing_merge_path(pass_results, ...)
+          ...
+
+  Where `_table_overlay_enabled()` reads `os.environ.get(
+  "DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true").lower() != "false"`.
+  This is the operator-controlled "back to baseline" path: a single
+  env-flag flip + worker restart is sufficient to drop the system to
+  pre-overlay behavior even if `pipeline_pass_outputs.metadata_json`
+  already contains overlay payloads from yesterday's runs.
+- **Diagnostics.** When the worker-side gate trips on cached overlays,
+  log `INFO: TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER pass_count=%d
+  cached_overlay_present=%d` once per `merge_and_resolve` invocation.
+  The `service_table_overlay.kill_switch_active` field in the
+  /extract-pass response reflects the parser-side flag; a separate
+  worker-emitted log line reflects the worker-side gate. They are
+  redundant by design (defense in depth).
+
+Restart sequence to fully revert: (1) flip both env flags, (2) restart
+docling-graph and worker / worker-graph containers (so they pick up
+the new env), (3) any pending merge work after the restart respects
+the new flag. In-flight Celery tasks finish with their captured-at-
+start flag value (acceptable; they were already past the worker-side
+gate).
 
 ### 4.4 Coordination with concurrent plan: per-pass Celery tasks
 
@@ -396,10 +451,38 @@ def apply_field_overlay(
          (post-rewrite). If none, skipped_no_entity++ and continue.
       2. For each matching instance (fan-out — see "multi-instance"
          note below):
-           a. Capture original via
+           a. **Pre-validate the field name against the model.**
+              Extraction schemas use `ConfigDict(extra="ignore")`, which
+              means `cls.model_validate(candidate)` would silently drop
+              an unknown key in the candidate dict. Without this check,
+              a stale or pass-mismatched `fact.schema_field` could pass
+              `model_validate`, then `getattr(revalidated,
+              fact.schema_field)` would either raise AttributeError
+              (truly unknown attribute) OR return the entity's prior
+              value (silently inherited from the dump), and `applied++`
+              would falsely count a no-op as success. Guard explicitly:
+                cls = type(inst)
+                if fact.schema_field not in cls.model_fields:
+                    skipped_unknown_field++
+                    log("FIELD_OVERLAY_UNKNOWN_FIELD pass=%s "
+                        "entity_type=%s entity=%s schema_field=%s "
+                        "model=%s — fact dropped",
+                        fact.pass_name, fact.entity_type,
+                        fact.canonical_entity, fact.schema_field,
+                        cls.__name__)
+                    continue
+              This catches: (i) fact emitted from a parser bug under a
+              field name that does not exist on the routed pass's
+              schema; (ii) cross-pass mis-routing (e.g., a propulsion
+              fact accidentally tagged `pass_name="missile_airframe"`);
+              (iii) schema renames where the parser alias map was not
+              updated. All three are caller bugs, not validation
+              failures, and are counted separately so the diagnostics
+              surface distinguishes them from value-typed failures.
+           b. Capture original via
               getattr(inst, fact.schema_field, None).
-           b. Build a candidate dict (NOT setattr-with-TypeAdapter).
-              Plain `TypeAdapter(field_info.annotation).validate_python`
+           c. Build a candidate dict and validate. Plain
+              `TypeAdapter(field_info.annotation).validate_python`
               validates the raw annotation but does NOT execute the
               schema's `field_validator(mode='before')` hooks (e.g.
               `_v_booster_mass_kg`, `_v_max_intercept_km`) or any
@@ -408,14 +491,16 @@ def apply_field_overlay(
               candidate dict so before-validators AND field-level
               constraints AND any future `model_validator(mode='after')`
               all fire:
-                cls = type(inst)
                 candidate = {**inst.model_dump(), fact.schema_field: fact.value}
                 try:
                     revalidated = cls.model_validate(candidate)
                 except (ValidationError, ValueError, TypeError):
                     skipped_validation_fail++; continue
                 coerced = getattr(revalidated, fact.schema_field)
-           c. Atomic swap. The model_validate call already produced a
+              `extra="ignore"` no longer hides anything here because
+              step (a) already rejected unknown field names; the only
+              remaining failure mode is value-typed.
+           d. Atomic swap. The model_validate call already produced a
               fully-validated `revalidated` instance. Mutate inst's
               fields from revalidated's dump:
                 for k, v in revalidated.model_dump().items():
@@ -425,8 +510,10 @@ def apply_field_overlay(
               instances in the same fan-out are independent: a
               validation failure for one does NOT block fan-out to the
               others.
-           d. Bookkeeping:
-                applied++
+           e. Bookkeeping:
+                applied++           # fact-instance count, NOT fact count
+                matches_touched++   # fact-level, incremented once per fact
+                                    # outside the inner loop (see below)
                 if original is not None and original != coerced:
                     conflicts_overridden++
                     log("FIELD_OVERLAY_OVERRIDE pass=%s entity_type=%s "
@@ -436,6 +523,12 @@ def apply_field_overlay(
                         original, coerced, fact.source_label)
                 else:
                     log applied event (DEBUG)
+      3. After the per-instance loop completes for a fact, increment
+         matches_touched++ if the fact applied to ≥1 instance. This
+         counter answers "how many facts found an entity to land on?"
+         independently of fan-out width. With fan-out, `applied`
+         (fact-instance count) ≥ matches_touched (fact count); the
+         ratio = average post-rewrite duplicate-count per fact.
 
     **Multi-instance fan-out:** A TableFact applies to ALL matching
     instances of the right entity_type within its pass, not just the
@@ -461,8 +554,15 @@ def apply_field_overlay(
     mutations completed). Overlay is bounded-degraded, not bounded-
     none-or-all.
 
-    Returns OverlayStats(applied=N, skipped_no_entity=, skipped_validation_fail=,
-    conflicts_overridden=, policy_active="table_wins_for_table_facts").
+    Returns OverlayStats(
+        applied=N,                  # fact-instance count (fan-out)
+        matches_touched=M,          # fact count that landed on >=1 inst
+        skipped_no_entity=,         # fact had no matching entity in pass
+        skipped_unknown_field=,     # fact.schema_field not in cls.model_fields
+        skipped_validation_fail=,   # value failed model_validate
+        conflicts_overridden=,      # LLM had a value AND TableFact replaced it
+        policy_active="table_wins_for_table_facts",
+    ).
     """
 ```
 
@@ -614,9 +714,11 @@ class RewriteStats:
 
 @dataclass
 class OverlayStats:
-    applied: int = 0
-    skipped_no_entity: int = 0
-    skipped_validation_fail: int = 0
+    applied: int = 0                # fact-instance count (fan-out width)
+    matches_touched: int = 0        # fact count that landed on >=1 instance
+    skipped_no_entity: int = 0      # fact had no matching entity in pass
+    skipped_unknown_field: int = 0  # fact.schema_field not in cls.model_fields
+    skipped_validation_fail: int = 0  # value failed cls.model_validate(...)
     conflicts_overridden: int = 0   # set when LLM had a value AND TableFact overwrote
     policy_active: str = "table_wins_for_table_facts"  # echoed for diagnostics
     def as_dict(self) -> dict: return asdict(self)
@@ -721,17 +823,21 @@ def merge_and_resolve(
             )
             logger.info(
                 "TABLE_OVERLAY_APPLIED doc_id=%s "
-                "field_overlay_applied=%d skipped_no_entity=%d "
+                "field_overlay_applied=%d matches_touched=%d "
+                "skipped_no_entity=%d skipped_unknown_field=%d "
                 "skipped_validation_fail=%d conflicts_overridden=%d "
                 "policy=%s",
-                document_id, stats.applied, stats.skipped_no_entity,
+                document_id, stats.applied, stats.matches_touched,
+                stats.skipped_no_entity, stats.skipped_unknown_field,
                 stats.skipped_validation_fail, stats.conflicts_overridden,
                 stats.policy_active,
             )
         except Exception as exc:
             logger.warning(
-                "apply_field_overlay failed: %s — proceeding with merge "
-                "using LLM-extracted values only",
+                "apply_field_overlay failed mid-loop: %s — proceeding "
+                "with merge. NOTE: any successful (fact, instance) swaps "
+                "completed before the exception remain in pass_results. "
+                "Overlay is bounded-degraded, not all-or-nothing — see §7.",
                 exc,
             )
 
@@ -983,10 +1089,11 @@ correct narrower claim is:
 | Entity has no `system_name` field | Skip that entity (existing behavior) | DEBUG |
 | `alias_map` points to canonical no entity has | Rewrite still applies (collapses aliases even without canonical seed) | (expected) |
 | Field overlay finds no entity matching `fact.canonical_entity` | Skip fact | INFO `skipped_no_entity++` |
+| `fact.schema_field` not in `cls.model_fields` (stale alias map / wrong pass routing / schema rename) | Skip fact; do NOT call model_validate (would silently no-op via `extra="ignore"`) | INFO `skipped_unknown_field++`; `FIELD_OVERLAY_UNKNOWN_FIELD pass=… entity_type=… entity=… schema_field=… model=…` |
 | Pydantic validation fails on field overlay | Skip fact | INFO `skipped_validation_fail++` |
 | Field already populated AND policy=`table_wins_for_table_facts` AND `original != coerced` | Override LLM value with table fact | INFO `conflicts_overridden++`; `FIELD_OVERLAY_OVERRIDE doc=… pass=… entity=… field=… prior=… new=… fact=…` log line per override |
 | Field already populated AND policy=`table_wins_for_table_facts` AND `original == coerced` | No-op (idempotent re-apply) | DEBUG; counted as `applied++`, NOT as override |
-| Either function raises uncaught exception | `extraction_merge` catches, logs WARNING, falls through to existing path with original `pass_output` intact | `WARNING: <function> failed: <exc>` |
+| Either function raises uncaught exception **mid-loop** | `extraction_merge` catches, logs WARNING, falls through to merge with **whatever (fact, instance) swaps had already completed** in `pass_results`. NOT all-or-nothing — overlay is bounded-degraded per §7 invariants. The per-(fact, instance) atomicity guarantees each individual mutation is internally consistent; the overall batch is not transactional. Operator-controlled rollback is via the kill switch (§4.3), not via in-flight rollback. | `WARNING: <function> failed mid-loop: <exc>` |
 
 ### Integration-layer (`extraction_merge.py`)
 
@@ -1003,7 +1110,8 @@ correct narrower claim is:
 
 ```python
 {
-    "alias_map_size": int,
+    # parser-side, per-doc:
+    "alias_map_size": int,            # sum of len(sub_map) across entity types
     "facts_count": int,
     "cross_entity_hints_count": int,
     "tables_processed": int,
@@ -1013,7 +1121,29 @@ correct narrower claim is:
     "tables_skipped_multi": int,         # extras beyond first STRICTLY-QUALIFYING table
     "tables_skipped_unqualified": int,   # column_major/hybrid shape but failed entity_columns ≥ 4 / identity_rows ≥ 1 / sparse-identity gate
     "tables_skipped_other": int,         # other shape (row-major, too small, etc.)
-    "kill_switch_active": bool,          # echoes DOCLING_GRAPH_TABLE_OVERLAY_ENABLED
+    "kill_switch_active_parser": bool,   # echoes parser-side DOCLING_GRAPH_TABLE_OVERLAY_ENABLED
+}
+```
+
+Worker emits `worker_table_overlay_stats` separately on each merge
+(this surfaces the worker-side stats that the parser-side response
+cannot carry, and the worker-side kill-switch state which can differ
+from the parser's):
+
+```python
+{
+    "kill_switch_active_worker": bool,   # worker-side env flag at merge time
+    "cached_overlay_present": int,       # how many PassResults carried a non-empty overlay
+    "rewrites": int,                     # apply_identity_rewrite stats
+    "unique_canonicals": int,
+    "passes_touched": int,
+    "applied": int,                      # fact-instance count (fan-out)
+    "matches_touched": int,              # fact count that landed on >=1 instance
+    "skipped_no_entity": int,
+    "skipped_unknown_field": int,        # NEW: fact.schema_field not in cls.model_fields
+    "skipped_validation_fail": int,
+    "conflicts_overridden": int,
+    "policy_active": str,                # "table_wins_for_table_facts" | etc.
 }
 ```
 
@@ -1024,8 +1154,20 @@ IDENTITY_REWRITE doc_id=<id>
   rewrites=N unique_canonicals=M passes_touched=K
 
 TABLE_OVERLAY_APPLIED doc_id=<id>
-  field_overlay_applied=K skipped_no_entity=A skipped_validation_fail=B
-  conflicts_overridden=C policy=table_wins_for_table_facts
+  field_overlay_applied=K matches_touched=M skipped_no_entity=A
+  skipped_unknown_field=U skipped_validation_fail=B conflicts_overridden=C
+  policy=table_wins_for_table_facts
+
+# Emitted ONCE per merge_and_resolve invocation when the worker-side
+# kill switch is off and at least one cached overlay was ignored:
+TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER doc_id=<id>
+  pass_count=N cached_overlay_present=M
+
+# Emitted per (fact, instance) pair where the model_validate dropped
+# the field due to extra="ignore" — i.e., skipped_unknown_field path:
+FIELD_OVERLAY_UNKNOWN_FIELD doc_id=<id>
+  pass=<pass_name> entity_type=<type> entity=<canonical>
+  schema_field=<field> model=<cls.__name__>
 ```
 
 Both lines emit even when their counts are zero, so an operator scanning
@@ -1136,6 +1278,8 @@ def test_canonical_priority_uses_display_labels():
 |---|---|
 | `apply_identity_rewrite` | empty alias_map → no-op; entity with system_name in map → rewritten; entity without system_name → skipped; multiple entities sharing alias → all rewrite to same canonical; empty pass_output → no-op; entity_type-scoped map: alias for MISSILE_SYSTEM never rewrites a RADAR_SYSTEM instance |
 | `apply_field_overlay` validation gate uses model_validate | Fact value passed as a string ("1135") for `booster_mass_kg` → `_v_booster_mass_kg` field_validator coerces to float → applied as 1135.0. Verifies cls.model_validate(...) is used (NOT TypeAdapter on raw annotation, which would skip the validator). |
+| `apply_field_overlay` unknown-field precheck | Fact carries `schema_field="bogus_field_not_on_model"` for a propulsion entity. cls.model_validate would silently no-op (extra="ignore") and getattr(revalidated, "bogus_field_not_on_model") would raise/return stale. Expected: `skipped_unknown_field++`, `FIELD_OVERLAY_UNKNOWN_FIELD` log emitted, no setattr, applied stays at 0, instance unchanged. |
+| `apply_field_overlay` matches_touched vs applied accounting | One fact, two post-rewrite instances both matching the canonical → applied=2, matches_touched=1. One fact, zero matching instances → applied=0, matches_touched=0, skipped_no_entity=1. Demonstrates fact-instance vs fact accounting under fan-out. |
 | `apply_field_overlay` (table_wins_for_table_facts, v1 default) | Fact for canonical not in pass_output → skipped (skipped_no_entity++); value passes model_validate → applied; value fails model_validate → skipped (skipped_validation_fail++); pre-existing LLM value present → overwritten AND override logged AND conflicts_overridden++; pre-existing was None → applied without log noise; fields without a corresponding TableFact are NEVER touched |
 | `apply_field_overlay` entity-type scoping | Fact with entity_type="MISSILE_SYSTEM" never lands on a RADAR_SYSTEM instance even if system_names happen to collide |
 | `apply_field_overlay` multi-instance fan-out | Two MISSILE_SYSTEM instances in the same pass with system_name="1D" (post-rewrite, originally "SA-75" and "SA-2A"); single TableFact for 1D.booster_mass_kg=1135 → BOTH receive the value, applied++ counted twice |
@@ -1218,7 +1362,20 @@ def test_kill_switch_disables_overlay():
     """DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false → table_overlay=None in
     response → worker no-ops both functions → existing token-overlap
     canonicalization runs as before."""
-```
+
+def test_kill_switch_worker_side_overrides_cached_overlay():
+    """Critical defense-in-depth case: worker receives a PassResult
+    whose .table_overlay field is a fully-populated TableOverlay
+    (e.g., loaded from pipeline_pass_outputs.metadata_json from
+    yesterday's run). Operator has just set
+    DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false on the worker container.
+    Expected: merge_and_resolve consults the worker-side env gate,
+    treats the cached overlay as if it were None, runs ONLY the
+    pre-overlay code path. apply_identity_rewrite NOT called;
+    apply_field_overlay NOT called; no IDENTITY_REWRITE log line; no
+    TABLE_OVERLAY_APPLIED log line. ONE INFO log line:
+    TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER pass_count=N
+    cached_overlay_present=N."""
 
 ### 8.5 End-to-end fixture (`test_table_overlay_end_to_end.py`)
 
@@ -1328,8 +1485,8 @@ the stale cached values.
 7. **Floor (entity-count) targets** from §8.6 met or beaten relative to the live baseline (±2 LLM-noise tolerance). Specifically: `missile_propulsion ≥ live-baseline floor`, `missile_kinematics ≥ live-baseline floor`, `missile_airframe ≥ live-baseline floor`, `missile_speed_timing ≥ live-baseline floor`. The floor is a guard against entity-loss regressions, not the primary gate.
 8. No regression on the 20 no-table corpus docs (system_name set within ±2 entities and ⊇ 80% of pre-deploy set per §8.6).
 9. Wall-time delta ≤ +5% on table-bearing docs; 0% on no-table docs.
-10. Kill switch (`DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false`) cleanly reverts behavior without code change.
-11. Diagnostics surfaced: `service_table_overlay` in /extract-pass response (with `tables_skipped_unqualified` / `tables_skipped_multi` / `tables_skipped_other` populated); `IDENTITY_REWRITE` / `TABLE_OVERLAY_APPLIED` / `FIELD_OVERLAY_OVERRIDE` log lines from the worker.
+10. Kill switch (`DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false`) cleanly reverts behavior without code change. **Both parser and worker honor the flag**; the worker-side gate is authoritative and ignores any cached overlay carried in `pass_results` from prior runs (verified by `test_kill_switch_worker_side_overrides_cached_overlay`).
+11. Diagnostics surfaced: `service_table_overlay` in /extract-pass response (with `tables_skipped_unqualified` / `tables_skipped_multi` / `tables_skipped_other` and `kill_switch_active_parser` populated); worker stats include `applied` / `matches_touched` / `skipped_no_entity` / `skipped_unknown_field` / `skipped_validation_fail` / `conflicts_overridden` / `kill_switch_active_worker` / `cached_overlay_present`; log lines `IDENTITY_REWRITE` / `TABLE_OVERLAY_APPLIED` / `FIELD_OVERLAY_OVERRIDE` / `FIELD_OVERLAY_UNKNOWN_FIELD` / `TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER` emitted from the worker.
 
 ## 10. Implementation Order (suggested)
 
