@@ -71,7 +71,8 @@ here.
 - **Prose-pattern alias detection** (e.g., parsing "X (also Y, NATO designation Z)" from narrative). Defer until empirical need; tables give bounded equivalence classes, prose does not.
 - **Row-major variants tables.** Different shape, separate handling. Add when corpus has examples.
 - **Cross-entity relationship pass.** `cross_entity_hints` are collected for the Fan Song / radar association but NOT applied as `ASSOCIATED_WITH` edges in this spec. Reserved for a follow-up that integrates with the existing relationship-pass pipeline.
-- **`table_wins` conflict resolution policy.** v1 ships with `additive_only` (apply table fact only when entity field is null). Escalation to `table_wins` deferred until empirical evidence shows additive_only insufficient.
+- **`table_wins` conflict resolution policy.** v1 ships with `additive_only` (apply table fact only when entity field is null). Escalation to `table_wins` deferred until empirical evidence shows additive_only insufficient. The `policy` parameter is plumbed through (one-line v2 escalation) but `table_wins` tests are written as `xfail` — flip the marker when v2 ships.
+- **Multi-table docs.** A single doc with two distinct variants tables (e.g., a future doc with both a missile variants table AND a separate radar variants table) — first table's alias_map wins. Subsequent tables logged at INFO level and skipped. The corpus survey shows zero docs with this shape today; revisit if a future doc requires both.
 
 ## 4. Architecture
 
@@ -201,54 +202,90 @@ Internal helpers (all private, all pure):
 | `_classify_identity_row(label) → str \| None` | "MISSILE_SYSTEM" / "RADAR_SYSTEM" / None based on case-insensitive substring against `MISSILE_IDENTITY_LABELS` and `RADAR_IDENTITY_LABELS`. |
 | `_classify_cross_entity_ref(label) → str \| None` | Returns target entity type if label matches `CROSS_ENTITY_REF_PATTERNS`, else None. |
 | `_extract_alias_clusters(rows, entity_type, label_width) → dict[entity_col, set[(label, alias_text)]]` | Per-column cluster of (source-label, alias-text) tuples drawn from identity rows of that entity_type only. |
-| `_pick_canonical(cluster, entity_type) → str` | Walks `CANONICAL_PRIORITY[entity_type]`; returns first matching alias's text. Falls back to alphabetic-first cluster member if no priority match (logged at INFO level). |
+| `_pick_canonical(cluster, entity_type) → str` | Walks `CANONICAL_PRIORITY[entity_type]`; returns first matching alias's text. Falls back to deterministic-first when no priority match: NFC-normalize then casefold cluster members; sort by (normalized form, raw text) tuple to disambiguate Unicode-equivalent forms; return first. Logged at INFO level. |
 
 ### 5.3 `app/services/table_overlay.py` — Worker-side overlay
 
+By the time `canonicalize_cross_pass_identities` runs, the worker has
+already parsed JSON `pass_output` into Pydantic instances and stored them
+under `PassResult` (per `pipeline.py:_parse_pass_response` → the `iter_entities_of_type`
+walker yields Pydantic instances). Both functions therefore operate on
+Pydantic instances, mutating in place via `setattr` — same pattern the
+existing `_pick_canonical_name` heuristic uses at `extraction_merge.py:1083`.
+
 ```python
 def apply_identity_rewrite(
-    pass_output: dict, alias_map: dict[str, str]
-) -> tuple[dict, RewriteStats]:
-    """Rewrite system_name aliases to canonical names in-place.
+    pass_results: dict[str, "PassResult"],
+    alias_map: dict[str, str],
+    ontology: dict,
+) -> RewriteStats:
+    """Rewrite system_name aliases to canonical names in-place on
+    Pydantic instances across all passes.
 
-    For each entity in pass_output's primary list:
-      if entity['system_name'] in alias_map:
-        entity['system_name'] = alias_map[entity['system_name']]
+    Operates on the same set of entity types canonicalize_cross_pass_identities
+    walks (those whose graph_id_fields == ('system_name',)).
 
-    Multiple entities may now share canonical system_name; merge_and_resolve
-    handles the actual vertex merge. We just rewrite the identity field.
+    For each pass, for each entity instance of an eligible entity type:
+      current = getattr(inst, 'system_name', None)
+      if current in alias_map and alias_map[current] != current:
+          setattr(inst, 'system_name', alias_map[current])
+          rewrites += 1
 
-    Returns (rewritten_pass_output, RewriteStats(rewrites=N, unique_canonicals=M)).
+    Multiple entities may now share canonical system_name; merge_and_resolve's
+    LogicalIdentity-keyed merge collapses them onto one MergedEntityRecord.
+
+    Returns RewriteStats(rewrites=N, unique_canonicals=M, passes_touched=K).
     """
 
 def apply_field_overlay(
-    pass_output: dict,
+    pass_results: dict[str, "PassResult"],
     table_facts: list[TableFact],
-    schema_cls: type[BaseModel],
-    active_pass: str,
     *, policy: str = "additive_only",
-) -> tuple[dict, OverlayStats]:
-    """Apply per-cell table facts to pass_output.
+) -> OverlayStats:
+    """Apply per-cell table facts to Pydantic entity instances.
 
-    For each fact whose pass_name == active_pass:
-      1. Find entity in pass_output where system_name == fact.canonical_entity
-         (after identity rewrite, so canonical names match).
-      2. Validate fact.value coerces to schema_cls's type for fact.schema_field
-         via Pydantic.
-      3. Apply per policy:
-         - 'additive_only' (v1 default): apply only if entity[field] is None
-         - 'table_wins' (deferred): always apply, overwriting LLM value if any
-      4. Log applied/skipped events for audit.
+    Facts already carry pass_name (set by parser); each fact is routed to
+    the matching pass_result. Within that pass, find the entity instance
+    whose system_name == fact.canonical_entity (post-rewrite, so canonical
+    names match).
 
-    Returns (overlaid_pass_output, OverlayStats(applied=N, skipped_no_entity=,
-    skipped_validation_fail=, skipped_field_populated=)).
+    For each candidate (fact, entity_instance) pair:
+      1. Skip if no entity matches fact.canonical_entity (skipped_no_entity++).
+      2. Try to set the field via Pydantic field assignment:
+           try:
+               setattr(entity_instance, fact.schema_field, fact.value)
+               # Pydantic v2 validate_assignment=True enforces type/range
+           except (ValidationError, ValueError, TypeError):
+               skipped_validation_fail += 1
+               continue
+      3. Apply per policy (note: validation runs BEFORE policy check, since
+         we need to know the value would coerce cleanly even if we skip):
+           - 'additive_only' (v1 default): if pre-existing value is not None,
+              skipped_field_populated++; revert the assignment to original.
+           - 'table_wins' (deferred): keep the assignment unconditionally;
+              if LLM had a value, log the override.
+      4. Log per-fact outcome for audit.
+
+    Returns OverlayStats(applied=N, skipped_no_entity=, skipped_validation_fail=,
+    skipped_field_populated=, conflicts_overridden=).
     """
 ```
 
+**Implementation note on Pydantic mutation:** all extraction-side
+schema models inherit `BaseModel` with `model_config = {"validate_assignment": True}`
+so `setattr(inst, field, value)` triggers field-level validation. Type
+coercion (str→float, int→float, etc.) and constraint enforcement (Pydantic
+field validators on the schema) all run automatically. If a validator
+raises, the assignment is rolled back; we increment `skipped_validation_fail`.
+This makes the all-4-agree gate self-enforcing — we don't need a separate
+schema-introspection step.
+
 **Conflict resolution policy: `additive_only` for v1.**
-Rationale: safest first cut, no override of LLM extraction. Empirically
-validate the gain on null-fill, then consider escalating to `table_wins` in
-v2 if measured benefit warrants.
+Rationale: safest first cut, no override of LLM extraction. The
+implementation captures the pre-existing value, attempts assignment for
+validation, and reverts if the field was already populated. This costs
+two assignments per applied fact but keeps the policy switch a one-line
+change for v2 escalation.
 
 ### 5.4 Data shapes
 
@@ -260,7 +297,7 @@ class TableFact:
     value: float | str
     source_label: str           # e.g., "Weight kg"
     section_ctx: str | None     # e.g., "1st Stage"
-    pass_name: str              # e.g., "missile_propulsion"
+    pass_name: str              # e.g., "missile_propulsion" — facts route to this pass
     raw_text: str               # e.g., "1135"
 
 @dataclass(frozen=True)
@@ -273,10 +310,13 @@ class CrossEntityHint:
 class TableOverlay:
     alias_map: dict[str, str]
     """Maps any alias name → canonical name. E.g., for SA-2 col 0:
-       {"SA-75": "1D", "SA-2A": "1D", ...}. Empty if no variants table found."""
+       {"SA-75": "1D", "SA-2A": "1D", ...}. Empty if no variants table found.
+       Doc-level: identical across all passes from the same DoclingDocument."""
 
     facts: list[TableFact]
-    """Per-cell facts ready for direct application to canonical entities."""
+    """Per-cell facts ready for direct application to canonical entities.
+       Each fact carries its own pass_name, allowing the overlay to filter
+       by pass when applied."""
 
     cross_entity_hints: list[CrossEntityHint]
     """Optional: rows like Fan Song Variant in a missile table (deferred:
@@ -286,6 +326,7 @@ class TableOverlay:
 class RewriteStats:
     rewrites: int = 0
     unique_canonicals: int = 0
+    passes_touched: int = 0
     def as_dict(self) -> dict: return asdict(self)
 
 @dataclass
@@ -294,43 +335,148 @@ class OverlayStats:
     skipped_no_entity: int = 0
     skipped_validation_fail: int = 0
     skipped_field_populated: int = 0
+    conflicts_overridden: int = 0  # only relevant for policy='table_wins'
+    policy_active: str = "additive_only"  # echoed for diagnostics
     def as_dict(self) -> dict: return asdict(self)
 ```
 
 ### 5.5 `extraction_merge.py` integration
 
+The alias map is doc-level (one DoclingDocument → one variants table → one
+alias_map identical across all passes against that doc). Pass it as a single
+`dict[str, str]`, not per-pass. Per-pass facts (which carry `pass_name`)
+travel separately as a `list[TableFact]`. To carry both with minimal
+plumbing, accept the full `TableOverlay` object. (Each `PassResult` will
+have a `table_overlay` attribute set by `pipeline.py`; `merge_and_resolve`
+extracts it from any one PassResult — they should be equivalent.)
+
+**Identity rewrite — slots into existing `canonicalize_cross_pass_identities`:**
+
 ```python
 def canonicalize_cross_pass_identities(
-    pass_results,
+    pass_results: dict[str, "PassResult"],
+    ontology: dict,
     *,
-    table_alias_maps_per_pass: dict[str, dict[str, str]] | None = None,
-):
-    # NEW: table-derived rewrite pass (deterministic, runs first)
-    if table_alias_maps_per_pass:
-        for pass_result in pass_results:
-            am = table_alias_maps_per_pass.get(pass_result.pass_name) or {}
-            if am:
-                try:
-                    pass_result.pass_output, stats = apply_identity_rewrite(
-                        pass_result.pass_output, am
-                    )
-                    logger.info(
-                        "IDENTITY_REWRITE pass=%s rewrites=%d unique_canonicals=%d",
-                        pass_result.pass_name, stats.rewrites, stats.unique_canonicals,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "apply_identity_rewrite failed pass=%s: %s — "
-                        "falling through to existing canonicalization",
-                        pass_result.pass_name, exc,
-                    )
+    table_alias_map: dict[str, str] | None = None,  # NEW, keyword-only
+) -> int:
+    """Mutate entity instances in-place so cross-pass duplicates share a
+    single canonical `system_name`.
 
-    # EXISTING: token-overlap canonicalization (catches names not in tables)
-    ... (unchanged code path)
+    Pass 0 (NEW): if table_alias_map is provided, rewrite aliases to
+    canonical names FIRST. Catches table-defined aliases that the
+    token-overlap heuristic below misses (e.g., SA-2A → 1D, where token
+    bags don't overlap).
+
+    Pass 1 (EXISTING): token-overlap canonicalization (unchanged).
+    """
+    rewrites = 0
+
+    # NEW: table-derived rewrite (runs first; doc-level map applies to all passes)
+    if table_alias_map:
+        try:
+            stats = apply_identity_rewrite(pass_results, table_alias_map, ontology)
+            rewrites += stats.rewrites
+            logger.info(
+                "IDENTITY_REWRITE rewrites=%d unique_canonicals=%d passes_touched=%d",
+                stats.rewrites, stats.unique_canonicals, stats.passes_touched,
+            )
+        except Exception as exc:
+            logger.warning(
+                "apply_identity_rewrite failed: %s — falling through to "
+                "existing token-overlap canonicalization",
+                exc,
+            )
+
+    # EXISTING: token-overlap canonicalization
+    for entity_def in ontology.get("entity_types", []):
+        ...  # unchanged code path
+
+    return rewrites
 ```
 
-`merge_and_resolve` calls `apply_field_overlay` after canonicalization,
-before its merge loop.
+**Field overlay — slots into `merge_and_resolve` Phase 0.5:**
+
+```python
+def merge_and_resolve(
+    pass_results: dict[str, "PassResult"],
+    manifest: Any,
+    ontology: dict,
+    document_id: str,
+    pipeline_run_id: str,
+) -> MergedExtraction:
+    # --- Phase 0: cross-pass identity canonicalization ---
+    # Extract doc-level table_overlay from any one PassResult (all should
+    # carry the same overlay parsed from the same DoclingDocument). If
+    # multiple passes carry different overlays, the parser is buggy; use
+    # the first non-empty and log a WARNING.
+    table_overlay = _extract_doc_overlay(pass_results)  # NEW helper
+
+    canonicalize_cross_pass_identities(
+        pass_results,
+        ontology,
+        table_alias_map=(table_overlay.alias_map if table_overlay else None),
+    )
+
+    # --- Phase 0.5 (NEW): per-pass field overlay ---
+    if table_overlay and table_overlay.facts:
+        try:
+            stats = apply_field_overlay(
+                pass_results,
+                table_overlay.facts,
+                policy="additive_only",
+            )
+            logger.info(
+                "TABLE_OVERLAY_APPLIED doc_id=%s "
+                "field_overlay_applied=%d skipped_no_entity=%d "
+                "skipped_validation_fail=%d skipped_field_populated=%d "
+                "policy=%s",
+                document_id, stats.applied, stats.skipped_no_entity,
+                stats.skipped_validation_fail, stats.skipped_field_populated,
+                "additive_only",
+            )
+        except Exception as exc:
+            logger.warning(
+                "apply_field_overlay failed: %s — proceeding with merge "
+                "using LLM-extracted values only",
+                exc,
+            )
+
+    # --- Pass 1: merge entities (existing) ---
+    entity_index: dict[LogicalIdentity, MergedEntityRecord] = {}
+    ...  # unchanged code path
+
+
+def _extract_doc_overlay(pass_results: dict[str, "PassResult"]) -> TableOverlay | None:
+    """Pick the doc-level TableOverlay carried on any PassResult.
+
+    All PassResults from the same doc should carry equivalent overlays
+    (parser is deterministic on doc.tables[]). Defensive: log WARNING if
+    multiple non-empty overlays disagree."""
+    seen: list[TableOverlay] = []
+    for pr in pass_results.values():
+        ov = getattr(pr, "table_overlay", None)
+        if ov is not None and ov.alias_map:
+            seen.append(ov)
+    if not seen:
+        return None
+    first = seen[0]
+    for other in seen[1:]:
+        if other.alias_map != first.alias_map:
+            logger.warning(
+                "PassResults carry divergent table_overlay.alias_map (parser bug?). "
+                "Using first non-empty; first_size=%d other_size=%d",
+                len(first.alias_map), len(other.alias_map),
+            )
+    return first
+```
+
+**Failure-mode invariant:** if `apply_identity_rewrite` partially mutates
+some Pydantic instances and then raises, those instances stay rewritten —
+subsequent token-overlap canonicalization runs against half-rewritten
+state. To keep this safe, both functions are written to be **idempotent**
+(re-applying the same alias_map is a no-op since `alias_map[canonical] ==
+canonical` short-circuits the assignment). Partial state therefore reaches
+token-overlap as a STABLE intermediate, not corruption.
 
 ## 6. Data Flow (worked example: SA-2 PDF, missile_airframe pass)
 
@@ -460,17 +606,23 @@ the current baseline.**
     "columns_skipped_no_canonical": int,
     "columns_with_canonical_via_fallback": int,
     "values_skipped_unparseable": int,
+    "kill_switch_active": bool,  # echoes DOCLING_GRAPH_TABLE_OVERLAY_ENABLED
 }
 ```
 
-Worker log line per merge:
+Worker log lines per merge:
 
 ```
+IDENTITY_REWRITE doc_id=<id>
+  rewrites=N unique_canonicals=M passes_touched=K
+
 TABLE_OVERLAY_APPLIED doc_id=<id>
-  identity_rewrites=N unique_canonicals=M
   field_overlay_applied=K skipped_no_entity=A skipped_validation_fail=B
   skipped_field_populated=C policy=additive_only
 ```
+
+Both lines emit even when their counts are zero, so an operator scanning
+logs can confirm the overlay path ran (vs ran silently / errored).
 
 ## 8. Testing
 
@@ -499,8 +651,14 @@ def test_cross_entity_ref_patterns_dont_overlap_identity_labels():
 
 def test_canonical_priority_uses_display_labels():
     """The strings in CANONICAL_PRIORITY are user-facing label patterns
-    (e.g., "Missile Type"), not schema field names ("system_name"). 
-    Sanity-check label format."""
+    (Title Case with spaces, e.g., "Missile Type"), not schema field names
+    (snake_case with underscores, e.g., "system_name"). Catches accidental
+    schema-field-name leakage. Specific assertions:
+      - Each entry contains at least one space (multi-word display label)
+      - No entry contains an underscore character
+      - Each entry's first character is uppercase
+      - Each entry, after normalize_label(), is a substring of at least one
+        entry in MISSILE_IDENTITY_LABELS or RADAR_IDENTITY_LABELS"""
 ```
 
 ### 8.3 Worker unit tests (`test_table_overlay_worker.py`)
@@ -549,14 +707,24 @@ Synthetic DoclingDocument matching SA-2 variants table structure; full
 
 1. Build synthetic DoclingDocument with SA-2 column structure (22×12,
    identity rows + section headers + spec rows + Fan Song row).
-2. Construct synthetic 4-pass `pass_result` list with LLM-extracted entities
-   under various aliases (SA-75, SA-2A, 1D, S-75, etc.).
-3. Call `merge_and_resolve` with `table_alias_maps_per_pass`.
-4. Assert final merged entity list:
-   - 10 distinct canonical missiles (1D, 13D, 13DM, 13DA, 13DAM, 20D, 20DP, 20DSU, 5Ya23, 15D)
-   - Each carries expected fields from variants table
-   - No duplicate vertices for alias names
-   - `cross_entity_hints` collected (5+ Fan Song associations) but NOT applied as relationship edges in v1
+2. Construct synthetic 4-pass `pass_results: dict[str, PassResult]` with
+   LLM-extracted entities (Pydantic instances) under various aliases
+   (SA-75, SA-2A, 1D, S-75, etc.). Each PassResult carries the
+   `table_overlay` attribute populated from step 1.
+3. Call `merge_and_resolve(pass_results, manifest, ontology, doc_id, run_id)`
+   — the new code path picks up the overlay from PassResult attributes.
+4. Assert final `MergedExtraction.entities`:
+   - One canonical MISSILE_SYSTEM per entity column of the synthetic table.
+     The SA-2 PDF has 10 entity columns (verified by 2026-05-05 dump:
+     1D, 13D, 13DM, 13DA, 13DAM, 20D, 20DP, 20DSU, 5Ya23, 15D); the
+     synthetic fixture matches this exactly.
+   - Each carries expected fields from variants table (per-cell overlay
+     application).
+   - No duplicate `MergedEntityRecord` for alias names — `SA-75`, `SA-2A`,
+     etc. must NOT appear as separate entities.
+   - `cross_entity_hints` collected (≥5 Fan Song associations from
+     applicable columns) but explicit assert: NO `ASSOCIATED_WITH` edges
+     between missile and radar entities in this v1 test (v2 / future spec).
 
 ### 8.6 Acceptance — empirical operator-driven
 
@@ -573,12 +741,24 @@ SA-2 PDF. Same scoreboard format used pre-revert.
 | `missile_propulsion` | **≥ 6 of 7 listed variants** (13DM, 13DA, 13DAM, 20D, 20DP, 20DSU, 5Ya23) for `booster_mass_kg` | spec target met |
 
 **No regression on no-table docs:**
-- For each of 16 no-table corpus docs: pre/post comparison of pass_output `system_name` lists must be byte-identical.
-- For 4 row-major-table docs: same — overlay is no-op there.
+- For each of 16 no-table corpus docs and 4 row-major-table docs: re-run extraction post-overlay-deploy at the SAME temperature as the pre-deploy run.
+  - **Hard guard:** entity count per pass must match within ±2 (LLM at T=1.0 is non-deterministic; tolerance accommodates run-to-run variance, not regression).
+  - **Soft guard:** the system_name set in the post-deploy run must be ⊇ 80% of the pre-deploy set (entities don't disappear; new aliases would be a parser bug since these docs have no variants tables).
+  - For temperature-sensitive comparison, run at T=0.0 against a synthetic LLM mock (returns canned response) — exact pass_output match required.
 
 **Wall-time budget:**
 - ≤ +5% per /extract-pass call wall time on table-bearing docs.
 - 0% on no-table docs.
+
+**Baseline reference for ✓ exact targets:**
+
+The numeric ✓ exact targets in the per-pass table above are pinned to the
+post-revert state at commit `1b71150` (table-fact synthesizer reverted,
+B1+B2 disabled, alias-only path active). Pre-deploy verification of these
+baselines at T=1.0 documented in the 2026-05-06 §20 GT scorecard
+(`/tmp/r21_alias_only_backup/`). If those cached results are no longer
+available, re-derive by running §20 against commit `1b71150` before
+landing the overlay.
 
 ## 9. Acceptance Criteria
 
