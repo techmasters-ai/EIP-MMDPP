@@ -29,7 +29,7 @@ Use the @superpowers-extended-cc:test-driven-development skill for every code-be
 
 Run inside the docling-graph container (matches production layout):
 ```bash
-docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests -q 2>&1 | tail -5
+pytest docker/docling-graph/tests -q 2>&1 | tail -5
 ```
 Expected: All current tests pass (test_sanitizer, test_numeric_candidates, test_table_pivot all green). Document any failure as a pre-existing issue not caused by this plan.
 
@@ -55,6 +55,22 @@ Run inside the Jupyter container:
 docker exec eip-mmdpp-jupyter ls /tmp/r21_alias_only_backup/
 ```
 Expected: 4 files, one per missile pass (kinematics/airframe/speed_timing/propulsion at T=1.0). Required for the post-deploy delta comparison in Task 18. If missing, re-derive baseline before judging the synthesizer's deltas.
+
+- [ ] **P6: Confirm test invocation environment.**
+
+This plan's tests are NOT inside the docling-graph container image (the
+Dockerfile copies `app/`, `repo/`, `patches/`, and `ontology_bundles/` but
+not `tests/`). All `pytest` commands in this plan run on the host from the
+repo root. The existing `docker/docling-graph/tests/conftest.py` adds the
+service root to `sys.path` so tests' lazy `from app.X import Y` calls
+resolve correctly when invoked as `pytest docker/docling-graph/tests/...`.
+
+Verify host Python has pytest available:
+```bash
+which pytest && pytest --version
+```
+Expected: pytest 7+ available. If not, activate the project's venv:
+`.venv/bin/activate` then re-check.
 
 ---
 
@@ -187,7 +203,7 @@ def test_alias_key_typealias_exists():
 
 - [ ] **Step 2: Run tests to verify they fail.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_table_facts_types.py -v 2>&1 | tail -20`
+Run: `pytest docker/docling-graph/tests/test_table_facts_types.py -v 2>&1 | tail -20`
 
 Expected: ALL fail with `ModuleNotFoundError` or attribute errors — file doesn't exist yet. (If the container doesn't have the test file mounted, run on host: `cd docker/docling-graph && python -m pytest tests/test_table_facts_types.py -v`.)
 
@@ -295,7 +311,7 @@ class FactStats:
 
 - [ ] **Step 4: Run tests to verify they pass.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_table_facts_types.py -v 2>&1 | tail -20`
+Run: `pytest docker/docling-graph/tests/test_table_facts_types.py -v 2>&1 | tail -20`
 
 Expected: 9/9 pass. (If the container needs a rebuild for the test file to be accessible, build first: `docker compose build docling-graph && docker compose up -d docling-graph`. Tests can also run on host with the loader pattern from `_load_table_facts()`.)
 
@@ -403,7 +419,7 @@ def test_empty_string():
 
 - [ ] **Step 2: Run tests to verify they fail.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_table_facts_normalize.py -v 2>&1 | tail -10`
+Run: `pytest docker/docling-graph/tests/test_table_facts_normalize.py -v 2>&1 | tail -10`
 Expected: FAIL — `normalize_label` not yet defined.
 
 - [ ] **Step 3: Add normalize_label to _table_facts.py.**
@@ -451,7 +467,7 @@ def normalize_label(text: str) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_table_facts_normalize.py -v 2>&1 | tail -10`
+Run: `pytest docker/docling-graph/tests/test_table_facts_normalize.py -v 2>&1 | tail -10`
 Expected: 6/6 pass.
 
 - [ ] **Step 5: Commit.**
@@ -578,7 +594,7 @@ def test_unit_table_includes_canonical_unit():
 
 - [ ] **Step 2: Run tests to verify they fail.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_alias_map.py -v 2>&1 | tail -10`
+Run: `pytest docker/docling-graph/tests/test_alias_map.py -v 2>&1 | tail -10`
 Expected: FAIL — `_alias_map.py` doesn't exist.
 
 - [ ] **Step 3: Create _alias_map.py with empty ALIAS_MAP + populated SECTION_KEYWORDS + UNIT_TABLE + FIELD_SUFFIX_TO_UNIT_CLASS.**
@@ -718,7 +734,7 @@ FIELD_SUFFIX_TO_UNIT_CLASS: dict[str, str] = {
 
 - [ ] **Step 4: Run tests to verify they pass.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_alias_map.py -v 2>&1 | tail -10`
+Run: `pytest docker/docling-graph/tests/test_alias_map.py -v 2>&1 | tail -10`
 
 Expected: All 4 tests pass. The drift-guard tests trivially pass on empty `ALIAS_MAP` (the for-loop never executes); they will start enforcing real constraints in Tasks 4 and 5 when the dict is populated.
 
@@ -803,10 +819,12 @@ def test_kinematics_min_range_aliases():
 
 
 def test_kinematics_altitude_aliases():
-    assert _resolve("Max Alt", None, "missile_kinematics") == "max_altitude_km"
+    """Only the full word 'Altitude' resolves — 'Alt' abbreviation is not in §12b prose."""
     assert _resolve("Max Altitude", None, "missile_kinematics") == "max_altitude_km"
-    assert _resolve("Max Alt km", None, "missile_kinematics") == "max_altitude_km"
-    assert _resolve("Min Alt", None, "missile_kinematics") == "min_altitude_km"
+    assert _resolve("Max Altitude km", None, "missile_kinematics") == "max_altitude_km"
+    assert _resolve("Min Altitude", None, "missile_kinematics") == "min_altitude_km"
+    # "Max Alt" deliberately does NOT resolve (would require §12b prose update).
+    assert _resolve("Max Alt", None, "missile_kinematics") is None
 
 
 def test_kinematics_pass_isolation():
@@ -893,7 +911,7 @@ def test_propulsion_thrust_aliases():
 
 - [ ] **Step 2: Run tests to verify they fail.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_alias_map_missile.py -v 2>&1 | tail -15`
+Run: `pytest docker/docling-graph/tests/test_alias_map_missile.py -v 2>&1 | tail -15`
 Expected: ALL fail — ALIAS_MAP is empty.
 
 - [ ] **Step 3: Populate ALIAS_MAP missile entries.**
@@ -922,19 +940,19 @@ ALIAS_MAP: dict[tuple[str, str | None, str], str] = {
     ("min range km",     None, "missile_kinematics"): "min_intercept_km",
     ("min range m",      None, "missile_kinematics"): "min_intercept_km",
     ("minimum range",    None, "missile_kinematics"): "min_intercept_km",
-    # Altitude -> max_altitude_km
-    ("altitude",          None, "missile_kinematics"): "max_altitude_km",
-    ("max alt",           None, "missile_kinematics"): "max_altitude_km",
-    ("max alt km",        None, "missile_kinematics"): "max_altitude_km",
-    ("max alt m",         None, "missile_kinematics"): "max_altitude_km",
-    ("max altitude",      None, "missile_kinematics"): "max_altitude_km",
-    ("ceiling",           None, "missile_kinematics"): "max_altitude_km",
+    # Altitude -> max_altitude_km. NOTE: §12b prose uses only the full word
+    # "Altitude" — the "Alt" abbreviation is NOT in §12b prose and would fail
+    # the drift guard. We only register the full forms. If real documents use
+    # "Max Alt km" labels we extend the alias map AFTER adding "(Alt is short
+    # for Altitude)" to §12b prose so the drift guard still passes.
+    ("altitude",            None, "missile_kinematics"): "max_altitude_km",
+    ("max altitude",        None, "missile_kinematics"): "max_altitude_km",
+    ("max altitude km",     None, "missile_kinematics"): "max_altitude_km",
+    ("ceiling",             None, "missile_kinematics"): "max_altitude_km",
     ("engagement altitude", None, "missile_kinematics"): "max_altitude_km",
     # Min Altitude -> min_altitude_km
-    ("min alt",           None, "missile_kinematics"): "min_altitude_km",
-    ("min alt km",        None, "missile_kinematics"): "min_altitude_km",
-    ("min alt m",         None, "missile_kinematics"): "min_altitude_km",
-    ("min altitude",      None, "missile_kinematics"): "min_altitude_km",
+    ("min altitude",        None, "missile_kinematics"): "min_altitude_km",
+    ("min altitude km",     None, "missile_kinematics"): "min_altitude_km",
 
     # ============================================================
     # missile_airframe
@@ -1043,7 +1061,7 @@ ALIAS_MAP: dict[tuple[str, str | None, str], str] = {
 
 Run:
 ```bash
-docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_alias_map.py /app/tests/test_alias_map_missile.py -v 2>&1 | tail -25
+pytest docker/docling-graph/tests/test_alias_map.py docker/docling-graph/tests/test_alias_map_missile.py -v 2>&1 | tail -25
 ```
 
 Expected: All tests pass — drift-guard tests AND missile-specific resolution tests both green.
@@ -1142,7 +1160,7 @@ def test_radar_pass_isolation():
 
 - [ ] **Step 2: Run tests, verify they fail.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_alias_map_radar.py -v 2>&1 | tail -10`
+Run: `pytest docker/docling-graph/tests/test_alias_map_radar.py -v 2>&1 | tail -10`
 Expected: ALL fail.
 
 - [ ] **Step 3: Extend ALIAS_MAP with radar entries.**
@@ -1216,7 +1234,7 @@ Edit `docker/docling-graph/app/_alias_map.py`. Append BEFORE the closing `}` of 
 
 Run:
 ```bash
-docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_alias_map.py /app/tests/test_alias_map_missile.py /app/tests/test_alias_map_radar.py -v 2>&1 | tail -25
+pytest docker/docling-graph/tests/test_alias_map.py docker/docling-graph/tests/test_alias_map_missile.py docker/docling-graph/tests/test_alias_map_radar.py -v 2>&1 | tail -25
 ```
 
 Expected: All pass — drift guard accepts every new label-token has a §12b mention; missile + radar resolution tests green.
@@ -1290,7 +1308,7 @@ def test_alias_map_target_fields_exist_on_schemas():
 
 - [ ] **Step 2: Run tests.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_alias_map.py -v 2>&1 | tail -15`
+Run: `pytest docker/docling-graph/tests/test_alias_map.py -v 2>&1 | tail -15`
 
 Expected: All 5 tests pass (4 prior + 1 new). If the new test fails with `'sustain_thrust' missing` or similar, the schema field doesn't exist as named — reconcile by either renaming the alias-map target OR adding the missing schema field.
 
@@ -1425,7 +1443,7 @@ def test_other_shape_when_neither_pattern_matches():
 
 - [ ] **Step 2: Run tests, verify they fail.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_table_facts_shape.py -v 2>&1 | tail -10`
+Run: `pytest docker/docling-graph/tests/test_table_facts_shape.py -v 2>&1 | tail -10`
 
 - [ ] **Step 3: Add detect_table_shape to _table_facts.py.**
 
@@ -1847,27 +1865,28 @@ def test_empty_data_cell_excluded_from_composite():
     assert ids[3] == "S-75M 13DM"
 
 
-def test_collision_last_write_wins(monkeypatch):
-    """Two columns with same composite — last one wins, FactStats mutation handled by orchestrator."""
+def test_collision_last_write_wins():
+    """Two columns producing the same composite — last one wins.
+    derive_entity_ids deduplicates so only one entry per unique composite
+    appears in the result. The orchestrator detects collision counts by
+    comparing all_cols size to returned ids size."""
     tf = _load()
     rows = [
         _row(0, "Missile Type", {1: "1D", 2: "1D", 3: "13DM"}),
     ]
     ids = tf.derive_entity_ids(rows, tf.Shape.COLUMN_MAJOR)
-    # Both cols 1 and 2 produce "1D"; last col wins. The orchestrator
-    # increments hybrid_collisions; derive_entity_ids itself does not see
-    # FactStats — it just returns the dict.
-    # The dict has key 1 OR 2 with value "1D" (depending on iteration order),
-    # plus key 3 = "13DM".
-    assert ids[3] == "13DM"
-    # At most one of (1, 2) appears (last write wins). The collision is
-    # detected by the orchestrator by counting unique vs total composites
-    # at the call site; derive_entity_ids returns whatever the dict has.
+    # "1D" appeared in cols 1 and 2; only col 2 (last) should appear.
+    # "13DM" appeared in col 3; appears in result.
+    assert ids == {2: "1D", 3: "13DM"}
+    # Total source cols: 3. Returned ids: 2. Collision count = 1.
 ```
 
-- [ ] **Step 2-4:** Run failing → implement → run passing.
+- [ ] **Step 2: Run tests, verify they fail.**
 
-Implementation:
+Run: `pytest docker/docling-graph/tests/$TEST_FILE -v 2>&1 | tail -10`
+Expected: FAIL — function not yet defined (NameError or AttributeError).
+
+- [ ] **Step 3: Implement.**
 
 ```python
 # ============================================================
@@ -1880,10 +1899,12 @@ def derive_entity_ids(rows: list[LabelRow], shape: Shape) -> dict[int, str]:
     For COLUMN_MAJOR: single key-label row's data_cells become entity_ids.
     For HYBRID: multiple key-label rows produce composite identities by
         concatenating non-empty cells in row order.
-    For ROW_MAJOR: identity column already populated by extract_label_rows
-        as col 0 cell text — but our LabelRow stream excluded col 0; the
-        identity comes from cells[start_col_offset_idx == 0] of the source
-        table, which we re-derive here.
+
+    Composite collisions (two columns producing the same entity_id) are
+    resolved last-write-wins: only the latest column with that identity
+    appears in the returned dict. The orchestrator detects collisions by
+    comparing the count of source columns to the count of returned ids
+    (incrementing FactStats.hybrid_collisions for the difference).
     """
     key_rows = [r for r in rows if _looks_like_key_label(r["label_text"])]
     if not key_rows:
@@ -1894,7 +1915,8 @@ def derive_entity_ids(rows: list[LabelRow], shape: Shape) -> dict[int, str]:
     for kr in key_rows:
         all_cols.update(kr["data_cells"].keys())
 
-    ids: dict[int, str] = {}
+    # Build (col -> composite_id) preserving column iteration order.
+    raw: dict[int, str] = {}
     for col in sorted(all_cols):
         parts = []
         for kr in key_rows:  # rows already sorted by row_idx
@@ -1902,9 +1924,21 @@ def derive_entity_ids(rows: list[LabelRow], shape: Shape) -> dict[int, str]:
             if cell:
                 parts.append(cell)
         if parts:
-            ids[col] = " ".join(parts)
-    return ids
+            raw[col] = " ".join(parts)
+
+    # Apply last-write-wins on duplicate composites: track which
+    # composite_id last appeared at which column, then keep only those cols.
+    last_col_for_id: dict[str, int] = {}
+    for col in sorted(raw):
+        last_col_for_id[raw[col]] = col
+
+    return {col: composite for composite, col in last_col_for_id.items()}
 ```
+
+- [ ] **Step 4: Run tests, verify they pass.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_entity_ids.py -v 2>&1 | tail -10`
+Expected: 5/5 pass.
 
 - [ ] **Step 5: Commit.**
 
@@ -2012,9 +2046,12 @@ def test_embedded_wins_over_header_row():
     assert contexts[1] == "2nd Stage"  # embedded wins
 ```
 
-- [ ] **Step 2-4:** Run failing → implement → run passing.
+- [ ] **Step 2: Run tests, verify they fail.**
 
-Implementation:
+Run: `pytest docker/docling-graph/tests/$TEST_FILE -v 2>&1 | tail -10`
+Expected: FAIL — function not yet defined (NameError or AttributeError).
+
+- [ ] **Step 3: Implement.**
 
 ```python
 # ============================================================
@@ -2108,6 +2145,11 @@ def _matching_keyword(label: str, keywords: tuple[str, ...]) -> str | None:
     return None
 ```
 
+- [ ] **Step 4: Run tests, verify they pass.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_sections.py -v 2>&1 | tail -10`
+Expected: 4/4 pass.
+
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -2190,6 +2232,11 @@ def resolve_alias(
     return ALIAS_MAP.get(key)
 ```
 
+- [ ] **Step 4: Run tests, verify they pass.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_resolve.py -v 2>&1 | tail -10`
+Expected: 4/4 pass.
+
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -2243,16 +2290,41 @@ def test_numeric_single_value_implied_unit_from_field_suffix():
     assert out[0].value == 1135.0
 
 
-def test_numeric_unit_conversion_mm_to_m():
-    """body_length_m + cell '10726' (mm) -> 10.726 m."""
+def test_numeric_unit_conversion_mm_to_m_explicit():
+    """Cell has explicit unit '10726 mm' -> 10.726 m via mm conversion."""
     tf = _load()
-    # Implied unit from cell context: row label "Length mm" would be passed
-    # in via the row_label_unit_hint param; here we test the simple case
-    # where the field name is the only signal AND the cell has explicit "mm".
     out = tf.coerce_value("10726 mm", "body_length_m")
     assert len(out) == 1
     assert abs(out[0].value - 10.726) < 1e-6
     assert out[0].conversion_factor == 0.001
+
+
+def test_numeric_unit_conversion_mm_to_m_via_row_label():
+    """Cell '10726' (no unit) + row_label 'Length mm' -> mm implied -> 10.726 m.
+    This is the SA-2 PDF case: spec values are stored as bare numbers in the
+    cell with the unit declared in the row label."""
+    tf = _load()
+    out = tf.coerce_value("10726", "body_length_m", row_label="Length mm")
+    assert len(out) == 1
+    assert abs(out[0].value - 10.726) < 1e-6
+
+
+def test_numeric_unit_from_row_label_kg():
+    """Cell '1135' + row_label '1st Stage Weight kg' -> kg implied."""
+    tf = _load()
+    out = tf.coerce_value("1135", "booster_mass_kg", row_label="1st Stage Weight kg")
+    assert len(out) == 1
+    assert out[0].value == 1135.0
+    assert out[0].unit_inferred == "kg"
+
+
+def test_numeric_no_unit_anywhere_falls_back_to_canonical():
+    """Cell '1135' + no row_label -> assumed canonical unit (kg) since the
+    field is *_kg. The coerce succeeds because there's nothing to convert."""
+    tf = _load()
+    out = tf.coerce_value("1135", "booster_mass_kg")
+    assert len(out) == 1
+    assert out[0].value == 1135.0
 
 
 def test_multi_value_alternatives_slash():
@@ -2320,7 +2392,12 @@ def test_unknown_unit_returns_empty():
     assert tf.coerce_value("1135 furlongs", "booster_mass_kg") == []
 ```
 
-- [ ] **Step 2-4:** Implement coerce_value with multi-value parsing + unit conversion.
+- [ ] **Step 2: Run tests, verify they fail.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_coerce.py -v 2>&1 | tail -10`
+Expected: FAIL — `coerce_value` not defined.
+
+- [ ] **Step 3: Implement coerce_value with multi-value parsing + unit conversion.**
 
 ```python
 # ============================================================
@@ -2342,8 +2419,20 @@ _RANGE_SEPARATORS_TEXT = (" to ", " - ", "-")  # handled in _split_values
 _ALTERNATIVE_SEPARATOR = "/"
 
 
-def coerce_value(cell_text: str, schema_field: str) -> list[ParsedValue]:
-    """Parse cell into 0+ ParsedValues. See spec §5.6 for the policy."""
+def coerce_value(
+    cell_text: str,
+    schema_field: str,
+    *,
+    row_label: str = "",
+) -> list[ParsedValue]:
+    """Parse cell into 0+ ParsedValues. See spec §5.6 for the policy.
+
+    `row_label` is the row's label text (e.g., "Length mm"), used as a
+    fallback unit hint when the cell value itself has no explicit unit.
+    SA-2-style tables store bare numbers in cells with units declared in
+    the row label — without this hint, '10726' for body_length_m would
+    coerce to 10726 metres instead of 10.726.
+    """
     raw = cell_text
     # Stop-word check on stripped/lowered raw text (with dash collapse).
     stop_check = _DASH_CLASS.sub("-", raw.strip()).lower()
@@ -2375,12 +2464,18 @@ def coerce_value(cell_text: str, schema_field: str) -> list[ParsedValue]:
     if not parsed:
         return []
 
+    # Determine the implied unit fallback chain:
+    # 1. Explicit unit in the cell fragment (preferred).
+    # 2. Implied unit from the row label (e.g., "Length mm" -> "mm").
+    # 3. Canonical unit for the field's unit class (factor 1.0).
+    label_implied_unit = _extract_unit_from_label(row_label, unit_class, UNIT_TABLE)
+
     # Apply unit conversion using the schema field's unit class.
     out: list[ParsedValue] = []
     for value, unit_str in parsed:
         if unit_str is None:
-            # Implied unit from field suffix: assume canonical.
-            unit_str = _canonical_unit_for_class(unit_class, UNIT_TABLE)
+            # No explicit unit in cell fragment — try row label, then canonical.
+            unit_str = label_implied_unit or _canonical_unit_for_class(unit_class, UNIT_TABLE)
         unit_norm = unit_str.lower()
         unit_table = UNIT_TABLE.get(unit_class) or {}
         factor = unit_table.get(unit_norm)
@@ -2423,6 +2518,37 @@ def _canonical_unit_for_class(unit_class: str, unit_table: dict) -> str:
         if factor == 1.0:
             return unit
     return ""
+
+
+def _extract_unit_from_label(
+    row_label: str, unit_class: str, unit_table: dict
+) -> str | None:
+    """Scan the row label for any token matching a unit in the field's unit
+    class. Used when the cell has no explicit unit but the label does
+    (e.g., "Length mm", "Weight kg").
+
+    Returns the matched unit (lowercased) or None. Longest-token-first match
+    so 'kg' beats 'g' on labels like 'Weight kg'.
+    """
+    if not row_label:
+        return None
+    table = unit_table.get(unit_class) or {}
+    label_lower = row_label.lower()
+    # Sort by descending length so 'kg' wins over 'g' on a label like
+    # 'Weight kg'.
+    for unit in sorted(table.keys(), key=len, reverse=True):
+        # Use word-boundary-style match: unit appears as its own token or
+        # at the end of the label. For single-letter units (e.g., 'm', 'g')
+        # require word boundary on both sides to avoid 'm' matching inside
+        # 'mass' or 'mm'.
+        if len(unit) <= 2:
+            pattern = re.compile(rf"(?:^|[\s,.;:/\\\-])({re.escape(unit)})(?:$|[\s,.;:/\\\-])")
+            if pattern.search(label_lower):
+                return unit
+        else:
+            if unit in label_lower:
+                return unit
+    return None
 
 
 def _split_values(cell_text: str) -> tuple[list[str], bool]:
@@ -2481,6 +2607,11 @@ def _parse_number_and_unit(text: str) -> tuple[float, str | None] | None:
         return None
     return value, unit_str
 ```
+
+- [ ] **Step 4: Run tests, verify they pass.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_coerce.py -v 2>&1 | tail -15`
+Expected: 13/13 pass (covers stop-words, single-value, multi-value alternatives, range collapse, unit conversion explicit + via row label, string passthrough, unparseable + unknown unit).
 
 - [ ] **Step 5: Commit.**
 
@@ -2570,7 +2701,12 @@ def test_emit_fact_int_value_formatted_without_decimal():
     assert " = 1135 " in item["text"]
 ```
 
-- [ ] **Step 2-4:** Implement emit_fact.
+- [ ] **Step 2: Run tests, verify they fail.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_emit.py -v 2>&1 | tail -10`
+Expected: FAIL — `emit_fact` not defined.
+
+- [ ] **Step 3: Implement emit_fact.**
 
 ```python
 # ============================================================
@@ -2625,6 +2761,11 @@ def _format_value(value: float | int | str) -> str:
         return str(value)
     return str(value)
 ```
+
+- [ ] **Step 4: Run tests, verify they pass.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_emit.py -v 2>&1 | tail -10`
+Expected: 4/4 pass.
 
 - [ ] **Step 5: Commit.**
 
@@ -2694,7 +2835,7 @@ def _sa2_shaped_doc():
         _cell("Max Range km",        1, 0, row_header=True),
         _cell("29",  1, 1), _cell("34",  1, 2), _cell("43",   1, 3),
 
-        _cell("Max Alt km",          2, 0, row_header=True),
+        _cell("Max Altitude km",     2, 0, row_header=True),
         _cell("22",  2, 1), _cell("27",  2, 2), _cell("30",   2, 3),
 
         _cell("Length mm",           3, 0, row_header=True),
@@ -2902,13 +3043,18 @@ def synthesize_table_facts(
             # No identifiable entities — skip the whole table.
             continue
 
-        # Detect HYBRID composite collisions (last-write-wins).
-        if shape == Shape.HYBRID:
-            key_rows = [r for r in rows if _looks_like_key_label(r["label_text"])]
-            all_cols = set()
-            for kr in key_rows:
-                all_cols.update(kr["data_cells"].keys())
-            stats.hybrid_collisions += max(0, len(all_cols) - len(entity_ids))
+        # Detect collisions: derive_entity_ids deduplicates composites
+        # (last-write-wins), so any difference between source-column count
+        # and returned-id count indicates collisions. Applies to all shapes
+        # (HYBRID is most common but column-major can collide too if two
+        # columns happen to share the same identity row value).
+        key_rows = [r for r in rows if _looks_like_key_label(r["label_text"])]
+        source_cols: set[int] = set()
+        for kr in key_rows:
+            source_cols.update(
+                col for col, cell in kr["data_cells"].items() if cell.strip()
+            )
+        stats.hybrid_collisions += max(0, len(source_cols) - len(entity_ids))
 
         sectioned = detect_section_context(rows)
 
@@ -2933,7 +3079,13 @@ def synthesize_table_facts(
                     stats.rows_skipped_unresolvable += 1
                     continue
 
-                parsed = coerce_value(cell_text, schema_field)
+                # Pass row_label so coerce_value can extract implied units
+                # (e.g., "Length mm" -> mm conversion for body_length_m).
+                # Use the original row's label if section was stripped, since
+                # the original label is what carries the unit token.
+                parsed = coerce_value(
+                    cell_text, schema_field, row_label=row["label_text"]
+                )
                 if not parsed:
                     stats.values_skipped_unparseable += 1
                     continue
@@ -3055,7 +3207,7 @@ def test_prompt_contains_synthesized_facts_in_emit_format():
 
 - [ ] **Step 2: Run, verify it passes (it doesn't depend on main.py changes — it's testing the synthesizer's output format).**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_table_facts_prompt_content.py -v 2>&1 | tail -10`
+Run: `pytest docker/docling-graph/tests/test_table_facts_prompt_content.py -v 2>&1 | tail -10`
 Expected: 1/1 pass.
 
 - [ ] **Step 3: Modify main.py — replace B1+B2 hook with synthesize_table_facts.**
@@ -3110,25 +3262,35 @@ with:
         fact_stats = FactStats.empty()
 ```
 
-Then in the diagnostics block at line ~1150 area, append:
+Locate the diagnostics block — first verify the actual line number with grep:
+
+```bash
+grep -n 'diagnostics\["service_identity_gate"\]' docker/docling-graph/app/main.py
+```
+
+Expected: one hit (current state). Append the new line directly after the
+`service_identity_gate` assignment:
+
 ```python
         diagnostics["service_table_facts"] = fact_stats.as_dict()
 ```
 
-(Insert it next to existing `diagnostics["service_identity_gate"] = ...` line.)
+The fact_stats variable is in scope from the synthesizer call above. Verify
+after editing: `grep -n 'service_table_facts' docker/docling-graph/app/main.py`
+should produce one hit.
 
-- [ ] **Step 4: Run all unit + integration tests inside the container after rebuild.**
+- [ ] **Step 4: Rebuild container, then run all tests on host.**
 
 ```bash
 docker compose build docling-graph && docker compose up -d docling-graph
 sleep 10
-docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests -v 2>&1 | tail -20
+pytest docker/docling-graph/tests -v 2>&1 | tail -20
 ```
 
-Expected: All tests green. The `_table_pivot.py` import is removed; existing
-test_table_pivot.py still imports `_table_pivot.py` directly (loadable
-standalone), so that test keeps passing as a regression for the deprecated
-path.
+Expected: All tests green. The `_table_pivot.py` import is removed from
+main.py; existing test_table_pivot.py still imports `_table_pivot.py`
+directly via `importlib.util` (loadable standalone), so that test keeps
+passing as a regression for the deprecated path.
 
 - [ ] **Step 5: Commit.**
 
@@ -3187,7 +3349,7 @@ Original docstring follows.
 
 - [ ] **Step 2: Verify the test file still loads.**
 
-Run: `docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests/test_table_pivot.py -v 2>&1 | tail -5`
+Run: `pytest docker/docling-graph/tests/test_table_pivot.py -v 2>&1 | tail -5`
 Expected: All test_table_pivot tests still pass — module is still importable
 even after main.py drops the import. The test file uses `importlib.util` to
 load it standalone, independent of the rest of the service.
@@ -3247,10 +3409,10 @@ docker exec eip-mmdpp-docling-graph-1 curl -s http://localhost:8002/health
 
 Expected: 200 OK response.
 
-- [ ] **Step 4: Run all tests inside the container.**
+- [ ] **Step 4: Run all tests on host.**
 
 ```bash
-docker exec eip-mmdpp-docling-graph-1 python -m pytest /app/tests -v 2>&1 | tail -25
+pytest docker/docling-graph/tests -v 2>&1 | tail -25
 ```
 
 Expected: All test files green (test_alias_map, test_alias_map_missile,
