@@ -19,7 +19,142 @@ from __future__ import annotations
 # AliasKey: tuple[str, SectionContext, str] = (label_normalized, section_ctx, pass_name)
 # Value: canonical schema field name (e.g., "booster_mass_kg").
 # Populated in Tasks 4 (missile passes) and 5 (radar passes).
-ALIAS_MAP: dict[tuple[str, str | None, str], str] = {}
+# IMPORTANT: keys are pre-normalized via _table_facts.normalize_label.
+# Authors must lowercase, strip punctuation per the normalizer rules, and
+# leave hyphens intact. The drift-guard test enforces this match against
+# §12b prose tokens in prompt_rules.DELTA_SYSTEM_PROMPT.
+ALIAS_MAP: dict[tuple[str, str | None, str], str] = {
+    # ============================================================
+    # missile_kinematics
+    # ============================================================
+    # Range -> max_intercept_km
+    ("range",            None, "missile_kinematics"): "max_intercept_km",
+    ("max range",        None, "missile_kinematics"): "max_intercept_km",
+    ("max range km",     None, "missile_kinematics"): "max_intercept_km",
+    ("max range m",      None, "missile_kinematics"): "max_intercept_km",
+    ("maximum range",    None, "missile_kinematics"): "max_intercept_km",
+    ("effective range",  None, "missile_kinematics"): "max_intercept_km",
+    ("engagement range", None, "missile_kinematics"): "max_intercept_km",
+    # Min Range -> min_intercept_km
+    ("min range",        None, "missile_kinematics"): "min_intercept_km",
+    ("min range km",     None, "missile_kinematics"): "min_intercept_km",
+    ("min range m",      None, "missile_kinematics"): "min_intercept_km",
+    ("minimum range",    None, "missile_kinematics"): "min_intercept_km",
+    # Altitude -> max_altitude_km. NOTE: §12b prose uses only the full word
+    # "Altitude" — the "Alt" abbreviation is NOT in §12b prose and would fail
+    # the drift guard. We only register the full forms. If real documents use
+    # "Max Alt km" labels we extend the alias map AFTER adding "(Alt is short
+    # for Altitude)" to §12b prose so the drift guard still passes.
+    ("altitude",            None, "missile_kinematics"): "max_altitude_km",
+    ("max altitude",        None, "missile_kinematics"): "max_altitude_km",
+    ("max altitude km",     None, "missile_kinematics"): "max_altitude_km",
+    ("ceiling",             None, "missile_kinematics"): "max_altitude_km",
+    ("engagement altitude", None, "missile_kinematics"): "max_altitude_km",
+    # Min Altitude -> min_altitude_km
+    ("min altitude",        None, "missile_kinematics"): "min_altitude_km",
+    ("min altitude km",     None, "missile_kinematics"): "min_altitude_km",
+
+    # ============================================================
+    # missile_airframe
+    # ============================================================
+    ("length",           None, "missile_airframe"): "body_length_m",
+    ("length mm",        None, "missile_airframe"): "body_length_m",
+    ("length m",         None, "missile_airframe"): "body_length_m",
+    ("overall length",   None, "missile_airframe"): "body_length_m",
+    ("missile length",   None, "missile_airframe"): "body_length_m",
+    ("body length",      None, "missile_airframe"): "body_length_m",
+
+    ("diameter",         None, "missile_airframe"): "body_diameter_m",
+    ("diameter mm",      None, "missile_airframe"): "body_diameter_m",
+    ("body diameter",    None, "missile_airframe"): "body_diameter_m",
+    ("calibre",          None, "missile_airframe"): "body_diameter_m",
+    ("caliber",          None, "missile_airframe"): "body_diameter_m",
+
+    # Total mass — when section_ctx is None, "Weight" / "Mass" map to total.
+    ("weight",           None, "missile_airframe"): "total_mass_kg",
+    ("weight kg",        None, "missile_airframe"): "total_mass_kg",
+    ("mass",             None, "missile_airframe"): "total_mass_kg",
+    ("mass kg",          None, "missile_airframe"): "total_mass_kg",
+    ("total weight",     None, "missile_airframe"): "total_mass_kg",
+    ("total weight kg",  None, "missile_airframe"): "total_mass_kg",
+    ("launch weight",    None, "missile_airframe"): "total_mass_kg",
+    ("launch mass",      None, "missile_airframe"): "total_mass_kg",
+
+    # ============================================================
+    # missile_speed_timing
+    # ============================================================
+    ("speed",            None, "missile_speed_timing"): "max_speed_mps",
+    ("max speed",        None, "missile_speed_timing"): "max_speed_mps",
+    ("max speed m s",    None, "missile_speed_timing"): "max_speed_mps",
+    ("max speed mps",    None, "missile_speed_timing"): "max_speed_mps",
+    ("velocity",         None, "missile_speed_timing"): "max_speed_mps",
+    ("maximum velocity", None, "missile_speed_timing"): "max_speed_mps",
+    ("average speed",    None, "missile_speed_timing"): "average_speed_mps",
+    ("flight time",      None, "missile_speed_timing"): "flight_time_sec",
+    ("time of flight",   None, "missile_speed_timing"): "flight_time_sec",
+    ("flyout time",      None, "missile_speed_timing"): "max_flyout_time_sec",
+    ("burn time",        None, "missile_speed_timing"): "total_burn_time_sec",
+
+    # ============================================================
+    # missile_propulsion
+    # ============================================================
+    # Booster (1st Stage) — Weight maps to booster_mass_kg.
+    ("weight",      "1st Stage", "missile_propulsion"): "booster_mass_kg",
+    ("weight kg",   "1st Stage", "missile_propulsion"): "booster_mass_kg",
+    ("mass",        "1st Stage", "missile_propulsion"): "booster_mass_kg",
+    ("mass kg",     "1st Stage", "missile_propulsion"): "booster_mass_kg",
+    ("weight",      "Booster",   "missile_propulsion"): "booster_mass_kg",
+    ("weight kg",   "Booster",   "missile_propulsion"): "booster_mass_kg",
+    ("mass",        "Booster",   "missile_propulsion"): "booster_mass_kg",
+    ("mass kg",     "Booster",   "missile_propulsion"): "booster_mass_kg",
+    # Booster — Time maps to booster_time_sec.
+    ("time",        "1st Stage", "missile_propulsion"): "booster_time_sec",
+    ("time sec",    "1st Stage", "missile_propulsion"): "booster_time_sec",
+    ("burn time",   "1st Stage", "missile_propulsion"): "booster_time_sec",
+    ("time",        "Booster",   "missile_propulsion"): "booster_time_sec",
+    ("time sec",    "Booster",   "missile_propulsion"): "booster_time_sec",
+    ("burn time",   "Booster",   "missile_propulsion"): "booster_time_sec",
+    # Booster — Thrust (string field; passthrough).
+    ("thrust",      "1st Stage", "missile_propulsion"): "booster_thrust",
+    ("thrust",      "Booster",   "missile_propulsion"): "booster_thrust",
+
+    # Sustainer (2nd Stage) — Weight maps to sustain_mass_kg.
+    ("weight",      "2nd Stage", "missile_propulsion"): "sustain_mass_kg",
+    ("weight kg",   "2nd Stage", "missile_propulsion"): "sustain_mass_kg",
+    ("mass",        "2nd Stage", "missile_propulsion"): "sustain_mass_kg",
+    ("mass kg",     "2nd Stage", "missile_propulsion"): "sustain_mass_kg",
+    ("weight",      "Sustainer", "missile_propulsion"): "sustain_mass_kg",
+    ("weight kg",   "Sustainer", "missile_propulsion"): "sustain_mass_kg",
+    ("mass",        "Sustainer", "missile_propulsion"): "sustain_mass_kg",
+    ("mass kg",     "Sustainer", "missile_propulsion"): "sustain_mass_kg",
+    ("weight",      "Sustain",   "missile_propulsion"): "sustain_mass_kg",
+    ("weight kg",   "Sustain",   "missile_propulsion"): "sustain_mass_kg",
+    ("mass",        "Sustain",   "missile_propulsion"): "sustain_mass_kg",
+    ("mass kg",     "Sustain",   "missile_propulsion"): "sustain_mass_kg",
+    # Sustainer — Time maps to sustain_time_sec.
+    ("time",        "2nd Stage", "missile_propulsion"): "sustain_time_sec",
+    ("time sec",    "2nd Stage", "missile_propulsion"): "sustain_time_sec",
+    ("burn time",   "2nd Stage", "missile_propulsion"): "sustain_time_sec",
+    ("time",        "Sustainer", "missile_propulsion"): "sustain_time_sec",
+    ("time sec",    "Sustainer", "missile_propulsion"): "sustain_time_sec",
+    ("burn time",   "Sustainer", "missile_propulsion"): "sustain_time_sec",
+    ("time",        "Sustain",   "missile_propulsion"): "sustain_time_sec",
+    ("time sec",    "Sustain",   "missile_propulsion"): "sustain_time_sec",
+    ("burn time",   "Sustain",   "missile_propulsion"): "sustain_time_sec",
+    # Sustainer — Thrust (string field; passthrough).
+    ("thrust",      "2nd Stage", "missile_propulsion"): "sustain_thrust",
+    ("thrust",      "Sustainer", "missile_propulsion"): "sustain_thrust",
+    ("thrust",      "Sustain",   "missile_propulsion"): "sustain_thrust",
+
+    # Ejector — Weight / Time / Thrust under Ejector section.
+    ("weight",      "Ejector",   "missile_propulsion"): "ejector_mass_kg",
+    ("weight kg",   "Ejector",   "missile_propulsion"): "ejector_mass_kg",
+    ("mass",        "Ejector",   "missile_propulsion"): "ejector_mass_kg",
+    ("mass kg",     "Ejector",   "missile_propulsion"): "ejector_mass_kg",
+    ("time",        "Ejector",   "missile_propulsion"): "ejector_time_sec",
+    ("time sec",    "Ejector",   "missile_propulsion"): "ejector_time_sec",
+    ("thrust",      "Ejector",   "missile_propulsion"): "ejector_thrust",
+}
 
 # Section keywords detected by the embedded substring scan in
 # detect_section_context (spec §5.4 strategy 1) and the standalone-row
