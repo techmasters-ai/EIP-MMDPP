@@ -129,6 +129,59 @@ When `false`, `extract_table_overlay` short-circuits to empty `TableOverlay`;
 worker-side overlay is a no-op. Restart docling-graph + worker (env var
 change) → fully reverted to pre-overlay behavior.
 
+### 4.4 Coordination with concurrent plan: per-pass Celery tasks
+
+A separate plan (`docs/superpowers/plans/2026-05-06-per-pass-celery-tasks.md`)
+restructures the worker's `derive_ontology_graph` Celery task into per-pass
+tasks plus a fan-in merge callback. That plan introduces a new
+`ingest.pipeline_pass_outputs` table that persists each pass's `pass_output`,
+metadata, and provenance, with the merge step loading from the DB rather
+than from an in-memory `dict[str, PassResult]`.
+
+**Interaction surface:** This spec adds a `table_overlay: TableOverlay | None`
+attribute to `PassResult`. If the Celery plan lands first, the per-pass
+extraction state is read back from `pipeline_pass_outputs.metadata_json` at
+merge time, so the table overlay must travel with that state. The two plans
+overlap in:
+
+| File / table | This spec | Celery plan |
+|---|---|---|
+| `app/workers/pipeline.py` | `_call_extract_pass` reads `table_overlay` from response and stashes on `PassResult` (~10 LOC) | New `derive_ontology_graph_pass` + `derive_ontology_graph_merge` tasks; refactor `derive_ontology_graph` to dispatcher (substantial) |
+| `pipeline_pass_outputs` table | Needs to carry `TableOverlay` JSON | Owns the schema |
+| `merge_and_resolve` invocation | Adds Phase 0.5 (field overlay) inside the function | Changes WHERE the function is called from (chord callback rather than inline) — the function body change here composes cleanly |
+
+**Persistence approach (agreed coordination): stash inside `metadata_json`.**
+Whichever plan lands first writes the glue:
+
+```python
+# Celery-plan-side, when persisting a pass's output:
+metadata_json["table_overlay"] = (
+    response.table_overlay.model_dump(mode="json") if response.table_overlay else None
+)
+
+# Merge-callback-side, when loading back:
+overlay_dict = pass_output_record.metadata_json.get("table_overlay")
+table_overlay = TableOverlay.model_validate(overlay_dict) if overlay_dict else None
+# Then attach: pass_result.table_overlay = table_overlay
+# _extract_doc_overlay(pass_results) picks it up unchanged.
+```
+
+Adding a dedicated `table_overlay_json` column instead is feasible but
+requires a separate Alembic migration; not justified at v1 (single doc class
+benefits from this overlay; metadata_json is the lower-friction site).
+
+**Sequencing implications:**
+- Celery plan first → this spec's worker-side wire-up adds two lines (write/read on `metadata_json["table_overlay"]`).
+- This spec first → Celery plan's persistence schema needs to know about `PassResult.table_overlay` and round-trip it through `metadata_json`.
+- Both in flight → agree on `metadata_json["table_overlay"]` shape upfront; conflicts limited to `app/workers/pipeline.py` rebase.
+
+The functional logic of identity rewrite + field overlay (this spec's
+substance) is independent of how pass results travel through the worker —
+in-memory dict, persisted DB rows, or any future storage doesn't change
+how `apply_identity_rewrite` and `apply_field_overlay` operate on the
+Pydantic instances they're handed. The Celery plan only affects the
+plumbing, not the algorithms.
+
 ## 5. Components
 
 ### 5.1 `_alias_map.py` — Constants
