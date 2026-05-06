@@ -315,3 +315,49 @@ def _extract_row_major(cells: list[dict]) -> list[LabelRow]:
         rows_by_label[label_cols[col]]["data_cells"][row] = text
 
     return list(rows_by_label.values())
+
+
+# ============================================================
+# Pipeline step 3: derive_entity_ids (spec §5.3.5)
+# ============================================================
+
+def derive_entity_ids(rows: list[LabelRow], shape: Shape) -> dict[int, str]:
+    """Map entity_col -> entity_id from key-label rows.
+
+    For COLUMN_MAJOR: single key-label row's data_cells become entity_ids.
+    For HYBRID: multiple key-label rows produce composite identities by
+        concatenating non-empty cells in row order.
+
+    Composite collisions (two columns producing the same entity_id) are
+    resolved last-write-wins: only the latest column with that identity
+    appears in the returned dict. The orchestrator detects collisions by
+    comparing the count of source columns to the count of returned ids
+    (incrementing FactStats.hybrid_collisions for the difference).
+    """
+    key_rows = [r for r in rows if _looks_like_key_label(r["label_text"])]
+    if not key_rows:
+        return {}
+
+    # Collect all entity_cols seen across key rows.
+    all_cols: set[int] = set()
+    for kr in key_rows:
+        all_cols.update(kr["data_cells"].keys())
+
+    # Build (col -> composite_id) preserving column iteration order.
+    raw: dict[int, str] = {}
+    for col in sorted(all_cols):
+        parts = []
+        for kr in key_rows:  # rows already sorted by row_idx
+            cell = kr["data_cells"].get(col, "").strip()
+            if cell:
+                parts.append(cell)
+        if parts:
+            raw[col] = " ".join(parts)
+
+    # Apply last-write-wins on duplicate composites: track which
+    # composite_id last appeared at which column, then keep only those cols.
+    last_col_for_id: dict[str, int] = {}
+    for col in sorted(raw):
+        last_col_for_id[raw[col]] = col
+
+    return {col: composite for composite, col in last_col_for_id.items()}
