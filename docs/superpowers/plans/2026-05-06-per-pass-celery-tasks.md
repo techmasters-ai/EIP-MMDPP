@@ -58,7 +58,7 @@ This plan builds on those.
 |---|---|
 | `app/models/ingest.py` | Add `PipelinePassOutput` model; add `dispatched_phases JSONB DEFAULT '{}'` column on `PipelineRun` |
 | `alembic/versions/<hash>_add_pipeline_pass_outputs.py` | Migration: table + column |
-| `app/services/pass_outputs_store.py` | `save_pass_output`, `load_pass_output`, `load_completed_pass_outputs`, `count_completed_passes`, `count_terminal_passes`, `is_pass_already_completed` |
+| `app/services/pass_outputs_store.py` | `save_pass_output`, `load_pass_output`, `load_completed_pass_outputs`, `count_completed_passes`, `count_terminal_passes`, `is_pass_already_resolved` |
 | `app/services/run_phase_dispatch.py` | State-machine helpers: `claim_phase`, `mark_phase_dispatched`, `mark_phase_terminal`, `reclaim_stale_phase`, `is_run_cancelled`, `read_phase_state` |
 | `app/workers/pipeline.py` | Refactor: extract `_execute_pass_attempt` helper from `_run_single_pass`; new `derive_ontology_graph_pass`, `derive_ontology_graph_merge`, `reconcile_ontology_graph_runs` tasks; rewrite `derive_ontology_graph` as dispatcher; trim outer chain in `start_ingest_pipeline` and `reingest_graph_only` |
 | `app/workers/celery_app.py` | Beat entry for the reconciler |
@@ -143,16 +143,16 @@ Steps:
 **Files:** `app/services/pass_outputs_store.py`, `tests/unit/test_pass_outputs_store.py`
 
 Critical contracts:
-- `is_pass_already_completed`: returns true iff `execution_status='COMPLETE'`. **EMPTY/DEGRADED yield_status both count.**
+- `is_pass_already_resolved`: returns true iff a terminal row exists in ANY `execution_status` (`COMPLETE`, `FAILED`, or `SKIPPED`). Used by the per-pass Celery task's skip-if-done check — covers successful (`COMPLETE`), terminally-failed (`FAILED`, retries exhausted), and authorized-skipped (`SKIPPED`) passes. EMPTY/DEGRADED yield_status both count as COMPLETE for this check.
 - `count_completed_passes`: counts distinct passes with `execution_status='COMPLETE'`.
 - `count_terminal_passes(run_id, pass_names)`: counts distinct passes in `pass_names` with `execution_status` ∈ {`COMPLETE`, `FAILED`, `SKIPPED`}. Used by fan-in to know "all entity passes resolved." **A `FAILED` optional pass and an authorized `SKIPPED` pass both count as resolved.**
 
 Tests must include:
-- `test_empty_yield_is_completed` — `execution_status=COMPLETE, yield_status=EMPTY` → `is_pass_already_completed=True`
+- `test_empty_yield_is_completed` — `execution_status=COMPLETE, yield_status=EMPTY` → `is_pass_already_resolved=True`
 - `test_skipped_pass_with_reason_persists` — round-trip `skip_reason='NO_UPSTREAM_ENDPOINTS'`
 - `test_count_terminal_includes_failed_and_skipped` — verifies fan-in semantics
-- `test_count_completed_excludes_failed_and_skipped` — verifies merge-input filtering
-- `test_save_overwrites_same_attempt` — upsert semantics
+- `test_load_completed_excludes_failed_and_skipped` — verifies merge-input filtering
+- `test_save_overwrites_same_run_pass` — upsert semantics
 
 Steps:
 - [ ] **2.1** Write tests

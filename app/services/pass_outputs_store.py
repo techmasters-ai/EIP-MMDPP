@@ -103,7 +103,8 @@ def save_pass_output(
         "field_provenance_json": field_provenance or [],
     }
 
-    update_values = {k: v for k, v in values.items() if k != "id"}
+    # Defensive: never overwrite id (PK) or created_at (preserved across upserts)
+    update_values = {k: v for k, v in values.items() if k not in ("id", "created_at")}
 
     stmt = (
         pg_insert(_table())
