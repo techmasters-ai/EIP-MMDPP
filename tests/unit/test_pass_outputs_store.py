@@ -7,17 +7,15 @@ fixture.  Run with:
         pytest tests/unit/test_pass_outputs_store.py -v
 
 Each test function covers exactly one behavioral contract.  Parent rows
-(Source, Document, PipelineRun) are created inside each test via the
-``_make_pipeline_run`` helper; they are rolled back after each test by the
-``db_session`` transaction-rollback fixture.
+(Source, Document, PipelineRun) are created inside each test via the shared
+``pipeline_run_factory`` conftest fixture; they are rolled back after each test
+by the ``db_session`` transaction-rollback fixture.
 """
 from __future__ import annotations
 
 import uuid
-from typing import Generator
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.services.pass_outputs_store import (
@@ -28,59 +26,6 @@ from app.services.pass_outputs_store import (
     load_pass_output,
     save_pass_output,
 )
-
-
-# ---------------------------------------------------------------------------
-# Test-data helpers
-# ---------------------------------------------------------------------------
-
-_DUMMY_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
-def _make_pipeline_run(db: Session) -> uuid.UUID:
-    """Insert minimal Source → Document → PipelineRun rows and return the
-    PipelineRun.id.  All rows are rolled back by the db_session fixture."""
-    source_id = uuid.uuid4()
-    document_id = uuid.uuid4()
-    pipeline_run_id = uuid.uuid4()
-
-    db.execute(
-        text(
-            "INSERT INTO ingest.sources (id, name, created_by) "
-            "VALUES (:id, :name, :created_by)"
-        ),
-        {"id": source_id, "name": f"test-source-{source_id}", "created_by": _DUMMY_USER_ID},
-    )
-    db.execute(
-        text(
-            "INSERT INTO ingest.documents "
-            "(id, source_id, filename, storage_bucket, storage_key, uploaded_by, retry_count) "
-            "VALUES (:id, :source_id, :filename, :bucket, :key, :user_id, :retry_count)"
-        ),
-        {
-            "id": document_id,
-            "source_id": source_id,
-            "filename": "test.pdf",
-            "bucket": "test-bucket",
-            "key": f"test/{document_id}.pdf",
-            "user_id": _DUMMY_USER_ID,
-            "retry_count": 0,
-        },
-    )
-    db.execute(
-        text(
-            "INSERT INTO ingest.pipeline_runs (id, document_id, pipeline_version, status) "
-            "VALUES (:id, :document_id, :version, :status)"
-        ),
-        {
-            "id": pipeline_run_id,
-            "document_id": document_id,
-            "version": "v2",
-            "status": "PROCESSING",
-        },
-    )
-    db.flush()
-    return pipeline_run_id
 
 
 def _minimal_response() -> dict:
@@ -134,9 +79,9 @@ def _save(
 # ---------------------------------------------------------------------------
 
 
-def test_save_then_load_round_trip(db_session: Session):
+def test_save_then_load_round_trip(db_session: Session, pipeline_run_factory):
     """Full save with all fields → load returns same data; JSON round-trip is faithful."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
     response = _full_response()
 
     save_pass_output(
@@ -182,22 +127,22 @@ def test_save_then_load_round_trip(db_session: Session):
     ]
 
 
-def test_empty_yield_is_completed(db_session: Session):
+def test_empty_yield_is_completed(db_session: Session, pipeline_run_factory):
     """COMPLETE + EMPTY yield → is_pass_already_resolved=True, count_completed=1.
 
     Off-domain entity passes legitimately produce no entities; EMPTY yield
     is still a COMPLETE execution and must count as such for merge inputs.
     """
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
     _save(db_session, run_id, "missile_kinematics", execution_status="COMPLETE", yield_status="EMPTY")
 
     assert is_pass_already_resolved(db_session, run_id, "missile_kinematics") is True
     assert count_completed_passes(db_session, run_id) == 1
 
 
-def test_skipped_pass_with_reason_persists(db_session: Session):
+def test_skipped_pass_with_reason_persists(db_session: Session, pipeline_run_factory):
     """SKIPPED + skip_reason round-trips; resolved=True; completed=0; terminal=1."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
     save_pass_output(
         db_session,
         pipeline_run_id=run_id,
@@ -228,9 +173,9 @@ def test_skipped_pass_with_reason_persists(db_session: Session):
     assert count_terminal_passes(db_session, run_id) == 1
 
 
-def test_failed_pass_persists_with_diagnostics(db_session: Session):
+def test_failed_pass_persists_with_diagnostics(db_session: Session, pipeline_run_factory):
     """FAILED + retry_exhausted diagnostics round-trips; resolved=True; completed=0; terminal=1."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
     diagnostics = {"retry_exhausted": True, "last_error": "LLM timeout", "attempts": 3}
 
     save_pass_output(
@@ -264,9 +209,9 @@ def test_failed_pass_persists_with_diagnostics(db_session: Session):
     assert count_terminal_passes(db_session, run_id) == 1
 
 
-def test_count_terminal_includes_failed_and_skipped(db_session: Session):
+def test_count_terminal_includes_failed_and_skipped(db_session: Session, pipeline_run_factory):
     """Mixed COMPLETE/FAILED/SKIPPED: count_terminal = total; count_completed = COMPLETE only."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
 
     _save(db_session, run_id, "radar_domain", execution_status="COMPLETE")
     _save(db_session, run_id, "radar_timing", execution_status="COMPLETE")
@@ -279,9 +224,9 @@ def test_count_terminal_includes_failed_and_skipped(db_session: Session):
     assert count_completed_passes(db_session, run_id) == 2
 
 
-def test_count_terminal_with_pass_names_filter(db_session: Session):
+def test_count_terminal_with_pass_names_filter(db_session: Session, pipeline_run_factory):
     """count_terminal_passes with pass_names only counts matching rows."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
 
     _save(db_session, run_id, "radar_domain", execution_status="COMPLETE")
     _save(db_session, run_id, "radar_timing", execution_status="COMPLETE")
@@ -303,9 +248,9 @@ def test_count_terminal_with_pass_names_filter(db_session: Session):
     assert count_terminal_passes(db_session, run_id, pass_names=["nonexistent"]) == 0
 
 
-def test_load_completed_excludes_failed_and_skipped(db_session: Session):
+def test_load_completed_excludes_failed_and_skipped(db_session: Session, pipeline_run_factory):
     """load_completed_pass_outputs returns ONLY COMPLETE rows."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
 
     _save(db_session, run_id, "radar_domain", execution_status="COMPLETE")
     _save(db_session, run_id, "radar_timing", execution_status="FAILED",
@@ -319,9 +264,9 @@ def test_load_completed_excludes_failed_and_skipped(db_session: Session):
     assert completed["radar_domain"].execution_status == "COMPLETE"
 
 
-def test_save_overwrites_same_run_pass(db_session: Session):
+def test_save_overwrites_same_run_pass(db_session: Session, pipeline_run_factory):
     """Upsert: COMPLETE for (run, pass) then FAILED for same key → FAILED wins."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
 
     _save(db_session, run_id, "radar_domain", execution_status="COMPLETE", yield_status="HIT")
     # Defensive: same pass terminalizes again with FAILED (should overwrite)
@@ -336,17 +281,17 @@ def test_save_overwrites_same_run_pass(db_session: Session):
     assert count_completed_passes(db_session, run_id) == 0
 
 
-def test_load_pass_output_returns_none_when_absent(db_session: Session):
+def test_load_pass_output_returns_none_when_absent(db_session: Session, pipeline_run_factory):
     """load_pass_output returns None when no row exists yet."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
 
     result = load_pass_output(db_session, run_id, "nonexistent_pass")
     assert result is None
 
 
-def test_count_returns_zero_when_no_rows(db_session: Session):
+def test_count_returns_zero_when_no_rows(db_session: Session, pipeline_run_factory):
     """All count helpers return 0 when no pass_output rows exist for the run."""
-    run_id = _make_pipeline_run(db_session)
+    run_id = pipeline_run_factory()
 
     assert count_completed_passes(db_session, run_id) == 0
     assert count_terminal_passes(db_session, run_id) == 0
