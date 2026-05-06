@@ -966,7 +966,22 @@ Create `docker/docling-graph/tests/test_table_overlay_qualification.py` with the
 Guards against the user-flagged failure mode: a small earlier column-
 major-shaped table starving the real variants table at row 6+.
 """
-from app import _table_facts as _tf
+# Loader pattern: the docling-graph `app/` package is shadowed by the
+# repo-root `app/` in normal test runs (pytest's rootdir wins index 0
+# in sys.path; conftest only APPENDS the service root). To make
+# `from app._alias_map import …` lazy imports inside _table_facts.py
+# resolve to the docling-graph copy, prepend `docker/docling-graph/`
+# AND `docker/docling-graph/app/` to sys.path before importing.
+# Same pattern as test_table_facts_resolve.py and test_table_overlay_extract.py
+# (Task 2). Pure importlib.spec_from_file_location does NOT work here.
+import sys
+from pathlib import Path
+
+_SERVICE_ROOT = Path(__file__).resolve().parent.parent
+_APP_DIR = _SERVICE_ROOT / "app"
+sys.path.insert(0, str(_APP_DIR))
+sys.path.insert(0, str(_SERVICE_ROOT))
+import _table_facts as _tf  # noqa: E402  (sys.path setup must precede)
 
 
 def _load_table_facts():
