@@ -894,3 +894,165 @@ def synthesize_table_facts(
     stats.sections_detected = len(sections_seen)
     doc_json[_IDEMPOTENCE_FLAG] = True
     return doc_json, stats
+
+
+# ============================================================================
+# Mechanism A1 helpers (spec §5.2). Pure, deterministic, milliseconds.
+#
+# Imports of `app._alias_map` symbols are LAZY (inside each helper),
+# matching the existing convention used by extract_label_rows /
+# detect_section_context / coerce_value above. Module-level
+# `from app._alias_map import …` would fail at importlib-spec-load
+# time in tests (the existing test_table_facts_*.py files load this
+# module via importlib.spec_from_file_location, before the conftest's
+# service-root sys.path append has fired for *those* tests).
+# ============================================================================
+# `unicodedata` is already imported at the top of this module — do NOT
+# re-import it here.
+
+
+def _normalize_label(s: str) -> str:
+    """Case-insensitive + NFC-folded label normalization.
+    Used everywhere we substring-match a row label against the constants
+    in _alias_map.py. Stable across operating-system locale settings."""
+    return unicodedata.normalize("NFC", (s or "").strip()).casefold()
+
+
+def _classify_identity_row(label: str) -> str | None:
+    """Return entity type ("MISSILE_SYSTEM" / "RADAR_SYSTEM") if the
+    label matches an identity row for that type. Otherwise None.
+
+    Classification order (spec §5.1):
+      1. Cross-entity-ref check FIRST — labels like 'Fan Song Variant'
+         return None here so the caller routes them to
+         _classify_cross_entity_ref instead.
+      2. Identity-label check SECOND.
+    """
+    from app._alias_map import (  # lazy — see module header comment
+        MISSILE_IDENTITY_LABELS,
+        RADAR_IDENTITY_LABELS,
+        CROSS_ENTITY_REF_PATTERNS,
+    )
+    norm = _normalize_label(label)
+    if not norm:
+        return None
+    # (1) cross-entity-ref short-circuits — the row is NOT an identity row
+    # for any entity type.
+    if norm in CROSS_ENTITY_REF_PATTERNS:
+        return None
+    # (2) identity-label check, longest-first to avoid 'designation'
+    # eating 'industry designation' (we already removed bare 'designation'
+    # from the labels list, but stay defensive).
+    for missile_label in MISSILE_IDENTITY_LABELS:
+        if missile_label in norm:
+            return "MISSILE_SYSTEM"
+    for radar_label in RADAR_IDENTITY_LABELS:
+        if radar_label in norm:
+            return "RADAR_SYSTEM"
+    return None
+
+
+def _classify_cross_entity_ref(label: str) -> str | None:
+    """Return target entity type if the label is a cross-entity-ref row
+    (e.g., 'Fan Song Variant' → 'RADAR_SYSTEM' in a missile-context
+    table). Otherwise None.
+    """
+    from app._alias_map import CROSS_ENTITY_REF_PATTERNS  # lazy
+    norm = _normalize_label(label)
+    return CROSS_ENTITY_REF_PATTERNS.get(norm)
+
+
+def _extract_alias_clusters(
+    table: dict,
+    *,
+    entity_type: str,
+) -> list[dict[str, str]]:
+    """For each data column in the table, build a {label: value} map of
+    cells from rows whose label matches an identity row for entity_type.
+
+    Excludes:
+      - Cross-entity-ref rows (Fan Song Variant etc.) — they go to
+        cross_entity_hints, NOT into the alias cluster.
+      - Empty cells.
+
+    Returns a list parallel to the data columns (in left-to-right order).
+    Empty list if the table has no identity rows for entity_type.
+    """
+    cells = (table or {}).get("data", {}).get("table_cells") or []
+    if not cells:
+        return []
+
+    # Reuse the existing _label_column_width(cells) helper defined
+    # earlier in this module. Same algorithm — max end_col_offset_idx of
+    # col-0 row_header cells.
+    label_width = _label_column_width(cells)
+
+    # Map (row_idx → label) for identity rows that match entity_type.
+    identity_rows: dict[int, str] = {}
+    for c in cells:
+        if c.get("start_col_offset_idx") != 0:
+            continue
+        if not c.get("row_header"):
+            continue
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        if _classify_identity_row(text) != entity_type:
+            continue
+        row = c.get("start_row_offset_idx")
+        if row is None:
+            continue
+        identity_rows[row] = text
+
+    if not identity_rows:
+        return []
+
+    # Enumerate data column starts (cells with start_col_offset_idx >=
+    # label_width).
+    data_col_starts = sorted({
+        c.get("start_col_offset_idx") for c in cells
+        if c.get("start_col_offset_idx") is not None
+        and c.get("start_col_offset_idx") >= label_width
+    })
+
+    clusters: list[dict[str, str]] = []
+    for col in data_col_starts:
+        cluster: dict[str, str] = {}
+        for cell in cells:
+            if cell.get("start_col_offset_idx") != col:
+                continue
+            row = cell.get("start_row_offset_idx")
+            if row not in identity_rows:
+                continue
+            text = (cell.get("text") or "").strip()
+            if not text:
+                continue
+            cluster[identity_rows[row]] = text
+        clusters.append(cluster)
+    return clusters
+
+
+def _pick_canonical(
+    cluster: dict[str, str],
+    *,
+    entity_type: str,
+) -> str:
+    """Pick the canonical name from an alias cluster using
+    CANONICAL_PRIORITY[entity_type]. First priority entry that's a
+    substring of any cluster label wins.
+
+    Fallback: if no priority entry matches, return the alphabetically-
+    first value (NFC + casefold sort) and log INFO
+    'canonical_picked_via_fallback'. Empty cluster → empty string.
+    """
+    from app._alias_map import CANONICAL_PRIORITY  # lazy
+    if not cluster:
+        return ""
+    priority = CANONICAL_PRIORITY.get(entity_type, ())
+    for priority_label in priority:
+        priority_norm = _normalize_label(priority_label)
+        for label, value in cluster.items():
+            if priority_norm in _normalize_label(label):
+                return value
+    # Fallback — alphabetically first.
+    return sorted(cluster.values(), key=lambda v: _normalize_label(v))[0]
