@@ -72,7 +72,7 @@ here.
 - **Row-major variants tables.** Different shape, separate handling. Add when corpus has examples.
 - **Cross-entity relationship pass.** `cross_entity_hints` are collected for the Fan Song / radar association but NOT applied as `ASSOCIATED_WITH` edges in this spec. Reserved for a follow-up that integrates with the existing relationship-pass pipeline.
 - **`table_wins` conflict resolution policy.** v1 ships with `additive_only` (apply table fact only when entity field is null). Escalation to `table_wins` deferred until empirical evidence shows additive_only insufficient. The `policy` parameter is plumbed through (one-line v2 escalation) but `table_wins` tests are written as `xfail` — flip the marker when v2 ships.
-- **Multi-table docs.** A single doc with two distinct variants tables (e.g., a future doc with both a missile variants table AND a separate radar variants table) — first table's alias_map wins. Subsequent tables logged at INFO level and skipped. The corpus survey shows zero docs with this shape today; revisit if a future doc requires both.
+- **Multi-table docs.** A single doc with two distinct variants tables (e.g., a future doc with both a missile variants table AND a separate radar variants table) — **`extract_table_overlay` (parser, §5.2) enforces "first qualifying table wins"**. Subsequent qualifying tables logged at INFO level (`tables_skipped_multi=N`) and skipped. The corpus survey shows zero docs with this shape today; revisit if a future doc requires both. The worker side (`apply_*` functions, `merge_and_resolve`) doesn't need to enforce — it only ever sees the parser's selected first table.
 
 ## 4. Architecture
 
@@ -85,7 +85,7 @@ here.
 | `docker/docling-graph/app/schemas.py` | MODIFY (~+30 LOC) | Add `TableOverlay`, `TableFact`, `CrossEntityHint` Pydantic models. Add `table_overlay: TableOverlay \| None` field to `ExtractPassResponse`. |
 | `docker/docling-graph/app/main.py` | MODIFY (~+10 LOC) | Call `extract_table_overlay` after sanitize, before LLM extraction. Attach to response. Wrap in try/except (overlay parsing failure must not break extract-pass). |
 | `app/services/table_overlay.py` | NEW (~200 LOC) | Two pure functions: `apply_identity_rewrite(pass_output, alias_map)` and `apply_field_overlay(pass_output, table_facts, schema_cls, active_pass, *, policy)`. |
-| `app/services/extraction_merge.py` | MODIFY (~+30 LOC) | `canonicalize_cross_pass_identities` accepts new `table_alias_maps_per_pass` argument; calls `apply_identity_rewrite` BEFORE its existing token-overlap loop. New separate call to `apply_field_overlay` from `merge_and_resolve` after canonicalization, before merge. |
+| `app/services/extraction_merge.py` | MODIFY (~+30 LOC) | `canonicalize_cross_pass_identities` accepts new `table_alias_map` argument; calls `apply_identity_rewrite` BEFORE its existing token-overlap loop. New separate call to `apply_field_overlay` from `merge_and_resolve` after canonicalization, before merge. |
 | `app/workers/pipeline.py` | MODIFY (~+20 LOC) | `_call_extract_pass` reads `table_overlay` from response and stashes on `PassResult`. `merge_and_resolve` invocation passes through to `canonicalize_cross_pass_identities`. |
 
 **Test files (NEW):**
@@ -178,9 +178,15 @@ Public entry point. Pure function, deterministic, milliseconds.
 
 ```python
 def extract_table_overlay(doc_json: dict) -> TableOverlay:
-    """Parse all column-major / hybrid variants tables in doc.tables[].
+    """Parse the FIRST column-major / hybrid variants table in doc.tables[].
 
-    For each entity column in each table:
+    Multi-table policy (per §3 Non-Goals): if multiple column-major /
+    hybrid tables are encountered, only the FIRST (in doc.tables[] order)
+    is processed. Subsequent qualifying tables are logged at INFO with
+    `tables_skipped_multi=N` and skipped. Tables of OTHER shape (small,
+    row-major-only, no identity rows) are silently skipped — same as today.
+
+    For the chosen table, for each entity column:
     1. Build alias cluster from MISSILE_IDENTITY_LABELS rows (excluding
        CROSS_ENTITY_REF_PATTERNS).
     2. Pick canonical via CANONICAL_PRIORITY[entity_type].
@@ -190,8 +196,8 @@ def extract_table_overlay(doc_json: dict) -> TableOverlay:
        conversion succeeds, value coerces to a parseable type).
     5. Walk cross-entity-ref rows → emit CrossEntityHint per cell.
 
-    Returns empty TableOverlay if no variants tables found (no-op for docs
-    without column-major / hybrid tables).
+    Returns empty TableOverlay if no qualifying table found (no-op for
+    docs without column-major / hybrid tables).
     """
 ```
 
@@ -250,21 +256,35 @@ def apply_field_overlay(
     names match).
 
     For each candidate (fact, entity_instance) pair:
-      1. Skip if no entity matches fact.canonical_entity (skipped_no_entity++).
-      2. Try to set the field via Pydantic field assignment:
-           try:
-               setattr(entity_instance, fact.schema_field, fact.value)
-               # Pydantic v2 validate_assignment=True enforces type/range
-           except (ValidationError, ValueError, TypeError):
-               skipped_validation_fail += 1
-               continue
-      3. Apply per policy (note: validation runs BEFORE policy check, since
-         we need to know the value would coerce cleanly even if we skip):
-           - 'additive_only' (v1 default): if pre-existing value is not None,
-              skipped_field_populated++; revert the assignment to original.
-           - 'table_wins' (deferred): keep the assignment unconditionally;
-              if LLM had a value, log the override.
+      1. Route fact to pass: if fact.pass_name not in pass_results, increment
+         skipped_no_entity++ and continue. Otherwise, look up entity in
+         pass_results[fact.pass_name] whose system_name == fact.canonical_entity.
+         If no such entity exists, skipped_no_entity++ and continue.
+      2. Capture original value BEFORE attempting assignment:
+           original = getattr(entity_instance, fact.schema_field, None)
+      3. Apply per policy (validation gate is implicit in setattr under
+         Pydantic v2 validate_assignment=True):
+           - 'additive_only' (v1 default):
+               If original is not None: skipped_field_populated++; continue
+               (no assignment, original preserved by virtue of never writing).
+               If original is None:
+                   try: setattr(entity_instance, fact.schema_field, fact.value)
+                   except (ValidationError, ValueError, TypeError):
+                       skipped_validation_fail++; continue
+                   applied++; log applied event
+           - 'table_wins' (deferred, v2):
+                   try: setattr(entity_instance, fact.schema_field, fact.value)
+                   except (ValidationError, ValueError, TypeError):
+                       skipped_validation_fail++; continue
+                   if original is not None: conflicts_overridden++; log override
+                   applied++; log applied event
       4. Log per-fact outcome for audit.
+
+    Note on policy ordering: 'additive_only' checks `original is not None`
+    BEFORE attempting setattr, so the policy check is the first gate (no
+    revert path needed; the original value is never overwritten in the
+    skipped case). This avoids the validate-then-revert subtlety where a
+    revert to None on a non-Optional field would re-raise.
 
     Returns OverlayStats(applied=N, skipped_no_entity=, skipped_validation_fail=,
     skipped_field_populated=, conflicts_overridden=).
@@ -589,7 +609,7 @@ the current baseline.**
 
 | Failure | Behavior |
 |---|---|
-| `table_alias_maps_per_pass` not provided (None) | New code path is a no-op; existing token-overlap canonicalization runs as before. Backward-compatible. |
+| `table_alias_map` not provided (None) | New code path is a no-op; existing token-overlap canonicalization runs as before. Backward-compatible. |
 | Multiple passes provide different `alias_map` content (parser bug — same doc should yield same map) | Defensive: use first non-empty alias_map; log WARNING on mismatch. |
 | Field overlay applies value, then merge phase rejects via vertex-write validation | Standard merge error path triggers (already exists). Same behavior as if LLM had emitted that value directly. |
 
@@ -606,7 +626,8 @@ the current baseline.**
     "columns_skipped_no_canonical": int,
     "columns_with_canonical_via_fallback": int,
     "values_skipped_unparseable": int,
-    "kill_switch_active": bool,  # echoes DOCLING_GRAPH_TABLE_OVERLAY_ENABLED
+    "tables_skipped_multi": int,    # multi-table docs: extras beyond first
+    "kill_switch_active": bool,     # echoes DOCLING_GRAPH_TABLE_OVERLAY_ENABLED
 }
 ```
 
@@ -764,10 +785,10 @@ landing the overlay.
 
 1. `extract_table_overlay` is wired into `/extract-pass` with catch-and-continue guard.
 2. `apply_identity_rewrite` + `apply_field_overlay` exist as pure functions in `app/services/table_overlay.py`.
-3. `canonicalize_cross_pass_identities` accepts `table_alias_maps_per_pass` argument; calls rewrite BEFORE its existing token-overlap pass.
+3. `canonicalize_cross_pass_identities` accepts `table_alias_map` argument; calls rewrite BEFORE its existing token-overlap pass.
 4. All unit, integration, drift-guard, and end-to-end tests pass.
 5. Operator-driven §20 acceptance run shows: `missile_propulsion ✓ exact ≥ 6 of 7 listed variants` AND no regression on `missile_kinematics ≥ 4`, `missile_airframe ≥ 14`, `missile_speed_timing ≥ 6`.
-6. No regression on the 20 no-table corpus docs (system_name lists byte-identical pre/post).
+6. No regression on the 20 no-table corpus docs (system_name set within ±2 entities and ⊇ 80% of pre-deploy set per §8.6).
 7. Wall-time delta ≤ +5% on table-bearing docs; 0% on no-table docs.
 8. Kill switch (`DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false`) cleanly reverts behavior without code change.
 9. Diagnostics surfaced: `service_table_overlay` in /extract-pass response; `IDENTITY_REWRITE` / `TABLE_OVERLAY_APPLIED` log lines from the worker.
