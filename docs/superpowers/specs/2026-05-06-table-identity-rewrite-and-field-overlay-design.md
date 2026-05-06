@@ -92,8 +92,8 @@ out of scope — see the existing entry above.)
 | `docker/docling-graph/app/_alias_map.py` | MODIFY (~+50 LOC) | Add `MISSILE_IDENTITY_LABELS`, `RADAR_IDENTITY_LABELS`, `CROSS_ENTITY_REF_PATTERNS`, `CANONICAL_PRIORITY` constants. |
 | `docker/docling-graph/app/schemas.py` | MODIFY (~+30 LOC) | Add `TableOverlay`, `TableFact`, `CrossEntityHint` Pydantic models. Add `table_overlay: TableOverlay \| None` field to `ExtractPassResponse`. |
 | `docker/docling-graph/app/main.py` | MODIFY (~+10 LOC) | Call `extract_table_overlay` after sanitize, before LLM extraction. Attach to response. Wrap in try/except (overlay parsing failure must not break extract-pass). |
-| `app/services/table_overlay.py` | NEW (~200 LOC) | Two functions operating on Pydantic instances via `iter_entities_of_type`: `apply_identity_rewrite(pass_results, alias_map, ontology) -> RewriteStats` and `apply_field_overlay(pass_results, table_facts, *, policy="table_wins_for_table_facts") -> OverlayStats`. |
-| `app/services/extraction_merge.py` | MODIFY (~+30 LOC) | `canonicalize_cross_pass_identities` accepts new `table_alias_map` argument; calls `apply_identity_rewrite` BEFORE its existing token-overlap loop. New separate call to `apply_field_overlay` from `merge_and_resolve` after canonicalization, before merge. |
+| `app/services/table_overlay.py` | NEW (~200 LOC) | Two functions operating on Pydantic instances via `iter_entities_of_type`: `apply_identity_rewrite(pass_results, alias_map_by_entity_type: dict[str, dict[str, str]], ontology) -> RewriteStats` and `apply_field_overlay(pass_results, table_facts, *, policy="table_wins_for_table_facts") -> OverlayStats`. |
+| `app/services/extraction_merge.py` | MODIFY (~+30 LOC) | `canonicalize_cross_pass_identities` accepts new keyword-only `table_alias_map_by_entity_type: dict[str, dict[str, str]] \| None` argument; calls `apply_identity_rewrite` BEFORE its existing token-overlap loop. New separate call to `apply_field_overlay` from `merge_and_resolve` after canonicalization, before merge. |
 | `app/workers/pipeline.py` | MODIFY (~+20 LOC) | `_call_extract_pass` reads `table_overlay` from response and stashes on `PassResult`. `merge_and_resolve` invocation passes through to `canonicalize_cross_pass_identities`. |
 
 **Test files (NEW):**
@@ -543,8 +543,11 @@ class OverlayStats:
 ### 5.5 `extraction_merge.py` integration
 
 The alias map is doc-level (one DoclingDocument → one variants table → one
-alias_map identical across all passes against that doc). Pass it as a single
-`dict[str, str]`, not per-pass. Per-pass facts (which carry `pass_name`)
+alias map identical across all passes against that doc). Pass it as a
+single **entity-type-scoped** `dict[str, dict[str, str]]` (outer key is
+ontology type like `"MISSILE_SYSTEM"`, inner is alias→canonical), NOT a
+flat `dict[str, str]` — the scoping prevents radar names from colliding
+with missile names per §3 issue 3. Per-pass facts (which carry `pass_name`)
 travel separately as a `list[TableFact]`. To carry both with minimal
 plumbing, accept the full `TableOverlay` object. (Each `PassResult` will
 have a `table_overlay` attribute set by `pipeline.py`; `merge_and_resolve`
@@ -557,24 +560,31 @@ def canonicalize_cross_pass_identities(
     pass_results: dict[str, "PassResult"],
     ontology: dict,
     *,
-    table_alias_map: dict[str, str] | None = None,  # NEW, keyword-only
+    # NEW, keyword-only. Entity-type-scoped: outer key is ontology type
+    # name (e.g., "MISSILE_SYSTEM"), inner is alias → canonical.
+    table_alias_map_by_entity_type: dict[str, dict[str, str]] | None = None,
 ) -> int:
     """Mutate entity instances in-place so cross-pass duplicates share a
     single canonical `system_name`.
 
-    Pass 0 (NEW): if table_alias_map is provided, rewrite aliases to
-    canonical names FIRST. Catches table-defined aliases that the
-    token-overlap heuristic below misses (e.g., SA-2A → 1D, where token
-    bags don't overlap).
+    Pass 0 (NEW): if table_alias_map_by_entity_type is provided, rewrite
+    aliases to canonical names FIRST. Catches table-defined aliases that
+    the token-overlap heuristic below misses (e.g., SA-2A → 1D, where
+    token bags don't overlap). Scoped per entity type: a missile's alias
+    map cannot rewrite a radar's system_name and vice versa.
 
     Pass 1 (EXISTING): token-overlap canonicalization (unchanged).
     """
     rewrites = 0
 
     # NEW: table-derived rewrite (runs first; doc-level map applies to all passes)
-    if table_alias_map:
+    if table_alias_map_by_entity_type:
         try:
-            stats = apply_identity_rewrite(pass_results, table_alias_map, ontology)
+            stats = apply_identity_rewrite(
+                pass_results,
+                table_alias_map_by_entity_type,
+                ontology,
+            )
             rewrites += stats.rewrites
             logger.info(
                 "IDENTITY_REWRITE rewrites=%d unique_canonicals=%d passes_touched=%d",
@@ -614,7 +624,9 @@ def merge_and_resolve(
     canonicalize_cross_pass_identities(
         pass_results,
         ontology,
-        table_alias_map=(table_overlay.alias_map if table_overlay else None),
+        table_alias_map_by_entity_type=(
+            table_overlay.alias_map_by_entity_type if table_overlay else None
+        ),
     )
 
     # --- Phase 0.5 (NEW): per-pass field overlay ---
@@ -713,8 +725,15 @@ Input: docling_document_json (SA-2 PDF, has variants table)
   Sanitize → extract_table_overlay (NEW) → LLM extraction → response
                 ↓
   TableOverlay(
-    alias_map={"SA-75":"1D", "SA-2A":"1D", "S-75":"13D", "SA-2C":"13D",
-               "S-75M":"13DM", "SA-2D":"13DM", ...},
+    alias_map_by_entity_type={
+      "MISSILE_SYSTEM": {
+        "SA-75":"1D", "SA-2A":"1D", "S-75":"13D", "SA-2C":"13D",
+        "S-75M":"13DM", "SA-2D":"13DM", ...
+      },
+      # No "RADAR_SYSTEM" entry — Fan Song / Spoon Rest rows in the
+      # missile-context table are emitted as cross_entity_hints, NOT
+      # as aliases (per §5.1 classification-order rule).
+    },
     facts=[
       TableFact(canonical="1D", schema_field="body_length_m", value=10.726,
                 source_label="Length mm", section_ctx=None,
@@ -743,9 +762,12 @@ PassResult.table_overlay attached per pass.
 PHASE 3: merge_and_resolve → canonicalize_cross_pass_identities
 ─────────────────────────────────────────────────────────────────────────
 
-  for each pass_result:
-    apply_identity_rewrite(pass_output, alias_map)
-    # airframe pass_output AFTER rewrite:
+  apply_identity_rewrite(
+      pass_results,                         # all 4 passes' Pydantic instances
+      alias_map_by_entity_type,             # outer-keyed by ontology type
+      ontology,
+  )
+  # airframe pass_results["missile_airframe"] AFTER rewrite:
     # [{"system_name": "1D",   "body_length_m": 10.726, ...},
     #  {"system_name": "1D",   "total_mass_kg": 2163, ...},
     #  {"system_name": "13DM", "body_length_m": 10.841, ...},
@@ -783,7 +805,7 @@ fields:
 Demonstrates scoped-table-wins:
   - body_length_m / body_diameter_m / booster_time_sec → applied (LLM null)
   - booster_mass_kg → overridden (LLM had wrong number; this is the
-    propulsion-acceptance unlock that additive_only would have missed)
+    propulsion-acceptance unlock that a populated-only policy would have missed)
   - total_mass_kg / booster_thrust → NEVER touched (no TableFact ⇒ no
     interference with LLM-only fields)
 ```
@@ -824,8 +846,9 @@ the current baseline.**
 
 | Failure | Behavior |
 |---|---|
-| `table_alias_map` not provided (None) | New code path is a no-op; existing token-overlap canonicalization runs as before. Backward-compatible. |
-| Multiple passes provide different `alias_map` content (parser bug — same doc should yield same map) | Defensive: use first non-empty alias_map; log WARNING on mismatch. |
+| `table_alias_map_by_entity_type` not provided (None) | New code path is a no-op; existing token-overlap canonicalization runs as before. Backward-compatible. |
+| Entity-type-scoped alias map provided but contains no key matching this entity's ontology type | `apply_identity_rewrite` skips that entity (via `sub_map = alias_map_by_entity_type.get(entity_type, {})`) — guards against radar maps landing on missiles and vice versa. |
+| Multiple passes provide different `alias_map_by_entity_type` content (parser bug — same doc should yield same map) | Defensive: use first non-empty map; log WARNING on mismatch. |
 | Field overlay applies value, then merge phase rejects via vertex-write validation | Standard merge error path triggers (already exists). Same behavior as if LLM had emitted that value directly. |
 
 ### Diagnostics surface
@@ -1005,11 +1028,11 @@ field-specific row must pass.
 
 **Why field-specific gates matter (per user pushback on r5):** the floor
 counts above are the same metric we used pre-revert and they conflate
-"entity exists" with "entity has correct field values." `additive_only`
-(rejected here) could have hit the floor counts while leaving the
-propulsion field values wrong because the LLM had populated them with
-wrong-but-non-null numbers that `additive_only` would not have
-overridden. Scoped `table_wins_for_table_facts` is the only policy that
+"entity exists" with "entity has correct field values." A populated-only
+policy (rejected here per user pushback on r5) could have hit the floor
+counts while leaving the propulsion field values wrong because the LLM
+had populated them with wrong-but-non-null numbers that a populated-only
+policy would not have overridden. Scoped `table_wins_for_table_facts` is the only policy that
 satisfies the field-specific row when the LLM emits wrong numbers; the
 field-specific row is therefore the load-bearing acceptance, and the
 floor is just a guard against introducing entity-loss regressions.
@@ -1054,7 +1077,7 @@ the stale cached values.
 
 1. `extract_table_overlay` is wired into `/extract-pass` with catch-and-continue guard.
 2. `apply_identity_rewrite` + `apply_field_overlay` exist as pure functions in `app/services/table_overlay.py`.
-3. `canonicalize_cross_pass_identities` accepts `table_alias_map` argument; calls rewrite BEFORE its existing token-overlap pass.
+3. `canonicalize_cross_pass_identities` accepts keyword-only `table_alias_map_by_entity_type: dict[str, dict[str, str]] | None` argument; calls rewrite BEFORE its existing token-overlap pass with entity-type scoping enforced.
 4. All unit, integration, drift-guard, and end-to-end tests pass.
 5. **Live baseline re-derived** at HEAD with overlay disabled (per §8.6 baseline-reference subsection); floor row in §8.6 updated to live numbers before approval.
 6. **Field-specific table-overlay acceptance** per §8.6 satisfied: for each pass and each variants-table field listed there, ≥ 6 of 7 listed variants match the table cell within tolerance, and `FIELD_OVERLAY_OVERRIDE` log lines exist for any variant where the LLM had emitted a wrong value pre-overlay (proves `apply_field_overlay` actually overrode rather than leaving wrong LLM values intact).
