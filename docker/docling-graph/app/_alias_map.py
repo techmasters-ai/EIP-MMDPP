@@ -325,3 +325,69 @@ FIELD_SUFFIX_TO_UNIT_CLASS: dict[str, str] = {
     "_dbw": "power_dbw",
     "_deg": "angle_deg",
 }
+
+# ----------------------------------------------------------------------
+# Mechanism A1 (spec §5.1): identity-row label patterns + cross-entity
+# refs + canonical-name priority. Used by extract_table_overlay() in
+# _table_facts.py to classify column-0 cells in column-major variants
+# tables.
+# ----------------------------------------------------------------------
+
+# Row labels that mean "this row holds an identifier for the entity in
+# the column above." Bare "variant" and "designation" are DELIBERATELY
+# EXCLUDED for v1 — they create false positives via cross-entity-ref
+# rows (e.g., "Fan Song Variant" would match "variant", which is wrong).
+MISSILE_IDENTITY_LABELS: tuple[str, ...] = (
+    "missile type",
+    "missile variant",
+    "industry designation",
+    "military designation",
+    "nato designation",
+    "system designation",
+)
+
+RADAR_IDENTITY_LABELS: tuple[str, ...] = (
+    "radar variant",
+    "radar designation",
+    "radar type",
+)
+
+# Cross-entity reference rows: row labels that name a SIBLING entity
+# type. When seen in a missile-context table, the row's cells are not
+# missile aliases — they're radar aliases attached to the same column's
+# missile via a relationship hint. Emitted as CrossEntityHint, not
+# folded into the missile alias cluster.
+#
+# Classification order (enforced in _classify_identity_row):
+#   1. Cross-entity-ref check FIRST
+#   2. Identity-label check SECOND
+#   3. Spec-row check (label-to-schema-field alias) THIRD
+#   4. Otherwise: ignored
+CROSS_ENTITY_REF_PATTERNS: dict[str, str] = {
+    "fan song variant": "RADAR_SYSTEM",
+    "spoon rest variant": "RADAR_SYSTEM",
+}
+
+# Canonical-name priority per entity type. When a column has aliases
+# from multiple identity rows, pick the FIRST priority label that's
+# present. Every entry in MISSILE_/RADAR_IDENTITY_LABELS must appear
+# (case-insensitive substring) somewhere in this priority tuple,
+# OTHERWISE the drift guard
+# test_identity_labels_have_canonical_priority_coverage will fail.
+# Order is least-specific-last so "Missile Type" wins over "Missile
+# Variant" when both are present in a cluster.
+CANONICAL_PRIORITY: dict[str, tuple[str, ...]] = {
+    "MISSILE_SYSTEM": (
+        "Missile Type",
+        "Industry Designation",
+        "Military Designation",
+        "NATO Designation",
+        "System Designation",   # fallback for docs that use this label only
+        "Missile Variant",      # fallback for docs that use this label only
+    ),
+    "RADAR_SYSTEM": (
+        "Radar Variant",
+        "Radar Designation",
+        "Radar Type",
+    ),
+}
