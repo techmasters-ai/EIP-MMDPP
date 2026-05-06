@@ -370,6 +370,9 @@ class PipelinePassOutput(Base):
         nullable=False,
         comment="COMPLETE | FAILED | SKIPPED",
     )
+    # Wider than StageRun.skip_reason (String(32)) to give headroom for future
+    # multi-word skip reasons; readers querying both tables for the same logical
+    # field should be aware of the size difference.
     skip_reason: Mapped[Optional[str]] = mapped_column(
         String(64),
         nullable=True,
@@ -402,11 +405,10 @@ class PipelinePassOutput(Base):
         server_default=sa.text("'[]'::jsonb"),
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     pipeline_run: Mapped["PipelineRun"] = relationship(back_populates="pass_outputs")
-    stage_run: Mapped[Optional["StageRun"]] = relationship()
 
 
 class DocumentElement(Base):
