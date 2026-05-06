@@ -17,7 +17,7 @@
     {
       "id": 2,
       "subject": "Task 2: _table_facts.py parser primitives",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ]
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-06T23:34:31.855195+00:00"
+  "lastUpdated": "2026-05-06T23:43:50.226388+00:00"
 }
