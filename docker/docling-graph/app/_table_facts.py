@@ -727,3 +727,144 @@ def _format_value(value: float | int | str) -> str:
             return str(int(value))
         return str(value)
     return str(value)
+
+
+# ============================================================
+# Public entry point: synthesize_table_facts (spec §4.2 / §6)
+# ============================================================
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+_IDEMPOTENCE_FLAG = "__synthesized_table_facts__"
+
+
+def synthesize_table_facts(
+    doc_json: dict,
+    *,
+    active_pass: str,
+    max_synthesized: int = 256,
+) -> tuple[dict, FactStats]:
+    """Append section-aware per-cell table-fact TextItems to doc_json.
+
+    Spec §4.2 / §6 entry point. Pass-aware — same DoclingDocument fed to
+    four different passes produces four different fact sets, each scoped
+    to that pass's schema fields via ALIAS_MAP[(label, section, pass)].
+
+    Returns (mutated_doc_json, FactStats). Mutates doc_json in place but
+    also returns it for chaining. Sets the idempotence flag on first run;
+    second call short-circuits with idempotent_skip=True.
+    """
+    stats = FactStats.empty()
+
+    if not isinstance(doc_json, dict):
+        return doc_json, stats
+
+    if doc_json.get(_IDEMPOTENCE_FLAG) is True:
+        stats.idempotent_skip = True
+        return doc_json, stats
+
+    tables = doc_json.get("tables") or []
+    if not tables:
+        doc_json[_IDEMPOTENCE_FLAG] = True
+        return doc_json, stats
+
+    texts = doc_json.setdefault("texts", [])
+    body = doc_json.setdefault("body", {})
+    body_children = body.setdefault("children", [])
+
+    sections_seen: set[str] = set()
+
+    for table in tables:
+        stats.tables_seen += 1
+        shape = detect_table_shape(table)
+        stats.tables_by_shape[shape.value] = (
+            stats.tables_by_shape.get(shape.value, 0) + 1
+        )
+
+        if shape == Shape.OTHER:
+            continue
+
+        rows = extract_label_rows(table, shape)
+        if not rows:
+            continue
+
+        entity_ids = derive_entity_ids(rows, shape)
+        if not entity_ids:
+            # No identifiable entities — skip the whole table.
+            continue
+
+        # Detect collisions: derive_entity_ids deduplicates composites
+        # (last-write-wins), so any difference between source-column count
+        # and returned-id count indicates collisions. Applies to all shapes
+        # (HYBRID is most common but column-major can collide too if two
+        # columns happen to share the same identity row value).
+        key_rows = [r for r in rows if _looks_like_key_label(r["label_text"])]
+        source_cols: set[int] = set()
+        for kr in key_rows:
+            source_cols.update(
+                col for col, cell in kr["data_cells"].items() if cell.strip()
+            )
+        stats.hybrid_collisions += max(0, len(source_cols) - len(entity_ids))
+
+        sectioned = detect_section_context(rows)
+
+        for row, section_ctx in sectioned:
+            # Skip the rows that are themselves identity rows; they don't
+            # produce facts (they produce entity_ids).
+            if _looks_like_key_label(row["label_text"]):
+                continue
+
+            if section_ctx is not None:
+                sections_seen.add(section_ctx)
+
+            for entity_col, cell_text in row["data_cells"].items():
+                entity_id = entity_ids.get(entity_col)
+                if entity_id is None:
+                    continue
+
+                schema_field = resolve_alias(
+                    row["label_text"], section_ctx, active_pass
+                )
+                if schema_field is None:
+                    stats.rows_skipped_unresolvable += 1
+                    continue
+
+                # Pass row_label so coerce_value can extract implied units
+                # (e.g., "Length mm" -> mm conversion for body_length_m).
+                # detect_section_context strips the section keyword from
+                # label_text but leaves the unit token intact ("1st Stage
+                # Weight kg" -> "Weight kg"), so the post-strip label still
+                # carries the unit hint we need.
+                parsed = coerce_value(
+                    cell_text, schema_field, row_label=row["label_text"]
+                )
+                if not parsed:
+                    stats.values_skipped_unparseable += 1
+                    continue
+
+                if len(parsed) >= 2:
+                    stats.multi_value_emissions += 1
+
+                for pv in parsed:
+                    if stats.facts_emitted >= max_synthesized:
+                        stats.truncated_at_cap = True
+                        doc_json[_IDEMPOTENCE_FLAG] = True
+                        return doc_json, stats
+
+                    text_idx = len(texts)
+                    item = emit_fact(
+                        entity_id=entity_id,
+                        schema_field=schema_field,
+                        value=pv.value,
+                        source_label=row["label_text"],
+                        text_idx=text_idx,
+                    )
+                    texts.append(item)
+                    body_children.append({"$ref": f"#/texts/{text_idx}"})
+                    stats.facts_emitted += 1
+
+    stats.sections_detected = len(sections_seen)
+    doc_json[_IDEMPOTENCE_FLAG] = True
+    return doc_json, stats
