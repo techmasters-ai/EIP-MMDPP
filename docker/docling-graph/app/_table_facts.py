@@ -468,3 +468,209 @@ def resolve_alias(
 
     key: AliasKey = (normalize_label(label), section_ctx, active_pass)
     return ALIAS_MAP.get(key)
+
+
+# ============================================================
+# Pipeline step 6: coerce_value (spec §5.6 / D3 + D4)
+# ============================================================
+
+# Stop-words returning [] from coerce_value, normalized lowercased.
+_STOP_WORDS = frozenset({
+    "", "tbd", "n/a", "na", "unknown", "unk", "none",
+    "?", "??", "???",
+    "-", "--",
+    "–", "—", "―",  # en/em/horizontal-bar dashes (pre-normalization)
+})
+
+# Range separators (after dash-class normalization to '-'): treat '-' here
+# as ASCII hyphen-minus.
+_ALTERNATIVE_SEPARATOR = "/"
+
+
+def coerce_value(
+    cell_text: str,
+    schema_field: str,
+    *,
+    row_label: str = "",
+) -> list[ParsedValue]:
+    """Parse cell into 0+ ParsedValues. See spec §5.6 for the policy.
+
+    `row_label` is the row's label text (e.g., "Length mm"), used as a
+    fallback unit hint when the cell value itself has no explicit unit.
+    SA-2-style tables store bare numbers in cells with units declared in
+    the row label — without this hint, '10726' for body_length_m would
+    coerce to 10726 metres instead of 10.726.
+    """
+    raw = cell_text
+    # Stop-word check on stripped/lowered raw text (with dash collapse).
+    stop_check = _DASH_CLASS.sub("-", raw.strip()).lower()
+    if stop_check in _STOP_WORDS:
+        return []
+
+    # Determine if this is a string-typed field (no numeric suffix match).
+    from app._alias_map import FIELD_SUFFIX_TO_UNIT_CLASS, UNIT_TABLE
+    unit_class = _field_unit_class(schema_field, FIELD_SUFFIX_TO_UNIT_CLASS)
+    if unit_class is None:
+        # String passthrough.
+        return [ParsedValue(value=raw.strip(), unit_inferred=None,
+                            conversion_factor=1.0, raw_text=raw)]
+
+    # Numeric path. Normalize dash characters first.
+    normalized = _DASH_CLASS.sub("-", raw)
+    # Split into value-fragments.
+    fragments, is_range = _split_values(normalized)
+    if not fragments:
+        return []
+
+    # Parse each fragment (number + unit).
+    parsed: list[tuple[float, str | None]] = []
+    for frag in fragments:
+        num_unit = _parse_number_and_unit(frag)
+        if num_unit is None:
+            continue
+        parsed.append(num_unit)
+    if not parsed:
+        return []
+
+    # Determine the implied unit fallback chain:
+    # 1. Explicit unit in the cell fragment (preferred).
+    # 2. Implied unit from the row label (e.g., "Length mm" -> "mm").
+    # 3. Canonical unit for the field's unit class (factor 1.0).
+    label_implied_unit = _extract_unit_from_label(row_label, unit_class, UNIT_TABLE)
+
+    # Apply unit conversion using the schema field's unit class.
+    out: list[ParsedValue] = []
+    for value, unit_str in parsed:
+        if unit_str is None:
+            # No explicit unit in cell fragment — try row label, then canonical.
+            unit_str = label_implied_unit or _canonical_unit_for_class(unit_class, UNIT_TABLE)
+        unit_norm = unit_str.lower()
+        unit_table = UNIT_TABLE.get(unit_class) or {}
+        factor = unit_table.get(unit_norm)
+        if factor is None:
+            # Unknown unit -> skip this value.
+            continue
+        out.append(ParsedValue(
+            value=value * factor,
+            unit_inferred=unit_norm,
+            conversion_factor=factor,
+            raw_text=raw,
+        ))
+
+    # Range collapse: if input was detected as a range and we ended up with
+    # exactly two parsed values, return the midpoint as a single ParsedValue.
+    if is_range and len(out) == 2:
+        midpoint = (out[0].value + out[1].value) / 2
+        return [ParsedValue(
+            value=midpoint,
+            unit_inferred=out[0].unit_inferred,
+            conversion_factor=out[0].conversion_factor,
+            raw_text=raw,
+        )]
+
+    return out
+
+
+def _field_unit_class(schema_field: str, suffix_map: dict[str, str]) -> str | None:
+    """Find the unit class by checking each registered suffix (longest first)."""
+    for suffix in sorted(suffix_map, key=len, reverse=True):
+        if schema_field.endswith(suffix):
+            return suffix_map[suffix]
+    return None
+
+
+def _canonical_unit_for_class(unit_class: str, unit_table: dict) -> str:
+    """Find a unit with factor 1.0 in the class — that's the canonical."""
+    table = unit_table.get(unit_class) or {}
+    for unit, factor in table.items():
+        if factor == 1.0:
+            return unit
+    return ""
+
+
+def _extract_unit_from_label(
+    row_label: str, unit_class: str, unit_table: dict
+) -> str | None:
+    """Scan the row label for any token matching a unit in the field's unit
+    class. Used when the cell has no explicit unit but the label does
+    (e.g., "Length mm", "Weight kg").
+
+    Returns the matched unit (lowercased) or None. Longest-token-first match
+    so 'kg' beats 'g' on labels like 'Weight kg'.
+
+    Uses word-boundary-style matching for ALL unit lengths to prevent false
+    matches inside larger words. Real failure modes this guards against:
+    - 'min' (factor 60 for time_sec) embedded inside 'minimum'
+    - 'rad' (factor 57.29 for angle_deg) embedded inside 'radar'
+    - 'ton' (factor 1000 for mass_kg) embedded inside 'stone'
+    Word-boundary chars: start/end of label, whitespace, or punctuation
+    [,.;:/\\-]. Using a uniform check is cheaper to reason about than a
+    length-dependent rule and has the same correctness on the canonical
+    'Length mm' case.
+    """
+    if not row_label:
+        return None
+    table = unit_table.get(unit_class) or {}
+    label_lower = row_label.lower()
+    # Sort by descending length so 'kg' wins over 'g' on 'Weight kg'.
+    for unit in sorted(table.keys(), key=len, reverse=True):
+        pattern = re.compile(
+            rf"(?:^|[\s,.;:/\\\-])({re.escape(unit)})(?:$|[\s,.;:/\\\-])"
+        )
+        if pattern.search(label_lower):
+            return unit
+    return None
+
+
+def _split_values(cell_text: str) -> tuple[list[str], bool]:
+    """Split a cell into value fragments and report whether it was a range.
+
+    Returns (fragments, is_range). is_range=True means the orchestrator
+    should collapse the parsed values to their midpoint.
+    """
+    text = cell_text.strip()
+    # Discrete alternatives via slash.
+    if _ALTERNATIVE_SEPARATOR in text:
+        parts = [p.strip() for p in text.split(_ALTERNATIVE_SEPARATOR) if p.strip()]
+        if len(parts) >= 2:
+            return parts, False
+
+    # Range via " to " word separator.
+    if " to " in text.lower():
+        parts = re.split(r"\s+to\s+", text, flags=re.IGNORECASE)
+        if len(parts) == 2:
+            return [p.strip() for p in parts], True
+
+    # Range or alternatives via ASCII hyphen-minus (ambiguous).
+    hyphen_split = re.split(r"\s*-\s*", text)
+    if len(hyphen_split) == 2:
+        a = _parse_number_and_unit(hyphen_split[0])
+        b = _parse_number_and_unit(hyphen_split[1])
+        if a is not None and b is not None:
+            is_range = a[0] < b[0]  # X<Y -> range
+            return [hyphen_split[0].strip(), hyphen_split[1].strip()], is_range
+
+    # Single value.
+    return [text], False
+
+
+# Number + optional unit parser. Accepts "1135", "1135 kg", "1.5e3", "1,135".
+_NUMBER_UNIT_PATTERN = re.compile(
+    r"^\s*([+-]?\d+(?:[,\.]\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za-z°/]+)?\s*$"
+)
+
+
+def _parse_number_and_unit(text: str) -> tuple[float, str | None] | None:
+    if not text:
+        return None
+    # Replace thousands separators (commas immediately before 3 digits).
+    cleaned = re.sub(r",(\d{3})", r"\1", text)
+    m = _NUMBER_UNIT_PATTERN.match(cleaned)
+    if not m:
+        return None
+    num_str, unit_str = m.group(1), m.group(2)
+    try:
+        value = float(num_str)
+    except ValueError:
+        return None
+    return value, unit_str
