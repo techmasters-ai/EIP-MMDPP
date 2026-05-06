@@ -154,6 +154,67 @@ ALIAS_MAP: dict[tuple[str, str | None, str], str] = {
     ("time",        "Ejector",   "missile_propulsion"): "ejector_time_sec",
     ("time sec",    "Ejector",   "missile_propulsion"): "ejector_time_sec",
     ("thrust",      "Ejector",   "missile_propulsion"): "ejector_thrust",
+
+    # ============================================================
+    # radar_power_rf
+    # ============================================================
+    ("frequency",           None, "radar_power_rf"): "nominal_rf_mhz",
+    ("frequency mhz",       None, "radar_power_rf"): "nominal_rf_mhz",
+    ("operating frequency", None, "radar_power_rf"): "nominal_rf_mhz",
+    ("carrier frequency",   None, "radar_power_rf"): "nominal_rf_mhz",
+    ("rf",                  None, "radar_power_rf"): "nominal_rf_mhz",
+
+    ("peak power",          None, "radar_power_rf"): "tx_peak_power_kw",
+    ("transmitter power",   None, "radar_power_rf"): "tx_peak_power_kw",
+    ("tx power",            None, "radar_power_rf"): "tx_peak_power_kw",
+
+    ("erp",                          None, "radar_power_rf"): "erp_dbw",
+    ("effective radiated power",     None, "radar_power_rf"): "erp_dbw",
+
+    # ============================================================
+    # radar_timing
+    # ============================================================
+    ("pri",                       None, "radar_timing"): "nominal_pri_usec",
+    ("pulse repetition interval", None, "radar_timing"): "nominal_pri_usec",
+    ("pulse interval",            None, "radar_timing"): "nominal_pri_usec",
+
+    ("pw",                        None, "radar_timing"): "nominal_pd_usec",
+    ("pulse width",               None, "radar_timing"): "nominal_pd_usec",
+    ("pulse duration",            None, "radar_timing"): "nominal_pd_usec",
+
+    ("scan period",  None, "radar_timing"): "scan_period_sec",
+    ("scan time",    None, "radar_timing"): "scan_period_sec",
+    ("rotation period", None, "radar_timing"): "scan_period_sec",
+
+    ("dwell",        None, "radar_timing"): "dwell_time",
+    ("dwell time",   None, "radar_timing"): "dwell_time",
+
+    # ============================================================
+    # radar_antenna
+    # ============================================================
+    ("antenna gain",     None, "radar_antenna"): "gain_dbi",
+
+    ("antenna width",       None, "radar_antenna"): "antenna_dim_az_m",
+    ("azimuth aperture",    None, "radar_antenna"): "antenna_dim_az_m",
+    ("antenna height",      None, "radar_antenna"): "antenna_dim_el_m",
+    ("elevation aperture",  None, "radar_antenna"): "antenna_dim_el_m",
+
+    ("azimuth beamwidth",   None, "radar_antenna"): "beamwidth_az_deg",
+    ("elevation beamwidth", None, "radar_antenna"): "beamwidth_el_deg",
+    ("elevation coverage",  None, "radar_antenna"): "coverage_limits_el_deg",
+
+    # ============================================================
+    # radar_modulation
+    # ============================================================
+    ("chirp bandwidth",     None, "radar_modulation"): "frequency_excursion_mhz",
+    ("frequency excursion", None, "radar_modulation"): "frequency_excursion_mhz",
+    ("sweep width",         None, "radar_modulation"): "frequency_excursion_mhz",
+
+    ("code length",      None, "radar_modulation"): "num_bits_in_code",
+    ("chips",            None, "radar_modulation"): "num_bits_in_code",
+    ("bits",             None, "radar_modulation"): "num_bits_in_code",
+
+    ("pulses per dwell", None, "radar_modulation"): "pulses_per_dwell",
 }
 
 # Section keywords detected by the embedded substring scan in
