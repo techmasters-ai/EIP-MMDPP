@@ -1,6 +1,6 @@
 # Table-Derived Identity Rewrite + Per-Cell Field Overlay (Mechanism A1)
 
-**Status:** Draft (in user review — r6)
+**Status:** Draft (in user review — r7)
 **Predecessor (parked):** `docs/superpowers/specs/2026-05-05-section-aware-table-fact-synthesis-design.md`
 **Reuses:** `docker/docling-graph/app/_table_facts.py` parser primitives (already on disk, 99 tests passing)
 **Related future work:** Mechanism B (per-variant prose binding accuracy for V-75-style docs) — separate spec
@@ -310,14 +310,20 @@ By the time `canonicalize_cross_pass_identities` runs, the worker has
 already parsed JSON `pass_output` into Pydantic instances and stored them
 under `PassResult` (per `pipeline.py:_parse_pass_response` → the `iter_entities_of_type`
 walker yields Pydantic instances). Both functions operate on Pydantic
-instances, but **explicitly re-validate values via `TypeAdapter`** because
-the current extraction schemas (e.g., `missile_propulsion.py:30`) do NOT
-set `validate_assignment=True` in their `model_config`. Plain `setattr`
-on those models bypasses validators and field-level coercion. We use
-`TypeAdapter(field_type).validate_python(value)` for explicit per-field
-validation, then `setattr` only the validated value (or fall back to
-`type(inst).model_validate(updated_dict)` if a model-level validator
-needs to fire).
+instances, but **explicitly re-validate values via the full
+`cls.model_validate({**inst.model_dump(), field: value})` path** because
+the current extraction schemas (e.g., `missile_propulsion.py:30`) do
+NOT set `validate_assignment=True` in their `model_config` AND each
+schema attaches per-field `field_validator(mode="before")` hooks
+(`_v_booster_mass_kg`, `_v_max_intercept_km`, `_v_max_speed_mps`, etc.)
+that handle string→float coercion and codebase-specific normalization.
+A bare `TypeAdapter(field_info.annotation).validate_python(value)` would
+coerce the type but skip those validators; `setattr` would skip
+everything. We therefore route every (entity, field) overlay through
+`cls.model_validate(...)` so every existing field validator fires, and
+any future `model_validator(mode="after")` cross-field constraint also
+fires automatically. See §5.3 for the per-step swap pattern that keeps
+instance identity stable.
 
 ```python
 def apply_identity_rewrite(
@@ -358,18 +364,23 @@ def apply_field_overlay(
 ) -> OverlayStats:
     """Apply per-cell table facts to Pydantic entity instances.
 
-    Facts already carry pass_name + canonical_entity + schema_field + value
-    + section_ctx + source_label (set by parser). Each fact is routed to
-    the matching pass_result. Within that pass, find the entity instance
-    whose system_name == fact.canonical_entity (post-rewrite).
+    Facts already carry pass_name + entity_type + canonical_entity +
+    schema_field + value + section_ctx + source_label (set by parser).
+    Each fact is routed to the matching pass_result. Within that pass,
+    apply the fact to **every** entity instance of the matching
+    `entity_type` whose `system_name == fact.canonical_entity`
+    (post-rewrite). After alias rewrite, multiple instances can legitimately
+    share a canonical name; we cannot rely on one being "the" instance —
+    if we update only one, merge order can preserve a wrong value from a
+    sibling. So a fact fans out across all matches.
 
     Conflict resolution policy: 'table_wins_for_table_facts' (v1 default).
     The variants table is the authoritative source for spec values when a
     TableFact passed all 4 gates (section + alias + unit + Pydantic
     validation). The LLM's value for that same field is ignored — this is
     deliberate, because the propulsion failure mode is non-null wrong values
-    (off-by-one row attribution), not nulls. Additive-only would skip those
-    and miss the acceptance target.
+    (off-by-one row attribution), not nulls. A populated-only policy would
+    skip those and miss the acceptance target.
 
     The "scoped" qualifier matters: ONLY (entity, field) pairs covered by
     a TableFact are overridden. Fields the LLM extracted that have NO
@@ -377,41 +388,85 @@ def apply_field_overlay(
     in a doc with no variants table) are entirely untouched. The overlay
     NEVER mutates fields outside its own evidence.
 
-    For each candidate (fact, entity_instance) pair:
-      1. Route fact to pass: if fact.pass_name not in pass_results,
-         skipped_no_entity++ and continue. Otherwise look up entity in
-         pass_results[fact.pass_name] whose system_name == fact.canonical_entity.
-         If no such entity, skipped_no_entity++ and continue.
-      2. Capture original via getattr(entity_instance, fact.schema_field, None).
-      3. Validate fact.value against the field's Pydantic type:
-           field_info = type(entity_instance).model_fields[fact.schema_field]
-           try:
-               coerced = TypeAdapter(field_info.annotation).validate_python(fact.value)
-           except (ValidationError, ValueError, TypeError):
-               skipped_validation_fail++; continue
-      4. Apply: setattr(entity_instance, fact.schema_field, coerced)
-         applied++
-         if original is not None and original != coerced:
-             conflicts_overridden++
-             log("FIELD_OVERLAY_OVERRIDE pass=%s entity=%s field=%s "
-                 "llm=%r table=%r source=%r",
-                 fact.pass_name, fact.canonical_entity, fact.schema_field,
-                 original, coerced, fact.source_label)
-         else:
-             log applied event (DEBUG)
-      5. Optional model-level revalidation hook: when extraction schemas
-         add `model_validator(mode='after')` constraints in the future
-         (e.g., total_mass_kg >= booster_mass_kg + sustain_mass_kg), call
-         type(inst).model_validate(inst.model_dump()) once at end of
-         per-entity overlay batch. Out of scope for v1 — current schemas
-         have no such cross-field validators.
+    For each fact:
+      1. Route to pass: if fact.pass_name not in pass_results,
+         skipped_no_entity++ and continue. Otherwise enumerate ALL
+         entity instances in pass_results[fact.pass_name] of type
+         fact.entity_type whose system_name == fact.canonical_entity
+         (post-rewrite). If none, skipped_no_entity++ and continue.
+      2. For each matching instance (fan-out — see "multi-instance"
+         note below):
+           a. Capture original via
+              getattr(inst, fact.schema_field, None).
+           b. Build a candidate dict (NOT setattr-with-TypeAdapter).
+              Plain `TypeAdapter(field_info.annotation).validate_python`
+              validates the raw annotation but does NOT execute the
+              schema's `field_validator(mode='before')` hooks (e.g.
+              `_v_booster_mass_kg`, `_v_max_intercept_km`) or any
+              `Field(ge=…, le=…)` metadata constraints attached to the
+              field. Use Pydantic's full model-validation path on a
+              candidate dict so before-validators AND field-level
+              constraints AND any future `model_validator(mode='after')`
+              all fire:
+                cls = type(inst)
+                candidate = {**inst.model_dump(), fact.schema_field: fact.value}
+                try:
+                    revalidated = cls.model_validate(candidate)
+                except (ValidationError, ValueError, TypeError):
+                    skipped_validation_fail++; continue
+                coerced = getattr(revalidated, fact.schema_field)
+           c. Atomic swap. The model_validate call already produced a
+              fully-validated `revalidated` instance. Mutate inst's
+              fields from revalidated's dump:
+                for k, v in revalidated.model_dump().items():
+                    setattr(inst, k, v)
+              This guarantees that if model_validate raised, inst is
+              UNCHANGED (we never partially mutated it). Sibling
+              instances in the same fan-out are independent: a
+              validation failure for one does NOT block fan-out to the
+              others.
+           d. Bookkeeping:
+                applied++
+                if original is not None and original != coerced:
+                    conflicts_overridden++
+                    log("FIELD_OVERLAY_OVERRIDE pass=%s entity_type=%s "
+                        "entity=%s field=%s llm=%r table=%r source=%r",
+                        fact.pass_name, fact.entity_type,
+                        fact.canonical_entity, fact.schema_field,
+                        original, coerced, fact.source_label)
+                else:
+                    log applied event (DEBUG)
+
+    **Multi-instance fan-out:** A TableFact applies to ALL matching
+    instances of the right entity_type within its pass, not just the
+    first. Rationale: after alias rewrite, a pass can contain N >= 1
+    instances with the same canonical system_name (e.g., the LLM
+    emitted "SA-2A" and "SA-75" separately, both rewritten to "1D").
+    If overlay only touched the first, the OTHER N-1 instances retain
+    their pre-overlay (potentially wrong) LLM values. The merge layer
+    then has no deterministic way to pick the correct one — order-
+    dependent. Fanning out to all N gives all N the same correct value
+    so any merge order yields the right answer. Same-pass duplicates
+    are common in propulsion when columns alias to a single missile.
+
+    **Transactional semantics — bounded, not full:** Each (fact,
+    instance) pair is atomic via the model_validate-then-swap pattern;
+    a validation failure for that pair leaves the instance untouched.
+    BUT the overall apply_field_overlay loop is NOT a single
+    transaction across multiple facts: an unhandled exception thrown
+    from inside the loop body (e.g. KeyError on a malformed fact)
+    leaves earlier successfully-applied mutations in place. The §7
+    error-handling table classifies what extraction_merge.py does on
+    that path (catch+log, fall through to merge with whatever
+    mutations completed). Overlay is bounded-degraded, not bounded-
+    none-or-all.
 
     Returns OverlayStats(applied=N, skipped_no_entity=, skipped_validation_fail=,
     conflicts_overridden=, policy_active="table_wins_for_table_facts").
     """
 ```
 
-**Why explicit `TypeAdapter` validation, not `setattr` + `validate_assignment`:**
+**Why full model-validation, not `TypeAdapter` and not `setattr` + `validate_assignment`:**
 
 The current extraction schemas (verified at `missile_propulsion.py:30`,
 `radar_*.py:31`) configure `ConfigDict(extra="ignore", ontology_name=...,
@@ -422,20 +477,42 @@ enforcement. That's a real risk: a fact with `value="not a number"`
 would land on a `Optional[float]` field as a string, breaking downstream
 serialization at unpredictable points.
 
-Two mitigations were considered:
+Three mitigations considered:
 - **(A)** Add `validate_assignment=True` to every extraction schema's
   `ConfigDict`. Touches ~9 files; possible but invasive; might surface
   pre-existing validators that fire on unexpected data shapes elsewhere
   in the pipeline.
-- **(B) (chosen)** Validate explicitly via `TypeAdapter(field_type).validate_python(value)`
-  before `setattr`. Self-contained in the overlay code path; no schema
-  changes; `TypeAdapter` does all the type coercion (str→float etc.) and
-  constraint enforcement (`Field(ge=0, le=...)`) that `validate_assignment`
-  would have done.
+- **(B)** Validate via `TypeAdapter(field_info.annotation).validate_python(value)`
+  before `setattr`. **Rejected.** TypeAdapter applied to the bare
+  annotation (e.g. `Optional[float]`) coerces the type but does NOT
+  execute the schema's `field_validator(mode='before')` hooks
+  (`_v_booster_mass_kg = field_validator("booster_mass_kg",
+  mode="before")(coerce_optional_float)` and the equivalents on
+  every numeric field across propulsion / kinematics / speed_timing /
+  airframe). Those validators are where the codebase's float-coercion
+  rules and `coerce_optional_text` logic live; bypassing them means
+  the overlay applies raw `fact.value` (a Python primitive from the
+  parser, but with no schema-level normalization). It also misses any
+  `Field(ge=…, le=…)` metadata constraints, which TypeAdapter on the
+  raw annotation does not always honor without an `Annotated[...]`
+  wrapper. We cannot pretend constraints don't exist; some are
+  load-bearing for downstream graph-write validity.
+- **(C) (chosen)** Use full Pydantic model validation:
+    `cls.model_validate({**inst.model_dump(), fact.schema_field: fact.value})`
+  This re-runs the entire schema's validators on a candidate dict —
+  including every `field_validator(mode='before')`, every `Field(...)`
+  constraint, every existing-but-currently-unused
+  `model_validator(mode='after')`. The cost is one extra `model_dump()`
+  + `model_validate()` per fact-instance pair (microseconds per
+  instance per fact; negligible at the corpus scale). The benefit is
+  that whatever the schema currently enforces, the overlay also
+  enforces, and future `model_validator(mode='after')` cross-field
+  constraints are honored automatically.
 
-If `model_validator(mode='after')` field-cross constraints land on the
-extraction schemas in the future, swap to `model_validate(inst.model_dump())`
-at the end of each entity's overlay batch (see step 5 above).
+  After validation succeeds, a "swap" pattern (copy validated values
+  back via `setattr`) keeps the *identity* of the instance stable —
+  important because `iter_entities_of_type` may have already yielded
+  references the caller holds.
 
 **v1 policy: `table_wins_for_table_facts`.** Scoped, deterministic, and
 load-bearing for the propulsion acceptance target.
@@ -475,7 +552,7 @@ The internal stats types (`RewriteStats`, `OverlayStats`) stay as
 worker functions and serialized via `asdict()` only for log lines.
 
 ```python
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 class TableFact(BaseModel):
     """Per-cell deterministic fact derived from a variants table row."""
@@ -500,7 +577,12 @@ class CrossEntityHint(BaseModel):
 
 class TableOverlay(BaseModel):
     """Doc-level deterministic overlay derived from a variants table."""
-    alias_map_by_entity_type: dict[str, dict[str, str]] = {}
+    # Use Field(default_factory=...) for mutable defaults so each
+    # instance gets its own dict/list. Pydantic v2 deep-copies bare
+    # `= {}` / `= []` defaults safely, but default_factory is the
+    # idiomatic and unambiguous form, and keeps spec→implementation
+    # transcription from accidentally introducing shared-default bugs.
+    alias_map_by_entity_type: dict[str, dict[str, str]] = Field(default_factory=dict)
     """Entity-type-scoped alias map: {entity_type: {alias: canonical}}.
        E.g., for SA-2 col 0:
        {"MISSILE_SYSTEM": {"SA-75": "1D", "SA-2A": "1D", ...}}.
@@ -514,12 +596,12 @@ class TableOverlay(BaseModel):
        makes the rewrite unambiguous and prevents accidental cross-type
        collapse."""
 
-    facts: list[TableFact] = []
+    facts: list[TableFact] = Field(default_factory=list)
     """Per-cell facts ready for direct application to canonical entities.
        Each fact carries its own pass_name and entity_type, allowing the
        overlay to filter by both when applied."""
 
-    cross_entity_hints: list[CrossEntityHint] = []
+    cross_entity_hints: list[CrossEntityHint] = Field(default_factory=list)
     """Optional: rows like Fan Song Variant in a missile table. v1: collected
        for future relationship-pass integration but NOT applied as edges."""
 
@@ -735,16 +817,33 @@ Input: docling_document_json (SA-2 PDF, has variants table)
       # as aliases (per §5.1 classification-order rule).
     },
     facts=[
-      TableFact(canonical="1D", schema_field="body_length_m", value=10.726,
+      TableFact(canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+                schema_field="body_length_m", value=10.726,
                 source_label="Length mm", section_ctx=None,
-                pass_name="missile_airframe"),
-      TableFact(canonical="1D", schema_field="booster_mass_kg", value=1135,
+                pass_name="missile_airframe", raw_text="10726 mm"),
+      TableFact(canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+                schema_field="booster_mass_kg", value=1135,
                 source_label="Weight kg", section_ctx="1st Stage",
-                pass_name="missile_propulsion"),
+                pass_name="missile_propulsion", raw_text="1135"),
+      TableFact(canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+                schema_field="sustain_mass_kg", value=896,
+                source_label="Weight kg", section_ctx="2nd Stage",
+                pass_name="missile_propulsion", raw_text="896"),
+      TableFact(canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+                schema_field="max_intercept_km", value=29,
+                source_label="Max Effective Range km", section_ctx=None,
+                pass_name="missile_kinematics", raw_text="29"),
+      TableFact(canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+                schema_field="max_speed_mps", value=975,
+                source_label="Max Speed m/s", section_ctx=None,
+                pass_name="missile_speed_timing", raw_text="975"),
       ... ~50 facts across all passes
     ],
     cross_entity_hints=[
-      CrossEntityHint(source_canonical="1D", target_alias="RSNA-75",
+      CrossEntityHint(source_canonical="1D",
+                      source_entity_type="MISSILE_SYSTEM",
+                      target_alias="RSNA-75",
+                      target_entity_type="RADAR_SYSTEM",
                       relationship_kind="associated_with"),
       ...  (deferred — not applied in v1)
     ]
@@ -780,10 +879,17 @@ PHASE 4: field overlay (called once from merge_and_resolve, all passes routed)
 ─────────────────────────────────────────────────────────────────────────
 
   apply_field_overlay(pass_results, table_overlay.facts, policy="table_wins_for_table_facts")
-  # Each fact carries pass_name → routed to pass_results[fact.pass_name].
-  # Gate: TypeAdapter validation passes (LLM value, if any, gets overridden — scoped table_wins)
-  #       (which subsumes the section_ctx + alias + unit checks since
-  #        the parser only emitted facts that already passed those).
+  # Each fact carries (pass_name, entity_type) → routed to
+  # pass_results[fact.pass_name], filtered to instances of fact.entity_type.
+  # Gate: cls.model_validate(candidate) succeeds (runs all
+  #       field_validator(mode="before") hooks + Field(...) constraints).
+  #       LLM value, if any, gets overridden — scoped table_wins.
+  # Fan-out: a fact applies to ALL post-rewrite instances of the matching
+  #          entity_type with system_name == fact.canonical_entity in
+  #          pass_results[fact.pass_name], not just one. After alias
+  #          rewrite, multiple instances can legitimately share the
+  #          canonical name; updating only one would let merge order
+  #          preserve a wrong sibling value.
 
 ─────────────────────────────────────────────────────────────────────────
 PHASE 5: merge_and_resolve entity loop (existing code, unchanged)
@@ -812,9 +918,49 @@ Demonstrates scoped-table-wins:
 
 ## 7. Error Handling
 
-The overlay is augmentative at every boundary. Any failure falls back to the
-existing LLM-extraction + token-overlap path. **System never gets worse than
-the current baseline.**
+Overlay is **bounded-degraded, not strictly augmentative.** With
+`policy="table_wins_for_table_facts"`, an applied fact intentionally
+overwrites a populated LLM value when the parser's 4-gate test passed —
+that is, by design, a way the post-overlay field value differs from the
+pre-overlay LLM value. So the older r1-r5 phrasing ("system never gets
+worse than the current baseline") is no longer true *as stated*. The
+correct narrower claim is:
+
+  1. **Parser-side bypass.** Any uncaught parser exception causes
+     `main.py` to emit `table_overlay=None` and log a WARNING; the
+     LLM-extraction path runs untouched. Overlay-off behavior == pre-
+     overlay behavior, exactly.
+  2. **Worker-side bypass.** Any uncaught exception from
+     `apply_identity_rewrite` or `apply_field_overlay` is caught at the
+     `merge_and_resolve` boundary, logged WARNING, and merge proceeds
+     with whatever `pass_results` state existed at that moment.
+  3. **Bounded override risk.** A fact is only emitted when section
+     context AND label-to-field alias AND unit conversion AND Pydantic
+     model-validation all succeed. An emitted fact therefore has
+     stronger provenance than an LLM extraction for the same
+     (entity, field). Overrides are not unconditional; they are
+     conditional on the 4-gate passing.
+  4. **Per-(fact, instance) atomicity, not full-batch atomicity.**
+     Each `model_validate`+swap is atomic: a validation failure on one
+     pair leaves that instance unchanged. But the apply_field_overlay
+     loop is NOT a single transaction across multiple facts. If an
+     unhandled exception fires from inside the loop body (e.g., a
+     fan-out hitting an instance that was deleted by an unrelated
+     code path mid-run — should not happen in practice), earlier
+     successfully-applied mutations stay in place. Merge then runs
+     with a partially-overlaid `pass_results`, which is a strictly
+     better state than pre-overlay for the fields that landed and
+     identical to pre-overlay for the fields that didn't. There is
+     no rollback. We accept partial-progress over rollback because
+     rollback would require deep-copying every Pydantic instance
+     before mutation, which is wall-time-significant on the corpus
+     and not justified by any observed failure mode.
+  5. **Kill switch.** `DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false`
+     drops behavior to exactly the pre-overlay path with no code
+     change. This is the operator-controlled "get back to baseline"
+     escape hatch; the system invariant of "never worse than
+     baseline" is preserved through the kill switch, not through the
+     overlay code path itself.
 
 ### Parser-side (docling-graph)
 
@@ -897,6 +1043,68 @@ logs can confirm the overlay path ran (vs ran silently / errored).
 | `_pick_canonical` | Cluster with Missile Type → "Missile Type" wins; cluster missing Missile Type, present NATO → NATO wins; cluster with no priority match → alphabetic fallback (logged); empty cluster → "" |
 | `extract_table_overlay` | SA-2 fixture → ~30 alias entries, ~50 facts, cross_entity_hints for Fan Song; doc with no tables → empty TableOverlay; doc with row-major table → empty (out of scope); malformed cells → empty + WARNING log |
 
+**Strict-qualification starvation tests (`test_table_overlay_qualification.py`):**
+
+These guard the §3 strict 4-of-4 AND gate against the failure mode the
+user called out in r6.1 review: a small earlier column-major-shaped
+table starving the real variants table.
+
+```python
+def test_unqualified_earlier_table_does_not_starve_real_variants_table():
+    """doc.tables = [
+        # Table 0 — column_major shape but only 2 entity columns,
+        # 1 identity row → fails entity_columns ≥ 4 gate.
+        small_columnar_spec_sheet,
+        # Table 1 — REAL SA-2 variants table (10 cols, 5 identity rows).
+        real_variants_table,
+    ]. Expected: extract_table_overlay returns alias_map_by_entity_type
+    populated from Table 1, tables_skipped_unqualified=1,
+    tables_skipped_multi=0, NOT empty."""
+
+def test_entity_columns_gate_under_4_rejects():
+    """column_major table with 3 entity columns and 2 identity rows →
+    fails (entity_columns < 4). Returns empty TableOverlay,
+    tables_skipped_unqualified=1."""
+
+def test_sparse_identity_cells_rejects():
+    """column_major table, entity_columns=5, identity_rows=1, but the
+    matched identity row has cells filled in only 1 of the 5 columns →
+    fails (every-entity-column-must-have-cell gate). Returns empty,
+    tables_skipped_unqualified=1."""
+
+def test_radar_qualifying_table_before_missile_table_v1_picks_missile():
+    """v1 acceptance is missile-focused (per §1 Pattern A, §8.6 acceptance
+    rows). When doc.tables = [
+        radar_variants_table_qualifying,   # passes 4-gate, RADAR_SYSTEM-keyed
+        missile_variants_table_qualifying, # passes 4-gate, MISSILE_SYSTEM-keyed
+    ], extract_table_overlay should still pick the FIRST strictly-
+    qualifying table — the radar one — because the picker is
+    entity-type-agnostic by design (cross-entity scoping happens later
+    via alias_map_by_entity_type and TableFact.entity_type, not at the
+    table-pick stage). Result: alias_map_by_entity_type contains a
+    "RADAR_SYSTEM" key from the radar table; missile entities are NOT
+    affected because no MISSILE_SYSTEM aliases were emitted from the
+    chosen table. tables_skipped_multi=1 (the missile table is the
+    skipped second-qualifying)."""
+
+def test_two_qualifying_missile_tables_first_wins():
+    """Two strictly-qualifying missile variants tables in the same doc.
+    First wins; second logged tables_skipped_multi=1. Confirms the
+    "no order-dependence problem within a single entity type"
+    assumption documented in §3."""
+```
+
+**Note on radar-before-missile:** the v1 picker is entity-type-agnostic
+(it picks the first strictly-qualifying table of any keying). If a
+future SA-2-shaped doc puts a small qualifying radar table before the
+real missile variants table, the picker will choose the radar table
+and the missile entities will not benefit from overlay. This is
+acceptable for v1 because (a) the corpus survey shows zero such docs
+today, and (b) the kill switch + diagnostics surface the choice. v2
+may revisit by adding entity-type preference (e.g.,
+`prefer_entity_type="MISSILE_SYSTEM"`) when a real corpus example
+appears.
+
 ### 8.2 Drift guards (`test_alias_map_overlay_constants.py`)
 
 ```python
@@ -926,9 +1134,12 @@ def test_canonical_priority_uses_display_labels():
 
 | Function | Cases |
 |---|---|
-| `apply_identity_rewrite` | empty alias_map → no-op; entity with system_name in map → rewritten; entity without system_name → skipped; multiple entities sharing alias → all rewrite to same canonical; empty pass_output → no-op |
-| `apply_field_overlay` (table_wins_for_table_facts, v1 default) | Fact for canonical not in pass_output → skipped (skipped_no_entity++); value coerces via TypeAdapter → applied; value fails TypeAdapter → skipped (skipped_validation_fail++); pre-existing LLM value present → overwritten AND override logged AND conflicts_overridden++; pre-existing was None → applied without log noise; fields without a corresponding TableFact are NEVER touched |
-| `apply_field_overlay` entity-type scoping | Fact with entity_type="MISSILE_SYSTEM" never lands on a RADAR_SYSTEM instance even if names happen to collide |
+| `apply_identity_rewrite` | empty alias_map → no-op; entity with system_name in map → rewritten; entity without system_name → skipped; multiple entities sharing alias → all rewrite to same canonical; empty pass_output → no-op; entity_type-scoped map: alias for MISSILE_SYSTEM never rewrites a RADAR_SYSTEM instance |
+| `apply_field_overlay` validation gate uses model_validate | Fact value passed as a string ("1135") for `booster_mass_kg` → `_v_booster_mass_kg` field_validator coerces to float → applied as 1135.0. Verifies cls.model_validate(...) is used (NOT TypeAdapter on raw annotation, which would skip the validator). |
+| `apply_field_overlay` (table_wins_for_table_facts, v1 default) | Fact for canonical not in pass_output → skipped (skipped_no_entity++); value passes model_validate → applied; value fails model_validate → skipped (skipped_validation_fail++); pre-existing LLM value present → overwritten AND override logged AND conflicts_overridden++; pre-existing was None → applied without log noise; fields without a corresponding TableFact are NEVER touched |
+| `apply_field_overlay` entity-type scoping | Fact with entity_type="MISSILE_SYSTEM" never lands on a RADAR_SYSTEM instance even if system_names happen to collide |
+| `apply_field_overlay` multi-instance fan-out | Two MISSILE_SYSTEM instances in the same pass with system_name="1D" (post-rewrite, originally "SA-75" and "SA-2A"); single TableFact for 1D.booster_mass_kg=1135 → BOTH receive the value, applied++ counted twice |
+| `apply_field_overlay` per-(fact, instance) atomicity | Validation failure on instance A leaves A unchanged AND does not block fan-out to instance B which passes validation |
 | `RewriteStats` / `OverlayStats` | Counter increments + `.as_dict()` serialization |
 
 ### 8.4 Worker integration tests (`test_extraction_merge_table_overlay.py`)
@@ -958,10 +1169,34 @@ def test_field_overlay_table_wins_for_table_facts_policy():
     incremented because original == coerced."""
 
 def test_field_overlay_only_touches_fields_with_facts():
-    """entity has body_length_m=10.5 (LLM) and max_speed_m_per_s=600 (LLM);
+    """entity has body_length_m=10.5 (LLM) and total_mass_kg=2200 (LLM);
     table_fact only for body_length_m. After overlay, body_length_m=10.726
-    (overridden), max_speed_m_per_s=600 (untouched). Demonstrates scoped
+    (overridden), total_mass_kg=2200 (untouched). Demonstrates scoped
     table_wins: no fact, no change."""
+
+def test_field_overlay_runs_field_validator_hooks():
+    """`missile_propulsion._v_booster_mass_kg` is a
+    field_validator(mode='before')(coerce_optional_float) hook. A
+    TableFact value passed as a string ("1135") must round-trip through
+    the validator to a float. Verifies that apply_field_overlay uses
+    `cls.model_validate(...)`, NOT TypeAdapter on the raw annotation —
+    the latter would not execute the field-validator and the field
+    would end up holding a str."""
+
+def test_field_overlay_fans_out_to_all_matching_instances():
+    """After alias rewrite, missile_propulsion pass_output contains TWO
+    Pydantic instances both with system_name='1D' (one was originally
+    'SA-75', one was originally 'SA-2A'; both have null booster_mass_kg).
+    A single TableFact for 1D.booster_mass_kg=1135 → BOTH instances get
+    booster_mass_kg=1135, applied++ twice. Verifies fan-out (sibling
+    duplicates can't carry stale wrong values into merge)."""
+
+def test_field_overlay_atomic_per_fact_failure():
+    """A TableFact's value fails model_validate (e.g., violates Field(ge=0)
+    on a future-added constraint). The instance's prior LLM value MUST be
+    unchanged after the failure (atomicity per (fact, instance) pair).
+    Sibling instances in the same fan-out must still receive the fact if
+    they pass validation — one instance's failure does not block siblings."""
 
 def test_field_overlay_entity_type_scope():
     """table_fact has entity_type='MISSILE_SYSTEM'. pass_output contains a
@@ -969,11 +1204,15 @@ def test_field_overlay_entity_type_scope():
     RADAR_SYSTEM. Confirms cross-type collisions are filtered out."""
 
 def test_field_overlay_pydantic_validation_gate():
-    """table_fact value="not a number" for numeric field →
-    TypeAdapter(field_info.annotation).validate_python raises →
-    skipped_validation_fail++, entity field stays at its prior LLM value
-    (NOT overwritten with garbage). Verifies validate-and-coerce is a hard
-    gate even under table_wins_for_table_facts."""
+    """table_fact value="not a number" for a numeric field →
+    cls.model_validate({**inst.model_dump(), field: value}) raises
+    ValidationError → skipped_validation_fail++, entity field stays at
+    its prior LLM value (NOT overwritten with garbage). Verifies
+    validate-and-coerce is a hard gate even under
+    table_wins_for_table_facts, and that the gate uses full model
+    validation (so all field_validator(mode='before') hooks AND
+    Field(...) constraints fire), not bare TypeAdapter on the raw
+    annotation."""
 
 def test_kill_switch_disables_overlay():
     """DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false → table_overlay=None in
@@ -1019,12 +1258,17 @@ The targets below are FLOORS (entity counts at the pass level) plus
 fields the variants table actually carries). Both the floor and the
 field-specific row must pass.
 
+Schema field names verified against
+`ontology_bundles/air_defense_v3/extraction_schemas/{missile_propulsion,missile_kinematics,missile_speed_timing,missile_airframe}.py`
+(2026-05-06 HEAD). Fields not present in the schemas are excluded from
+acceptance even if the variants table carries the row label.
+
 | Pass | Floor: ✓ exact entity count (post-A1) | Field-specific table-overlay acceptance | vs alias-only baseline |
 |---|---|---|---|
-| `missile_kinematics` | ≥ 4 | n/a — variants table carries no kinematics fields per the SA-2 PDF | no regression |
-| `missile_airframe` | ≥ 14 | for each variant column where the variants table row "Body Length" is non-empty: that variant's `body_length_m` post-overlay equals the table cell to within unit-conversion tolerance (1e-3 m); same for "Diameter" → `body_diameter_m`. Required: ≥ 6 of the 7 listed variants on EACH such field where the cell exists. | +6 over baseline 8 |
-| `missile_speed_timing` | ≥ 6 | for each variant column where the variants table row "Max Speed" / "Max Effective Range" is non-empty: that variant's corresponding flat field post-overlay equals the cell within tolerance. Required: ≥ 6 of 7 on EACH such field. | no regression |
-| `missile_propulsion` | ≥ 4 (was the regression-baseline floor) | **≥ 6 of 7 listed variants** (13DM, 13DA, 13DAM, 20D, 20DP, 20DSU, 5Ya23) have `booster_mass_kg` matching the variants-table booster row within tolerance, AND ≥ 6 of 7 have `booster_propellant_mass_kg` matching, sourced via `apply_field_overlay` (i.e. with `FIELD_OVERLAY_OVERRIDE` log lines emitted where the LLM had wrong values pre-overlay) | spec target met |
+| `missile_kinematics` | ≥ 4 (was treated as "no fields" in r5/r6 — that was wrong; the SA-2 variants table DOES carry range/altitude rows) | for each variant column where the variants table has non-empty cells in "Max (Effective) Range", "Min Range", "Max Altitude", "Min Altitude": ≥ 6 of 7 listed variants have `max_intercept_km` / `min_intercept_km` / `max_altitude_km` / `min_altitude_km` matching the table cell within tolerance (1e-2 km). Schema fields per `missile_kinematics.py`: `min_intercept_km`, `max_intercept_km`, `min_altitude_km`, `max_altitude_km`, `max_launch_angle_deg`. | live-baseline pinned per re-derive note below |
+| `missile_airframe` | ≥ live-baseline floor | for each variant column where "Length" / "Diameter" is non-empty: ≥ 6 of 7 listed variants have `body_length_m` / `body_diameter_m` matching within tolerance (1e-3 m). For columns where "Total Weight" / "Launch Weight" is non-empty: ≥ 6 of 7 have `total_mass_kg` matching within tolerance (1 kg). Schema fields per `missile_airframe.py`: `body_length_m`, `body_diameter_m`, `total_mass_kg`. | +6 over alias-only baseline 8 (subject to live-baseline re-derive) |
+| `missile_speed_timing` | ≥ live-baseline floor | for each variant column where "Max Speed" is non-empty: ≥ 6 of 7 have `max_speed_mps` (NOT `max_speed_m_per_s` — that field does not exist) matching within tolerance (1 m/s). Schema fields per `missile_speed_timing.py` available for table mapping: `average_speed_mps`, `max_speed_mps`, `max_flyout_time_sec`, `flight_time_sec`, `coast_time_sec`, `intra_salvo_time_sec`, `total_burn_time_sec`, `ejector_time_sec`. **Note:** "Max Effective Range" maps to `missile_kinematics.max_intercept_km`, NOT to any speed_timing field; if r5 wording suggested otherwise, that was wrong. | no regression vs live baseline |
+| `missile_propulsion` | ≥ live-baseline floor | **≥ 6 of 7 listed variants** (13DM, 13DA, 13DAM, 20D, 20DP, 20DSU, 5Ya23) have `booster_mass_kg` matching the variants-table 1st-stage weight row within tolerance, AND ≥ 6 of 7 have `sustain_mass_kg` matching the 2nd-stage weight row (NOT `booster_propellant_mass_kg` — that field does NOT exist in `missile_propulsion.py`; the schema's flat fields are `ejector_mass_kg`, `booster_mass_kg`, `sustain_mass_kg`, plus `_thrust` text fields and `_time_sec` floats). Each match must be sourced via `apply_field_overlay` with `FIELD_OVERLAY_OVERRIDE` log lines emitted where the LLM had wrong values pre-overlay. | spec target met |
 
 **Why field-specific gates matter (per user pushback on r5):** the floor
 counts above are the same metric we used pre-revert and they conflate
