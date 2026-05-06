@@ -27,7 +27,8 @@ Use the @superpowers-extended-cc:test-driven-development skill for every code-be
 
 - [ ] **P1: Confirm baseline test suite status.**
 
-Run inside the docling-graph container (matches production layout):
+Run on host from repo root (tests are not packaged in the docling-graph
+container image — see P6 below):
 ```bash
 pytest docker/docling-graph/tests -q 2>&1 | tail -5
 ```
@@ -205,7 +206,7 @@ def test_alias_key_typealias_exists():
 
 Run: `pytest docker/docling-graph/tests/test_table_facts_types.py -v 2>&1 | tail -20`
 
-Expected: ALL fail with `ModuleNotFoundError` or attribute errors — file doesn't exist yet. (If the container doesn't have the test file mounted, run on host: `cd docker/docling-graph && python -m pytest tests/test_table_facts_types.py -v`.)
+Expected: ALL fail with `ModuleNotFoundError` or attribute errors — file doesn't exist yet. The pytest invocation is host-side; the docling-graph container does not contain the tests/ directory.
 
 - [ ] **Step 3: Create the types module.**
 
@@ -1782,7 +1783,11 @@ def _extract_row_major(cells: list[dict]) -> list[LabelRow]:
     return list(rows_by_label.values())
 ```
 
-- [ ] **Step 4: Run tests.**
+- [ ] **Step 4: Run tests, verify they pass.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_extract.py -v 2>&1 | tail -10`
+Expected: 4/4 pass.
+
 - [ ] **Step 5: Commit.**
 
 ```bash
@@ -2214,7 +2219,12 @@ def test_resolve_pass_conditional():
     assert tf.resolve_alias("Length mm", None, "missile_propulsion") is None
 ```
 
-- [ ] **Step 2-4:** Run failing → implement → run passing.
+- [ ] **Step 2: Run tests, verify they fail.**
+
+Run: `pytest docker/docling-graph/tests/test_table_facts_resolve.py -v 2>&1 | tail -10`
+Expected: FAIL — `resolve_alias` not yet defined.
+
+- [ ] **Step 3: Implement.**
 
 ```python
 # ============================================================
@@ -2529,25 +2539,28 @@ def _extract_unit_from_label(
 
     Returns the matched unit (lowercased) or None. Longest-token-first match
     so 'kg' beats 'g' on labels like 'Weight kg'.
+
+    Uses word-boundary-style matching for ALL unit lengths to prevent false
+    matches inside larger words. Real failure modes this guards against:
+    - 'min' (factor 60 for time_sec) embedded inside 'minimum'
+    - 'rad' (factor 57.29 for angle_deg) embedded inside 'radar'
+    - 'ton' (factor 1000 for mass_kg) embedded inside 'stone'
+    Word-boundary chars: start/end of label, whitespace, or punctuation
+    [,.;:/\\-]. Using a uniform check is cheaper to reason about than a
+    length-dependent rule and has the same correctness on the canonical
+    'Length mm' case.
     """
     if not row_label:
         return None
     table = unit_table.get(unit_class) or {}
     label_lower = row_label.lower()
-    # Sort by descending length so 'kg' wins over 'g' on a label like
-    # 'Weight kg'.
+    # Sort by descending length so 'kg' wins over 'g' on 'Weight kg'.
     for unit in sorted(table.keys(), key=len, reverse=True):
-        # Use word-boundary-style match: unit appears as its own token or
-        # at the end of the label. For single-letter units (e.g., 'm', 'g')
-        # require word boundary on both sides to avoid 'm' matching inside
-        # 'mass' or 'mm'.
-        if len(unit) <= 2:
-            pattern = re.compile(rf"(?:^|[\s,.;:/\\\-])({re.escape(unit)})(?:$|[\s,.;:/\\\-])")
-            if pattern.search(label_lower):
-                return unit
-        else:
-            if unit in label_lower:
-                return unit
+        pattern = re.compile(
+            rf"(?:^|[\s,.;:/\\\-])({re.escape(unit)})(?:$|[\s,.;:/\\\-])"
+        )
+        if pattern.search(label_lower):
+            return unit
     return None
 
 
@@ -2610,8 +2623,8 @@ def _parse_number_and_unit(text: str) -> tuple[float, str | None] | None:
 
 - [ ] **Step 4: Run tests, verify they pass.**
 
-Run: `pytest docker/docling-graph/tests/test_table_facts_coerce.py -v 2>&1 | tail -15`
-Expected: 13/13 pass (covers stop-words, single-value, multi-value alternatives, range collapse, unit conversion explicit + via row label, string passthrough, unparseable + unknown unit).
+Run: `pytest docker/docling-graph/tests/test_table_facts_coerce.py -v 2>&1 | tail -20`
+Expected: 15/15 pass (covers stop-words, single-value with explicit/implied/row-label/canonical units, multi-value alternatives, range collapse via en-dash and "to" word, ambiguous-hyphen with X<Y vs X>Y, string passthrough, unparseable, unknown unit).
 
 - [ ] **Step 5: Commit.**
 
@@ -2663,7 +2676,8 @@ def test_emit_fact_textitem_schema_completeness():
     assert item["orig"] == item["text"]
 
 
-def test_emit_fact_text_format():
+def test_emit_fact_text_format_integer_valued_float():
+    """1135.0 is an integer-valued float; _format_value trims trailing .0."""
     tf = _load()
     item = tf.emit_fact(
         entity_id="1D",
@@ -2672,7 +2686,20 @@ def test_emit_fact_text_format():
         source_label="1st Stage Weight kg",
         text_idx=42,
     )
-    assert item["text"] == "1D — booster_mass_kg = 1135.0 [source: 1st Stage Weight kg row of variants table]"
+    assert item["text"] == "1D — booster_mass_kg = 1135 [source: 1st Stage Weight kg row of variants table]"
+
+
+def test_emit_fact_text_format_decimal_float():
+    """10.726 has a non-zero fractional part; _format_value preserves it."""
+    tf = _load()
+    item = tf.emit_fact(
+        entity_id="1D",
+        schema_field="body_length_m",
+        value=10.726,
+        source_label="Length mm",
+        text_idx=42,
+    )
+    assert item["text"] == "1D — body_length_m = 10.726 [source: Length mm row of variants table]"
 
 
 def test_emit_fact_string_value():
@@ -3081,8 +3108,10 @@ def synthesize_table_facts(
 
                 # Pass row_label so coerce_value can extract implied units
                 # (e.g., "Length mm" -> mm conversion for body_length_m).
-                # Use the original row's label if section was stripped, since
-                # the original label is what carries the unit token.
+                # detect_section_context strips the section keyword from
+                # label_text but leaves the unit token intact ("1st Stage
+                # Weight kg" -> "Weight kg"), so the post-strip label still
+                # carries the unit hint we need.
                 parsed = coerce_value(
                     cell_text, schema_field, row_label=row["label_text"]
                 )
@@ -3223,8 +3252,19 @@ with:
 from app._table_facts import synthesize_table_facts, FactStats
 ```
 
-Replace the B1+B2 block at line ~551-570 (the block currently re-enabled for
-the diagnostic test in this session):
+First locate the actual line range of the B1+B2 block (line numbers
+drift across PRs):
+
+```bash
+grep -n "synthesize_pivoted_table_texts\|GRAPH_EXTRACTION_PIVOTED" docker/docling-graph/app/main.py
+```
+
+Expected: 2 hits (one call site, one log statement). Note the line numbers
+of the call statement and the closing `)` of its `if _pivoted_count > 0:`
+block — those bound the replacement range.
+
+Replace the B1+B2 block at the located lines (the block currently
+re-enabled for the diagnostic test in this session):
 ```python
     docling_document_json, _pivoted_count = synthesize_pivoted_table_texts(
         docling_document_json
