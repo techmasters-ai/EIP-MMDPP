@@ -31,8 +31,8 @@ Use the @superpowers-extended-cc:test-driven-development skill for every code-be
 
 Run on host from repo root (host pytest, NOT inside the docling-graph container — the Dockerfile copies `app/` but not `tests/`):
 ```bash
-pytest docker/docling-graph/tests -q 2>&1 | tail -5
-pytest tests/unit -q 2>&1 | tail -5
+set -o pipefail \&\& pytest docker/docling-graph/tests -q 2>&1 | tail -5
+set -o pipefail \&\& pytest tests/unit -q 2>&1 | tail -5
 ```
 Expected: All current tests pass. Note any pre-existing failures so they aren't attributed to this plan.
 
@@ -102,10 +102,15 @@ Open `notebooks/extraction_walkthrough.ipynb` in the running Jupyter container. 
 
 - [ ] **Step 4: Save baseline snapshot.**
 
+`docker exec ... cp` would copy the source path INSIDE the container (to a path that doesn't exist on the host). Use `docker cp` to land it on the host:
+
 ```bash
 mkdir -p /tmp/baseline_2026-05-06_pre_overlay
-docker exec eip-mmdpp-jupyter cp -r /home/jovyan/work/notebooks/.cell_outputs/section_20_T1.0/ /tmp/baseline_2026-05-06_pre_overlay/
+docker cp eip-mmdpp-jupyter:/home/jovyan/work/notebooks/.cell_outputs/section_20_T1.0/ \
+          /tmp/baseline_2026-05-06_pre_overlay/section_20_T1.0/
+ls /tmp/baseline_2026-05-06_pre_overlay/section_20_T1.0/  # verify host-side files exist
 ```
+
 Save the headline scorecard markdown to `/tmp/baseline_2026-05-06_pre_overlay/scorecard.md` for direct quotation in the spec.
 
 - [ ] **Step 5: Update spec §8.6 floor row with live numbers.**
@@ -151,20 +156,17 @@ constants (MISSILE_IDENTITY_LABELS, RADAR_IDENTITY_LABELS,
 CROSS_ENTITY_REF_PATTERNS, CANONICAL_PRIORITY) so that future edits
 cannot silently break the overlay's classification rules.
 """
-import importlib.util
-from pathlib import Path
-
-_ALIAS_PATH = Path(__file__).resolve().parent.parent / "app" / "_alias_map.py"
+# `_load_alias_map` uses the existing docking-graph test convention:
+# the conftest at `docker/docling-graph/tests/conftest.py` appends the
+# service root to sys.path so `from app._alias_map import …` resolves.
+# We use a tiny indirection so a single import-failure error message
+# is descriptive when the conftest-driven sys.path insert is somehow
+# missing.
+from app import _alias_map as _am
 
 
 def _load_alias_map():
-    spec = importlib.util.spec_from_file_location(
-        "docling_graph_service_alias_map", _ALIAS_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return _am
 
 
 def test_missile_identity_labels_excludes_bare_variant_and_designation():
@@ -228,7 +230,7 @@ def test_canonical_priority_uses_display_labels():
 - [ ] **Step 2: Run tests, confirm 4 fail.**
 
 ```bash
-pytest docker/docling-graph/tests/test_alias_map_overlay_constants.py -v
+set -o pipefail \&\& pytest docker/docling-graph/tests/test_alias_map_overlay_constants.py -v
 ```
 Expected: 4 FAILED with `AttributeError: module ... has no attribute 'MISSILE_IDENTITY_LABELS'`.
 
@@ -281,13 +283,20 @@ CROSS_ENTITY_REF_PATTERNS: dict[str, str] = {
 
 # Canonical-name priority per entity type. When a column has aliases
 # from multiple identity rows, pick the FIRST priority label that's
-# present.
+# present. Every entry in MISSILE_/RADAR_IDENTITY_LABELS must appear
+# (case-insensitive substring) somewhere in this priority tuple,
+# OTHERWISE the drift guard
+# test_identity_labels_have_canonical_priority_coverage will fail.
+# Order is least-specific-last so "Missile Type" wins over "Missile
+# Variant" when both are present in a cluster.
 CANONICAL_PRIORITY: dict[str, tuple[str, ...]] = {
     "MISSILE_SYSTEM": (
         "Missile Type",
         "Industry Designation",
         "Military Designation",
         "NATO Designation",
+        "System Designation",   # fallback for docs that use this label only
+        "Missile Variant",      # fallback for docs that use this label only
     ),
     "RADAR_SYSTEM": (
         "Radar Variant",
@@ -336,20 +345,16 @@ These cover the four pure helpers that compose extract_table_overlay:
 _classify_identity_row, _classify_cross_entity_ref,
 _extract_alias_clusters, _pick_canonical.
 """
-import importlib.util
-from pathlib import Path
-
-_FACTS_PATH = Path(__file__).resolve().parent.parent / "app" / "_table_facts.py"
+# See `test_alias_map_overlay_constants.py` for the conftest-driven
+# import pattern. `_table_facts` uses absolute `from app._alias_map
+# import …` internally, so it imports cleanly under the service-root
+# sys.path insert; relative-import-only loaders (importlib.spec_from_
+# file_location) would fail.
+from app import _table_facts as _tf
 
 
 def _load_table_facts():
-    spec = importlib.util.spec_from_file_location(
-        "docling_graph_service_table_facts_overlay", _FACTS_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return _tf
 
 
 # ---- _classify_identity_row -------------------------------------------------
@@ -522,7 +527,7 @@ Append to `docker/docling-graph/app/_table_facts.py` (after existing exports):
 # ============================================================================
 
 import unicodedata
-from ._alias_map import (
+from app._alias_map import (
     MISSILE_IDENTITY_LABELS,
     RADAR_IDENTITY_LABELS,
     CROSS_ENTITY_REF_PATTERNS,
@@ -688,7 +693,7 @@ def _pick_canonical(
 - [ ] **Step 4: Run tests, confirm all pass.**
 
 ```bash
-pytest docker/docling-graph/tests/test_table_overlay_extract.py -v
+set -o pipefail \&\& pytest docker/docling-graph/tests/test_table_overlay_extract.py -v
 ```
 Expected: All PASSED (~12 tests).
 
@@ -725,23 +730,13 @@ Create `docker/docling-graph/tests/test_table_overlay_schemas.py`:
 
 ```python
 """Schema tests for spec §5.4 wire types."""
-import importlib.util
-from pathlib import Path
-
 import pytest
 
-
-_SCHEMAS_PATH = Path(__file__).resolve().parent.parent / "app" / "schemas.py"
+from app import schemas as _s
 
 
 def _load_schemas():
-    spec = importlib.util.spec_from_file_location(
-        "docling_graph_service_schemas", _SCHEMAS_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return _s
 
 
 def test_table_fact_required_fields():
@@ -832,7 +827,7 @@ def test_extract_pass_response_carries_table_overlay_optional():
 - [ ] **Step 2: Run tests, confirm all fail.**
 
 ```bash
-pytest docker/docling-graph/tests/test_table_overlay_schemas.py -v
+set -o pipefail \&\& pytest docker/docling-graph/tests/test_table_overlay_schemas.py -v
 ```
 Expected: All FAILED (`AttributeError: module ... has no attribute 'TableFact'`).
 
@@ -935,46 +930,42 @@ Create `docker/docling-graph/tests/test_table_overlay_qualification.py` with the
 Guards against the user-flagged failure mode: a small earlier column-
 major-shaped table starving the real variants table at row 6+.
 """
-import importlib.util
-from pathlib import Path
-
-_FACTS_PATH = Path(__file__).resolve().parent.parent / "app" / "_table_facts.py"
+from app import _table_facts as _tf
 
 
 def _load_table_facts():
-    spec = importlib.util.spec_from_file_location(
-        "docling_graph_service_table_facts_qual", _FACTS_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return _tf
 
 
 def _make_qualifying_missile_table(num_cols: int = 5):
     """num_cols entity columns + label col 0. 2 identity rows
-    (Missile Type, NATO Designation) + 1 spec row (Length mm).
-    All entity columns have non-empty cells in BOTH identity rows
-    (so it qualifies under all 4 gates)."""
+    (Missile Type, NATO Designation) + 2 spec rows (Length mm,
+    Diameter mm). num_rows >= 4 satisfies _is_column_major_or_hybrid's
+    rows-and-cols ≥ 4 gate. All entity columns have non-empty cells
+    in BOTH identity rows (so it qualifies under all 4 gates)."""
     cells = []
-    cells.append({"start_row_offset_idx": 0, "start_col_offset_idx": 0,
-                  "end_col_offset_idx": 1, "row_header": True,
-                  "text": "Missile Type"})
-    cells.append({"start_row_offset_idx": 1, "start_col_offset_idx": 0,
-                  "end_col_offset_idx": 1, "row_header": True,
-                  "text": "NATO Designation"})
-    cells.append({"start_row_offset_idx": 2, "start_col_offset_idx": 0,
-                  "end_col_offset_idx": 1, "row_header": True,
-                  "text": "Length mm"})
+    label_rows = (
+        ("Missile Type", True),
+        ("NATO Designation", True),
+        ("Length mm", True),
+        ("Diameter mm", True),
+    )
+    for r, (label, is_header) in enumerate(label_rows):
+        cells.append({
+            "start_row_offset_idx": r, "start_col_offset_idx": 0,
+            "end_col_offset_idx": 1, "row_header": is_header,
+            "text": label,
+        })
     for col_idx in range(1, num_cols + 1):
-        for r, val in enumerate((f"M{col_idx}", f"NATO{col_idx}", "10726")):
+        col_vals = (f"M{col_idx}", f"NATO{col_idx}", "10726", "654")
+        for r, val in enumerate(col_vals):
             cells.append({
                 "start_row_offset_idx": r,
                 "start_col_offset_idx": col_idx,
                 "end_col_offset_idx": col_idx + 1,
                 "row_header": False, "text": val,
             })
-    return {"data": {"table_cells": cells, "num_rows": 3,
+    return {"data": {"table_cells": cells, "num_rows": 4,
                      "num_cols": num_cols + 1}}
 
 
@@ -984,11 +975,11 @@ def _make_unqualified_3_col_table():
 
 
 def _make_unqualified_sparse_identity_table():
-    """5 entity columns, identity row exists, but only column 1 has a
-    non-empty cell in the identity row → fails sparse-identity gate."""
+    """5 entity columns, identity rows exist, but only column 1 has
+    non-empty cells in the identity rows → fails sparse-identity gate."""
     table = _make_qualifying_missile_table(num_cols=5)
     cells = table["data"]["table_cells"]
-    # Blank identity-row cells in cols 2..5 for both identity rows.
+    # Blank identity-row cells in cols 2..5 (rows 0 and 1).
     for c in cells:
         if (c.get("start_row_offset_idx") in (0, 1)
                 and c.get("start_col_offset_idx", 0) >= 2):
@@ -997,22 +988,31 @@ def _make_unqualified_sparse_identity_table():
 
 
 def _make_qualifying_radar_table(num_cols: int = 5):
+    """Radar version. 2 identity rows (Radar Variant, Radar Type) + 2
+    spec rows (Frequency MHz, Range km) → num_rows = 4."""
     cells = []
-    cells.append({"start_row_offset_idx": 0, "start_col_offset_idx": 0,
-                  "end_col_offset_idx": 1, "row_header": True,
-                  "text": "Radar Variant"})
-    cells.append({"start_row_offset_idx": 1, "start_col_offset_idx": 0,
-                  "end_col_offset_idx": 1, "row_header": True,
-                  "text": "Radar Type"})
+    label_rows = (
+        ("Radar Variant", True),
+        ("Radar Type", True),
+        ("Frequency MHz", True),
+        ("Range km", True),
+    )
+    for r, (label, is_header) in enumerate(label_rows):
+        cells.append({
+            "start_row_offset_idx": r, "start_col_offset_idx": 0,
+            "end_col_offset_idx": 1, "row_header": is_header,
+            "text": label,
+        })
     for col_idx in range(1, num_cols + 1):
-        for r, val in enumerate((f"R{col_idx}", f"Type{col_idx}")):
+        col_vals = (f"R{col_idx}", f"Type{col_idx}", "3000", "75")
+        for r, val in enumerate(col_vals):
             cells.append({
                 "start_row_offset_idx": r,
                 "start_col_offset_idx": col_idx,
                 "end_col_offset_idx": col_idx + 1,
                 "row_header": False, "text": val,
             })
-    return {"data": {"table_cells": cells, "num_rows": 2,
+    return {"data": {"table_cells": cells, "num_rows": 4,
                      "num_cols": num_cols + 1}}
 
 
@@ -1076,7 +1076,7 @@ def test_two_qualifying_missile_tables_first_wins():
 - [ ] **Step 2: Run tests, confirm all fail.**
 
 ```bash
-pytest docker/docling-graph/tests/test_table_overlay_qualification.py -v
+set -o pipefail \&\& pytest docker/docling-graph/tests/test_table_overlay_qualification.py -v
 ```
 Expected: 5 FAILED (`extract_table_overlay` undefined).
 
@@ -1161,7 +1161,7 @@ def extract_table_overlay(doc_json: dict) -> tuple["TableOverlay", dict]:
     """
     # Lazy import to avoid circular schemas → _table_facts dependency
     # at module load.
-    from .schemas import TableOverlay, TableFact, CrossEntityHint  # noqa: PLC0415
+    from app.schemas import TableOverlay, TableFact, CrossEntityHint  # noqa: PLC0415
 
     stats = {
         "tables_processed": 0,
@@ -1291,7 +1291,7 @@ def _emit_facts_and_hints(
     (label, section, pass) triples, which gives us pass-uniqueness for
     free.)
     """
-    from .schemas import TableFact, CrossEntityHint  # noqa: PLC0415
+    from app.schemas import TableFact, CrossEntityHint  # noqa: PLC0415
 
     facts: list = []
     hints: list = []
@@ -1333,12 +1333,14 @@ def _emit_facts_and_hints(
     for row, section_ctx in sectioned:
         label_text = row["label_text"]
 
-        # Identity rows produce alias_map only — already handled in
-        # the caller via _extract_alias_clusters + _pick_canonical.
-        if _looks_like_key_label(label_text):
-            continue
-
-        # Cross-entity-ref rows produce CrossEntityHint, not facts.
+        # Classification order MUST match spec §5.1: cross-entity-ref
+        # check FIRST, identity-label check SECOND. The existing
+        # _looks_like_key_label considers "fan song variant" a key
+        # label (its _KEY_LABEL_PATTERNS includes that string), so
+        # without this ordering Fan Song rows would be skipped before
+        # we could emit them as CrossEntityHints — re-introducing the
+        # exact bug spec §1's empirical example called out (Fan Song
+        # accidentally collapsed into the missile alias cluster).
         cross_target = _classify_cross_entity_ref(label_text)
         if cross_target == target_for_cross_ref:
             for entity_col, cell_text in row["data_cells"].items():
@@ -1358,6 +1360,14 @@ def _emit_facts_and_hints(
                     ))
                 except Exception:
                     stats["facts_skipped_construct_fail"] += 1
+            continue
+
+        # Identity rows produce alias_map only — already handled in
+        # the caller via _extract_alias_clusters + _pick_canonical.
+        # Comes AFTER the cross-entity-ref check above so Fan Song
+        # rows (which _looks_like_key_label happens to match) reach
+        # the cross-entity branch first.
+        if _looks_like_key_label(label_text):
             continue
 
         # Spec rows: try each candidate pass; the alias map will
@@ -1458,15 +1468,84 @@ After Chunk 3, the parser ships overlay payloads on the response. The worker doe
 
 - [ ] **Step 1: Write failing main.py integration test.**
 
+**Import note:** the directory `docker/docling-graph/` has a hyphen and is NOT a valid Python package path. The existing `docker/docling-graph/tests/conftest.py` adds the service root (`docker/docling-graph/`) to `sys.path`, making `from app.main import app` resolve. We rely on that — DON'T `from docker.docling_graph.app.main import app` (won't work; the underscore is a misleading rename).
+
+**LLM mock:** the existing handler invokes Ollama. We mock it via `app.main`'s extraction entry-point (the symbol where the LLM call lands — see the existing `test_main_*.py` tests in this directory for the prior-art mock fixture pattern). If you can't find one, search for `monkeypatch.setattr(app.main, "...", ...)` in the existing tests; the same hook is reused below.
+
 Create `docker/docling-graph/tests/test_main_table_overlay_integration.py`:
 
 ```python
 """Integration: main.py /extract-pass populates response.table_overlay
-when a qualifying variants table exists, and respects the kill switch."""
-import os
-from unittest.mock import patch
+when a qualifying variants table exists, and respects the kill switch.
 
+Imports use the conftest-driven sys.path insert that puts
+docker/docling-graph/ at the front, so `from app.main import app`
+resolves to docker/docling-graph/app/main.py — NOT the worker-side
+app/ at the repo root."""
 from fastapi.testclient import TestClient
+import pytest
+
+from app.main import app  # docking-graph FastAPI app, via conftest sys.path
+
+
+@pytest.fixture
+def sa2_like_doc_with_table_fixture():
+    """Minimal SA-2-shaped DoclingDocument carrying ONE qualifying
+    column-major variants table. Borrowed cell shape from the
+    test_table_overlay_qualification.py _make_qualifying_missile_table
+    helper (Task 4)."""
+    cells = []
+    label_rows = (
+        ("Missile Type", True),
+        ("NATO Designation", True),
+        ("Length mm", True),
+        ("Diameter mm", True),
+    )
+    for r, (label, is_header) in enumerate(label_rows):
+        cells.append({
+            "start_row_offset_idx": r, "start_col_offset_idx": 0,
+            "end_col_offset_idx": 1, "row_header": is_header,
+            "text": label,
+        })
+    for col_idx in range(1, 6):  # 5 entity columns
+        for r, val in enumerate(
+            (f"M{col_idx}", f"NATO{col_idx}", "10726", "654")
+        ):
+            cells.append({
+                "start_row_offset_idx": r,
+                "start_col_offset_idx": col_idx,
+                "end_col_offset_idx": col_idx + 1,
+                "row_header": False, "text": val,
+            })
+    return {
+        "tables": [
+            {"data": {"table_cells": cells, "num_rows": 4, "num_cols": 6}}
+        ],
+        "texts": [], "body": {"children": []},
+    }
+
+
+@pytest.fixture
+def stub_llm(monkeypatch):
+    """Replace the LLM extraction entry-point with a stub returning a
+    fixed dict so the test doesn't depend on a live Ollama. The
+    extraction symbol the handler calls — find it via:
+        grep -nE 'def run_pipeline|def _do_extract|llm_extract' docker/docling-graph/app/main.py
+    Then patch that symbol below. We use a lambda returning empty
+    pass_output because this test only inspects table_overlay, not
+    pass_output."""
+    import app.main as main_module
+    # Adjust attribute name to match whatever the implementer finds
+    # via the grep above. The prior-art _table_pivot test at
+    # docker/docling-graph/tests/test_main_pivot_smoke.py monkeypatches
+    # this same symbol — copy its fixture.
+    if hasattr(main_module, "run_pipeline"):
+        monkeypatch.setattr(
+            main_module, "run_pipeline",
+            lambda *args, **kwargs: type("Ctx", (), {
+                "knowledge_graph": [], "trace": lambda self: {},
+            })(),
+        )
 
 
 def _make_minimal_request_payload(doc_with_table: dict):
@@ -1478,15 +1557,15 @@ def _make_minimal_request_payload(doc_with_table: dict):
 
 
 def test_extract_pass_includes_table_overlay_when_table_qualifies(
-    sa2_like_doc_with_table_fixture,  # see conftest
-    monkeypatch,
+    sa2_like_doc_with_table_fixture, monkeypatch, stub_llm,
 ):
     monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true")
-    from docker.docling_graph.app.main import app  # adapt path
     client = TestClient(app)
-    r = client.post("/extract-pass",
-                    json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture))
-    assert r.status_code == 200
+    r = client.post(
+        "/extract-pass",
+        json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture),
+    )
+    assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("table_overlay") is not None
     overlay = body["table_overlay"]
@@ -1498,14 +1577,15 @@ def test_extract_pass_includes_table_overlay_when_table_qualifies(
 
 
 def test_extract_pass_kill_switch_returns_no_overlay(
-    sa2_like_doc_with_table_fixture, monkeypatch,
+    sa2_like_doc_with_table_fixture, monkeypatch, stub_llm,
 ):
     monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "false")
-    from docker.docling_graph.app.main import app
     client = TestClient(app)
-    r = client.post("/extract-pass",
-                    json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture))
-    assert r.status_code == 200
+    r = client.post(
+        "/extract-pass",
+        json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture),
+    )
+    assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("table_overlay") is None
     diag = body.get("diagnostics") or {}
@@ -1513,12 +1593,10 @@ def test_extract_pass_kill_switch_returns_no_overlay(
     assert svc.get("kill_switch_active_parser") is True
 ```
 
-(If a TestClient setup doesn't already exist in the docling-graph tests, mock the LLM call inside the handler to avoid a live Ollama dependency. The existing `_table_facts.py` test suite has prior art — borrow its FastAPI test fixture conventions.)
-
 - [ ] **Step 2: Run test, confirm fail.**
 
 ```bash
-pytest docker/docling-graph/tests/test_main_table_overlay_integration.py -v
+set -o pipefail \&\& pytest docker/docling-graph/tests/test_main_table_overlay_integration.py -v
 ```
 Expected: FAIL.
 
@@ -1546,10 +1624,24 @@ overlay_stats = {
 if _table_overlay_enabled_parser():
     try:
         from app._table_facts import extract_table_overlay
-        table_overlay_obj, parser_stats = extract_table_overlay(
+        parsed_overlay, parser_stats = extract_table_overlay(
             sanitized_doc_json,
         )
         overlay_stats.update(parser_stats)
+        # Spec §5.4: response MUST carry table_overlay=None (NOT an
+        # empty TableOverlay object) when no qualifying table found.
+        # The parser internally returns an empty TableOverlay() so the
+        # call site signature is uniform; we collapse "empty" → None
+        # at the response boundary so downstream worker logic and
+        # diagnostics treat "no overlay" identically regardless of
+        # whether parsing succeeded with no data or kill switch was
+        # set.
+        is_empty = (
+            not parsed_overlay.alias_map_by_entity_type
+            and not parsed_overlay.facts
+            and not parsed_overlay.cross_entity_hints
+        )
+        table_overlay_obj = None if is_empty else parsed_overlay
         if table_overlay_obj is not None:
             overlay_stats["alias_map_size"] = sum(
                 len(m) for m in table_overlay_obj.alias_map_by_entity_type.values()
@@ -1558,6 +1650,10 @@ if _table_overlay_enabled_parser():
             overlay_stats["cross_entity_hints_count"] = len(
                 table_overlay_obj.cross_entity_hints,
             )
+        else:
+            overlay_stats["alias_map_size"] = 0
+            overlay_stats["facts_count"] = 0
+            overlay_stats["cross_entity_hints_count"] = 0
     except Exception as exc:
         logger.warning(
             "extract_table_overlay failed: %s — continuing with table_overlay=None",
@@ -2057,7 +2153,12 @@ def apply_field_overlay(
             # (b) capture original
             original = getattr(inst, fact.schema_field, None)
 
-            # (c) full model validation
+            # (c) full model validation. The candidate dict carries
+            # the LLM's existing values for every other field plus
+            # fact.value for fact.schema_field — model_validate runs
+            # every field_validator(mode="before") hook AND every
+            # Field(...) constraint AND any model_validator(mode=
+            # "after"). Coerced output is read back via getattr.
             candidate = {**inst.model_dump(), fact.schema_field: fact.value}
             try:
                 revalidated = cls.model_validate(candidate)
@@ -2066,15 +2167,35 @@ def apply_field_overlay(
                 continue
             coerced = getattr(revalidated, fact.schema_field)
 
-            # (d) atomic swap
-            for k, v in revalidated.model_dump().items():
-                try:
-                    setattr(inst, k, v)
-                except Exception:
-                    # If a field cannot be set, skip — instance is no
-                    # longer guaranteed consistent, but per spec §7
-                    # bounded-degraded: do NOT roll back.
-                    pass
+            # (d) atomic single-field setattr. We mutate ONLY
+            # fact.schema_field on `inst`, using the validated
+            # `coerced` value. Per-pair atomicity: either the field
+            # changes to coerced or it doesn't change at all (the
+            # try/except below). We deliberately do NOT loop over
+            # revalidated.model_dump() and copy every field — that
+            # would silently rewrite siblings to whatever shape
+            # model_validate produced (string→float coercions on
+            # un-touched fields, etc.) and could surprise downstream
+            # logic that expects unchanged LLM values for fields the
+            # overlay didn't touch.
+            try:
+                setattr(inst, fact.schema_field, coerced)
+            except Exception as exc:
+                # Pydantic on these schemas does NOT have
+                # validate_assignment=True, so a normal float setattr
+                # cannot fail. If a future schema change makes setattr
+                # fail (e.g., adding validate_assignment=True with a
+                # rejecting validator), failing loudly is the right
+                # call: silent-pass would mean we count applied++
+                # for an instance whose value didn't actually change.
+                logger.warning(
+                    "FIELD_OVERLAY_SETATTR_FAILED pass=%s entity_type=%s "
+                    "entity=%s field=%s coerced=%r — instance unchanged: %s",
+                    fact.pass_name, fact.entity_type, fact.canonical_entity,
+                    fact.schema_field, coerced, exc,
+                )
+                stats.skipped_validation_fail += 1
+                continue
 
             # (e) per-instance bookkeeping
             stats.applied += 1
@@ -2130,9 +2251,6 @@ Create `tests/unit/test_extraction_merge_table_overlay.py`:
 """Integration tests for spec §8.4 — extraction_merge.py + worker-side
 kill switch. Each test exercises merge_and_resolve end-to-end with
 in-memory PassResults; no docling-graph HTTP, no Ollama."""
-import os
-from unittest.mock import patch
-
 from app.services.extraction_merge import (
     merge_and_resolve, canonicalize_cross_pass_identities, PassResult,
 )
@@ -2206,29 +2324,35 @@ def test_table_overlay_does_not_break_existing_token_overlap(monkeypatch):
     assert a.system_name in ("PAC-3", "MIM-104F")
 
 
-def test_kill_switch_disables_overlay_fresh_extraction(monkeypatch):
+def test_kill_switch_disables_overlay_fresh_extraction(monkeypatch, caplog):
     """DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false on the worker → even
     if a fresh-extraction PassResult carries no overlay, behavior is
     unchanged: canonicalize runs without alias_map; Phase 0.5 skipped;
-    no IDENTITY_REWRITE / TABLE_OVERLAY_APPLIED log lines."""
+    no IDENTITY_REWRITE / TABLE_OVERLAY_APPLIED log lines.
+
+    Use caplog (NOT patch on extraction_merge.logger) so the assertion
+    catches absence-of-log lines from BOTH extraction_merge.logger AND
+    app.services.table_overlay.logger — the emission boundary may
+    move between them in future refactors and we don't want absence
+    asserts to silently soften."""
+    import logging as _logging
     monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "false")
+    caplog.set_level(_logging.INFO)
     a = _missile_inst("1D")
     pr = _make_propulsion_passresult([a], table_overlay=None)
     pass_results = {"missile_propulsion": pr}
-    # Build minimal manifest stub
     manifest = type("M", (), {"passes": [], "bundle_key": "test"})()
-    with patch("app.services.extraction_merge.logger") as log:
-        merge_and_resolve(
-            pass_results=pass_results, manifest=manifest,
-            ontology=_ontology_min(),
-            document_id="doc-x", pipeline_run_id="run-x",
-        )
-        log_calls = [c.args[0] for c in log.info.call_args_list]
-        assert not any("IDENTITY_REWRITE" in s for s in log_calls)
-        assert not any("TABLE_OVERLAY_APPLIED" in s for s in log_calls)
+    merge_and_resolve(
+        pass_results=pass_results, manifest=manifest,
+        ontology=_ontology_min(),
+        document_id="doc-x", pipeline_run_id="run-x",
+    )
+    log_messages = [r.getMessage() for r in caplog.records]
+    assert not any("IDENTITY_REWRITE" in m for m in log_messages)
+    assert not any("TABLE_OVERLAY_APPLIED" in m for m in log_messages)
 
 
-def test_kill_switch_worker_side_overrides_cached_overlay(monkeypatch):
+def test_kill_switch_worker_side_overrides_cached_overlay(monkeypatch, caplog):
     """Critical defense-in-depth case (spec §4.3): a PassResult arrives
     with a fully-populated TableOverlay (e.g., loaded from cached
     pipeline_pass_outputs.metadata_json from yesterday's run). Operator
@@ -2236,7 +2360,9 @@ def test_kill_switch_worker_side_overrides_cached_overlay(monkeypatch):
     Expected: merge_and_resolve sees the cached overlay AS IF None.
     apply_identity_rewrite NOT called; apply_field_overlay NOT called;
     one TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER INFO log line emitted."""
+    import logging as _logging
     monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "false")
+    caplog.set_level(_logging.INFO)
     a = _missile_inst("SA-75")
     cached_overlay = TableOverlay(
         alias_map_by_entity_type={"MISSILE_SYSTEM": {"SA-75": "1D"}},
@@ -2250,17 +2376,16 @@ def test_kill_switch_worker_side_overrides_cached_overlay(monkeypatch):
     pr = _make_propulsion_passresult([a], table_overlay=cached_overlay)
     pass_results = {"missile_propulsion": pr}
     manifest = type("M", (), {"passes": [], "bundle_key": "test"})()
-    with patch("app.services.extraction_merge.logger") as log:
-        merge_and_resolve(
-            pass_results=pass_results, manifest=manifest,
-            ontology=_ontology_min(),
-            document_id="doc-y", pipeline_run_id="run-y",
-        )
-        log_calls = [c.args[0] for c in log.info.call_args_list]
-        assert any("TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER" in s
-                   for s in log_calls)
-        assert not any("IDENTITY_REWRITE" in s for s in log_calls)
-        assert not any("TABLE_OVERLAY_APPLIED" in s for s in log_calls)
+    merge_and_resolve(
+        pass_results=pass_results, manifest=manifest,
+        ontology=_ontology_min(),
+        document_id="doc-y", pipeline_run_id="run-y",
+    )
+    log_messages = [r.getMessage() for r in caplog.records]
+    assert any("TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER" in m
+               for m in log_messages)
+    assert not any("IDENTITY_REWRITE" in m for m in log_messages)
+    assert not any("TABLE_OVERLAY_APPLIED" in m for m in log_messages)
     # Critical: instance must NOT have been rewritten despite cached
     # alias_map carrying SA-75 → 1D.
     assert a.system_name == "SA-75"
@@ -2425,7 +2550,7 @@ def _extract_doc_overlay(pass_results: dict) -> "TableOverlay | None":
 - [ ] **Step 6: Run integration tests.**
 
 ```bash
-pytest tests/unit/test_extraction_merge_table_overlay.py -v
+set -o pipefail \&\& pytest tests/unit/test_extraction_merge_table_overlay.py -v
 ```
 Expected: All PASSED.
 
@@ -2713,8 +2838,6 @@ SA-2-shaped variants table, 4-pass stub LLM responses encoding the
 empirical alias-scatter + wrong-propulsion-value failure modes,
 through merge_and_resolve. Validates Mechanism A1 collapses aliases
 AND overrides wrong propulsion values."""
-from unittest.mock import patch
-
 from app.services.extraction_merge import merge_and_resolve, PassResult
 from app.services.table_overlay import (
     TableOverlay as WorkerTO, TableFact, CrossEntityHint,
@@ -2820,15 +2943,24 @@ def _build_airframe_passresult():
     return pr, instances
 
 
-def test_end_to_end_sa2_alias_collapse_and_propulsion_override(monkeypatch):
+def test_end_to_end_sa2_alias_collapse_and_propulsion_override(
+    monkeypatch, caplog,
+):
     """Mechanism A1 acceptance smoke test:
        - 4 alias instances (SA-75/SA-2A → 1D, S-75/SA-2C → 13D) collapse
          to 2 canonical post-rewrite.
        - Wrong LLM booster_mass_kg=970 on SA-75 is OVERRIDDEN to 1135
          (table fact wins).
        - FIELD_OVERLAY_OVERRIDE log line is emitted for that override.
+         IMPORTANT: that log line is emitted from
+         app.services.table_overlay.logger (not extraction_merge), so
+         we use caplog at INFO level to capture across loggers rather
+         than patching one of them — patching extraction_merge.logger
+         would miss it.
        - Other instances pick up booster_mass_kg=1135 from null."""
+    import logging as _logging
     monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true")
+    caplog.set_level(_logging.INFO)
 
     prop_pr, prop_instances = _build_propulsion_passresult()
     af_pr, af_instances = _build_airframe_passresult()
@@ -2841,13 +2973,12 @@ def test_end_to_end_sa2_alias_collapse_and_propulsion_override(monkeypatch):
     ]}
     manifest = type("M", (), {"passes": [], "bundle_key": "air_defense_v3"})()
 
-    with patch("app.services.extraction_merge.logger") as log:
-        merge_and_resolve(
-            pass_results=pass_results, manifest=manifest,
-            ontology=ontology,
-            document_id="sa2-doc", pipeline_run_id="run-sa2",
-        )
-        log_calls_info = [c.args[0] for c in log.info.call_args_list]
+    merge_and_resolve(
+        pass_results=pass_results, manifest=manifest,
+        ontology=ontology,
+        document_id="sa2-doc", pipeline_run_id="run-sa2",
+    )
+    log_messages = [r.getMessage() for r in caplog.records]
 
     # Alias rewrite happened
     rewritten_names = {inst.system_name for inst in prop_instances}
@@ -2855,24 +2986,23 @@ def test_end_to_end_sa2_alias_collapse_and_propulsion_override(monkeypatch):
         f"expected alias collapse, got {rewritten_names}"
     )
 
-    # The wrong-booster-mass instance now carries the table value
-    wrong_orig = next(i for i in prop_instances if i.booster_mass_kg == 970.0)
-    # Should NOT exist anymore — must be overridden
-    matching_wrong = [i for i in prop_instances if i.booster_mass_kg == 970.0]
-    assert matching_wrong == [], (
-        "wrong LLM booster_mass_kg=970.0 should have been overridden"
+    # All instances now have booster_mass_kg=1135.0; the LLM=970.0
+    # value should have been overridden by the overlay.
+    masses = {inst.booster_mass_kg for inst in prop_instances}
+    assert masses == {1135.0}, (
+        f"expected all instances to carry booster_mass_kg=1135.0, "
+        f"got {masses}"
     )
-    # All 1D / 13D instances now have 1135.0
-    for inst in prop_instances:
-        assert inst.booster_mass_kg == 1135.0
 
-    # FIELD_OVERLAY_OVERRIDE log emitted for the override case
-    assert any("FIELD_OVERLAY_OVERRIDE" in s for s in log_calls_info), (
+    # FIELD_OVERLAY_OVERRIDE log emitted (from
+    # app.services.table_overlay.logger; caplog captures all loggers).
+    assert any("FIELD_OVERLAY_OVERRIDE" in m for m in log_messages), (
         "expected FIELD_OVERLAY_OVERRIDE log line for booster_mass_kg override"
     )
-    # IDENTITY_REWRITE and TABLE_OVERLAY_APPLIED also emitted
-    assert any("IDENTITY_REWRITE" in s for s in log_calls_info)
-    assert any("TABLE_OVERLAY_APPLIED" in s for s in log_calls_info)
+    # IDENTITY_REWRITE / TABLE_OVERLAY_APPLIED also emitted (these
+    # come from extraction_merge.logger).
+    assert any("IDENTITY_REWRITE" in m for m in log_messages)
+    assert any("TABLE_OVERLAY_APPLIED" in m for m in log_messages)
 
     # Airframe instances: body_length_m populated from overlay (was null)
     af_lengths = {inst.body_length_m for inst in af_instances}
