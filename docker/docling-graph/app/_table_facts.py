@@ -201,3 +201,117 @@ def _looks_like_key_label(label: str) -> bool:
         return False
     norm = label.strip().lower()
     return any(pat in norm for pat in _KEY_LABEL_PATTERNS)
+
+
+# ============================================================
+# Pipeline step 2: extract_label_rows (spec §5.3)
+# ============================================================
+
+def extract_label_rows(table: dict, shape: Shape) -> list[LabelRow]:
+    """Normalize column-major and row-major into a unified LabelRow stream."""
+    if shape == Shape.OTHER:
+        return []
+
+    cells = (table or {}).get("data", {}).get("table_cells") or []
+    if not cells:
+        return []
+
+    if shape in (Shape.COLUMN_MAJOR, Shape.HYBRID):
+        return _extract_column_major(cells)
+    if shape == Shape.ROW_MAJOR:
+        return _extract_row_major(cells)
+    return []
+
+
+def _label_column_width(cells: list[dict]) -> int:
+    """Return how many leftmost columns the row-label cells span."""
+    width = 1
+    for c in cells:
+        if c.get("start_col_offset_idx") != 0:
+            continue
+        if not c.get("row_header"):
+            continue
+        end_col = c.get("end_col_offset_idx", 1) or 1
+        if end_col > width:
+            width = end_col
+    return width
+
+
+def _extract_column_major(cells: list[dict]) -> list[LabelRow]:
+    label_width = _label_column_width(cells)
+
+    rows_by_idx: dict[int, LabelRow] = {}
+    # First pass: collect labels (row_header cells in label region).
+    for c in cells:
+        if c.get("start_col_offset_idx") != 0:
+            continue
+        if not c.get("row_header"):
+            continue
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        row_idx = c.get("start_row_offset_idx")
+        if row_idx is None:
+            continue
+        rows_by_idx[row_idx] = LabelRow(
+            row_idx=row_idx,
+            label_text=text,
+            label_col_span=c.get("col_span", 1) or 1,
+            data_cells={},
+        )
+
+    # Second pass: collect data cells (col >= label_width).
+    for c in cells:
+        col = c.get("start_col_offset_idx")
+        if col is None or col < label_width:
+            continue
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        row_idx = c.get("start_row_offset_idx")
+        if row_idx is None or row_idx not in rows_by_idx:
+            continue
+        rows_by_idx[row_idx]["data_cells"][col] = text
+
+    return [rows_by_idx[k] for k in sorted(rows_by_idx)]
+
+
+def _extract_row_major(cells: list[dict]) -> list[LabelRow]:
+    # Top-row column headers; assume col 0 is identity, cols 1+ are spec labels.
+    header_cells = [c for c in cells if c.get("start_row_offset_idx") == 0
+                    and c.get("column_header") is True]
+    if not header_cells:
+        return []
+    sorted_headers = sorted(header_cells, key=lambda c: c.get("start_col_offset_idx", 0))
+    if not sorted_headers:
+        return []
+    spec_headers = sorted_headers[1:]  # skip identity column
+
+    rows_by_label: dict[str, LabelRow] = {}
+    for header in spec_headers:
+        col = header.get("start_col_offset_idx")
+        text = (header.get("text") or "").strip()
+        if not text or col is None:
+            continue
+        rows_by_label[text] = LabelRow(
+            row_idx=col,  # in row-major, "row_idx" of the synthetic LabelRow is the source col
+            label_text=text,
+            label_col_span=1,
+            data_cells={},
+        )
+
+    # Collect data cells (rows below 0, at the columns we care about).
+    label_cols = {h["row_idx"]: h["label_text"] for h in rows_by_label.values()}
+    for c in cells:
+        row = c.get("start_row_offset_idx")
+        col = c.get("start_col_offset_idx")
+        if row is None or row == 0:
+            continue
+        if col not in label_cols:
+            continue
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        rows_by_label[label_cols[col]]["data_cells"][row] = text
+
+    return list(rows_by_label.values())
