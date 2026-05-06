@@ -25,7 +25,7 @@
     {
       "id": 3,
       "subject": "Task 3: schemas.py wire types",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         0
       ]
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-06T23:43:50.226388+00:00"
+  "lastUpdated": "2026-05-06T23:51:06.479264+00:00"
 }
