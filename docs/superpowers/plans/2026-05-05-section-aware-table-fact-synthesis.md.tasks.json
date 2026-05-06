@@ -1,24 +1,153 @@
 {
   "planPath": "docs/superpowers/plans/2026-05-05-section-aware-table-fact-synthesis.md",
   "tasks": [
-    {"id": 65, "subject": "Task 1: Create _table_facts.py types module", "status": "pending"},
-    {"id": 66, "subject": "Task 2: Add normalize_label function + tests", "status": "pending", "blockedBy": [65]},
-    {"id": 67, "subject": "Task 3: Create _alias_map.py skeleton + drift guard", "status": "pending", "blockedBy": [66]},
-    {"id": 68, "subject": "Task 4: Populate ALIAS_MAP for missile passes", "status": "pending", "blockedBy": [67]},
-    {"id": 69, "subject": "Task 5: Populate ALIAS_MAP for radar passes", "status": "pending", "blockedBy": [68]},
-    {"id": 70, "subject": "Task 6: Schema-side drift-guard test", "status": "pending", "blockedBy": [69]},
-    {"id": 71, "subject": "Task 7: detect_table_shape", "status": "pending", "blockedBy": [70]},
-    {"id": 72, "subject": "Task 8: extract_label_rows", "status": "pending", "blockedBy": [70]},
-    {"id": 73, "subject": "Task 9: derive_entity_ids", "status": "pending", "blockedBy": [72]},
-    {"id": 74, "subject": "Task 10: detect_section_context", "status": "pending", "blockedBy": [72]},
-    {"id": 75, "subject": "Task 11: resolve_alias", "status": "pending", "blockedBy": [70]},
-    {"id": 76, "subject": "Task 12: coerce_value", "status": "pending", "blockedBy": [67]},
-    {"id": 77, "subject": "Task 13: emit_fact", "status": "pending", "blockedBy": [65]},
-    {"id": 78, "subject": "Task 14: synthesize_table_facts orchestrator + integration tests", "status": "pending", "blockedBy": [71, 72, 73, 74, 75, 76, 77]},
-    {"id": 79, "subject": "Task 15: Wire synthesize_table_facts into main.py", "status": "pending", "blockedBy": [78]},
-    {"id": 80, "subject": "Task 16: Mark _table_pivot.py DEPRECATED", "status": "pending", "blockedBy": [79]},
-    {"id": 81, "subject": "Task 17: Container rebuild + log verification + smoke run", "status": "pending", "blockedBy": [80]},
-    {"id": 82, "subject": "Task 18: §20 acceptance run + sign-off", "status": "pending", "blockedBy": [81]}
+    {
+      "id": 65,
+      "subject": "Task 1: Create _table_facts.py types module",
+      "status": "completed"
+    },
+    {
+      "id": 66,
+      "subject": "Task 2: Add normalize_label function + tests",
+      "status": "completed",
+      "blockedBy": [
+        65
+      ]
+    },
+    {
+      "id": 67,
+      "subject": "Task 3: Create _alias_map.py skeleton + drift guard",
+      "status": "completed",
+      "blockedBy": [
+        66
+      ]
+    },
+    {
+      "id": 68,
+      "subject": "Task 4: Populate ALIAS_MAP for missile passes",
+      "status": "completed",
+      "blockedBy": [
+        67
+      ]
+    },
+    {
+      "id": 69,
+      "subject": "Task 5: Populate ALIAS_MAP for radar passes",
+      "status": "completed",
+      "blockedBy": [
+        68
+      ]
+    },
+    {
+      "id": 70,
+      "subject": "Task 6: Schema-side drift-guard test",
+      "status": "completed",
+      "blockedBy": [
+        69
+      ]
+    },
+    {
+      "id": 71,
+      "subject": "Task 7: detect_table_shape",
+      "status": "completed",
+      "blockedBy": [
+        70
+      ]
+    },
+    {
+      "id": 72,
+      "subject": "Task 8: extract_label_rows",
+      "status": "completed",
+      "blockedBy": [
+        70
+      ]
+    },
+    {
+      "id": 73,
+      "subject": "Task 9: derive_entity_ids",
+      "status": "completed",
+      "blockedBy": [
+        72
+      ]
+    },
+    {
+      "id": 74,
+      "subject": "Task 10: detect_section_context",
+      "status": "completed",
+      "blockedBy": [
+        72
+      ]
+    },
+    {
+      "id": 75,
+      "subject": "Task 11: resolve_alias",
+      "status": "completed",
+      "blockedBy": [
+        70
+      ]
+    },
+    {
+      "id": 76,
+      "subject": "Task 12: coerce_value",
+      "status": "completed",
+      "blockedBy": [
+        67
+      ]
+    },
+    {
+      "id": 77,
+      "subject": "Task 13: emit_fact",
+      "status": "completed",
+      "blockedBy": [
+        65
+      ]
+    },
+    {
+      "id": 78,
+      "subject": "Task 14: synthesize_table_facts orchestrator + integration tests",
+      "status": "completed",
+      "blockedBy": [
+        71,
+        72,
+        73,
+        74,
+        75,
+        76,
+        77
+      ]
+    },
+    {
+      "id": 79,
+      "subject": "Task 15: Wire synthesize_table_facts into main.py",
+      "status": "completed",
+      "blockedBy": [
+        78
+      ]
+    },
+    {
+      "id": 80,
+      "subject": "Task 16: Mark _table_pivot.py DEPRECATED",
+      "status": "completed",
+      "blockedBy": [
+        79
+      ]
+    },
+    {
+      "id": 81,
+      "subject": "Task 17: Container rebuild + log verification + smoke run",
+      "status": "completed",
+      "blockedBy": [
+        80
+      ]
+    },
+    {
+      "id": 82,
+      "subject": "Task 18: \u00a720 acceptance run + sign-off",
+      "status": "pending",
+      "blockedBy": [
+        81
+      ]
+    }
   ],
-  "lastUpdated": "2026-05-05T20:55:00-05:00"
+  "lastUpdated": "2026-05-05T21:03:27.582650"
 }
