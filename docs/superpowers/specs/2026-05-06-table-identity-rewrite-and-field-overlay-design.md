@@ -510,10 +510,9 @@ def apply_field_overlay(
               instances in the same fan-out are independent: a
               validation failure for one does NOT block fan-out to the
               others.
-           e. Bookkeeping:
+           e. Bookkeeping (per-instance only — `matches_touched` is
+              incremented once per fact in step 3, NOT here):
                 applied++           # fact-instance count, NOT fact count
-                matches_touched++   # fact-level, incremented once per fact
-                                    # outside the inner loop (see below)
                 if original is not None and original != coerced:
                     conflicts_overridden++
                     log("FIELD_OVERLAY_OVERRIDE pass=%s entity_type=%s "
