@@ -1693,6 +1693,12 @@ Create `app/services/table_overlay.py`:
 ```python
 """Worker-side overlay application (spec §5.3, Mechanism A1).
 
+This module is also the canonical home of the worker-side TableOverlay,
+TableFact, CrossEntityHint Pydantic classes. The parser-side mirror in
+docker/docling-graph/app/schemas.py is a structurally-identical
+declaration; JSON travels between them. A drift-guard test in Task 9
+asserts field-shape equivalence by JSON round-trip.
+
 Two functions operate on Pydantic instances reachable via
 PassResult.iter_entities_of_type:
 
@@ -1709,11 +1715,54 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, asdict
-from typing import Any
+from typing import Any, Optional
 
-from pydantic import ValidationError, BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger(__name__)
+
+
+# ----------------------------------------------------------------------
+# Wire types (mirror of docker/docling-graph/app/schemas.py declarations).
+# Drift guard: tests/unit/test_table_overlay_worker.py
+#   ::test_parser_and_worker_table_overlay_classes_round_trip asserts
+# field-shape equivalence between this declaration and the parser side.
+# ----------------------------------------------------------------------
+
+
+class TableFact(BaseModel):
+    """Spec §5.4."""
+    model_config = ConfigDict(frozen=True)
+    canonical_entity: str
+    entity_type: str
+    schema_field: str
+    value: Any
+    source_label: str
+    section_ctx: Optional[str] = None
+    pass_name: str
+    raw_text: str
+
+
+class CrossEntityHint(BaseModel):
+    """Spec §5.4."""
+    model_config = ConfigDict(frozen=True)
+    source_canonical: str
+    source_entity_type: str
+    target_alias: str
+    target_entity_type: str
+    relationship_kind: str
+
+
+class TableOverlay(BaseModel):
+    """Spec §5.4."""
+    alias_map_by_entity_type: dict[str, dict[str, str]] = Field(default_factory=dict)
+    facts: list[TableFact] = Field(default_factory=list)
+    cross_entity_hints: list[CrossEntityHint] = Field(default_factory=list)
+
+
+TableFact.model_rebuild()
+CrossEntityHint.model_rebuild()
+TableOverlay.model_rebuild()
 
 
 @dataclass
@@ -1806,8 +1855,8 @@ Append to `tests/unit/test_table_overlay_worker.py`:
 
 ```python
 def _make_table_fact(**kwargs):
-    """Build TableFact compatible with both schema imports."""
-    from docker.docling_graph.app.schemas import TableFact
+    """Build TableFact from the canonical worker-side home (Task 6)."""
+    from app.services.table_overlay import TableFact
     defaults = dict(
         canonical_entity="1D", entity_type="MISSILE_SYSTEM",
         schema_field="booster_mass_kg", value=1135.0,
@@ -2087,7 +2136,7 @@ from unittest.mock import patch
 from app.services.extraction_merge import (
     merge_and_resolve, canonicalize_cross_pass_identities, PassResult,
 )
-from docker.docling_graph.app.schemas import TableOverlay, TableFact
+from app.services.table_overlay import TableOverlay, TableFact
 
 
 def _ontology_min():
@@ -2342,6 +2391,8 @@ Per-(fact, instance) atomicity inside `apply_field_overlay` (Task 7) guarantees 
 
 - [ ] **Step 5: Add `_extract_doc_overlay` helper.**
 
+> **Placement note:** Add this function at module level in `app/services/extraction_merge.py`, BEFORE `merge_and_resolve` so the call in Step 4 resolves at import time. (Module-level helpers in this file conventionally precede `merge_and_resolve`; see existing `canonicalize_cross_pass_identities` placement.)
+
 ```python
 def _extract_doc_overlay(pass_results: dict) -> "TableOverlay | None":
     """Find the first non-empty table_overlay across pass_results.
@@ -2399,53 +2450,9 @@ git commit -m "feat(table-overlay): integrate identity rewrite + Phase 0.5 field
 - Modify: `app/workers/pipeline.py` (`_parse_pass_response` populates field)
 - Modify: `tests/unit/test_run_single_pass.py`
 
-**Decision: where does the `TableOverlay` Pydantic class live?**
+**TableOverlay class home:** `app/services/table_overlay.py` is the canonical worker-side home (declared in Task 6 alongside RewriteStats). The parser-side `docker/docling-graph/app/schemas.py` declares a structurally-identical mirror (Task 3). JSON travels between them, not class identity. Drift guard: Step 5 below adds a round-trip test asserting field-shape equivalence.
 
-The reviewer flagged that `from docker.docling_graph.app.schemas import TableOverlay` is fragile (hyphen in directory name; not a normal Python package layout). Decision for this plan: **the canonical home is `app/services/table_overlay.py` (worker side).** The parser-side `docker/docling-graph/app/schemas.py` declares its own `TableOverlay` (Task 3) for the response schema; the worker never imports from `docker/docling-graph/`. The two declarations are **structurally identical Pydantic models** with the same field names and types — JSON travels between them, not class identity. Task 9 wires both sides to use their own local class. Drift guard: a unit test (Step 6 below) round-trips a parser-side TableOverlay through JSON into a worker-side TableOverlay and asserts equality.
-
-- [ ] **Step 1: Add `TableFact`, `CrossEntityHint`, `TableOverlay` to `app/services/table_overlay.py` (worker copy).**
-
-Append to `app/services/table_overlay.py`:
-
-```python
-from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict, Field
-
-
-class TableFact(BaseModel):
-    """Worker-side mirror of the parser's TableFact wire shape (spec §5.4)."""
-    model_config = ConfigDict(frozen=True)
-    canonical_entity: str
-    entity_type: str
-    schema_field: str
-    value: Any
-    source_label: str
-    section_ctx: Optional[str] = None
-    pass_name: str
-    raw_text: str
-
-
-class CrossEntityHint(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    source_canonical: str
-    source_entity_type: str
-    target_alias: str
-    target_entity_type: str
-    relationship_kind: str
-
-
-class TableOverlay(BaseModel):
-    alias_map_by_entity_type: dict[str, dict[str, str]] = Field(default_factory=dict)
-    facts: list[TableFact] = Field(default_factory=list)
-    cross_entity_hints: list[CrossEntityHint] = Field(default_factory=list)
-
-
-TableFact.model_rebuild()
-CrossEntityHint.model_rebuild()
-TableOverlay.model_rebuild()
-```
-
-- [ ] **Step 2: Write failing test for `_parse_pass_response`.**
+- [ ] **Step 1: Write failing test for `_parse_pass_response`.**
 
 In `tests/unit/test_run_single_pass.py`, add:
 
@@ -2537,14 +2544,14 @@ def test_parse_pass_response_malformed_table_overlay_is_dropped():
     assert result.table_overlay is None
 ```
 
-- [ ] **Step 3: Run, confirm 3 fail.**
+- [ ] **Step 2: Run, confirm 3 fail.**
 
 ```bash
 pytest tests/unit/test_run_single_pass.py -k table_overlay -v
 ```
 Expected: 3 FAILED.
 
-- [ ] **Step 4: Add `table_overlay` field to `PassResult`.**
+- [ ] **Step 3: Add `table_overlay` field to `PassResult`.**
 
 In `app/services/extraction_merge.py` near the top of the dataclass at line 202, add the import at file top:
 
@@ -2561,7 +2568,7 @@ And the field on the `PassResult` dataclass:
     table_overlay: TableOverlay | None = None
 ```
 
-- [ ] **Step 5: Modify `_parse_pass_response` in `app/workers/pipeline.py`.**
+- [ ] **Step 4: Modify `_parse_pass_response` in `app/workers/pipeline.py`.**
 
 At `app/workers/pipeline.py:2610` (where `PassResult(...)` is constructed), insert just before the `return PassResult(...)` line:
 
@@ -2581,7 +2588,7 @@ At `app/workers/pipeline.py:2610` (where `PassResult(...)` is constructed), inse
 
 Then thread `table_overlay=table_overlay_obj` into the `PassResult(...)` constructor call.
 
-- [ ] **Step 6: Add parser↔worker drift-guard test.**
+- [ ] **Step 5: Add parser↔worker drift-guard test.**
 
 In `tests/unit/test_table_overlay_worker.py`, add:
 
@@ -2643,7 +2650,7 @@ def test_parser_and_worker_table_overlay_classes_round_trip():
     )
 ```
 
-- [ ] **Step 7: Run pipeline tests.**
+- [ ] **Step 6: Run pipeline tests.**
 
 ```bash
 pytest tests/unit/test_run_single_pass.py -v
@@ -2651,7 +2658,7 @@ pytest tests/unit/test_table_overlay_worker.py::test_parser_and_worker_table_ove
 ```
 Expected: All PASSED.
 
-- [ ] **Step 8: Commit.**
+- [ ] **Step 7: Commit.**
 
 ```bash
 git add app/services/extraction_merge.py app/services/table_overlay.py \
