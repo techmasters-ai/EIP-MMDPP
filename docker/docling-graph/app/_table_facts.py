@@ -674,3 +674,56 @@ def _parse_number_and_unit(text: str) -> tuple[float, str | None] | None:
     except ValueError:
         return None
     return value, unit_str
+
+
+# ============================================================
+# Pipeline step 7: emit_fact (spec §5.7)
+# ============================================================
+
+def emit_fact(
+    entity_id: str,
+    schema_field: str,
+    value: float | int | str,
+    source_label: str,
+    text_idx: int,
+) -> dict:
+    """Render a (entity, field, value) triple as a TextItem-shaped dict.
+
+    Format:
+        "{entity_id} — {schema_field} = {value} [source: {source_label} row of variants table]"
+
+    The em-dash separator is the schema-keyed prefix; the bracketed source
+    preserves traceability without forcing the LLM to re-derive it.
+
+    The TextItem skeleton mirrors the b9fe407 schema-validation fix used by
+    _table_pivot.py — same shape so DoclingDocument's Pydantic union
+    validates correctly.
+    """
+    formatted_value = _format_value(value)
+    text = (
+        f"{entity_id} — {schema_field} = {formatted_value} "
+        f"[source: {source_label} row of variants table]"
+    )
+    return {
+        "self_ref": f"#/texts/{text_idx}",
+        "parent": {"$ref": "#/body"},
+        "children": [],
+        "content_layer": "body",
+        "label": "text",
+        "prov": [],
+        "orig": text,
+        "text": text,
+    }
+
+
+def _format_value(value: float | int | str) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        # Trim trailing .0 for integer-valued floats; retain decimals otherwise.
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    return str(value)
