@@ -12,6 +12,8 @@ and are added in subsequent tasks.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import TypeAlias, TypedDict
@@ -93,3 +95,38 @@ class FactStats:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+# Dash-class characters mapped to single ASCII hyphen for stable matching.
+# Covers: hyphen, non-breaking hyphen, figure dash, en-dash, em-dash,
+# horizontal bar, minus sign, hyphen bullet, two-em / three-em dash,
+# small em-dash, small hyphen-minus, fullwidth hyphen-minus.
+_DASH_CLASS = re.compile(r"[‐‑‒–—―−⁃﹘﹣－]")
+
+# Punctuation to strip after dash normalization. Keeps ASCII alphanumerics,
+# whitespace, and hyphens (dashes already collapsed). Strips:
+# . , ; : ! ? ' " ` ( ) [ ] { } / \ | _ * + = & % @ # ^ ~ < >
+_PUNCT_TO_STRIP = re.compile(
+    r"[\.\,\;\:\!\?\'\"\`\(\)\[\]\{\}\/\\\|_\*\+\=\&\%\@\#\^\~\<\>]"
+)
+
+
+def normalize_label(text: str) -> str:
+    """Normalize a label string for ALIAS_MAP lookup and §8.3 drift-guard.
+
+    Steps (spec §5.5):
+    1. Unicode NFKC fold (collapses fancy quotes, full-width digits, etc.).
+    2. Collapse all dash variants (en/em/figure/etc.) -> ASCII hyphen.
+    3. Strip punctuation per _PUNCT_TO_STRIP (hyphens preserved).
+    4. Lowercase.
+    5. Collapse whitespace runs to single space; strip leading/trailing.
+
+    The same function is used by resolve_alias and the §8.3 drift-guard
+    test so prose-side and label-side normalization always agree.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = _DASH_CLASS.sub("-", text)
+    text = _PUNCT_TO_STRIP.sub(" ", text)
+    text = text.lower()
+    text = " ".join(text.split())
+    return text
