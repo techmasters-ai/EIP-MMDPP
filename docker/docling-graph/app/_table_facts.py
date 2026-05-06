@@ -453,3 +453,18 @@ def _matching_keyword(label: str, keywords: tuple[str, ...]) -> str | None:
         if kw.lower() == label_norm:
             return kw
     return None
+
+
+# ============================================================
+# Pipeline step 5: resolve_alias (spec §5.5)
+# ============================================================
+
+def resolve_alias(
+    label: str, section_ctx: SectionContext, active_pass: str
+) -> str | None:
+    """Look up the schema field for (label, section, pass). Returns None
+    when no entry exists; the synthesizer skips that row silently."""
+    from app._alias_map import ALIAS_MAP
+
+    key: AliasKey = (normalize_label(label), section_ctx, active_pass)
+    return ALIAS_MAP.get(key)
