@@ -361,3 +361,95 @@ def derive_entity_ids(rows: list[LabelRow], shape: Shape) -> dict[int, str]:
         last_col_for_id[raw[col]] = col
 
     return {col: composite for composite, col in last_col_for_id.items()}
+
+
+# ============================================================
+# Pipeline step 4: detect_section_context (spec §5.4 / D2)
+# ============================================================
+
+def detect_section_context(
+    rows: list[LabelRow],
+) -> list[tuple[LabelRow, SectionContext]]:
+    """Pair each LabelRow with its section_ctx using a two-strategy chain.
+
+    Strategy 1 (embedded): substring scan of label_text against
+        SECTION_KEYWORDS. If matched, that row's section_ctx is the matched
+        keyword AND the keyword is stripped from label_text in the returned
+        row (so resolve_alias keys on the bare label).
+    Strategy 2 (header-row): track most recent row whose label_text equals
+        a section keyword AND whose data_cells are empty/header-like.
+        Subsequent rows inherit until the next header-row or end-of-table.
+        Header-row marker rows themselves are dropped from the result.
+
+    Conflict resolution: embedded wins (only for non-header-row-marker rows).
+    Header-row markers are checked first so that standalone section keywords
+    with no data are treated as markers, not as embedded keywords.
+    """
+    from app._alias_map import SECTION_KEYWORDS
+
+    out: list[tuple[LabelRow, SectionContext]] = []
+    current_header_section: str | None = None
+
+    for row in rows:
+        label = row["label_text"]
+
+        # Strategy 2 first: header-row marker detection. A row whose label IS
+        # a section keyword (exact match after normalize) AND whose data_cells
+        # are empty/header-like acts as a context propagator. Drop the marker.
+        if _is_header_row_marker(row, SECTION_KEYWORDS):
+            current_header_section = _matching_keyword(label, SECTION_KEYWORDS)
+            continue
+
+        # Strategy 1: embedded keyword scan (case-insensitive substring).
+        embedded = _find_embedded_keyword(label, SECTION_KEYWORDS)
+        if embedded is not None:
+            new_label = _strip_keyword(label, embedded)
+            new_row: LabelRow = {
+                "row_idx": row["row_idx"],
+                "label_text": new_label,
+                "label_col_span": row["label_col_span"],
+                "data_cells": row["data_cells"],
+            }
+            out.append((new_row, embedded))
+            continue
+
+        out.append((row, current_header_section))
+
+    return out
+
+
+def _find_embedded_keyword(label: str, keywords: tuple[str, ...]) -> str | None:
+    label_lower = label.lower()
+    # Iterate longest-first so "1st Stage" matches before "Stage".
+    for kw in sorted(keywords, key=len, reverse=True):
+        if kw.lower() in label_lower:
+            return kw
+    return None
+
+
+def _strip_keyword(label: str, keyword: str) -> str:
+    """Remove a case-insensitive occurrence of keyword from label, collapsing
+    whitespace."""
+    pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+    stripped = pattern.sub("", label, count=1)
+    return " ".join(stripped.split())
+
+
+def _is_header_row_marker(row: LabelRow, keywords: tuple[str, ...]) -> bool:
+    """Marker rows have a section keyword as their label AND no real data."""
+    matching = _matching_keyword(row["label_text"], keywords)
+    if matching is None:
+        return False
+    cells = row["data_cells"]
+    if not cells:
+        return True
+    return all(not (v or "").strip() for v in cells.values())
+
+
+def _matching_keyword(label: str, keywords: tuple[str, ...]) -> str | None:
+    """Return the keyword IF the label IS exactly that keyword (after normalize)."""
+    label_norm = " ".join(label.lower().split())
+    for kw in keywords:
+        if kw.lower() == label_norm:
+            return kw
+    return None
