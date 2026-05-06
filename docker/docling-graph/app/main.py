@@ -117,6 +117,7 @@ _install_prompt_rules()
 _install_resolver_patch()
 _install_gleaning_patch()
 
+from app._table_facts import synthesize_table_facts, FactStats
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app._field_provenance_helpers import _primary_list_field_name
 from app.config_builder import build_pipeline_config, DoclingGraphSettings
@@ -548,12 +549,28 @@ def run_extraction_pass(
                 pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
             )
 
-    # Phase B (B1+B2) was rolled back in Run 19 — synthesized per-column
-    # summaries flattened the variants table's nested section headers
-    # (1st Stage / 2nd Stage), causing missile_propulsion to lose 7 GT-correct
-    # booster_mass_kg / sustain_mass_kg attributions and introducing wrong
-    # values at T=1.0. The _table_pivot.py module + tests are preserved for
-    # potential future use with section-header-aware synthesis.
+    fact_stats: FactStats
+    try:
+        docling_document_json, fact_stats = synthesize_table_facts(
+            docling_document_json,
+            active_pass=pass_name,
+        )
+        if fact_stats.facts_emitted > 0:
+            logger.info(
+                "GRAPH_EXTRACTION_FACTS pass=%s facts=%d tables=%d sections=%d "
+                "skipped_unresolvable=%d unparseable=%d shapes=%s "
+                "hybrid_collisions=%d truncated=%s",
+                pass_name, fact_stats.facts_emitted, fact_stats.tables_seen,
+                fact_stats.sections_detected, fact_stats.rows_skipped_unresolvable,
+                fact_stats.values_skipped_unparseable, fact_stats.tables_by_shape,
+                fact_stats.hybrid_collisions, fact_stats.truncated_at_cap,
+            )
+    except Exception as exc:
+        logger.warning(
+            "synthesize_table_facts failed pass=%s: %s — continuing with original doc",
+            pass_name, exc,
+        )
+        fact_stats = FactStats.empty()
 
     if _is_empty(docling_document_json):
         logger.warning(
@@ -1155,6 +1172,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             "dropped_entity_examples": {},
         }
         diagnostics["service_identity_gate"]["evidence_text_nonempty"] = bool(evidence_text)
+        diagnostics["service_table_facts"] = fact_stats.as_dict()
         diagnostics["service_pre_filter_counts"] = raw_pass_counts
         diagnostics["service_pre_filter_identity_examples"] = raw_identity_examples
         diagnostics["service_postprocess"] = postprocess_stats or {}
