@@ -99,3 +99,51 @@ def test_unit_table_includes_canonical_unit():
             continue
         assert unit in am.UNIT_TABLE[cls], f"{cls} missing canonical unit {unit!r}"
         assert am.UNIT_TABLE[cls][unit] == 1.0, f"{cls}[{unit!r}] should be 1.0"
+
+
+def _collect_all_field_names(template_cls) -> set[str]:
+    """Two-level walk: template_cls -> each entity item class -> model_fields.
+    Mirrors the pattern in app/_field_provenance_helpers.py and
+    docling-graph's provenance walker. Catches schema-side drift if a field
+    is renamed or removed."""
+    all_fields = set(template_cls.model_fields.keys())
+    for fname, finfo in template_cls.model_fields.items():
+        # If this field's annotation is a list[ItemClass] or ItemClass,
+        # introspect the item class's fields too.
+        annotation = finfo.annotation
+        item_cls = None
+        # list[X] case
+        if hasattr(annotation, "__origin__") and annotation.__origin__ is list:
+            args = getattr(annotation, "__args__", ())
+            if args and hasattr(args[0], "model_fields"):
+                item_cls = args[0]
+        # Direct BaseModel case
+        elif hasattr(annotation, "model_fields"):
+            item_cls = annotation
+        if item_cls is not None:
+            all_fields.update(item_cls.model_fields.keys())
+    return all_fields
+
+
+def test_alias_map_target_fields_exist_on_schemas():
+    """Every ALIAS_MAP value (target schema field) must exist as a field on
+    the schema for the corresponding pass. Catches drift where a schema is
+    refactored and the alias map still points at a renamed/removed field."""
+    am = _aliases()
+    # Group ALIAS_MAP entries by pass.
+    by_pass: dict[str, set[str]] = {}
+    for (_label, _section, pass_name), schema_field in am.ALIAS_MAP.items():
+        by_pass.setdefault(pass_name, set()).add(schema_field)
+
+    # Resolve template classes via the bundle loader. Mirrors how main.py
+    # loads them at extract-pass time. Use _load helper to dynamically import.
+    bundles = _load("docling_graph_service_bundles", _APP_DIR / "bundles.py")
+    for pass_name, fields in by_pass.items():
+        template_cls = bundles.load_pass_template("air_defense_v3", pass_name)
+        actual_fields = _collect_all_field_names(template_cls)
+        missing = fields - actual_fields
+        assert not missing, (
+            f"ALIAS_MAP entries for pass {pass_name!r} reference fields "
+            f"{missing!r} that do not exist on the schema. The schema may "
+            f"have been refactored; reconcile the alias map."
+        )

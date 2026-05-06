@@ -146,13 +146,16 @@ ALIAS_MAP: dict[tuple[str, str | None, str], str] = {
     ("thrust",      "Sustainer", "missile_propulsion"): "sustain_thrust",
     ("thrust",      "Sustain",   "missile_propulsion"): "sustain_thrust",
 
-    # Ejector — Weight / Time / Thrust under Ejector section.
+    # Ejector — Weight / Thrust under Ejector section.
+    # Schema has only ejector_thrust + ejector_mass_kg; no ejector_time_sec
+    # field exists. "Time"/"Time sec" labels under Ejector simply don't
+    # resolve and the synthesizer skips them. The plan's Task 4 originally
+    # listed ejector_time_sec; removed by Task 6's schema-side drift guard
+    # which correctly flagged the missing field.
     ("weight",      "Ejector",   "missile_propulsion"): "ejector_mass_kg",
     ("weight kg",   "Ejector",   "missile_propulsion"): "ejector_mass_kg",
     ("mass",        "Ejector",   "missile_propulsion"): "ejector_mass_kg",
     ("mass kg",     "Ejector",   "missile_propulsion"): "ejector_mass_kg",
-    ("time",        "Ejector",   "missile_propulsion"): "ejector_time_sec",
-    ("time sec",    "Ejector",   "missile_propulsion"): "ejector_time_sec",
     ("thrust",      "Ejector",   "missile_propulsion"): "ejector_thrust",
 
     # ============================================================
