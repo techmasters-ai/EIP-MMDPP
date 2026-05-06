@@ -153,7 +153,8 @@ GRAPH_NODE_MIN_CONFIDENCE=0.60                    # Min entity confidence for Ar
 GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence for ArcadeDB import
 
 DEFAULT_ONTOLOGY_BUNDLE_KEY=air_defense_v3         # Bundle resolution system default
-PASS_MAX_RETRIES=3                                 # Per-pass retry budget
+PASS_MAX_RETRIES=3                                 # Per-pass retry budget for logic failures (5xx, malformed JSON, validation)
+PASS_MAX_TRANSPORT_RETRIES=3                       # Separate budget for transport failures (disconnect, timeout, DNS); does not burn PASS_MAX_RETRIES
 DOCLING_FALLBACK_ENABLED=false                    # Fall back to legacy extraction on Docling 5xx (default false)
 ```
 

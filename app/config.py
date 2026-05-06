@@ -303,6 +303,13 @@ class Settings(BaseSettings):
     # Max attempts per extraction pass (spec §6.5). Default 3 means 1 initial
     # call + 2 retries before giving up.
     pass_max_retries: int = 3
+    # Max transport-level retries per pass attempt (connection drops, name
+    # resolution failures, mid-stream disconnects from docling-graph). Infra
+    # failures must NOT consume the business ``pass_max_retries`` budget.
+    # Default 3 (30+60+120s backoff = 3.5min per pass) covers a typical
+    # docker-compose restart of docling-graph. Higher caps risk blowing the
+    # 8h ``graph_soft_time_limit`` when 12 passes each retry the maximum.
+    pass_max_transport_retries: int = 3
     # Quality-gate floor shared with the docling-graph service. Mirrors
     # DoclingGraphSettings.docling_graph_quality_min_instances so compose
     # can propagate a single DOCLING_GRAPH_QUALITY_MIN_INSTANCES env var

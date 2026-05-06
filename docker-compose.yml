@@ -152,16 +152,22 @@ services:
       # config_builder.py reads DOCLING_GRAPH_* prefixed env vars via pydantic-settings
       DOCLING_GRAPH_LLM_PROVIDER: ${DOCLING_GRAPH_LLM_PROVIDER:-ollama}
       DOCLING_GRAPH_LLM_MODEL: ${DOCLING_GRAPH_LLM_MODEL:-gpt-oss:120b}
-      # Graph extraction intentionally uses a tighter output cap than the
-      # general app LLM. This prevents JSON-mode pathological chunks from
-      # streaming for tens of minutes.
-      DOCLING_GRAPH_LLM_MAX_TOKENS: ${DOCLING_GRAPH_LLM_MAX_TOKENS:-4096}
-      # Bounded truncation recovery. Default stops at the first 2x retry
-      # (4096 -> 8192); raise explicitly for targeted diagnostics.
-      DOCLING_GRAPH_LLM_TRUNCATION_RETRY_MAX_TOKENS: ${DOCLING_GRAPH_LLM_TRUNCATION_RETRY_MAX_TOKENS:-8192}
+      # Sampling temperature for graph extraction. Default 0.1 — small
+      # variance is needed because T=0.0 returns empty JSON pathologically
+      # under structured-output constraints (config_builder.py:98). Per-
+      # request override via body.temperature in /extract-pass; production
+      # worker omits the field and inherits this service default.
+      DOCLING_GRAPH_LLM_TEMPERATURE: ${DOCLING_GRAPH_LLM_TEMPERATURE:-0.1}
+      # Graph extraction output cap. 8192 (raised from 4096) reduces the
+      # bimodal "first call hits cap → retry at 2x" path observed in prod —
+      # the 4096 floor was triggering 7-min retries on radar/missile schemas
+      # whose populated outputs reach 5–6k tokens.
+      DOCLING_GRAPH_LLM_MAX_TOKENS: ${DOCLING_GRAPH_LLM_MAX_TOKENS:-8192}
+      # Bounded truncation recovery (one 2x retry above MAX_TOKENS).
+      DOCLING_GRAPH_LLM_TRUNCATION_RETRY_MAX_TOKENS: ${DOCLING_GRAPH_LLM_TRUNCATION_RETRY_MAX_TOKENS:-16384}
       # Override LiteLLM's 4092-token fallback for ollama/* models not in its
       # registry (llama3.3:70b). Must be >= DOCLING_GRAPH_LLM_MAX_TOKENS.
-      DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS: ${DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS:-4096}
+      DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS: ${DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS:-8192}
       DOCLING_GRAPH_LLM_CONTEXT_LIMIT: ${DOCLING_GRAPH_LLM_CONTEXT_LIMIT:-131072}
       DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-72000}
       # Concurrent chunk batches per /extract-pass (config_builder.py:44).

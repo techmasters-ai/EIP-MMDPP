@@ -247,6 +247,66 @@ class TestRunSinglePass:
                     document_id="doc-1",
                 )
 
+    def test_transport_error_does_not_burn_business_retry_budget(self):
+        """PassTransportError uses its own counter — business attempt stays at 1
+        across all transport retries until either transport budget is exhausted
+        or a non-transport response arrives.
+        """
+        from app.workers.pipeline import _run_single_pass, PassTransportError
+
+        pass_def = _fake_pass_def(required=False)
+        manifest = _fake_manifest([pass_def])
+
+        with patch(
+            "app.workers.pipeline._call_extract_pass",
+            side_effect=PassTransportError("server disconnected"),
+        ), patch("app.workers.pipeline._write_stage_run") as mock_write, \
+             patch("app.workers.pipeline._backoff"):
+            _run_single_pass(
+                pipeline_run_id="run-1",
+                pass_def=pass_def,
+                manifest=manifest,
+                ontology=MINIMAL_ONTOLOGY,
+                bundle_key="air_defense_v3",
+                doc_json={},
+                pass_results={},
+                upstream_refs={},
+                document_id="doc-1",
+            )
+
+        # Default pass_max_transport_retries=3 → 3 StageRun rows, all attempt=1
+        assert mock_write.call_count == 3
+        for call in mock_write.call_args_list:
+            assert call.kwargs["attempt"] == 1
+            assert call.kwargs["execution_status"] == "FAILED"
+            assert "transport-retry" in call.kwargs["error"]
+
+    def test_transport_error_exhausted_raises_if_required(self):
+        from app.workers.pipeline import (
+            _run_single_pass, PassTransportError, IngestFailed,
+        )
+
+        pass_def = _fake_pass_def(required=True)
+        manifest = _fake_manifest([pass_def])
+
+        with patch(
+            "app.workers.pipeline._call_extract_pass",
+            side_effect=PassTransportError("name resolution failed"),
+        ), patch("app.workers.pipeline._write_stage_run"), \
+             patch("app.workers.pipeline._backoff"):
+            with pytest.raises(IngestFailed, match="exhausted transport retries"):
+                _run_single_pass(
+                    pipeline_run_id="run-1",
+                    pass_def=pass_def,
+                    manifest=manifest,
+                    ontology=MINIMAL_ONTOLOGY,
+                    bundle_key="air_defense_v3",
+                    doc_json={},
+                    pass_results={},
+                    upstream_refs={},
+                    document_id="doc-1",
+                )
+
     def test_terminal_error_raises_immediately_if_required(self):
         from app.workers.pipeline import _run_single_pass, PassTerminal, IngestFailed
 
@@ -584,3 +644,67 @@ class TestPassResultUpstreamRefsAttachment:
         # document_only passes do not consume upstream refs, so the post-
         # parse attach block must not populate this field.
         assert result.upstream_refs is None
+
+
+# --- _call_extract_pass: stub-on-error handling ----------------------------
+
+class TestCallExtractPass:
+    """When the docling-graph service catches an internal exception, it
+    returns 200 with ``diagnostics.pipeline_error`` set and an empty
+    pass_output (a ``stub`` response). The worker must surface this as
+    PassRetryable so the retry loop can have another go, instead of treating
+    the empty stub as a clean success.
+    """
+
+    def _make_response(self, *, status_code=200, payload):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.json = MagicMock(return_value=payload)
+        resp.text = ""
+        return resp
+
+    def test_pipeline_error_stub_raises_pass_retryable(self):
+        from app.workers.pipeline import _call_extract_pass, PassRetryable
+
+        stub_payload = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {
+                "pipeline_error": {
+                    "type": "PipelineError",
+                    "message": "stage 'Extraction' failed",
+                },
+            },
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=stub_payload),
+        ):
+            with pytest.raises(PassRetryable, match="service pipeline_error"):
+                _call_extract_pass(
+                    {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                     "document_id": "doc-1"},
+                    timeout=10.0,
+                )
+
+    def test_clean_zero_yield_does_not_raise(self):
+        """Empty result without a pipeline_error marker is a legitimate
+        outcome (off-domain pass) — log only, do not retry.
+        """
+        from app.workers.pipeline import _call_extract_pass
+
+        clean_empty = {
+            "pass_output": {},
+            "metadata": {"node_count": 0, "edge_count": 0},
+            "diagnostics": {},
+        }
+        with patch(
+            "app.workers.pipeline.httpx.post",
+            return_value=self._make_response(payload=clean_empty),
+        ):
+            result = _call_extract_pass(
+                {"bundle_key": "air_defense_v3", "pass_name": "missile_identity",
+                 "document_id": "doc-1"},
+                timeout=10.0,
+            )
+            assert result == clean_empty

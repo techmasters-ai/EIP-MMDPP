@@ -107,9 +107,17 @@ from ontology_bundles.air_defense_v3.validators import (  # noqa: E402
 # --- Custom exception types for the single-pass dispatcher (spec §5.5 + §6.5) ---
 
 class PassRetryable(Exception):
-    """Raised by _call_extract_pass for transport errors, timeouts, HTTP 5xx,
-    partial response parse errors, and TransientOllamaBusyError.
+    """Raised by _call_extract_pass for HTTP 5xx, partial response parse errors,
+    TransientOllamaBusyError, and service-level pipeline_error stubs.
     _run_single_pass retries up to pass_max_retries with exponential backoff."""
+
+
+class PassTransportError(PassRetryable):
+    """Subclass for connection-level failures: ``httpx.TimeoutException``,
+    ``httpx.TransportError`` (server disconnect mid-stream, connection refused,
+    DNS failure). These are infra-level and should NOT consume the business
+    ``pass_max_retries`` budget — ``_run_single_pass`` retries them up to
+    ``pass_max_transport_retries`` without incrementing ``attempt``."""
 
 
 class PassTerminal(Exception):
@@ -586,7 +594,9 @@ def _run_single_pass(
     operators can audit retry history.
     """
     max_retries = getattr(settings, "pass_max_retries", 3)
+    max_transport_retries = getattr(settings, "pass_max_transport_retries", 3)
     attempt = 1
+    transport_attempt = 0
 
     while True:
         if _should_skip(pass_def, upstream_refs, ontology):
@@ -643,6 +653,30 @@ def _run_single_pass(
                     if identity is not None:
                         pass_result.upstream_refs[ref_id] = identity
 
+        # Order-dependent: PassTransportError is a subclass of PassRetryable,
+        # so this branch MUST precede `except PassRetryable` below — flipping
+        # them would route transport errors through the business-retry budget
+        # and revive the bug the separate counter exists to fix.
+        except PassTransportError as exc:
+            transport_attempt += 1
+            _write_stage_run(
+                pipeline_run_id=pipeline_run_id,
+                pass_def=pass_def,
+                attempt=attempt,
+                execution_status="FAILED",
+                yield_status=None,
+                skip_reason=None,
+                counts=None,
+                error=f"[transport-retry {transport_attempt}/{max_transport_retries}] {exc}",
+            )
+            if transport_attempt >= max_transport_retries:
+                if pass_def.required:
+                    raise IngestFailed(
+                        f"Required pass {pass_def.name} exhausted transport retries"
+                    ) from exc
+                return
+            _backoff(transport_attempt)
+            continue
         except PassRetryable as exc:
             _write_stage_run(
                 pipeline_run_id=pipeline_run_id,
@@ -2411,7 +2445,7 @@ def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
     try:
         response = httpx.post(url, json=request_body, timeout=timeout)
     except (httpx.TimeoutException, httpx.TransportError) as exc:
-        raise PassRetryable(f"transport error: {exc}") from exc
+        raise PassTransportError(f"transport error: {exc}") from exc
 
     if response.status_code >= 500:
         raise PassRetryable(f"HTTP {response.status_code}: {response.text[:200]}")
@@ -2423,13 +2457,15 @@ def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
     except ValueError as exc:
         raise PassRetryable(f"partial/malformed response: {exc}") from exc
 
-    # Worker-side loud surface for service-level soft-fails. The docling-graph
+    # Worker-side handling of service-level soft-fails. The docling-graph
     # service returns 200 even when run_pipeline raised internally (it stubs
-    # the context to keep the pass from hard-failing the worker retry loop).
-    # That stub flows through the worker as if the pass succeeded with empty
-    # output — silent degradation. Detect via diagnostics.pipeline_error and
-    # zero-yield metadata, and emit ERROR with the document/pass identifiers
-    # so an operator grepping logs sees one entry per degraded pass.
+    # the context with empty output and a pipeline_error diagnostic marker).
+    # We treat that stub as PassRetryable: a real internal exception inside
+    # the library is a transient failure mode (LLM JSON-parse drift,
+    # connection blip to Ollama mid-extraction), not a clean "no entities
+    # found." Empty results from a clean run_pipeline path do NOT set
+    # pipeline_error and are handled below as ZERO_YIELD (logged but not
+    # retried — could be legitimate empty for off-domain passes).
     diagnostics = (payload or {}).get("diagnostics") or {}
     pipeline_err = diagnostics.get("pipeline_error") if isinstance(diagnostics, dict) else None
     metadata = (payload or {}).get("metadata") or {}
@@ -2441,12 +2477,17 @@ def _call_extract_pass(request_body: dict, *, timeout: float) -> dict:
     if pipeline_err:
         logger.error(
             "EXTRACT_PASS_PIPELINE_ERROR bundle=%s pass=%s document_id=%s "
-            "error_type=%s error_msg=%s — service stubbed the response; this "
-            "pass's pass_output is empty.",
+            "error_type=%s error_msg=%s — service stubbed the response; "
+            "raising PassRetryable so the worker can retry instead of "
+            "silently treating it as success.",
             bundle_key, pass_name, document_id,
             pipeline_err.get("type", "?"), pipeline_err.get("message", "?"),
         )
-    elif node_count == 0 and edge_count == 0:
+        raise PassRetryable(
+            f"service pipeline_error: type={pipeline_err.get('type', '?')} "
+            f"msg={pipeline_err.get('message', '?')[:200]}"
+        )
+    if node_count == 0 and edge_count == 0:
         logger.error(
             "EXTRACT_PASS_ZERO_YIELD bundle=%s pass=%s document_id=%s "
             "node_count=0 edge_count=0 — pass succeeded but produced no "
