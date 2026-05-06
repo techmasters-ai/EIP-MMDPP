@@ -317,10 +317,15 @@ def test_reclaim_stale_claimed_compare_and_reset(db_session: Session, pipeline_r
 def test_reclaim_stale_dispatched_revokes_and_resets(
     db_session: Session, pipeline_run_factory, monkeypatch
 ):
-    """Stale dispatched entry: celery revoke is called with the task_id; phase removed."""
+    """Stale dispatched entry: celery revoke is called with the task_id; phase removed.
+
+    Two-phase positive+negative: first call with stale dispatched_at succeeds;
+    second call with fresh dispatched_at returns False without firing revoke or
+    removing the entry.
+    """
     run_id = pipeline_run_factory()
 
-    # Pre-seed as 'dispatched' with dispatched_at 2 hours ago
+    # --- Positive case: dispatched_at 2 hours ago, threshold 1 hour ---
     stale_dispatched_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     claimed_at = (datetime.now(timezone.utc) - timedelta(hours=2, minutes=1)).isoformat()
     _seed_phase(
@@ -359,6 +364,43 @@ def test_reclaim_stale_dispatched_revokes_and_resets(
     raw = _read_raw(db_session, run_id, _PHASE)
     assert raw is None
 
+    # --- Negative case: re-seed with a fresh dispatched_at (10s ago), same threshold ---
+    fresh_dispatched_at = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    fresh_claimed_at = (datetime.now(timezone.utc) - timedelta(seconds=15)).isoformat()
+    _seed_phase(
+        db_session,
+        run_id,
+        _PHASE,
+        {
+            "state": "dispatched",
+            "result": None,
+            "task_id": "fresh-task",
+            "claimed_at": fresh_claimed_at,
+            "dispatched_at": fresh_dispatched_at,
+            "completed_at": None,
+        },
+    )
+
+    mock_celery.reset_mock()
+
+    reclaimed_again = reclaim_stale_phase(
+        db_session,
+        run_id,
+        _PHASE,
+        claim_threshold_s=30,
+        dispatch_threshold_s=3600,
+    )
+    db_session.flush()
+
+    assert reclaimed_again is False
+    # revoke must NOT have been called for the fresh entry
+    mock_celery.control.revoke.assert_not_called()
+    # Entry still present and unchanged
+    entry = read_phase_state(db_session, run_id, _PHASE)
+    assert entry is not None
+    assert entry.state == "dispatched"
+    assert entry.task_id == "fresh-task"
+
 
 # ---------------------------------------------------------------------------
 # Phase 3 — Read + cancel
@@ -370,6 +412,12 @@ def test_read_phase_state_returns_none_when_absent(db_session: Session, pipeline
     run_id = pipeline_run_factory()
 
     result = read_phase_state(db_session, run_id, _PHASE)
+    assert result is None
+
+
+def test_read_phase_state_returns_none_when_run_missing(db_session: Session):
+    """Pass a run_id that doesn't exist; verify None (no exception)."""
+    result = read_phase_state(db_session, uuid.uuid4(), _PHASE)
     assert result is None
 
 

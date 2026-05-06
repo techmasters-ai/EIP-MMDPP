@@ -302,15 +302,13 @@ def pipeline_run_factory(db_session):
 
     All rows are rolled back after the test by the ``db_session`` fixture.
     """
-    from sqlalchemy import text as sa_text
-
     def _make(status: str = "PROCESSING") -> "uuid.UUID":
         source_id = uuid.uuid4()
         document_id = uuid.uuid4()
         pipeline_run_id = uuid.uuid4()
 
         db_session.execute(
-            sa_text(
+            text(
                 "INSERT INTO ingest.sources (id, name, created_by) "
                 "VALUES (:id, :name, :created_by)"
             ),
@@ -321,7 +319,7 @@ def pipeline_run_factory(db_session):
             },
         )
         db_session.execute(
-            sa_text(
+            text(
                 "INSERT INTO ingest.documents "
                 "(id, source_id, filename, storage_bucket, storage_key, uploaded_by, retry_count) "
                 "VALUES (:id, :source_id, :filename, :bucket, :key, :user_id, :retry_count)"
@@ -337,7 +335,7 @@ def pipeline_run_factory(db_session):
             },
         )
         db_session.execute(
-            sa_text(
+            text(
                 "INSERT INTO ingest.pipeline_runs (id, document_id, pipeline_version, status) "
                 "VALUES (:id, :document_id, :version, :status)"
             ),

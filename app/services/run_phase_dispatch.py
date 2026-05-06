@@ -62,6 +62,13 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Reusable type aliases
+# ---------------------------------------------------------------------------
+
+PhaseState = Literal["claimed", "dispatched", "completed"]
+PhaseResult = Literal["succeeded", "failed", "skipped"]
+
+# ---------------------------------------------------------------------------
 # Public dataclass
 # ---------------------------------------------------------------------------
 
@@ -72,8 +79,8 @@ _CANCELLED_STATUSES = frozenset({"FAILED", "COMPLETE", "PARTIAL_COMPLETE", "CANC
 class PhaseEntry:
     """Parsed representation of one phase slot in ``dispatched_phases``."""
 
-    state: Literal["claimed", "dispatched", "completed"]
-    result: Literal["succeeded", "failed", "skipped"] | None
+    state: PhaseState
+    result: PhaseResult | None
     task_id: str | None
     claimed_at: datetime
     dispatched_at: datetime | None
@@ -145,7 +152,7 @@ def mark_phase_dispatched(
     run_id: uuid.UUID | str,
     phase_name: str,
     task_id: str,
-    expected_state: str = "claimed",
+    expected_state: PhaseState = "claimed",
 ) -> bool:
     """Advance a phase slot from *claimed* → *dispatched*.
 
@@ -210,7 +217,7 @@ def mark_phase_terminal(
     run_id: uuid.UUID | str,
     phase_name: str,
     *,
-    result: Literal["succeeded", "failed", "skipped"],
+    result: PhaseResult,
 ) -> bool:
     """Advance a phase slot to *completed* with a final result.
 
@@ -383,6 +390,14 @@ def reclaim_stale_phase(
         if age_s < dispatch_threshold_s:
             return False
 
+        # Race window: between the SELECT (read_phase_state above) and the SQL UPDATE
+        # below, another worker could have advanced this phase to 'completed' (the
+        # task itself called mark_phase_terminal). The UPDATE will correctly no-op
+        # (WHERE state='dispatched' returns rowcount=0), but revoke() was already
+        # issued — it may hit a task that has already succeeded. Operationally
+        # benign because the per-task idempotency guard rejects late results, but
+        # operators should expect occasional "revoking already-completed task"
+        # warnings in worker logs.
         # Best-effort revoke — must not block reclaim on failure
         task_id = entry.get("task_id")
         if task_id:

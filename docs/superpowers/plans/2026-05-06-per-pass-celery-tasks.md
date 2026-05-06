@@ -247,10 +247,10 @@ Tests:
 - `test_mark_terminal_records_result_skipped` — verify `result='skipped'`
 - `test_mark_terminal_idempotent`
 - `test_reclaim_stale_claimed_compare_and_reset` — pre-seed `claimed_at` 60s ago, threshold 30s, expect reset; THEN re-run with `claimed_at` refreshed to 0s ago, expect NO reset (predicate matches stale timestamp only)
-- `test_reclaim_stale_dispatched_revokes_and_resets` — pre-seed `dispatched_at` 2× soft_time_limit ago, no pass-output row, no pending retry; expect Celery revoke called + reset
-- `test_reclaim_dispatched_with_failed_attempt_pending_retry_does_not_reset` — pass-output FAILED + attempt < pass_max_retries: helper returns False (Celery's retry will land); no revoke, no reset
-- `test_reclaim_dispatched_with_pass_output_promotes_to_terminal` — task wrote output but didn't mark_phase_terminal (crashed between save and mark); reconciler calls mark_phase_terminal instead of reclaim
+- `test_reclaim_stale_dispatched_revokes_and_resets` — pre-seed `dispatched_at` 2× soft_time_limit ago; expect Celery revoke called + reset; THEN re-seed with fresh `dispatched_at` (10s ago), verify no revoke, no reset (compare-and-reset negative case)
 - `test_is_run_cancelled_handles_missing_run`
+
+> **Note:** Tests requiring pass_outputs awareness (e.g., "reconciler waits when a Celery retry is pending" or "reconciler promotes a dispatched phase to terminal when pass_outputs row exists") are deferred to Task 9 — the helper itself does not couple to pass_outputs (per the reclaim_stale_phase contract).
 
 Steps:
 - [ ] **3.1** Write tests
@@ -927,8 +927,8 @@ Tests:
 - `test_does_not_touch_recent_claimed` — `claimed_at` within threshold; no action
 - `test_repairs_stale_dispatched_revokes_and_redispatches` — no pass-output, no pending retry, > threshold
 - `test_does_not_touch_recent_dispatched`
-- **`test_does_not_reclaim_dispatched_with_pending_retry`** (r4) — pre-seed a FAILED StageRun with `attempt < max_retries` and `finished_at` within Celery's countdown window; verify NO revoke, NO reclaim
-- **`test_does_not_reclaim_dispatched_when_attempts_exhausted_but_pass_output_exists`** (r4) — pre-seed terminal pass-output row; verify reconciler calls `mark_phase_terminal` instead of reclaim
+- **`test_does_not_reclaim_dispatched_with_pending_retry`** (r4) — pre-seed a FAILED StageRun with `attempt < max_retries` and `finished_at` within Celery's countdown window; verify NO revoke, NO reclaim (also covers `test_reclaim_dispatched_with_failed_attempt_pending_retry_does_not_reset` intent from Task 3)
+- **`test_does_not_reclaim_dispatched_when_attempts_exhausted_but_pass_output_exists`** (r4) — pre-seed terminal pass-output row; verify reconciler calls `mark_phase_terminal` instead of reclaim (also covers `test_reclaim_dispatched_with_pass_output_promotes_to_terminal` intent from Task 3)
 - `test_promotes_completed_but_not_marked_terminal` — task wrote pass-output but didn't mark phase terminal; reconciler does it
 - `test_dispatches_missing_follow_up` — all entity passes resolved, no `system_links` phase entry; reconciler dispatches it
 - `test_skips_terminalized_runs` — run.status=FAILED; no action
