@@ -9,7 +9,7 @@
     {
       "id": 1,
       "subject": "Task 1: _alias_map.py constants + drift guards",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         0
       ]
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-06T23:16:17.885497+00:00"
+  "lastUpdated": "2026-05-06T23:34:31.855195+00:00"
 }
