@@ -1888,8 +1888,8 @@ def test_collision_last_write_wins():
 
 - [ ] **Step 2: Run tests, verify they fail.**
 
-Run: `pytest docker/docling-graph/tests/$TEST_FILE -v 2>&1 | tail -10`
-Expected: FAIL — function not yet defined (NameError or AttributeError).
+Run: `pytest docker/docling-graph/tests/test_table_facts_entity_ids.py -v 2>&1 | tail -10`
+Expected: FAIL — `derive_entity_ids` not yet defined.
 
 - [ ] **Step 3: Implement.**
 
@@ -2053,8 +2053,8 @@ def test_embedded_wins_over_header_row():
 
 - [ ] **Step 2: Run tests, verify they fail.**
 
-Run: `pytest docker/docling-graph/tests/$TEST_FILE -v 2>&1 | tail -10`
-Expected: FAIL — function not yet defined (NameError or AttributeError).
+Run: `pytest docker/docling-graph/tests/test_table_facts_sections.py -v 2>&1 | tail -10`
+Expected: FAIL — `detect_section_context` not yet defined.
 
 - [ ] **Step 3: Implement.**
 
@@ -2387,7 +2387,7 @@ def test_string_field_passthrough():
 
 def test_stop_words_return_empty_list():
     tf = _load()
-    for stop in ["", "TBD", "—", "N/A", "unknown", "?", "—", "-", "--"]:
+    for stop in ["", "TBD", "—", "N/A", "unknown", "?", "-", "--"]:
         assert tf.coerce_value(stop, "booster_mass_kg") == [], f"{stop!r} not stopped"
 
 
@@ -2792,7 +2792,7 @@ def _format_value(value: float | int | str) -> str:
 - [ ] **Step 4: Run tests, verify they pass.**
 
 Run: `pytest docker/docling-graph/tests/test_table_facts_emit.py -v 2>&1 | tail -10`
-Expected: 4/4 pass.
+Expected: 5/5 pass.
 
 - [ ] **Step 5: Commit.**
 
