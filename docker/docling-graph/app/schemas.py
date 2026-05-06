@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExtractionMetadata(BaseModel):
@@ -176,6 +176,41 @@ class ExtractionFieldProvenance(BaseModel):
     )
 
 
+class TableFact(BaseModel):
+    """Per-cell deterministic fact derived from a variants table row.
+    Spec §5.4.
+    """
+    model_config = ConfigDict(frozen=True)
+    canonical_entity: str
+    entity_type: str
+    schema_field: str
+    value: Any
+    source_label: str
+    section_ctx: Optional[str] = None
+    pass_name: str
+    raw_text: str
+
+
+class CrossEntityHint(BaseModel):
+    """Row-level cross-entity reference. v1: collected but not applied
+    as edges. Spec §5.4."""
+    model_config = ConfigDict(frozen=True)
+    source_canonical: str
+    source_entity_type: str
+    target_alias: str
+    target_entity_type: str
+    relationship_kind: str
+
+
+class TableOverlay(BaseModel):
+    """Doc-level deterministic overlay derived from a variants table.
+    Spec §5.4. Mutable defaults via Field(default_factory=...) so each
+    instance gets its own dict/list."""
+    alias_map_by_entity_type: dict[str, dict[str, str]] = Field(default_factory=dict)
+    facts: list[TableFact] = Field(default_factory=list)
+    cross_entity_hints: list[CrossEntityHint] = Field(default_factory=list)
+
+
 class ExtractPassResponse(BaseModel):
     """Response body for POST /extract-pass. Spec §5.9 wire contract.
 
@@ -218,6 +253,14 @@ class ExtractPassResponse(BaseModel):
             "trace() for schema."
         ),
     )
+    table_overlay: Optional[TableOverlay] = Field(
+        default=None,
+        description=(
+            "Doc-level deterministic overlay (Mechanism A1, spec §5.4). "
+            "None when no qualifying variants table found OR kill switch "
+            "DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false."
+        ),
+    )
 
 
 # Resolve forward references in the module namespace so the classes
@@ -229,3 +272,6 @@ class ExtractPassResponse(BaseModel):
 # that pydantic cannot resolve in the alt-module namespace.
 ExtractionProvenance.model_rebuild()
 ExtractPassResponse.model_rebuild()
+TableFact.model_rebuild()
+CrossEntityHint.model_rebuild()
+TableOverlay.model_rebuild()
