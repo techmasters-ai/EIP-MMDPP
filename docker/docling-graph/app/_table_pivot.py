@@ -1,4 +1,24 @@
-"""Pre-chunker pivoting of column-major tables (Phase B / B1+B2 combined).
+"""DEPRECATED — replaced by ``_table_facts.py`` operationally on 2026-05-05.
+
+This module's ``synthesize_pivoted_table_texts`` emitted one prose summary
+per column. Empirical R21 measurements (alias-only T=1.0 vs B1+B2 T=1.0)
+showed it was neutral on the SA-2 ``missile_propulsion`` GT scorecard — the
+column-arithmetic failure mode survived the pivot intact because the
+synthesized prose still required the LLM to map row labels to schema
+fields. The replacement (``_table_facts.py``) emits one TextItem per
+``(entity, schema_field, value)`` triple, resolving row labels to schema
+fields deterministically via ``_alias_map.py``.
+
+This module is preserved one cycle as regression scaffolding for the
+deprecated path (``test_table_pivot.py`` still imports it via
+``importlib.util``). Both this file and its test will be deleted in the
+next maintenance cycle once the new synthesizer has had at least one
+round of green production telemetry.
+
+Original docstring follows.
+============================================================================
+
+Pre-chunker pivoting of column-major tables (Phase B / B1+B2 combined).
 
 Detects DoclingDocument tables where the leftmost column holds row labels
 (``Industry Designation``, ``Missile Type``, ``Max Range``, ...) and the
