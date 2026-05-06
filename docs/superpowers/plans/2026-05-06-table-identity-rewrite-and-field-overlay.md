@@ -16,7 +16,7 @@
 
 ## Pre-flight checklist
 
-Run these once at the start of the session and before each chunk:
+Run **P0–P5 once at the start of the session.** P6 (host pytest sanity) any time. P3 (no-new-symbols guard) is a START-OF-SESSION snapshot only; once Chunk 1 lands the new symbols WILL exist and P3 becomes stale by design — do not re-run it mid-implementation.
 
 - [ ] **P0: Read the spec.**
 
@@ -31,8 +31,8 @@ Use the @superpowers-extended-cc:test-driven-development skill for every code-be
 
 Run on host from repo root (host pytest, NOT inside the docling-graph container — the Dockerfile copies `app/` but not `tests/`):
 ```bash
-set -o pipefail \&\& pytest docker/docling-graph/tests -q 2>&1 | tail -5
-set -o pipefail \&\& pytest tests/unit -q 2>&1 | tail -5
+set -o pipefail && pytest docker/docling-graph/tests -q 2>&1 | tail -5
+set -o pipefail && pytest tests/unit -q 2>&1 | tail -5
 ```
 Expected: All current tests pass. Note any pre-existing failures so they aren't attributed to this plan.
 
@@ -43,7 +43,7 @@ docker compose ps --format "table {{.Service}}\t{{.Status}}" | grep -E "docling-
 ```
 Expected: docling-graph, api, worker / worker-graph all Up. If not, `docker compose up -d` and wait 30 s.
 
-- [ ] **P3: Confirm none of the new symbols already exist.**
+- [ ] **P3 (START-OF-SESSION ONLY): Confirm none of the new symbols already exist.**
 
 ```bash
 grep -nE "extract_table_overlay|class TableOverlay|class TableFact|class CrossEntityHint|MISSILE_IDENTITY_LABELS|RADAR_IDENTITY_LABELS|CANONICAL_PRIORITY|CROSS_ENTITY_REF_PATTERNS|apply_identity_rewrite|apply_field_overlay|table_alias_map_by_entity_type|DOCLING_GRAPH_TABLE_OVERLAY_ENABLED" docker/docling-graph/app/_table_facts.py docker/docling-graph/app/_alias_map.py docker/docling-graph/app/main.py docker/docling-graph/app/schemas.py app/services/extraction_merge.py app/workers/pipeline.py docker-compose.yml 2>&1
@@ -156,17 +156,25 @@ constants (MISSILE_IDENTITY_LABELS, RADAR_IDENTITY_LABELS,
 CROSS_ENTITY_REF_PATTERNS, CANONICAL_PRIORITY) so that future edits
 cannot silently break the overlay's classification rules.
 """
-# `_load_alias_map` uses the existing docking-graph test convention:
-# the conftest at `docker/docling-graph/tests/conftest.py` appends the
-# service root to sys.path so `from app._alias_map import …` resolves.
-# We use a tiny indirection so a single import-failure error message
-# is descriptive when the conftest-driven sys.path insert is somehow
-# missing.
-from app import _alias_map as _am
+# Existing test convention in this directory loads service modules via
+# importlib.spec_from_file_location (see test_table_facts_*.py). The
+# conftest appends the service root to sys.path AT THE END, which is
+# not enough on its own — the repo-root `app/` package wins on
+# `from app import …`. Direct importlib loading sidesteps that.
+import importlib.util
+from pathlib import Path
+
+_ALIAS_PATH = Path(__file__).resolve().parent.parent / "app" / "_alias_map.py"
 
 
 def _load_alias_map():
-    return _am
+    spec = importlib.util.spec_from_file_location(
+        "docling_graph_service_alias_map_overlay", _ALIAS_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_missile_identity_labels_excludes_bare_variant_and_designation():
@@ -230,7 +238,7 @@ def test_canonical_priority_uses_display_labels():
 - [ ] **Step 2: Run tests, confirm 4 fail.**
 
 ```bash
-set -o pipefail \&\& pytest docker/docling-graph/tests/test_alias_map_overlay_constants.py -v
+set -o pipefail && pytest docker/docling-graph/tests/test_alias_map_overlay_constants.py -v
 ```
 Expected: 4 FAILED with `AttributeError: module ... has no attribute 'MISSILE_IDENTITY_LABELS'`.
 
@@ -316,7 +324,7 @@ Expected: 4 PASSED.
 - [ ] **Step 5: Run the full docling-graph test suite to confirm no regression.**
 
 ```bash
-pytest docker/docling-graph/tests -q 2>&1 | tail -10
+set -o pipefail && pytest docker/docling-graph/tests -q 2>&1 | tail -10
 ```
 Expected: All tests pass; new test count up by 4.
 
@@ -345,16 +353,27 @@ These cover the four pure helpers that compose extract_table_overlay:
 _classify_identity_row, _classify_cross_entity_ref,
 _extract_alias_clusters, _pick_canonical.
 """
-# See `test_alias_map_overlay_constants.py` for the conftest-driven
-# import pattern. `_table_facts` uses absolute `from app._alias_map
-# import …` internally, so it imports cleanly under the service-root
-# sys.path insert; relative-import-only loaders (importlib.spec_from_
-# file_location) would fail.
-from app import _table_facts as _tf
+# Same importlib pattern as the existing test_table_facts_*.py files.
+# _table_facts.py uses LAZY `from app._alias_map import …` inside
+# function bodies (not module-level), so importlib loading works as
+# long as the conftest's service-root sys.path append fires before
+# the lazy imports execute (it does — conftest is collected first).
+import importlib.util
+import sys
+from pathlib import Path
+
+_FACTS_PATH = Path(__file__).resolve().parent.parent / "app" / "_table_facts.py"
 
 
 def _load_table_facts():
-    return _tf
+    spec = importlib.util.spec_from_file_location(
+        "docling_graph_service_table_facts_overlay", _FACTS_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules["docling_graph_service_table_facts_overlay"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 # ---- _classify_identity_row -------------------------------------------------
@@ -524,15 +543,17 @@ Append to `docker/docling-graph/app/_table_facts.py` (after existing exports):
 ```python
 # ============================================================================
 # Mechanism A1 helpers (spec §5.2). Pure, deterministic, milliseconds.
+#
+# Imports of `app._alias_map` symbols are LAZY (inside each helper),
+# matching the existing convention used by extract_label_rows /
+# detect_section_context / coerce_value above. Module-level
+# `from app._alias_map import …` would fail at importlib-spec-load
+# time in tests (the existing test_table_facts_*.py files load this
+# module via importlib.spec_from_file_location, before the conftest's
+# service-root sys.path append has fired for *those* tests).
 # ============================================================================
 
 import unicodedata
-from app._alias_map import (
-    MISSILE_IDENTITY_LABELS,
-    RADAR_IDENTITY_LABELS,
-    CROSS_ENTITY_REF_PATTERNS,
-    CANONICAL_PRIORITY,
-)
 
 
 def _normalize_label(s: str) -> str:
@@ -552,6 +573,11 @@ def _classify_identity_row(label: str) -> str | None:
          _classify_cross_entity_ref instead.
       2. Identity-label check SECOND.
     """
+    from app._alias_map import (  # lazy — see module header comment
+        MISSILE_IDENTITY_LABELS,
+        RADAR_IDENTITY_LABELS,
+        CROSS_ENTITY_REF_PATTERNS,
+    )
     norm = _normalize_label(label)
     if not norm:
         return None
@@ -576,6 +602,7 @@ def _classify_cross_entity_ref(label: str) -> str | None:
     (e.g., 'Fan Song Variant' → 'RADAR_SYSTEM' in a missile-context
     table). Otherwise None.
     """
+    from app._alias_map import CROSS_ENTITY_REF_PATTERNS  # lazy
     norm = _normalize_label(label)
     return CROSS_ENTITY_REF_PATTERNS.get(norm)
 
@@ -678,6 +705,7 @@ def _pick_canonical(
     first value (NFC + casefold sort) and log INFO
     'canonical_picked_via_fallback'. Empty cluster → empty string.
     """
+    from app._alias_map import CANONICAL_PRIORITY  # lazy
     if not cluster:
         return ""
     priority = CANONICAL_PRIORITY.get(entity_type, ())
@@ -693,14 +721,14 @@ def _pick_canonical(
 - [ ] **Step 4: Run tests, confirm all pass.**
 
 ```bash
-set -o pipefail \&\& pytest docker/docling-graph/tests/test_table_overlay_extract.py -v
+set -o pipefail && pytest docker/docling-graph/tests/test_table_overlay_extract.py -v
 ```
 Expected: All PASSED (~12 tests).
 
 - [ ] **Step 5: Run full docling-graph test suite to confirm no regression.**
 
 ```bash
-pytest docker/docling-graph/tests -q 2>&1 | tail -10
+set -o pipefail && pytest docker/docling-graph/tests -q 2>&1 | tail -10
 ```
 Expected: All pass; the existing 99 tests still green.
 
@@ -729,18 +757,26 @@ After Chunk 2, the parser knows how to produce a `TableOverlay` from a `DoclingD
 Create `docker/docling-graph/tests/test_table_overlay_schemas.py`:
 
 ```python
-"""Schema tests for spec §5.4 wire types."""
+"""Schema tests for spec §5.4 wire types. Uses the existing
+`dg_schemas` fixture from conftest.py — that fixture already handles
+the importlib swap so docling-graph schemas don't shadow the worker-
+side app/ package."""
 import pytest
 
-from app import schemas as _s
+
+# Tests use the `dg_schemas` fixture parameter from conftest, which
+# returns the loaded docling-graph schemas module. Example:
+#
+#   def test_X(dg_schemas):
+#       fact = dg_schemas.TableFact(...)
+#
+# We keep a local helper for any tests that don't take the fixture.
+def _load_schemas(dg_schemas):
+    return dg_schemas
 
 
-def _load_schemas():
-    return _s
-
-
-def test_table_fact_required_fields():
-    s = _load_schemas()
+def test_table_fact_required_fields(dg_schemas):
+    s = dg_schemas
     fact = s.TableFact(
         canonical_entity="1D",
         entity_type="MISSILE_SYSTEM",
@@ -755,8 +791,8 @@ def test_table_fact_required_fields():
     assert fact.entity_type == "MISSILE_SYSTEM"
 
 
-def test_table_fact_frozen():
-    s = _load_schemas()
+def test_table_fact_frozen(dg_schemas):
+    s = dg_schemas
     fact = s.TableFact(
         canonical_entity="1D", entity_type="MISSILE_SYSTEM",
         schema_field="booster_mass_kg", value=1135.0,
@@ -767,8 +803,8 @@ def test_table_fact_frozen():
         fact.value = 9999.0  # frozen=True must reject
 
 
-def test_cross_entity_hint_required_fields():
-    s = _load_schemas()
+def test_cross_entity_hint_required_fields(dg_schemas):
+    s = dg_schemas
     hint = s.CrossEntityHint(
         source_canonical="1D",
         source_entity_type="MISSILE_SYSTEM",
@@ -779,10 +815,10 @@ def test_cross_entity_hint_required_fields():
     assert hint.target_entity_type == "RADAR_SYSTEM"
 
 
-def test_table_overlay_default_factories_independent():
+def test_table_overlay_default_factories_independent(dg_schemas):
     """Mutable defaults bug guard. Two TableOverlay instances must NOT
     share the same dict / list objects."""
-    s = _load_schemas()
+    s = dg_schemas
     a = s.TableOverlay()
     b = s.TableOverlay()
     a.alias_map_by_entity_type["MISSILE_SYSTEM"] = {"x": "y"}
@@ -793,8 +829,8 @@ def test_table_overlay_default_factories_independent():
     assert b.cross_entity_hints == []
 
 
-def test_table_overlay_round_trip():
-    s = _load_schemas()
+def test_table_overlay_round_trip(dg_schemas):
+    s = dg_schemas
     overlay = s.TableOverlay(
         alias_map_by_entity_type={"MISSILE_SYSTEM": {"SA-75": "1D"}},
         facts=[s.TableFact(
@@ -811,8 +847,8 @@ def test_table_overlay_round_trip():
     assert len(restored.facts) == 1
 
 
-def test_extract_pass_response_carries_table_overlay_optional():
-    s = _load_schemas()
+def test_extract_pass_response_carries_table_overlay_optional(dg_schemas):
+    s = dg_schemas
     # Without overlay
     resp = s.ExtractPassResponse(bundle_key="x", pass_name="y", pass_output={})
     assert resp.table_overlay is None
@@ -827,7 +863,7 @@ def test_extract_pass_response_carries_table_overlay_optional():
 - [ ] **Step 2: Run tests, confirm all fail.**
 
 ```bash
-set -o pipefail \&\& pytest docker/docling-graph/tests/test_table_overlay_schemas.py -v
+set -o pipefail && pytest docker/docling-graph/tests/test_table_overlay_schemas.py -v
 ```
 Expected: All FAILED (`AttributeError: module ... has no attribute 'TableFact'`).
 
@@ -902,7 +938,7 @@ Expected: All PASSED (6 tests).
 - [ ] **Step 5: Confirm no regression in the schemas tests.**
 
 ```bash
-pytest docker/docling-graph/tests -q 2>&1 | tail -10
+set -o pipefail && pytest docker/docling-graph/tests -q 2>&1 | tail -10
 ```
 
 - [ ] **Step 6: Commit.**
@@ -1076,7 +1112,7 @@ def test_two_qualifying_missile_tables_first_wins():
 - [ ] **Step 2: Run tests, confirm all fail.**
 
 ```bash
-set -o pipefail \&\& pytest docker/docling-graph/tests/test_table_overlay_qualification.py -v
+set -o pipefail && pytest docker/docling-graph/tests/test_table_overlay_qualification.py -v
 ```
 Expected: 5 FAILED (`extract_table_overlay` undefined).
 
@@ -1441,7 +1477,7 @@ Expected: All PASSED.
 - [ ] **Step 6: Run full docling-graph suite.**
 
 ```bash
-pytest docker/docling-graph/tests -q 2>&1 | tail -10
+set -o pipefail && pytest docker/docling-graph/tests -q 2>&1 | tail -10
 ```
 Expected: All pass.
 
@@ -1468,9 +1504,12 @@ After Chunk 3, the parser ships overlay payloads on the response. The worker doe
 
 - [ ] **Step 1: Write failing main.py integration test.**
 
-**Import note:** the directory `docker/docling-graph/` has a hyphen and is NOT a valid Python package path. The existing `docker/docling-graph/tests/conftest.py` adds the service root (`docker/docling-graph/`) to `sys.path`, making `from app.main import app` resolve. We rely on that — DON'T `from docker.docling_graph.app.main import app` (won't work; the underscore is a misleading rename).
+**Import + mock pattern: copy the existing endpoint test (`test_extract_pass_endpoint.py`).** That file uses two pieces from `conftest.py`:
 
-**LLM mock:** the existing handler invokes Ollama. We mock it via `app.main`'s extraction entry-point (the symbol where the LLM call lands — see the existing `test_main_*.py` tests in this directory for the prior-art mock fixture pattern). If you can't find one, search for `monkeypatch.setattr(app.main, "...", ...)` in the existing tests; the same hook is reused below.
+- `dg_app_module` (module-scope fixture): loads `docker/docling-graph/app/main.py` under stable name `docling_graph_service_main` via the conftest's importlib swap. This sidesteps the repo-root `app/` package shadowing problem.
+- A `client` fixture that wraps `dg_app_module.app` in a `TestClient`.
+
+The LLM is mocked by `patch(f"{_DG_MODULE_NAME}.run_extraction_pass")` — that's the symbol the handler calls. **Do not patch `run_pipeline`** — `run_pipeline` is imported lazily inside `run_extraction_pass`, so a `setattr` on `main_module.run_pipeline` is fragile. Patching `run_extraction_pass` itself (the boundary the handler touches) is the prior-art pattern.
 
 Create `docker/docling-graph/tests/test_main_table_overlay_integration.py`:
 
@@ -1478,14 +1517,26 @@ Create `docker/docling-graph/tests/test_main_table_overlay_integration.py`:
 """Integration: main.py /extract-pass populates response.table_overlay
 when a qualifying variants table exists, and respects the kill switch.
 
-Imports use the conftest-driven sys.path insert that puts
-docker/docling-graph/ at the front, so `from app.main import app`
-resolves to docker/docling-graph/app/main.py — NOT the worker-side
-app/ at the repo root."""
-from fastapi.testclient import TestClient
-import pytest
+Uses the existing conftest fixtures `dg_app_module` (loads
+docker/docling-graph/app/main.py under stable module name
+`docling_graph_service_main`) and patches `run_extraction_pass` —
+same pattern as test_extract_pass_endpoint.py."""
+from unittest.mock import MagicMock, patch
 
-from app.main import app  # docking-graph FastAPI app, via conftest sys.path
+import pytest
+from fastapi.testclient import TestClient
+
+_DG_MODULE_NAME = "docling_graph_service_main"
+
+
+@pytest.fixture
+def client(dg_app_module):
+    """Wraps the docling-graph FastAPI app in a TestClient.
+    Module-scope fixture `dg_app_module` from conftest.py loads main.py
+    under the swap-safe `_DG_MODULE_NAME` name."""
+    fastapi_app = dg_app_module.app
+    with TestClient(fastapi_app) as c:
+        yield c
 
 
 @pytest.fixture
@@ -1522,30 +1573,23 @@ def sa2_like_doc_with_table_fixture():
             {"data": {"table_cells": cells, "num_rows": 4, "num_cols": 6}}
         ],
         "texts": [], "body": {"children": []},
+        "name": "sa2_test_doc",
     }
 
 
-@pytest.fixture
-def stub_llm(monkeypatch):
-    """Replace the LLM extraction entry-point with a stub returning a
-    fixed dict so the test doesn't depend on a live Ollama. The
-    extraction symbol the handler calls — find it via:
-        grep -nE 'def run_pipeline|def _do_extract|llm_extract' docker/docling-graph/app/main.py
-    Then patch that symbol below. We use a lambda returning empty
-    pass_output because this test only inspects table_overlay, not
-    pass_output."""
-    import app.main as main_module
-    # Adjust attribute name to match whatever the implementer finds
-    # via the grep above. The prior-art _table_pivot test at
-    # docker/docling-graph/tests/test_main_pivot_smoke.py monkeypatches
-    # this same symbol — copy its fixture.
-    if hasattr(main_module, "run_pipeline"):
-        monkeypatch.setattr(
-            main_module, "run_pipeline",
-            lambda *args, **kwargs: type("Ctx", (), {
-                "knowledge_graph": [], "trace": lambda self: {},
-            })(),
-        )
+def _stub_run_extraction_pass_return():
+    """Mimic run_extraction_pass's return shape. Same shape as the
+    existing _mock_run_pipeline_return helper in
+    test_extract_pass_endpoint.py."""
+    ctx = MagicMock()
+    ctx.knowledge_graph.number_of_nodes.return_value = 0
+    ctx.knowledge_graph.number_of_edges.return_value = 0
+    ctx.graph_metadata = MagicMock(
+        node_count=0, edge_count=0, node_types={}, edge_types={},
+    )
+    ctx.template_instance.model_dump.return_value = {}
+    ctx._upstream_preamble_applied = False
+    return ctx
 
 
 def _make_minimal_request_payload(doc_with_table: dict):
@@ -1557,14 +1601,15 @@ def _make_minimal_request_payload(doc_with_table: dict):
 
 
 def test_extract_pass_includes_table_overlay_when_table_qualifies(
-    sa2_like_doc_with_table_fixture, monkeypatch, stub_llm,
+    client, sa2_like_doc_with_table_fixture, monkeypatch,
 ):
     monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true")
-    client = TestClient(app)
-    r = client.post(
-        "/extract-pass",
-        json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture),
-    )
+    with patch(f"{_DG_MODULE_NAME}.run_extraction_pass") as mock_run:
+        mock_run.return_value = _stub_run_extraction_pass_return()
+        r = client.post(
+            "/extract-pass",
+            json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture),
+        )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("table_overlay") is not None
@@ -1577,14 +1622,15 @@ def test_extract_pass_includes_table_overlay_when_table_qualifies(
 
 
 def test_extract_pass_kill_switch_returns_no_overlay(
-    sa2_like_doc_with_table_fixture, monkeypatch, stub_llm,
+    client, sa2_like_doc_with_table_fixture, monkeypatch,
 ):
     monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "false")
-    client = TestClient(app)
-    r = client.post(
-        "/extract-pass",
-        json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture),
-    )
+    with patch(f"{_DG_MODULE_NAME}.run_extraction_pass") as mock_run:
+        mock_run.return_value = _stub_run_extraction_pass_return()
+        r = client.post(
+            "/extract-pass",
+            json=_make_minimal_request_payload(sa2_like_doc_with_table_fixture),
+        )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body.get("table_overlay") is None
@@ -1596,7 +1642,7 @@ def test_extract_pass_kill_switch_returns_no_overlay(
 - [ ] **Step 2: Run test, confirm fail.**
 
 ```bash
-set -o pipefail \&\& pytest docker/docling-graph/tests/test_main_table_overlay_integration.py -v
+set -o pipefail && pytest docker/docling-graph/tests/test_main_table_overlay_integration.py -v
 ```
 Expected: FAIL.
 
@@ -1675,7 +1721,7 @@ Expected: 2 PASSED.
 - [ ] **Step 5: Run full suite.**
 
 ```bash
-pytest docker/docling-graph/tests -q 2>&1 | tail -10
+set -o pipefail && pytest docker/docling-graph/tests -q 2>&1 | tail -10
 ```
 Expected: All pass.
 
@@ -1820,7 +1866,7 @@ logger = logging.getLogger(__name__)
 
 # ----------------------------------------------------------------------
 # Wire types (mirror of docker/docling-graph/app/schemas.py declarations).
-# Drift guard: tests/unit/test_table_overlay_worker.py
+# Drift guard: docker/docling-graph/tests/test_table_overlay_schemas.py
 #   ::test_parser_and_worker_table_overlay_classes_round_trip asserts
 # field-shape equivalence between this declaration and the parser side.
 # ----------------------------------------------------------------------
@@ -2411,10 +2457,20 @@ def canonicalize_cross_pass_identities(
 ) -> int:
 ```
 
-At the top of the function body, before the existing token-overlap pass:
+**Insertion point:** the existing function body initializes `rewrites = 0` near `app/services/extraction_merge.py:1028`. Move that initializer to remain the first line of the body (do NOT add a second `rewrites = 0`), then add the new alias-map block IMMEDIATELY AFTER it. This keeps the existing token-overlap accounting intact and lets the alias-map rewrite simply contribute to the same counter via `+=`. Diff-style:
 
 ```python
-    rewrites = 0
+def canonicalize_cross_pass_identities(
+    pass_results: dict[str, "PassResult"],
+    ontology: dict,
+    *,
+    table_alias_map_by_entity_type: dict[str, dict[str, str]] | None = None,
+) -> int:
+    """... (docstring updated to describe new param) ..."""
+    rewrites = 0   # EXISTING — keep, do NOT duplicate
+
+    # NEW: Mechanism A1 alias-map rewrite (Phase 0). Runs BEFORE the
+    # existing token-overlap pass so its rewrites land first.
     if table_alias_map_by_entity_type:
         try:
             from app.services.table_overlay import apply_identity_rewrite
@@ -2431,7 +2487,17 @@ At the top of the function body, before the existing token-overlap pass:
                 "apply_identity_rewrite failed: %s — falling through to "
                 "existing token-overlap canonicalization", exc,
             )
+
+    # EXISTING: token-overlap canonicalization continues below
+    # (the existing for-loop over ontology.get("entity_types", []) plus
+    # union-find logic). It also adds to `rewrites` via `+=`, so the
+    # final return value is the SUM of alias-map rewrites and token-
+    # overlap rewrites.
+    ...
+    return rewrites
 ```
+
+The point: there is exactly ONE `rewrites = 0` initializer in the final code, and it lives at the top. The alias-map block goes between it and the existing token-overlap loop.
 
 - [ ] **Step 4: Restructure `merge_and_resolve` — extract overlay FIRST, then call canonicalize WITH the alias map, then Phase 0.5.**
 
@@ -2550,14 +2616,14 @@ def _extract_doc_overlay(pass_results: dict) -> "TableOverlay | None":
 - [ ] **Step 6: Run integration tests.**
 
 ```bash
-set -o pipefail \&\& pytest tests/unit/test_extraction_merge_table_overlay.py -v
+set -o pipefail && pytest tests/unit/test_extraction_merge_table_overlay.py -v
 ```
 Expected: All PASSED.
 
 - [ ] **Step 7: Confirm worker test suite still green.**
 
 ```bash
-pytest tests/unit -q 2>&1 | tail -15
+set -o pipefail && pytest tests/unit -q 2>&1 | tail -15
 ```
 
 - [ ] **Step 8: Commit.**
@@ -2600,7 +2666,7 @@ def test_parse_pass_response_reads_table_overlay():
     response_json = {
         "bundle_key": "air_defense_v3",
         "pass_name": "missile_propulsion",
-        "pass_output": {"records": []},
+        "pass_output": {"missile_systems": []},
         "metadata": {"node_count": 0, "edge_count": 0},
         "provenance": [],
         "field_provenance": [],
@@ -2641,7 +2707,7 @@ def test_parse_pass_response_table_overlay_missing_is_none():
     manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
     response_json = {
         "bundle_key": "air_defense_v3", "pass_name": "missile_propulsion",
-        "pass_output": {"records": []},
+        "pass_output": {"missile_systems": []},
         "metadata": {}, "provenance": [], "field_provenance": [],
         # No table_overlay key
     }
@@ -2661,7 +2727,7 @@ def test_parse_pass_response_malformed_table_overlay_is_dropped():
     manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
     response_json = {
         "bundle_key": "air_defense_v3", "pass_name": "missile_propulsion",
-        "pass_output": {"records": []},
+        "pass_output": {"missile_systems": []},
         "metadata": {}, "provenance": [], "field_provenance": [],
         "table_overlay": {"alias_map_by_entity_type": "not a dict"},  # bogus
     }
@@ -2715,36 +2781,25 @@ Then thread `table_overlay=table_overlay_obj` into the `PassResult(...)` constru
 
 - [ ] **Step 5: Add parser↔worker drift-guard test.**
 
-In `tests/unit/test_table_overlay_worker.py`, add:
+The drift-guard test compares the parser-side `docker/docling-graph/app/schemas.py` `TableOverlay`/`TableFact` against the worker-side `app/services/table_overlay.py` versions. The cleanest place to live is `docker/docling-graph/tests/test_table_overlay_schemas.py` (where the conftest's `dg_schemas` fixture is available — that fixture handles the importlib swap for parser-side schemas, sidestepping the prior annotation/model-rebuild trouble that bare `importlib.spec_from_file_location` on `schemas.py` has caused in this repo). Append:
 
 ```python
-def test_parser_and_worker_table_overlay_classes_round_trip():
-    """The parser-side TableOverlay (in docker/docling-graph/app/schemas.py)
-    and the worker-side TableOverlay (in app/services/table_overlay.py)
-    declare structurally identical Pydantic models. JSON round-trip
-    between them must equal element-wise. This test guards against
-    drift: if a field is added on one side and not the other, this
-    test fails."""
-    # Parser side
-    import importlib.util
-    from pathlib import Path
-    parser_path = (
-        Path(__file__).resolve().parent.parent.parent
-        / "docker" / "docling-graph" / "app" / "schemas.py"
-    )
-    spec = importlib.util.spec_from_file_location("dg_schemas", parser_path)
-    parser_schemas = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(parser_schemas)
-
+def test_parser_and_worker_table_overlay_classes_round_trip(dg_schemas):
+    """The parser-side TableOverlay (loaded via dg_schemas fixture from
+    docker/docling-graph/app/schemas.py) and the worker-side
+    TableOverlay (in app/services/table_overlay.py) declare
+    structurally identical Pydantic models. JSON round-trip between
+    them must equal element-wise. This test guards against drift: if
+    a field is added on one side and not the other, this test fails."""
     # Worker side
     from app.services.table_overlay import (
         TableOverlay as WorkerTO, TableFact as WorkerTF,
     )
 
     # Build a parser-side overlay
-    parser_ov = parser_schemas.TableOverlay(
+    parser_ov = dg_schemas.TableOverlay(
         alias_map_by_entity_type={"MISSILE_SYSTEM": {"SA-75": "1D"}},
-        facts=[parser_schemas.TableFact(
+        facts=[dg_schemas.TableFact(
             canonical_entity="1D", entity_type="MISSILE_SYSTEM",
             schema_field="booster_mass_kg", value=1135.0,
             source_label="Weight kg", section_ctx="1st Stage",
@@ -2762,13 +2817,13 @@ def test_parser_and_worker_table_overlay_classes_round_trip():
     assert worker_ov.facts[0].canonical_entity == "1D"
     assert worker_ov.facts[0].value == 1135.0
 
-    # Schema-shape equivalence: same field names + types.
-    parser_fields = set(parser_schemas.TableOverlay.model_fields.keys())
+    # Schema-shape equivalence: same field names.
+    parser_fields = set(dg_schemas.TableOverlay.model_fields.keys())
     worker_fields = set(WorkerTO.model_fields.keys())
     assert parser_fields == worker_fields, (
         f"TableOverlay field drift: parser={parser_fields} worker={worker_fields}"
     )
-    parser_fact_fields = set(parser_schemas.TableFact.model_fields.keys())
+    parser_fact_fields = set(dg_schemas.TableFact.model_fields.keys())
     worker_fact_fields = set(WorkerTF.model_fields.keys())
     assert parser_fact_fields == worker_fact_fields, (
         f"TableFact field drift: parser={parser_fact_fields} worker={worker_fact_fields}"
@@ -2779,7 +2834,7 @@ def test_parser_and_worker_table_overlay_classes_round_trip():
 
 ```bash
 pytest tests/unit/test_run_single_pass.py -v
-pytest tests/unit/test_table_overlay_worker.py::test_parser_and_worker_table_overlay_classes_round_trip -v
+pytest docker/docling-graph/tests/test_table_overlay_schemas.py::test_parser_and_worker_table_overlay_classes_round_trip -v
 ```
 Expected: All PASSED.
 
