@@ -1,0 +1,20 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-06-per-pass-celery-tasks.md",
+  "revision": "r4",
+  "tasks": [
+    {"id": 1, "subject": "Task 1: Schema — PipelinePassOutput + dispatched_phases JSONB column", "status": "pending"},
+    {"id": 2, "subject": "Task 2: pass_outputs_store with SKIPPED + execution_status semantics", "status": "pending", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 3: run_phase_dispatch state machine (claim/dispatched/completed) + reclaim_stale_phase", "status": "pending", "blockedBy": [1]},
+    {"id": 4, "subject": "Task 4: Extract _execute_pass_attempt from _run_single_pass", "status": "pending"},
+    {"id": 5, "subject": "Task 5: derive_ontology_graph_pass — Celery-retry boundary + state machine integration", "status": "pending", "blockedBy": [2, 3, 4]},
+    {"id": 6, "subject": "Task 6: derive_ontology_graph_merge with summary-row lifecycle + drift detection", "status": "pending", "blockedBy": [2, 3, 5]},
+    {"id": 7, "subject": "Task 7: Refactor start_ingest_pipeline + reingest_graph_only — outer chain ends at derive_ontology_graph", "status": "pending", "blockedBy": [6]},
+    {"id": 8, "subject": "Task 8: derive_ontology_graph dispatcher — RUNNING summary + atomic initial dispatch", "status": "pending", "blockedBy": [3, 5]},
+    {"id": 9, "subject": "Task 9: reconcile_ontology_graph_runs — repair stale claimed/dispatched + missed advance", "status": "pending", "blockedBy": [3, 5, 8]},
+    {"id": 10, "subject": "Task 10: Targeted FK-violation swallow in save_pass_output (cancel-only)", "status": "pending", "blockedBy": [2, 5]},
+    {"id": 11, "subject": "Task 11: E2E DB-fan-in tests — happy path + 10 failure modes", "status": "pending", "blockedBy": [6, 7, 8, 9, 10]},
+    {"id": 12, "subject": "Task 12: Live smoke — single doc through new pipeline", "status": "pending", "blockedBy": [11]},
+    {"id": 13, "subject": "Task 13: VERIFICATION_CHECKLIST + README + rollout doc", "status": "pending", "blockedBy": [12]}
+  ],
+  "lastUpdated": "2026-05-06T16:30:00Z"
+}
