@@ -130,3 +130,74 @@ def normalize_label(text: str) -> str:
     text = text.lower()
     text = " ".join(text.split())
     return text
+
+
+# ============================================================
+# Pipeline step 1: detect_table_shape (spec §5.2 / D1)
+# ============================================================
+
+def detect_table_shape(table: dict) -> Shape:
+    """Classify a DoclingDocument table cell-shape into one of four buckets.
+
+    COLUMN_MAJOR: ≥50% of leftmost-col cells flagged row_header=True.
+    ROW_MAJOR: ≥50% of top-row cells flagged column_header=True.
+    HYBRID: column-major with multiple identity rows (left col has more
+        than one row_header cell whose value is a key-label pattern).
+    OTHER: below 4×4 floor, or neither pattern fires.
+    """
+    data = (table or {}).get("data") or {}
+    cells = data.get("table_cells") or []
+    num_rows = data.get("num_rows") or 0
+    num_cols = data.get("num_cols") or 0
+
+    if num_rows < 4 or num_cols < 4 or not cells:
+        return Shape.OTHER
+
+    col0_cells = [c for c in cells if c.get("start_col_offset_idx") == 0]
+    row0_cells = [c for c in cells if c.get("start_row_offset_idx") == 0]
+
+    col0_rh = sum(1 for c in col0_cells if c.get("row_header") is True)
+    row0_ch = sum(1 for c in row0_cells if c.get("column_header") is True)
+
+    is_col_major = col0_cells and col0_rh * 2 >= len(col0_cells)
+    is_row_major = row0_cells and row0_ch * 2 >= len(row0_cells)
+
+    if is_col_major and not is_row_major:
+        # Distinguish HYBRID by counting row_header cells in col 0 that
+        # match identity patterns. The patterns are intentionally local to
+        # detect_table_shape (single-purpose); derive_entity_ids has its
+        # own list. Both are kept in sync via a constant defined below.
+        identity_count = sum(
+            1 for c in col0_cells
+            if c.get("row_header") is True
+            and _looks_like_key_label((c.get("text") or "").strip())
+        )
+        return Shape.HYBRID if identity_count >= 2 else Shape.COLUMN_MAJOR
+    if is_row_major and not is_col_major:
+        return Shape.ROW_MAJOR
+    return Shape.OTHER
+
+
+# Identity-row label patterns. Cells matching any of these (case-insensitive
+# substring) are treated as entity-naming labels, not spec labels. Shared by
+# detect_table_shape (HYBRID detection) and derive_entity_ids (Task 9).
+_KEY_LABEL_PATTERNS = (
+    "missile type",
+    "missile variant",
+    "industry designation",
+    "military designation",
+    "nato designation",
+    "fan song variant",
+    "radar variant",
+    "system name",
+    "system designation",
+    "designation",
+    "variant",
+)
+
+
+def _looks_like_key_label(label: str) -> bool:
+    if not label:
+        return False
+    norm = label.strip().lower()
+    return any(pat in norm for pat in _KEY_LABEL_PATTERNS)
