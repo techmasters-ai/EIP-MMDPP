@@ -1056,3 +1056,329 @@ def _pick_canonical(
                 return value
     # Fallback — alphabetically first.
     return sorted(cluster.values(), key=lambda v: _normalize_label(v))[0]
+
+
+# ============================================================================
+# Mechanism A1 public entry point + qualification gate (spec §3 / §5.2).
+#
+# Imports of `app._alias_map` and `app.schemas` are LAZY (inside each helper
+# function body), matching the convention used by all other helpers in this
+# module. Module-level imports would fail at importlib-spec-load time in
+# tests that load this module via importlib.spec_from_file_location.
+# ============================================================================
+
+
+def _is_column_major_or_hybrid(table: dict) -> bool:
+    """Lightweight shape detector: leftmost column carries row_header
+    cells AND ≥4 cols / ≥4 rows. Mirrors the existing _table_pivot.py
+    heuristic so we stay consistent with the table-fact synthesizer."""
+    data = (table or {}).get("data") or {}
+    cells = data.get("table_cells") or []
+    if not cells:
+        return False
+    nr, nc = data.get("num_rows") or 0, data.get("num_cols") or 0
+    if nr < 4 or nc < 4:
+        return False
+    col0 = [c for c in cells if c.get("start_col_offset_idx") == 0]
+    if not col0:
+        return False
+    label_count = sum(1 for c in col0 if c.get("row_header") is True)
+    return label_count * 2 >= len(col0)
+
+
+def _table_qualifies_for_overlay(
+    table: dict,
+    *,
+    entity_type: str,
+) -> tuple[bool, str]:
+    """Return (qualifies, reason). Reason is one of:
+       'qualified', 'wrong_shape', 'too_few_entity_columns',
+       'no_identity_rows', 'sparse_identity_cells'.
+    Spec §3 four-of-four AND gate.
+    """
+    if not _is_column_major_or_hybrid(table):
+        return False, "wrong_shape"
+
+    cells = (table or {}).get("data", {}).get("table_cells") or []
+    label_width = _label_column_width(cells)
+
+    data_col_starts = sorted({
+        c.get("start_col_offset_idx") for c in cells
+        if c.get("start_col_offset_idx") is not None
+        and c.get("start_col_offset_idx") >= label_width
+    })
+    if len(data_col_starts) < 4:
+        return False, "too_few_entity_columns"
+
+    # Identity rows for entity_type
+    identity_rows = {
+        c.get("start_row_offset_idx")
+        for c in cells
+        if c.get("start_col_offset_idx") == 0
+        and c.get("row_header")
+        and _classify_identity_row(c.get("text") or "") == entity_type
+    }
+    if not identity_rows:
+        return False, "no_identity_rows"
+
+    # Every entity column has a non-empty cell in ≥1 identity row
+    for col in data_col_starts:
+        has_cell = False
+        for cell in cells:
+            if cell.get("start_col_offset_idx") != col:
+                continue
+            if cell.get("start_row_offset_idx") not in identity_rows:
+                continue
+            if (cell.get("text") or "").strip():
+                has_cell = True
+                break
+        if not has_cell:
+            return False, "sparse_identity_cells"
+
+    return True, "qualified"
+
+
+def extract_table_overlay(doc_json: dict) -> tuple["TableOverlay", dict]:
+    """Parse the FIRST strictly-qualifying column-major / hybrid table
+    in doc.tables[]. Returns (TableOverlay, stats_dict). Spec §5.2.
+    """
+    # Lazy import to avoid circular schemas → _table_facts dependency
+    # at module load.
+    from app.schemas import TableOverlay  # noqa: PLC0415
+
+    stats = {
+        "tables_processed": 0,
+        "tables_skipped_unqualified": 0,
+        "tables_skipped_multi": 0,
+        "tables_skipped_other": 0,
+        "columns_skipped_no_canonical": 0,
+        "columns_with_canonical_via_fallback": 0,
+        "values_skipped_unparseable": 0,
+        "facts_skipped_construct_fail": 0,
+    }
+
+    tables = (doc_json or {}).get("tables") or []
+    if not tables:
+        return TableOverlay(), stats
+
+    winner_table = None
+    winner_entity_type = None
+    for table in tables:
+        # Try MISSILE_SYSTEM first, then RADAR_SYSTEM (entity-type-
+        # agnostic in v1; first qualifying-of-any-type wins).
+        qualified_for_this_table = False
+        for et in ("MISSILE_SYSTEM", "RADAR_SYSTEM"):
+            qualifies, _reason = _table_qualifies_for_overlay(
+                table, entity_type=et,
+            )
+            if qualifies:
+                qualified_for_this_table = True
+                if winner_table is None:
+                    winner_table = table
+                    winner_entity_type = et
+                else:
+                    stats["tables_skipped_multi"] += 1
+                break
+        if not qualified_for_this_table:
+            # No entity-type qualified for this table.
+            if not _is_column_major_or_hybrid(table):
+                stats["tables_skipped_other"] += 1
+            else:
+                stats["tables_skipped_unqualified"] += 1
+
+    if winner_table is None:
+        return TableOverlay(), stats
+
+    stats["tables_processed"] = 1
+
+    # Build alias clusters + canonical names.
+    clusters = _extract_alias_clusters(
+        winner_table, entity_type=winner_entity_type,
+    )
+    sub_map: dict[str, str] = {}
+    canonical_per_col: list[str] = []
+    for cluster in clusters:
+        canonical = _pick_canonical(cluster, entity_type=winner_entity_type)
+        canonical_per_col.append(canonical)
+        if not canonical:
+            stats["columns_skipped_no_canonical"] += 1
+            continue
+        for alias in cluster.values():
+            if alias and alias != canonical:
+                sub_map[alias] = canonical
+            if alias:
+                # Identity: also map canonical → canonical so
+                # downstream rewrite is idempotent.
+                sub_map.setdefault(alias, canonical)
+
+    alias_map_by_entity_type: dict[str, dict[str, str]] = {}
+    if sub_map:
+        alias_map_by_entity_type[winner_entity_type] = sub_map
+
+    # Build facts from spec rows + cross_entity_hints from cross-entity-
+    # ref rows. Reuses existing _table_facts.py primitives:
+    # extract_label_rows / detect_section_context / coerce_value /
+    # resolve_alias / _looks_like_key_label / _classify_cross_entity_ref.
+    cells = winner_table.get("data", {}).get("table_cells") or []
+    label_width = _label_column_width(cells)
+    data_col_starts = sorted({
+        c.get("start_col_offset_idx") for c in cells
+        if c.get("start_col_offset_idx") is not None
+        and c.get("start_col_offset_idx") >= label_width
+    })
+
+    facts, hints = _emit_facts_and_hints(
+        winner_table,
+        canonical_per_col=canonical_per_col,
+        winner_entity_type=winner_entity_type,
+        data_col_starts=data_col_starts,
+        stats=stats,
+    )
+
+    overlay = TableOverlay(
+        alias_map_by_entity_type=alias_map_by_entity_type,
+        facts=facts,
+        cross_entity_hints=hints,
+    )
+    return overlay, stats
+
+
+def _emit_facts_and_hints(
+    table: dict,
+    *,
+    canonical_per_col: list[str],
+    winner_entity_type: str,
+    data_col_starts: list[int],
+    stats: dict,
+) -> tuple[list, list]:
+    """Walk spec rows + cross-entity-ref rows; emit TableFacts and
+    CrossEntityHints. Wraps the existing _table_facts.py primitives:
+    extract_label_rows, detect_section_context, resolve_alias,
+    coerce_value, _looks_like_key_label, _classify_cross_entity_ref.
+
+    Multi-pass routing: for each non-identity, non-cross-entity row, try
+    each missile/radar pass that can own that label-section combo via
+    resolve_alias(label, section, pass_name). The first pass that
+    resolves it gets the fact. (resolve_alias returns None when a pass
+    doesn't own the label; the alias map in _alias_map.py is keyed on
+    (label, section, pass) triples, which gives us pass-uniqueness for
+    free.)
+    """
+    from app.schemas import TableFact, CrossEntityHint  # noqa: PLC0415
+
+    facts: list = []
+    hints: list = []
+
+    if winner_entity_type == "MISSILE_SYSTEM":
+        candidate_passes = (
+            "missile_propulsion",
+            "missile_kinematics",
+            "missile_speed_timing",
+            "missile_airframe",
+        )
+        target_for_cross_ref = "RADAR_SYSTEM"
+    elif winner_entity_type == "RADAR_SYSTEM":
+        candidate_passes = (
+            "radar_antenna", "radar_modulation",
+            "radar_power_rf", "radar_timing",
+        )
+        target_for_cross_ref = "MISSILE_SYSTEM"
+    else:
+        return [], []
+
+    # Map data_col_starts → canonical
+    col_to_canonical = {
+        col: canonical_per_col[i]
+        for i, col in enumerate(data_col_starts)
+        if i < len(canonical_per_col) and canonical_per_col[i]
+    }
+
+    shape = detect_table_shape(table)
+    if shape == Shape.OTHER:
+        return [], []
+
+    rows = extract_label_rows(table, shape)
+    if not rows:
+        return [], []
+
+    sectioned = detect_section_context(rows)
+
+    for row, section_ctx in sectioned:
+        label_text = row["label_text"]
+
+        # Classification order MUST match spec §5.1: cross-entity-ref
+        # check FIRST, identity-label check SECOND. The existing
+        # _looks_like_key_label considers "fan song variant" a key
+        # label (its _KEY_LABEL_PATTERNS includes that string), so
+        # without this ordering Fan Song rows would be skipped before
+        # we could emit them as CrossEntityHints — re-introducing the
+        # exact bug spec §1's empirical example called out (Fan Song
+        # accidentally collapsed into the missile alias cluster).
+        cross_target = _classify_cross_entity_ref(label_text)
+        if cross_target == target_for_cross_ref:
+            for entity_col, cell_text in row["data_cells"].items():
+                target_alias = (cell_text or "").strip()
+                if not target_alias:
+                    continue
+                source_canonical = col_to_canonical.get(entity_col, "")
+                if not source_canonical:
+                    continue
+                try:
+                    hints.append(CrossEntityHint(
+                        source_canonical=source_canonical,
+                        source_entity_type=winner_entity_type,
+                        target_alias=target_alias,
+                        target_entity_type=cross_target,
+                        relationship_kind="associated_with",
+                    ))
+                except Exception:
+                    stats["facts_skipped_construct_fail"] += 1
+            continue
+
+        # Identity rows produce alias_map only — already handled in
+        # the caller via _extract_alias_clusters + _pick_canonical.
+        # Comes AFTER the cross-entity-ref check above so Fan Song
+        # rows (which _looks_like_key_label happens to match) reach
+        # the cross-entity branch first.
+        if _looks_like_key_label(label_text):
+            continue
+
+        # Spec rows: try each candidate pass; the alias map will
+        # resolve at most one (or zero).
+        for entity_col, cell_text in row["data_cells"].items():
+            canonical = col_to_canonical.get(entity_col, "")
+            if not canonical:
+                continue
+            for pass_name in candidate_passes:
+                schema_field = resolve_alias(
+                    label_text, section_ctx, pass_name,
+                )
+                if schema_field is None:
+                    continue
+                parsed = coerce_value(
+                    cell_text, schema_field, row_label=label_text,
+                )
+                if not parsed:
+                    stats["values_skipped_unparseable"] += 1
+                    continue
+                for pv in parsed:
+                    try:
+                        facts.append(TableFact(
+                            canonical_entity=canonical,
+                            entity_type=winner_entity_type,
+                            schema_field=schema_field,
+                            value=pv.value,
+                            source_label=label_text,
+                            section_ctx=section_ctx,
+                            pass_name=pass_name,
+                            raw_text=cell_text,
+                        ))
+                    except Exception:
+                        stats["facts_skipped_construct_fail"] += 1
+                # Stop after the first pass that owns this label —
+                # alias map is keyed on (label, section, pass), so at
+                # most one pass will match for any given (label,
+                # section).
+                break
+
+    return facts, hints

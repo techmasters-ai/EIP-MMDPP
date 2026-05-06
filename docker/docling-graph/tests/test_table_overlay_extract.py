@@ -176,3 +176,21 @@ def test_extract_alias_clusters_no_identity_rows_returns_empty():
     ]
     table = {"data": {"table_cells": cells, "num_rows": 1, "num_cols": 2}}
     assert tf._extract_alias_clusters(table, entity_type="MISSILE_SYSTEM") == []
+
+
+# ---- extract_table_overlay (SA-2 fixture) ----------------------------------
+
+
+def test_extract_table_overlay_sa2_shape_yields_alias_map():
+    tf = _load_table_facts()
+    table = _build_sa2_like_cells()
+    doc = {"tables": [table]}
+    overlay, stats = tf.extract_table_overlay(doc)
+    assert "MISSILE_SYSTEM" in overlay.alias_map_by_entity_type
+    sub = overlay.alias_map_by_entity_type["MISSILE_SYSTEM"]
+    # 1D should be a canonical (Missile Type wins)
+    assert sub.get("SA-75") == "1D"
+    assert sub.get("SA-2A") == "1D"
+    # 13DM column
+    assert sub.get("S-75M") == "13DM"
+    assert sub.get("SA-2D") == "13DM"
