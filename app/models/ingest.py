@@ -2,11 +2,13 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+import sqlalchemy as sa
 from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -256,8 +258,22 @@ class PipelineRun(Base):
     use_case_key: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     extraction_profile_version: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    dispatched_phases: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=sa.text("'{}'::jsonb"),
+        comment=(
+            "Per-pass phase-tracking state machine. Maps pass_name → phase dict. "
+            "Written by the per-pass Celery fan-in coordinator; read by the "
+            "fan-in callback to detect completion and trigger the merge step."
+        ),
+    )
 
     stage_runs: Mapped[list["StageRun"]] = relationship(back_populates="pipeline_run")
+    pass_outputs: Mapped[list["PipelinePassOutput"]] = relationship(
+        back_populates="pipeline_run"
+    )
 
 
 class StageRun(Base):
@@ -306,6 +322,91 @@ class StageRun(Base):
     rollback_executed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
     pipeline_run: Mapped["PipelineRun"] = relationship(back_populates="stage_runs")
+
+
+class PipelinePassOutput(Base):
+    """Terminal pass-resolution record for a pipeline run.
+
+    One row per (pipeline_run, pass_name) — unique constraint enforces at most
+    one resolved output per pass, regardless of how many retry attempts were made.
+    Intermediate attempt records live in ``stage_runs``; this table captures only
+    the final outcome so that the fan-in coordinator can safely upsert without
+    accumulating per-attempt duplicates.
+    """
+
+    __tablename__ = "pipeline_pass_outputs"
+    __table_args__ = (
+        UniqueConstraint(
+            "pipeline_run_id",
+            "pass_name",
+            name="uq_pipeline_pass_outputs_run_pass",
+        ),
+        Index("ix_pipeline_pass_outputs_pipeline_run_id", "pipeline_run_id"),
+        {"schema": "ingest"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    pipeline_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.pipeline_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stage_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ingest.stage_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pass_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        comment="Which attempt resolved this pass (audit only; full history in stage_runs).",
+    )
+    execution_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        comment="COMPLETE | FAILED | SKIPPED",
+    )
+    skip_reason: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="e.g. NO_UPSTREAM_ENDPOINTS",
+    )
+    yield_status: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        nullable=True,
+        comment="HIT | EMPTY | DEGRADED | BRIDGES_ONLY",
+    )
+    extract_pass_response_json: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        comment="Literal /extract-pass response payload.",
+    )
+    primary_entities_extracted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bridge_entities_extracted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    relationships_extracted: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    relationships_rejected: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    diagnostics_json: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=sa.text("'{}'::jsonb"),
+    )
+    field_provenance_json: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=sa.text("'[]'::jsonb"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    pipeline_run: Mapped["PipelineRun"] = relationship(back_populates="pass_outputs")
+    stage_run: Mapped[Optional["StageRun"]] = relationship()
 
 
 class DocumentElement(Base):
