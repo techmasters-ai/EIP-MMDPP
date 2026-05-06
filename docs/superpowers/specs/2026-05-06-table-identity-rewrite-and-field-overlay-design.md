@@ -84,7 +84,7 @@ here.
 | `docker/docling-graph/app/_alias_map.py` | MODIFY (~+50 LOC) | Add `MISSILE_IDENTITY_LABELS`, `RADAR_IDENTITY_LABELS`, `CROSS_ENTITY_REF_PATTERNS`, `CANONICAL_PRIORITY` constants. |
 | `docker/docling-graph/app/schemas.py` | MODIFY (~+30 LOC) | Add `TableOverlay`, `TableFact`, `CrossEntityHint` Pydantic models. Add `table_overlay: TableOverlay \| None` field to `ExtractPassResponse`. |
 | `docker/docling-graph/app/main.py` | MODIFY (~+10 LOC) | Call `extract_table_overlay` after sanitize, before LLM extraction. Attach to response. Wrap in try/except (overlay parsing failure must not break extract-pass). |
-| `app/services/table_overlay.py` | NEW (~200 LOC) | Two pure functions: `apply_identity_rewrite(pass_output, alias_map)` and `apply_field_overlay(pass_output, table_facts, schema_cls, active_pass, *, policy)`. |
+| `app/services/table_overlay.py` | NEW (~200 LOC) | Two functions operating on Pydantic instances via `iter_entities_of_type`: `apply_identity_rewrite(pass_results, alias_map, ontology) -> RewriteStats` and `apply_field_overlay(pass_results, table_facts, *, policy="additive_only") -> OverlayStats`. |
 | `app/services/extraction_merge.py` | MODIFY (~+30 LOC) | `canonicalize_cross_pass_identities` accepts new `table_alias_map` argument; calls `apply_identity_rewrite` BEFORE its existing token-overlap loop. New separate call to `apply_field_overlay` from `merge_and_resolve` after canonicalization, before merge. |
 | `app/workers/pipeline.py` | MODIFY (~+20 LOC) | `_call_extract_pass` reads `table_overlay` from response and stashes on `PassResult`. `merge_and_resolve` invocation passes through to `canonicalize_cross_pass_identities`. |
 
@@ -301,11 +301,12 @@ This makes the all-4-agree gate self-enforcing — we don't need a separate
 schema-introspection step.
 
 **Conflict resolution policy: `additive_only` for v1.**
-Rationale: safest first cut, no override of LLM extraction. The
-implementation captures the pre-existing value, attempts assignment for
-validation, and reverts if the field was already populated. This costs
-two assignments per applied fact but keeps the policy switch a one-line
-change for v2 escalation.
+Rationale: safest first cut, no override of LLM extraction. v1
+implementation gates on `original is not None` BEFORE attempting
+assignment, so the pre-existing LLM value is never overwritten and
+validation only runs on actually-applied facts (single assignment per
+applied fact, zero assignments for skipped). Switching to `table_wins`
+in v2 is a one-line policy change.
 
 ### 5.4 Data shapes
 
@@ -552,13 +553,14 @@ PHASE 3: merge_and_resolve → canonicalize_cross_pass_identities
   EXISTING: token-overlap canonicalization runs (catches non-table names)
 
 ─────────────────────────────────────────────────────────────────────────
-PHASE 4: per-pass field overlay (called from merge_and_resolve)
+PHASE 4: field overlay (called once from merge_and_resolve, all passes routed)
 ─────────────────────────────────────────────────────────────────────────
 
-  for each pass:
-    apply_field_overlay(pass_output, table_facts, schema_cls, active_pass)
-    # Gate: section_ctx + alias + unit + Pydantic-valid + (additive_only:
-    #        entity field is null)
+  apply_field_overlay(pass_results, table_overlay.facts, policy="additive_only")
+  # Each fact carries pass_name → routed to pass_results[fact.pass_name].
+  # Gate: original-is-None (additive_only) + Pydantic validate_assignment
+  #       (which subsumes the section_ctx + alias + unit checks since
+  #        the parser only emitted facts that already passed those).
 
 ─────────────────────────────────────────────────────────────────────────
 PHASE 5: merge_and_resolve entity loop (existing code, unchanged)
