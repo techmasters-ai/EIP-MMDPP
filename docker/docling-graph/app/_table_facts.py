@@ -241,11 +241,23 @@ def _extract_column_major(cells: list[dict]) -> list[LabelRow]:
     label_width = _label_column_width(cells)
 
     rows_by_idx: dict[int, LabelRow] = {}
-    # First pass: collect labels (row_header cells in label region).
+    # First pass: collect labels.
+    #
+    # Two kinds of col-0 cells qualify:
+    # 1) row_header=True cells — standard spec-row labels (Length, Weight, etc.)
+    # 2) section-header cells — col-0 cells with row_header=False whose
+    #    col_span bridges INTO the data-column region (col_span > label_width).
+    #    The SA-2 variants table contains "1st Stage" / "2nd Stage" cells
+    #    with col_span=12, row_header=False that the PDF parser doesn't flag
+    #    as row_header but ARE the section markers. Including them lets
+    #    detect_section_context's header-row strategy match them.
+    #
+    # The label_width check on col_span is what discriminates them from
+    # ordinary multi-column label cells (e.g., "Industry Designation"
+    # spans cols 0-1 with col_span=2 == label_width, so it is NOT picked
+    # up by the section-header branch — only the row_header=True branch).
     for c in cells:
         if c.get("start_col_offset_idx") != 0:
-            continue
-        if not c.get("row_header"):
             continue
         text = (c.get("text") or "").strip()
         if not text:
@@ -253,6 +265,15 @@ def _extract_column_major(cells: list[dict]) -> list[LabelRow]:
         row_idx = c.get("start_row_offset_idx")
         if row_idx is None:
             continue
+
+        is_row_header = c.get("row_header") is True
+        is_section_header = (
+            not is_row_header
+            and (c.get("col_span", 1) or 1) > label_width
+        )
+        if not (is_row_header or is_section_header):
+            continue
+
         rows_by_idx[row_idx] = LabelRow(
             row_idx=row_idx,
             label_text=text,
@@ -261,6 +282,11 @@ def _extract_column_major(cells: list[dict]) -> list[LabelRow]:
         )
 
     # Second pass: collect data cells (col >= label_width).
+    # Section-header rows naturally have empty data_cells because the
+    # spanning cell occupies all data columns at that row, so no other
+    # cells exist there. detect_section_context._is_header_row_marker
+    # picks them up via name match against SECTION_KEYWORDS + empty-data
+    # check.
     for c in cells:
         col = c.get("start_col_offset_idx")
         if col is None or col < label_width:

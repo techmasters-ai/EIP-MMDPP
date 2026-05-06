@@ -99,3 +99,66 @@ def test_skips_empty_label_rows():
     rows = tf.extract_label_rows(table, tf.Shape.COLUMN_MAJOR)
     assert len(rows) == 2
     assert {r["label_text"] for r in rows} == {"Length mm", "Weight kg"}
+
+
+def test_section_header_row_with_row_header_false_is_included():
+    """SA-2-style section header: col-0 cell with row_header=False but col_span
+    bridging into data cols (here 6 > label_width 1) — must be in the LabelRow
+    stream so detect_section_context's header-row strategy can match it."""
+    tf = _load()
+    cells = [
+        _cell("Missile Type",        0, 0, row_header=True),
+        _cell("1D",  0, 1), _cell("13D", 0, 2), _cell("13DM", 0, 3), _cell("13DA", 0, 4), _cell("20D", 0, 5),
+        _cell("Total Weight kg",     1, 0, row_header=True),
+        _cell("2163", 1, 1), _cell("2283", 1, 2), _cell("2283", 1, 3), _cell("2289", 1, 4), _cell("2391", 1, 5),
+        # Section header — row_header=False, spans all 6 cols (label_width=1, span=6 > 1)
+        _cell("1st Stage",           2, 0, col_span=6),
+        _cell("Weight kg",           3, 0, row_header=True),
+        _cell("1135", 3, 1), _cell("1032", 3, 2), _cell("1032", 3, 3), _cell("1032", 3, 4), _cell("1011", 3, 5),
+        _cell("2nd Stage",           4, 0, col_span=6),
+        _cell("Diameter mm",         5, 0, row_header=True),
+        _cell("500", 5, 1), _cell("500", 5, 2), _cell("500", 5, 3), _cell("500", 5, 4), _cell("500", 5, 5),
+    ]
+    table = {"data": {"table_cells": cells, "num_rows": 6, "num_cols": 6}}
+    rows = tf.extract_label_rows(table, tf.Shape.COLUMN_MAJOR)
+
+    # Should have 6 LabelRow entries: 4 row_header=True + 2 section_header
+    labels = [r["label_text"] for r in rows]
+    assert "1st Stage" in labels
+    assert "2nd Stage" in labels
+    assert "Total Weight kg" in labels
+    assert "Weight kg" in labels
+    assert "Diameter mm" in labels
+
+    # Section-header rows must have empty data_cells (the col_span=6 cell
+    # occupies all data cols at that row, so no separate data cells exist).
+    by_label = {r["label_text"]: r for r in rows}
+    assert by_label["1st Stage"]["data_cells"] == {}
+    assert by_label["2nd Stage"]["data_cells"] == {}
+
+    # Spec rows still have their data cells correctly populated.
+    assert by_label["Weight kg"]["data_cells"] == {1: "1135", 2: "1032", 3: "1032", 4: "1032", 5: "1011"}
+
+
+def test_section_header_does_NOT_capture_ordinary_label_cells_with_col_span():
+    """An identity row like 'Industry Designation' with col_span=2 == label_width
+    must NOT be confused with a section header (col_span must be STRICTLY GREATER
+    than label_width to qualify as a section header). Otherwise rows 0-3 of the
+    SA-2 variants table (Industry/Military/NATO/Fan Song designation) — which all
+    have row_header=True AND col_span=2 — would be captured by both branches."""
+    tf = _load()
+    cells = [
+        _cell("Industry Designation", 0, 0, row_header=True, col_span=2),
+        _cell("SA-75", 0, 2), _cell("S-75", 0, 3), _cell("S-75M", 0, 4),
+        _cell("Length mm",            1, 0, row_header=True, col_span=2),
+        _cell("10726", 1, 2), _cell("10841", 1, 3), _cell("10778", 1, 4),
+    ]
+    table = {"data": {"table_cells": cells, "num_rows": 2, "num_cols": 5}}
+    rows = tf.extract_label_rows(table, tf.Shape.COLUMN_MAJOR)
+    # Both rows kept (via row_header=True branch). Neither flagged as section.
+    labels = [r["label_text"] for r in rows]
+    assert "Industry Designation" in labels
+    assert "Length mm" in labels
+    # Industry Designation row has its identity data_cells populated normally.
+    by_label = {r["label_text"]: r for r in rows}
+    assert by_label["Industry Designation"]["data_cells"] == {2: "SA-75", 3: "S-75", 4: "S-75M"}

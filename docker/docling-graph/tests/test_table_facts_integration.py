@@ -185,3 +185,85 @@ def test_stats_counters_increment_correctly():
     # Max Altitude km, Length mm, Total Weight kg, Max Speed m/s = 5 rows × 3 cols
     # (Max Speed 1D cell is empty and not counted, so actual minimum is 14).
     assert stats.rows_skipped_unresolvable >= 14
+
+
+def _sa2_with_section_headers_doc():
+    """SA-2 variants table WITH the 'row_header=False, col_span=12' section
+    header rows that the real DoclingDocument produces. This is the actual
+    bug case from the 2026-05-06 acceptance run — without the section-header
+    fix in _extract_column_major, missile_propulsion gets facts_emitted=0."""
+    cells = [
+        # Row 0: Missile Type identity — col_span=1 since label_width must be 1
+        _cell("Missile Type",        0, 0, row_header=True),
+        _cell("1D",  0, 1), _cell("13D", 0, 2), _cell("13DM", 0, 3),
+        # Row 1: total weight (no section)
+        _cell("Total Weight kg",     1, 0, row_header=True),
+        _cell("2163", 1, 1), _cell("2283", 1, 2), _cell("2283", 1, 3),
+        # Row 2: SECTION HEADER — row_header=False, col_span=4 (data region is cols 1-3)
+        _cell("1st Stage",           2, 0, col_span=4),
+        # Row 3: Weight under 1st Stage
+        _cell("Weight kg",           3, 0, row_header=True),
+        _cell("1135", 3, 1), _cell("1032", 3, 2), _cell("1032", 3, 3),
+        # Row 4: another SECTION HEADER
+        _cell("2nd Stage",           4, 0, col_span=4),
+        # Row 5: Diameter under 2nd Stage (no Weight row in SA-2, matching reality)
+        _cell("Diameter mm",         5, 0, row_header=True),
+        _cell("500", 5, 1), _cell("500", 5, 2), _cell("500", 5, 3),
+    ]
+    return {
+        "tables": [
+            {
+                "self_ref": "#/tables/0",
+                "data": {"table_cells": cells, "num_rows": 6, "num_cols": 4},
+                "prov": [{"page_no": 6}],
+            }
+        ],
+        "texts": [],
+        "body": {"children": []},
+    }
+
+
+def test_sa2_section_headers_unlock_propulsion_facts():
+    """Regression test for the 2026-05-06 acceptance failure: synthesizer
+    must emit booster_mass_kg facts when the variants table has section-
+    header rows with row_header=False, col_span > label_width."""
+    tf = _load()
+    doc = _sa2_with_section_headers_doc()
+    out_doc, stats = tf.synthesize_table_facts(doc, active_pass="missile_propulsion")
+
+    # Section detection MUST fire — we have explicit "1st Stage" + "2nd Stage" markers
+    assert stats.sections_detected >= 2, (
+        f"Expected ≥2 sections detected, got {stats.sections_detected}. "
+        f"This means detect_section_context didn't see the row_header=False "
+        f"section-header rows (likely _extract_column_major filter bug)."
+    )
+
+    # Booster mass facts MUST emit for all 3 missile columns
+    assert stats.facts_emitted >= 3, (
+        f"Expected ≥3 facts (one booster_mass_kg per missile col), got {stats.facts_emitted}. "
+        f"Section context not propagating to Weight kg row → resolve_alias returns None."
+    )
+
+    text_set = {t["text"] for t in out_doc["texts"]}
+    assert any("1D — booster_mass_kg = 1135" in t for t in text_set), (
+        f"1D booster_mass_kg=1135 not synthesized. Texts: {text_set}"
+    )
+    assert any("13D — booster_mass_kg = 1032" in t for t in text_set)
+    assert any("13DM — booster_mass_kg = 1032" in t for t in text_set)
+
+
+def test_sa2_section_headers_total_mass_unaffected():
+    """The pre-section 'Total Weight kg' row must still resolve to total_mass_kg
+    in the airframe pass (section_ctx=None). The fix should not break airframe."""
+    tf = _load()
+    doc = _sa2_with_section_headers_doc()
+    out_doc, stats = tf.synthesize_table_facts(doc, active_pass="missile_airframe")
+
+    assert stats.facts_emitted >= 3
+    text_set = {t["text"] for t in out_doc["texts"]}
+    assert any("1D — total_mass_kg = 2163" in t for t in text_set)
+    assert any("13D — total_mass_kg = 2283" in t for t in text_set)
+    # The 1st-stage Weight row must NOT bleed into airframe (different section, different field).
+    # Ideally the airframe pass shouldn't see "1st Stage Weight kg" → total_mass_kg.
+    # Since alias map keys (weight, "1st Stage", "missile_airframe") doesn't exist,
+    # the row is correctly skipped.
