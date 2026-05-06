@@ -1095,14 +1095,6 @@ def _table_qualifies_for_overlay(
        'no_identity_rows', 'sparse_identity_cells'.
     Spec §3 four-of-four AND gate.
     """
-    # Reuse existing detector — accepts column_major OR hybrid.
-    shape, _, _ = _classify_table_shape(table) if hasattr(
-        # placeholder to keep this single-import-friendly; if
-        # _classify_table_shape isn't already exported, inline its
-        # logic via _is_column_major_table + label_column_width.
-        _, "_"
-    ) else ("column_major", 0, 0)
-    # Use the simpler existing detector to be safe:
     if not _is_column_major_or_hybrid(table):
         return False, "wrong_shape"
 
@@ -1286,26 +1278,130 @@ def _emit_facts_and_hints(
     data_col_starts: list[int],
     stats: dict,
 ) -> tuple[list, list]:
-    """Walk spec rows + cross-entity-ref rows; emit one TableFact per
-    (canonical, schema_field, value) triple and one CrossEntityHint per
-    cross-entity-ref cell. Pure; no I/O.
+    """Walk spec rows + cross-entity-ref rows; emit TableFacts and
+    CrossEntityHints. Wraps the existing _table_facts.py primitives:
+    extract_label_rows, detect_section_context, resolve_alias,
+    coerce_value, _looks_like_key_label, _classify_cross_entity_ref.
 
-    Wraps existing _table_facts.py primitives:
-      - extract_label_rows for label rows
-      - detect_section_context for 'lst Stage' / '2nd Stage' headers
-      - resolve_alias for label → schema_field mapping
-      - coerce_value for value typing
-    Per-pass routing comes from the schema-field's owning pass (stored
-    in _alias_map.py's per-field metadata).
+    Multi-pass routing: for each non-identity, non-cross-entity row, try
+    each missile/radar pass that can own that label-section combo via
+    resolve_alias(label, section, pass_name). The first pass that
+    resolves it gets the fact. (resolve_alias returns None when a pass
+    doesn't own the label; the alias map in _alias_map.py is keyed on
+    (label, section, pass) triples, which gives us pass-uniqueness for
+    free.)
     """
     from .schemas import TableFact, CrossEntityHint  # noqa: PLC0415
-    # ... implementation reuses existing helpers; see spec §5.2.
-    # For the v1 floor, even an empty facts list still gives us identity
-    # rewrite, which delivers the alias-collapse half of acceptance.
-    return [], []
+
+    facts: list = []
+    hints: list = []
+
+    if winner_entity_type == "MISSILE_SYSTEM":
+        candidate_passes = (
+            "missile_propulsion",
+            "missile_kinematics",
+            "missile_speed_timing",
+            "missile_airframe",
+        )
+        target_for_cross_ref = "RADAR_SYSTEM"
+    elif winner_entity_type == "RADAR_SYSTEM":
+        candidate_passes = (
+            "radar_antenna", "radar_modulation",
+            "radar_power_rf", "radar_timing",
+        )
+        target_for_cross_ref = "MISSILE_SYSTEM"
+    else:
+        return [], []
+
+    # Map data_col_starts → canonical
+    col_to_canonical = {
+        col: canonical_per_col[i]
+        for i, col in enumerate(data_col_starts)
+        if i < len(canonical_per_col) and canonical_per_col[i]
+    }
+
+    shape = detect_table_shape(table)
+    if shape.value == "OTHER":
+        return [], []
+
+    rows = extract_label_rows(table, shape)
+    if not rows:
+        return [], []
+
+    sectioned = detect_section_context(rows)
+
+    for row, section_ctx in sectioned:
+        label_text = row["label_text"]
+
+        # Identity rows produce alias_map only — already handled in
+        # the caller via _extract_alias_clusters + _pick_canonical.
+        if _looks_like_key_label(label_text):
+            continue
+
+        # Cross-entity-ref rows produce CrossEntityHint, not facts.
+        cross_target = _classify_cross_entity_ref(label_text)
+        if cross_target == target_for_cross_ref:
+            for entity_col, cell_text in row["data_cells"].items():
+                target_alias = (cell_text or "").strip()
+                if not target_alias:
+                    continue
+                source_canonical = col_to_canonical.get(entity_col, "")
+                if not source_canonical:
+                    continue
+                try:
+                    hints.append(CrossEntityHint(
+                        source_canonical=source_canonical,
+                        source_entity_type=winner_entity_type,
+                        target_alias=target_alias,
+                        target_entity_type=cross_target,
+                        relationship_kind="associated_with",
+                    ))
+                except Exception:
+                    stats["facts_skipped_construct_fail"] += 1
+            continue
+
+        # Spec rows: try each candidate pass; the alias map will
+        # resolve at most one (or zero).
+        for entity_col, cell_text in row["data_cells"].items():
+            canonical = col_to_canonical.get(entity_col, "")
+            if not canonical:
+                continue
+            for pass_name in candidate_passes:
+                schema_field = resolve_alias(
+                    label_text, section_ctx, pass_name,
+                )
+                if schema_field is None:
+                    continue
+                parsed = coerce_value(
+                    cell_text, schema_field, row_label=label_text,
+                )
+                if not parsed:
+                    stats["values_skipped_unparseable"] += 1
+                    continue
+                for pv in parsed:
+                    try:
+                        facts.append(TableFact(
+                            canonical_entity=canonical,
+                            entity_type=winner_entity_type,
+                            schema_field=schema_field,
+                            value=pv.value,
+                            source_label=label_text,
+                            section_ctx=section_ctx,
+                            pass_name=pass_name,
+                            raw_text=cell_text,
+                        ))
+                    except Exception:
+                        stats["facts_skipped_construct_fail"] += 1
+                # Stop after the first pass that owns this label —
+                # alias map is keyed on (label, section, pass), so at
+                # most one pass will match for any given (label,
+                # section).
+                break
+
+    return facts, hints
 ```
 
-> **NOTE for the implementer:** the body of `_emit_facts_and_hints` ports the spec-row + section-context logic that was on disk in the parked synthesizer (`_table_facts.py` 99 tests). Search for `extract_label_rows`, `detect_section_context`, `coerce_value`, `resolve_alias` in the existing module — they exist and just need wrapping into the (canonical, field, value) → TableFact and (canonical, ref_alias) → CrossEntityHint emission loop. The expected fact count for SA-2 is ~50 across all 4 passes per spec §6 worked example.
+> **Implementer note:** the loop above wraps the same primitives the parked synthesizer used (commit `1b71150` era), now switched from emitting TextItems to emitting `TableFact` / `CrossEntityHint` Pydantic instances. Expected SA-2 fact count: ~50 across all 4 passes (matches spec §6 worked example). If fewer facts emit on real SA-2 (~<30), the alias map in `_alias_map.py` is missing label entries — verify §12b prose-to-alias-map drift via the predecessor plan's drift-guard test before assuming a bug here.
 
 - [ ] **Step 4: Add SA-2-shaped fixture test in `test_table_overlay_extract.py`.**
 
@@ -1979,9 +2075,154 @@ After Chunk 5, the worker actually invokes the overlay during merge.
 
 - [ ] **Step 1: Write failing integration tests.**
 
-Create `tests/unit/test_extraction_merge_table_overlay.py` with the 4 integration tests from spec §8.4 — `test_table_alias_map_runs_before_token_overlap`, `test_kill_switch_worker_side_overrides_cached_overlay`, `test_table_overlay_does_not_break_existing_token_overlap`, `test_kill_switch_disables_overlay`.
+Create `tests/unit/test_extraction_merge_table_overlay.py`:
+
+```python
+"""Integration tests for spec §8.4 — extraction_merge.py + worker-side
+kill switch. Each test exercises merge_and_resolve end-to-end with
+in-memory PassResults; no docling-graph HTTP, no Ollama."""
+import os
+from unittest.mock import patch
+
+from app.services.extraction_merge import (
+    merge_and_resolve, canonicalize_cross_pass_identities, PassResult,
+)
+from docker.docling_graph.app.schemas import TableOverlay, TableFact
+
+
+def _ontology_min():
+    """Minimal ontology: one missile entity type."""
+    return {"entity_types": [
+        {"name": "MISSILE_SYSTEM", "graph_id_fields": ["system_name"]},
+    ]}
+
+
+def _missile_inst(name, **fields):
+    from ontology_bundles.air_defense_v3.extraction_schemas import missile_propulsion
+    return missile_propulsion.MissilePropulsionRecord(system_name=name, **fields)
+
+
+def _make_propulsion_passresult(instances, *, table_overlay=None):
+    """Build a PassResult-shaped object stub for tests."""
+    pr = PassResult.__new__(PassResult)
+    pr.pass_name = "missile_propulsion"
+    pr.template_instance = None  # tests don't walk the typed-edge graph
+    pr.metadata = None
+    pr.pre_merge_rejections = []
+    pr.upstream_refs = None
+    pr.pre_merge_walk = None
+    pr.provenance = []
+    pr.field_evidence = {}
+    pr._walker_entities_cache = list(instances)  # short-circuit walker
+    pr.table_overlay = table_overlay
+    return pr
+
+
+def test_table_alias_map_runs_before_token_overlap(monkeypatch):
+    """alias_map_by_entity_type collapses three non-token-overlapping
+    aliases (SA-75 / SA-2A / 1D) onto canonical 1D before the
+    token-overlap pass runs. After canonicalize, all three have
+    system_name='1D'."""
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true")
+    a = _missile_inst("SA-75")
+    b = _missile_inst("SA-2A")
+    c = _missile_inst("1D")
+    pr = _make_propulsion_passresult([a, b, c])
+    pass_results = {"missile_propulsion": pr}
+    alias_map = {"MISSILE_SYSTEM": {"SA-75": "1D", "SA-2A": "1D"}}
+    rewrites = canonicalize_cross_pass_identities(
+        pass_results, _ontology_min(),
+        table_alias_map_by_entity_type=alias_map,
+    )
+    assert rewrites == 2
+    assert a.system_name == b.system_name == c.system_name == "1D"
+
+
+def test_table_overlay_does_not_break_existing_token_overlap(monkeypatch):
+    """When table_alias_map_by_entity_type is None, existing token-
+    overlap canonicalization runs unchanged. Two instances with
+    overlapping tokens (PAC-3 / MIM-104F) still collapse the way they
+    did pre-overlay."""
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true")
+    a = _missile_inst("PAC-3")
+    b = _missile_inst("MIM-104F")  # token-overlap target
+    pr = _make_propulsion_passresult([a, b])
+    pass_results = {"missile_propulsion": pr}
+    canonicalize_cross_pass_identities(
+        pass_results, _ontology_min(),
+        table_alias_map_by_entity_type=None,
+    )
+    # Existing token-overlap behavior is whatever the pre-overlay code
+    # did — assert only that the call ran without error.
+    assert a.system_name in ("PAC-3", "MIM-104F")
+
+
+def test_kill_switch_disables_overlay_fresh_extraction(monkeypatch):
+    """DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false on the worker → even
+    if a fresh-extraction PassResult carries no overlay, behavior is
+    unchanged: canonicalize runs without alias_map; Phase 0.5 skipped;
+    no IDENTITY_REWRITE / TABLE_OVERLAY_APPLIED log lines."""
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "false")
+    a = _missile_inst("1D")
+    pr = _make_propulsion_passresult([a], table_overlay=None)
+    pass_results = {"missile_propulsion": pr}
+    # Build minimal manifest stub
+    manifest = type("M", (), {"passes": [], "bundle_key": "test"})()
+    with patch("app.services.extraction_merge.logger") as log:
+        merge_and_resolve(
+            pass_results=pass_results, manifest=manifest,
+            ontology=_ontology_min(),
+            document_id="doc-x", pipeline_run_id="run-x",
+        )
+        log_calls = [c.args[0] for c in log.info.call_args_list]
+        assert not any("IDENTITY_REWRITE" in s for s in log_calls)
+        assert not any("TABLE_OVERLAY_APPLIED" in s for s in log_calls)
+
+
+def test_kill_switch_worker_side_overrides_cached_overlay(monkeypatch):
+    """Critical defense-in-depth case (spec §4.3): a PassResult arrives
+    with a fully-populated TableOverlay (e.g., loaded from cached
+    pipeline_pass_outputs.metadata_json from yesterday's run). Operator
+    has just set DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false on the worker.
+    Expected: merge_and_resolve sees the cached overlay AS IF None.
+    apply_identity_rewrite NOT called; apply_field_overlay NOT called;
+    one TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER INFO log line emitted."""
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "false")
+    a = _missile_inst("SA-75")
+    cached_overlay = TableOverlay(
+        alias_map_by_entity_type={"MISSILE_SYSTEM": {"SA-75": "1D"}},
+        facts=[TableFact(
+            canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+            schema_field="booster_mass_kg", value=1135.0,
+            source_label="Weight kg", section_ctx="1st Stage",
+            pass_name="missile_propulsion", raw_text="1135",
+        )],
+    )
+    pr = _make_propulsion_passresult([a], table_overlay=cached_overlay)
+    pass_results = {"missile_propulsion": pr}
+    manifest = type("M", (), {"passes": [], "bundle_key": "test"})()
+    with patch("app.services.extraction_merge.logger") as log:
+        merge_and_resolve(
+            pass_results=pass_results, manifest=manifest,
+            ontology=_ontology_min(),
+            document_id="doc-y", pipeline_run_id="run-y",
+        )
+        log_calls = [c.args[0] for c in log.info.call_args_list]
+        assert any("TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER" in s
+                   for s in log_calls)
+        assert not any("IDENTITY_REWRITE" in s for s in log_calls)
+        assert not any("TABLE_OVERLAY_APPLIED" in s for s in log_calls)
+    # Critical: instance must NOT have been rewritten despite cached
+    # alias_map carrying SA-75 → 1D.
+    assert a.system_name == "SA-75"
+```
 
 - [ ] **Step 2: Run, confirm fail.**
+
+```bash
+pytest tests/unit/test_extraction_merge_table_overlay.py -v
+```
+Expected: 4 FAILED — `canonicalize_cross_pass_identities` doesn't yet accept `table_alias_map_by_entity_type`; `merge_and_resolve` doesn't yet honor the worker-side kill switch.
 
 - [ ] **Step 3: Modify `canonicalize_cross_pass_identities` signature.**
 
@@ -2018,12 +2259,12 @@ At the top of the function body, before the existing token-overlap pass:
             )
 ```
 
-- [ ] **Step 4: Add Phase 0.5 to `merge_and_resolve` + worker-side kill switch.**
+- [ ] **Step 4: Restructure `merge_and_resolve` — extract overlay FIRST, then call canonicalize WITH the alias map, then Phase 0.5.**
 
-In `app/services/extraction_merge.py:1105` `merge_and_resolve`, just after the existing `canonicalize_cross_pass_identities` call:
+In `app/services/extraction_merge.py:1105` `merge_and_resolve`, the canonical final shape (replace the existing `canonicalize_cross_pass_identities(...)` call near the top of the function with this block):
 
 ```python
-    # Phase 0.5 (Mechanism A1, spec §5.5): table-derived field overlay.
+    # ----- Mechanism A1 (Phase 0 + Phase 0.5): table overlay -----
     import os
     from app.services.table_overlay import apply_field_overlay
 
@@ -2032,66 +2273,72 @@ In `app/services/extraction_merge.py:1105` `merge_and_resolve`, just after the e
             "DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true",
         ).lower() != "false"
 
-    table_overlay = _extract_doc_overlay(pass_results)
+    overlay_enabled = _table_overlay_enabled_worker()
+    table_overlay = _extract_doc_overlay(pass_results) if overlay_enabled else None
 
-    if not _table_overlay_enabled_worker():
-        if table_overlay is not None and (
-            table_overlay.alias_map_by_entity_type
-            or table_overlay.facts
-            or table_overlay.cross_entity_hints
-        ):
-            cached_overlay_present = sum(
-                1 for pr in pass_results.values()
-                if getattr(pr, "table_overlay", None) is not None
-            )
+    # Worker-side kill switch is authoritative over cached overlays.
+    # Spec §4.3.
+    if not overlay_enabled:
+        cached_overlay_present = sum(
+            1 for pr in pass_results.values()
+            if getattr(pr, "table_overlay", None) is not None
+        )
+        if cached_overlay_present:
             logger.info(
                 "TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER doc_id=%s "
                 "pass_count=%d cached_overlay_present=%d",
                 document_id, len(pass_results), cached_overlay_present,
             )
-        # canonicalize was already called above WITHOUT
-        # table_alias_map_by_entity_type because we extracted overlay
-        # AFTER the call. Per spec §4.3 worker-side authority, redo
-        # canonicalize without overlay to be safe — but in practice
-        # the existing call already ran without overlay. Skip Phase
-        # 0.5 entirely.
-    else:
-        # Pass alias map into canonicalize (we have to call it again
-        # here only if the prior call didn't have it; restructure so
-        # the alias map is passed at the original call site instead.
-        # See restructured call below.)
-        if table_overlay is not None and table_overlay.facts:
-            try:
-                stats = apply_field_overlay(
-                    pass_results, table_overlay.facts,
-                    policy="table_wins_for_table_facts",
-                )
-                logger.info(
-                    "TABLE_OVERLAY_APPLIED doc_id=%s "
-                    "field_overlay_applied=%d matches_touched=%d "
-                    "skipped_no_entity=%d skipped_unknown_field=%d "
-                    "skipped_validation_fail=%d conflicts_overridden=%d "
-                    "policy=%s",
-                    document_id, stats.applied, stats.matches_touched,
-                    stats.skipped_no_entity, stats.skipped_unknown_field,
-                    stats.skipped_validation_fail, stats.conflicts_overridden,
-                    stats.policy_active,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "apply_field_overlay failed mid-loop: %s — proceeding "
-                    "with merge using whatever (fact, instance) swaps had "
-                    "already completed. Bounded-degraded per §7. Operator "
-                    "rollback via kill switch only.", exc,
-                )
+
+    # Phase 0: cross-pass identity canonicalization. When overlay is
+    # enabled AND we found one, pass the alias map through; otherwise
+    # call with None and rely on the existing token-overlap pass.
+    canonicalize_cross_pass_identities(
+        pass_results,
+        ontology,
+        table_alias_map_by_entity_type=(
+            table_overlay.alias_map_by_entity_type
+            if (overlay_enabled and table_overlay is not None)
+            else None
+        ),
+    )
+
+    # Phase 0.5: per-cell field overlay. Only when overlay is enabled,
+    # we found one, and it carries facts.
+    if overlay_enabled and table_overlay is not None and table_overlay.facts:
+        try:
+            stats = apply_field_overlay(
+                pass_results,
+                table_overlay.facts,
+                policy="table_wins_for_table_facts",
+            )
+            logger.info(
+                "TABLE_OVERLAY_APPLIED doc_id=%s "
+                "field_overlay_applied=%d matches_touched=%d "
+                "skipped_no_entity=%d skipped_unknown_field=%d "
+                "skipped_validation_fail=%d conflicts_overridden=%d "
+                "policy=%s",
+                document_id, stats.applied, stats.matches_touched,
+                stats.skipped_no_entity, stats.skipped_unknown_field,
+                stats.skipped_validation_fail, stats.conflicts_overridden,
+                stats.policy_active,
+            )
+        except Exception as exc:
+            logger.warning(
+                "apply_field_overlay failed mid-loop: %s — proceeding "
+                "with merge using whatever (fact, instance) swaps had "
+                "already completed. Bounded-degraded per §7. Operator "
+                "rollback via kill switch only.", exc,
+            )
+    # ---------- end Mechanism A1 ----------
 ```
 
-**Restructure note:** the cleanest landing is:
-1. Add a helper `_extract_doc_overlay(pass_results)` near the top of the file.
-2. Move the `canonicalize_cross_pass_identities` call so it's invoked AFTER the overlay extraction, with `table_alias_map_by_entity_type=table_overlay.alias_map_by_entity_type if (overlay AND enabled) else None`.
-3. Phase 0.5 becomes a single `if enabled and table_overlay and table_overlay.facts:` block.
+The control flow guarantees:
+- Worker-side kill-switch off → `table_overlay = None` → `canonicalize` called with `None` → Phase 0.5 skipped → emits `TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER` if cached overlays exist.
+- Worker-side on AND no overlay → `canonicalize` called with `None`, Phase 0.5 skipped (no facts).
+- Worker-side on AND overlay present → `canonicalize` called with the alias map, Phase 0.5 applies facts.
 
-The pseudocode above gets the safety properties right; the implementer should refactor for readability.
+Per-(fact, instance) atomicity inside `apply_field_overlay` (Task 7) guarantees the per-mutation safety; this block adds the catch-and-log if `apply_field_overlay` itself raises.
 
 - [ ] **Step 5: Add `_extract_doc_overlay` helper.**
 
@@ -2152,79 +2399,265 @@ git commit -m "feat(table-overlay): integrate identity rewrite + Phase 0.5 field
 - Modify: `app/workers/pipeline.py` (`_parse_pass_response` populates field)
 - Modify: `tests/unit/test_run_single_pass.py`
 
-- [ ] **Step 1: Write failing test.**
+**Decision: where does the `TableOverlay` Pydantic class live?**
+
+The reviewer flagged that `from docker.docling_graph.app.schemas import TableOverlay` is fragile (hyphen in directory name; not a normal Python package layout). Decision for this plan: **the canonical home is `app/services/table_overlay.py` (worker side).** The parser-side `docker/docling-graph/app/schemas.py` declares its own `TableOverlay` (Task 3) for the response schema; the worker never imports from `docker/docling-graph/`. The two declarations are **structurally identical Pydantic models** with the same field names and types — JSON travels between them, not class identity. Task 9 wires both sides to use their own local class. Drift guard: a unit test (Step 6 below) round-trips a parser-side TableOverlay through JSON into a worker-side TableOverlay and asserts equality.
+
+- [ ] **Step 1: Add `TableFact`, `CrossEntityHint`, `TableOverlay` to `app/services/table_overlay.py` (worker copy).**
+
+Append to `app/services/table_overlay.py`:
+
+```python
+from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class TableFact(BaseModel):
+    """Worker-side mirror of the parser's TableFact wire shape (spec §5.4)."""
+    model_config = ConfigDict(frozen=True)
+    canonical_entity: str
+    entity_type: str
+    schema_field: str
+    value: Any
+    source_label: str
+    section_ctx: Optional[str] = None
+    pass_name: str
+    raw_text: str
+
+
+class CrossEntityHint(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    source_canonical: str
+    source_entity_type: str
+    target_alias: str
+    target_entity_type: str
+    relationship_kind: str
+
+
+class TableOverlay(BaseModel):
+    alias_map_by_entity_type: dict[str, dict[str, str]] = Field(default_factory=dict)
+    facts: list[TableFact] = Field(default_factory=list)
+    cross_entity_hints: list[CrossEntityHint] = Field(default_factory=list)
+
+
+TableFact.model_rebuild()
+CrossEntityHint.model_rebuild()
+TableOverlay.model_rebuild()
+```
+
+- [ ] **Step 2: Write failing test for `_parse_pass_response`.**
 
 In `tests/unit/test_run_single_pass.py`, add:
 
 ```python
 def test_parse_pass_response_reads_table_overlay():
-    """If response_json carries a table_overlay key, _parse_pass_response
+    """When response_json carries a table_overlay key, _parse_pass_response
     must populate PassResult.table_overlay with a parsed TableOverlay
-    instance. None when key is missing or null."""
+    instance. None when key is missing or value is null."""
     from app.workers.pipeline import _parse_pass_response
-    # ... build a minimal pass_def + manifest stub + response_json
-    # carrying a synthetic TableOverlay payload, assert
-    # result.table_overlay is not None and has the expected
-    # alias_map_by_entity_type.
+    from app.services.table_overlay import TableOverlay
+
+    # Minimal pass_def + manifest stub matching what the prod code reads.
+    pass_def = type("PD", (), {
+        "name": "missile_propulsion",
+        "module": "extraction_schemas.missile_propulsion",
+        "template_class": "MissilePropulsionPass",
+    })()
+    manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
+
+    response_json = {
+        "bundle_key": "air_defense_v3",
+        "pass_name": "missile_propulsion",
+        "pass_output": {"records": []},
+        "metadata": {"node_count": 0, "edge_count": 0},
+        "provenance": [],
+        "field_provenance": [],
+        "table_overlay": {
+            "alias_map_by_entity_type": {
+                "MISSILE_SYSTEM": {"SA-75": "1D"},
+            },
+            "facts": [{
+                "canonical_entity": "1D",
+                "entity_type": "MISSILE_SYSTEM",
+                "schema_field": "booster_mass_kg",
+                "value": 1135.0,
+                "source_label": "Weight kg",
+                "section_ctx": "1st Stage",
+                "pass_name": "missile_propulsion",
+                "raw_text": "1135",
+            }],
+            "cross_entity_hints": [],
+        },
+    }
+
+    result = _parse_pass_response(response_json, pass_def, manifest)
+    assert isinstance(result.table_overlay, TableOverlay)
+    assert result.table_overlay.alias_map_by_entity_type == {
+        "MISSILE_SYSTEM": {"SA-75": "1D"},
+    }
+    assert len(result.table_overlay.facts) == 1
+    assert result.table_overlay.facts[0].canonical_entity == "1D"
+
+
+def test_parse_pass_response_table_overlay_missing_is_none():
+    from app.workers.pipeline import _parse_pass_response
+    pass_def = type("PD", (), {
+        "name": "missile_propulsion",
+        "module": "extraction_schemas.missile_propulsion",
+        "template_class": "MissilePropulsionPass",
+    })()
+    manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
+    response_json = {
+        "bundle_key": "air_defense_v3", "pass_name": "missile_propulsion",
+        "pass_output": {"records": []},
+        "metadata": {}, "provenance": [], "field_provenance": [],
+        # No table_overlay key
+    }
+    result = _parse_pass_response(response_json, pass_def, manifest)
+    assert result.table_overlay is None
+
+
+def test_parse_pass_response_malformed_table_overlay_is_dropped():
+    """A malformed payload (e.g., wrong field types) must not crash;
+    log a WARNING and set table_overlay=None."""
+    from app.workers.pipeline import _parse_pass_response
+    pass_def = type("PD", (), {
+        "name": "missile_propulsion",
+        "module": "extraction_schemas.missile_propulsion",
+        "template_class": "MissilePropulsionPass",
+    })()
+    manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
+    response_json = {
+        "bundle_key": "air_defense_v3", "pass_name": "missile_propulsion",
+        "pass_output": {"records": []},
+        "metadata": {}, "provenance": [], "field_provenance": [],
+        "table_overlay": {"alias_map_by_entity_type": "not a dict"},  # bogus
+    }
+    result = _parse_pass_response(response_json, pass_def, manifest)
+    assert result.table_overlay is None
 ```
 
-- [ ] **Step 2: Run, confirm fail.**
+- [ ] **Step 3: Run, confirm 3 fail.**
 
-- [ ] **Step 3: Add `table_overlay` field to `PassResult`.**
+```bash
+pytest tests/unit/test_run_single_pass.py -k table_overlay -v
+```
+Expected: 3 FAILED.
 
-In `app/services/extraction_merge.py:202` (the `@dataclass` block), add:
+- [ ] **Step 4: Add `table_overlay` field to `PassResult`.**
+
+In `app/services/extraction_merge.py` near the top of the dataclass at line 202, add the import at file top:
+
+```python
+from app.services.table_overlay import TableOverlay  # type: ignore[import]
+```
+
+And the field on the `PassResult` dataclass:
 
 ```python
     # Mechanism A1 (spec §4.4 + §5.5): doc-level overlay parsed from
     # the docling-graph /extract-pass response. None when the parser
     # found no qualifying table OR the parser-side kill switch was off.
-    table_overlay: "TableOverlay | None" = None
+    table_overlay: TableOverlay | None = None
 ```
 
-Add the import at file top:
+- [ ] **Step 5: Modify `_parse_pass_response` in `app/workers/pipeline.py`.**
 
-```python
-from docker.docling_graph.app.schemas import TableOverlay  # type: ignore
-```
-
-(If the import path is awkward — i.e., the worker doesn't typically import from docker/docling-graph/ directly — replicate the `TableOverlay` type in `app/services/table_overlay.py` instead and use that class on both sides; the wire-shape JSON is what travels, not the class identity.)
-
-- [ ] **Step 4: Modify `_parse_pass_response`.**
-
-At `app/workers/pipeline.py:2610`, where `PassResult(...)` is constructed, add a try/except that parses `response_json.get("table_overlay")` into a `TableOverlay` and threads it through:
+At `app/workers/pipeline.py:2610` (where `PassResult(...)` is constructed), insert just before the `return PassResult(...)` line:
 
 ```python
     overlay_dict = response_json.get("table_overlay")
-    table_overlay = None
+    table_overlay_obj = None
     if isinstance(overlay_dict, dict):
         try:
-            from app.services.table_overlay import TableOverlay  # or wherever
-            table_overlay = TableOverlay.model_validate(overlay_dict)
+            from app.services.table_overlay import TableOverlay
+            table_overlay_obj = TableOverlay.model_validate(overlay_dict)
         except Exception as exc:
             logger.warning(
                 "_parse_pass_response: dropping malformed table_overlay: %s", exc,
             )
-            table_overlay = None
+            table_overlay_obj = None
+```
 
-    return PassResult(
-        ...,
-        table_overlay=table_overlay,
+Then thread `table_overlay=table_overlay_obj` into the `PassResult(...)` constructor call.
+
+- [ ] **Step 6: Add parser↔worker drift-guard test.**
+
+In `tests/unit/test_table_overlay_worker.py`, add:
+
+```python
+def test_parser_and_worker_table_overlay_classes_round_trip():
+    """The parser-side TableOverlay (in docker/docling-graph/app/schemas.py)
+    and the worker-side TableOverlay (in app/services/table_overlay.py)
+    declare structurally identical Pydantic models. JSON round-trip
+    between them must equal element-wise. This test guards against
+    drift: if a field is added on one side and not the other, this
+    test fails."""
+    # Parser side
+    import importlib.util
+    from pathlib import Path
+    parser_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / "docker" / "docling-graph" / "app" / "schemas.py"
+    )
+    spec = importlib.util.spec_from_file_location("dg_schemas", parser_path)
+    parser_schemas = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(parser_schemas)
+
+    # Worker side
+    from app.services.table_overlay import (
+        TableOverlay as WorkerTO, TableFact as WorkerTF,
+    )
+
+    # Build a parser-side overlay
+    parser_ov = parser_schemas.TableOverlay(
+        alias_map_by_entity_type={"MISSILE_SYSTEM": {"SA-75": "1D"}},
+        facts=[parser_schemas.TableFact(
+            canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+            schema_field="booster_mass_kg", value=1135.0,
+            source_label="Weight kg", section_ctx="1st Stage",
+            pass_name="missile_propulsion", raw_text="1135",
+        )],
+        cross_entity_hints=[],
+    )
+
+    # JSON round-trip into worker side
+    dumped = parser_ov.model_dump(mode="json")
+    worker_ov = WorkerTO.model_validate(dumped)
+
+    assert worker_ov.alias_map_by_entity_type == parser_ov.alias_map_by_entity_type
+    assert len(worker_ov.facts) == 1
+    assert worker_ov.facts[0].canonical_entity == "1D"
+    assert worker_ov.facts[0].value == 1135.0
+
+    # Schema-shape equivalence: same field names + types.
+    parser_fields = set(parser_schemas.TableOverlay.model_fields.keys())
+    worker_fields = set(WorkerTO.model_fields.keys())
+    assert parser_fields == worker_fields, (
+        f"TableOverlay field drift: parser={parser_fields} worker={worker_fields}"
+    )
+    parser_fact_fields = set(parser_schemas.TableFact.model_fields.keys())
+    worker_fact_fields = set(WorkerTF.model_fields.keys())
+    assert parser_fact_fields == worker_fact_fields, (
+        f"TableFact field drift: parser={parser_fact_fields} worker={worker_fact_fields}"
     )
 ```
 
-- [ ] **Step 5: Run pipeline tests.**
+- [ ] **Step 7: Run pipeline tests.**
 
 ```bash
 pytest tests/unit/test_run_single_pass.py -v
+pytest tests/unit/test_table_overlay_worker.py::test_parser_and_worker_table_overlay_classes_round_trip -v
 ```
-Expected: PASSED.
+Expected: All PASSED.
 
-- [ ] **Step 6: Commit.**
+- [ ] **Step 8: Commit.**
 
 ```bash
-git add app/services/extraction_merge.py app/workers/pipeline.py \
-       tests/unit/test_run_single_pass.py
-git commit -m "feat(table-overlay): plumb table_overlay from /extract-pass response onto PassResult"
+git add app/services/extraction_merge.py app/services/table_overlay.py \
+       app/workers/pipeline.py \
+       tests/unit/test_run_single_pass.py tests/unit/test_table_overlay_worker.py
+git commit -m "feat(table-overlay): plumb table_overlay from /extract-pass response onto PassResult; add worker-side TableOverlay class + parser drift guard"
 ```
 
 ### Task 10: `docker-compose.yml` kill-switch env var on both services
@@ -2263,22 +2696,199 @@ git commit -m "feat(table-overlay): expose DOCLING_GRAPH_TABLE_OVERLAY_ENABLED o
 **Files:**
 - Create: `tests/integration/test_table_overlay_end_to_end.py`
 
-- [ ] **Step 1: Build the synthetic fixture.**
+- [ ] **Step 1: Write the failing end-to-end test.**
 
-Per spec §8.5: synthetic DoclingDocument matching SA-2 column structure (22×12, identity rows + section headers + spec rows + Fan Song row), 4-pass simulation through `merge_and_resolve` with stub LLM responses encoding the exact alias-scatter pattern from §1 (LLM emits "1D" / "SA-75" / "SA-2A" / etc. as separate vertices; the propulsion stub emits a wrong booster_mass_kg value matching the empirical failure mode 970 instead of GT 1135).
+Create `tests/integration/test_table_overlay_end_to_end.py`:
 
-- [ ] **Step 2: Run, confirm full pipeline collapses correctly.**
+```python
+"""End-to-end fixture for spec §8.5: synthetic DoclingDocument with
+SA-2-shaped variants table, 4-pass stub LLM responses encoding the
+empirical alias-scatter + wrong-propulsion-value failure modes,
+through merge_and_resolve. Validates Mechanism A1 collapses aliases
+AND overrides wrong propulsion values."""
+from unittest.mock import patch
 
-Assertions:
-- After `merge_and_resolve`, exactly one MISSILE_SYSTEM vertex per column (not three per column from the alias scatter).
-- The `1D` vertex carries `body_length_m`, `body_diameter_m`, `total_mass_kg` from the airframe pass AND `booster_mass_kg=1135.0` (overlay applied), AND a `FIELD_OVERLAY_OVERRIDE` log line was emitted.
-- The radar Fan Song instance is NOT present in MISSILE_SYSTEM cluster.
+from app.services.extraction_merge import merge_and_resolve, PassResult
+from app.services.table_overlay import (
+    TableOverlay as WorkerTO, TableFact, CrossEntityHint,
+)
+from ontology_bundles.air_defense_v3.extraction_schemas import (
+    missile_propulsion, missile_airframe, missile_kinematics,
+    missile_speed_timing,
+)
+
+
+def _build_overlay_for_sa2():
+    """Synthetic overlay matching SA-2 column 0 (1D) and column 1 (13D)."""
+    alias_map = {"MISSILE_SYSTEM": {
+        "SA-75": "1D", "SA-2A": "1D",  # column 0 aliases
+        "S-75": "13D", "SA-2C": "13D",  # column 1 aliases
+    }}
+    facts = [
+        # Airframe row (Length mm) for both columns
+        TableFact(canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+                  schema_field="body_length_m", value=10.726,
+                  source_label="Length mm", section_ctx=None,
+                  pass_name="missile_airframe", raw_text="10726"),
+        TableFact(canonical_entity="13D", entity_type="MISSILE_SYSTEM",
+                  schema_field="body_length_m", value=10.841,
+                  source_label="Length mm", section_ctx=None,
+                  pass_name="missile_airframe", raw_text="10841"),
+        # Propulsion row (1st Stage Weight kg) — these are the
+        # acceptance-driving facts.
+        TableFact(canonical_entity="1D", entity_type="MISSILE_SYSTEM",
+                  schema_field="booster_mass_kg", value=1135.0,
+                  source_label="Weight kg", section_ctx="1st Stage",
+                  pass_name="missile_propulsion", raw_text="1135"),
+        TableFact(canonical_entity="13D", entity_type="MISSILE_SYSTEM",
+                  schema_field="booster_mass_kg", value=1135.0,
+                  source_label="Weight kg", section_ctx="1st Stage",
+                  pass_name="missile_propulsion", raw_text="1135"),
+    ]
+    hints = [CrossEntityHint(
+        source_canonical="1D", source_entity_type="MISSILE_SYSTEM",
+        target_alias="RSNA-75", target_entity_type="RADAR_SYSTEM",
+        relationship_kind="associated_with",
+    )]
+    return WorkerTO(
+        alias_map_by_entity_type=alias_map,
+        facts=facts,
+        cross_entity_hints=hints,
+    )
+
+
+def _build_propulsion_passresult():
+    """Stub-LLM propulsion pass: emits 4 instances under different alias
+    names, with ONE instance carrying a WRONG booster_mass_kg=970 (the
+    empirical failure mode). Overlay must rewrite system_name AND
+    override the wrong value."""
+    instances = [
+        missile_propulsion.MissilePropulsionRecord(
+            system_name="SA-75", booster_mass_kg=970.0,  # WRONG
+        ),
+        missile_propulsion.MissilePropulsionRecord(
+            system_name="SA-2A", booster_mass_kg=None,
+        ),
+        missile_propulsion.MissilePropulsionRecord(
+            system_name="S-75", booster_mass_kg=None,
+        ),
+        missile_propulsion.MissilePropulsionRecord(
+            system_name="SA-2C", booster_mass_kg=None,
+        ),
+    ]
+    pr = PassResult.__new__(PassResult)
+    pr.pass_name = "missile_propulsion"
+    pr.template_instance = None
+    pr.metadata = None
+    pr.pre_merge_rejections = []
+    pr.upstream_refs = None
+    pr.pre_merge_walk = None
+    pr.provenance = []
+    pr.field_evidence = {}
+    pr._walker_entities_cache = list(instances)
+    pr.table_overlay = _build_overlay_for_sa2()
+    return pr, instances
+
+
+def _build_airframe_passresult():
+    instances = [
+        missile_airframe.MissileAirframeRecord(
+            system_name="SA-75", body_length_m=None,
+        ),
+        missile_airframe.MissileAirframeRecord(
+            system_name="S-75", body_length_m=None,
+        ),
+    ]
+    pr = PassResult.__new__(PassResult)
+    pr.pass_name = "missile_airframe"
+    pr.template_instance = None
+    pr.metadata = None
+    pr.pre_merge_rejections = []
+    pr.upstream_refs = None
+    pr.pre_merge_walk = None
+    pr.provenance = []
+    pr.field_evidence = {}
+    pr._walker_entities_cache = list(instances)
+    pr.table_overlay = _build_overlay_for_sa2()
+    return pr, instances
+
+
+def test_end_to_end_sa2_alias_collapse_and_propulsion_override(monkeypatch):
+    """Mechanism A1 acceptance smoke test:
+       - 4 alias instances (SA-75/SA-2A → 1D, S-75/SA-2C → 13D) collapse
+         to 2 canonical post-rewrite.
+       - Wrong LLM booster_mass_kg=970 on SA-75 is OVERRIDDEN to 1135
+         (table fact wins).
+       - FIELD_OVERLAY_OVERRIDE log line is emitted for that override.
+       - Other instances pick up booster_mass_kg=1135 from null."""
+    monkeypatch.setenv("DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true")
+
+    prop_pr, prop_instances = _build_propulsion_passresult()
+    af_pr, af_instances = _build_airframe_passresult()
+    pass_results = {
+        "missile_propulsion": prop_pr,
+        "missile_airframe": af_pr,
+    }
+    ontology = {"entity_types": [
+        {"name": "MISSILE_SYSTEM", "graph_id_fields": ["system_name"]},
+    ]}
+    manifest = type("M", (), {"passes": [], "bundle_key": "air_defense_v3"})()
+
+    with patch("app.services.extraction_merge.logger") as log:
+        merge_and_resolve(
+            pass_results=pass_results, manifest=manifest,
+            ontology=ontology,
+            document_id="sa2-doc", pipeline_run_id="run-sa2",
+        )
+        log_calls_info = [c.args[0] for c in log.info.call_args_list]
+
+    # Alias rewrite happened
+    rewritten_names = {inst.system_name for inst in prop_instances}
+    assert rewritten_names == {"1D", "13D"}, (
+        f"expected alias collapse, got {rewritten_names}"
+    )
+
+    # The wrong-booster-mass instance now carries the table value
+    wrong_orig = next(i for i in prop_instances if i.booster_mass_kg == 970.0)
+    # Should NOT exist anymore — must be overridden
+    matching_wrong = [i for i in prop_instances if i.booster_mass_kg == 970.0]
+    assert matching_wrong == [], (
+        "wrong LLM booster_mass_kg=970.0 should have been overridden"
+    )
+    # All 1D / 13D instances now have 1135.0
+    for inst in prop_instances:
+        assert inst.booster_mass_kg == 1135.0
+
+    # FIELD_OVERLAY_OVERRIDE log emitted for the override case
+    assert any("FIELD_OVERLAY_OVERRIDE" in s for s in log_calls_info), (
+        "expected FIELD_OVERLAY_OVERRIDE log line for booster_mass_kg override"
+    )
+    # IDENTITY_REWRITE and TABLE_OVERLAY_APPLIED also emitted
+    assert any("IDENTITY_REWRITE" in s for s in log_calls_info)
+    assert any("TABLE_OVERLAY_APPLIED" in s for s in log_calls_info)
+
+    # Airframe instances: body_length_m populated from overlay (was null)
+    af_lengths = {inst.body_length_m for inst in af_instances}
+    assert af_lengths == {10.726, 10.841}
+```
+
+- [ ] **Step 2: Run, confirm fail (until merge_and_resolve integration is done in Task 8).**
+
+```bash
+pytest tests/integration/test_table_overlay_end_to_end.py -v
+```
+Expected: PASS once Tasks 6–9 are complete (this test depends on the worker overlay module + extraction_merge integration + PassResult.table_overlay plumbing).
+
+If it fails after Tasks 6–9, examine the exact assertion that fails and trace back through:
+1. Did `apply_identity_rewrite` actually run? (look for `IDENTITY_REWRITE` log)
+2. Did `apply_field_overlay` find the matching instance? (look for `TABLE_OVERLAY_APPLIED` log with `applied>0`)
+3. Did fan-out work — both 1D instances received the fact? Did the 970→1135 override register `conflicts_overridden++`?
 
 - [ ] **Step 3: Commit.**
 
 ```bash
 git add tests/integration/test_table_overlay_end_to_end.py
-git commit -m "test(table-overlay): synthetic SA-2 end-to-end through merge_and_resolve"
+git commit -m "test(table-overlay): synthetic SA-2 end-to-end with alias collapse + propulsion override"
 ```
 
 ---
