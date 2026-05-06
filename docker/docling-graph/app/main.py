@@ -611,6 +611,11 @@ def run_extraction_pass(
                 "fallback and TODO #29 for VLM routing."
             ),
         }
+        # Attach synthesizer stats so extract_pass can surface them in
+        # diagnostics["service_table_facts"]. fact_stats is in scope from
+        # the synthesizer call above and survives the empty-source short-
+        # circuit (the synthesizer runs before _is_empty).
+        ctx._table_facts_stats = fact_stats
         return ctx
     # ----------------------------------------------------------------------
 
@@ -869,6 +874,13 @@ def run_extraction_pass(
 
         try:
             context._delta_trace = trace
+        except AttributeError:
+            pass
+        # Attach synthesizer stats so extract_pass can surface them in
+        # diagnostics["service_table_facts"]. Mirrors the empty-source
+        # short-circuit branch above.
+        try:
+            context._table_facts_stats = fact_stats
         except AttributeError:
             pass
         return context
@@ -1172,7 +1184,16 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             "dropped_entity_examples": {},
         }
         diagnostics["service_identity_gate"]["evidence_text_nonempty"] = bool(evidence_text)
-        diagnostics["service_table_facts"] = fact_stats.as_dict()
+        # fact_stats is set inside run_extraction_pass; surfaced via
+        # context._table_facts_stats so it survives the asyncio.to_thread
+        # boundary. Fallback to FactStats.empty() if the attribute is
+        # missing for any reason (defensive: the synthesizer try/except
+        # ensures it's always set, but guard against future refactors).
+        _table_facts_stats = getattr(context, "_table_facts_stats", None)
+        if _table_facts_stats is not None:
+            diagnostics["service_table_facts"] = _table_facts_stats.as_dict()
+        else:
+            diagnostics["service_table_facts"] = FactStats.empty().as_dict()
         diagnostics["service_pre_filter_counts"] = raw_pass_counts
         diagnostics["service_pre_filter_identity_examples"] = raw_identity_examples
         diagnostics["service_postprocess"] = postprocess_stats or {}
