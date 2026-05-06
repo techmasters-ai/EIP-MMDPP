@@ -30,7 +30,7 @@ Task graph (manifest-first, parallel derivations, idempotent):
 import hashlib
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 import redis as redis_lib
@@ -141,6 +141,24 @@ class WorkerInvariantError(Exception):
 class GateResult:
     passed: bool
     failures: list  # list[tuple[str, str]] — (pass_name, reason_description)
+
+
+@dataclass
+class PassAttemptOutcome:
+    """Rich result of one attempt at one pass.
+
+    Returned by ``_execute_pass_attempt``; consumed by ``_run_single_pass``
+    (in-process retry loop) and by Task 5's per-pass Celery task (Celery as
+    retry boundary).  The caller decides retry/persistence — the helper is
+    stateless.
+    """
+    execution_status: Literal["COMPLETE", "FAILED", "SKIPPED"]
+    skip_reason: str | None        # "NO_UPSTREAM_ENDPOINTS" etc.; set iff SKIPPED
+    yield_status: str | None       # "HIT"/"EMPTY"/"DEGRADED"/"BRIDGES_ONLY"; set iff COMPLETE
+    pass_result: object | None     # PassResult iff COMPLETE; None otherwise
+    raw_response_payload: dict | None  # literal /extract-pass JSON; set when HTTP call succeeded
+    counts: dict | None            # _count_pass_output result; set iff COMPLETE
+    error: Exception | None        # PassRetryable/PassTransportError/PassTerminal; set iff FAILED
 
 
 @_dataclass
@@ -574,6 +592,134 @@ def _build_pre_merge_walk_summary(
     return PreMergeWalkSummary(entities=entities, raw_edge_count=edge_count)
 
 
+def _execute_pass_attempt(
+    *,
+    pipeline_run_id,
+    pass_def,
+    manifest,
+    ontology: dict,
+    bundle_key: str,
+    doc_json: dict,
+    upstream_refs: dict,
+    document_id: str,
+) -> "PassAttemptOutcome":
+    """One attempt at one pass.  Does NOT retry — the caller decides retry.
+    Does NOT write StageRun or pipeline_pass_outputs — the caller persists.
+    Returns rich metadata so the caller can decide what to do.
+
+    r4: introduced to allow Task 5's per-pass Celery task to invoke this
+    helper directly, with Celery as the retry boundary instead of the
+    in-process ``while True`` loop in ``_run_single_pass``.
+    """
+    # 1. Skip check
+    if _should_skip(pass_def, upstream_refs, ontology):
+        return PassAttemptOutcome(
+            execution_status="SKIPPED",
+            skip_reason="NO_UPSTREAM_ENDPOINTS",
+            yield_status=None,
+            pass_result=None,
+            raw_response_payload=None,
+            counts=None,
+            error=None,
+        )
+
+    # 2. Compute selected_refs ONCE — reused for both the request body and the
+    #    upstream-refs attachment below, eliminating any drift surface.
+    selected_refs = (
+        _select_upstream_refs_for_pass(pass_def, upstream_refs, ontology)
+        if pass_def.input_mode == "document_plus_entity_refs"
+        else None
+    )
+
+    # 3. Build request + call HTTP
+    request_body = _build_extract_pass_request(
+        bundle_key=bundle_key,
+        pass_def=pass_def,
+        doc_json=doc_json,
+        upstream_refs=selected_refs,
+        document_id=document_id,
+    )
+    try:
+        raw_payload = _call_extract_pass(request_body, timeout=settings.docling_graph_timeout)
+    except (PassRetryable, PassTransportError, PassTerminal) as exc:
+        # PassTransportError is a subclass of PassRetryable, so the tuple catches all
+        # three; the caller (_run_single_pass) uses order-dependent isinstance checks
+        # to distinguish them.
+        return PassAttemptOutcome(
+            execution_status="FAILED",
+            skip_reason=None,
+            yield_status=None,
+            pass_result=None,
+            raw_response_payload=None,
+            counts=None,
+            error=exc,
+        )
+
+    # 4. Parse response
+    try:
+        pass_result = _parse_pass_response(raw_payload, pass_def, manifest)
+    except PassTerminal as exc:
+        return PassAttemptOutcome(
+            execution_status="FAILED",
+            skip_reason=None,
+            yield_status=None,
+            pass_result=None,
+            raw_response_payload=raw_payload,  # captured — useful forensic data
+            counts=None,
+            error=exc,
+        )
+
+    # 5. Attach upstream refs as LogicalIdentity objects so merge_and_resolve
+    #    can resolve from_ref_id / to_ref_id (extraction_merge.py:384).
+    #    Only document_plus_entity_refs passes use this — document_only passes
+    #    do not consume upstream refs.
+    if pass_def.input_mode == "document_plus_entity_refs":
+        from app.services.extraction_merge import logical_identity_from_dict
+        # Reuse the same selection that built the request body above —
+        # ensures the merge side sees exactly the refs the LLM was
+        # told about, and removes a drift surface where future edits
+        # could cause the two sites to disagree.
+        selected = selected_refs or {}
+        pass_result.upstream_refs = {}
+        for ref_id, ref in selected.items():
+            identity = logical_identity_from_dict(
+                ref.entity_type,
+                ref.identity_values or {},
+                ontology,
+                document_id,
+            )
+            if identity is not None:
+                pass_result.upstream_refs[ref_id] = identity
+
+    # 6. Compute pre_merge_walk + yield_status + counts
+    # Plan Task 34b: build the single shared pre-merge carrier and
+    # attach it to PassResult. classify_yield and _count_pass_output
+    # consume pass_result.pre_merge_walk — the walker runs ONCE per
+    # PassResult for the whole pre-merge phase.
+    pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+        pass_result, pass_def, ontology, document_id,
+    )
+    yield_status_val = classify_yield(pass_result, pass_def, ontology)
+    # classify_yield returns a YieldStatus enum; normalise to string
+    yield_str = (
+        yield_status_val.value
+        if hasattr(yield_status_val, "value")
+        else str(yield_status_val)
+    )
+    counts = _count_pass_output(pass_result, pass_def, ontology)
+
+    # 7. Return COMPLETE outcome
+    return PassAttemptOutcome(
+        execution_status="COMPLETE",
+        skip_reason=None,
+        yield_status=yield_str,
+        pass_result=pass_result,
+        raw_response_payload=raw_payload,
+        counts=counts,
+        error=None,
+    )
+
+
 def _run_single_pass(
     *,
     pipeline_run_id,
@@ -592,6 +738,11 @@ def _run_single_pass(
     optionally extends upstream_refs for downstream passes that depend on this
     one.  Writes a StageRun row for every attempt (including failures) so
     operators can audit retry history.
+
+    r4: now wraps _execute_pass_attempt for the per-attempt logic. The retry
+    loop, StageRun writes, and pass_results population stay here. The helper
+    can be invoked independently by Task 5's Celery task without going through
+    this wrapper.
     """
     max_retries = getattr(settings, "pass_max_retries", 3)
     max_transport_retries = getattr(settings, "pass_max_transport_retries", 3)
@@ -599,138 +750,96 @@ def _run_single_pass(
     transport_attempt = 0
 
     while True:
-        if _should_skip(pass_def, upstream_refs, ontology):
+        outcome = _execute_pass_attempt(
+            pipeline_run_id=pipeline_run_id,
+            pass_def=pass_def,
+            manifest=manifest,
+            ontology=ontology,
+            bundle_key=bundle_key,
+            doc_json=doc_json,
+            upstream_refs=upstream_refs,
+            document_id=document_id,
+        )
+
+        if outcome.execution_status == "SKIPPED":
             _write_stage_run(
                 pipeline_run_id=pipeline_run_id,
                 pass_def=pass_def,
                 attempt=attempt,
                 execution_status="SKIPPED",
                 yield_status=None,
-                skip_reason="NO_UPSTREAM_ENDPOINTS",
+                skip_reason=outcome.skip_reason,
                 counts=None,
                 error=None,
             )
             return
 
-        try:
-            selected_refs = (
-                _select_upstream_refs_for_pass(pass_def, upstream_refs, ontology)
-                if pass_def.input_mode == "document_plus_entity_refs"
-                else None
-            )
-            request_body = _build_extract_pass_request(
-                bundle_key=bundle_key,
-                pass_def=pass_def,
-                doc_json=doc_json,
-                upstream_refs=selected_refs,
-                document_id=document_id,
-            )
-            response = _call_extract_pass(
-                request_body,
-                timeout=settings.docling_graph_timeout,
-            )
-            pass_result = _parse_pass_response(response, pass_def, manifest)
-
-            # Attach the filtered, ordered upstream refs AS LogicalIdentity objects
-            # so merge_and_resolve can resolve from_ref_id / to_ref_id directly
-            # (extraction_merge.py:384). Only document_plus_entity_refs passes use
-            # this — document_only passes do not consume upstream refs.
-            if pass_def.input_mode == "document_plus_entity_refs":
-                from app.services.extraction_merge import logical_identity_from_dict
-                # Reuse the same selection that built the request body above —
-                # ensures the merge side sees exactly the refs the LLM was
-                # told about, and removes a drift surface where future edits
-                # could cause the two sites to disagree.
-                selected = selected_refs or {}
-                pass_result.upstream_refs = {}
-                for ref_id, ref in selected.items():
-                    identity = logical_identity_from_dict(
-                        ref.entity_type,
-                        ref.identity_values or {},
-                        ontology,
-                        document_id,
-                    )
-                    if identity is not None:
-                        pass_result.upstream_refs[ref_id] = identity
-
-        # Order-dependent: PassTransportError is a subclass of PassRetryable,
-        # so this branch MUST precede `except PassRetryable` below — flipping
-        # them would route transport errors through the business-retry budget
-        # and revive the bug the separate counter exists to fix.
-        except PassTransportError as exc:
-            transport_attempt += 1
-            _write_stage_run(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                attempt=attempt,
-                execution_status="FAILED",
-                yield_status=None,
-                skip_reason=None,
-                counts=None,
-                error=f"[transport-retry {transport_attempt}/{max_transport_retries}] {exc}",
-            )
-            if transport_attempt >= max_transport_retries:
+        if outcome.execution_status == "FAILED":
+            # Order-dependent: PassTransportError is a subclass of PassRetryable;
+            # check the more specific class first so transport errors use their own
+            # counter and do not burn the business-retry budget.
+            if isinstance(outcome.error, PassTransportError):
+                transport_attempt += 1
+                _write_stage_run(
+                    pipeline_run_id=pipeline_run_id,
+                    pass_def=pass_def,
+                    attempt=attempt,
+                    execution_status="FAILED",
+                    yield_status=None,
+                    skip_reason=None,
+                    counts=None,
+                    error=f"[transport-retry {transport_attempt}/{max_transport_retries}] {outcome.error}",
+                )
+                if transport_attempt >= max_transport_retries:
+                    if pass_def.required:
+                        raise IngestFailed(
+                            f"Required pass {pass_def.name} exhausted transport retries"
+                        ) from outcome.error
+                    return
+                _backoff(transport_attempt)
+                continue
+            elif isinstance(outcome.error, PassRetryable):
+                _write_stage_run(
+                    pipeline_run_id=pipeline_run_id,
+                    pass_def=pass_def,
+                    attempt=attempt,
+                    execution_status="FAILED",
+                    yield_status=None,
+                    skip_reason=None,
+                    counts=None,
+                    error=str(outcome.error),
+                )
+                if attempt >= max_retries:
+                    if pass_def.required:
+                        raise IngestFailed(
+                            f"Required pass {pass_def.name} exhausted retries"
+                        ) from outcome.error
+                    return
+                _backoff(attempt)
+                attempt += 1
+                continue
+            elif isinstance(outcome.error, PassTerminal):
+                _write_stage_run(
+                    pipeline_run_id=pipeline_run_id,
+                    pass_def=pass_def,
+                    attempt=attempt,
+                    execution_status="FAILED",
+                    yield_status=None,
+                    skip_reason=None,
+                    counts=None,
+                    error=str(outcome.error),
+                )
                 if pass_def.required:
                     raise IngestFailed(
-                        f"Required pass {pass_def.name} exhausted transport retries"
-                    ) from exc
+                        f"Required pass {pass_def.name} terminal failure"
+                    ) from outcome.error
                 return
-            _backoff(transport_attempt)
-            continue
-        except PassRetryable as exc:
-            _write_stage_run(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                attempt=attempt,
-                execution_status="FAILED",
-                yield_status=None,
-                skip_reason=None,
-                counts=None,
-                error=str(exc),
-            )
-            if attempt >= max_retries:
-                if pass_def.required:
-                    raise IngestFailed(
-                        f"Required pass {pass_def.name} exhausted retries"
-                    ) from exc
-                return
-            _backoff(attempt)
-            attempt += 1
-            continue
+            else:
+                # Defensive — _execute_pass_attempt should only ever return one
+                # of the three known exception types as outcome.error.
+                raise outcome.error  # surfaces unexpected error class
 
-        except PassTerminal as exc:
-            _write_stage_run(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                attempt=attempt,
-                execution_status="FAILED",
-                yield_status=None,
-                skip_reason=None,
-                counts=None,
-                error=str(exc),
-            )
-            if pass_def.required:
-                raise IngestFailed(
-                    f"Required pass {pass_def.name} terminal failure"
-                ) from exc
-            return
-
-        # Plan Task 34b: build the single shared pre-merge carrier and
-        # attach it to PassResult. classify_yield and _count_pass_output
-        # (rewritten in Task 35c) consume pass_result.pre_merge_walk —
-        # the walker runs ONCE per PassResult for the whole pre-merge phase.
-        pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
-            pass_result, pass_def, ontology, document_id,
-        )
-
-        yield_status_val = classify_yield(pass_result, pass_def, ontology)
-        # classify_yield returns a YieldStatus enum; normalise to string
-        yield_str = (
-            yield_status_val.value
-            if hasattr(yield_status_val, "value")
-            else str(yield_status_val)
-        )
-        counts = _count_pass_output(pass_result, pass_def, ontology)
+        # COMPLETE outcome — write StageRun and populate pass_results
         # Plan Task 36 pre-merge JSONB shape: all 5 authoritative-shape keys
         # are present on every write. counts_authoritative=False so readers
         # know the values are provisional; _apply_post_merge_yield_updates
@@ -738,13 +847,14 @@ def _run_single_pass(
         # Top-level StageRun columns (relationships_extracted / _rejected)
         # are mirrored into the JSONB block so the two projections never
         # drift — lockstep contract pinned by test_counts_authoritative_lifecycle.
+        counts = outcome.counts
         counts["metrics"] = {
             "counts_authoritative": False,
             "relationships_extracted": counts["relationships_extracted"],
             "relationships_rejected": counts["relationships_rejected"],
             "rejection_sample": [],
             "rejections_by_reason": _build_rejections_by_reason(
-                getattr(pass_result, "pre_merge_rejections", None),
+                getattr(outcome.pass_result, "pre_merge_rejections", None),
             ),
         }
         _write_stage_run(
@@ -752,15 +862,15 @@ def _run_single_pass(
             pass_def=pass_def,
             attempt=attempt,
             execution_status="COMPLETE",
-            yield_status=yield_str,
+            yield_status=outcome.yield_status,
             skip_reason=None,
             counts=counts,
             error=None,
         )
-        pass_results[pass_def.name] = pass_result
+        pass_results[pass_def.name] = outcome.pass_result
 
         if _any_downstream_pass_depends_on(manifest, pass_def.name):
-            _extend_upstream_refs(upstream_refs, pass_result, pass_def, ontology)
+            _extend_upstream_refs(upstream_refs, outcome.pass_result, pass_def, ontology)
         return
 
 
