@@ -296,12 +296,17 @@ CROSS_ENTITY_REF_PATTERNS: dict[str, str] = {
 
 # Canonical-name priority per entity type. When a column has aliases from
 # multiple identity rows, pick the FIRST priority label that's present.
+# Every entry in MISSILE_/RADAR_IDENTITY_LABELS must appear (case-insensitive
+# substring) somewhere in this priority tuple — otherwise the drift guard
+# test_identity_labels_have_canonical_priority_coverage fails.
 CANONICAL_PRIORITY: dict[str, tuple[str, ...]] = {
     "MISSILE_SYSTEM": (
         "Missile Type",
         "Industry Designation",
         "Military Designation",
         "NATO Designation",
+        "System Designation",   # fallback for docs that use this label only
+        "Missile Variant",      # fallback for docs that use this label only
     ),
     "RADAR_SYSTEM": (
         "Radar Variant",
