@@ -1015,6 +1015,8 @@ def _pick_canonical_name(names: Iterable[str]) -> str:
 def canonicalize_cross_pass_identities(
     pass_results: dict[str, "PassResult"],
     ontology: dict,
+    *,
+    table_alias_map_by_entity_type: dict[str, dict[str, str]] | None = None,
 ) -> int:
     """Mutate entity instances in-place so cross-pass duplicates share a
     single canonical `system_name`.
@@ -1024,8 +1026,33 @@ def canonicalize_cross_pass_identities(
 
     Only acts on entity types whose graph_id_fields is exactly ['system_name'].
     Other identity schemes (multi-field, content-hashed, etc.) are left alone.
+
+    When ``table_alias_map_by_entity_type`` is non-None, runs Mechanism A1
+    Phase 0 (table-overlay alias rewrite) BEFORE the existing token-overlap
+    pass. Spec §5.3.
     """
     rewrites = 0
+
+    # Mechanism A1 alias-map rewrite (Phase 0). Runs BEFORE the existing
+    # token-overlap pass so its rewrites land first.
+    if table_alias_map_by_entity_type:
+        try:
+            from app.services.table_overlay import apply_identity_rewrite
+            stats = apply_identity_rewrite(
+                pass_results, table_alias_map_by_entity_type, ontology,
+            )
+            rewrites += stats.rewrites
+            logger.info(
+                "IDENTITY_REWRITE rewrites=%d unique_canonicals=%d "
+                "passes_touched=%d",
+                stats.rewrites, stats.unique_canonicals, stats.passes_touched,
+            )
+        except Exception as exc:
+            logger.warning(
+                "apply_identity_rewrite failed: %s — falling through to "
+                "existing token-overlap canonicalization", exc,
+            )
+
     for entity_def in ontology.get("entity_types", []):
         entity_type = entity_def["name"]
 
@@ -1102,6 +1129,34 @@ def canonicalize_cross_pass_identities(
 # ---------------------------------------------------------------------------
 
 
+def _extract_doc_overlay(pass_results: dict):
+    """Find the first non-empty table_overlay across pass_results.
+    All passes from the same DoclingDocument should have identical
+    overlays; if they diverge, log WARNING and use the first.
+    Spec §5.5."""
+    first = None
+    for pass_name, pr in pass_results.items():
+        ov = getattr(pr, "table_overlay", None)
+        if ov is None:
+            continue
+        is_nonempty = bool(
+            ov.alias_map_by_entity_type or ov.facts or ov.cross_entity_hints
+        )
+        if not is_nonempty:
+            continue
+        if first is None:
+            first = ov
+            continue
+        if ov.model_dump() != first.model_dump():
+            logger.warning(
+                "_extract_doc_overlay: divergent overlays across passes — "
+                "using first non-empty. Inspect parser deterministic "
+                "behavior. first_facts=%d other_facts=%d",
+                len(first.facts), len(ov.facts),
+            )
+    return first
+
+
 def merge_and_resolve(
     pass_results: dict[str, PassResult],
     manifest: Any,  # BundleManifest or compatible stub
@@ -1121,14 +1176,90 @@ def merge_and_resolve(
     4. Rejections counted per pass and per reason.
     5. confidence = 0.8 if rel.confidence is None. Explicit 0.0 preserved.
     """
-    # --- Phase 0: cross-pass identity canonicalization ---
+    # ----- Mechanism A1 (Phase 0 + Phase 0.5): table overlay -----
     # Field-group passes may emit different `system_name` values for the
     # same physical entity (e.g. missile_identity emits 'MIM-104F' while
     # missile_airframe emits 'PAC-3' from the same prose). Mutate
     # instances so cross-pass duplicates share a canonical system_name
     # before LogicalIdentity is built. See
     # canonicalize_cross_pass_identities for the matching heuristic.
-    canonicalize_cross_pass_identities(pass_results, ontology)
+    #
+    # When a doc-level table overlay was extracted by docling-graph
+    # (spec §5.4-5.5), it carries (a) an alias_map_by_entity_type used
+    # by Phase 0 to deterministically collapse table aliases BEFORE the
+    # token-overlap heuristic, and (b) a list of TableFacts applied in
+    # Phase 0.5 to overwrite per-cell field values where the table
+    # disagrees with the LLM extraction. The worker-side kill switch
+    # (DOCLING_GRAPH_TABLE_OVERLAY_ENABLED) is authoritative even over
+    # cached overlay payloads loaded from prior runs (spec §4.3).
+    import os
+    from app.services.table_overlay import apply_field_overlay
+
+    def _table_overlay_enabled_worker() -> bool:
+        return os.environ.get(
+            "DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true",
+        ).lower() != "false"
+
+    overlay_enabled = _table_overlay_enabled_worker()
+    table_overlay = (
+        _extract_doc_overlay(pass_results) if overlay_enabled else None
+    )
+
+    # Worker-side kill switch is authoritative over cached overlays.
+    # Spec §4.3.
+    if not overlay_enabled:
+        cached_overlay_present = sum(
+            1 for pr in pass_results.values()
+            if getattr(pr, "table_overlay", None) is not None
+        )
+        if cached_overlay_present:
+            logger.info(
+                "TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER doc_id=%s "
+                "pass_count=%d cached_overlay_present=%d",
+                document_id, len(pass_results), cached_overlay_present,
+            )
+
+    # Phase 0: cross-pass identity canonicalization. When overlay is
+    # enabled AND we found one, pass the alias map through; otherwise
+    # call with None and rely on the existing token-overlap pass.
+    canonicalize_cross_pass_identities(
+        pass_results,
+        ontology,
+        table_alias_map_by_entity_type=(
+            table_overlay.alias_map_by_entity_type
+            if (overlay_enabled and table_overlay is not None)
+            else None
+        ),
+    )
+
+    # Phase 0.5: per-cell field overlay. Only when overlay is enabled,
+    # we found one, and it carries facts.
+    if overlay_enabled and table_overlay is not None and table_overlay.facts:
+        try:
+            stats = apply_field_overlay(
+                pass_results,
+                table_overlay.facts,
+                policy="table_wins_for_table_facts",
+            )
+            logger.info(
+                "TABLE_OVERLAY_APPLIED doc_id=%s "
+                "field_overlay_applied=%d matches_touched=%d "
+                "skipped_no_entity=%d skipped_unknown_field=%d "
+                "skipped_validation_fail=%d conflicts_overridden=%d "
+                "policy=%s",
+                document_id, stats.applied, stats.matches_touched,
+                stats.skipped_no_entity, stats.skipped_unknown_field,
+                stats.skipped_validation_fail, stats.conflicts_overridden,
+                stats.policy_active,
+            )
+        except Exception as exc:
+            logger.warning(
+                "apply_field_overlay failed mid-loop: %s — proceeding "
+                "with merge using whatever (fact, instance) swaps had "
+                "already completed. Bounded-degraded per §7. Operator "
+                "rollback via kill switch only.", exc,
+            )
+    # ---------- end Mechanism A1 ----------
 
     # --- Pass 1: merge entities ---
     entity_index: dict[LogicalIdentity, MergedEntityRecord] = {}
