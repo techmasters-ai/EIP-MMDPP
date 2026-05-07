@@ -1136,32 +1136,12 @@ def canonicalize_cross_pass_identities(
 # ---------------------------------------------------------------------------
 
 
-def _extract_doc_overlay(pass_results: dict):
-    """Find the first non-empty table_overlay across pass_results.
-    All passes from the same DoclingDocument should have identical
-    overlays; if they diverge, log WARNING and use the first.
-    Spec §5.5."""
-    first = None
-    for pass_name, pr in pass_results.items():
-        ov = getattr(pr, "table_overlay", None)
-        if ov is None:
-            continue
-        is_nonempty = bool(
-            ov.alias_map_by_entity_type or ov.facts or ov.cross_entity_hints
-        )
-        if not is_nonempty:
-            continue
-        if first is None:
-            first = ov
-            continue
-        if ov.model_dump() != first.model_dump():
-            logger.warning(
-                "_extract_doc_overlay: divergent overlays across passes — "
-                "using first non-empty. Inspect parser deterministic "
-                "behavior. first_facts=%d other_facts=%d",
-                len(first.facts), len(ov.facts),
-            )
-    return first
+# NOTE: _extract_doc_overlay used to live here; promoted to
+# app.services.table_overlay.extract_doc_overlay (and called via the
+# top-level apply_table_overlay_phases orchestrator below) so the
+# Mechanism A1 worker-side surface is one self-contained module. This
+# stub is kept as a doc-comment so future-you grepping for the old name
+# lands at the new home.
 
 
 def merge_and_resolve(
@@ -1199,73 +1179,23 @@ def merge_and_resolve(
     # disagrees with the LLM extraction. The worker-side kill switch
     # (DOCLING_GRAPH_TABLE_OVERLAY_ENABLED) is authoritative even over
     # cached overlay payloads loaded from prior runs (spec §4.3).
-    import os
-    from app.services.table_overlay import apply_field_overlay
-
-    def _table_overlay_enabled_worker() -> bool:
-        return os.environ.get(
-            "DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true",
-        ).lower() != "false"
-
-    overlay_enabled = _table_overlay_enabled_worker()
-    table_overlay = (
-        _extract_doc_overlay(pass_results) if overlay_enabled else None
-    )
-
-    # Worker-side kill switch is authoritative over cached overlays.
-    # Spec §4.3.
-    if not overlay_enabled:
-        cached_overlay_present = sum(
-            1 for pr in pass_results.values()
-            if getattr(pr, "table_overlay", None) is not None
-        )
-        if cached_overlay_present:
-            logger.info(
-                "TABLE_OVERLAY_KILL_SWITCH_ACTIVE_WORKER doc_id=%s "
-                "pass_count=%d cached_overlay_present=%d",
-                document_id, len(pass_results), cached_overlay_present,
-            )
-
-    # Phase 0: cross-pass identity canonicalization. When overlay is
-    # enabled AND we found one, pass the alias map through; otherwise
-    # call with None and rely on the existing token-overlap pass.
-    canonicalize_cross_pass_identities(
+    #
+    # The orchestrator encapsulates: env-flag read, kill-switch
+    # logging, extract_doc_overlay, Phase 0 (delegated back to
+    # canonicalize_cross_pass_identities), and Phase 0.5
+    # (apply_field_overlay). When future refactors split this merge
+    # function into a different dispatcher (e.g., the
+    # derive_ontology_graph_merge of feat/per-pass-celery-fanin), the
+    # orchestrator call below should be threaded into that dispatcher
+    # at the same point — between identity canonicalization and entity
+    # merge. Spec §5.5.
+    from app.services.table_overlay import apply_table_overlay_phases
+    apply_table_overlay_phases(
         pass_results,
-        ontology,
-        table_alias_map_by_entity_type=(
-            table_overlay.alias_map_by_entity_type
-            if (overlay_enabled and table_overlay is not None)
-            else None
-        ),
+        ontology=ontology,
+        document_id=document_id,
+        canonicalize_fn=canonicalize_cross_pass_identities,
     )
-
-    # Phase 0.5: per-cell field overlay. Only when overlay is enabled,
-    # we found one, and it carries facts.
-    if overlay_enabled and table_overlay is not None and table_overlay.facts:
-        try:
-            stats = apply_field_overlay(
-                pass_results,
-                table_overlay.facts,
-                policy="table_wins_for_table_facts",
-            )
-            logger.info(
-                "TABLE_OVERLAY_APPLIED doc_id=%s "
-                "field_overlay_applied=%d matches_touched=%d "
-                "skipped_no_entity=%d skipped_unknown_field=%d "
-                "skipped_validation_fail=%d conflicts_overridden=%d "
-                "policy=%s",
-                document_id, stats.applied, stats.matches_touched,
-                stats.skipped_no_entity, stats.skipped_unknown_field,
-                stats.skipped_validation_fail, stats.conflicts_overridden,
-                stats.policy_active,
-            )
-        except Exception as exc:
-            logger.warning(
-                "apply_field_overlay failed mid-loop: %s — proceeding "
-                "with merge using whatever (fact, instance) swaps had "
-                "already completed. Bounded-degraded per §7. Operator "
-                "rollback via kill switch only.", exc,
-            )
     # ---------- end Mechanism A1 ----------
 
     # --- Pass 1: merge entities ---
