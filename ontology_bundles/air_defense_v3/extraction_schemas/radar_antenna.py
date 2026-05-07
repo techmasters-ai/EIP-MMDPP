@@ -59,7 +59,8 @@ class RadarAntennaRecord(BaseModel):
     gain_dbi: Optional[float] = Field(
         default=None,
         description=(
-            "Peak antenna gain in dBi. Emit only when the source states "
+            "Peak antenna gain in dBi. Source labels such as 'Gain' or "
+            "'Antenna Gain' map here. Emit only when the source states "
             "value AND unit. See Unit Policy in DELTA_SYSTEM_PROMPT for "
             "dB-domain conversions."
         ),
@@ -68,28 +69,34 @@ class RadarAntennaRecord(BaseModel):
         default=None,
         description=(
             "Antenna aperture width (azimuth dimension) in meters. Emit "
-            "only when the source states value AND unit."
+            "only when the source states value AND unit. Source labels "
+            "such as 'Antenna Width', 'Azimuth Aperture', 'Horizontal "
+            "Aperture', or width-like dimensions map here."
         ),
     )
     antenna_dim_el_m: Optional[float] = Field(
         default=None,
         description=(
             "Antenna aperture height (elevation dimension) in meters. "
-            "Emit only when the source states value AND unit."
+            "Emit only when the source states value AND unit. Source "
+            "labels such as 'Antenna Height', 'Elevation Aperture', "
+            "'Vertical Aperture', or height-like dimensions map here."
         ),
     )
     beamwidth_az_deg: Optional[float] = Field(
         default=None,
         description=(
             "Main-beam 3 dB azimuth beamwidth in degrees. Emit only when "
-            "the source states value AND unit."
+            "the source states value AND unit. Source labels such as "
+            "'Azimuth Beamwidth' or 'Horizontal Beamwidth' map here."
         ),
     )
     beamwidth_el_deg: Optional[float] = Field(
         default=None,
         description=(
             "Main-beam 3 dB elevation beamwidth in degrees. Emit only "
-            "when the source states value AND unit."
+            "when the source states value AND unit. Source labels such "
+            "as 'Elevation Beamwidth' or 'Vertical Beamwidth' map here."
         ),
     )
     spoiled: Optional[bool] = Field(
@@ -103,7 +110,9 @@ class RadarAntennaRecord(BaseModel):
         default=None,
         description=(
             "Maximum elevation coverage angle in degrees. Emit only when "
-            "the source states value AND unit."
+            "the source states value AND unit. Source labels such as "
+            "'Elevation Coverage', 'Elevation Limit', or 'Elevation "
+            "Coverage Limits' map here."
         ),
     )
 

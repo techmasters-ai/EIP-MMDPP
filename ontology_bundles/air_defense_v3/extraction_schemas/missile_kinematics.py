@@ -56,30 +56,38 @@ class MissileKinematicsRecord(BaseModel):
         default=None,
         description=(
             "Minimum intercept range in kilometers. Emit only when the "
-            "source states value AND unit. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "source states value AND unit. Source labels such as "
+            "'Min Range' or 'minimum range' map here when they describe "
+            "the missile variant. See Unit Policy in DELTA_SYSTEM_PROMPT "
+            "for conversions."
         ),
     )
     max_intercept_km: Optional[float] = Field(
         default=None,
         description=(
             "Maximum intercept range in kilometers. Emit only when the "
-            "source states value AND unit. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "source states value AND unit. Source labels such as "
+            "'Range', 'Max Range', 'maximum range', 'effective range', "
+            "or 'engagement range' map here when they describe the "
+            "missile variant. See Unit Policy in DELTA_SYSTEM_PROMPT for "
+            "conversions."
         ),
     )
     min_altitude_km: Optional[float] = Field(
         default=None,
         description=(
             "Minimum engagement altitude in kilometers. Emit only when "
-            "the source states value AND unit."
+            "the source states value AND unit. Source labels such as "
+            "'Min Altitude' or 'minimum altitude' map here."
         ),
     )
     max_altitude_km: Optional[float] = Field(
         default=None,
         description=(
             "Maximum engagement altitude in kilometers. Emit only when "
-            "the source states value AND unit."
+            "the source states value AND unit. Source labels such as "
+            "'Altitude', 'Max Altitude', 'ceiling', or 'engagement "
+            "altitude' map here when they describe the missile variant."
         ),
     )
     max_launch_angle_deg: Optional[float] = Field(

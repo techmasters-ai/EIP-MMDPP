@@ -380,6 +380,67 @@ radar timing, radar antenna, missile airframe, missile speed/timing,
 missile propulsion, and relationship passes must all preserve row-local
 attribution.
 
+### 12b) Source-label to schema-field aliases
+
+Source tables and prose often use human labels instead of schema field names.
+Use these aliases only when the source value and unit are explicit and the
+active pass contains the target field. Field units remain authoritative.
+
+Missile aliases:
+
+* `Range`, `Max Range`, `maximum range`, `effective range`, or `engagement range`
+  may populate `max_intercept_km` when the row/column belongs to a missile
+  variant; convert metres to kilometres when needed.
+* `Min Range` or `minimum range` may populate `min_intercept_km`.
+* `Altitude`, `Max Altitude`, `ceiling`, or `engagement altitude` may populate
+  `max_altitude_km`; `Min Altitude` may populate `min_altitude_km`.
+* `Length`, `Overall Length`, or `Missile Length` may populate
+  `body_length_m`; convert mm/cm/ft/in to metres when needed.
+* `Diameter`, `Body Diameter`, `Calibre`, or `Caliber` may populate
+  `body_diameter_m`; convert mm/cm/in to metres when needed.
+* `Weight`, `Mass`, `Launch Weight`, or `Launch Mass` may populate
+  `total_mass_kg` only when it describes the whole missile.
+* `Speed`, `Velocity`, or `Maximum Velocity` may populate `max_speed_mps` only
+  when the source label implies a maximum; `Average Speed` maps to
+  `average_speed_mps`.
+* `Time of Flight`, `Flight Time`, or `Flyout Time` may populate
+  `flight_time_sec` or `max_flyout_time_sec` according to the source label.
+* `Burn Time` may populate `total_burn_time_sec` only when it describes the
+  full motor burn. If a row/section says `1st Stage`, `Booster`, `Ejector`,
+  `2nd Stage`, `Sustainer`, or `Sustain`, map the value only to the matching
+  stage field (`booster_*`, `ejector_*`, `sustain_*`).
+* Under a `1st Stage` or `Booster` section, `Weight`/`Mass` maps to
+  `booster_mass_kg`; under a `2nd Stage`, `Sustainer`, or `Sustain` section,
+  it maps to `sustain_mass_kg`. Never map a stage mass to `total_mass_kg`.
+* Under a stage section, `Thrust` maps to the matching free-text thrust field
+  (`booster_thrust`, `sustain_thrust`, or `ejector_thrust`) and should preserve
+  the source unit string.
+
+Radar aliases:
+
+* `Frequency`, `Operating Frequency`, `Carrier Frequency`, or `RF` may
+  populate `nominal_rf_mhz` when the value belongs to the radar.
+* `Peak Power`, `Transmitter Power`, or `Tx Power` may populate
+  `tx_peak_power_kw`; `ERP` or `Effective Radiated Power` may populate
+  `erp_dbw` only when the source unit is dBW/dBm.
+* `PRI`, `Pulse Repetition Interval`, or `Pulse Interval` may populate
+  `nominal_pri_usec`; `Pulse Width`, `Pulse Duration`, or `PW` may populate
+  `nominal_pd_usec`.
+* `Scan Period`, `Scan Time`, or `Rotation Period` may populate
+  `scan_period_sec`; `Dwell` or `Dwell Time` may populate `dwell_time`.
+* `Antenna Gain` maps to `gain_dbi`; `Antenna Width`, `Azimuth Aperture`, or
+  horizontal aperture maps to `antenna_dim_az_m`; `Antenna Height`,
+  `Elevation Aperture`, or vertical aperture maps to `antenna_dim_el_m`.
+* `Azimuth Beamwidth` maps to `beamwidth_az_deg`; `Elevation Beamwidth` maps
+  to `beamwidth_el_deg`; `Elevation Coverage` maps to
+  `coverage_limits_el_deg`.
+* `Chirp Bandwidth`, `Frequency Excursion`, or `Sweep Width` may populate
+  `frequency_excursion_mhz`; `Code Length`, `Chips`, or `Bits` may populate
+  `num_bits_in_code`; `Pulses per Dwell` maps to `pulses_per_dwell`.
+
+These aliases do not permit inference. They only translate explicit source
+labels into the active schema's field names.
+
 ### 13) Status and role inference discipline
 
 * Do not infer `system_status` from historical narrative, publication date, museum context, archival context, or general knowledge

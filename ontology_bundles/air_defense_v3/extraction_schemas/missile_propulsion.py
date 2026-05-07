@@ -76,8 +76,10 @@ class MissilePropulsionRecord(BaseModel):
     booster_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Booster-stage burn time in seconds. Emit only when the "
-            "source states value AND unit."
+            "Booster-stage burn time in seconds. Source labels such as "
+            "'Burn Time' or 'Time' map here only under a '1st Stage', "
+            "'Booster', or equivalent section/row label. Emit only when "
+            "the source states value AND unit."
         ),
     )
     booster_thrust: Optional[str] = Field(
@@ -94,15 +96,20 @@ class MissilePropulsionRecord(BaseModel):
     booster_mass_kg: Optional[float] = Field(
         default=None,
         description=(
-            "Booster-stage mass in kilograms. Emit only when the source "
+            "Booster-stage mass in kilograms. Source labels such as "
+            "'Weight' or 'Mass' map here only under a '1st Stage', "
+            "'Booster', or equivalent section/row label. Never copy "
+            "this value to total_mass_kg. Emit only when the source "
             "states value AND unit."
         ),
     )
     sustain_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Sustainer-stage burn time in seconds. Emit only when the "
-            "source states value AND unit."
+            "Sustainer-stage burn time in seconds. Source labels such "
+            "as 'Burn Time' or 'Time' map here only under a '2nd Stage', "
+            "'Sustainer', 'Sustain', or equivalent section/row label. "
+            "Emit only when the source states value AND unit."
         ),
     )
     sustain_thrust: Optional[str] = Field(
@@ -119,7 +126,10 @@ class MissilePropulsionRecord(BaseModel):
     sustain_mass_kg: Optional[float] = Field(
         default=None,
         description=(
-            "Sustainer-stage mass in kilograms. Emit only when the "
+            "Sustainer-stage mass in kilograms. Source labels such as "
+            "'Weight' or 'Mass' map here only under a '2nd Stage', "
+            "'Sustainer', 'Sustain', or equivalent section/row label. "
+            "Never copy this value to total_mass_kg. Emit only when the "
             "source states value AND unit."
         ),
     )

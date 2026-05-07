@@ -47,25 +47,31 @@ class RadarPowerRfRecord(BaseModel):
     erp_dbw: Optional[float] = Field(
         default=None,
         description=(
-            "Effective Radiated Power in dBW. Emit only when the source "
-            "states the value with units; otherwise null. See Unit "
-            "Policy in DELTA_SYSTEM_PROMPT for conversions."
+            "Effective Radiated Power in dBW. Source labels such as "
+            "'ERP' or 'Effective Radiated Power' map here only when the "
+            "source unit is dBW/dBm. Emit only when the source states "
+            "the value with units; otherwise null. See Unit Policy in "
+            "DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
     tx_peak_power_kw: Optional[float] = Field(
         default=None,
         description=(
-            "Transmitter peak power in kilowatts. Emit only when the "
-            "source states value AND unit. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "Transmitter peak power in kilowatts. Source labels such as "
+            "'Peak Power', 'Transmitter Power', 'Tx Power', or 'Pulse "
+            "Power' map here when they describe peak transmitter power. "
+            "Emit only when the source states value AND unit. See Unit "
+            "Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
     nominal_rf_mhz: Optional[float] = Field(
         default=None,
         description=(
-            "Nominal carrier frequency in MHz. Emit only when the source "
-            "states value AND unit. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "Nominal carrier frequency in MHz. Source labels such as "
+            "'Frequency', 'Operating Frequency', 'Carrier Frequency', "
+            "or 'RF' map here when they describe the radar carrier. "
+            "Emit only when the source states value AND unit. See Unit "
+            "Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
 

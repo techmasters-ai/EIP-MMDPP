@@ -78,22 +78,28 @@ class RadarModulationRecord(BaseModel):
         default=None,
         description=(
             "Frequency excursion (chirp bandwidth) in MHz. Emit only "
-            "when the source states value AND unit. See Unit Policy in "
+            "when the source states value AND unit. Source labels such "
+            "as 'Frequency Excursion', 'Chirp Bandwidth', 'Sweep Width', "
+            "or 'Modulation Bandwidth' map here. See Unit Policy in "
             "DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
     num_bits_in_code: Optional[int] = Field(
         default=None,
         description=(
-            "Number of chips in the phase-code sequence. Integer count; "
-            "emit only when the source states it."
+            "Number of chips/bits in the phase-code sequence. Source "
+            "labels such as 'Code Length', 'Chips', 'Bits', or 'Number "
+            "of Bits' map here. Integer count; emit only when the source "
+            "states it."
         ),
     )
     pulses_per_dwell: Optional[int] = Field(
         default=None,
         description=(
-            "Pulses integrated per beam-position dwell. Integer count; "
-            "emit only when the source states it."
+            "Pulses integrated per beam-position dwell. Source labels "
+            "such as 'Pulses per Dwell', 'Pulses/Dwell', or 'Integrated "
+            "Pulses' map here. Integer count; emit only when the source "
+            "states it."
         ),
     )
 

@@ -48,23 +48,27 @@ class RadarTimingRecord(BaseModel):
         default=None,
         description=(
             "Nominal Pulse Repetition Interval in microseconds. Emit "
-            "only when the source states value AND unit. See Unit Policy "
-            "in DELTA_SYSTEM_PROMPT for conversions."
+            "only when the source states value AND unit. Source labels "
+            "such as 'PRI', 'Pulse Repetition Interval', or 'Pulse "
+            "Interval' map here. See Unit Policy in DELTA_SYSTEM_PROMPT "
+            "for conversions."
         ),
     )
     nominal_pd_usec: Optional[float] = Field(
         default=None,
         description=(
             "Nominal Pulse Duration in microseconds. Emit only when the "
-            "source states value AND unit. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "source states value AND unit. Source labels such as 'Pulse "
+            "Width', 'Pulse Duration', 'Pulse Length', or 'PW' map here. "
+            "See Unit Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
     scan_period_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Time to complete one full scan in seconds. Emit only when "
-            "the source states value AND unit."
+            "Time to complete one full scan in seconds. Source labels "
+            "such as 'Scan Period', 'Scan Time', or 'Rotation Period' "
+            "map here. Emit only when the source states value AND unit."
         ),
     )
     dwell_time: Optional[str] = Field(
