@@ -97,14 +97,21 @@ class TestStartIngestPipelineChainShape:
         # Verify task name presence via .task attribute on each Signature
         task_names = [getattr(sig, "task", "") for sig in chain_args]
 
-        # First stage must be prepare_document
-        assert any("prepare_document" in n for n in task_names[:1]), (
-            f"First stage must be prepare_document, got: {task_names[0]}"
-        )
-
-        # Last stage must be derive_ontology_graph
-        assert any("derive_ontology_graph" in n for n in task_names[-1:]), (
-            f"Last stage must be derive_ontology_graph, got: {task_names[-1]}"
+        # Assert the full ordered sequence — a stage-reorder regression will fail here
+        expected_sequence = [
+            "prepare_document",
+            "detect_and_translate",
+            "derive_document_metadata",
+            "purge_document_derivations",
+            "derive_picture_descriptions",
+            "derive_text_chunks_and_embeddings",
+            "derive_image_embeddings",
+            "derive_document_anchors",
+            "derive_ontology_graph",
+        ]
+        actual_sequence = [name.rsplit(".", 1)[-1] for name in task_names]
+        assert actual_sequence == expected_sequence, (
+            f"Chain order mismatch: expected {expected_sequence}, got {actual_sequence}"
         )
 
         # Excluded stages must be absent
@@ -156,14 +163,11 @@ class TestReingestGraphOnlyChainShape:
 
         task_names = [getattr(sig, "task", "") for sig in chain_args]
 
-        # First stage must be derive_document_anchors
-        assert any("derive_document_anchors" in n for n in task_names[:1]), (
-            f"First stage must be derive_document_anchors, got: {task_names[0]}"
-        )
-
-        # Last stage must be derive_ontology_graph
-        assert any("derive_ontology_graph" in n for n in task_names[-1:]), (
-            f"Last stage must be derive_ontology_graph, got: {task_names[-1]}"
+        # Assert the full ordered sequence — a stage-reorder regression will fail here
+        expected_sequence = ["derive_document_anchors", "derive_ontology_graph"]
+        actual_sequence = [name.rsplit(".", 1)[-1] for name in task_names]
+        assert actual_sequence == expected_sequence, (
+            f"Chain order mismatch: expected {expected_sequence}, got {actual_sequence}"
         )
 
         # Excluded stages must be absent

@@ -2239,8 +2239,10 @@ def reingest_graph_only(doc_id, request) -> dict:
     Resolves the bundle via graph_only precedence (explicit →
     inherited from latest run → source default → system default),
     creates a new PipelineRun with mode='graph_only' and the bundle
-    snapshot, then dispatches the 3-stage graph-only chain
-    (derive_ontology_graph, derive_structure_links, finalize_document).
+    snapshot, then dispatches a 2-stage chain ending at
+    derive_ontology_graph. The downstream chain
+    (derive_structure_links → finalize_document) is dispatched by
+    derive_ontology_graph_merge after the per-pass fan-in completes.
 
     Returns a dict matching the legacy route's response shape:
         {
@@ -6232,7 +6234,6 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         # dispatcher for downstream stages. finalize_document (the last stage
         # in each chain) sets run.status=COMPLETE for both modes — the merge
         # task no longer sets run.status directly in graph_only mode.
-        from celery import chain as celery_chain
         if run_mode == "graph_only":
             # graph_only is a shorter chain — no collect_derivations, no
             # derive_canonicalization (matches the legacy reingest_graph_only
@@ -6938,6 +6939,16 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
             return
 
         # Check for failed, missing, or stuck stages
+        # TODO(per-pass-fanin Task 8): REQUIRED_STAGES is currently mode-blind. For
+        # graph_only runs (which skip prepare_document, purge_document_derivations,
+        # derive_text_embeddings/derive_image_embeddings, derive_canonicalization),
+        # this set contains stages that never ran, causing graph_only runs to always
+        # resolve to PARTIAL_COMPLETE instead of COMPLETE. Pre-Task-7, the merge
+        # task's direct run.status="COMPLETE" write was being clobbered here too —
+        # the bug pre-dates Task 7 but is now exposed without that workaround.
+        # Fix: read run.mode from the DB and use a mode-scoped required-stages set
+        # for graph_only (e.g., {"derive_document_anchors", "derive_ontology_graph",
+        # "derive_structure_links"}).
         REQUIRED_STAGES = {
             "prepare_document",
             "detect_and_translate",

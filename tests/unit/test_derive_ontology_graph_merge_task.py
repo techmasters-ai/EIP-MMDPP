@@ -276,8 +276,10 @@ def _patched_merge(
         patch("app.workers.pipeline._upsert_document_graph_extraction"),
         patch("app.workers.pipeline._update_document_pipeline_status"),
         patch("app.workers.pipeline._terminalize_doc_and_run"),
-        # Always patch celery.chain to avoid Redis connection in tests
-        patch("celery.chain", mock_chain_fn),
+        # Patch the module-level alias so the merge task's celery_chain calls
+        # are intercepted (the local import was removed in Task 7 review fix #3;
+        # the merge task now uses the module-level binding at import time).
+        patch("app.workers.pipeline.celery_chain", mock_chain_fn),
     ]
     if skip_consistency_check:
         patches.append(patch("app.workers.pipeline._assert_stage_run_pass_output_consistency"))
