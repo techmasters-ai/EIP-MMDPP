@@ -446,6 +446,53 @@ A worker hung on a dead ArcadeDB socket is invisible: no error log, no task time
 
 ---
 
+**#83. Relax post-extraction IDENTITY_FILTER (recoverable false-positive drops at high temperature)**
+**Status:** Open. Surfaced during the 2026-05-03/05 temperature × field A/B sweep (Runs 13–20).
+**Files:** `docker/docling-graph/app/main.py:1121` (`_filter_pass_output_by_batch_text`), same file ~1146 (`_filter_provenance_rows_by_allowed_identities`), same file ~1167–1179 (IDENTITY_FILTER log).
+
+**Observation:**
+The post-extraction "service identity gate" at `main.py:1121` substring-matches each extracted entity's identity values against the batch's evidence text and drops any that don't appear verbatim. At higher LLM sampling temperatures (T=1.0 in particular), gemma4:31b extracted entities whose identity values ARE in the source document but whose surface form differed from the evidence text by literal characters — the gate rejected them as if they were hallucinations.
+
+Concrete failure modes the substring check misses:
+1. **Unit normalization** — model emits `"30 kilometres"` while batch has `"30 km"` (or model converts `"29000 m"` → `"29"` for a `_km` field, mathematically correct but invisible to substring match).
+2. **Whitespace / punctuation** — model emits `"SA-2 Guideline"` while batch has `"SA-2  Guideline"` (table-extracted double space) or `"SA-2/Guideline"`.
+3. **Case** — current check appears case-sensitive depending on the cell.
+4. **Cross-cell concatenation** — value spans a table cell boundary the evidence-text collector flattened differently from the model's reconstruction.
+5. **Numeric formatting** — `"1,135"` vs `"1135"` vs `"1.135 t"` for the same booster mass.
+
+The gate is correct in spirit (drops obvious hallucinations), but its substring-equality implementation is too literal — at T≥0.5 it costs us *real* extractions while still admitting some false positives. At T=0.0 the model's surface form usually matches the input verbatim, so the gate is approximately a no-op; at T=1.0 the same gate drops correct entities along with hallucinations.
+
+**What needs to be done:**
+
+Three relaxation tiers, each independently shippable. Land Tier A first; measure delta vs R17/alias-patch baseline before deciding on B/C.
+
+1. **Tier A (cheap, ~2 hours):** Normalize both sides before substring check. Lowercase, collapse whitespace runs, strip ASCII punctuation `[-_/.,;:]`. Recovers (2) and (3) immediately. Add a unit test in `docker/docling-graph/tests/` covering each of (2)/(3) variants. Acceptance: `IDENTITY_FILTER` `service_identity_dropped` count at T=1.0 drops by ≥30% on the SA-2 corpus without admitting any new hallucinations (verify by spot-check of `dropped_examples` log before/after).
+
+2. **Tier B (moderate, ~4 hours):** Numeric-aware match. When the field's Pydantic type is `int`/`float`, parse both the extracted value and any number-shaped tokens in the same evidence cell as numbers; admit if `abs(extracted - any_token) / max(any_token, 1) < 0.10` AND the unit-class is consistent with the field name (`*_km` accepts evidence-cell numbers near the value × {1, 1000} for m↔km conversion; `*_m` accepts × {1, 1/1000}; `*_kg` only accepts × 1, etc.). Recovers (1) and (5). Reuse the `grade()` tolerance dict already in `notebooks/extraction_walkthrough.ipynb` §20 as a starting source-of-truth for per-field tolerances. Acceptance: aggregate ✓+~ count on the §20 GT scorecard increases at T=1.0 vs Tier A baseline by ≥20%.
+
+3. **Tier C (advisory, ~1 hour):** Make the gate temperature-aware. Read the call's `temperature` (already plumbed through `extract_pass` body) and switch behavior:
+   - T ≤ 0.3: drop on miss (current behavior — keeps the strict gate where it works).
+   - T ≥ 0.5: log a `WARNING` with `gate_advisory=true` but admit the entity. The `service_identity_dropped` count becomes `service_identity_advisory` so observability still tracks how often the gate would have fired.
+   - Add a kill-switch env var `DOCLING_GRAPH_IDENTITY_GATE_MODE` ∈ `{strict, normalized, numeric, advisory}` defaulting to `normalized` (Tier A) so an operator can pin behavior without a code change.
+
+**Why this matters:**
+At T=1.0 the model has higher recall (more entities found) AND higher field-fill (more numeric fields populated per entity) — exactly what the §20 sweep is trying to measure — but those gains are partially being clawed back by an over-strict post-extraction gate. The R17 vs T=1.0 comparison currently understates the temperature effect because we're measuring `extracted ∩ admitted_by_gate`, not `extracted`.
+
+This is the same class of soft-fail that #77 (silent translation drops) and #78 (tiny-markdown stub) address: a real signal being lost to a too-aggressive filter, with no surfacing in the operator's primary dashboard. Per the project's "soft-fails belong in TODO" rule, fixing it visibly closes one more silent-degradation path.
+
+**Estimated lift:** Tier A ~2h. Tier B ~4h. Tier C ~1h. Total ~1 day if all three land, or ~2h for the high-leverage Tier A alone.
+
+**When to do it:**
+Bundle with the next `docker/docling-graph/app/main.py` change. Specifically: if the alias-patch sweep (currently running) shows field-fill plateau at T=0.3 and the working hypothesis shifts to "T=1.0 has more raw signal but the gate is eating it," ship Tier A immediately and re-run §20 — that's the cheapest test of the hypothesis.
+
+**Acceptance:**
+- `IDENTITY_FILTER` log shows reduced `service_identity_dropped` count at T=1.0 (Tier A: ≥30%).
+- `dropped_examples` spot-check confirms no new hallucinations admitted.
+- §20 GT scorecard at T=1.0 shows ≥20% more ✓+~ entries vs current behavior (Tier B).
+- Optional: §20 cells re-run identical → cache-friendly diff demonstrates the gate change is the only delta.
+
+---
+
 ## Completed Items (Reference)
 
 ### Gaps/Bugs Fixed
