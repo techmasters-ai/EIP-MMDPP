@@ -74,7 +74,7 @@
     {
       "id": 9,
       "subject": "Task 9: pipeline.py reads table_overlay onto PassResult",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         3,
         8
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-07T02:54:56.435029+00:00"
+  "lastUpdated": "2026-05-07T03:26:55.153339+00:00"
 }
