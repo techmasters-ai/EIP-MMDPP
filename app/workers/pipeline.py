@@ -6101,6 +6101,15 @@ def _has_pending_retry_for_pass(
     - finished_at > now - countdown_buffer_seconds (the Celery countdown is
       still pending in the broker's countdown queue)
 
+    The check uses ``attempt < (pass_max_retries + pass_max_transport_retries)``
+    as a conservative upper bound.  In practice, only ``pass_max_retries``
+    contributes to Celery's ``self.request.retries`` counter — transport-class
+    retries loop internally inside ``_execute_pass_attempt`` without going
+    through Celery.  Using the combined sum errs on the side of waiting longer
+    rather than racing a retry.  Branch 3 of the reconciler (promote-when-
+    pass-output-exists) handles the exhausted-but-recently-finished case
+    first, so this conservative bound has no functional impact.
+
     The countdown_buffer_seconds defaults to 10 min — covers the worst case of
     _retry_delay (300s capped) + a generous safety margin.  Used by the
     reconciler to avoid revoking a task whose retry is genuinely pending.
@@ -6162,6 +6171,7 @@ def reconcile_ontology_graph_runs(self) -> dict:
         "skipped_pending_retry": [...],
     }
     """
+    from datetime import datetime, timezone, timedelta  # local; matches file's style
     from app.models.ingest import PipelineRun
     from app.services.run_phase_dispatch import reclaim_stale_phase
 
@@ -6216,12 +6226,17 @@ def reconcile_ontology_graph_runs(self) -> dict:
             # ----------------------------------------------------------------
             n_terminal = count_terminal_passes(db, run_id, entity_passes)
             if n_terminal >= len(entity_passes) and entity_passes:
-                # Check if merge or system_links has not been started
+                # Check if merge or system_links has not been started / is still running.
                 merge_absent = "merge" not in dispatched_phases
-                sl_absent = "system_links" not in dispatched_phases
+                sl_entry = dispatched_phases.get("system_links")
+                # sl_blocking is True only when system_links is in-progress (claimed
+                # or dispatched). A completed system_links is NOT blocking — it means
+                # we should proceed to dispatch merge.  An absent system_links is also
+                # not blocking — _try_advance_phase will dispatch it first.
+                sl_blocking = sl_entry is not None and sl_entry.get("state") != "completed"
                 # Only advance if no follow-up is already in progress.
                 # _try_advance_phase has its own idempotency via claim_phase.
-                if merge_absent and sl_absent:
+                if merge_absent and not sl_blocking:
                     logger.info(
                         "reconcile_ontology_graph_runs: stuck-without-advance "
                         "run_id=%s — all %d entity passes terminal, no follow-up; advancing",
@@ -6261,7 +6276,6 @@ def reconcile_ontology_graph_runs(self) -> dict:
                     claimed_at_raw = phase_entry.get("claimed_at")
                     if claimed_at_raw is None:
                         continue
-                    from datetime import datetime, timezone, timedelta
                     claimed_at = datetime.fromisoformat(claimed_at_raw)
                     age_s = (datetime.now(timezone.utc) - claimed_at).total_seconds()
                     if age_s < stale_claimed_threshold_s:
@@ -6296,7 +6310,6 @@ def reconcile_ontology_graph_runs(self) -> dict:
                     dispatched_at_raw = phase_entry.get("dispatched_at")
                     if dispatched_at_raw is None:
                         continue
-                    from datetime import datetime, timezone, timedelta
                     dispatched_at = datetime.fromisoformat(dispatched_at_raw)
                     age_s = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
 
@@ -6394,10 +6407,21 @@ def reconcile_ontology_graph_runs(self) -> dict:
                         )
                         db.rollback()
 
-        logger.info(
+        no_actions = (
+            summary["scanned_runs"] == 0
+            or not any([
+                summary["stale_claimed_reclaimed"],
+                summary["stale_dispatched_reclaimed"],
+                summary["promoted_to_terminal"],
+                summary["stuck_advances"],
+                summary["skipped_pending_retry"],
+            ])
+        )
+        log_method = logger.debug if no_actions else logger.info
+        log_method(
             "reconcile_ontology_graph_runs: scan complete — "
             "scanned=%d stale_claimed=%d stale_dispatched=%d promoted=%d "
-            "stuck_advances=%d skipped_pending_retry=%d",
+            "stuck=%d skipped=%d",
             summary["scanned_runs"],
             len(summary["stale_claimed_reclaimed"]),
             len(summary["stale_dispatched_reclaimed"]),

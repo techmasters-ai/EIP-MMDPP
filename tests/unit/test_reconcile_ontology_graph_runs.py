@@ -516,6 +516,39 @@ class TestPromotesCompletedButNotMarkedTerminal:
         assert entry is not None
         assert entry.result == "succeeded"
 
+    def test_promotes_skipped_to_terminal_skipped(
+        self, db_session: Session, pipeline_run_factory
+    ):
+        """Branch 3: dispatched + SKIPPED pass-output → mark_phase_terminal(result='skipped').
+
+        Regression guard: a typo mapping SKIPPED to 'failed' instead of 'skipped'
+        would go undetected without this test (only COMPLETE and FAILED were
+        previously covered).
+        """
+        run_id = pipeline_run_factory(status="PROCESSING")
+        _set_run_mode(db_session, run_id)
+
+        recent_at = _now_minus_iso(45)
+        _seed_phase(
+            db_session, run_id, _PHASE_A,
+            _build_dispatched_entry(recent_at, task_id="task-wrote-skipped"),
+        )
+        _seed_pass_output(db_session, run_id, _PASS_A, execution_status="SKIPPED")
+
+        with _patched_reconciler(db_session):
+            result = _run_reconciler()
+
+        assert _PHASE_A in result["promoted_to_terminal"], (
+            f"Expected {_PHASE_A} in promoted_to_terminal; got {result}"
+        )
+        # Phase must be marked completed with result='skipped' (not 'failed').
+        entry = read_phase_state(db_session, run_id, _PHASE_A)
+        assert entry is not None
+        assert entry.state == "completed"
+        assert entry.result == "skipped", (
+            f"Expected result='skipped' for SKIPPED execution_status; got '{entry.result}'"
+        )
+
 
 class TestStuckWithoutAdvance:
     """Branch 4: all entity passes terminal but no follow-up dispatched."""
@@ -564,6 +597,73 @@ class TestStuckWithoutAdvance:
             f"Expected run_id in stuck_advances; got {result['stuck_advances']}"
         )
         # _try_advance_phase dispatches merge via send_task (no system_links in manifest).
+        mocks["send_task"].assert_called()
+
+    def test_dispatches_merge_when_system_links_completed_but_merge_absent(
+        self, db_session: Session, pipeline_run_factory
+    ):
+        """Regression: Branch 4 must fire when system_links is completed AND merge
+        is absent.
+
+        Previously the condition was ``merge_absent and sl_absent`` — this skipped
+        Branch 4 whenever system_links appeared in dispatched_phases at all (even
+        with state='completed'), leaving runs with:
+          - all entity passes completed
+          - system_links completed
+          - no merge dispatch
+        in a permanently stuck state.  Production bundles (air_defense_v3) include
+        system_links, so this bug would have manifested in every production run.
+        """
+        run_id = pipeline_run_factory(status="PROCESSING")
+        _set_run_mode(db_session, run_id)
+
+        # Use a manifest that includes system_links (depends_on=[_PASS_A] marks it as
+        # a non-entity pass so entity_passes contains only _PASS_A and _PASS_B).
+        sl_pass_def = SimpleNamespace(
+            name="system_links",
+            kind="relationships_only",
+            input_mode="document_only",
+            required=True,
+            depends_on=[_PASS_A],  # non-empty → not an entity pass
+            primary_entity_types=[],
+            bridge_entity_types=[],
+            extracted_relationship_types=["ASSOCIATED_WITH"],
+            skip_if_no_upstream_endpoints=True,
+            module="extraction_schemas.system_links",
+            template_class="SystemLinksPass",
+        )
+        manifest_with_sl = SimpleNamespace(
+            bundle_key=_BUNDLE_KEY,
+            passes=[_fake_pass_def(_PASS_A), _fake_pass_def(_PASS_B), sl_pass_def],
+        )
+
+        # Seed terminal pass-output rows for both entity passes AND system_links.
+        _seed_pass_output(db_session, run_id, _PASS_A, execution_status="COMPLETE")
+        _seed_pass_output(db_session, run_id, _PASS_B, execution_status="COMPLETE")
+        _seed_pass_output(db_session, run_id, "system_links", execution_status="COMPLETE")
+
+        # Seed dispatched_phases: entity passes + system_links all 'completed'; no merge.
+        completed_at = _now_minus_iso(5)
+        completed_entry = {
+            "state": "completed",
+            "result": "succeeded",
+            "task_id": "task-done",
+            "claimed_at": _now_minus_iso(300),
+            "dispatched_at": _now_minus_iso(250),
+            "completed_at": completed_at,
+        }
+        for phase_key in (_PHASE_A, _PHASE_B, "system_links"):
+            _seed_phase(db_session, run_id, phase_key, completed_entry)
+        # "merge" is intentionally absent from dispatched_phases.
+
+        with _patched_reconciler(db_session, manifest=manifest_with_sl) as mocks:
+            result = _run_reconciler()
+
+        assert str(run_id) in result["stuck_advances"], (
+            "Branch 4 should have fired for run with completed entity passes + "
+            f"completed system_links + absent merge; got stuck_advances={result['stuck_advances']}"
+        )
+        # _try_advance_phase should have dispatched merge.
         mocks["send_task"].assert_called()
 
 
