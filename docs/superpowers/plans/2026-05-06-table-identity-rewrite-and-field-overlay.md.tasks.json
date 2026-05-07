@@ -33,7 +33,7 @@
     {
       "id": 4,
       "subject": "Task 4: extract_table_overlay public entry + qualification gate",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         2,
         3
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-06T23:51:06.479264+00:00"
+  "lastUpdated": "2026-05-07T00:01:36.588311+00:00"
 }
