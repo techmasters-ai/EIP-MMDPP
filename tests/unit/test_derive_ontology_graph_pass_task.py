@@ -294,6 +294,55 @@ class TestCancelAndSkip:
         mock_exec.assert_not_called()
         assert result["skipped"] == "cancelled"
 
+    def test_pass_task_aborts_when_cancel_lands_mid_extraction(
+        self, db_session, pipeline_run_factory
+    ):
+        """Cancel landing AFTER _execute_pass_attempt returns but BEFORE save is
+        detected by the second cancel-check inside derive_ontology_graph_pass.
+
+        Simulates the race by using a side_effect on _execute_pass_attempt that
+        flips the run status to 'FAILED' (the cancel_document terminal status) as
+        part of returning the COMPLETE outcome.
+
+        Verifies:
+        - The task returns {"skipped": "cancelled_mid_extraction"}.
+        - No pipeline_pass_outputs row is written.
+        - mark_phase_terminal is NOT called.
+        """
+        from app.models.ingest import PipelineRun
+
+        run_id = pipeline_run_factory()
+        doc_id = str(uuid.uuid4())
+
+        complete_outcome = _make_complete_outcome()
+
+        def _execute_and_cancel(*args, **kwargs):
+            """Return a COMPLETE outcome AND flip the run to FAILED simultaneously."""
+            run_obj = db_session.get(PipelineRun, run_id)
+            assert run_obj is not None, "Pipeline run must exist at cancel-flip time"
+            run_obj.status = "FAILED"
+            db_session.flush()
+            return complete_outcome
+
+        with _patched(db_session) as mocks:
+            with patch(
+                "app.workers.pipeline._execute_pass_attempt",
+                side_effect=_execute_and_cancel,
+            ):
+                with patch("app.workers.pipeline.mark_phase_terminal") as mock_terminal:
+                    result = _invoke(
+                        _make_task_self(), doc_id, str(run_id), "radar_identity"
+                    )
+
+        assert result.get("skipped") == "cancelled_mid_extraction"
+
+        # No pipeline_pass_outputs row written
+        db_session.expire_all()
+        assert not is_pass_already_resolved(db_session, run_id, "radar_identity")
+
+        # mark_phase_terminal must NOT have been called
+        mock_terminal.assert_not_called()
+
     def test_skip_when_run_missing(self, db_session, pipeline_run_factory):
         """Non-existent run_id → is_run_cancelled returns True (hard-deleted)."""
         doc_id = str(uuid.uuid4())

@@ -5744,6 +5744,11 @@ def derive_ontology_graph_pass(
         #    FAILED with retry pending → no pass-output write; self.retry().
         #    FAILED with retry exhausted → terminal write + terminalize if required.
         if outcome.execution_status in ("COMPLETE", "SKIPPED"):
+            # Second cancel-check: narrow the race window before save.  The targeted
+            # FK swallow in save_pass_output catches the residual race where
+            # cancel_document fires AFTER this check but BEFORE db.commit().
+            if is_run_cancelled(db, run_id):
+                return {"pass_name": pass_name, "skipped": "cancelled_mid_extraction"}
             _save_terminal_pass_output(
                 db,
                 run_id=run_id,
@@ -5781,6 +5786,11 @@ def derive_ontology_graph_pass(
         # Terminal failure: non-retryable PassTerminal OR retryable after exhausting
         # Celery retries. r4: do NOT rely on Celery's MaxRetriesExceededError — it
         # would re-raise without running this cleanup.
+        # Second cancel-check: narrow the race window before save.  The targeted
+        # FK swallow in save_pass_output catches the residual race where
+        # cancel_document fires AFTER this check but BEFORE db.commit().
+        if is_run_cancelled(db, run_id):
+            return {"pass_name": pass_name, "skipped": "cancelled_mid_extraction"}
         _save_terminal_pass_output(
             db,
             run_id=run_id,

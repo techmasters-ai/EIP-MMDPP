@@ -14,11 +14,14 @@ by the ``db_session`` transaction-rollback fixture.
 from __future__ import annotations
 
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.services.pass_outputs_store import (
+    _is_pipeline_run_fk_violation,
     count_completed_passes,
     count_terminal_passes,
     is_pass_already_resolved,
@@ -297,3 +300,108 @@ def test_count_returns_zero_when_no_rows(db_session: Session, pipeline_run_facto
     assert count_terminal_passes(db_session, run_id) == 0
     assert count_terminal_passes(db_session, run_id, pass_names=["radar_domain"]) == 0
     assert is_pass_already_resolved(db_session, run_id, "radar_domain") is False
+
+
+# ---------------------------------------------------------------------------
+# FK-swallow / cancel-safety tests (Task 10)
+# ---------------------------------------------------------------------------
+
+
+def test_save_swallows_specific_pipeline_run_fk_violation(
+    db_session: Session, pipeline_run_factory
+):
+    """save_pass_output discards the row and returns cleanly when the parent
+    pipeline_runs row has been hard-deleted (cancel_document path).
+
+    Uses a mocked db.execute to inject a synthetic ForeignKeyViolation for
+    the specific pipeline_run_id FK constraint.  This avoids the real-DB
+    approach (which would roll back the outer test transaction and discard
+    the pipeline_run_factory setup) while still exercising the full
+    save_pass_output try/except + rollback path.
+
+    Verifies:
+    - No exception is raised.
+    - The call returns None (cleanly).
+    - db.rollback() was called exactly once.
+    """
+    from unittest.mock import patch, MagicMock, call
+    from psycopg2.errors import ForeignKeyViolation
+
+    run_id = pipeline_run_factory()
+
+    # Build a synthetic ForeignKeyViolation for the pipeline_run_id FK.
+    fake_diag = MagicMock()
+    fake_diag.constraint_name = "pipeline_pass_outputs_pipeline_run_id_fkey"
+    fake_orig = MagicMock(spec=ForeignKeyViolation)
+    fake_orig.diag = fake_diag
+    fk_exc = IntegrityError("stmt", {}, fake_orig)
+    fk_exc.orig = fake_orig
+
+    # Patch db.execute to raise the FK violation, and spy on db.rollback.
+    with patch.object(db_session, "execute", side_effect=fk_exc):
+        with patch.object(db_session, "rollback") as mock_rollback:
+            result = save_pass_output(
+                db_session,
+                pipeline_run_id=run_id,
+                stage_run_id=None,
+                pass_name="radar_timing",
+                attempt=1,
+                execution_status="COMPLETE",
+                skip_reason=None,
+                yield_status="HIT",
+                extract_pass_response={"status": "ok"},
+                primary_entities_extracted=0,
+                bridge_entities_extracted=0,
+                relationships_extracted=0,
+                relationships_rejected=0,
+                diagnostics={},
+                field_provenance=[],
+            )
+
+    # Call returns None (cleanly swallowed) and rollback was called once.
+    assert result is None
+    mock_rollback.assert_called_once()
+
+
+def test_helper_returns_true_for_pipeline_run_fk(db_session: Session):
+    """_is_pipeline_run_fk_violation returns True for the exact target constraint."""
+    from psycopg2.errors import ForeignKeyViolation
+
+    fake_diag = MagicMock()
+    fake_diag.constraint_name = "pipeline_pass_outputs_pipeline_run_id_fkey"
+
+    fake_orig = MagicMock(spec=ForeignKeyViolation)
+    fake_orig.diag = fake_diag
+
+    exc = IntegrityError("stmt", {}, fake_orig)
+    exc.orig = fake_orig
+
+    assert _is_pipeline_run_fk_violation(exc) is True
+
+
+def test_helper_returns_false_for_other_fk(db_session: Session):
+    """_is_pipeline_run_fk_violation returns False for a different FK constraint."""
+    from psycopg2.errors import ForeignKeyViolation
+
+    fake_diag = MagicMock()
+    fake_diag.constraint_name = "pipeline_pass_outputs_stage_run_id_fkey"
+
+    fake_orig = MagicMock(spec=ForeignKeyViolation)
+    fake_orig.diag = fake_diag
+
+    exc = IntegrityError("stmt", {}, fake_orig)
+    exc.orig = fake_orig
+
+    assert _is_pipeline_run_fk_violation(exc) is False
+
+
+def test_helper_returns_false_for_unique_violation(db_session: Session):
+    """_is_pipeline_run_fk_violation returns False for a UniqueViolation."""
+    from psycopg2.errors import UniqueViolation
+
+    fake_orig = MagicMock(spec=UniqueViolation)
+
+    exc = IntegrityError("stmt", {}, fake_orig)
+    exc.orig = fake_orig
+
+    assert _is_pipeline_run_fk_violation(exc) is False

@@ -25,6 +25,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.ingest import PipelinePassOutput
@@ -42,6 +43,27 @@ _COMPLETE_STATUS = "COMPLETE"
 def _table():
     """Return the underlying Table object for raw-DML operations."""
     return PipelinePassOutput.__table__
+
+
+def _is_pipeline_run_fk_violation(exc: IntegrityError) -> bool:
+    """Return True iff the IntegrityError is a FK violation on
+    ``pipeline_pass_outputs.pipeline_run_id`` (the FK to ingest.pipeline_runs).
+
+    Identifies the violation by the Postgres constraint name
+    ``pipeline_pass_outputs_pipeline_run_id_fkey`` so that unique-constraint
+    violations and other-FK violations (e.g. ``stage_run_id_fkey``) are NOT
+    matched and continue to propagate as bugs.
+    """
+    from psycopg2.errors import ForeignKeyViolation
+
+    orig = getattr(exc, "orig", None)
+    if not isinstance(orig, ForeignKeyViolation):
+        return False
+    diag = getattr(orig, "diag", None)
+    if diag is None:
+        return False
+    constraint_name = getattr(diag, "constraint_name", None)
+    return constraint_name == "pipeline_pass_outputs_pipeline_run_id_fkey"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +106,24 @@ def save_pass_output(
     The caller is responsible for ``db.commit()`` — this function does NOT
     commit.  Matches the surrounding service style where transaction
     boundaries are owned by the worker/task layer.
+
+    **Cancel-safety:** if ``cancel_document`` hard-deletes the parent
+    ``pipeline_runs`` row between the per-pass task's cancel-check and this
+    write, the FK to ``ingest.pipeline_runs`` will fail.  This function
+    catches that *specific* ``IntegrityError`` (identified by the constraint
+    name ``pipeline_pass_outputs_pipeline_run_id_fkey``), calls
+    ``db.rollback()`` to clean up the aborted transaction, logs a warning,
+    and returns cleanly — the pass output is silently discarded because the
+    run no longer exists.
+
+    Other integrity errors (unique-constraint violations, other-FK violations
+    such as ``stage_run_id_fkey``, JSON serialization errors, length/enum
+    errors) are NOT swallowed and will still propagate as bugs.
+
+    Contract on early return: on FK-swallow the rollback is done internally;
+    the caller must NOT attempt a subsequent ``db.commit()`` for this
+    operation (the rolled-back transaction is clean but the row was not
+    written).
     """
     values: dict[str, Any] = {
         "id": uuid.uuid4(),
@@ -114,7 +154,22 @@ def save_pass_output(
             set_=update_values,
         )
     )
-    db.execute(stmt)
+    try:
+        db.execute(stmt)
+    except IntegrityError as exc:
+        db.rollback()
+        # Only swallow the specific FK violation indicating the parent run was
+        # hard-deleted (cancel_document path).  Other integrity errors
+        # (unique-constraint, other-FK like stage_run_id, JSON serialization,
+        # enum/length) must surface as bugs.
+        if _is_pipeline_run_fk_violation(exc):
+            logger.warning(
+                "save_pass_output: pipeline_run %s no longer exists (cancelled/"
+                "deleted) — discarding pass output for pass=%s",
+                pipeline_run_id, pass_name,
+            )
+            return
+        raise
 
 
 def load_pass_output(
