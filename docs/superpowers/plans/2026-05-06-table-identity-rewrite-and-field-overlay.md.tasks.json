@@ -83,7 +83,7 @@
     {
       "id": 10,
       "subject": "Task 10: docker-compose.yml kill-switch env var on both services",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         8
       ]
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-07T03:26:55.153339+00:00"
+  "lastUpdated": "2026-05-07T03:28:47.852861+00:00"
 }
