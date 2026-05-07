@@ -1,6 +1,6 @@
 # Table-Derived Identity Rewrite + Per-Cell Field Overlay (Mechanism A1)
 
-**Status:** Draft (in user review — r8)
+**Status:** Approved 2026-05-07 — implementation complete on `main`, parser smoke verified on real SA-2 Guideline PDF (43/43 GT-field facts correct, 9 listed missile variants × 5 fields). Worker-side application verified by Task 7+8+11 unit/integration tests. Live worker-side smoke against real SA-2 deferred pending coordination with concurrent `feat/per-pass-celery-fanin` branch (spec §4.4) — the in-memory PassResults path on `main` is shortly to be replaced by the DB-backed fan-in path, so a full real-ingest live smoke is best deferred to the post-merge moment when both architectures are live together.
 **Predecessor (parked):** `docs/superpowers/specs/2026-05-05-section-aware-table-fact-synthesis-design.md`
 **Reuses:** `docker/docling-graph/app/_table_facts.py` parser primitives (already on disk, 99 tests passing)
 **Related future work:** Mechanism B (per-variant prose binding accuracy for V-75-style docs) — separate spec
