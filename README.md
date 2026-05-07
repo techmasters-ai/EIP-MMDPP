@@ -155,6 +155,10 @@ GRAPH_REL_MIN_CONFIDENCE=0.55                     # Min relationship confidence 
 DEFAULT_ONTOLOGY_BUNDLE_KEY=air_defense_v3         # Bundle resolution system default
 PASS_MAX_RETRIES=3                                 # Per-pass retry budget for logic failures (5xx, malformed JSON, validation)
 PASS_MAX_TRANSPORT_RETRIES=3                       # Separate budget for transport failures (disconnect, timeout, DNS); does not burn PASS_MAX_RETRIES
+PASS_SOFT_TIME_LIMIT=3600                          # Per-pass Celery task soft time limit (1h); replaces the legacy 8h graph_soft_time_limit
+PASS_CONCURRENCY_PER_DOCUMENT=2                    # Max in-flight entity-extraction passes per document
+RECONCILER_PERIOD_SECONDS=60                       # How often reconcile_ontology_graph_runs runs (beat schedule)
+PHASE_CLAIM_STALE_SECONDS=30                       # How long a `claimed` phase entry must be old before reconciler repairs it
 DOCLING_FALLBACK_ENABLED=false                    # Fall back to legacy extraction on Docling 5xx (default false)
 ```
 
