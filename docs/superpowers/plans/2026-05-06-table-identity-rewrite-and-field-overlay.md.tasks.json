@@ -91,7 +91,7 @@
     {
       "id": 11,
       "subject": "Task 11: End-to-end synthetic fixture",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         9,
         10
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-07T03:28:47.852861+00:00"
+  "lastUpdated": "2026-05-07T03:33:15.968741+00:00"
 }
