@@ -166,6 +166,17 @@ if not any(
 MAX_CONCURRENT = int(os.environ.get("DOCLING_GRAPH_MAX_CONCURRENT_EXTRACTIONS", "2"))
 
 
+def _table_overlay_enabled_parser() -> bool:
+    """Parser-side kill switch for the deterministic table overlay
+    (Mechanism A1, spec §4.3 + §5.5). Defaults to enabled. Set
+    DOCLING_GRAPH_TABLE_OVERLAY_ENABLED=false to short-circuit
+    extract_table_overlay() and ship table_overlay=None on every response.
+    """
+    return os.environ.get(
+        "DOCLING_GRAPH_TABLE_OVERLAY_ENABLED", "true",
+    ).lower() != "false"
+
+
 def _json_for_log(value: Any, *, max_chars: int = 2000) -> str:
     try:
         text = json.dumps(value, sort_keys=True, default=str)
@@ -1035,6 +1046,87 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     raw_node_count_for_log = -1
     raw_edge_count_for_log = -1
     service_dropped_for_log = -1
+
+    # Mechanism A1 (spec §4.3 + §5.5): deterministic table overlay parse.
+    # Runs on the raw DoclingDocument BEFORE the LLM extraction. Sanitize
+    # only blanks texts[]; tables[] are untouched, so parsing the overlay
+    # on body.docling_document_json is equivalent to parsing the
+    # post-sanitize doc seen by the LLM. Catch-and-continue: a parser
+    # failure leaves table_overlay_obj=None and records repr(exc) into
+    # diagnostics — the LLM extraction still runs.
+    table_overlay_obj = None
+    overlay_stats: dict[str, Any] = {
+        "kill_switch_active_parser": not _table_overlay_enabled_parser(),
+        "tables_processed": 0,
+    }
+    if _table_overlay_enabled_parser():
+        try:
+            from app._table_facts import extract_table_overlay
+            import typing as _typing
+            # Resolve the EXACT TableOverlay class that
+            # ExtractPassResponse references in its annotation. In
+            # production this is the single class from sys.modules
+            # ['app.schemas']; under the test conftest's importlib
+            # swap, ExtractPassResponse may have been loaded against a
+            # now-stale schemas module while a fresh `from app.schemas
+            # import TableOverlay` would resolve to a different class
+            # object. Pulling the class off the model_fields annotation
+            # itself sidesteps that gap — the JSON round-trip rebinds
+            # the parser's empty-class-mirror instance to the response
+            # class. Spec §5.4 mandates JSON travels parser↔worker so
+            # this round-trip is faithful.
+            _resp_overlay_args = _typing.get_args(
+                ExtractPassResponse.model_fields["table_overlay"].annotation
+            )
+            _ResponseTableOverlay = next(
+                (a for a in _resp_overlay_args if a is not type(None)),
+                None,
+            )
+            parsed_overlay, parser_stats = extract_table_overlay(
+                body.docling_document_json,
+            )
+            if (
+                _ResponseTableOverlay is not None
+                and not isinstance(parsed_overlay, _ResponseTableOverlay)
+            ):
+                parsed_overlay = _ResponseTableOverlay.model_validate(
+                    parsed_overlay.model_dump(mode="json"),
+                )
+            overlay_stats.update(parser_stats)
+            # Spec §5.4: response MUST carry table_overlay=None (NOT an
+            # empty TableOverlay object) when no qualifying table found.
+            # The parser internally returns an empty TableOverlay() so the
+            # call site signature is uniform; we collapse "empty" → None
+            # at the response boundary so downstream worker logic and
+            # diagnostics treat "no overlay" identically regardless of
+            # whether parsing succeeded with no data or kill switch was
+            # set.
+            is_empty = (
+                not parsed_overlay.alias_map_by_entity_type
+                and not parsed_overlay.facts
+                and not parsed_overlay.cross_entity_hints
+            )
+            table_overlay_obj = None if is_empty else parsed_overlay
+            if table_overlay_obj is not None:
+                overlay_stats["alias_map_size"] = sum(
+                    len(m) for m in table_overlay_obj.alias_map_by_entity_type.values()
+                )
+                overlay_stats["facts_count"] = len(table_overlay_obj.facts)
+                overlay_stats["cross_entity_hints_count"] = len(
+                    table_overlay_obj.cross_entity_hints,
+                )
+            else:
+                overlay_stats["alias_map_size"] = 0
+                overlay_stats["facts_count"] = 0
+                overlay_stats["cross_entity_hints_count"] = 0
+        except Exception as exc:
+            logger.warning(
+                "extract_table_overlay failed: %s — continuing with table_overlay=None",
+                exc,
+            )
+            table_overlay_obj = None
+            overlay_stats["extract_failure"] = repr(exc)
+
     try:
         async with semaphore:
             try:
@@ -1163,6 +1255,11 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         diagnostics["service_postprocess"] = postprocess_stats or {}
         diagnostics["service_post_filter_counts"] = filtered_counts
         diagnostics["service_post_filter_identity_examples"] = filtered_identity_examples
+        # Mechanism A1: surface the parser-side overlay stats so an
+        # operator (or downstream worker) can verify per-pass whether
+        # the kill switch fired, how many tables qualified, alias_map
+        # / facts / hints sizes, and any extract-time failure repr.
+        diagnostics["service_table_overlay"] = overlay_stats
         if "path_counts" in diagnostics:
             diagnostics["raw_path_counts"] = diagnostics.get("path_counts", {})
         diagnostics["path_counts"] = filtered_counts["path_counts"]
@@ -1276,6 +1373,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             provenance=provenance_rows,
             field_provenance=field_provenance_rows,
             diagnostics=getattr(context, "_delta_trace", None),
+            table_overlay=table_overlay_obj,
         )
     finally:
         # Pull chunk/batch counts off the response's diagnostics so an operator
