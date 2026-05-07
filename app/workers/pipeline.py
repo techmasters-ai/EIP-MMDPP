@@ -5285,230 +5285,6 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
 
 
 # ---------------------------------------------------------------------------
-# New bundle_passes branch — spec §5.4 orchestrator. Task 4.6.
-# ---------------------------------------------------------------------------
-
-def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id: str) -> dict:
-    """New path: fixed per-pass templates, merge, import, rollback. Spec §5.4."""
-    from app.models.ingest import PipelineRun, StageRun
-    from datetime import datetime
-    from types import SimpleNamespace
-
-    # 1. Stage-summary row
-    db = _get_db()
-    try:
-        run = db.get(PipelineRun, uuid.UUID(pipeline_run_id))
-        if run is None:
-            # Parent pipeline_run was hard-deleted (cascade from document
-            # delete) while this task was queued. Inserting the stage_runs
-            # row would FK-violate; nothing else this task does is useful.
-            # Exit cleanly so the chain doesn't keep retrying.
-            logger.warning(
-                "derive_ontology_graph: pipeline_run %s not found "
-                "(document likely deleted); skipping orphaned task",
-                pipeline_run_id,
-            )
-            return {
-                "stage": "derive_ontology_graph",
-                "status": "skipped",
-                "reason": "orphaned_run",
-            }
-        stage_summary = StageRun(
-            pipeline_run_id=uuid.UUID(pipeline_run_id),
-            stage_name="derive_ontology_graph",
-            pass_name=None,
-            attempt=self.request.retries + 1,
-            status="RUNNING",
-            started_at=datetime.utcnow(),
-        )
-        db.add(stage_summary)
-        db.flush()
-        stage_summary_id = stage_summary.id
-        run_document_id = str(run.document_id)
-        run_mode = run.mode
-        bundle_key = run.ontology_bundle_key
-        db.commit()
-    finally:
-        db.close()
-
-    tracker = GraphWriteTracker()
-
-    def _terminalize_failure(exc_type, error_msg, should_rollback):
-        rollback_note = _attempt_rollback(run_document_id) if should_rollback else ""
-        db2 = _get_db()
-        try:
-            from datetime import datetime as dt
-            row = db2.get(StageRun, stage_summary_id)
-            if row:
-                row.status = "FAILED"
-                row.execution_status = "FAILED"
-                row.rollback_executed = should_rollback
-                row.error_message = f"{exc_type}: {error_msg}{rollback_note}"
-                row.finished_at = dt.utcnow()
-            run_row = db2.get(PipelineRun, uuid.UUID(pipeline_run_id))
-            if run_row:
-                run_row.status = "FAILED"
-                run_row.finished_at = dt.utcnow()
-            db2.commit()
-        except Exception as bookkeeping_exc:
-            db2.rollback()
-            logger.error(
-                "derive_ontology_graph: bookkeeping also failed: %s", bookkeeping_exc
-            )
-        finally:
-            db2.close()
-        _update_document_pipeline_status(run_document_id, "PARTIAL_COMPLETE")
-
-    try:
-        manifest = load_bundle_manifest(bundle_key)
-        ontology = load_ontology(bundle_key=bundle_key)
-        doc_json = _build_docling_document_json(run_document_id)
-
-        pass_results: dict = {}
-        upstream_refs: dict = {}
-
-        for pass_def in manifest.passes:
-            _run_single_pass(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                manifest=manifest,
-                ontology=ontology,
-                bundle_key=bundle_key,
-                doc_json=doc_json,
-                pass_results=pass_results,
-                upstream_refs=upstream_refs,
-                document_id=run_document_id,
-            )
-
-        gate = check_required_pass_gate(pipeline_run_id)
-        if not gate.passed:
-            raise IngestFailed(f"Required passes failed: {gate.failures}")
-
-        merged = merge_and_resolve(
-            pass_results=pass_results,
-            manifest=manifest,
-            ontology=ontology,
-            document_id=run_document_id,
-            pipeline_run_id=str(pipeline_run_id),
-        )
-
-        _apply_post_merge_yield_updates(pipeline_run_id, merged, manifest)
-        _write_pipeline_run_metrics(pipeline_run_id, merged, manifest)
-
-        provenance_envelope = _build_provenance_envelope(
-            run_document_id, str(pipeline_run_id), merged.entities, db,
-        )
-        identity_to_rid = _import_graph_phase_nodes(
-            merged, ontology, run_document_id, tracker, provenance_envelope,
-        )
-        _import_graph_phase_domain_edges(merged, ontology, tracker, provenance_envelope)
-
-        # Ensure the structural Document vertex exists before phase 4 references
-        # it. The chain creates this vertex in `derive_structure_links` which
-        # runs AFTER derive_ontology_graph, but phase 4 (_import_graph_phase_
-        # structural_edges) needs it to exist now for MENTIONED_IN edges. The
-        # upsert is idempotent — derive_structure_links will later update it
-        # with full document metadata (summary, classification, etc.).
-        _ensure_structural_document_vertex(run_document_id)
-
-        _import_graph_phase_structural_edges(
-            merged, identity_to_rid, run_document_id, str(pipeline_run_id), tracker,
-        )
-
-        # Build a detachment-safe snapshot so _upsert_document_graph_extraction
-        # can access run metadata after the original DB session was closed.
-        run_snapshot = SimpleNamespace(
-            ontology_bundle_key=bundle_key,
-            ontology_name=getattr(manifest, "ontology_name", None),
-            ontology_version=getattr(manifest, "ontology_version", None),
-            use_case_key=None,
-            extraction_profile_version=getattr(manifest, "extraction_profile_version", None),
-        )
-
-        # Phase 8 Task 53: build element_uid → artifact_id map once and
-        # persist into the audit blob so derive_structure_links can
-        # read from the snapshot instead of re-querying Postgres
-        # (snapshot-consistency contract: the audit blob is the
-        # ingestion's view-of-the-world).
-        element_uid_to_artifact_id: dict[str, str] = {}
-        try:
-            db_elem = _get_db()
-            try:
-                element_uid_to_artifact_id = _build_element_uid_to_artifact_id(
-                    db_elem, run_document_id,
-                )
-            finally:
-                db_elem.close()
-        except Exception as exc:
-            logger.warning(
-                "derive_ontology_graph: element_uid_to_artifact_id build failed for %s: %s",
-                run_document_id, exc,
-            )
-
-        _upsert_document_graph_extraction(
-            document_id=run_document_id,
-            pipeline_run_id=pipeline_run_id,
-            run=run_snapshot,
-            merged=merged,
-            manifest=manifest,
-            identity_to_rid=identity_to_rid,
-            element_uid_to_artifact_id=element_uid_to_artifact_id,
-        )
-
-        # Success terminalization
-        db3 = _get_db()
-        try:
-            from datetime import datetime as dt
-            row = db3.get(StageRun, stage_summary_id)
-            if row:
-                row.status = "COMPLETE"
-                row.execution_status = "COMPLETE"
-                row.rollback_executed = False
-                row.finished_at = dt.utcnow()
-
-            run_row = db3.get(PipelineRun, uuid.UUID(pipeline_run_id))
-            if run_row and run_mode == "graph_only":
-                run_row.status = "COMPLETE"
-                run_row.finished_at = dt.utcnow()
-            db3.commit()
-        finally:
-            db3.close()
-
-        if run_mode == "graph_only":
-            _update_document_pipeline_status(run_document_id, "COMPLETE")
-
-        return {
-            "stage": "derive_ontology_graph",
-            "status": "ok",
-            "entities": len(merged.entities),
-            "edges": len(merged.edges),
-        }
-
-    except IngestFailed as exc:
-        _terminalize_failure("gate_failed", str(exc), should_rollback=False)
-        raise
-    except SoftTimeLimitExceeded as exc:
-        # Celery's soft-timeout inside the helper. Engage self.retry so Celery's
-        # max_retries=2 budget applies. On exhaustion self.retry re-raises
-        # SoftTimeLimitExceeded, which reaches guard_stage_run (post-Task 0
-        # the guard terminalizes unconditionally on any Exception). Stage_run
-        # FAILED row is written by the guard — skip it here to avoid NameError
-        # if SoftTimeLimitExceeded fires before stage_summary_id is assigned.
-        logger.warning(
-            "derive_ontology_graph: soft time limit for run=%s doc=%s — retrying via Celery",
-            pipeline_run_id, document_id,
-        )
-        raise self.retry(exc=exc)
-    except Exception as exc:
-        logger.exception("derive_ontology_graph bundle_passes failure")
-        _terminalize_failure(
-            "unexpected_failure", str(exc),
-            should_rollback=tracker.any_mutation_attempted,
-        )
-        raise
-
-
-# ---------------------------------------------------------------------------
 # Per-pass Celery fan-in — Task 5 helpers + derive_ontology_graph_pass task
 # ---------------------------------------------------------------------------
 # Import note: pass_outputs_store and run_phase_dispatch are imported here at
@@ -6274,17 +6050,90 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         db.close()
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
-                 soft_time_limit=settings.graph_soft_time_limit,
-                 time_limit=settings.graph_time_limit)
+# CHANGED 2026-05-06 (Task 8): replaced monolithic ~225-line helper
+# (_derive_ontology_graph_bundle_passes) with a thin ~50-line dispatcher.
+# soft_time_limit dropped from 8 h (settings.graph_soft_time_limit) to 10 min
+# because this task only does manifest-load + initial pass dispatch.
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    queue="graph",
+    soft_time_limit=600,
+    name="app.workers.pipeline.derive_ontology_graph",
+)
 @guard_stage_run("derive_ontology_graph")
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
-    """Dispatch graph extraction via the bundle-passes orchestrator.
+    """Thin dispatcher: create summary StageRun then fan-out to per-pass tasks.
 
     Callers always dispatch as derive_ontology_graph.si(document_id, run_id),
-    where run_id IS the pipeline_run_id. The legacy path was removed in Task 5.2.
+    where run_id IS the pipeline_run_id.
+
+    Steps:
+    1. Resolve run_id + PipelineRun (orphaned-run safety net).
+    2. Create the derive_ontology_graph summary StageRun with status=RUNNING
+       so finalize_document's REQUIRED_STAGES gate sees this stage as in-flight.
+    3. Load the manifest; identify entity passes (p.depends_on empty).
+    4. Dispatch the first pass_concurrency_per_document entity passes via
+       claim_phase → .delay → mark_phase_dispatched (same flow used by
+       _try_advance_phase follow-ups in derive_ontology_graph_pass).
+    5. Return immediately — per-pass tasks handle extraction.
     """
-    return _derive_ontology_graph_bundle_passes(self, run_id, document_id)
+    from app.models.ingest import PipelineRun, StageRun
+    from datetime import datetime
+
+    db = _get_db()
+    try:
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
+        run = db.get(PipelineRun, uuid.UUID(str(run_id))) if run_id else None
+        if run is None:
+            logger.warning(
+                "derive_ontology_graph: pipeline_run %s not found "
+                "(document likely deleted); skipping orphaned task",
+                run_id,
+            )
+            return {
+                "stage": "derive_ontology_graph",
+                "status": "skipped",
+                "reason": "orphaned_run",
+            }
+
+        # Create the summary StageRun as RUNNING so finalize_document's
+        # REQUIRED_STAGES gate sees this stage before any pass completes.
+        summary = StageRun(
+            pipeline_run_id=uuid.UUID(str(run_id)),
+            stage_name="derive_ontology_graph",
+            pass_name=None,
+            attempt=self.request.retries + 1,
+            status="RUNNING",
+            started_at=datetime.utcnow(),
+        )
+        db.add(summary)
+        db.flush()
+
+        bundle_key = run.ontology_bundle_key
+        db.commit()
+    finally:
+        db.close()
+
+    manifest = load_bundle_manifest(bundle_key)
+    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+
+    db2 = _get_db()
+    try:
+        for pass_name in entity_passes[: settings.pass_concurrency_per_document]:
+            _claim_and_dispatch_pass(db2, document_id, str(run_id), pass_name)
+    finally:
+        db2.close()
+
+    return {
+        "stage": "derive_ontology_graph",
+        "status": "dispatched",
+        "entity_passes_dispatched": min(
+            len(entity_passes), settings.pass_concurrency_per_document
+        ),
+    }
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
@@ -6938,18 +6787,12 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
             _update_document_status(document_id, STATUS_COMPLETE, stage=None)
             return
 
-        # Check for failed, missing, or stuck stages
-        # TODO(per-pass-fanin Task 8): REQUIRED_STAGES is currently mode-blind. For
-        # graph_only runs (which skip prepare_document, purge_document_derivations,
-        # derive_text_embeddings/derive_image_embeddings, derive_canonicalization),
-        # this set contains stages that never ran, causing graph_only runs to always
-        # resolve to PARTIAL_COMPLETE instead of COMPLETE. Pre-Task-7, the merge
-        # task's direct run.status="COMPLETE" write was being clobbered here too —
-        # the bug pre-dates Task 7 but is now exposed without that workaround.
-        # Fix: read run.mode from the DB and use a mode-scoped required-stages set
-        # for graph_only (e.g., {"derive_document_anchors", "derive_ontology_graph",
-        # "derive_structure_links"}).
-        REQUIRED_STAGES = {
+        # CHANGED 2026-05-06 (Task 8): mode-scoped required stages. graph_only runs
+        # (re-extraction without re-converting the source PDF) skip the
+        # prepare/translate/metadata/picture/embedding/canonicalization stages —
+        # only the graph extraction path runs. Using the full set for graph_only
+        # caused those runs to always resolve to PARTIAL_COMPLETE (the bug fixed here).
+        _FULL_REQUIRED_STAGES = {
             "prepare_document",
             "detect_and_translate",
             "derive_document_metadata",
@@ -6962,6 +6805,16 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
             "derive_structure_links",
             "derive_canonicalization",
         }
+        _GRAPH_ONLY_REQUIRED_STAGES = {
+            "derive_document_anchors",
+            "derive_ontology_graph",
+            "derive_structure_links",
+        }
+        run_row = db.get(PipelineRun, uuid.UUID(run_id))
+        run_mode = run_row.mode if run_row is not None else "full"
+        REQUIRED_STAGES = (
+            _GRAPH_ONLY_REQUIRED_STAGES if run_mode == "graph_only" else _FULL_REQUIRED_STAGES
+        )
 
         all_stages = db.execute(
             select(StageRun).where(StageRun.pipeline_run_id == uuid.UUID(run_id))

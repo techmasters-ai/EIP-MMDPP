@@ -24,16 +24,17 @@ class TestBundlePassesCodePath:
         s = Settings(_env_file=None, postgres_password="test")
         assert not hasattr(s, "graph_extraction_engine")
 
-    def test_derive_ontology_graph_always_dispatches_to_bundle_passes(self):
-        """derive_ontology_graph unconditionally routes to bundle_passes branch."""
+    def test_derive_ontology_graph_is_thin_dispatcher(self):
+        """derive_ontology_graph is now a thin dispatcher (Task 8); the legacy
+        _derive_ontology_graph_bundle_passes helper has been deleted."""
         from app.workers.pipeline import derive_ontology_graph
+        import inspect
 
-        with patch("app.workers.pipeline._derive_ontology_graph_bundle_passes") as mock_new:
-            mock_new.return_value = {"status": "ok"}
-            # Use .run() to bypass Celery middleware; bind=True passes self implicitly
-            derive_ontology_graph.run("doc-1", "run-1")
-
-        mock_new.assert_called_once()
+        src = inspect.getsource(derive_ontology_graph.run)
+        # The dispatcher uses _claim_and_dispatch_pass to fan out to per-pass tasks
+        assert "_claim_and_dispatch_pass" in src
+        # The deleted legacy helper must not be referenced
+        assert "_derive_ontology_graph_bundle_passes" not in src
 
 
 class TestNewSymbolsImportable:

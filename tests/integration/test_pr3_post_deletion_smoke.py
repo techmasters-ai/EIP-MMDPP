@@ -58,14 +58,20 @@ class TestCILintsPass:
 
 class TestOnlyNewPathExists:
     def test_no_legacy_branch_in_derive_ontology_graph(self):
-        """derive_ontology_graph must call _derive_ontology_graph_bundle_passes
-        unconditionally — no feature-flag dispatch."""
+        """derive_ontology_graph is now a thin dispatcher (Task 8). It must
+        reference _claim_and_dispatch_pass (per-pass fan-out) and must NOT
+        reference the deleted legacy helper or any feature-flag branch."""
         from app.workers import pipeline
         src = inspect.getsource(pipeline.derive_ontology_graph.run)
         assert "_derive_ontology_graph_legacy" not in src, (
             "derive_ontology_graph still references the legacy branch"
         )
-        assert "_derive_ontology_graph_bundle_passes" in src
+        assert "_derive_ontology_graph_bundle_passes" not in src, (
+            "derive_ontology_graph still references the deleted monolithic helper"
+        )
+        assert "_claim_and_dispatch_pass" in src, (
+            "derive_ontology_graph dispatcher must use _claim_and_dispatch_pass"
+        )
 
     def test_no_legacy_function_exists(self):
         """_derive_ontology_graph_legacy must not exist as a module attribute."""
