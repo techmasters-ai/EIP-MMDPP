@@ -6080,7 +6080,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     5. Return immediately — per-pass tasks handle extraction.
     """
     from app.models.ingest import PipelineRun, StageRun
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     db = _get_db()
     try:
@@ -6107,7 +6107,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             pass_name=None,
             attempt=self.request.retries + 1,
             status="RUNNING",
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
         )
         db.add(summary)
         db.flush()
@@ -6120,6 +6120,9 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     manifest = load_bundle_manifest(bundle_key)
     entity_passes = [p.name for p in manifest.passes if not p.depends_on]
 
+    # Second session: _claim_and_dispatch_pass commits phase records
+    # independently. Using a single session would interleave the RUNNING
+    # StageRun commit with phase claim commits and risk dirty reads.
     db2 = _get_db()
     try:
         for pass_name in entity_passes[: settings.pass_concurrency_per_document]:

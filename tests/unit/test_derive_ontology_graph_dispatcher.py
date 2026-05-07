@@ -288,8 +288,10 @@ class TestDispatcherHandlesOrphanedRun:
         row = db_session.execute(
             text(
                 "SELECT COUNT(*) FROM ingest.stage_runs "
-                "WHERE stage_name = 'derive_ontology_graph'"
-            )
+                "WHERE stage_name = 'derive_ontology_graph' "
+                "AND pipeline_run_id = :run_id"
+            ),
+            {"run_id": missing_run_id},
         ).scalar()
         assert row == 0, f"Unexpected StageRun rows: {row}"
 
@@ -331,3 +333,14 @@ class TestDispatcherConcurrencyCap:
             f"got {delay_mock.call_count}"
         )
         assert result["entity_passes_dispatched"] == expected_count
+
+        dispatched_names = [c.args[2] for c in delay_mock.call_args_list]
+        entity_passes = [
+            "radar_identity", "radar_kinematics", "radar_power",
+            "radar_timing", "radar_antenna",
+        ]
+        expected_first_n = entity_passes[: settings.pass_concurrency_per_document]
+        assert dispatched_names == expected_first_n, (
+            f"Expected first {settings.pass_concurrency_per_document} entity passes, "
+            f"got {dispatched_names}"
+        )

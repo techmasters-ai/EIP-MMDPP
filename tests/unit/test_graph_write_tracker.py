@@ -3,7 +3,10 @@
 Task 4.1 of the extraction-refactor plan. Asserts the tracker's default
 state and its one-way transition semantics (``.mark()`` is idempotent).
 The helper stubs from Task 4.1 were replaced with real implementations
-in Task 4.6 and are tested in test_derive_ontology_graph_bundle_passes.py.
+in Task 4.6.
+# Reference: integration tests for the rollback path now live in
+# `test_derive_ontology_graph_merge_task.py` (Task 6's GraphWriteTracker
+# rollback contract).
 """
 from app.workers.pipeline import GraphWriteTracker
 

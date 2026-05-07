@@ -1,8 +1,12 @@
-"""PR 2 switchover smoke test — updated for Task 5.2 (PR 3 cleanup).
+"""PR2 switchover regression test — verifies the deletion of the legacy
+extraction path is complete.
 
-Task 5.2 deleted the legacy path and feature flag. derive_ontology_graph now
-unconditionally delegates to _derive_ontology_graph_bundle_passes. The
-feature-flag dispatch tests have been replaced with a simpler wiring check.
+Task 5.2 deleted the legacy `extraction_engine` codepath. Task 8 deleted
+the legacy `_derive_ontology_graph_bundle_passes` monolithic helper.
+This file's tests verify that:
+  - `_derive_ontology_graph_bundle_passes` is no longer present in source
+  - `derive_ontology_graph` is now a thin dispatcher that uses
+    `_claim_and_dispatch_pass` to fan out to per-pass Celery tasks
 
 The actual end-to-end extraction (ingest a document, produce a graph)
 requires the full compose stack — tests/e2e/test_full_pipeline.py
