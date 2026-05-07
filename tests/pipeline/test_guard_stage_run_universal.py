@@ -28,6 +28,7 @@ PIPELINE_TASKS = [
     ("derive_document_anchors", "derive_document_anchors"),
     ("derive_ontology_graph", "derive_ontology_graph"),
     ("derive_ontology_graph_pass", "derive_ontology_graph_pass"),
+    ("derive_ontology_graph_merge", "derive_ontology_graph_merge"),
     ("derive_structure_links", "derive_structure_links"),
     ("collect_derivations", "collect_derivations"),
     ("derive_canonicalization", "derive_canonicalization"),

@@ -5516,6 +5516,7 @@ from app.services.pass_outputs_store import (  # noqa: E402
     is_pass_already_resolved,
     count_terminal_passes,
     load_pass_output,
+    load_completed_pass_outputs,
 )
 from app.services.run_phase_dispatch import (  # noqa: E402
     claim_phase,
@@ -6033,6 +6034,238 @@ def derive_ontology_graph_pass(
             "execution_status": "FAILED",
             "reason": "retry_exhausted" if is_retryable else "terminal",
         }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Per-pass Celery fan-in — Task 6 helpers + derive_ontology_graph_merge task
+# ---------------------------------------------------------------------------
+
+
+def _assert_stage_run_pass_output_consistency(db, run_id) -> None:
+    """Raise WorkerInvariantError if any pass has a COMPLETE StageRun row
+    but no matching COMPLETE pipeline_pass_outputs row.
+
+    Detects the crash window between _write_stage_run() and
+    _save_terminal_pass_output() in derive_ontology_graph_pass.
+    """
+    from sqlalchemy import select
+    from app.models.ingest import StageRun, PipelinePassOutput
+
+    # Find passes with at least one COMPLETE StageRun row
+    complete_stage_run_passes = set(
+        row[0] for row in db.execute(
+            select(StageRun.pass_name)
+            .where(StageRun.pipeline_run_id == uuid.UUID(str(run_id)))
+            .where(StageRun.execution_status == "COMPLETE")
+            .where(StageRun.pass_name.is_not(None))
+            .distinct()
+        )
+    )
+    # Find passes with a COMPLETE pipeline_pass_outputs row
+    complete_pass_output_passes = set(
+        row[0] for row in db.execute(
+            select(PipelinePassOutput.pass_name)
+            .where(PipelinePassOutput.pipeline_run_id == uuid.UUID(str(run_id)))
+            .where(PipelinePassOutput.execution_status == "COMPLETE")
+        )
+    )
+    missing = complete_stage_run_passes - complete_pass_output_passes
+    if missing:
+        raise WorkerInvariantError(
+            f"COMPLETE StageRun rows exist without matching pipeline_pass_outputs "
+            f"rows for run_id={run_id}, passes={sorted(missing)}. "
+            f"This indicates a crash between _write_stage_run and "
+            f"_save_terminal_pass_output in derive_ontology_graph_pass."
+        )
+
+
+def _rehydrate_pass_result(
+    row: "PipelinePassOutput", manifest, ontology, document_id: str,
+):
+    """Rebuild a PassResult from a persisted pipeline_pass_outputs row.
+
+    Reuses _parse_pass_response (the live-request parsing path) so the
+    rehydrated PassResult is structurally identical to one built in-process.
+    Then attaches pre_merge_walk via _build_pre_merge_walk_summary so
+    classify_yield and merge_and_resolve work as if the pass had just run.
+
+    If _parse_pass_response raises PassTerminal (corrupt persisted JSON), let
+    it propagate — the merge task's outer except handler catches it before
+    re-raising.
+    """
+    pass_def = next(p for p in manifest.passes if p.name == row.pass_name)
+    pass_result = _parse_pass_response(row.extract_pass_response_json, pass_def, manifest)
+    pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+        pass_result, pass_def, ontology, document_id,
+    )
+    # Restore upstream_refs for document_plus_entity_refs passes via the
+    # same logic _execute_pass_attempt uses; the persisted JSON includes
+    # whatever the original task captured.
+    if pass_def.input_mode == "document_plus_entity_refs":
+        # The persisted upstream_refs (if any) should already be in the
+        # rehydrated PassResult via _parse_pass_response. If not present,
+        # leave as None — merge tolerates missing upstream_refs gracefully.
+        pass
+    return pass_result
+
+
+@celery_app.task(
+    bind=True, max_retries=1, default_retry_delay=30, queue="graph",
+    soft_time_limit=settings.graph_soft_time_limit,
+    name="app.workers.pipeline.derive_ontology_graph_merge",
+)
+@guard_stage_run("derive_ontology_graph_merge")
+def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
+    """Fan-in. Loads COMPLETE pass outputs from pipeline_pass_outputs,
+    rehydrates via _parse_pass_response, runs merge_and_resolve + graph
+    imports + downstream chain dispatch.
+
+    Rollback contract (preserves pipeline.py:5478-5483 behavior): if
+    `tracker.any_mutation_attempted` is True at exception time, call
+    `_attempt_rollback(document_id)` BEFORE re-raising, so a Celery
+    retry (or operator-driven graph_only reingest) starts from a clean
+    graph state.
+    """
+    db = _get_db()
+    tracker = GraphWriteTracker()
+    try:
+        if is_run_cancelled(db, run_id):
+            return {"merge": "skipped_cancelled"}
+
+        _assert_stage_run_pass_output_consistency(db, run_id)
+
+        from app.models.ingest import PipelineRun
+        run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+        bundle_key = run.ontology_bundle_key
+        run_mode = run.mode  # "full" or "graph_only"
+        manifest = load_bundle_manifest(bundle_key)
+        ontology = load_ontology(bundle_key=bundle_key)
+
+        gate = check_required_pass_gate(run_id)
+        if not gate.passed:
+            _update_summary_stage_run(
+                db, run_id, "FAILED",
+                error=f"Required passes failed: {gate.failures}",
+            )
+            mark_phase_terminal(db, run_id, "merge", result="failed")
+            db.commit()
+            _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
+            raise IngestFailed(f"Required passes failed: {gate.failures}")
+
+        completed_outputs = load_completed_pass_outputs(db, run_id)
+        rehydrated = {
+            row.pass_name: _rehydrate_pass_result(row, manifest, ontology, document_id)
+            for row in completed_outputs.values()
+        }
+
+        merged = merge_and_resolve(
+            pass_results=rehydrated, manifest=manifest, ontology=ontology,
+            document_id=document_id, pipeline_run_id=run_id,
+        )
+        _apply_post_merge_yield_updates(run_id, merged, manifest)
+        _write_pipeline_run_metrics(run_id, merged, manifest)
+
+        provenance_envelope = _build_provenance_envelope(
+            document_id, run_id, merged.entities, db,
+        )
+        identity_to_rid = _import_graph_phase_nodes(
+            merged, ontology, document_id, tracker, provenance_envelope,
+        )
+        _import_graph_phase_domain_edges(
+            merged, ontology, tracker, provenance_envelope,
+        )
+        _ensure_structural_document_vertex(document_id)
+        _import_graph_phase_structural_edges(
+            merged, identity_to_rid, document_id, run_id, tracker,
+        )
+
+        # Build a detachment-safe snapshot so _upsert_document_graph_extraction
+        # can access run metadata after the original DB session was closed.
+        from types import SimpleNamespace
+        run_snapshot = SimpleNamespace(
+            ontology_bundle_key=bundle_key,
+            ontology_name=getattr(manifest, "ontology_name", None),
+            ontology_version=getattr(manifest, "ontology_version", None),
+            use_case_key=None,
+            extraction_profile_version=getattr(manifest, "extraction_profile_version", None),
+        )
+
+        # Build element_uid → artifact_id map; persist into audit blob so
+        # derive_structure_links can read from the snapshot.
+        element_uid_to_artifact_id: dict[str, str] = {}
+        try:
+            db_elem = _get_db()
+            try:
+                element_uid_to_artifact_id = _build_element_uid_to_artifact_id(
+                    db_elem, document_id,
+                )
+            finally:
+                db_elem.close()
+        except Exception as exc:
+            logger.warning(
+                "derive_ontology_graph_merge: element_uid_to_artifact_id build "
+                "failed for %s: %s", document_id, exc,
+            )
+
+        _upsert_document_graph_extraction(
+            document_id=document_id,
+            pipeline_run_id=run_id,
+            run=run_snapshot,
+            merged=merged,
+            manifest=manifest,
+            identity_to_rid=identity_to_rid,
+            element_uid_to_artifact_id=element_uid_to_artifact_id,
+        )
+
+        _update_summary_stage_run(db, run_id, "COMPLETE")
+        mark_phase_terminal(db, run_id, "merge", result="succeeded")
+
+        # graph_only runs reach final state here; full runs continue through
+        # the downstream chain (collect_derivations → derive_structure_links
+        # → derive_canonicalization → finalize_document) which sets COMPLETE.
+        if run_mode == "graph_only":
+            from datetime import datetime as _dt
+            run.status = "COMPLETE"
+            run.finished_at = _dt.utcnow()
+            _update_document_pipeline_status(document_id, "COMPLETE")
+
+        db.commit()
+
+        # Dispatch downstream chain — full mode only.
+        # graph_only: reingest_graph_only's chain already dispatches
+        # derive_structure_links + finalize_document; respect that.
+        # (Task 7 will reconcile whether to also pull those into the
+        # merge dispatch — for now, preserve existing behavior.)
+        if run_mode == "full":
+            from celery import chain as celery_chain
+            celery_chain(
+                collect_derivations.si(document_id, run_id),
+                derive_structure_links.si(document_id, run_id),
+                derive_canonicalization.si(document_id, run_id),
+                finalize_document.si(document_id, run_id),
+            ).apply_async()
+
+        return {
+            "merge": "ok",
+            "entities": len(merged.entities),
+            "edges": len(merged.edges),
+        }
+    except Exception as exc:
+        if tracker.any_mutation_attempted:
+            rollback_note = _attempt_rollback(document_id)
+            logger.info(
+                "derive_ontology_graph_merge: rolled back partial graph state "
+                "for doc=%s run=%s before re-raising %s%s",
+                document_id, run_id, type(exc).__name__, rollback_note,
+            )
+        try:
+            mark_phase_terminal(db, run_id, "merge", result="failed")
+            db.commit()
+        except Exception:
+            logger.exception("merge: mark_phase_terminal failed in error path")
+        raise
     finally:
         db.close()
 
