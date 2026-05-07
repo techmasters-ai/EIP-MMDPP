@@ -6050,6 +6050,370 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# Task 9: reconcile_ontology_graph_runs — beat-scheduled safety net
+# ---------------------------------------------------------------------------
+
+
+def _get_processing_ontology_graph_runs(db) -> list:
+    """Query all PipelineRun rows where status='PROCESSING' AND mode IN ('full', 'graph_only')
+    AND the derive_ontology_graph stage has been past initial dispatch (i.e.,
+    dispatched_phases is non-empty OR there is a RUNNING summary StageRun).
+
+    The mode filter avoids scanning runs from other unrelated pipeline stages
+    that happen to be in PROCESSING.
+    """
+    from app.models.ingest import PipelineRun
+    from sqlalchemy import select, text as sa_text
+
+    # Use a CTE to find run IDs that have a RUNNING derive_ontology_graph summary StageRun.
+    # Combined with the dispatched_phases non-empty check using Postgres JSONB operator.
+    stmt = select(PipelineRun).where(
+        PipelineRun.status == "PROCESSING",
+        PipelineRun.mode.in_(["full", "graph_only"]),
+        sa_text(
+            "("
+            "  dispatched_phases != '{}'::jsonb"
+            "  OR id IN ("
+            "    SELECT pipeline_run_id FROM ingest.stage_runs"
+            "    WHERE stage_name = 'derive_ontology_graph'"
+            "      AND pass_name IS NULL"
+            "      AND status = 'RUNNING'"
+            "  )"
+            ")"
+        ),
+    )
+    return db.execute(stmt).scalars().all()
+
+
+def _has_pending_retry_for_pass(
+    db,
+    pipeline_run_id,
+    pass_name: str,
+    *,
+    countdown_buffer_seconds: int = 600,
+) -> bool:
+    """True if the latest StageRun for this pass indicates a pending Celery retry.
+
+    Returns True when ALL of:
+    - Latest StageRun has execution_status='FAILED'
+    - attempt < (pass_max_retries + pass_max_transport_retries)
+    - finished_at > now - countdown_buffer_seconds (the Celery countdown is
+      still pending in the broker's countdown queue)
+
+    The countdown_buffer_seconds defaults to 10 min — covers the worst case of
+    _retry_delay (300s capped) + a generous safety margin.  Used by the
+    reconciler to avoid revoking a task whose retry is genuinely pending.
+    """
+    from app.models.ingest import StageRun
+    from sqlalchemy import select
+    from datetime import datetime, timedelta, timezone
+
+    max_attempts = settings.pass_max_retries + settings.pass_max_transport_retries
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=countdown_buffer_seconds)
+
+    row = db.execute(
+        select(StageRun)
+        .where(
+            StageRun.pipeline_run_id == uuid.UUID(str(pipeline_run_id)),
+            StageRun.stage_name == "derive_ontology_graph",
+            StageRun.pass_name == pass_name,
+        )
+        .order_by(StageRun.attempt.desc())
+        .limit(1)
+    ).scalars().first()
+
+    if row is None:
+        return False
+
+    if row.execution_status != "FAILED":
+        return False
+
+    if row.attempt >= max_attempts:
+        return False
+
+    if row.finished_at is None:
+        return False
+
+    # finished_at within the countdown buffer → retry is pending
+    return row.finished_at > cutoff
+
+
+@celery_app.task(
+    bind=True, queue="graph",
+    soft_time_limit=120,
+    name="app.workers.pipeline.reconcile_ontology_graph_runs",
+)
+def reconcile_ontology_graph_runs(self) -> dict:
+    """Beat-scheduled safety net for the per-pass fan-in.
+
+    Scans PROCESSING runs every reconciler_period_seconds (default 60s); repairs:
+      - Stale claimed phases (>30s, dispatcher crashed before .delay)
+      - Stale dispatched phases (>2h, task crashed; pending-retry-aware)
+      - Completed-but-not-marked-terminal (task wrote output but didn't mark)
+      - Stuck-without-advance (finisher crashed between save and _try_advance_phase)
+
+    Returns a dict summarizing actions taken: {
+        "scanned_runs": N,
+        "stale_claimed_reclaimed": [...phase keys...],
+        "stale_dispatched_reclaimed": [...],
+        "promoted_to_terminal": [...],
+        "stuck_advances": [...],
+        "skipped_pending_retry": [...],
+    }
+    """
+    from app.models.ingest import PipelineRun
+    from app.services.run_phase_dispatch import reclaim_stale_phase
+
+    stale_claimed_threshold_s = settings.phase_claim_stale_seconds
+    stale_dispatched_threshold_s = 2 * settings.pass_soft_time_limit
+
+    summary: dict = {
+        "scanned_runs": 0,
+        "stale_claimed_reclaimed": [],
+        "stale_dispatched_reclaimed": [],
+        "promoted_to_terminal": [],
+        "stuck_advances": [],
+        "skipped_pending_retry": [],
+    }
+
+    db = _get_db()
+    try:
+        runs = _get_processing_ontology_graph_runs(db)
+        summary["scanned_runs"] = len(runs)
+
+        for run in runs:
+            run_id = str(run.id)
+            document_id = str(run.document_id)
+
+            # Load the manifest to know which passes are entity passes.
+            if not run.ontology_bundle_key:
+                logger.debug(
+                    "reconcile_ontology_graph_runs: run_id=%s has no ontology_bundle_key, skipping",
+                    run_id,
+                )
+                continue
+
+            try:
+                manifest = load_bundle_manifest(run.ontology_bundle_key)
+            except Exception:
+                logger.warning(
+                    "reconcile_ontology_graph_runs: could not load manifest for run_id=%s "
+                    "bundle_key=%s; skipping",
+                    run_id, run.ontology_bundle_key, exc_info=True,
+                )
+                continue
+
+            entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+
+            dispatched_phases = run.dispatched_phases or {}
+
+            # ----------------------------------------------------------------
+            # Branch 4: stuck-without-advance check (fast path)
+            # All entity passes have terminal pass-output rows but no system_links
+            # or merge phase has been started yet (finisher crashed between
+            # saving the pass-output and calling _try_advance_phase).
+            # ----------------------------------------------------------------
+            n_terminal = count_terminal_passes(db, run_id, entity_passes)
+            if n_terminal >= len(entity_passes) and entity_passes:
+                # Check if merge or system_links has not been started
+                merge_absent = "merge" not in dispatched_phases
+                sl_absent = "system_links" not in dispatched_phases
+                # Only advance if no follow-up is already in progress.
+                # _try_advance_phase has its own idempotency via claim_phase.
+                if merge_absent and sl_absent:
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stuck-without-advance "
+                        "run_id=%s — all %d entity passes terminal, no follow-up; advancing",
+                        run_id, len(entity_passes),
+                    )
+                    try:
+                        _try_advance_phase(db, document_id, run_id)
+                        db.commit()
+                        summary["stuck_advances"].append(run_id)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: _try_advance_phase failed for "
+                            "run_id=%s", run_id, exc_info=True,
+                        )
+                        db.rollback()
+                    continue
+
+            # ----------------------------------------------------------------
+            # Per-phase inspection: iterate every entry in dispatched_phases.
+            # ----------------------------------------------------------------
+            for phase_key, phase_entry in dispatched_phases.items():
+                state = (phase_entry or {}).get("state")
+                if state not in ("claimed", "dispatched"):
+                    # Completed or missing state — no action needed.
+                    continue
+
+                # Map phase_key back to pass_name for pass-output queries.
+                if phase_key.startswith("entity_pass_"):
+                    pass_name = phase_key[len("entity_pass_"):]
+                else:
+                    pass_name = phase_key  # "system_links" or "merge"
+
+                if state == "claimed":
+                    # --------------------------------------------------------
+                    # Branch 1: stale claimed repair
+                    # --------------------------------------------------------
+                    claimed_at_raw = phase_entry.get("claimed_at")
+                    if claimed_at_raw is None:
+                        continue
+                    from datetime import datetime, timezone, timedelta
+                    claimed_at = datetime.fromisoformat(claimed_at_raw)
+                    age_s = (datetime.now(timezone.utc) - claimed_at).total_seconds()
+                    if age_s < stale_claimed_threshold_s:
+                        continue  # still fresh
+
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stale claimed phase "
+                        "run_id=%s phase=%s age=%.0fs — reclaiming",
+                        run_id, phase_key, age_s,
+                    )
+                    try:
+                        reclaimed = reclaim_stale_phase(
+                            db, run_id, phase_key,
+                            claim_threshold_s=stale_claimed_threshold_s,
+                            dispatch_threshold_s=stale_dispatched_threshold_s,
+                        )
+                        if reclaimed:
+                            db.commit()
+                            summary["stale_claimed_reclaimed"].append(phase_key)
+                            _try_advance_phase(db, document_id, run_id)
+                            db.commit()
+                        else:
+                            db.rollback()
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: reclaim failed for "
+                            "run_id=%s phase=%s", run_id, phase_key, exc_info=True,
+                        )
+                        db.rollback()
+
+                elif state == "dispatched":
+                    dispatched_at_raw = phase_entry.get("dispatched_at")
+                    if dispatched_at_raw is None:
+                        continue
+                    from datetime import datetime, timezone, timedelta
+                    dispatched_at = datetime.fromisoformat(dispatched_at_raw)
+                    age_s = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
+
+                    # --------------------------------------------------------
+                    # Branch 3: promote completed-but-not-marked-terminal
+                    # Check BEFORE the stale-dispatched threshold — a task
+                    # that wrote a pass-output row but crashed before
+                    # mark_phase_terminal must be promoted regardless of age.
+                    # --------------------------------------------------------
+                    try:
+                        pass_output = load_pass_output(db, run_id, pass_name)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: load_pass_output failed for "
+                            "run_id=%s pass=%s", run_id, pass_name, exc_info=True,
+                        )
+                        continue
+
+                    if pass_output is not None:
+                        # Task completed AND wrote the pass-output row, but
+                        # crashed before mark_phase_terminal. Promote it.
+                        exec_status = pass_output.execution_status
+                        result = (
+                            "succeeded" if exec_status == "COMPLETE"
+                            else "skipped" if exec_status == "SKIPPED"
+                            else "failed"
+                        )
+                        logger.info(
+                            "reconcile_ontology_graph_runs: promote dispatched-with-output "
+                            "run_id=%s phase=%s exec_status=%s → result=%s",
+                            run_id, phase_key, exec_status, result,
+                        )
+                        try:
+                            mark_phase_terminal(db, run_id, phase_key, result=result)
+                            db.commit()
+                            summary["promoted_to_terminal"].append(phase_key)
+                            _try_advance_phase(db, document_id, run_id)
+                            db.commit()
+                        except Exception:
+                            logger.warning(
+                                "reconcile_ontology_graph_runs: promote failed for "
+                                "run_id=%s phase=%s", run_id, phase_key, exc_info=True,
+                            )
+                            db.rollback()
+                        continue
+
+                    # --------------------------------------------------------
+                    # Branch 2: stale dispatched repair (pending-retry-aware)
+                    # --------------------------------------------------------
+                    if age_s < stale_dispatched_threshold_s:
+                        continue  # still within the expected completion window
+
+                    # Check for pending Celery retry before revoking.
+                    try:
+                        pending = _has_pending_retry_for_pass(db, run_id, pass_name)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: _has_pending_retry_for_pass "
+                            "failed for run_id=%s pass=%s; skipping reclaim",
+                            run_id, pass_name, exc_info=True,
+                        )
+                        continue
+
+                    if pending:
+                        logger.debug(
+                            "reconcile_ontology_graph_runs: skipping stale dispatched "
+                            "run_id=%s phase=%s — pending Celery retry detected",
+                            run_id, phase_key,
+                        )
+                        summary["skipped_pending_retry"].append(phase_key)
+                        continue
+
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stale dispatched phase "
+                        "run_id=%s phase=%s age=%.0fs — revoking + reclaiming",
+                        run_id, phase_key, age_s,
+                    )
+                    try:
+                        reclaimed = reclaim_stale_phase(
+                            db, run_id, phase_key,
+                            claim_threshold_s=stale_claimed_threshold_s,
+                            dispatch_threshold_s=stale_dispatched_threshold_s,
+                        )
+                        if reclaimed:
+                            db.commit()
+                            summary["stale_dispatched_reclaimed"].append(phase_key)
+                            _try_advance_phase(db, document_id, run_id)
+                            db.commit()
+                        else:
+                            db.rollback()
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: reclaim (dispatched) failed for "
+                            "run_id=%s phase=%s", run_id, phase_key, exc_info=True,
+                        )
+                        db.rollback()
+
+        logger.info(
+            "reconcile_ontology_graph_runs: scan complete — "
+            "scanned=%d stale_claimed=%d stale_dispatched=%d promoted=%d "
+            "stuck_advances=%d skipped_pending_retry=%d",
+            summary["scanned_runs"],
+            len(summary["stale_claimed_reclaimed"]),
+            len(summary["stale_dispatched_reclaimed"]),
+            len(summary["promoted_to_terminal"]),
+            len(summary["stuck_advances"]),
+            len(summary["skipped_pending_retry"]),
+        )
+        return summary
+    except Exception:
+        logger.exception("reconcile_ontology_graph_runs: unexpected error in reconciler scan")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 # CHANGED 2026-05-06 (Task 8): replaced monolithic ~225-line helper
 # (_derive_ontology_graph_bundle_passes) with a thin ~50-line dispatcher.
 # soft_time_limit dropped from 8 h (settings.graph_soft_time_limit) to 10 min

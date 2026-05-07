@@ -8,12 +8,21 @@ Locks in two invariants:
      critical because derive_text_chunks_and_embeddings (function name)
      writes stage_runs under "derive_text_embeddings" (stage name);
      mismatched bookkeeping silently breaks retrieval.
+
+Beat tasks (reconcilers, sweepers) that do NOT write stage_run rows are
+listed in BEAT_TASKS_NO_GUARD and verified separately.
 """
 from __future__ import annotations
 
 import pytest
 
 pytestmark = pytest.mark.unit
+
+# Beat tasks that are NOT wrapped by guard_stage_run (they don't write
+# stage_run rows; they're maintenance/coordination tasks).
+BEAT_TASKS_NO_GUARD = [
+    "reconcile_ontology_graph_runs",
+]
 
 # (task_function_name, expected_stage_name_passed_to_guard_stage_run)
 # Function name and stage_name intentionally differ for one task — see plan.
@@ -49,4 +58,21 @@ def test_pipeline_task_has_guard_stage_run(task_name, expected_stage):
         f"{task_name} is wrapped with stage_name="
         f"{getattr(task.run, 'stage_name', None)!r} but should use "
         f"{expected_stage!r} to match the canonical _update_stage_run calls."
+    )
+
+
+@pytest.mark.parametrize("task_name", BEAT_TASKS_NO_GUARD)
+def test_beat_task_exists_and_is_registered(task_name):
+    """Beat tasks that don't write stage_run rows are importable and in the
+    Celery beat_schedule."""
+    import app.workers.pipeline as pipeline
+    from app.workers.celery_app import celery_app
+
+    # Task must be importable from pipeline module.
+    task = getattr(pipeline, task_name, None)
+    assert task is not None, f"{task_name} not found in app.workers.pipeline"
+
+    # reconcile_ontology_graph_runs must be in the beat schedule.
+    assert "reconcile-ontology-graph-runs" in celery_app.conf.beat_schedule, (
+        "reconcile-ontology-graph-runs not found in celery_app.conf.beat_schedule"
     )

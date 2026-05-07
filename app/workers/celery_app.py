@@ -93,6 +93,11 @@ celery_app.conf.update(
             "task": "app.workers.pipeline.periodic_stale_run_sweep",
             "schedule": timedelta(minutes=10),
         },
+        "reconcile-ontology-graph-runs": {
+            "task": "app.workers.pipeline.reconcile_ontology_graph_runs",
+            "schedule": settings.reconciler_period_seconds,
+            "options": {"queue": "graph"},
+        },
     },
 )
 
