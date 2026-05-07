@@ -8,8 +8,7 @@ from app.services.table_overlay import (
     TableOverlay as WorkerTO, TableFact, CrossEntityHint,
 )
 from ontology_bundles.air_defense_v3.extraction_schemas import (
-    missile_propulsion, missile_airframe, missile_kinematics,
-    missile_speed_timing,
+    missile_propulsion, missile_airframe,
 )
 
 
