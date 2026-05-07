@@ -344,3 +344,60 @@ class TestDispatcherConcurrencyCap:
             f"Expected first {settings.pass_concurrency_per_document} entity passes, "
             f"got {dispatched_names}"
         )
+
+
+class TestDispatcherConcurrentRace:
+    """Test 6: two concurrent dispatcher invocations for the same (run_id, attempt)
+    must not crash with IntegrityError on uq_stage_runs_summary_row.
+
+    Regression: prior to the ON CONFLICT DO NOTHING fix, the second copy would
+    raise psycopg2.errors.UniqueViolation on the partial unique index.  Observed
+    in Task 12 smoke test on run ea1df7dd."""
+
+    def test_dispatcher_concurrent_dispatch_does_not_raise_integrity_error(
+        self, db_session, pipeline_run_factory
+    ):
+        """Two dispatcher invocations for the same (run_id, attempt) must not
+        crash. The second one's INSERT should ON CONFLICT DO NOTHING and the
+        function should return cleanly. Regression: previously second crashed
+        with IntegrityError on uq_stage_runs_summary_row."""
+        run_id = pipeline_run_factory()
+        doc_id = str(uuid.uuid4())
+
+        # First dispatcher invocation — creates the RUNNING summary row
+        with _patched_dispatcher(db_session) as mocks:
+            result_1 = _invoke(_make_task_self(request_id="task-first"), doc_id, str(run_id))
+
+        assert result_1["status"] == "dispatched"
+
+        # Verify the summary row was created exactly once
+        rows_after_first = db_session.execute(
+            text(
+                "SELECT COUNT(*) FROM ingest.stage_runs "
+                "WHERE pipeline_run_id = :run_id "
+                "  AND stage_name = 'derive_ontology_graph' "
+                "  AND pass_name IS NULL"
+            ),
+            {"run_id": run_id},
+        ).scalar()
+        assert rows_after_first == 1, f"Expected 1 summary row after first dispatch, got {rows_after_first}"
+
+        # Second dispatcher invocation for the same (run, attempt=1) — must NOT raise
+        with _patched_dispatcher(db_session) as mocks:
+            result_2 = _invoke(_make_task_self(request_id="task-second"), doc_id, str(run_id))
+
+        assert result_2["status"] == "dispatched"
+
+        # Still only one row — ON CONFLICT DO NOTHING suppressed the duplicate
+        rows_after_second = db_session.execute(
+            text(
+                "SELECT COUNT(*) FROM ingest.stage_runs "
+                "WHERE pipeline_run_id = :run_id "
+                "  AND stage_name = 'derive_ontology_graph' "
+                "  AND pass_name IS NULL"
+            ),
+            {"run_id": run_id},
+        ).scalar()
+        assert rows_after_second == 1, (
+            f"Second dispatcher wrote a duplicate row (expected 1, got {rows_after_second})"
+        )

@@ -2452,10 +2452,15 @@ def _write_stage_run(
     skip_reason: str | None,
     counts: dict | None,
     error: str | None,
-) -> None:
+) -> uuid.UUID | None:
     """Upsert a per-pass StageRun row targeting the partial unique index
     uq_stage_runs_run_pass_attempt (WHERE pass_name IS NOT NULL) added in
     migration 0015.
+
+    Returns the UUID of the inserted or updated StageRun row so callers can
+    populate pipeline_pass_outputs.stage_run_id for direct FK linkage.
+    Returns None only if the upsert fails (stale run_id / FK violation) and
+    the exception is swallowed.
 
     Maps execution_status to the legacy celery-level status column so the
     existing monitoring queries still work:
@@ -2516,17 +2521,20 @@ def _write_stage_run(
                 if k not in ("pipeline_run_id", "stage_name", "pass_name", "attempt")
             },
         )
+        .returning(StageRun.id)
     )
     db = _get_db()
     try:
-        db.execute(stmt)
+        row = db.execute(stmt).fetchone()
         db.commit()
+        return row[0] if row else None
     except Exception as exc:
         db.rollback()
         logger.debug(
             "_write_stage_run skipped (stale run_id %s, pass %s): %s",
             pipeline_run_id, pass_def.name, exc,
         )
+        return None
     finally:
         db.close()
 
@@ -5357,12 +5365,6 @@ def _save_terminal_pass_output(
       ``primary_entities_extracted``, ``bridge_entities_extracted``,
       ``relationships_extracted``, ``relationships_rejected``
     NOT the shorter forms ``primary_entities`` / ``bridge_entities``.
-
-    TODO(per-pass-fanin): ``_write_stage_run`` currently returns None, so the
-    ``stage_run_id`` FK on ``pipeline_pass_outputs`` rows is always NULL —
-    losing direct join-back-to-audit-row.  Either change ``_write_stage_run``
-    to return the inserted UUID, or document that consumers must query by
-    (pipeline_run_id, pass_name, attempt) to find the matching StageRun.
     """
     diagnostics = (outcome.raw_response_payload or {}).get("diagnostics", {}) or {}
     if override_diagnostics_extra:
@@ -5728,8 +5730,10 @@ def derive_ontology_graph_pass(
         )
 
         # 5. ALWAYS write StageRun (per-attempt audit; matches existing shape).
-        # _write_stage_run manages its own DB session and commit — no return value.
-        _write_stage_run(
+        # _write_stage_run manages its own DB session and commit — returns the
+        # UUID of the inserted/upserted row so pipeline_pass_outputs.stage_run_id
+        # can be populated for direct FK linkage (Issue #2 fix).
+        stage_run_id = _write_stage_run(
             pipeline_run_id=run_id,
             pass_def=pass_def,
             attempt=attempt_n,
@@ -5752,7 +5756,7 @@ def derive_ontology_graph_pass(
             _save_terminal_pass_output(
                 db,
                 run_id=run_id,
-                stage_run_id=None,
+                stage_run_id=stage_run_id,
                 pass_name=pass_name,
                 attempt=attempt_n,
                 outcome=outcome,
@@ -5794,7 +5798,7 @@ def derive_ontology_graph_pass(
         _save_terminal_pass_output(
             db,
             run_id=run_id,
-            stage_run_id=None,
+            stage_run_id=stage_run_id,
             pass_name=pass_name,
             attempt=attempt_n,
             outcome=outcome,
@@ -6479,6 +6483,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     """
     from app.models.ingest import PipelineRun, StageRun
     from datetime import datetime, timezone
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     db = _get_db()
     try:
@@ -6497,18 +6502,28 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 "reason": "orphaned_run",
             }
 
-        # Create the summary StageRun as RUNNING so finalize_document's
-        # REQUIRED_STAGES gate sees this stage before any pass completes.
-        summary = StageRun(
-            pipeline_run_id=uuid.UUID(str(run_id)),
-            stage_name="derive_ontology_graph",
-            pass_name=None,
-            attempt=self.request.retries + 1,
-            status="RUNNING",
-            started_at=datetime.now(timezone.utc),
+        # Idempotent insert — when two dispatcher copies race (e.g., Celery
+        # redelivery after worker crash), both can safely fire this; the partial
+        # unique index uq_stage_runs_summary_row (WHERE pass_name IS NULL) guards
+        # against duplicates without raising IntegrityError on the second copy.
+        stmt = (
+            pg_insert(StageRun)
+            .values(
+                id=uuid.uuid4(),
+                pipeline_run_id=uuid.UUID(str(run_id)),
+                stage_name="derive_ontology_graph",
+                pass_name=None,
+                attempt=self.request.retries + 1,
+                status="RUNNING",
+                execution_status="RUNNING",
+                started_at=datetime.now(timezone.utc),
+            )
+            .on_conflict_do_nothing(
+                index_elements=["pipeline_run_id", "stage_name", "attempt"],
+                index_where=sa.text("pass_name IS NULL"),
+            )
         )
-        db.add(summary)
-        db.flush()
+        db.execute(stmt)
 
         bundle_key = run.ontology_bundle_key
         db.commit()

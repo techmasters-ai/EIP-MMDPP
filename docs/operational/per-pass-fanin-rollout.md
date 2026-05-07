@@ -162,37 +162,42 @@ Documents that were mid-extraction under the new code at rollback time will need
 
 ## Known issues and carry-forward
 
-### 1. Concurrent dispatcher race on summary StageRun
+### 1. Concurrent dispatcher race on summary StageRun — FIXED
 
-When two `derive_ontology_graph` dispatcher tasks fire for the same `(run_id, attempt)`
+~~When two `derive_ontology_graph` dispatcher tasks fire for the same `(run_id, attempt)`
 — for example, after a Celery task redelivery following a worker restart — only one
-can successfully insert the summary StageRun. The second crashes with an
-`IntegrityError` on the `uq_stage_runs_summary_row` partial unique index. The first
-dispatcher's run continues normally; the second produces an ERROR log line and the
-Celery task is marked as failed on the broker, but no data loss occurs (the winning
-dispatcher's per-pass tasks are still in flight).
+can successfully insert the summary StageRun.  The second would crash with
+`IntegrityError` on the `uq_stage_runs_summary_row` partial unique index.~~
 
-**Mitigation (not yet implemented):** wrap the StageRun INSERT in
-`ON CONFLICT DO NOTHING` or catch `IntegrityError` in the dispatcher's body so the
-second redelivery becomes a no-op. Search for `TODO(per-pass-fanin)` in the codebase
-for the relevant marker.
+**Resolved:** the dispatcher now uses `pg_insert().on_conflict_do_nothing()` targeting
+the partial unique index `uq_stage_runs_summary_row` (`WHERE pass_name IS NULL`). Both
+concurrent dispatcher copies can fire safely; the second's INSERT becomes a no-op and
+the task continues dispatching passes as normal. Regression test:
+`TestDispatcherConcurrentRace::test_dispatcher_concurrent_dispatch_does_not_raise_integrity_error`.
 
-### 2. `stage_run_id` always NULL on `pipeline_pass_outputs` rows
+### 2. `stage_run_id` now populated on `pipeline_pass_outputs` rows
 
-`_write_stage_run` returns `None` (it does not return the inserted row's ID). As a
-result, the `stage_run_id` FK column on `pipeline_pass_outputs` is always NULL.
-Operators must query by `(pipeline_run_id, pass_name, attempt)` to find the matching
-`stage_runs` row rather than joining via the FK:
+~~`_write_stage_run` returned `None`, causing `pipeline_pass_outputs.stage_run_id` to
+always be NULL.~~
+
+**Resolved:** `_write_stage_run` now appends `RETURNING id` to the upsert statement and
+returns the UUID of the inserted/updated row. The per-pass task captures this UUID and
+passes it through to `_save_terminal_pass_output`, so `pipeline_pass_outputs.stage_run_id`
+is populated. Operators can now join pass-output rows directly to their audit StageRun:
 
 ```sql
 SELECT sr.*
   FROM ingest.stage_runs sr
   JOIN ingest.pipeline_pass_outputs ppo
-    ON sr.pipeline_run_id = ppo.pipeline_run_id
-   AND sr.pass_name       = ppo.pass_name
-   AND sr.attempt         = ppo.attempt
+    ON sr.id = ppo.stage_run_id
  WHERE ppo.pipeline_run_id = '<run_id>';
 ```
+
+The composite-key join (by `pipeline_run_id, pass_name, attempt`) continues to work for
+any rows written before this fix (e.g., from the Task 12 smoke test run). New rows have
+the FK populated. Regression tests:
+- `TestWriteStageRunReturnsUUID::test_write_stage_run_returns_uuid`
+- `TestPassOutputStageRunIdPopulated::test_pass_output_row_has_stage_run_id_populated`
 
 ### 3. JSONB size for large extract_pass_response_json
 

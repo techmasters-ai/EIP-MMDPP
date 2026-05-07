@@ -994,3 +994,178 @@ class TestRehydrateUpstreamRefs:
         # Second arg is the fake pass result with pre_merge_walk attached
         assert extend_call_args[1] is fake_pass_result
         assert fake_pass_result.pre_merge_walk is fake_walk
+
+
+# ---------------------------------------------------------------------------
+# Issue #2 regression tests — _write_stage_run returns UUID; stage_run_id FK
+# is populated on pipeline_pass_outputs rows
+# ---------------------------------------------------------------------------
+
+
+class TestWriteStageRunReturnsUUID:
+    """_write_stage_run must return the inserted/upserted UUID.
+
+    Regression: prior to the Issue #2 fix, _write_stage_run returned None,
+    causing pipeline_pass_outputs.stage_run_id to always be NULL."""
+
+    def test_write_stage_run_returns_uuid(self, db_session, pipeline_run_factory):
+        """_write_stage_run returns the UUID of the upserted StageRun row,
+        and that UUID matches what's actually in the DB."""
+        from app.workers.pipeline import _write_stage_run
+
+        run_id = pipeline_run_factory()
+        pass_def = SimpleNamespace(name="radar_identity")
+        proxy = _NoCloseProxy(db_session)
+
+        with patch("app.workers.pipeline._get_db", return_value=proxy):
+            returned_id = _write_stage_run(
+                pipeline_run_id=str(run_id),
+                pass_def=pass_def,
+                attempt=1,
+                execution_status="COMPLETE",
+                yield_status="HIT",
+                skip_reason=None,
+                counts={"primary_entities_extracted": 5},
+                error=None,
+            )
+
+        assert returned_id is not None, "_write_stage_run must return a UUID, not None"
+        assert isinstance(returned_id, uuid.UUID), f"Expected uuid.UUID, got {type(returned_id)}"
+
+        # Verify the returned UUID matches the row in the DB
+        from sqlalchemy import text as sa_text
+        actual_id = db_session.execute(
+            sa_text(
+                "SELECT id FROM ingest.stage_runs "
+                "WHERE pipeline_run_id = :run_id "
+                "  AND pass_name = 'radar_identity' "
+                "  AND attempt = 1"
+            ),
+            {"run_id": str(run_id)},
+        ).scalar()
+
+        assert actual_id is not None, "No StageRun row was written"
+        assert str(actual_id) == str(returned_id), (
+            f"Returned UUID {returned_id} does not match DB row {actual_id}"
+        )
+
+    def test_write_stage_run_upsert_returns_same_uuid(self, db_session, pipeline_run_factory):
+        """Second call with same (run_id, pass_name, attempt) upserts and returns the
+        same row UUID (ON CONFLICT DO UPDATE returns the existing row's id)."""
+        from app.workers.pipeline import _write_stage_run
+
+        run_id = pipeline_run_factory()
+        pass_def = SimpleNamespace(name="radar_identity")
+        proxy = _NoCloseProxy(db_session)
+
+        with patch("app.workers.pipeline._get_db", return_value=proxy):
+            first_id = _write_stage_run(
+                pipeline_run_id=str(run_id),
+                pass_def=pass_def,
+                attempt=1,
+                execution_status="COMPLETE",
+                yield_status="HIT",
+                skip_reason=None,
+                counts=None,
+                error=None,
+            )
+
+        with patch("app.workers.pipeline._get_db", return_value=proxy):
+            second_id = _write_stage_run(
+                pipeline_run_id=str(run_id),
+                pass_def=pass_def,
+                attempt=1,
+                execution_status="COMPLETE",
+                yield_status="EMPTY",
+                skip_reason=None,
+                counts=None,
+                error=None,
+            )
+
+        assert first_id is not None
+        assert second_id is not None
+        # Upsert: the row is updated, not a new row — same UUID returned
+        assert str(first_id) == str(second_id), (
+            "Upsert on same (run, pass, attempt) should return the same UUID "
+            f"but got {first_id} != {second_id}"
+        )
+
+
+class TestPassOutputStageRunIdPopulated:
+    """After a COMPLETE pass, pipeline_pass_outputs.stage_run_id must be set.
+
+    Regression: prior to the Issue #2 fix, stage_run_id was always NULL
+    because _write_stage_run returned None and that None was passed through
+    to _save_terminal_pass_output."""
+
+    def test_pass_output_row_has_stage_run_id_populated(
+        self, db_session, pipeline_run_factory
+    ):
+        """After a COMPLETE pass, pipeline_pass_outputs.stage_run_id must NOT be NULL.
+        It should point to the matching StageRun audit row."""
+        from sqlalchemy import text as sa_text
+
+        run_id = pipeline_run_factory()
+        doc_id = str(uuid.uuid4())
+        fake_stage_run_id = uuid.uuid4()
+
+        # Insert a real StageRun row that our fake _write_stage_run will return
+        db_session.execute(
+            sa_text(
+                "INSERT INTO ingest.stage_runs "
+                "(id, pipeline_run_id, stage_name, pass_name, attempt, status, "
+                " execution_status, yield_status) "
+                "VALUES (:id, :run_id, 'derive_ontology_graph', 'radar_identity', 1, "
+                "        'COMPLETE', 'COMPLETE', 'HIT')"
+            ),
+            {"id": fake_stage_run_id, "run_id": run_id},
+        )
+        db_session.flush()
+
+        # Patch _write_stage_run to return our known UUID (instead of opening its own session)
+        patches_with_real_stage_run_id = _build_patches(db_session)
+        # Replace the _write_stage_run patch to return the known UUID
+        patches_with_real_stage_run_id[5] = patch(
+            "app.workers.pipeline._write_stage_run",
+            return_value=fake_stage_run_id,
+        )
+
+        started = []
+        mocks: dict = {}
+        keys = ["_get_db", "_build_docling_document_json", "load_bundle_manifest",
+                "load_ontology", "_rehydrate_upstream_refs", "_write_stage_run",
+                "_try_advance_phase"]
+        for p, key in zip(patches_with_real_stage_run_id, keys):
+            m = p.start()
+            mocks[key] = m
+            started.append(p)
+
+        try:
+            with patch(
+                "app.workers.pipeline._execute_pass_attempt",
+                return_value=_make_complete_outcome(),
+            ):
+                _invoke(_make_task_self(), doc_id, str(run_id), "radar_identity")
+        finally:
+            for p in started:
+                p.stop()
+
+        db_session.expire_all()
+
+        # Verify stage_run_id is populated on the pass output row
+        row = db_session.execute(
+            sa_text(
+                "SELECT stage_run_id FROM ingest.pipeline_pass_outputs "
+                "WHERE pipeline_run_id = :run_id AND pass_name = 'radar_identity'"
+            ),
+            {"run_id": str(run_id)},
+        ).fetchone()
+
+        assert row is not None, "No pipeline_pass_outputs row was written"
+        assert row.stage_run_id is not None, (
+            "stage_run_id is NULL — the Issue #2 fix did not propagate the UUID "
+            "from _write_stage_run to _save_terminal_pass_output"
+        )
+        assert str(row.stage_run_id) == str(fake_stage_run_id), (
+            f"stage_run_id {row.stage_run_id} does not match expected {fake_stage_run_id}"
+        )
