@@ -175,6 +175,13 @@ services:
       DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-4}
       # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
       DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
+      # Mechanism A1 (table-derived identity rewrite + per-cell field overlay) kill switch.
+      # When "false", main.py's /extract-pass handler skips extract_table_overlay() and
+      # ships table_overlay=None on the response. Spec §4.3. The same flag is read on
+      # the worker side (see worker / worker-graph services below); the worker check is
+      # AUTHORITATIVE — even cached overlay payloads in pipeline_pass_outputs.metadata_json
+      # are ignored when this is false.
+      DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
       # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,
       # LiteLLM reads OLLAMA_API_BASE / OLLAMA_BASE_URL
       OLLAMA_LLM_BASE_URL: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
@@ -333,6 +340,9 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Mechanism A1 kill switch (worker side — AUTHORITATIVE over cached overlays).
+      # See docling-graph service for full rationale. Spec §4.3.
+      DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
@@ -475,6 +485,9 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Mechanism A1 kill switch (worker side — AUTHORITATIVE over cached overlays).
+      # See docling-graph service for full rationale. Spec §4.3.
+      DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
