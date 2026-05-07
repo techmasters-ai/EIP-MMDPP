@@ -42,7 +42,7 @@
     {
       "id": 5,
       "subject": "Task 5: main.py wire-up + parser-side kill switch",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         4
       ]
@@ -106,5 +106,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-05-07T00:01:36.588311+00:00"
+  "lastUpdated": "2026-05-07T00:13:34.069932+00:00"
 }
