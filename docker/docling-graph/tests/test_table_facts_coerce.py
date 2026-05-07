@@ -64,6 +64,67 @@ def test_numeric_unit_conversion_mm_to_m_via_row_label():
     assert abs(out[0].value - 10.726) < 1e-6
 
 
+def test_bare_length_infers_mm_when_magnitude_requires_it():
+    tf = _load()
+    out = tf.coerce_value("10726", "body_length_m", row_label="Length")
+    assert len(out) == 1
+    assert abs(out[0].value - 10.726) < 1e-6
+    assert out[0].unit_inferred == "mm"
+
+
+def test_bare_length_keeps_m_when_magnitude_requires_it():
+    tf = _load()
+    out = tf.coerce_value("10.726", "body_length_m", row_label="Length")
+    assert len(out) == 1
+    assert out[0].value == 10.726
+    assert out[0].unit_inferred == "m"
+
+
+def test_bare_diameter_infers_mm_when_magnitude_requires_it():
+    tf = _load()
+    out = tf.coerce_value("654", "body_diameter_m", row_label="Diameter")
+    assert len(out) == 1
+    assert abs(out[0].value - 0.654) < 1e-6
+    assert out[0].unit_inferred == "mm"
+
+
+def test_bare_range_infers_m_when_magnitude_requires_it():
+    tf = _load()
+    out = tf.coerce_value("29000", "max_intercept_km", row_label="Max Range")
+    assert len(out) == 1
+    assert out[0].value == 29.0
+    assert out[0].unit_inferred == "m"
+
+
+def test_bare_range_keeps_km_when_magnitude_requires_it():
+    tf = _load()
+    out = tf.coerce_value("29", "max_intercept_km", row_label="Max Range")
+    assert len(out) == 1
+    assert out[0].value == 29.0
+    assert out[0].unit_inferred == "km"
+
+
+def test_bare_altitude_infers_m_when_magnitude_requires_it():
+    tf = _load()
+    out = tf.coerce_value("22000", "max_altitude_km", row_label="Altitude")
+    assert len(out) == 1
+    assert out[0].value == 22.0
+    assert out[0].unit_inferred == "m"
+
+
+def test_bare_min_altitude_infers_m_when_km_is_implausible():
+    tf = _load()
+    out = tf.coerce_value("100", "min_altitude_km", row_label="Min Altitude")
+    assert len(out) == 1
+    assert out[0].value == 0.1
+    assert out[0].unit_inferred == "m"
+
+
+def test_bare_risky_length_skips_when_no_interpretation_is_plausible():
+    tf = _load()
+    assert tf.coerce_value("150", "body_length_m", row_label="Length") == []
+
+
 def test_numeric_unit_from_row_label_kg():
     """Cell '1135' + row_label '1st Stage Weight kg' -> kg implied."""
     tf = _load()
@@ -78,6 +139,30 @@ def test_numeric_no_unit_anywhere_falls_back_to_canonical():
     out = tf.coerce_value("1135", "booster_mass_kg")
     assert len(out) == 1
     assert out[0].value == 1135.0
+
+
+def test_numeric_usec_suffix_bare_value_defaults_to_usec():
+    tf = _load()
+    out = tf.coerce_value("2500", "nominal_pri_usec", row_label="PRI")
+    assert len(out) == 1
+    assert out[0].value == 2500.0
+    assert out[0].unit_inferred == "usec"
+
+
+def test_numeric_ms_to_usec_explicit():
+    tf = _load()
+    out = tf.coerce_value("2.5 ms", "nominal_pri_usec")
+    assert len(out) == 1
+    assert out[0].value == 2500.0
+    assert out[0].unit_inferred == "ms"
+
+
+def test_numeric_dbm_to_dbw_uses_offset_conversion():
+    tf = _load()
+    out = tf.coerce_value("100 dBm", "erp_dbw")
+    assert len(out) == 1
+    assert out[0].value == 70.0
+    assert out[0].unit_inferred == "dbm"
 
 
 def test_multi_value_alternatives_slash():

@@ -272,6 +272,15 @@ UNIT_TABLE: dict[str, dict[str, float]] = {
         "min": 60.0,
         "minutes": 60.0,
     },
+    "time_usec": {
+        "usec": 1.0,
+        "us": 1.0,
+        "µs": 1.0,
+        "μs": 1.0,
+        "ms": 1000.0,
+        "sec": 1000000.0,
+        "s": 1000000.0,
+    },
     "velocity_mps": {
         "mps": 1.0,
         "m/s": 1.0,
@@ -297,6 +306,8 @@ UNIT_TABLE: dict[str, dict[str, float]] = {
     },
     "power_dbw": {
         "dbw": 1.0,
+        # dBm is converted with an offset (dBW = dBm - 30) in coerce_value.
+        # The 1.0 factor keeps it discoverable as a valid unit token.
         "dbm": 1.0,
     },
     "angle_deg": {
@@ -317,6 +328,7 @@ FIELD_SUFFIX_TO_UNIT_CLASS: dict[str, str] = {
     "_m": "length_m",
     "_km": "length_km",
     "_kg": "mass_kg",
+    "_usec": "time_usec",
     "_sec": "time_sec",
     "_mps": "velocity_mps",
     "_mhz": "frequency_mhz",

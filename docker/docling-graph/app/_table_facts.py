@@ -561,23 +561,33 @@ def coerce_value(
     # Determine the implied unit fallback chain:
     # 1. Explicit unit in the cell fragment (preferred).
     # 2. Implied unit from the row label (e.g., "Length mm" -> "mm").
-    # 3. Canonical unit for the field's unit class (factor 1.0).
+    # 3. Field-aware bare-number inference for risky length/range fields.
+    # 4. Canonical unit fallback only for fields where that is low risk.
     label_implied_unit = _extract_unit_from_label(row_label, unit_class, UNIT_TABLE)
 
     # Apply unit conversion using the schema field's unit class.
     out: list[ParsedValue] = []
     for value, unit_str in parsed:
         if unit_str is None:
-            # No explicit unit in cell fragment — try row label, then canonical.
-            unit_str = label_implied_unit or _canonical_unit_for_class(unit_class, UNIT_TABLE)
+            # No explicit unit in cell fragment — try row label, then a
+            # field-aware inference. If the value is ambiguous for risky
+            # fields, skip rather than emit a wrong table overlay fact.
+            unit_str = (
+                label_implied_unit
+                or _infer_unit_for_bare_number(value, schema_field, unit_class, UNIT_TABLE)
+            )
+            if unit_str is None:
+                if not _allow_canonical_fallback_for_bare_number(schema_field, unit_class):
+                    continue
+                unit_str = _canonical_unit_for_class(unit_class, UNIT_TABLE)
         unit_norm = unit_str.lower()
-        unit_table = UNIT_TABLE.get(unit_class) or {}
-        factor = unit_table.get(unit_norm)
-        if factor is None:
+        converted = _convert_numeric_value(value, unit_norm, unit_class, UNIT_TABLE)
+        if converted is None:
             # Unknown unit -> skip this value.
             continue
+        converted_value, factor = converted
         out.append(ParsedValue(
-            value=value * factor,
+            value=converted_value,
             unit_inferred=unit_norm,
             conversion_factor=factor,
             raw_text=raw,
@@ -612,6 +622,80 @@ def _canonical_unit_for_class(unit_class: str, unit_table: dict) -> str:
         if factor == 1.0:
             return unit
     return ""
+
+
+_BARE_UNIT_CANONICAL_RANGES: dict[str, tuple[float, float]] = {
+    # Ranges are expressed in the schema's canonical unit. Candidate source
+    # units are accepted only when exactly one conversion lands in range.
+    "body_length_m": (0.5, 25.0),
+    "body_diameter_m": (0.05, 3.0),
+    "max_intercept_km": (1.0, 1000.0),
+    "min_intercept_km": (1.0, 1000.0),
+    "max_altitude_km": (1.0, 100.0),
+    "min_altitude_km": (0.03, 10.0),
+}
+
+_BARE_UNIT_CANDIDATES_BY_CLASS: dict[str, tuple[str, ...]] = {
+    "length_m": ("m", "mm"),
+    "length_km": ("km", "m"),
+}
+
+
+def _infer_unit_for_bare_number(
+    value: float,
+    schema_field: str,
+    unit_class: str,
+    unit_table: dict,
+) -> str | None:
+    """Infer a source unit for bare risky fields when exactly one
+    interpretation is plausible. Ambiguous values intentionally return None.
+    """
+    canonical_range = _BARE_UNIT_CANONICAL_RANGES.get(schema_field)
+    candidate_units = _BARE_UNIT_CANDIDATES_BY_CLASS.get(unit_class)
+    if canonical_range is None or candidate_units is None:
+        return None
+
+    low, high = canonical_range
+    plausible: list[str] = []
+    for unit in candidate_units:
+        converted = _convert_numeric_value(value, unit, unit_class, unit_table)
+        if converted is None:
+            continue
+        converted_value, _factor = converted
+        if low <= converted_value <= high:
+            plausible.append(unit)
+
+    if len(plausible) == 1:
+        return plausible[0]
+    return None
+
+
+def _allow_canonical_fallback_for_bare_number(
+    schema_field: str, unit_class: str
+) -> bool:
+    """Return True when a bare numeric cell can safely use the field's
+    canonical unit. Length/range fields covered by table overlays are risky:
+    SA-2-style tables often omit row-label units while storing mm or m.
+    """
+    if schema_field in _BARE_UNIT_CANONICAL_RANGES:
+        return False
+    return unit_class not in {"length_m", "length_km"}
+
+
+def _convert_numeric_value(
+    value: float,
+    unit_norm: str,
+    unit_class: str,
+    unit_table: dict,
+) -> tuple[float, float] | None:
+    if unit_class == "power_dbw" and unit_norm == "dbm":
+        return value - 30.0, 1.0
+
+    table = unit_table.get(unit_class) or {}
+    factor = table.get(unit_norm)
+    if factor is None:
+        return None
+    return value * factor, factor
 
 
 def _extract_unit_from_label(
@@ -682,7 +766,7 @@ def _split_values(cell_text: str) -> tuple[list[str], bool]:
 
 # Number + optional unit parser. Accepts "1135", "1135 kg", "1.5e3", "1,135".
 _NUMBER_UNIT_PATTERN = re.compile(
-    r"^\s*([+-]?\d+(?:[,\.]\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za-z°/]+)?\s*$"
+    r"^\s*([+-]?\d+(?:[,\.]\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za-z°/µμ]+)?\s*$"
 )
 
 

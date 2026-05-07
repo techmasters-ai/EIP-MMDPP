@@ -87,6 +87,7 @@ def test_unit_table_includes_canonical_unit():
         "length_km": "km",
         "mass_kg": "kg",
         "time_sec": "sec",
+        "time_usec": "usec",
         "velocity_mps": "mps",
         "frequency_mhz": "mhz",
         "gain_dbi": "dbi",
