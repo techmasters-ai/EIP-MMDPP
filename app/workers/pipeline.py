@@ -5504,6 +5504,502 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
         raise
 
 
+# ---------------------------------------------------------------------------
+# Per-pass Celery fan-in — Task 5 helpers + derive_ontology_graph_pass task
+# ---------------------------------------------------------------------------
+# Import note: pass_outputs_store and run_phase_dispatch are imported here at
+# module level so the task and helpers can reference them directly. Placing the
+# imports here (after the main pipeline body) avoids circular-import risk from
+# placing them at the top of a very large module.
+from app.services.pass_outputs_store import (  # noqa: E402
+    save_pass_output,
+    is_pass_already_resolved,
+    count_terminal_passes,
+    load_pass_output,
+)
+from app.services.run_phase_dispatch import (  # noqa: E402
+    claim_phase,
+    mark_phase_dispatched,
+    mark_phase_terminal,
+    read_phase_state,
+    is_run_cancelled,
+)
+
+
+def _phase_key(pass_name: str) -> str:
+    """Map pass_name to the dispatched_phases JSONB key.
+
+    Entity passes use the ``entity_pass_<name>`` prefix; ``system_links`` and
+    ``merge`` are stored as top-level keys (no prefix) because they aren't
+    per-entity extraction passes.
+    """
+    if pass_name in ("system_links", "merge"):
+        return pass_name
+    return f"entity_pass_{pass_name}"
+
+
+def _retry_delay(retries: int) -> int:
+    """Celery countdown-compatible exponential backoff: 30s × 2^retries, capped at 300s.
+
+    Note: ``self.request.retries`` starts at 0 on the **first** retry attempt
+    (the original invocation is attempt 0).  Using ``2**retries`` directly
+    (rather than ``2**(retries-1)`` like the in-process ``_backoff``) gives
+    the desired 30→60→120→300 sequence: 30×1, 30×2, 30×4, 30×8 (capped).
+    """
+    return min(30 * (2 ** retries), 300)
+
+
+def _save_terminal_pass_output(
+    db,
+    *,
+    run_id: str,
+    stage_run_id,
+    pass_name: str,
+    attempt: int,
+    outcome: "PassAttemptOutcome",
+    override_status: str | None = None,
+    override_diagnostics_extra: dict | None = None,
+) -> None:
+    """Write the single terminal ``pipeline_pass_outputs`` row for this pass.
+
+    Upserts by (run_id, pass_name) — overwrites any prior terminal write
+    (defensive; a pass should only terminalize once in normal operation, but
+    the upsert is safe if it does).
+
+    ``override_status`` lets the caller force ``FAILED`` even when
+    ``outcome.execution_status`` says otherwise (used for retry-exhaustion).
+    ``override_diagnostics_extra`` is merged into the diagnostics dict pulled
+    from ``raw_response_payload``; used to add ``{"retry_exhausted": True}``.
+
+    IMPORTANT: counts keys from ``_count_pass_output`` are:
+      ``primary_entities_extracted``, ``bridge_entities_extracted``,
+      ``relationships_extracted``, ``relationships_rejected``
+    NOT the shorter forms ``primary_entities`` / ``bridge_entities``.
+    """
+    diagnostics = (outcome.raw_response_payload or {}).get("diagnostics", {}) or {}
+    if override_diagnostics_extra:
+        diagnostics = {**diagnostics, **override_diagnostics_extra}
+    save_pass_output(
+        db,
+        pipeline_run_id=run_id,
+        stage_run_id=stage_run_id,
+        pass_name=pass_name,
+        attempt=attempt,
+        execution_status=override_status or outcome.execution_status,
+        skip_reason=outcome.skip_reason,
+        yield_status=outcome.yield_status,
+        extract_pass_response=outcome.raw_response_payload or {},
+        primary_entities_extracted=(outcome.counts or {}).get("primary_entities_extracted", 0),
+        bridge_entities_extracted=(outcome.counts or {}).get("bridge_entities_extracted", 0),
+        relationships_extracted=(outcome.counts or {}).get("relationships_extracted", 0),
+        relationships_rejected=(outcome.counts or {}).get("relationships_rejected", 0),
+        diagnostics=diagnostics,
+        field_provenance=(outcome.raw_response_payload or {}).get("field_provenance", []),
+    )
+
+
+def _rehydrate_upstream_refs_from_persisted_passes(
+    db,
+    run_id: str,
+    pass_def,
+    manifest,
+    ontology: dict,
+    document_id: str,
+) -> dict:
+    """Build the upstream_refs dict for a ``document_plus_entity_refs`` pass.
+
+    The per-pass Celery task runs in isolation — it has no in-memory
+    ``pass_results`` dict from prior passes.  For passes like ``system_links``
+    that declare ``input_mode='document_plus_entity_refs'`` and non-empty
+    ``depends_on``, we must reconstruct upstream_refs by loading each
+    dependency's persisted row from ``pipeline_pass_outputs`` and re-parsing
+    the stored response JSON through ``_parse_pass_response``.
+
+    Algorithm:
+    1. Early-exit if the pass doesn't need upstream refs.
+    2. For each dependency pass name in ``pass_def.depends_on``:
+       a. Load the persisted row.  Skip if missing or not COMPLETE.
+       b. Re-parse the stored ``extract_pass_response_json`` through
+          ``_parse_pass_response`` to get a live PassResult object.
+       c. Attach ``pre_merge_walk`` via ``_build_pre_merge_walk_summary`` so
+          ``_extend_upstream_refs`` sees entity counts.
+       d. Call ``_extend_upstream_refs`` to merge the dependency's entities
+          into the accumulating ``upstream_refs`` dict.
+    3. Return the accumulated dict (may be empty if all deps were missing/FAILED).
+
+    Contract: a ``system_links`` task running at time T sees the same upstream
+    refs it would have seen if dependencies A, B, C had run in-process at T-1.
+    """
+    upstream_refs: dict = {}
+
+    # Early-exit: only document_plus_entity_refs passes with dependencies need this.
+    if getattr(pass_def, "input_mode", None) != "document_plus_entity_refs":
+        return upstream_refs
+    depends_on = list(getattr(pass_def, "depends_on", None) or [])
+    if not depends_on:
+        return upstream_refs
+
+    # Build a fast lookup of dep_pass_name → dep_pass_def from the manifest.
+    manifest_by_name = {p.name: p for p in manifest.passes}
+
+    for dep_pass_name in depends_on:
+        dep_row = load_pass_output(db, run_id, dep_pass_name)
+        if dep_row is None:
+            logger.warning(
+                "_rehydrate_upstream_refs: dependency '%s' has no terminal row "
+                "(run_id=%s) — skipping",
+                dep_pass_name, run_id,
+            )
+            continue
+        if dep_row.execution_status != "COMPLETE":
+            logger.warning(
+                "_rehydrate_upstream_refs: dependency '%s' is %s, not COMPLETE "
+                "(run_id=%s) — skipping",
+                dep_pass_name, dep_row.execution_status, run_id,
+            )
+            continue
+
+        dep_pass_def = manifest_by_name.get(dep_pass_name)
+        if dep_pass_def is None:
+            logger.warning(
+                "_rehydrate_upstream_refs: dependency '%s' not in manifest "
+                "(run_id=%s) — skipping",
+                dep_pass_name, run_id,
+            )
+            continue
+
+        try:
+            dep_pass_result = _parse_pass_response(
+                dep_row.extract_pass_response_json, dep_pass_def, manifest
+            )
+        except PassTerminal as exc:
+            logger.warning(
+                "_rehydrate_upstream_refs: re-parsing dependency '%s' raised "
+                "PassTerminal: %s (run_id=%s) — skipping",
+                dep_pass_name, exc, run_id,
+            )
+            continue
+
+        # Attach pre_merge_walk so _extend_upstream_refs can walk entities.
+        dep_pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+            dep_pass_result, dep_pass_def, ontology, document_id,
+        )
+        _extend_upstream_refs(upstream_refs, dep_pass_result, dep_pass_def, ontology)
+
+    return upstream_refs
+
+
+def _update_summary_stage_run(
+    db,
+    run_id: str,
+    status: str,
+    *,
+    error: str | None = None,
+) -> None:
+    """Update the summary StageRun for ``derive_ontology_graph`` (pass_name IS NULL).
+
+    The summary row is created by the Task-8 dispatcher with status=RUNNING.
+    This helper advances it to a terminal status (COMPLETE or FAILED) at the
+    end of the fan-in lifecycle — called by ``derive_ontology_graph_merge``
+    on success (Task 6) or by ``derive_ontology_graph_pass`` on required-pass
+    terminal failure (this task).
+
+    Design choice: resilient to a missing summary row (logs a warning and
+    returns) so that tests that don't pre-seed the summary row still pass.
+    Task 8's dispatcher will always create the row in production; the
+    resilience here is defensive and avoids coupling Task 5 tests to Task 8
+    fixtures.
+    """
+    import datetime
+    from app.models.ingest import StageRun
+    from sqlalchemy import select
+
+    row = db.execute(
+        select(StageRun).where(
+            StageRun.pipeline_run_id == uuid.UUID(str(run_id)),
+            StageRun.stage_name == "derive_ontology_graph",
+            StageRun.pass_name.is_(None),
+        )
+    ).scalars().first()
+
+    if row is None:
+        logger.warning(
+            "_update_summary_stage_run: no summary StageRun found "
+            "(run_id=%s stage=derive_ontology_graph pass_name=NULL) — skipping update",
+            run_id,
+        )
+        return
+
+    row.status = status
+    if hasattr(row, "execution_status"):
+        row.execution_status = status
+    row.finished_at = datetime.datetime.now(datetime.timezone.utc)
+    if error and status in ("FAILED", "COMPLETE"):
+        row.error_message = error
+
+
+def _try_advance_phase(db, document_id: str, run_id: str) -> None:
+    """Decide whether to dispatch the next entity pass, system_links, or merge.
+
+    Called by each finishing pass (COMPLETE / SKIPPED / FAILED-optional) so
+    the fan-in automatically advances to the next stage without a separate
+    coordinator task.
+
+    Three mutually exclusive branches (return after the first successful
+    dispatch so we do exactly one dispatch per finisher):
+
+    1. If in-flight entity passes < concurrency cap → dispatch the next
+       not-yet-dispatched entity pass.
+    2. If all entity passes resolved AND system_links not yet dispatched →
+       dispatch system_links.
+    3. If system_links resolved AND merge not yet dispatched → dispatch merge.
+
+    Forward reference: ``derive_ontology_graph_merge`` is defined later in
+    this module (Task 6).  We use ``celery_app.send_task(...)`` with the
+    registered task name rather than a direct ``.delay()`` call to avoid a
+    Python forward-reference at function-definition time.  The name is
+    resolved at call time via Celery's task registry — so as long as the
+    module is fully loaded before this branch runs, the dispatch succeeds.
+    """
+    from app.models.ingest import PipelineRun
+    run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+    if run is None:
+        logger.warning("_try_advance_phase: run_id=%s not found — skipping", run_id)
+        return
+
+    manifest = load_bundle_manifest(run.ontology_bundle_key)
+    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+
+    # Branch 1: dispatch next entity pass if cap allows.
+    in_flight = sum(
+        1 for k, v in (run.dispatched_phases or {}).items()
+        if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+    )
+    if in_flight < settings.pass_concurrency_per_document:
+        completed_or_terminal = {
+            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
+            if k.startswith("entity_pass_") and v.get("state") == "completed"
+        }
+        in_flight_names = {
+            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
+            if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+        }
+        next_pass = next(
+            (p for p in entity_passes
+             if p not in completed_or_terminal and p not in in_flight_names),
+            None,
+        )
+        if next_pass is not None:
+            _claim_and_dispatch_pass(db, document_id, run_id, next_pass)
+            return  # one dispatch per finisher
+
+    # Branch 2: all entity passes resolved → dispatch system_links if not yet.
+    n_resolved = count_terminal_passes(db, run_id, entity_passes)
+    if n_resolved >= len(entity_passes):
+        sl_state = read_phase_state(db, run_id, "system_links")
+        if sl_state is None:
+            _claim_and_dispatch_pass(db, document_id, run_id, "system_links")
+            return
+
+    # Branch 3: system_links resolved → dispatch merge if not yet.
+    sl_pass = load_pass_output(db, run_id, "system_links")
+    if sl_pass and sl_pass.execution_status in ("COMPLETE", "SKIPPED", "FAILED"):
+        merge_state = read_phase_state(db, run_id, "merge")
+        if merge_state is None:
+            if claim_phase(db, run_id, "merge"):
+                async_result = celery_app.send_task(
+                    "app.workers.pipeline.derive_ontology_graph_merge",
+                    args=[document_id, run_id],
+                )
+                mark_phase_dispatched(db, run_id, "merge", async_result.id)
+                db.commit()
+
+
+def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) -> None:
+    """Claim a phase slot and dispatch the corresponding Celery task.
+
+    Used by both the initial dispatcher (Task 8) and the follow-up dispatch in
+    ``_try_advance_phase``.  Pattern: claim_phase → .delay() → mark_phase_dispatched.
+    If the claim fails (another worker won), returns without dispatching.
+
+    A crash between claim and mark_phase_dispatched leaves the phase in
+    'claimed' state — the reconciler (Task 9) will reclaim it after the
+    stale-claim threshold (``phase_claim_stale_seconds``).
+    """
+    phase_key = _phase_key(pass_name)
+    if not claim_phase(db, run_id, phase_key):
+        return  # another worker won the claim
+    async_result = derive_ontology_graph_pass.delay(document_id, run_id, pass_name)
+    mark_phase_dispatched(db, run_id, phase_key, async_result.id)
+    db.commit()
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    queue="graph",
+    soft_time_limit=settings.pass_soft_time_limit,
+    name="app.workers.pipeline.derive_ontology_graph_pass",
+)
+@guard_stage_run("derive_ontology_graph_pass")
+def derive_ontology_graph_pass(
+    self, document_id: str, run_id: str, pass_name: str,
+) -> dict:
+    """One Celery task per pass attempt. Celery is the retry boundary.
+
+    Pass-output write semantics (r4): ``pipeline_pass_outputs`` has at most ONE
+    row per (run_id, pass_name) — the terminal one. Intermediate retry attempts
+    only update ``StageRun``. The fan-in counter (``count_terminal_passes``)
+    therefore counts pass-resolved passes, not failed attempts that may still retry.
+
+    Order of operations:
+    1. Cancel check — bail early if run is terminal/cancelled.
+    2. Already-resolved check — idempotency guard; advances phase + returns.
+    3. Mark phase dispatched (compare-and-reset; benign if reconciler reset us).
+    4. Execute one attempt via ``_execute_pass_attempt``.
+    5. Write per-attempt StageRun audit row (always, regardless of outcome).
+    6. Branch on outcome:
+       - COMPLETE / SKIPPED → write terminal pass-output, advance phase.
+       - FAILED + retryable + retries remain → commit StageRun; raise self.retry().
+       - FAILED + exhausted OR non-retryable terminal → write terminal pass-output,
+         mark phase failed, terminalize run if pass required.
+    """
+    db = _get_db()
+    try:
+        # 1. Cancel check
+        if is_run_cancelled(db, run_id):
+            return {"pass_name": pass_name, "skipped": "cancelled"}
+
+        # 2. Already-resolved idempotency guard
+        if is_pass_already_resolved(db, run_id, pass_name):
+            mark_phase_terminal(db, run_id, _phase_key(pass_name), result="succeeded")
+            db.commit()
+            _try_advance_phase(db, document_id, run_id)
+            return {"pass_name": pass_name, "skipped": "already_resolved"}
+
+        # 3. Compare-and-reset advance to 'dispatched'. Returns False if the
+        # reconciler reclaimed the phase under us — we proceed anyway because any
+        # new dispatch will see our terminal write and skip.
+        mark_phase_dispatched(db, run_id, _phase_key(pass_name), self.request.id)
+        db.commit()
+
+        # 4. Execute one attempt
+        from app.models.ingest import PipelineRun
+        run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+        if run is None:
+            # Run hard-deleted between cancel-check and here (edge case)
+            return {"pass_name": pass_name, "skipped": "run_missing"}
+
+        bundle_key = run.ontology_bundle_key
+        manifest = load_bundle_manifest(bundle_key)
+        ontology = load_ontology(bundle_key=bundle_key)
+        pass_def = next(p for p in manifest.passes if p.name == pass_name)
+        doc_json = _build_docling_document_json(document_id)
+        upstream_refs = _rehydrate_upstream_refs_from_persisted_passes(
+            db, run_id, pass_def, manifest, ontology, document_id,
+        )
+
+        attempt_n = self.request.retries + 1
+        outcome = _execute_pass_attempt(
+            pipeline_run_id=run_id,
+            pass_def=pass_def,
+            manifest=manifest,
+            ontology=ontology,
+            bundle_key=bundle_key,
+            doc_json=doc_json,
+            upstream_refs=upstream_refs,
+            document_id=document_id,
+        )
+
+        # 5. ALWAYS write StageRun (per-attempt audit; matches existing shape).
+        # _write_stage_run manages its own DB session and commit — no return value.
+        _write_stage_run(
+            pipeline_run_id=run_id,
+            pass_def=pass_def,
+            attempt=attempt_n,
+            execution_status=outcome.execution_status,
+            yield_status=outcome.yield_status,
+            skip_reason=outcome.skip_reason,
+            counts=outcome.counts,
+            error=str(outcome.error) if outcome.error else None,
+        )
+
+        # 6. Branch: COMPLETE / SKIPPED → terminal write + advance.
+        #    FAILED with retry pending → no pass-output write; self.retry().
+        #    FAILED with retry exhausted → terminal write + terminalize if required.
+        if outcome.execution_status in ("COMPLETE", "SKIPPED"):
+            _save_terminal_pass_output(
+                db,
+                run_id=run_id,
+                stage_run_id=None,
+                pass_name=pass_name,
+                attempt=attempt_n,
+                outcome=outcome,
+            )
+            db.commit()
+            mark_phase_terminal(
+                db, run_id, _phase_key(pass_name),
+                result="succeeded" if outcome.execution_status == "COMPLETE" else "skipped",
+            )
+            db.commit()
+            _try_advance_phase(db, document_id, run_id)
+            return {"pass_name": pass_name, "execution_status": outcome.execution_status}
+
+        # FAILED branch
+        is_retryable = isinstance(outcome.error, (PassRetryable, PassTransportError))
+        retries_left = self.request.retries < self.max_retries
+
+        if is_retryable and retries_left:
+            # Pending Celery retry. Phase stays in 'dispatched' for the next
+            # attempt. NO pipeline_pass_outputs write — fan-in counter must not
+            # count this attempt as resolved.
+            db.commit()  # commit StageRun audit written by _write_stage_run's own session
+            raise self.retry(
+                exc=outcome.error,
+                countdown=_retry_delay(self.request.retries),
+            )
+
+        # Terminal failure: non-retryable PassTerminal OR retryable after exhausting
+        # Celery retries. r4: do NOT rely on Celery's MaxRetriesExceededError — it
+        # would re-raise without running this cleanup.
+        _save_terminal_pass_output(
+            db,
+            run_id=run_id,
+            stage_run_id=None,
+            pass_name=pass_name,
+            attempt=attempt_n,
+            outcome=outcome,
+            override_status="FAILED",
+            override_diagnostics_extra={"retry_exhausted": is_retryable},
+        )
+        db.commit()
+        mark_phase_terminal(db, run_id, _phase_key(pass_name), result="failed")
+        db.commit()
+
+        if pass_def.required:
+            _update_summary_stage_run(
+                db, run_id, "FAILED",
+                error=(
+                    f"required pass {pass_name} "
+                    f"{'retry-exhausted' if is_retryable else 'terminal failure'}"
+                ),
+            )
+            db.commit()
+            _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
+            raise IngestFailed(f"Required pass {pass_name} terminal failure")
+
+        # Optional terminal — phase done with result=failed; run continues.
+        _try_advance_phase(db, document_id, run_id)
+        return {
+            "pass_name": pass_name,
+            "execution_status": "FAILED",
+            "reason": "retry_exhausted" if is_retryable else "terminal",
+        }
+    finally:
+        db.close()
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
                  soft_time_limit=settings.graph_soft_time_limit,
                  time_limit=settings.graph_time_limit)

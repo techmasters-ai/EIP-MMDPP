@@ -310,6 +310,19 @@ class Settings(BaseSettings):
     # docker-compose restart of docling-graph. Higher caps risk blowing the
     # 8h ``graph_soft_time_limit`` when 12 passes each retry the maximum.
     pass_max_transport_retries: int = 3
+    # Per-pass Celery task configuration (Task 5 — per-pass fan-in architecture).
+    # Soft time limit per individual pass task (seconds). Passed directly to the
+    # Celery task decorator — SoftTimeLimitExceeded fires at this threshold.
+    pass_soft_time_limit: int = 3600
+    # Max concurrent entity passes per document. _try_advance_phase enforces this:
+    # it only dispatches the next entity pass when in_flight < this cap.
+    pass_concurrency_per_document: int = 2
+    # Stale phase reclaim threshold in seconds. A phase stuck in 'claimed' or
+    # 'dispatched' longer than this is eligible for reconciler reclaim (Task 9).
+    phase_claim_stale_seconds: int = 30
+    # Reconciler beat period in seconds. The Task-9 celery beat schedules the
+    # reconciler to run at this interval.
+    reconciler_period_seconds: int = 60
     # Quality-gate floor shared with the docling-graph service. Mirrors
     # DoclingGraphSettings.docling_graph_quality_min_instances so compose
     # can propagate a single DOCLING_GRAPH_QUALITY_MIN_INSTANCES env var
