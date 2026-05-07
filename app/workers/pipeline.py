@@ -6100,14 +6100,12 @@ def _rehydrate_pass_result(
     pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
         pass_result, pass_def, ontology, document_id,
     )
-    # Restore upstream_refs for document_plus_entity_refs passes via the
-    # same logic _execute_pass_attempt uses; the persisted JSON includes
-    # whatever the original task captured.
-    if pass_def.input_mode == "document_plus_entity_refs":
-        # The persisted upstream_refs (if any) should already be in the
-        # rehydrated PassResult via _parse_pass_response. If not present,
-        # leave as None — merge tolerates missing upstream_refs gracefully.
-        pass
+    # Note: for document_plus_entity_refs passes, upstream_refs is intentionally
+    # not re-attached here — merge_and_resolve does not require it (it resolves
+    # refs by identity_dict / ref_id lookup against pass_result entities). If a
+    # future merge path needs upstream_refs to be present on rehydrated PassResults,
+    # rehydrate them via _select_upstream_refs_for_pass + logical_identity_from_dict
+    # the same way _execute_pass_attempt does.
     return pass_result
 
 
@@ -6143,6 +6141,9 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         manifest = load_bundle_manifest(bundle_key)
         ontology = load_ontology(bundle_key=bundle_key)
 
+        # Note: check_required_pass_gate opens and closes its own DB session
+        # internally (see pipeline.py:1316). This is intentional — the gate's
+        # query is independent of the merge task's session lifetime.
         gate = check_required_pass_gate(run_id)
         if not gate.passed:
             _update_summary_stage_run(

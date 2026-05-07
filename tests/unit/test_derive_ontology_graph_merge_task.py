@@ -365,6 +365,37 @@ class TestAssertStageRunPassOutputConsistency:
 
 
 # ---------------------------------------------------------------------------
+# _rehydrate_pass_result unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestRehydratePassResult:
+    """Unit-level tests for the _rehydrate_pass_result helper."""
+
+    def test_rehydrate_pass_result_propagates_pass_terminal_on_corrupt_json(self):
+        """Corrupt persisted extract_pass_response_json → _parse_pass_response raises
+        PassTerminal → _rehydrate_pass_result propagates (so the merge task's outer
+        except handler catches it and triggers _attempt_rollback)."""
+        from app.workers.pipeline import PassTerminal
+
+        # Build a minimal fake row with a corrupt payload
+        fake_row = SimpleNamespace(
+            pass_name="radar_identity",
+            extract_pass_response_json={"pass_output": "<corrupt>"},
+        )
+        manifest = _fake_manifest(passes=[_fake_pass_def(name="radar_identity")])
+
+        with patch(
+            "app.workers.pipeline._parse_pass_response",
+            side_effect=PassTerminal("corrupt JSON"),
+        ):
+            with pytest.raises(PassTerminal, match="corrupt JSON"):
+                _rehydrate_pass_result(
+                    fake_row, manifest, ontology={}, document_id="doc-1"
+                )
+
+
+# ---------------------------------------------------------------------------
 # Cancel / skip
 # ---------------------------------------------------------------------------
 
