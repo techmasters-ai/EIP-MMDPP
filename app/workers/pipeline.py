@@ -2607,6 +2607,25 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         )
         field_evidence.setdefault(instance_id, {}).setdefault(field_name, []).append(row)
 
+    # Mechanism A1 (spec §4.4 + §5.5, plan Task 9): parse the doc-level
+    # table_overlay payload into the worker-side TableOverlay so the
+    # downstream merge_and_resolve._extract_doc_overlay (Task 8) finds
+    # real data instead of falling through the kill-switch path.
+    # Malformed payloads do NOT terminate the pass — the LLM extraction
+    # itself succeeded; losing the table overlay is a quality
+    # degradation, so log WARNING and continue with table_overlay=None.
+    overlay_dict = response_json.get("table_overlay")
+    table_overlay_obj = None
+    if isinstance(overlay_dict, dict):
+        try:
+            from app.services.table_overlay import TableOverlay
+            table_overlay_obj = TableOverlay.model_validate(overlay_dict)
+        except Exception as exc:
+            logger.warning(
+                "_parse_pass_response: dropping malformed table_overlay: %s", exc,
+            )
+            table_overlay_obj = None
+
     return PassResult(
         pass_name=pass_def.name,
         template_instance=template_instance,
@@ -2617,6 +2636,7 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         pre_merge_rejections=[],
         provenance=provenance_rows,
         field_evidence=field_evidence,
+        table_overlay=table_overlay_obj,
     )
 
 

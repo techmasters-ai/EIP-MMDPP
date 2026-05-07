@@ -708,3 +708,101 @@ class TestCallExtractPass:
                 timeout=10.0,
             )
             assert result == clean_empty
+
+
+# ---------------------------------------------------------------------------
+# Plan Task 9 — _parse_pass_response reads response_json["table_overlay"]
+# onto PassResult.table_overlay (Mechanism A1, spec §4.4 + §5.5).
+# ---------------------------------------------------------------------------
+
+
+def test_parse_pass_response_reads_table_overlay():
+    """When response_json carries a table_overlay key, _parse_pass_response
+    must populate PassResult.table_overlay with a parsed TableOverlay
+    instance. None when key is missing or value is null."""
+    from app.workers.pipeline import _parse_pass_response
+    from app.services.table_overlay import TableOverlay
+
+    pass_def = type("PD", (), {
+        "name": "missile_propulsion",
+        "module": "extraction_schemas.missile_propulsion",
+        "template_class": "MissilePropulsionPass",
+    })()
+    manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
+
+    response_json = {
+        "bundle_key": "air_defense_v3",
+        "pass_name": "missile_propulsion",
+        "pass_output": {"missile_systems": []},
+        "metadata": {"node_count": 0, "edge_count": 0},
+        "provenance": [],
+        "field_provenance": [],
+        "table_overlay": {
+            "alias_map_by_entity_type": {
+                "MISSILE_SYSTEM": {"SA-75": "1D"},
+            },
+            "facts": [{
+                "canonical_entity": "1D",
+                "entity_type": "MISSILE_SYSTEM",
+                "schema_field": "booster_mass_kg",
+                "value": 1135.0,
+                "source_label": "Weight kg",
+                "section_ctx": "1st Stage",
+                "pass_name": "missile_propulsion",
+                "raw_text": "1135",
+            }],
+            "cross_entity_hints": [],
+        },
+    }
+
+    result = _parse_pass_response(response_json, pass_def, manifest)
+    assert isinstance(result.table_overlay, TableOverlay)
+    assert result.table_overlay.alias_map_by_entity_type == {
+        "MISSILE_SYSTEM": {"SA-75": "1D"},
+    }
+    assert len(result.table_overlay.facts) == 1
+    assert result.table_overlay.facts[0].canonical_entity == "1D"
+
+
+def test_parse_pass_response_table_overlay_missing_is_none():
+    from app.workers.pipeline import _parse_pass_response
+    pass_def = type("PD", (), {
+        "name": "missile_propulsion",
+        "module": "extraction_schemas.missile_propulsion",
+        "template_class": "MissilePropulsionPass",
+    })()
+    manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
+    response_json = {
+        "bundle_key": "air_defense_v3", "pass_name": "missile_propulsion",
+        "pass_output": {"missile_systems": []},
+        "metadata": {}, "provenance": [], "field_provenance": [],
+        # No table_overlay key
+    }
+    result = _parse_pass_response(response_json, pass_def, manifest)
+    assert result.table_overlay is None
+
+
+def test_parse_pass_response_malformed_table_overlay_is_dropped(caplog):
+    """A malformed payload (e.g., wrong field types) must not crash;
+    log a WARNING and set table_overlay=None."""
+    import logging
+    from app.workers.pipeline import _parse_pass_response
+    pass_def = type("PD", (), {
+        "name": "missile_propulsion",
+        "module": "extraction_schemas.missile_propulsion",
+        "template_class": "MissilePropulsionPass",
+    })()
+    manifest = type("M", (), {"bundle_key": "air_defense_v3"})()
+    response_json = {
+        "bundle_key": "air_defense_v3", "pass_name": "missile_propulsion",
+        "pass_output": {"missile_systems": []},
+        "metadata": {}, "provenance": [], "field_provenance": [],
+        "table_overlay": {"alias_map_by_entity_type": "not a dict"},  # bogus
+    }
+    with caplog.at_level(logging.WARNING, logger="app.workers.pipeline"):
+        result = _parse_pass_response(response_json, pass_def, manifest)
+    assert result.table_overlay is None
+    assert any(
+        "table_overlay" in rec.message for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+    )

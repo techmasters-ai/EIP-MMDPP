@@ -20,6 +20,8 @@ from typing import Any, Callable, Iterable, Literal
 
 from pydantic import BaseModel
 
+from app.services.table_overlay import TableOverlay  # type: ignore[import]
+
 logger = logging.getLogger(__name__)
 
 
@@ -229,6 +231,11 @@ class PassResult:
     field_evidence: dict[str, dict[str, list["FieldEvidenceRow"]]] = field(
         default_factory=dict,
     )
+    # Mechanism A1 (spec §4.4 + §5.5): doc-level overlay parsed from
+    # the docling-graph /extract-pass response. None when the parser
+    # found no qualifying table OR the parser-side kill switch was off.
+    # Consumed by merge_and_resolve._extract_doc_overlay (Task 8).
+    table_overlay: TableOverlay | None = None
     _walker_entities_cache: list[Any] | None = field(default=None, init=False, repr=False)
 
     def _cached_entities(self) -> list[Any]:
