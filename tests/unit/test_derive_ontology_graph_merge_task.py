@@ -557,10 +557,16 @@ class TestMergeSuccessPath:
         assert row is not None
         assert row[0] == "COMPLETE"
 
-    def test_merge_dispatches_downstream_chain_in_full_mode(
+    def test_merge_dispatches_4_stage_chain_in_full_mode(
         self, db_session, pipeline_run_factory
     ):
-        """full mode → celery_chain with the 4 downstream stages dispatched."""
+        """full mode → celery_chain with the 4 downstream stages dispatched.
+
+        After Task 7's outer-chain trim, the merge task is the single dispatcher
+        for full-mode downstream stages:
+            collect_derivations → derive_structure_links →
+            derive_canonicalization → finalize_document
+        """
         run_id = pipeline_run_factory()
         doc_id = str(uuid.uuid4())
 
@@ -577,10 +583,15 @@ class TestMergeSuccessPath:
         assert len(args) == 4
         mock_chain.return_value.apply_async.assert_called_once()
 
-    def test_merge_does_not_dispatch_downstream_in_graph_only_mode(
+    def test_merge_dispatches_2_stage_chain_in_graph_only_mode(
         self, db_session, pipeline_run_factory
     ):
-        """graph_only mode → NO downstream chain dispatched."""
+        """graph_only mode → 2-stage downstream chain dispatched.
+
+        After Task 7's outer-chain trim, derive_ontology_graph_merge dispatches
+        derive_structure_links → finalize_document for graph_only runs.
+        finalize_document sets run.status=COMPLETE (no longer done in merge task).
+        """
         run_id = pipeline_run_factory()
         doc_id = str(uuid.uuid4())
 
@@ -595,34 +606,14 @@ class TestMergeSuccessPath:
             with patch("app.workers.pipeline.mark_phase_terminal"):
                 _invoke(_make_task_self(), doc_id, str(run_id))
 
-        mocks["celery_chain"].assert_not_called()
-
-    def test_merge_graph_only_mode_marks_run_complete(
-        self, db_session, pipeline_run_factory
-    ):
-        """graph_only success → run.status=COMPLETE set, _update_document_pipeline_status called."""
-        run_id = pipeline_run_factory()
-        doc_id = str(uuid.uuid4())
-
-        db_session.execute(
-            text("UPDATE ingest.pipeline_runs SET mode = 'graph_only' WHERE id = :id"),
-            {"id": run_id},
-        )
-        db_session.flush()
-
-        with _patched_merge(db_session) as mocks:
-            with patch("app.workers.pipeline.mark_phase_terminal"):
-                _invoke(_make_task_self(), doc_id, str(run_id))
-
-        mocks["_update_document_pipeline_status"].assert_called_once_with(doc_id, "COMPLETE")
-
-        # Run status should be COMPLETE in DB
-        row = db_session.execute(
-            text("SELECT status FROM ingest.pipeline_runs WHERE id = :id"),
-            {"id": run_id},
-        ).fetchone()
-        assert row is not None
-        assert row[0] == "COMPLETE"
+        mock_chain = mocks["celery_chain"]
+        mock_chain.assert_called_once()
+        args = mock_chain.call_args[0]
+        # 2 tasks in chain: derive_structure_links, finalize_document
+        assert len(args) == 2
+        mock_chain.return_value.apply_async.assert_called_once()
+        # Merge task must NOT set run.status directly — finalize_document handles it
+        mocks["_update_document_pipeline_status"].assert_not_called()
 
     def test_skipped_passes_excluded_from_merge_inputs(
         self, db_session, pipeline_run_factory

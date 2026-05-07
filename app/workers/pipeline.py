@@ -2175,6 +2175,12 @@ def start_ingest_pipeline(
     # in a simple chain.  The derivation stages (chunks, embed, graph) lose
     # parallelism but each takes only 10-60s vs 20+ min for picture descriptions,
     # so the throughput impact is negligible.
+    #
+    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
+    # from 13 → 9 stages. The downstream chain (collect_derivations →
+    # derive_structure_links → derive_canonicalization → finalize_document) is
+    # now dispatched by derive_ontology_graph_merge after the per-pass fan-in
+    # completes. See app/workers/pipeline.py (derive_ontology_graph_merge).
     pipeline = chain(
         prepare_document.si(document_id, run_id),
         detect_and_translate.si(document_id, run_id),
@@ -2185,10 +2191,6 @@ def start_ingest_pipeline(
         derive_image_embeddings.si(document_id, run_id),
         derive_document_anchors.si(document_id, run_id),
         derive_ontology_graph.si(document_id, run_id),
-        collect_derivations.si(document_id, run_id),
-        derive_structure_links.si(document_id, run_id),
-        derive_canonicalization.si(document_id, run_id),
-        finalize_document.si(document_id, run_id),
     )
     result = pipeline.apply_async()
     return IngestDispatchResult(
@@ -2317,13 +2319,13 @@ def reingest_graph_only(doc_id, request) -> dict:
     finally:
         db.close()
 
-    # Same 3-stage chain the legacy reingest route used to build inline,
-    # but now with the newly-created run_id.
+    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
+    # from 4 → 2 stages. Downstream stages (derive_structure_links →
+    # finalize_document) are now dispatched by derive_ontology_graph_merge in
+    # graph_only mode after the per-pass fan-in completes.
     result = celery_chain(
         derive_document_anchors.si(doc_id_str, run_id),
         derive_ontology_graph.si(doc_id_str, run_id),
-        derive_structure_links.si(doc_id_str, run_id),
-        finalize_document.si(doc_id_str, run_id),
     ).apply_async()
 
     return {
@@ -6223,24 +6225,24 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         _update_summary_stage_run(db, run_id, "COMPLETE")
         mark_phase_terminal(db, run_id, "merge", result="succeeded")
 
-        # graph_only runs reach final state here; full runs continue through
-        # the downstream chain (collect_derivations → derive_structure_links
-        # → derive_canonicalization → finalize_document) which sets COMPLETE.
-        if run_mode == "graph_only":
-            from datetime import datetime as _dt
-            run.status = "COMPLETE"
-            run.finished_at = _dt.utcnow()
-            _update_document_pipeline_status(document_id, "COMPLETE")
-
         db.commit()
 
-        # Dispatch downstream chain — full mode only.
-        # graph_only: reingest_graph_only's chain already dispatches
-        # derive_structure_links + finalize_document; respect that.
-        # (Task 7 will reconcile whether to also pull those into the
-        # merge dispatch — for now, preserve existing behavior.)
-        if run_mode == "full":
-            from celery import chain as celery_chain
+        # CHANGED 2026-05-06 (Task 7): dispatch the downstream chain for both
+        # modes. After the outer-chain trim, the merge task is the single
+        # dispatcher for downstream stages. finalize_document (the last stage
+        # in each chain) sets run.status=COMPLETE for both modes — the merge
+        # task no longer sets run.status directly in graph_only mode.
+        from celery import chain as celery_chain
+        if run_mode == "graph_only":
+            # graph_only is a shorter chain — no collect_derivations, no
+            # derive_canonicalization (matches the legacy reingest_graph_only
+            # chain shape pre-Task-7).
+            celery_chain(
+                derive_structure_links.si(document_id, run_id),
+                finalize_document.si(document_id, run_id),
+            ).apply_async()
+        else:
+            # full mode — 4-stage downstream chain.
             celery_chain(
                 collect_derivations.si(document_id, run_id),
                 derive_structure_links.si(document_id, run_id),
