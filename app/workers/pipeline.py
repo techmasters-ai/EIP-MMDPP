@@ -5539,12 +5539,13 @@ def _phase_key(pass_name: str) -> str:
 
 
 def _retry_delay(retries: int) -> int:
-    """Celery countdown-compatible exponential backoff: 30s × 2^retries, capped at 300s.
+    """Celery countdown-compatible delay: 30s × 2^retries, capped at 300s.
 
-    Note: ``self.request.retries`` starts at 0 on the **first** retry attempt
-    (the original invocation is attempt 0).  Using ``2**retries`` directly
-    (rather than ``2**(retries-1)`` like the in-process ``_backoff``) gives
-    the desired 30→60→120→300 sequence: 30×1, 30×2, 30×4, 30×8 (capped).
+    Sequence: retries=0 → 30s; retries=1 → 60s; retries=2 → 120s;
+    retries=3 → 240s; retries=4+ → 300s (cap).
+
+    Note: Celery's ``self.request.retries`` starts at 0 on the first retry,
+    so we use 2^retries directly (not 2^(retries-1) like _backoff).
     """
     return min(30 * (2 ** retries), 300)
 
@@ -5575,6 +5576,12 @@ def _save_terminal_pass_output(
       ``primary_entities_extracted``, ``bridge_entities_extracted``,
       ``relationships_extracted``, ``relationships_rejected``
     NOT the shorter forms ``primary_entities`` / ``bridge_entities``.
+
+    TODO(per-pass-fanin): ``_write_stage_run`` currently returns None, so the
+    ``stage_run_id`` FK on ``pipeline_pass_outputs`` rows is always NULL —
+    losing direct join-back-to-audit-row.  Either change ``_write_stage_run``
+    to return the inserted UUID, or document that consumers must query by
+    (pipeline_run_id, pass_name, attempt) to find the matching StageRun.
     """
     diagnostics = (outcome.raw_response_payload or {}).get("diagnostics", {}) or {}
     if override_diagnostics_extra:
@@ -5750,9 +5757,10 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
 
     1. If in-flight entity passes < concurrency cap → dispatch the next
        not-yet-dispatched entity pass.
-    2. If all entity passes resolved AND system_links not yet dispatched →
-       dispatch system_links.
-    3. If system_links resolved AND merge not yet dispatched → dispatch merge.
+    2. If all entity passes resolved AND the bundle defines system_links AND
+       system_links not yet dispatched → dispatch system_links.
+    3. If system_links resolved (or bundle has no system_links and all entity
+       passes are terminal) AND merge not yet dispatched → dispatch merge.
 
     Forward reference: ``derive_ontology_graph_merge`` is defined later in
     this module (Task 6).  We use ``celery_app.send_task(...)`` with the
@@ -5760,12 +5768,24 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     Python forward-reference at function-definition time.  The name is
     resolved at call time via Celery's task registry — so as long as the
     module is fully loaded before this branch runs, the dispatch succeeds.
+
+    Note: ``mark_phase_dispatched`` and friends use raw SQL (``jsonb_set``)
+    that bypasses the ORM identity map.  We expire ``dispatched_phases``
+    before reading it so the in_flight count reflects the latest DB state and
+    cannot underreport, which would allow dispatching above the concurrency cap.
     """
     from app.models.ingest import PipelineRun
     run = db.get(PipelineRun, uuid.UUID(str(run_id)))
     if run is None:
         logger.warning("_try_advance_phase: run_id=%s not found — skipping", run_id)
         return
+
+    # Expire the identity-map cache so the dispatched_phases JSONB read
+    # reflects the latest state from raw-SQL UPDATEs (jsonb_set bypasses
+    # the ORM identity map). Without this, in_flight counts can be stale
+    # and dispatch may exceed the concurrency cap.
+    db.expire(run, ["dispatched_phases"])
+    db.refresh(run, ["dispatched_phases"])
 
     manifest = load_bundle_manifest(run.ontology_bundle_key)
     entity_passes = [p.name for p in manifest.passes if not p.depends_on]
@@ -5793,25 +5813,39 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
             _claim_and_dispatch_pass(db, document_id, run_id, next_pass)
             return  # one dispatch per finisher
 
-    # Branch 2: all entity passes resolved → dispatch system_links if not yet.
+    # Branch 2: dispatch system_links if all entity passes resolved AND
+    # the bundle defines a system_links pass (not all bundles do — guard
+    # against StopIteration in the per-pass task body).
     n_resolved = count_terminal_passes(db, run_id, entity_passes)
-    if n_resolved >= len(entity_passes):
+    has_system_links = any(p.name == "system_links" for p in manifest.passes)
+    if n_resolved >= len(entity_passes) and has_system_links:
         sl_state = read_phase_state(db, run_id, "system_links")
         if sl_state is None:
             _claim_and_dispatch_pass(db, document_id, run_id, "system_links")
             return
 
-    # Branch 3: system_links resolved → dispatch merge if not yet.
-    sl_pass = load_pass_output(db, run_id, "system_links")
-    if sl_pass and sl_pass.execution_status in ("COMPLETE", "SKIPPED", "FAILED"):
+    # Branch 3: dispatch merge if (a) system_links is resolved, OR
+    # (b) the bundle has no system_links and all entity passes are terminal.
+    # Note: dispatched_phases["merge"].task_id is observability-only; the
+    # send_task call doesn't return a usable task ID synchronously the way
+    # .delay() does, so "<send_task>" is used as a placeholder string.
+    if has_system_links:
+        sl_pass = load_pass_output(db, run_id, "system_links")
+        sl_resolved = sl_pass is not None and sl_pass.execution_status in (
+            "COMPLETE", "SKIPPED", "FAILED"
+        )
+    else:
+        sl_resolved = (n_resolved >= len(entity_passes))
+
+    if sl_resolved:
         merge_state = read_phase_state(db, run_id, "merge")
         if merge_state is None:
             if claim_phase(db, run_id, "merge"):
-                async_result = celery_app.send_task(
+                celery_app.send_task(
                     "app.workers.pipeline.derive_ontology_graph_merge",
                     args=[document_id, run_id],
                 )
-                mark_phase_dispatched(db, run_id, "merge", async_result.id)
+                mark_phase_dispatched(db, run_id, "merge", "<send_task>")
                 db.commit()
 
 
@@ -5954,7 +5988,10 @@ def derive_ontology_graph_pass(
             # Pending Celery retry. Phase stays in 'dispatched' for the next
             # attempt. NO pipeline_pass_outputs write — fan-in counter must not
             # count this attempt as resolved.
-            db.commit()  # commit StageRun audit written by _write_stage_run's own session
+            # Defensive: any pending writes on this session (none expected in the
+            # retry branch since _write_stage_run uses its own session, but the
+            # flush is harmless insurance) flush before Celery raises.
+            db.commit()
             raise self.retry(
                 exc=outcome.error,
                 countdown=_retry_delay(self.request.retries),

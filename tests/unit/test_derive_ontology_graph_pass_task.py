@@ -782,3 +782,166 @@ class TestAttemptCounter:
         row = load_pass_output(db_session, run_id, "radar_identity")
         assert row is not None
         assert row.attempt == 3  # retries=2 → attempt_n = 2 + 1 = 3
+
+
+# ---------------------------------------------------------------------------
+# _rehydrate_upstream_refs_from_persisted_passes unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestRehydrateUpstreamRefs:
+    """Direct unit tests for _rehydrate_upstream_refs_from_persisted_passes.
+
+    These tests target the orchestration logic of the helper — the pass-def
+    branching, the dependency-skip logic, and the parse-and-walk wiring.
+    The heavy helpers (_parse_pass_response, _build_pre_merge_walk_summary,
+    _extend_upstream_refs) are mocked so tests stay fast and focused.
+    """
+
+    def test_rehydrate_returns_empty_for_document_only_pass(self):
+        """input_mode='document_only' → returns {} immediately without any DB query."""
+        from app.workers.pipeline import _rehydrate_upstream_refs_from_persisted_passes
+
+        pass_def = _fake_pass_def(input_mode="document_only", depends_on=[])
+        manifest = _fake_manifest([pass_def])
+        mock_db = MagicMock()
+
+        with patch("app.workers.pipeline.load_pass_output") as mock_load:
+            result = _rehydrate_upstream_refs_from_persisted_passes(
+                mock_db, str(uuid.uuid4()), pass_def, manifest, _MINIMAL_ONTOLOGY, str(uuid.uuid4())
+            )
+
+        assert result == {}
+        mock_load.assert_not_called()
+
+    def test_rehydrate_returns_empty_when_no_dependencies(self):
+        """input_mode='document_plus_entity_refs' but depends_on=[] → returns {} immediately."""
+        from app.workers.pipeline import _rehydrate_upstream_refs_from_persisted_passes
+
+        pass_def = _fake_pass_def(input_mode="document_plus_entity_refs", depends_on=[])
+        manifest = _fake_manifest([pass_def])
+        mock_db = MagicMock()
+
+        with patch("app.workers.pipeline.load_pass_output") as mock_load:
+            result = _rehydrate_upstream_refs_from_persisted_passes(
+                mock_db, str(uuid.uuid4()), pass_def, manifest, _MINIMAL_ONTOLOGY, str(uuid.uuid4())
+            )
+
+        assert result == {}
+        mock_load.assert_not_called()
+
+    def test_rehydrate_skips_non_complete_dependency_outputs(self, db_session, pipeline_run_factory):
+        """A FAILED dependency row is loaded but skipped; upstream_refs stays empty."""
+        from app.workers.pipeline import _rehydrate_upstream_refs_from_persisted_passes
+
+        run_id = pipeline_run_factory()
+
+        # Pre-seed a FAILED terminal row for the dependency
+        save_pass_output(
+            db_session,
+            pipeline_run_id=run_id,
+            stage_run_id=None,
+            pass_name="radar_identity",
+            attempt=1,
+            execution_status="FAILED",
+            skip_reason=None,
+            yield_status=None,
+            extract_pass_response={},
+            primary_entities_extracted=0,
+            bridge_entities_extracted=0,
+            relationships_extracted=0,
+            relationships_rejected=0,
+            diagnostics={"pipeline_error": "service down"},
+            field_provenance=[],
+        )
+        db_session.flush()
+
+        # system_links depends on radar_identity
+        dep_pass_def = _fake_pass_def(name="radar_identity")
+        sl_pass_def = _fake_pass_def(
+            name="system_links",
+            input_mode="document_plus_entity_refs",
+            depends_on=["radar_identity"],
+        )
+        manifest = _fake_manifest([dep_pass_def, sl_pass_def])
+
+        with patch("app.workers.pipeline._parse_pass_response") as mock_parse:
+            with patch("app.workers.pipeline._extend_upstream_refs") as mock_extend:
+                result = _rehydrate_upstream_refs_from_persisted_passes(
+                    db_session, run_id, sl_pass_def, manifest, _MINIMAL_ONTOLOGY, str(uuid.uuid4())
+                )
+
+        assert result == {}
+        mock_parse.assert_not_called()
+        mock_extend.assert_not_called()
+
+    def test_rehydrate_calls_parse_and_walk_for_complete_dependencies(
+        self, db_session, pipeline_run_factory
+    ):
+        """A COMPLETE dependency row is loaded; _parse_pass_response and _extend_upstream_refs
+        are both called with the correct arguments."""
+        from app.workers.pipeline import _rehydrate_upstream_refs_from_persisted_passes
+
+        run_id = pipeline_run_factory()
+        raw_payload = {"status": "ok", "pass_output": {"entities": [{"name": "SA-2"}]}}
+
+        # Pre-seed a COMPLETE terminal row for the dependency
+        save_pass_output(
+            db_session,
+            pipeline_run_id=run_id,
+            stage_run_id=None,
+            pass_name="radar_identity",
+            attempt=1,
+            execution_status="COMPLETE",
+            skip_reason=None,
+            yield_status="HIT",
+            extract_pass_response=raw_payload,
+            primary_entities_extracted=1,
+            bridge_entities_extracted=0,
+            relationships_extracted=0,
+            relationships_rejected=0,
+            diagnostics={},
+            field_provenance=[],
+        )
+        db_session.flush()
+
+        dep_pass_def = _fake_pass_def(name="radar_identity")
+        sl_pass_def = _fake_pass_def(
+            name="system_links",
+            input_mode="document_plus_entity_refs",
+            depends_on=["radar_identity"],
+        )
+        manifest = _fake_manifest([dep_pass_def, sl_pass_def])
+        doc_id = str(uuid.uuid4())
+
+        fake_pass_result = _fake_pass_result()
+        fake_walk = SimpleNamespace(entities=[], raw_edge_count=0)
+
+        with patch(
+            "app.workers.pipeline._parse_pass_response", return_value=fake_pass_result
+        ) as mock_parse:
+            with patch(
+                "app.workers.pipeline._build_pre_merge_walk_summary", return_value=fake_walk
+            ) as mock_walk:
+                with patch("app.workers.pipeline._extend_upstream_refs") as mock_extend:
+                    result = _rehydrate_upstream_refs_from_persisted_passes(
+                        db_session, run_id, sl_pass_def, manifest, _MINIMAL_ONTOLOGY, doc_id
+                    )
+
+        # _parse_pass_response called with the stored JSON and the dep's pass_def
+        mock_parse.assert_called_once()
+        parse_call_args = mock_parse.call_args[0]
+        assert parse_call_args[0] == raw_payload
+        assert parse_call_args[1].name == "radar_identity"
+
+        # _build_pre_merge_walk_summary called with the parse result
+        mock_walk.assert_called_once()
+
+        # _extend_upstream_refs called to merge into upstream_refs
+        mock_extend.assert_called_once()
+        extend_call_args = mock_extend.call_args[0]
+        # First arg is the accumulating upstream_refs dict
+        assert isinstance(extend_call_args[0], dict)
+        # Second arg is the fake pass result with pre_merge_walk attached
+        assert extend_call_args[1] is fake_pass_result
+        assert fake_pass_result.pre_merge_walk is fake_walk
