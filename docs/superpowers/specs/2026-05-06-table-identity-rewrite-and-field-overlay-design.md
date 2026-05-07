@@ -505,16 +505,32 @@ def apply_field_overlay(
               `extra="ignore"` no longer hides anything here because
               step (a) already rejected unknown field names; the only
               remaining failure mode is value-typed.
-           d. Atomic swap. The model_validate call already produced a
-              fully-validated `revalidated` instance. Mutate inst's
-              fields from revalidated's dump:
-                for k, v in revalidated.model_dump().items():
-                    setattr(inst, k, v)
-              This guarantees that if model_validate raised, inst is
-              UNCHANGED (we never partially mutated it). Sibling
-              instances in the same fan-out are independent: a
-              validation failure for one does NOT block fan-out to the
-              others.
+           d. Atomic single-field setattr. The model_validate call
+              already produced a fully-validated `revalidated`
+              instance. Mutate ONLY `fact.schema_field` on `inst`
+              using the validated `coerced` value:
+                try:
+                    setattr(inst, fact.schema_field, coerced)
+                except Exception as exc:
+                    skipped_validation_fail++
+                    log("FIELD_OVERLAY_SETATTR_FAILED ...")
+                    continue
+              We deliberately do NOT loop over `revalidated.model_dump()`
+              and copy every field. That would silently rewrite
+              SIBLING fields to whatever shape model_validate produced
+              (string→float coercions on un-touched fields, etc.) and
+              could surprise downstream code that expects unchanged
+              LLM values for fields the overlay didn't touch. The
+              "overlay NEVER mutates fields outside its own evidence"
+              principle from earlier in this section is load-bearing —
+              single-field setattr enforces it.
+
+              This guarantees: if model_validate raised, inst is
+              UNCHANGED. If setattr raised (rare; would only happen
+              under future `validate_assignment=True`), inst is also
+              unchanged. Sibling instances in the same fan-out are
+              independent: a validation failure for one does NOT
+              block fan-out to the others.
            e. Bookkeeping (per-instance only — `matches_touched` is
               incremented once per fact in step 3, NOT here):
                 applied++           # fact-instance count, NOT fact count
