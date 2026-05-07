@@ -178,7 +178,46 @@ class TestExecutePassAttempt:
         assert outcome.counts is not None
         assert outcome.error is None
 
-    # 4. Failed outcome — PassRetryable during HTTP call
+    # 4. COMPLETE outcome — outcome.counts not mutated by wrapper
+    def test_complete_outcome_counts_not_mutated_by_wrapper(self):
+        """The wrapper (_run_single_pass) shallow-copies outcome.counts before
+        injecting the 'metrics' block. The helper's outcome.counts must NOT
+        contain 'metrics' — otherwise Task 5's Celery caller would see a key
+        it didn't produce, violating the stateless-helper invariant."""
+        from app.workers.pipeline import _execute_pass_attempt
+
+        pass_def = _fake_pass_def()
+        fake_raw = {"pass_output": {}, "metadata": {}}
+        fake_pass_result = SimpleNamespace(
+            pass_name=pass_def.name,
+            template_instance=SimpleNamespace(),
+            metadata=SimpleNamespace(schema_size_chars=800, structured_output_mode="strict"),
+            pre_merge_rejections=[],
+            relationships=[],
+        )
+        fake_counts = {
+            "primary_entities_extracted": 3,
+            "bridge_entities_extracted": 0,
+            "relationships_extracted": 2,
+            "relationships_rejected": 0,
+            "schema_size_chars": 800,
+            "structured_output_mode": "strict",
+            "salvaged": False,
+        }
+
+        with patch("app.workers.pipeline._call_extract_pass", return_value=fake_raw), \
+             patch("app.workers.pipeline._parse_pass_response", return_value=fake_pass_result), \
+             patch("app.workers.pipeline._count_pass_output", return_value=fake_counts), \
+             patch("app.workers.pipeline.classify_yield", return_value="HIT"):
+            outcome = _execute_pass_attempt(**_common_call_kwargs(pass_def=pass_def))
+
+        assert outcome.execution_status == "COMPLETE"
+        assert "metrics" not in outcome.counts, (
+            "outcome.counts must not contain 'metrics' — the wrapper injects that "
+            "key only into its own shallow copy, never into the helper's dict"
+        )
+
+    # 5. Failed outcome — PassRetryable during HTTP call
     def test_failed_outcome_on_pass_retryable(self):
         """When _call_extract_pass raises PassRetryable, outcome is FAILED
         with the error instance, and pass_result + raw_response_payload are None."""
@@ -198,7 +237,7 @@ class TestExecutePassAttempt:
         assert outcome.counts is None
         assert outcome.skip_reason is None
 
-    # 5. Failed outcome — PassTransportError during HTTP call
+    # 6. Failed outcome — PassTransportError during HTTP call
     def test_failed_outcome_on_pass_transport_error(self):
         """When _call_extract_pass raises PassTransportError, outcome is FAILED
         and error is both a PassTransportError AND a PassRetryable (subclass)."""
@@ -217,7 +256,7 @@ class TestExecutePassAttempt:
         assert outcome.pass_result is None
         assert outcome.raw_response_payload is None
 
-    # 6. Failed outcome — PassTerminal during HTTP call
+    # 7. Failed outcome — PassTerminal during HTTP call
     def test_failed_outcome_on_pass_terminal_during_call(self):
         """When _call_extract_pass raises PassTerminal, outcome is FAILED,
         error is PassTerminal, and raw_response_payload is None (no response
@@ -235,7 +274,7 @@ class TestExecutePassAttempt:
         assert outcome.raw_response_payload is None
         assert outcome.pass_result is None
 
-    # 7. Failed outcome — PassTerminal during parse (raw_payload IS captured)
+    # 8. Failed outcome — PassTerminal during parse (raw_payload IS captured)
     def test_failed_outcome_on_pass_terminal_during_parse(self):
         """When _call_extract_pass succeeds but _parse_pass_response raises
         PassTerminal, the raw payload must still be captured in

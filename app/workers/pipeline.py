@@ -155,7 +155,7 @@ class PassAttemptOutcome:
     execution_status: Literal["COMPLETE", "FAILED", "SKIPPED"]
     skip_reason: str | None        # "NO_UPSTREAM_ENDPOINTS" etc.; set iff SKIPPED
     yield_status: str | None       # "HIT"/"EMPTY"/"DEGRADED"/"BRIDGES_ONLY"; set iff COMPLETE
-    pass_result: object | None     # PassResult iff COMPLETE; None otherwise
+    pass_result: "PassResult | None"  # populated iff COMPLETE; forward-stringed to avoid eager import
     raw_response_payload: dict | None  # literal /extract-pass JSON; set when HTTP call succeeded
     counts: dict | None            # _count_pass_output result; set iff COMPLETE
     error: Exception | None        # PassRetryable/PassTransportError/PassTerminal; set iff FAILED
@@ -610,6 +610,11 @@ def _execute_pass_attempt(
     r4: introduced to allow Task 5's per-pass Celery task to invoke this
     helper directly, with Celery as the retry boundary instead of the
     in-process ``while True`` loop in ``_run_single_pass``.
+
+    Note: ``pipeline_run_id`` is currently accepted but unused inside this
+    helper. It's reserved for Task 5's Celery task, which will use it to
+    correlate StageRun and pipeline_pass_outputs writes after the helper
+    returns.
     """
     # 1. Skip check
     if _should_skip(pass_def, upstream_refs, ontology):
@@ -835,9 +840,12 @@ def _run_single_pass(
                     ) from outcome.error
                 return
             else:
-                # Defensive — _execute_pass_attempt should only ever return one
-                # of the three known exception types as outcome.error.
-                raise outcome.error  # surfaces unexpected error class
+                # Defensive: _execute_pass_attempt should always set outcome.error for
+                # FAILED outcomes. If it didn't, surface a diagnostic instead of raising
+                # None (which would produce TypeError: exceptions must derive from BaseException).
+                raise outcome.error or RuntimeError(
+                    f"_execute_pass_attempt returned FAILED with error=None for pass {pass_def.name}"
+                )
 
         # COMPLETE outcome — write StageRun and populate pass_results
         # Plan Task 36 pre-merge JSONB shape: all 5 authoritative-shape keys
@@ -847,7 +855,10 @@ def _run_single_pass(
         # Top-level StageRun columns (relationships_extracted / _rejected)
         # are mirrored into the JSONB block so the two projections never
         # drift — lockstep contract pinned by test_counts_authoritative_lifecycle.
-        counts = outcome.counts
+        # Build the StageRun-bound counts dict on a shallow copy so we don't
+        # inject "metrics" into outcome.counts (which Task 5's Celery caller
+        # inspects directly without expecting that key).
+        counts = dict(outcome.counts)
         counts["metrics"] = {
             "counts_authoritative": False,
             "relationships_extracted": counts["relationships_extracted"],
