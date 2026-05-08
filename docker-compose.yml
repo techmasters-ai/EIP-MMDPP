@@ -173,6 +173,11 @@ services:
       # Concurrent chunk batches per /extract-pass (config_builder.py:44).
       # Effective parallelism is min(this, OLLAMA_NUM_PARALLEL on the LLM host).
       DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-4}
+      # asyncio.Semaphore cap on concurrent /extract-pass requests inside
+      # the docling-graph service (main.py:166). Distinct from
+      # DOCLING_GRAPH_PARALLEL_WORKERS, which is the per-request chunk
+      # parallelism. Total LLM calls in flight = MAX_CONCURRENT * PARALLEL_WORKERS.
+      DOCLING_GRAPH_MAX_CONCURRENT_EXTRACTIONS: ${DOCLING_GRAPH_MAX_CONCURRENT_EXTRACTIONS:-2}
       # Extraction backend: "llm" (default) or "vlm" (requires GPU — see deploy section)
       DOCLING_GRAPH_BACKEND: ${DOCLING_GRAPH_BACKEND:-llm}
       # Mechanism A1 (table-derived identity rewrite + per-cell field overlay) kill switch.
