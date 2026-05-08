@@ -5609,9 +5609,12 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
 
     # Branch 3: dispatch merge if (a) system_links is resolved, OR
     # (b) the bundle has no system_links and all entity passes are terminal.
-    # Note: dispatched_phases["merge"].task_id is observability-only; the
-    # send_task call doesn't return a usable task ID synchronously the way
-    # .delay() does, so "<send_task>" is used as a placeholder string.
+    # send_task is used (not .delay) because derive_ontology_graph_merge is
+    # defined later in this same file (forward reference). queue="graph" is
+    # MANDATORY: without it the message routes to the default "celery" queue
+    # where any subscribed worker may grab it. Stale celery processes (e.g.
+    # workers started before per-pass-fanin commits) ack-drop with KeyError
+    # on the unregistered task name, silently losing the merge dispatch.
     if has_system_links:
         sl_pass = load_pass_output(db, run_id, "system_links")
         sl_resolved = sl_pass is not None and sl_pass.execution_status in (
@@ -5627,6 +5630,7 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
                 celery_app.send_task(
                     "app.workers.pipeline.derive_ontology_graph_merge",
                     args=[document_id, run_id],
+                    queue="graph",
                 )
                 mark_phase_dispatched(db, run_id, "merge", "<send_task>")
                 db.commit()

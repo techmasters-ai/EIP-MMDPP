@@ -401,3 +401,46 @@ class TestDispatcherConcurrentRace:
         assert rows_after_second == 1, (
             f"Second dispatcher wrote a duplicate row (expected 1, got {rows_after_second})"
         )
+
+
+class TestMergeDispatchQueueRouting:
+    """Regression: merge dispatch must route explicitly to the 'graph' queue.
+
+    Without queue='graph', celery_app.send_task falls back to the default
+    'celery' queue. Multiple workers in this stack subscribe to 'celery'
+    (worker, worker-ingest). If any subscriber holds a stale celery process
+    (started before per-pass-fanin commits added derive_ontology_graph_merge),
+    it grabs the message and acks-drops with KeyError — silently losing the
+    task. The run then hangs until periodic_stale_run_sweep kills it ~hours
+    later.
+
+    Production incident 2026-05-08: doc 3ec6b236, runs 53bcff77, 698533c1, and
+    0ae7912b all hung 1-10h until sweep. Worker-ingest-1 (Up 6 days, stale
+    code) intercepted each merge dispatch:
+        ERROR Received unregistered task of type
+        'app.workers.pipeline.derive_ontology_graph_merge'
+    """
+
+    def test_try_advance_phase_send_task_specifies_graph_queue(self):
+        """Static check: the send_task call in _try_advance_phase must
+        include queue='graph'. Catches any future code change that drops
+        the explicit queue argument."""
+        import inspect
+        from app.workers import pipeline
+
+        src = inspect.getsource(pipeline._try_advance_phase)
+        # The merge dispatch is the only send_task call in this function.
+        # If the source ever stops calling send_task, this test should be
+        # updated to reflect the new dispatch mechanism.
+        assert "send_task" in src, (
+            "_try_advance_phase no longer dispatches via send_task — "
+            "update this test to match the new mechanism."
+        )
+        assert (
+            'queue="graph"' in src or "queue='graph'" in src
+        ), (
+            "Merge dispatch via celery_app.send_task MUST include "
+            "queue='graph' to prevent fallback to default 'celery' queue. "
+            "Stale workers subscribed to 'celery' may ack-drop the task. "
+            "See docstring above for production incident details."
+        )
