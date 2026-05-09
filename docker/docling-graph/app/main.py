@@ -775,8 +775,7 @@ def run_extraction_pass(
         if not chunk_to_self_refs:
             trace_data = getattr(context, "trace_data", None)
             trace_events = getattr(trace_data, "events", None) or []
-            chunk_to_self_refs = _chunk_to_self_refs_from_trace(trace_events)
-            chunk_to_evidence_units = _chunk_to_evidence_units_from_trace(trace_events)
+            chunk_to_self_refs, chunk_to_evidence_units = _chunk_maps_from_trace(trace_events)
             if chunk_to_self_refs:
                 logger.info(
                     "provenance source: trace fallback (debug mode). "
@@ -948,39 +947,30 @@ def _trace_event_payload(evt):
     return None, None
 
 
-def _chunk_to_self_refs_from_trace(trace_events) -> dict[int, list[str]]:
-    """Build {chunk_id: [self_ref, ...]} from chunk_created trace events.
+def _chunk_maps_from_trace(trace_events) -> tuple[dict[int, list[str]], dict[int, list[dict]]]:
+    """Build (chunk_to_self_refs, chunk_to_evidence_units) from chunk_created
+    trace events in a single pass.
 
-    Authoritative provenance source — uses the EXACT chunks the LLM saw,
-    keyed by their extraction-time chunk_id. Replaces the deprecated
-    re-chunking path that produced a different boundary set.
-    """
-    out: dict[int, list[str]] = {}
+    Authoritative provenance source — uses the EXACT chunks the LLM saw.
+    Replaces re-chunking. Both maps share the same iteration / filtering
+    so they cannot drift out of sync."""
+    refs_map: dict[int, list[str]] = {}
+    units_map: dict[int, list[dict]] = {}
     for evt in trace_events or []:
         name, payload = _trace_event_payload(evt)
         if name != "chunk_created" or not isinstance(payload, dict):
             continue
         cid = payload.get("chunk_id")
+        if cid is None:
+            continue
+        cid_int = int(cid)
         refs = payload.get("self_refs")
-        if cid is None or not isinstance(refs, list):
-            continue
-        out[int(cid)] = [r for r in refs if isinstance(r, str)]
-    return out
-
-
-def _chunk_to_evidence_units_from_trace(trace_events) -> dict[int, list[dict]]:
-    """Build {chunk_id: [evidence_unit, ...]} from chunk_created trace events."""
-    out: dict[int, list[dict]] = {}
-    for evt in trace_events or []:
-        name, payload = _trace_event_payload(evt)
-        if name != "chunk_created" or not isinstance(payload, dict):
-            continue
-        cid = payload.get("chunk_id")
+        if isinstance(refs, list):
+            refs_map[cid_int] = [r for r in refs if isinstance(r, str)]
         units = payload.get("evidence_units")
-        if cid is None or not isinstance(units, list):
-            continue
-        out[int(cid)] = list(units)
-    return out
+        if isinstance(units, list):
+            units_map[cid_int] = list(units)
+    return refs_map, units_map
 
 
 def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]] | None:

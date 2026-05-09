@@ -2784,7 +2784,6 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             )
             table_overlay_obj = None
 
-    # Phase 8 Task 12.5: parse relationship_provenance rows.
     relationship_provenance_rows: list[ExtractionRelationshipProvenance] = []
     for raw in response_json.get("relationship_provenance") or []:
         if not isinstance(raw, dict):
@@ -4524,6 +4523,8 @@ def _build_native_chunk_meta(
         "page_numbers": sorted(page_numbers),
         "modality": "text",
         "self_refs": self_refs,
+        # evidence_ids is an alias for self_refs at chunk-creation time; the LLM
+        # (per ir_normalizer._attach_evidence_to_prov) filters this down per-node.
         "evidence_ids": list(self_refs),
         "document_id": document_id,
     }

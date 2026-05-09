@@ -16,10 +16,10 @@ def test_chunk_to_self_refs_from_doc_processor_metadata(dg_app_module):
     assert out_refs == {0: ["#/texts/0", "#/texts/1"], 1: ["#/texts/2"]}
 
 
-def test_chunk_to_self_refs_built_from_trace_events_fallback(dg_app_module):
+def test_chunk_maps_from_trace_events_fallback(dg_app_module):
     """When doc_processor.last_chunk_metadata is empty, main.py falls back
-    to chunk_created trace events. Trace events are TraceEvent dataclass
-    instances per docling_graph.pipeline.trace.TraceEvent."""
+    to chunk_created trace events via _chunk_maps_from_trace (single-pass).
+    Asserts both maps are built correctly in one call."""
     from docling_graph.pipeline.trace import TraceEvent
     trace_events = [
         TraceEvent(
@@ -28,7 +28,7 @@ def test_chunk_to_self_refs_built_from_trace_events_fallback(dg_app_module):
             payload={
                 "chunk_id": 0,
                 "self_refs": ["#/texts/0", "#/texts/1"],
-                "evidence_units": [],
+                "evidence_units": [{"evidence_id": "#/texts/0", "text": "hi"}],
             },
         ),
         TraceEvent(
@@ -41,25 +41,9 @@ def test_chunk_to_self_refs_built_from_trace_events_fallback(dg_app_module):
             },
         ),
     ]
-    out = dg_app_module._chunk_to_self_refs_from_trace(trace_events)
-    assert out == {0: ["#/texts/0", "#/texts/1"], 1: ["#/texts/2"]}
-
-
-def test_chunk_to_evidence_units_from_trace_events(dg_app_module):
-    """Same dual-source approach, but for evidence_units."""
-    from docling_graph.pipeline.trace import TraceEvent
-    trace_events = [
-        TraceEvent(
-            sequence=0, timestamp=0.0, stage="extraction",
-            event_type="chunk_created",
-            payload={
-                "chunk_id": 0,
-                "evidence_units": [{"evidence_id": "#/texts/0", "text": "hi"}],
-            },
-        ),
-    ]
-    out = dg_app_module._chunk_to_evidence_units_from_trace(trace_events)
-    assert out == {0: [{"evidence_id": "#/texts/0", "text": "hi"}]}
+    refs_map, units_map = dg_app_module._chunk_maps_from_trace(trace_events)
+    assert refs_map == {0: ["#/texts/0", "#/texts/1"], 1: ["#/texts/2"]}
+    assert units_map == {0: [{"evidence_id": "#/texts/0", "text": "hi"}], 1: []}
 
 
 def test_no_production_path_in_main_calls_bare_hybridchunker():

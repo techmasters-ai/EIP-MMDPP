@@ -254,9 +254,9 @@ class PassResult:
     # found no qualifying table OR the parser-side kill switch was off.
     # Consumed by merge_and_resolve._extract_doc_overlay (Task 8).
     table_overlay: TableOverlay | None = None
-    # Phase 8 Task 12.5: relationship-level provenance rows parsed from
-    # the docling-graph response's ``relationship_provenance`` list.
-    # Each row links a relationship triple back to source elements.
+    # Relationship-level provenance rows parsed from the docling-graph response's
+    # ``relationship_provenance`` list. Each row links a relationship triple back
+    # to source elements.
     relationship_provenance: list["ExtractionRelationshipProvenance"] = field(
         default_factory=list,
     )

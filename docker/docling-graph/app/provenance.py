@@ -293,7 +293,7 @@ def build_provenance_from_context(
     context: Any,
     provenance_cls: type,
     chunk_to_self_refs: dict[int, list[str]] | None = None,
-    chunk_to_evidence_units: dict[int, list[dict]] | None = None,  # NEW
+    chunk_to_evidence_units: dict[int, list[dict]] | None = None,
 ) -> list[Any]:
     """Walk ``context.knowledge_graph`` and return a list of
     ``ExtractionProvenance`` instances, one per entity-typed node whose
@@ -372,7 +372,6 @@ def build_provenance_from_context(
                 element_uid=element_uid,
                 page=_resolve_page(data),
                 chunk_index=_resolve_chunk_index(data),
-                # NEW:
                 evidence_ids=[
                     eid for eid in (prov_dict.get("evidence_ids") or [])
                     if isinstance(eid, str)
