@@ -4428,6 +4428,44 @@ def purge_document_derivations(self, document_id: str, run_id: str | None = None
         db.close()
 
 
+def _build_native_chunk_meta(
+    chunk_idx: int,
+    chunk,
+    document_id: str,
+    model_version: str,
+) -> dict:
+    """Build per-chunk metadata for the native HybridChunker path.
+
+    Carries evidence_ids/self_refs/page_numbers so embedding chunks share
+    the same source-unit lineage as graph-extraction chunks (independent
+    boundaries, identical lineage shape).
+    """
+    self_refs: list[str] = []
+    page_numbers: set[int] = set()
+    for item in (getattr(getattr(chunk, "meta", None), "doc_items", None) or []):
+        ref = getattr(item, "self_ref", None)
+        if isinstance(ref, str) and ref:
+            self_refs.append(ref)
+        for p in (getattr(item, "prov", None) or []):
+            pn = getattr(p, "page_no", None)
+            if pn is not None:
+                page_numbers.add(pn)
+    chunk_key = hashlib.sha256(
+        f"{document_id}:native:{chunk_idx}:{model_version}".encode()
+    ).hexdigest()
+    chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+    return {
+        "chunk_id": chunk_id,
+        "chunk_index": chunk_idx,
+        "page_number": min(page_numbers) if page_numbers else None,
+        "page_numbers": sorted(page_numbers),
+        "modality": "text",
+        "self_refs": self_refs,
+        "evidence_ids": list(self_refs),
+        "document_id": document_id,
+    }
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
@@ -4500,7 +4538,13 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 
                     tok = AutoTokenizer.from_pretrained(settings.embedding_chunk_tokenizer_model)
                     hf_tok = HuggingFaceTokenizer(tokenizer=tok, max_tokens=settings.embedding_chunk_max_tokens)
-                    chunker = HybridChunker(tokenizer=hf_tok)
+                    chunker = HybridChunker(
+                        tokenizer=hf_tok,
+                        merge_peers=True,
+                        repeat_table_header=True,
+                        omit_header_on_overflow=False,
+                        always_emit_headings=False,
+                    )
                     doc_obj_dl = _DLDoc.model_validate(enriched)
                     native_chunks = list(chunker.chunk(doc_obj_dl))
                     use_native_chunking = True
@@ -4533,26 +4577,15 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     continue
                 _seen_chunk_texts.add(chunk_text)
 
-                # Extract page number from chunk metadata if available
-                page_number = None
-                try:
-                    page_number = chunk.meta.doc_items[0].prov[0].page_no
-                except (AttributeError, IndexError, TypeError):
-                    pass
-
-                # Deterministic chunk_id using same hash pattern as legacy code
-                chunk_key = hashlib.sha256(
-                    f"{document_id}:native:{chunk_idx}:{model_version}".encode()
-                ).hexdigest()
-                chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
-
                 all_texts.append(chunk_text)
-                all_chunk_metas.append({
-                    "chunk_id": chunk_id,
-                    "chunk_index": chunk_idx,
-                    "page_number": page_number,
-                    "modality": "text",
-                })
+                all_chunk_metas.append(
+                    _build_native_chunk_meta(
+                        chunk_idx=chunk_idx,
+                        chunk=chunk,
+                        document_id=document_id,
+                        model_version=model_version,
+                    )
+                )
 
             if all_texts:
                 embeddings: list[list[float]] = []
@@ -4591,6 +4624,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                             "modality": meta["modality"],
                             "page_number": meta["page_number"],
                             "classification": doc_classification,
+                            "page_numbers": meta["page_numbers"],
+                            "self_refs": meta["self_refs"],
+                            "evidence_ids": meta["evidence_ids"],
                         },
                         embedding=embedding,
                     ))
