@@ -4498,8 +4498,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     from transformers import AutoTokenizer
                     from docling.chunking import HybridChunker
 
-                    tok = AutoTokenizer.from_pretrained(settings.chunk_tokenizer_model)
-                    hf_tok = HuggingFaceTokenizer(tokenizer=tok, max_tokens=settings.chunk_max_tokens)
+                    tok = AutoTokenizer.from_pretrained(settings.embedding_chunk_tokenizer_model)
+                    hf_tok = HuggingFaceTokenizer(tokenizer=tok, max_tokens=settings.embedding_chunk_max_tokens)
                     chunker = HybridChunker(tokenizer=hf_tok)
                     doc_obj_dl = _DLDoc.model_validate(enriched)
                     native_chunks = list(chunker.chunk(doc_obj_dl))
@@ -4636,8 +4636,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             ]
             structured_chunks = structure_aware_chunk(
                 element_dicts,
-                max_chunk_tokens=settings.chunk_max_tokens,
-                overlap_tokens=settings.chunk_overlap_tokens,
+                max_chunk_tokens=settings.embedding_chunk_max_tokens,
+                overlap_tokens=settings.embedding_chunk_overlap_tokens,
             )
 
             # Build a lookup from element_uid to the ORM element for artifact_id / bounding_box

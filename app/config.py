@@ -394,10 +394,12 @@ class Settings(BaseSettings):
     query_default_top_k: int = 20
     query_default_min_confidence: float = 0.1
 
-    # Chunking
-    chunk_max_tokens: int = 512
-    chunk_overlap_tokens: int = 64
-    chunk_tokenizer_model: str = "BAAI/bge-m3"  # HuggingFace repo for HybridChunker tokenizer
+    # Embedding-pipeline chunking (Pass A — worker-embed → bge-m3).
+    # Independent of the extraction-pipeline chunking, which lives in
+    # docling-graph and is configured via DOCLING_GRAPH_CHUNK_MAX_TOKENS.
+    embedding_chunk_max_tokens: int = 512
+    embedding_chunk_overlap_tokens: int = 64
+    embedding_chunk_tokenizer_model: str = "BAAI/bge-m3"  # HuggingFace repo for HybridChunker tokenizer
 
     # Embedding batching
     embed_text_batch_size: int = 128

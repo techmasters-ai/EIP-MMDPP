@@ -533,7 +533,7 @@ Run against all 30 Known Fragile Features listed above.
 
 | Config | Default | What breaks if wrong |
 |---|---|---|
-| `CHUNK_MAX_TOKENS` | 512 | Embedding quality degrades |
+| `EMBEDDING_CHUNK_MAX_TOKENS` | 512 | Embedding quality degrades |
 | `EMBED_TEXT_BATCH_SIZE` | 128 | Large docs timeout |
 | `DOCLING_CONCURRENCY` | 1 | GPU OOM from parallel conversions |
 | `DOCLING_TIMEOUT_SECONDS` | 3600 | Large PDFs timeout |
