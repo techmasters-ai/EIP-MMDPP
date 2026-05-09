@@ -5,16 +5,17 @@
     {"id": 2, "subject": "Task 1: Make HybridChunker construction explicit (DocumentChunker)", "status": "pending", "blockedBy": [1]},
     {"id": 3, "subject": "Task 2: Extend extraction chunk metadata with evidence units", "status": "pending", "blockedBy": [1, 2]},
     {"id": 4, "subject": "Task 3: Embed [EVIDENCE id=\"…\"] markers in chunk text", "status": "pending", "blockedBy": [3]},
-    {"id": 5, "subject": "Task 4: Widen chunk_created trace payload with evidence metadata", "status": "pending", "blockedBy": [3]},
-    {"id": 6, "subject": "Task 5: Replace re-chunking with trace-based chunk_to_self_refs", "status": "pending", "blockedBy": [5]},
+    {"id": 5, "subject": "Task 4: Widen chunk_created trace payload + store on doc_processor", "status": "pending", "blockedBy": [3]},
+    {"id": 6, "subject": "Task 5: Replace re-chunking with doc_processor + trace fallback", "status": "pending", "blockedBy": [5]},
     {"id": 7, "subject": "Task 6: Add evidence fields to Delta IR models", "status": "pending", "blockedBy": [1]},
     {"id": 8, "subject": "Task 7: Update delta extraction prompt to request evidence IDs", "status": "pending", "blockedBy": [7]},
     {"id": 9, "subject": "Task 8: Preserve evidence in IR normalizer + validate against batch", "status": "pending", "blockedBy": [7, 3]},
-    {"id": 10, "subject": "Task 9: Extend ExtractionProvenance + provenance.py resolution", "status": "pending", "blockedBy": [9]},
+    {"id": 10, "subject": "Task 9: Extend ExtractionProvenance + provenance.py + populate evidence_text", "status": "pending", "blockedBy": [9, 6]},
     {"id": 11, "subject": "Task 10: Extend ExtractionFieldProvenance + build_auto_field_evidence", "status": "pending", "blockedBy": [9]},
-    {"id": 12, "subject": "Task 11: Add ExtractionRelationshipProvenance to ExtractPassResponse", "status": "pending", "blockedBy": [9]},
+    {"id": 12, "subject": "Task 11: Add ExtractionRelationshipProvenance (sourced from _delta_trace, not graph edges)", "status": "pending", "blockedBy": [9]},
     {"id": 13, "subject": "Task 12: Persist evidence metadata in embedding pipeline (Pass A)", "status": "pending", "blockedBy": [1]},
-    {"id": 14, "subject": "Task 13: End-to-end verification + simplify + docs update", "status": "pending", "blockedBy": [6, 10, 11, 12, 13]}
+    {"id": 15, "subject": "Task 12.5: Update worker-side response mirror in extraction_merge.py", "status": "pending", "blockedBy": [10, 11, 12]},
+    {"id": 14, "subject": "Task 13: End-to-end verification + simplify + docs update", "status": "pending", "blockedBy": [6, 10, 11, 12, 13, 15]}
   ],
-  "lastUpdated": "2026-05-09T00:00:00Z"
+  "lastUpdated": "2026-05-09T11:30:00Z"
 }
