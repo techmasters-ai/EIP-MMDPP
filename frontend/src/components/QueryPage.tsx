@@ -16,6 +16,7 @@ import {
 import { GraphView, toGraphElements } from "./GraphView";
 import { FieldGroupTable } from "./FieldGroupTable";
 import { DossierSectionList } from "./DossierSectionList";
+import { ProvenanceChips } from "./ProvenanceChips";
 import type cytoscape from "cytoscape";
 
 interface RetrievalModePreset {
@@ -635,6 +636,19 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
         {item.page_number != null && (
           <span className="text-xs text-muted">p.{item.page_number}</span>
         )}
+        {/* Multi-page indicator — only when page_numbers carries extra pages beyond the primary */}
+        {item.page_numbers && item.page_numbers.length > 1 && (() => {
+          const extra = item.page_numbers.filter((n) => n !== item.page_number);
+          return extra.length > 0 ? (
+            <span
+              className="badge badge-info text-xs"
+              title={`Spans pages: ${item.page_numbers.join(", ")}`}
+              style={{ fontSize: "0.72rem" }}
+            >
+              pp.&nbsp;{item.page_numbers[0]}&ndash;{item.page_numbers[item.page_numbers.length - 1]}
+            </span>
+          ) : null;
+        })()}
         {hasGraphData && (
           <button
             className={`btn btn-ghost btn-sm graph-toggle-btn${graphOpen ? " active" : ""}`}
@@ -725,6 +739,11 @@ function ResultCard({ item, index }: { item: QueryResultItem; index: number }) {
             </div>
           )}
           {provenance.length > 0 && <ProvenancePanel provenance={provenance} />}
+          {/* Chunk-level evidence IDs from backend provenance fields */}
+          <ProvenanceChips
+            evidenceIds={[...(item.evidence_ids ?? []), ...(item.self_refs ?? []).filter((r) => !(item.evidence_ids ?? []).includes(r))]}
+            pageNumbers={item.page_numbers}
+          />
           <MetadataDetail item={item} />
         </div>
       )}

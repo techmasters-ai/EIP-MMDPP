@@ -59,6 +59,10 @@ export interface QueryResultItem {
   }>;
   context?: Record<string, unknown>;
   image_url?: string;
+  // Chunk-level provenance (populated by /v1/retrieval/query and /v1/graph/query)
+  self_refs?: string[];
+  evidence_ids?: string[];
+  page_numbers?: number[];
 }
 
 export type QueryStrategy = "basic" | "hybrid" | "global";
@@ -483,6 +487,11 @@ export interface GraphNeighborhoodResponse {
     source: string;
     target: string;
     rel_type: string;
+    provenance?: {
+      evidence_ids?: string[];
+      self_refs?: string[];
+      page_numbers?: number[];
+    } | null;
     [key: string]: unknown;
   }>;
 }
