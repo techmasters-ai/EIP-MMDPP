@@ -157,6 +157,28 @@ class ExtractionProvenance(BaseModel):
         ),
     )
     chunk_index: Optional[int] = Field(None)
+    # Additive fields — extraction-time evidence carried through to the
+    # response. All optional / default-empty for backward compatibility.
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DoclingDocument self_refs (e.g. '#/texts/12') the LLM cited "
+            "as evidence for this entity instance. Populated when the "
+            "delta normalizer found valid evidence_ids in the LLM output."
+        ),
+    )
+    page_numbers: list[int] = Field(
+        default_factory=list,
+        description="Pages the cited evidence units span. Sorted, deduped.",
+    )
+    evidence_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "Concatenated text of the evidence units (best-effort, "
+            "truncated to ~500 chars). For human review and downstream "
+            "snippet display."
+        ),
+    )
 
 
 class ExtractionFieldProvenance(BaseModel):

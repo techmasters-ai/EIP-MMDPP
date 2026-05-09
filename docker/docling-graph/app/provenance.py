@@ -156,44 +156,91 @@ def _resolve_element_uid(
     node_data: dict[str, Any],
     chunk_to_self_refs: dict[int, list[str]] | None,
 ) -> str | None:
-    """Return the element_uid for a knowledge-graph node, or None if
-    none can be resolved.
+    """Return element_uid for a knowledge-graph node, or None if none.
 
     Resolution order:
-      1. Direct ``element_uid`` attribute on the node dict.
-      2. Nested ``provenance.element_uid``.
-      3. ``provenance.chunk_indexes[0]`` → first ``doc_item.self_ref``
-         of that chunk, via ``chunk_to_self_refs`` (built by main.py
-         after run_pipeline via the service's own HybridChunker pass).
-
-    ``chunk_to_self_refs`` may be ``None`` when the caller couldn't
-    build the mapping (e.g. chunker init failed). In that case step 3
-    is skipped and the node falls through to the drop-with-warning
-    branch.
+      1. Direct `element_uid` attribute on the node dict.
+      2. Nested `provenance.element_uid`.
+      3. Nested `provenance.self_refs[0]` (extraction-time, authoritative).
+      4. Nested `provenance.evidence_ids[0]` IF it is a Docling self_ref
+         (starts with '#/').
+      5. `provenance.chunk_indexes[0]` → first self_ref via
+         chunk_to_self_refs (extraction-time map from main.py).
     """
-    # 1. Direct attribute
     direct = node_data.get("element_uid")
     if isinstance(direct, str) and direct:
         return direct
 
-    # 2. Nested provenance dict
     prov = node_data.get("provenance")
-    if isinstance(prov, dict):
-        nested = prov.get("element_uid")
-        if isinstance(nested, str) and nested:
-            return nested
+    if not isinstance(prov, dict):
+        return None
 
-        # 3. chunk_indexes → chunk_to_self_refs[idx][0]
-        if chunk_to_self_refs:
-            chunk_indexes = prov.get("chunk_indexes")
-            if isinstance(chunk_indexes, list) and chunk_indexes:
-                first = chunk_indexes[0]
-                if isinstance(first, int):
-                    refs = chunk_to_self_refs.get(first)
-                    if refs:
-                        return refs[0]
+    nested = prov.get("element_uid")
+    if isinstance(nested, str) and nested:
+        return nested
+
+    self_refs = prov.get("self_refs")
+    if isinstance(self_refs, list) and self_refs:
+        first = self_refs[0]
+        if isinstance(first, str) and first:
+            return first
+
+    evidence_ids = prov.get("evidence_ids")
+    if isinstance(evidence_ids, list):
+        for eid in evidence_ids:
+            if isinstance(eid, str) and eid.startswith("#/"):
+                return eid
+
+    if chunk_to_self_refs:
+        chunk_indexes = prov.get("chunk_indexes")
+        if isinstance(chunk_indexes, list) and chunk_indexes:
+            first = chunk_indexes[0]
+            if isinstance(first, int):
+                refs = chunk_to_self_refs.get(first)
+                if refs:
+                    return refs[0]
 
     return None
+
+
+_EVIDENCE_TEXT_CAP = 500
+
+
+def _join_evidence_text_for_node(
+    prov_dict: dict,
+    chunk_to_evidence_units: dict[int, list[dict]] | None,
+) -> str | None:
+    """Join cited evidence units' text into a single capped snippet.
+
+    Selects evidence units by:
+      1. Walking prov_dict["chunk_indexes"] to look up the chunk's units.
+      2. Filtering to units whose evidence_id appears in
+         prov_dict["evidence_ids"] (per-node citations) — falls back to
+         all units when the per-node list is empty.
+    """
+    if not chunk_to_evidence_units:
+        return None
+    chunk_indexes = prov_dict.get("chunk_indexes") or []
+    cited_ids = set(prov_dict.get("evidence_ids") or [])
+
+    parts: list[str] = []
+    for ci in chunk_indexes:
+        units = chunk_to_evidence_units.get(ci) or []
+        for u in units:
+            if not isinstance(u, dict):
+                continue
+            text = u.get("text") or ""
+            if not text.strip():
+                continue
+            if cited_ids and u.get("evidence_id") not in cited_ids:
+                continue
+            parts.append(text.strip())
+    if not parts:
+        return None
+    joined = " ".join(parts)
+    if len(joined) <= _EVIDENCE_TEXT_CAP:
+        return joined
+    return joined[: _EVIDENCE_TEXT_CAP - 1] + "…"
 
 
 def _resolve_identity_values(
@@ -246,6 +293,7 @@ def build_provenance_from_context(
     context: Any,
     provenance_cls: type,
     chunk_to_self_refs: dict[int, list[str]] | None = None,
+    chunk_to_evidence_units: dict[int, list[dict]] | None = None,  # NEW
 ) -> list[Any]:
     """Walk ``context.knowledge_graph`` and return a list of
     ``ExtractionProvenance`` instances, one per entity-typed node whose
@@ -315,6 +363,7 @@ def build_provenance_from_context(
             or str(uuid.uuid4())
         )
 
+        prov_dict = data.get("provenance") if isinstance(data.get("provenance"), dict) else {}
         out.append(
             provenance_cls(
                 instance_id=str(instance_id),
@@ -323,6 +372,16 @@ def build_provenance_from_context(
                 element_uid=element_uid,
                 page=_resolve_page(data),
                 chunk_index=_resolve_chunk_index(data),
+                # NEW:
+                evidence_ids=[
+                    eid for eid in (prov_dict.get("evidence_ids") or [])
+                    if isinstance(eid, str)
+                ],
+                page_numbers=sorted({
+                    p for p in (prov_dict.get("page_numbers") or [])
+                    if isinstance(p, int)
+                }),
+                evidence_text=_join_evidence_text_for_node(prov_dict, chunk_to_evidence_units),
             )
         )
     return out

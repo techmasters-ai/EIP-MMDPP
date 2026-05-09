@@ -18,17 +18,47 @@ import pytest
 def dg_provenance(dg_schemas):
     """Load docker/docling-graph/app/provenance.py under its own
     alt-module name so the repo-root ``app/`` package doesn't shadow.
-    Returns (module, ExtractionProvenance) tuple."""
+    Returns (module, ExtractionProvenance) tuple.
+
+    Uses the same sys.path swap pattern as conftest._ensure_dg_app_package
+    so that ``from app._numeric_evidence import ...`` inside provenance.py
+    resolves to the docling-graph ``app/`` package, not the repo-root one.
+    """
+    import importlib
     import importlib.util
+    import sys
     from pathlib import Path
 
     service_root = Path(__file__).resolve().parent.parent
-    spec = importlib.util.spec_from_file_location(
-        "docling_graph_service_provenance",
-        service_root / "app" / "provenance.py",
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    module_name = "docling_graph_service_provenance"
+
+    if module_name in sys.modules:
+        mod = sys.modules[module_name]
+        return mod, dg_schemas.ExtractionProvenance
+
+    # Save state
+    saved = {k: v for k, v in sys.modules.items() if k == "app" or k.startswith("app.")}
+    saved_path = list(sys.path)
+
+    sys.path.insert(0, str(service_root))
+    for key in list(saved.keys()):
+        del sys.modules[key]
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            service_root / "app" / "provenance.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = mod
+        spec.loader.exec_module(mod)
+    finally:
+        for key in list(sys.modules.keys()):
+            if key == "app" or key.startswith("app."):
+                del sys.modules[key]
+        sys.modules.update(saved)
+        sys.path[:] = saved_path
+
     return mod, dg_schemas.ExtractionProvenance
 
 
@@ -191,3 +221,124 @@ def test_returns_empty_when_context_has_no_graph(dg_provenance):
     ctx = SimpleNamespace(knowledge_graph=None, docling_document=None)
     prov = mod.build_provenance_from_context(ctx, ExtractionProvenance)
     assert prov == []
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — resolver order + evidence_text population + cap
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_element_uid_prefers_provenance_self_refs(dg_provenance):
+    """self_refs (step 3) must beat evidence_ids (step 4) in resolution order."""
+    mod, ExtractionProvenance = dg_provenance
+    ctx = _stub_context(nodes=[
+        ("n1", {
+            "label": "RADAR_SYSTEM",
+            "identity_values": {"system_name": "Tombstone"},
+            "provenance": {
+                "self_refs": ["#/texts/99"],
+                "evidence_ids": ["#/texts/0"],
+            },
+        }),
+    ])
+    prov = mod.build_provenance_from_context(ctx, ExtractionProvenance)
+    assert len(prov) == 1
+    assert prov[0].element_uid == "#/texts/99"
+
+
+def test_resolve_element_uid_falls_back_to_evidence_ids(dg_provenance):
+    """When no direct / nested element_uid / self_refs, a '#/'-prefixed
+    evidence_id should resolve to element_uid."""
+    mod, ExtractionProvenance = dg_provenance
+    ctx = _stub_context(nodes=[
+        ("n1", {
+            "label": "MISSILE_SYSTEM",
+            "identity_values": {"system_name": "PAC-3"},
+            "provenance": {
+                "evidence_ids": ["#/texts/42"],
+            },
+        }),
+    ])
+    prov = mod.build_provenance_from_context(ctx, ExtractionProvenance)
+    assert len(prov) == 1
+    assert prov[0].element_uid == "#/texts/42"
+
+
+def test_resolve_element_uid_skips_non_selfref_evidence(dg_provenance):
+    """evidence_ids that don't start with '#/' must not be used as element_uid.
+    Falls through to chunk_to_self_refs lookup instead."""
+    mod, ExtractionProvenance = dg_provenance
+    chunk_to_self_refs = {0: ["#/texts/7"]}
+    ctx = _stub_context(nodes=[
+        ("n1", {
+            "label": "SECTION",
+            "identity_values": {},
+            "provenance": {
+                "evidence_ids": ["uuid-abc123"],  # NOT a self_ref
+                "chunk_indexes": [0],
+            },
+        }),
+    ])
+    prov = mod.build_provenance_from_context(
+        ctx, ExtractionProvenance, chunk_to_self_refs=chunk_to_self_refs
+    )
+    assert len(prov) == 1
+    assert prov[0].element_uid == "#/texts/7"
+
+
+def test_extraction_provenance_evidence_text_is_populated_from_units(dg_provenance):
+    """build_provenance_from_context populates evidence_text when
+    chunk_to_evidence_units is provided and the node's chunk_indexes match."""
+    mod, ExtractionProvenance = dg_provenance
+    chunk_to_evidence_units = {
+        2: [
+            {"evidence_id": "#/texts/10", "text": "The radar range is 400 km."},
+            {"evidence_id": "#/texts/11", "text": "Operates at X-band frequency."},
+        ]
+    }
+    ctx = _stub_context(nodes=[
+        ("n1", {
+            "label": "RADAR_SYSTEM",
+            "element_uid": "#/texts/10",
+            "identity_values": {"system_name": "Tombstone"},
+            "provenance": {
+                "chunk_indexes": [2],
+                "evidence_ids": ["#/texts/10", "#/texts/11"],
+            },
+        }),
+    ])
+    prov = mod.build_provenance_from_context(
+        ctx, ExtractionProvenance,
+        chunk_to_evidence_units=chunk_to_evidence_units,
+    )
+    assert len(prov) == 1
+    assert prov[0].evidence_text is not None
+    assert "radar range" in prov[0].evidence_text
+    assert "X-band" in prov[0].evidence_text
+
+
+def test_extraction_provenance_evidence_text_caps_at_500_chars(dg_provenance):
+    """evidence_text must be at most 501 chars (500 + ellipsis)."""
+    mod, ExtractionProvenance = dg_provenance
+    long_text = "A" * 600
+    chunk_to_evidence_units = {
+        0: [{"evidence_id": "#/texts/0", "text": long_text}]
+    }
+    ctx = _stub_context(nodes=[
+        ("n1", {
+            "label": "SECTION",
+            "element_uid": "#/texts/0",
+            "identity_values": {},
+            "provenance": {
+                "chunk_indexes": [0],
+                "evidence_ids": ["#/texts/0"],
+            },
+        }),
+    ])
+    prov = mod.build_provenance_from_context(
+        ctx, ExtractionProvenance,
+        chunk_to_evidence_units=chunk_to_evidence_units,
+    )
+    assert len(prov) == 1
+    assert prov[0].evidence_text is not None
+    assert len(prov[0].evidence_text) <= 501

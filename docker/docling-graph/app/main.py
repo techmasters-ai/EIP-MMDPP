@@ -1268,6 +1268,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             provenance_rows = build_provenance_from_context(
                 context, ExtractionProvenance,
                 chunk_to_self_refs=getattr(context, "_chunk_to_self_refs", None),
+                chunk_to_evidence_units=getattr(context, "_chunk_to_evidence_units", None),
             )
         except Exception as exc:
             logger.warning(

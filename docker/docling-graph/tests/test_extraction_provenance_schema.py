@@ -104,3 +104,38 @@ def test_extract_pass_response_roundtrip_with_provenance(dg_schemas):
     reloaded = dg_schemas.ExtractPassResponse.model_validate_json(dumped)
     assert len(reloaded.provenance) == 1
     assert reloaded.provenance[0].element_uid == "elem-1"
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — additive evidence fields (backward compat + accepts new fields)
+# ---------------------------------------------------------------------------
+
+
+def test_extraction_provenance_backward_compat(dg_schemas):
+    """Old callers that don't pass evidence_ids / page_numbers / evidence_text
+    must still get valid objects with empty/None defaults."""
+    prov = dg_schemas.ExtractionProvenance(
+        instance_id="uuid-bc",
+        ontology_name="RADAR_SYSTEM",
+        identity_values={"system_name": "Tombstone"},
+        element_uid="#/texts/5",
+    )
+    assert prov.evidence_ids == []
+    assert prov.page_numbers == []
+    assert prov.evidence_text is None
+
+
+def test_extraction_provenance_accepts_new_fields(dg_schemas):
+    """New callers can populate the three additive fields."""
+    prov = dg_schemas.ExtractionProvenance(
+        instance_id="uuid-new",
+        ontology_name="MISSILE_SYSTEM",
+        identity_values={"system_name": "PAC-3"},
+        element_uid="#/texts/10",
+        evidence_ids=["#/texts/10", "#/texts/11"],
+        page_numbers=[3, 4],
+        evidence_text="The PAC-3 system intercepts ballistic missiles.",
+    )
+    assert prov.evidence_ids == ["#/texts/10", "#/texts/11"]
+    assert prov.page_numbers == [3, 4]
+    assert prov.evidence_text == "The PAC-3 system intercepts ballistic missiles."
