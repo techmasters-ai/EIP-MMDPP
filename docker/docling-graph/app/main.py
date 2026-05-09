@@ -502,6 +502,7 @@ def run_extraction_pass(
     pass_name: str | None = None,
     temperature: float | None = None,
     llm_batch_token_size: int | None = None,
+    model: str | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -658,6 +659,7 @@ def run_extraction_pass(
             debug_dir=debug_dir,
             temperature_override=temperature,
             llm_batch_token_size_override=llm_batch_token_size,
+            model_override=model,
         )
 
         # Capture the library's print() + logging output to stdout/stderr during
@@ -1005,13 +1007,14 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         from app.config import settings as _service_settings
         _dg_settings = DoclingGraphSettings()
         logger.info(
-            "extract-pass: CONFIG pass=%s force_json_mode=%s "
+            "extract-pass: CONFIG pass=%s model=%s force_json_mode=%s "
             "temperature=%s max_tokens=%s truncation_retry_max_tokens=%s "
             "max_output_tokens=%s context_limit=%s batch_token_size=%s "
             "parallel_workers=%s gleaning_enabled=%s "
             "gleaning_max_passes=%s sanitize_input=%s "
             "structured_output_threshold_chars=%s llm_urls=%s",
             body.pass_name,
+            body.model if body.model is not None else _dg_settings.docling_graph_llm_model,
             getattr(_service_settings, "force_json_mode", "?"),
             (
                 body.temperature
@@ -1138,6 +1141,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.pass_name,
                     body.temperature,
                     body.llm_batch_token_size,
+                    body.model,
                 )
             except Exception as exc:
                 logger.exception(

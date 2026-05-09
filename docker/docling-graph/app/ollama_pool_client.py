@@ -299,16 +299,17 @@ class OllamaChatClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         truncation_retry_max_tokens: int | None = None,
+        model: str | None = None,
     ) -> "OllamaChatClient":
         """Return a client sharing this pool with per-request generation knobs.
 
         docling-graph ignores ``llm_overrides`` when a concrete ``llm_client``
         is injected. The service uses this to keep the process-wide pool while
-        still honoring notebook/API overrides such as temperature.
+        still honoring notebook/API overrides such as temperature or model.
         """
         return OllamaChatClient(
             pool=self.pool,
-            model=self.model,
+            model=model if model is not None else self.model,
             timeout_s=self._default_timeout,
             temperature=(
                 temperature

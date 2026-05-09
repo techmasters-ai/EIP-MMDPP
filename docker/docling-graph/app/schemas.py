@@ -74,6 +74,18 @@ class ExtractPassRequest(BaseModel):
             "callers omit this field and inherit the service default."
         ),
     )
+    model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Per-request Ollama model override for the extraction LLM call. "
+            "When None (default), uses the service-wide DOCLING_GRAPH_LLM_MODEL. "
+            "Used by the extraction_walkthrough notebook to compare different "
+            "models (e.g. 'llama3.3:70b' vs 'gpt-oss:120b') across passes. "
+            "Production worker callers omit this field and inherit the service "
+            "default. The named model must already be pulled in Ollama; an "
+            "unknown name fails at chat time."
+        ),
+    )
     llm_batch_token_size: Optional[int] = Field(
         default=None,
         description=(

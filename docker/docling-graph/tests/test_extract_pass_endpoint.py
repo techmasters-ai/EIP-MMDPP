@@ -420,3 +420,72 @@ def test_preamble_applied_flag_false_when_env_disables(client, monkeypatch):
     assert resp.status_code == 200, resp.text
     meta = resp.json()["metadata"]
     assert meta["upstream_preamble_applied"] is False
+
+
+# ---------------------------------------------------------------------------
+# Per-request `model` override (notebook-driven model comparison).
+# Mirrors the existing `temperature` override surface — same plumbing, same
+# test shape: schema field parses + handler threads it into run_extraction_pass.
+# ---------------------------------------------------------------------------
+
+def test_extract_pass_request_accepts_model_field(dg_app_module):
+    """ExtractPassRequest parses a `model` field and round-trips it."""
+    ExtractPassRequest = dg_app_module.ExtractPassRequest
+    req = ExtractPassRequest(
+        bundle_key="air_defense_v3",
+        pass_name="radar_identity",
+        docling_document_json={"name": "test"},
+        model="gpt-oss:120b",
+    )
+    assert req.model == "gpt-oss:120b"
+    req_default = ExtractPassRequest(
+        bundle_key="air_defense_v3",
+        pass_name="radar_identity",
+        docling_document_json={"name": "test"},
+    )
+    assert req_default.model is None
+
+
+def test_extract_pass_threads_model_into_run_extraction_pass(client):
+    """Handler passes body.model into run_extraction_pass positionally
+    after temperature + llm_batch_token_size."""
+    with patch(f"{_DG_MODULE_NAME}.run_extraction_pass") as mock_run:
+        mock_run.return_value = _mock_run_pipeline_return()
+        resp = client.post("/extract-pass", json={
+            "bundle_key": "air_defense_v3",
+            "pass_name": "radar_identity",
+            "docling_document_json": {"name": "test"},
+            "model": "llama3.3:70b",
+            "temperature": 0.3,
+        })
+    assert resp.status_code == 200, resp.text
+    # Signature: (docling_document_json, template_cls, upstream_entities,
+    #            pass_name, temperature, llm_batch_token_size, model)
+    args, _kwargs = mock_run.call_args
+    assert args[4] == 0.3, f"temperature must be 5th positional arg, got args={args}"
+    assert args[6] == "llama3.3:70b", f"model must be 7th positional arg, got args={args}"
+
+
+def test_with_runtime_defaults_overrides_model():
+    """OllamaChatClient.with_runtime_defaults(model=...) returns a clone
+    sharing the pool with the new model — config_builder's override hook."""
+    from app.ollama_pool_client import OllamaChatClient, OllamaPool
+
+    pool = OllamaPool(urls=["http://test:11434"])
+    base = OllamaChatClient(
+        pool=pool,
+        model="llama3.3:70b",
+        timeout_s=10.0,
+        temperature=0.1,
+    )
+    try:
+        clone = base.with_runtime_defaults(model="gpt-oss:120b")
+        assert clone.model == "gpt-oss:120b"
+        assert clone.pool is base.pool, "pool must be shared (counter accuracy)"
+        assert base.model == "llama3.3:70b", "base client must be unchanged"
+        clone_default = base.with_runtime_defaults(temperature=0.5)
+        assert clone_default.model == "llama3.3:70b"
+        clone_default.close()
+        clone.close()
+    finally:
+        base.close()
