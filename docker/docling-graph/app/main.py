@@ -131,11 +131,13 @@ from app.evidence_gate import (
 from app.provenance import (
     build_auto_field_evidence,
     build_provenance_from_context,
+    build_relationship_provenance_from_delta_trace,
     synthesize_provenance_from_pass_output,
 )
 from app.schemas import (
     ExtractionMetadata,
     ExtractionProvenance,
+    ExtractionRelationshipProvenance,
     HealthResponse,
     ExtractPassRequest,
     ExtractionFieldProvenance,
@@ -811,6 +813,29 @@ def run_extraction_pass(
         if trace is None:
             trace = {}
 
+        # Load delta_merged_graph.json for relationship provenance. This file
+        # carries the normalized IR's {"nodes": [...], "relationships": [...]}
+        # with per-relationship provenance dicts (evidence_ids, self_refs).
+        # delta_trace.json has stats/diagnostics only — NOT relationship data.
+        merged_graph: dict | None = None
+        for mg_candidate in (
+            os.path.join(debug_dir, "debug", "delta_merged_graph.json"),
+            os.path.join(debug_dir, "delta_merged_graph.json"),
+        ):
+            if os.path.exists(mg_candidate):
+                try:
+                    with open(mg_candidate, encoding="utf-8") as f:
+                        merged_graph = json.load(f)
+                    break
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load delta_merged_graph %s: %s", mg_candidate, exc
+                    )
+        try:
+            context._delta_merged_graph = merged_graph
+        except AttributeError:
+            pass
+
         captured_log = library_log_buf.getvalue()
         trace["library_log"] = captured_log
         # Sanitize stats are exposed in the response diagnostics so the
@@ -1455,6 +1480,16 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                         provenance_cls=ExtractionFieldProvenance,
                     )
 
+        relationship_provenance_rows = build_relationship_provenance_from_delta_trace(
+            context, ExtractionRelationshipProvenance,
+        )
+        if not relationship_provenance_rows and getattr(context, "_delta_merged_graph", None):
+            logger.warning(
+                "delta_merged_graph present but yielded 0 relationship_provenance rows — "
+                "verify delta_merged_graph.json shape against "
+                "build_relationship_provenance_from_delta_trace."
+            )
+
         return ExtractPassResponse(
             bundle_key=body.bundle_key,
             pass_name=body.pass_name,
@@ -1464,6 +1499,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             provider=os.environ.get("DOCLING_GRAPH_LLM_PROVIDER", "ollama"),
             provenance=provenance_rows,
             field_provenance=field_provenance_rows,
+            relationship_provenance=relationship_provenance_rows,
             diagnostics=getattr(context, "_delta_trace", None),
             table_overlay=table_overlay_obj,
         )

@@ -222,6 +222,22 @@ class ExtractionFieldProvenance(BaseModel):
     )
 
 
+class ExtractionRelationshipProvenance(BaseModel):
+    """Per-extracted-relationship provenance link to source DoclingDocument
+    elements. Mirrors ExtractionProvenance but for edges.
+
+    Built from delta-IR relationship.provenance (via context._delta_merged_graph),
+    which the Pydantic-to-graph converter does NOT preserve on edges.
+    """
+    relationship_type: str
+    source_instance_id: Optional[str] = None
+    target_instance_id: Optional[str] = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    self_refs: list[str] = Field(default_factory=list)
+    page_numbers: list[int] = Field(default_factory=list)
+    supporting_snippet: Optional[str] = None
+
+
 class TableFact(BaseModel):
     """Per-cell deterministic fact derived from a variants table row.
     Spec §5.4.
@@ -288,6 +304,14 @@ class ExtractPassResponse(BaseModel):
             "Phase 3 of the flat-schema profile refactor (spec §5.3)."
         ),
     )
+    relationship_provenance: list[ExtractionRelationshipProvenance] = Field(
+        default_factory=list,
+        description=(
+            "Per-relationship provenance, mirrors `provenance` for entities. "
+            "Built from delta-IR relationship.provenance when present. "
+            "Empty by default — additive on the wire shape."
+        ),
+    )
     diagnostics: Optional[dict[str, Any]] = Field(
         default=None,
         description=(
@@ -317,6 +341,7 @@ class ExtractPassResponse(BaseModel):
 # leaves ``Any`` / ``Optional`` / ``ExtractionProvenance`` as strings
 # that pydantic cannot resolve in the alt-module namespace.
 ExtractionProvenance.model_rebuild()
+ExtractionRelationshipProvenance.model_rebuild()
 ExtractPassResponse.model_rebuild()
 TableFact.model_rebuild()
 CrossEntityHint.model_rebuild()

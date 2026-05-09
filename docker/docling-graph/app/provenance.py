@@ -505,3 +505,78 @@ def build_auto_field_evidence(
                     document_id=row.get("document_id"),
                 ))
     return out
+
+
+def build_relationship_provenance_from_delta_trace(
+    context: Any,
+    provenance_cls: type,
+) -> list[Any]:
+    """Read normalized relationships from context._delta_merged_graph and emit
+    one ExtractionRelationshipProvenance per relationship.
+
+    Source: context._delta_merged_graph is the post-pipeline merged graph dict
+    loaded by main.py from <debug_dir>/debug/delta_merged_graph.json. It carries
+    the normalized delta IR's relationships WITH provenance — which the
+    Pydantic-to-graph converter does NOT preserve on context.knowledge_graph
+    edges (graph_converter.py creates Edge with properties={}).
+
+    Note: context._delta_trace (from delta_trace.json) has stats/diagnostics only,
+    NOT relationship data. delta_merged_graph.json is the correct source for
+    relationship provenance.
+    """
+    merged_graph = getattr(context, "_delta_merged_graph", None)
+    if not isinstance(merged_graph, dict):
+        return []
+
+    relationships = merged_graph.get("relationships") or []
+    nodes = merged_graph.get("nodes") or []
+
+    # Build lookup: (path, ids-frozenset) → instance_id. Keying by path
+    # ALONE collides when multiple nodes share a path but differ by ids.
+    def _node_key(node_path: str, ids_dict: dict | None) -> tuple:
+        if isinstance(ids_dict, dict):
+            id_items = tuple(sorted((str(k), str(v)) for k, v in ids_dict.items()))
+        else:
+            id_items = ()
+        return (str(node_path), id_items)
+
+    node_lookup: dict[tuple, str] = {}
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        path = n.get("path")
+        instance_id = n.get("instance_id") or n.get("__delta_node_uid")
+        if isinstance(path, str) and instance_id:
+            node_lookup[_node_key(path, n.get("ids"))] = str(instance_id)
+
+    out: list[Any] = []
+    for rel in relationships:
+        if not isinstance(rel, dict):
+            continue
+        label = rel.get("edge_label") or rel.get("label")
+        if not label:
+            continue
+        prov = rel.get("provenance") if isinstance(rel.get("provenance"), dict) else {}
+        source_key = _node_key(rel.get("source_path") or "", rel.get("source_ids"))
+        target_key = _node_key(rel.get("target_path") or "", rel.get("target_ids"))
+        out.append(
+            provenance_cls(
+                relationship_type=str(label),
+                source_instance_id=node_lookup.get(source_key),
+                target_instance_id=node_lookup.get(target_key),
+                evidence_ids=[
+                    eid for eid in (prov.get("evidence_ids") or [])
+                    if isinstance(eid, str)
+                ],
+                self_refs=[
+                    r for r in (prov.get("self_refs") or [])
+                    if isinstance(r, str)
+                ],
+                page_numbers=sorted({
+                    p for p in (prov.get("page_numbers") or [])
+                    if isinstance(p, int)
+                }),
+                supporting_snippet=None,
+            )
+        )
+    return out
