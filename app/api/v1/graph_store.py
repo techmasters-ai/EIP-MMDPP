@@ -117,6 +117,12 @@ async def query_graph(
                 "chunk_text_preview": chunk_text[:200] if chunk_text else "",
             })
 
+        # Surface flat entity provenance stored by _build_node_record (C.1).
+        # Uniform wire shape: entity hits carry evidence_ids/page_numbers
+        # just like text-chunk hits, so UI consumers need no branching.
+        entity_evidence_ids: list[str] = match.properties.get("_evidence_ids") or []
+        entity_page_numbers: list[int] = match.properties.get("_page_numbers") or []
+
         results.append(
             QueryResultItem(
                 document_id=first_doc_id,
@@ -126,6 +132,10 @@ async def query_graph(
                 page_number=first_page,
                 classification=highest_class,
                 sources=source_docs if source_docs else None,
+                evidence_ids=entity_evidence_ids,
+                page_numbers=entity_page_numbers,
+                # self_refs intentionally empty for entity hits — entities
+                # span multiple chunks, not a single DoclingDocument element.
                 context={
                     "entity_type": entity_type,
                     "entity_name": name,

@@ -1125,6 +1125,36 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
                 ]
                 for field_name, rows in e.field_evidence.items()
             }
+        # Flat per-entity provenance (Task 12.5 wire shape).
+        # Aggregate evidence_ids/page_numbers/evidence_text across all
+        # ExtractionProvenance rows for this entity so the entity vertex
+        # carries the data inline — no second-hop traversal required.
+        provenance_rows = getattr(e, "provenance", None) or []
+        if provenance_rows:
+            agg_evidence_ids: list[str] = []
+            agg_page_numbers: list[int] = []
+            agg_evidence_texts: list[str] = []
+            seen_eids: set[str] = set()
+            seen_pages: set[int] = set()
+            for prov_row in provenance_rows:
+                for eid in getattr(prov_row, "evidence_ids", None) or []:
+                    if eid not in seen_eids:
+                        seen_eids.add(eid)
+                        agg_evidence_ids.append(eid)
+                for pg in getattr(prov_row, "page_numbers", None) or []:
+                    if pg not in seen_pages:
+                        seen_pages.add(pg)
+                        agg_page_numbers.append(pg)
+                ev_text = getattr(prov_row, "evidence_text", None)
+                if ev_text:
+                    agg_evidence_texts.append(ev_text)
+            if agg_evidence_ids:
+                props["_evidence_ids"] = agg_evidence_ids
+            if agg_page_numbers:
+                props["_page_numbers"] = sorted(agg_page_numbers)
+            if agg_evidence_texts:
+                # Store first non-empty evidence text as representative snippet.
+                props["_evidence_text"] = agg_evidence_texts[0]
         return NodeRecord(
             entity_type=e.identity.entity_type,
             identity_fields=e.identity.as_upsert_identity_dict(),
