@@ -1440,10 +1440,17 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                             input_chunks_for_resolver.append((str(self_ref), str(txt)))
 
                 if input_chunks_for_resolver:
+                    evidence_units_by_chunk = getattr(context, "_chunk_to_evidence_units", None) or {}
+                    all_evidence_units: list[dict] = []
+                    for units in evidence_units_by_chunk.values():
+                        for u in units:
+                            u_copy = dict(u)
+                            u_copy.setdefault("document_id", body.document_id)
+                            all_evidence_units.append(u_copy)
                     field_provenance_rows = build_auto_field_evidence(
                         primary_entities=primary_entities,
                         instance_ids=instance_ids,
-                        input_chunks=input_chunks_for_resolver,
+                        input_chunks=all_evidence_units or input_chunks_for_resolver,
                         skip_fields=skip_fields,
                         provenance_cls=ExtractionFieldProvenance,
                     )

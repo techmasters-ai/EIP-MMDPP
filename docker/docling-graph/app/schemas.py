@@ -208,6 +208,18 @@ class ExtractionFieldProvenance(BaseModel):
             "treated as 'unverified source' by the UI."
         ),
     )
+    evidence_id: Optional[str] = Field(
+        default=None,
+        description="Stable evidence_id (== DoclingDocument self_ref) for the source unit.",
+    )
+    page: Optional[int] = Field(
+        default=None,
+        description="Page number of the supporting evidence unit.",
+    )
+    document_id: Optional[str] = Field(
+        default=None,
+        description="Document UUID this field's evidence came from.",
+    )
 
 
 class TableFact(BaseModel):

@@ -387,6 +387,30 @@ def build_provenance_from_context(
     return out
 
 
+def _normalize_field_evidence_inputs(input_chunks) -> list[dict]:
+    """Accept either (element_uid, text) tuples (legacy) or evidence-unit
+    dicts (new). Return a normalized list of dicts ready for matching."""
+    out: list[dict] = []
+    for entry in input_chunks or []:
+        if isinstance(entry, dict):
+            out.append({
+                "element_uid": entry.get("self_ref") or entry.get("evidence_id"),
+                "text": entry.get("text") or "",
+                "evidence_id": entry.get("evidence_id"),
+                "page": (entry.get("page_numbers") or [None])[0],
+                "document_id": entry.get("document_id"),
+            })
+        elif isinstance(entry, tuple) and len(entry) >= 2:
+            out.append({
+                "element_uid": entry[0],
+                "text": entry[1],
+                "evidence_id": entry[0] if isinstance(entry[0], str) and entry[0].startswith("#/") else None,
+                "page": None,
+                "document_id": None,
+            })
+    return out
+
+
 def _excerpt_around(text: str, needle_norm: str, max_chars: int = 240) -> str:
     """Return a short window of *text* centred on the first match of
     *needle_norm* (already normalized). Falls back to text[:max_chars]."""
@@ -431,6 +455,7 @@ def build_auto_field_evidence(
         list of provenance rows, ordered by (entity_index, field_name)
         for stable diffs.
     """
+    normalized_chunks = _normalize_field_evidence_inputs(input_chunks)
     out: list[Any] = []
     for idx, entity in enumerate(primary_entities):
         instance_id = instance_ids[idx] if idx < len(instance_ids) else ""
@@ -449,8 +474,9 @@ def build_auto_field_evidence(
                 continue
             normalized = [_normalize_text(c) for c in candidates if c]
             normalized = [n for n in normalized if n]
-            matches: list[tuple[str, str, str]] = []  # (euid, snippet, ctext)
-            for euid, ctext in input_chunks:
+            matches: list[dict] = []  # each entry is a normalized chunk dict + snippet
+            for row in normalized_chunks:
+                ctext = row["text"]
                 if not ctext:
                     continue
                 ctext_norm = _normalize_text(ctext)
@@ -458,20 +484,24 @@ def build_auto_field_evidence(
                 if hit is None:
                     continue
                 snippet = _excerpt_around(ctext, hit)
-                matches.append((euid, snippet, ctext))
-            if not matches and input_chunks:
+                matches.append({**row, "snippet": snippet})
+            if not matches and normalized_chunks:
                 # Fall back to batch-level: every chunk a candidate.
-                for euid, ctext in input_chunks[:3]:
+                for row in normalized_chunks[:3]:
+                    ctext = row["text"]
                     if not ctext:
                         continue
                     snippet = ctext[:240].strip()
-                    matches.append((euid, snippet, ctext))
-            for euid, snippet, _ctext in matches:
+                    matches.append({**row, "snippet": snippet})
+            for row in matches:
                 out.append(provenance_cls(
                     instance_id=instance_id,
                     field_name=fname,
                     value=value,
-                    supporting_snippet=snippet,
-                    element_uid=euid,
+                    supporting_snippet=row["snippet"],
+                    element_uid=row.get("element_uid"),
+                    evidence_id=row.get("evidence_id"),
+                    page=row.get("page"),
+                    document_id=row.get("document_id"),
                 ))
     return out
