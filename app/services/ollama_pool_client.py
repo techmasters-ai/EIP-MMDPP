@@ -234,6 +234,9 @@ class OllamaChatClient:
       - default_extra_params: dict of extra body fields to merge into every
         request (top_p, top_k, frequency_penalty, presence_penalty, seed,
         stop). Per-call kwargs override.
+      - request_semaphore: optional process-wide limiter for chat requests.
+        This lets callers set high per-pass worker counts while still capping
+        total in-flight Ollama generations to the fixed backend slot budget.
     """
 
     provider: str = "ollama"
@@ -255,6 +258,8 @@ class OllamaChatClient:
         truncation_retry_max_tokens: int | None = None,
         client_error_cls: type[Exception] | None = None,
         parse_json_fn: Callable[[str], Any] | None = None,
+        request_semaphore: threading.BoundedSemaphore | None = None,
+        request_semaphore_capacity: int | None = None,
         legacy_strip_marker_start: str = "\n\n=== TARGET SCHEMA ===\n",
         legacy_strip_marker_end: str = "=== END SCHEMA ===\n",
     ) -> None:
@@ -280,6 +285,8 @@ class OllamaChatClient:
         # parsing; lets docling-graph callers handle fenced/prose-wrapped JSON
         # without a hard json.loads failure. Falls back to json.loads.
         self._parse_json = parse_json_fn or json.loads
+        self._request_semaphore = request_semaphore
+        self._request_semaphore_capacity = request_semaphore_capacity
         # Schema-embedding markers used by upstream's legacy prompt-builder.
         # When force_json_mode=True AND structured_output=False, the client
         # strips this block from prompt['user'] before sending — replaces the
@@ -299,16 +306,17 @@ class OllamaChatClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         truncation_retry_max_tokens: int | None = None,
+        model: str | None = None,
     ) -> "OllamaChatClient":
         """Return a client sharing this pool with per-request generation knobs.
 
         docling-graph ignores ``llm_overrides`` when a concrete ``llm_client``
         is injected. The service uses this to keep the process-wide pool while
-        still honoring notebook/API overrides such as temperature.
+        still honoring notebook/API overrides such as temperature or model.
         """
         return OllamaChatClient(
             pool=self.pool,
-            model=self.model,
+            model=model if model is not None else self.model,
             timeout_s=self._default_timeout,
             temperature=(
                 temperature
@@ -332,6 +340,8 @@ class OllamaChatClient:
             ),
             client_error_cls=self._client_error_cls,
             parse_json_fn=self._parse_json,
+            request_semaphore=self._request_semaphore,
+            request_semaphore_capacity=self._request_semaphore_capacity,
             legacy_strip_marker_start=self._legacy_marker_start,
             legacy_strip_marker_end=self._legacy_marker_end,
         )
@@ -951,110 +961,124 @@ class OllamaChatClient:
         # level BATCH_HARD_TIMEOUT (default 3600s) remains the upper bound on
         # total batch wall-time.
         del timeout_s  # unused after the streaming switch
-        for attempt in range(2):
-            url = self.pool.acquire(exclude=excluded)
-            t0 = time.time()
-            try:
-                payload, _truncation_persisted = self._stream_with_truncation_retry(
-                    url, body, require_content=require_content, t0=t0,
+        slot_wait_started = time.time()
+        if self._request_semaphore is not None:
+            self._request_semaphore.acquire()
+            waited_s = time.time() - slot_wait_started
+            if waited_s >= 1.0:
+                logger.info(
+                    "OllamaChatClient: waited %.2fs for LLM slot "
+                    "(capacity=%s model=%s)",
+                    waited_s, self._request_semaphore_capacity, self.model,
                 )
-                choices = payload.get("choices") or []
-                if not choices:
+        try:
+            for attempt in range(2):
+                url = self.pool.acquire(exclude=excluded)
+                t0 = time.time()
+                try:
+                    payload, _truncation_persisted = self._stream_with_truncation_retry(
+                        url, body, require_content=require_content, t0=t0,
+                    )
+                    choices = payload.get("choices") or []
+                    if not choices:
+                        diag = {
+                            "url": url, "model": self.model, "provider": self.provider,
+                            "elapsed_s": time.time() - t0,
+                            "structured_failed": True, "fallback_used": False,
+                            "error": "no choices in response",
+                        }
+                        self.last_call_diagnostics = diag
+                        if self._client_error_cls is not None:
+                            raise self._client_error_cls(
+                                "LLM returned no choices", details=diag,
+                            )
+                        raise RuntimeError("LLM returned no choices")
+                    message = choices[0].get("message", {}) or {}
+                    content = (message.get("content") or "").strip()
+                    reasoning = (
+                        message.get("reasoning_content")
+                        or message.get("thinking")
+                        or ""
+                    )
+                    self.last_call_diagnostics = {
+                        "url": url,
+                        "model": self.model,
+                        "provider": self.provider,
+                        "elapsed_s": time.time() - t0,
+                        "raw_response": content,
+                        "has_reasoning_content": bool(reasoning),
+                        "structured_attempted": True,
+                        "structured_failed": False,
+                        "fallback_used": False,
+                    }
+                    logger.info(
+                        "OllamaChatClient: ok url=%s model=%s elapsed=%.2fs len(content)=%d",
+                        url, body["model"], time.time() - t0, len(content),
+                    )
+                    if content:
+                        return content
+                    if require_content:
+                        diag = {
+                            **self.last_call_diagnostics,
+                            "structured_failed": True,
+                            "error": "empty content; only reasoning available",
+                            "reasoning_preview": str(reasoning)[:500],
+                        }
+                        self.last_call_diagnostics = diag
+                        if self._client_error_cls is not None:
+                            raise self._client_error_cls(
+                                "LLM returned empty content",
+                                details=diag,
+                            )
+                        raise RuntimeError("LLM returned empty content")
+                    # Non-strict: app-side caller; fall back to reasoning.
+                    return str(reasoning).strip()
+                except (
+                    httpx.TimeoutException,    # ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout
+                    httpx.NetworkError,         # ConnectError, ReadError, WriteError, CloseError
+                    httpx.RemoteProtocolError,  # truncated response, mid-stream disconnect
+                ) as exc:
+                    last_exc = exc
+                    excluded.add(url)
+                    # ERROR not WARNING — silent socket drops (the
+                    # OLLAMA_POOL_TCP_DROP class) need to surface loudly so an
+                    # operator monitoring logs sees one entry per drop, not just
+                    # buried INFO routine. The retry-on-different-URL still happens;
+                    # this is purely visibility.
+                    logger.error(
+                        "OLLAMA_POOL_CONN_FAILURE exc_type=%s url=%s model=%s "
+                        "elapsed_s=%.1f attempt=%d/2 exc_msg=%s — retrying on "
+                        "remaining pool URLs.",
+                        type(exc).__name__, url, self.model,
+                        time.time() - t0, attempt + 1, exc,
+                    )
+                    # Guards acquire() from raising on attempt 2 — must run before
+                    # next iteration. Once every URL is excluded, retrying would
+                    # call pool.acquire(exclude=all_urls), which raises RuntimeError.
+                    if len(excluded) >= len(self.pool.urls):
+                        break
+                except httpx.HTTPStatusError as exc:
+                    # 4xx/5xx — wrap and re-raise; don't retry (the server
+                    # responded, the issue is the request body or model state).
                     diag = {
                         "url": url, "model": self.model, "provider": self.provider,
-                        "elapsed_s": time.time() - t0,
+                        "status_code": exc.response.status_code,
                         "structured_failed": True, "fallback_used": False,
-                        "error": "no choices in response",
+                        "error": str(exc),
+                        "raw_response": exc.response.text[:1000],
                     }
                     self.last_call_diagnostics = diag
                     if self._client_error_cls is not None:
                         raise self._client_error_cls(
-                            "LLM returned no choices", details=diag,
-                        )
-                    raise RuntimeError("LLM returned no choices")
-                message = choices[0].get("message", {}) or {}
-                content = (message.get("content") or "").strip()
-                reasoning = (
-                    message.get("reasoning_content")
-                    or message.get("thinking")
-                    or ""
-                )
-                self.last_call_diagnostics = {
-                    "url": url,
-                    "model": self.model,
-                    "provider": self.provider,
-                    "elapsed_s": time.time() - t0,
-                    "raw_response": content,
-                    "has_reasoning_content": bool(reasoning),
-                    "structured_attempted": True,
-                    "structured_failed": False,
-                    "fallback_used": False,
-                }
-                logger.info(
-                    "OllamaChatClient: ok url=%s model=%s elapsed=%.2fs len(content)=%d",
-                    url, body["model"], time.time() - t0, len(content),
-                )
-                if content:
-                    return content
-                if require_content:
-                    diag = {
-                        **self.last_call_diagnostics,
-                        "structured_failed": True,
-                        "error": "empty content; only reasoning available",
-                        "reasoning_preview": str(reasoning)[:500],
-                    }
-                    self.last_call_diagnostics = diag
-                    if self._client_error_cls is not None:
-                        raise self._client_error_cls(
-                            "LLM returned empty content",
+                            f"HTTP {exc.response.status_code} from Ollama",
                             details=diag,
-                        )
-                    raise RuntimeError("LLM returned empty content")
-                # Non-strict: app-side caller; fall back to reasoning.
-                return str(reasoning).strip()
-            except (
-                httpx.TimeoutException,    # ConnectTimeout, ReadTimeout, WriteTimeout, PoolTimeout
-                httpx.NetworkError,         # ConnectError, ReadError, WriteError, CloseError
-                httpx.RemoteProtocolError,  # truncated response, mid-stream disconnect
-            ) as exc:
-                last_exc = exc
-                excluded.add(url)
-                # ERROR not WARNING — silent socket drops (the
-                # OLLAMA_POOL_TCP_DROP class) need to surface loudly so an
-                # operator monitoring logs sees one entry per drop, not just
-                # buried INFO routine. The retry-on-different-URL still happens;
-                # this is purely visibility.
-                logger.error(
-                    "OLLAMA_POOL_CONN_FAILURE exc_type=%s url=%s model=%s "
-                    "elapsed_s=%.1f attempt=%d/2 exc_msg=%s — retrying on "
-                    "remaining pool URLs.",
-                    type(exc).__name__, url, self.model,
-                    time.time() - t0, attempt + 1, exc,
-                )
-                # Guards acquire() from raising on attempt 2 — must run before
-                # next iteration. Once every URL is excluded, retrying would
-                # call pool.acquire(exclude=all_urls), which raises RuntimeError.
-                if len(excluded) >= len(self.pool.urls):
-                    break
-            except httpx.HTTPStatusError as exc:
-                # 4xx/5xx — wrap and re-raise; don't retry (the server
-                # responded, the issue is the request body or model state).
-                diag = {
-                    "url": url, "model": self.model, "provider": self.provider,
-                    "status_code": exc.response.status_code,
-                    "structured_failed": True, "fallback_used": False,
-                    "error": str(exc),
-                    "raw_response": exc.response.text[:1000],
-                }
-                self.last_call_diagnostics = diag
-                if self._client_error_cls is not None:
-                    raise self._client_error_cls(
-                        f"HTTP {exc.response.status_code} from Ollama",
-                        details=diag,
-                    ) from exc
-                raise
-            finally:
-                self.pool.release(url)
+                        ) from exc
+                    raise
+                finally:
+                    self.pool.release(url)
+        finally:
+            if self._request_semaphore is not None:
+                self._request_semaphore.release()
         assert last_exc is not None
         # All pool URLs failed transport-wise. Loud surface BEFORE raising so
         # the failure is visible even if the caller swallows the exception

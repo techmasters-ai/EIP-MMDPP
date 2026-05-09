@@ -8,6 +8,7 @@ GET /debug/routing-metrics reports real fan-out.
 from __future__ import annotations
 
 import os
+import threading
 from functools import lru_cache
 
 from app.config_builder import DoclingGraphSettings
@@ -46,6 +47,20 @@ def get_docling_graph_client() -> OllamaChatClient:
 
     settings = DoclingGraphSettings()
     pool = OllamaPool(urls=settings.get_ollama_llm_urls())
+    max_in_flight = max(0, int(settings.docling_graph_llm_max_in_flight or 0))
+    request_semaphore = (
+        threading.BoundedSemaphore(max_in_flight)
+        if max_in_flight > 0
+        else None
+    )
+    if max_in_flight > 0:
+        # One explicit startup line makes it easy to verify that high
+        # per-pass parallelism is bounded by the fixed Ollama slot budget.
+        import logging
+        logging.getLogger(__name__).info(
+            "docling-graph LLM in-flight limiter enabled capacity=%d",
+            max_in_flight,
+        )
 
     default_extra_params = {
         "top_p": getattr(settings, "docling_graph_llm_top_p", None),
@@ -72,4 +87,6 @@ def get_docling_graph_client() -> OllamaChatClient:
         ),
         client_error_cls=ClientError,
         parse_json_fn=parse_llm_json_loose,
+        request_semaphore=request_semaphore,
+        request_semaphore_capacity=max_in_flight or None,
     )

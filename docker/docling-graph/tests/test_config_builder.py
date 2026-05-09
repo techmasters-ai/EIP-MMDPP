@@ -90,6 +90,12 @@ class TestConfigBuilderOverrides:
             build_pipeline_config(source="/tmp/test.json", template_class=None)
         assert mock_pipeline_config.call_args[1]["parallel_workers"] == 4
 
+    def test_llm_max_in_flight_setting(self, mock_pipeline_config):
+        module = _load_config_builder()
+        with patch.dict(os.environ, {"DOCLING_GRAPH_LLM_MAX_IN_FLIGHT": "8"}):
+            settings = module.DoclingGraphSettings()
+        assert settings.docling_graph_llm_max_in_flight == 8
+
     def test_gleaning_disabled_override(self, mock_pipeline_config):
         build_pipeline_config = _load_config_builder().build_pipeline_config
         with patch.dict(os.environ, {"DOCLING_GRAPH_GLEANING_ENABLED": "false"}):

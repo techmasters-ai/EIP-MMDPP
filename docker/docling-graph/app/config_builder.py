@@ -128,6 +128,11 @@ class DoclingGraphSettings(BaseSettings):
     # llama3.3:70b's full context length (input + output combined).
     docling_graph_llm_context_limit: int | None = 131072
     docling_graph_llm_max_output_tokens: int | None = 4096
+    # Optional process-wide cap on concurrent Ollama chat generations from
+    # this docling-graph service. Use this when PARALLEL_WORKERS is higher
+    # than the backend's fixed slot budget; ThreadPool workers block here
+    # instead of over-queueing Ollama.
+    docling_graph_llm_max_in_flight: int = 0
 
     # Backend: "llm" or "vlm"
     docling_graph_backend: str = "llm"

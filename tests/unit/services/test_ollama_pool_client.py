@@ -189,6 +189,69 @@ def test_chat_client_retries_on_different_url():
     assert seen_urls[0] != seen_urls[1]
 
 
+def test_chat_client_request_semaphore_caps_concurrent_streams():
+    pool = OllamaPool(urls=["http://only"])
+    limiter = threading.BoundedSemaphore(1)
+    client = OllamaChatClient(
+        pool=pool,
+        model="m",
+        request_semaphore=limiter,
+        request_semaphore_capacity=1,
+    )
+    first_inside = threading.Event()
+    release_first = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    calls = 0
+    errors: list[BaseException] = []
+
+    def fake_stream(self, url, body, **kw):
+        nonlocal active, max_active, calls
+        with lock:
+            active += 1
+            calls += 1
+            max_active = max(max_active, active)
+            call_no = calls
+        try:
+            if call_no == 1:
+                first_inside.set()
+                assert release_first.wait(2.0)
+            return _fake_stream_payload('{"ok": true}')
+        finally:
+            with lock:
+                active -= 1
+
+    def invoke():
+        try:
+            client.get_json_response(
+                prompt="hi",
+                schema_json="{}",
+                structured_output=False,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    with patch.object(OllamaChatClient, "_stream_chat_with_watchdog", fake_stream):
+        t1 = threading.Thread(target=invoke)
+        t2 = threading.Thread(target=invoke)
+        t1.start()
+        assert first_inside.wait(2.0)
+        t2.start()
+        time.sleep(0.05)
+        assert max_active == 1
+        release_first.set()
+        t1.join(2.0)
+        t2.join(2.0)
+
+    assert not t1.is_alive()
+    assert not t2.is_alive()
+    assert errors == []
+    assert calls == 2
+    assert max_active == 1
+    assert pool._inflight["http://only"] == 0
+
+
 def test_chat_client_no_retry_with_single_url():
     pool = OllamaPool(urls=["http://only"])
     client = OllamaChatClient(pool=pool, model="m")

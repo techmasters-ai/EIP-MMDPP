@@ -181,6 +181,10 @@ services:
       # Concurrent chunk batches per /extract-pass (config_builder.py:44).
       # Effective parallelism is min(this, OLLAMA_NUM_PARALLEL on the LLM host).
       DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-4}
+      # Optional process-wide outbound Ollama chat-call cap. Set this to the
+      # fixed graph-extraction slot budget, then PARALLEL_WORKERS can be
+      # higher to let long-tail passes reuse idle slots without oversubscribe.
+      DOCLING_GRAPH_LLM_MAX_IN_FLIGHT: ${DOCLING_GRAPH_LLM_MAX_IN_FLIGHT:-0}
       # asyncio.Semaphore cap on concurrent /extract-pass requests inside
       # the docling-graph service (main.py:166). Distinct from
       # DOCLING_GRAPH_PARALLEL_WORKERS, which is the per-request chunk
