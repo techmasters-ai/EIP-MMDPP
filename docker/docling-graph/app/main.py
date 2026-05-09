@@ -594,6 +594,7 @@ def run_extraction_pass(
         ctx = _EmptySourceContext()
         ctx._upstream_preamble_applied = False  # no chance to apply — source was empty
         ctx._chunk_to_self_refs = None  # no doc, nothing to map
+        ctx._chunk_to_evidence_units = {}  # no doc, nothing to map
         ctx._delta_trace = {
             "empty_source": True,
             "reason": "docling_document_has_no_extractable_content",
@@ -748,15 +749,47 @@ def run_extraction_pass(
         # Build chunk_index → [doc_item.self_ref, ...] mapping so the
         # provenance resolver can turn chunk indexes (the only location
         # identity the delta-IR normalizer attaches) into real
-        # DoclingDocument self_refs. Runs HybridChunker again on the doc —
-        # the embedding model is already warm so this is milliseconds.
-        # Kept best-effort: on chunker failure we log and continue with
-        # None, which drops provenance rows cleanly rather than crashing.
-        chunk_to_self_refs = _build_chunk_to_self_refs_map(
-            getattr(context, "docling_document", None)
-        )
+        # DoclingDocument self_refs.
+        #
+        # PRIMARY: doc_processor.last_chunk_metadata (debug-independent —
+        # always set by Task 4's strategy_ops update). Walk:
+        # context.extractor.doc_processor.
+        extractor = getattr(context, "extractor", None)
+        doc_processor = getattr(extractor, "doc_processor", None)
+        chunk_metadata = getattr(doc_processor, "last_chunk_metadata", None) or []
+
+        chunk_to_self_refs: dict[int, list[str]] = {}
+        chunk_to_evidence_units: dict[int, list[dict]] = {}
+        for cmeta in chunk_metadata:
+            cid = cmeta.get("chunk_id")
+            if cid is None:
+                continue
+            refs = cmeta.get("self_refs") or []
+            units = cmeta.get("evidence_units") or []
+            chunk_to_self_refs[int(cid)] = [r for r in refs if isinstance(r, str)]
+            chunk_to_evidence_units[int(cid)] = list(units)
+
+        # FALLBACK: trace events (debug-only, but cross-check / diagnostic).
+        if not chunk_to_self_refs:
+            trace_data = getattr(context, "trace_data", None)
+            trace_events = getattr(trace_data, "events", None) or []
+            chunk_to_self_refs = _chunk_to_self_refs_from_trace(trace_events)
+            chunk_to_evidence_units = _chunk_to_evidence_units_from_trace(trace_events)
+            if chunk_to_self_refs:
+                logger.info(
+                    "provenance source: trace fallback (debug mode). "
+                    "doc_processor.last_chunk_metadata was empty — verify Task 4 wiring."
+                )
+
+        if not chunk_to_self_refs:
+            logger.warning(
+                "no chunk metadata available from doc_processor or trace — "
+                "provenance will be empty. Check that strategy_ops set "
+                "doc_processor.last_chunk_metadata after chunking."
+            )
         try:
             context._chunk_to_self_refs = chunk_to_self_refs
+            context._chunk_to_evidence_units = chunk_to_evidence_units
         except AttributeError:
             pass
 
@@ -876,16 +909,63 @@ def run_extraction_pass(
         shutil.rmtree(debug_dir, ignore_errors=True)
 
 
-def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]] | None:
-    """Re-chunk ``docling_document`` with HybridChunker and return a
-    ``{chunk_index: [doc_item.self_ref, ...]}`` mapping.
+def _trace_event_payload(evt):
+    """Return (event_type, payload) from a trace event, supporting the
+    TraceEvent dataclass shape used by docling_graph.pipeline.trace and
+    the dict/tuple fallbacks some test harnesses emit. Returns
+    (None, None) for shapes we don't recognize."""
+    if hasattr(evt, "event_type") and hasattr(evt, "payload"):
+        return evt.event_type, evt.payload
+    if isinstance(evt, tuple) and len(evt) >= 3:
+        return evt[0], evt[2]
+    if isinstance(evt, dict):
+        return evt.get("event") or evt.get("name"), evt.get("payload") or evt
+    return None, None
 
-    The library throws away chunk metadata after delta extraction, so we
-    can't read it off ``context``. A re-run of the chunker is cheap
-    because the sentence-transformers model is already loaded. Returns
-    ``None`` when:
-      - docling_document is missing/None
-      - the chunker raises (logged at WARNING, never propagated)
+
+def _chunk_to_self_refs_from_trace(trace_events) -> dict[int, list[str]]:
+    """Build {chunk_id: [self_ref, ...]} from chunk_created trace events.
+
+    Authoritative provenance source — uses the EXACT chunks the LLM saw,
+    keyed by their extraction-time chunk_id. Replaces the deprecated
+    re-chunking path that produced a different boundary set.
+    """
+    out: dict[int, list[str]] = {}
+    for evt in trace_events or []:
+        name, payload = _trace_event_payload(evt)
+        if name != "chunk_created" or not isinstance(payload, dict):
+            continue
+        cid = payload.get("chunk_id")
+        refs = payload.get("self_refs")
+        if cid is None or not isinstance(refs, list):
+            continue
+        out[int(cid)] = [r for r in refs if isinstance(r, str)]
+    return out
+
+
+def _chunk_to_evidence_units_from_trace(trace_events) -> dict[int, list[dict]]:
+    """Build {chunk_id: [evidence_unit, ...]} from chunk_created trace events."""
+    out: dict[int, list[dict]] = {}
+    for evt in trace_events or []:
+        name, payload = _trace_event_payload(evt)
+        if name != "chunk_created" or not isinstance(payload, dict):
+            continue
+        cid = payload.get("chunk_id")
+        units = payload.get("evidence_units")
+        if cid is None or not isinstance(units, list):
+            continue
+        out[int(cid)] = list(units)
+    return out
+
+
+def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]] | None:
+    """DIAGNOSTIC-ONLY fallback. Re-chunks the document with a default
+    HybridChunker.
+
+    DO NOT use as a normal provenance source — the re-chunked boundaries
+    do NOT match the extraction-time chunks (different default max_tokens,
+    independent merge_peers state). Trace-event-derived
+    `_chunk_to_self_refs_from_trace` is authoritative.
     """
     if docling_document is None:
         return None
@@ -896,7 +976,7 @@ def _build_chunk_to_self_refs_map(docling_document: Any) -> dict[int, list[str]]
         return None
 
     try:
-        chunker = HybridChunker()
+        chunker = HybridChunker()  # diagnostic-only: re-chunk for fallback only
         out: dict[int, list[str]] = {}
         for i, chunk in enumerate(chunker.chunk(dl_doc=docling_document)):
             meta = getattr(chunk, "meta", None)
