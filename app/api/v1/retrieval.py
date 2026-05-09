@@ -493,6 +493,9 @@ async def _text_vector_search(
                 content_text=props.get("text") or props.get("chunk_text"),
                 page_number=props.get("page_number"),
                 classification=props.get("classification", "UNCLASSIFIED"),
+                self_refs=props.get("self_refs") or [],
+                evidence_ids=props.get("evidence_ids") or [],
+                page_numbers=props.get("page_numbers") or [],
             )
         )
 
@@ -567,6 +570,9 @@ async def _image_vector_search(
                 content_text=(props.get("text") or props.get("chunk_text")) if body.include_context else None,
                 page_number=props.get("page_number"),
                 classification=props.get("classification", "UNCLASSIFIED"),
+                self_refs=props.get("self_refs") or [],
+                evidence_ids=props.get("evidence_ids") or [],
+                page_numbers=props.get("page_numbers") or [],
             )
         )
 

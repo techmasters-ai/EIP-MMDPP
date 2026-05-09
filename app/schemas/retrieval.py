@@ -61,6 +61,19 @@ class QueryResultItem(APIModel):
     sources: Optional[list[dict[str, Any]]] = None
     context: Optional[dict[str, Any]] = None  # graph neighbors, source info, etc.
     image_url: Optional[str] = None  # presigned MinIO URL for image-modality results
+    # Provenance metadata (Pass A embedding chunks). All optional, default-empty.
+    self_refs: list[str] = Field(
+        default_factory=list,
+        description="DoclingDocument self_refs the chunk references (e.g. '#/texts/12').",
+    )
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        description="Stable evidence IDs for this chunk; alias for self_refs at chunk creation. Filtered per-entity by graph extraction.",
+    )
+    page_numbers: list[int] = Field(
+        default_factory=list,
+        description="All pages this chunk's source items span (sorted, deduped). Distinct from page_number which is a single representative page.",
+    )
 
 
 class UnifiedQueryRequest(APIModel):
