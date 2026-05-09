@@ -646,7 +646,7 @@ Docling's serialization). Cost: ~30 chars per unit; safe under any
 reasonable chunk_max_tokens budget."
 ```
 
-**Acceptance:** Each chunk text containing items ends with an `=== EVIDENCE UNITS ===` block. Each unit (with non-empty text) appears as `[EVIDENCE id="…" page="…"]…[/EVIDENCE]`. Token counts in metadata reflect the post-marker text.
+**Acceptance:** Each chunk text containing items ends with an `=== EVIDENCE LEGEND ===` block. Each unit appears as a self-closing `[EVIDENCE id="…" page="…" preview="…"]` line — NO `[/EVIDENCE]` closing tag, NO body text duplicated. Token counts in metadata reflect the post-legend text. Body text appears EXACTLY ONCE in the chunk (in the chunk text proper, not in the legend).
 
 ---
 
@@ -670,6 +670,27 @@ grep -rn '"chunk_created"' docker/docling-graph/ app/ tests/ docker/docling-grap
 ```
 
 The widened payload is additive (new keys, all old keys preserved), so dict-key consumers are safe. Flag any consumer that does `assert payload == { … exact-key set … }` — those need a one-line update. If grep returns nothing beyond the emit site itself, the widening is fully safe.
+
+- [ ] **Step 4.0b: Verify `context.extractor.doc_processor` is the same instance the strategy uses**
+
+Task 5 reads `context.extractor.doc_processor.last_chunk_metadata`. For that to work, the `doc_processor` instance whose attribute strategy_ops sets must be reachable through `context.extractor.doc_processor`. Confirm:
+
+```bash
+cd /home/josh/development/EIP-MMDPP/.worktrees/provenance
+grep -n "self.doc_processor\b\|self.document_processor\b" docker/docling-graph/repo/docling_graph/core/extractors/*.py | head -10
+grep -n "context.extractor\s*=\|context.extractor.doc_processor" docker/docling-graph/repo/docling_graph/pipeline/*.py | head -10
+```
+
+Verify that:
+1. The extractor class defines an attribute named `doc_processor` (or note the actual name like `_doc_processor` / `document_processor` and adjust Task 5's reader).
+2. `context.extractor` is set to the same extractor instance that calls `extract_delta_from_document` (which receives the `doc_processor` parameter that gets the metadata stash). `pipeline/stages.py:351` shows `context.extractor.trace_data = context.trace_data` — that confirms `context.extractor` is the live extractor.
+3. The extractor's `doc_processor` reference is the SAME object that strategy_ops receives as the `doc_processor` parameter (not a copy). Standard pattern: extractor holds `self.doc_processor` and passes `self.doc_processor` into strategy. If the extractor instead constructs a fresh DocumentProcessor per call, the attribute set in strategy_ops won't survive.
+
+If point (3) fails, the fix is to either:
+- Have the extractor cache the doc_processor used per call AND expose it on `context.extractor.last_doc_processor`.
+- OR have strategy_ops also set the metadata directly on `extractor.last_chunk_metadata` (not just on doc_processor) — that survives because `context.extractor` is stable.
+
+Pick the simpler option that matches the actual code; document the choice in Step 4.3.
 
 - [ ] **Step 4.1: Write failing tests — trace payload widened + last_chunk_metadata set**
 
@@ -1125,16 +1146,21 @@ Expected: baseline + 2.
 
 ```bash
 git add docker/docling-graph/app/main.py docker/docling-graph/tests/test_main_provenance_source.py
-git commit -m "fix(provenance): build chunk_to_self_refs from trace, not re-chunk
+git commit -m "fix(provenance): build chunk_to_self_refs from doc_processor (primary), trace (fallback)
 
 Bare HybridChunker() re-chunk produced boundaries unrelated to the
-chunks the LLM actually saw — silently broken provenance. Now reads
-self_refs and evidence_units from chunk_created trace events
-(extraction-time, authoritative).
+chunks the LLM actually saw — silently broken provenance.
 
-_build_chunk_to_self_refs_map kept as diagnostic-only fallback,
-marked with explicit comment so the regression test catches any new
-production callers."
+Now dual-source:
+- PRIMARY: context.extractor.doc_processor.last_chunk_metadata —
+  set unconditionally by strategy_ops after chunking; debug-independent.
+- FALLBACK: chunk_created trace events — debug-only, used as cross-check
+  / diagnostic when the primary path is empty (legacy extractors that
+  don't set last_chunk_metadata).
+
+_build_chunk_to_self_refs_map kept as diagnostic-only fallback, marked
+with explicit comment. Regression test flags any production HybridChunker(…)
+construction missing merge_peers."
 ```
 
 **Acceptance:** `_chunk_to_self_refs_from_trace` builds the map from trace events. Production path no longer calls bare `HybridChunker()`. The regression test (`test_no_production_path_calls_bare_hybridchunker`) prevents new violations.
@@ -1378,19 +1404,44 @@ The return is a tuple `(normalized_per_batch, stats)` where `normalized_per_batc
 Append to `tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py`:
 
 ```python
+# Minimal Pydantic template needed by build_delta_node_catalog. Mirror the
+# shape used by the file's existing passing tests (test_ir_normalizer.py:1-4
+# imports build_delta_node_catalog from contracts.delta.catalog and
+# build_dedup_policy from .helpers).
+from pydantic import BaseModel, ConfigDict, Field
+
+class _Foo(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "graph_node_label": "FOO",
+        "is_entity": True,
+        "graph_id_fields": ["id"],
+    })
+    id: str = ""
+
+class _MinTemplate(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "graph_node_label": "ROOT",
+        "is_entity": True,
+        "graph_id_fields": [],
+    })
+    foos: list[_Foo] = Field(default_factory=list)
+
+
 def _minimal_normalizer_kwargs():
-    """Build the minimal set of catalog/dedup_policy/config kwargs needed
-    by normalize_delta_ir_batch_results. Adapt to whatever the existing
-    tests in this file use — copy from any passing test as a starting point."""
+    """Real catalog + dedup_policy + config wired the way existing tests do.
+    Modules: contracts.delta.catalog (not delta_node_catalog), .helpers."""
     from docling_graph.core.extractors.contracts.delta.ir_normalizer import (
         DeltaIrNormalizerConfig,
     )
-    from docling_graph.core.extractors.contracts.delta.delta_node_catalog import (
-        DeltaNodeCatalog,
+    from docling_graph.core.extractors.contracts.delta.catalog import (
+        build_delta_node_catalog,
+    )
+    from docling_graph.core.extractors.contracts.delta.helpers import (
+        build_dedup_policy,
     )
     return {
-        "catalog": DeltaNodeCatalog(),  # adjust to match existing tests
-        "dedup_policy": {},
+        "catalog": build_delta_node_catalog(_MinTemplate),
+        "dedup_policy": build_dedup_policy(_MinTemplate),
         "config": DeltaIrNormalizerConfig(attach_provenance=True),
     }
 
@@ -2234,6 +2285,34 @@ preserved unchanged."
 
 **Steps:**
 
+- [ ] **Step 11.0 (HARD PREREQUISITE): Inspect actual `delta_trace.json` shape**
+
+Before writing tests OR implementation, capture and inspect a real `delta_trace.json` from a known-good `/extract-pass` run. Without this, you risk implementing against an imagined shape and producing empty `relationship_provenance` rows.
+
+```bash
+# Fire one /extract-pass on a small fixture document so debug_dir gets
+# populated and main.py loads the trace. Then capture the shape.
+cd /home/josh/development/EIP-MMDPP/.worktrees/provenance
+docker compose exec docling-graph bash -c '
+  curl -s -X POST http://localhost:8002/extract-pass \
+    -H "Content-Type: application/json" \
+    -d @/tests/fixtures/sample_extract_pass_request.json \
+    > /tmp/extract.json
+  ls -la /tmp/docgraph-debug-*/debug/delta_trace.json 2>/dev/null | tail -1
+  cat /tmp/docgraph-debug-*/debug/delta_trace.json 2>/dev/null | jq "keys" | head -20
+  cat /tmp/docgraph-debug-*/debug/delta_trace.json 2>/dev/null | jq ".relationships[0] // .edges[0] // \"NO_RELATIONSHIPS\"" | head -30
+'
+```
+
+If a sample request fixture doesn't exist, run any `/extract-pass` you have on hand. Inspect for:
+- Which top-level key holds relationships? (`relationships` / `edges` / `normalized.relationships` / etc.)
+- Does each relationship dict have a `provenance` sub-dict with `evidence_ids` / `self_refs` / `page_numbers`?
+- How are nodes referenced — by `path`, by `instance_id`, by both?
+
+**STOP HERE if the shape doesn't carry normalized relationships with provenance.** That means `delta_trace.json` is only stats/diagnostics, and Task 11 needs a different source — the right path is then to add a dedicated trace event in the normalizer (`extract_delta_emitted` payload carrying normalized relationships) at `ir_normalizer.py:832` and have `main.py` build the same `_chunk_to_evidence_units`-style map for relationships from those events. Update Step 11.4's reader function and tests accordingly.
+
+If the shape DOES carry normalized relationships, proceed to Step 11.1 with the tests below — adjust the fixture's `delta_trace` dict to match the real key layout you observed.
+
 - [ ] **Step 11.1: Write failing tests**
 
 Use `dg_schemas` / `dg_provenance` fixtures — see Task 9 Step 9.1 note.
@@ -2287,24 +2366,21 @@ def test_build_relationship_provenance_from_delta_trace(dg_schemas, dg_provenanc
     context.knowledge_graph edges (graph_converter drops provenance)."""
     from types import SimpleNamespace
     delta_trace = {
+        "nodes": [
+            {"path": "/radar", "ids": {"id": "R1"}, "instance_id": "i1"},
+            {"path": "/radar/array", "ids": {"id": "A1"}, "instance_id": "i2"},
+        ],
         "relationships": [
             {
                 "edge_label": "HAS_PART",
-                "source_path": "/radar",
-                "target_path": "/radar/array",
-                "source_ids": {"id": "R1"},
-                "target_ids": {"id": "A1"},
+                "source_path": "/radar", "source_ids": {"id": "R1"},
+                "target_path": "/radar/array", "target_ids": {"id": "A1"},
                 "provenance": {
                     "evidence_ids": ["#/texts/0"],
                     "self_refs": ["#/texts/0"],
                     "page_numbers": [3],
                 },
             },
-        ],
-        # nodes also live here for entity-id resolution if needed:
-        "nodes": [
-            {"path": "/radar", "ids": {"id": "R1"}, "instance_id": "i1"},
-            {"path": "/radar/array", "ids": {"id": "A1"}, "instance_id": "i2"},
         ],
     }
     ctx = SimpleNamespace(_delta_trace=delta_trace)
@@ -2326,6 +2402,34 @@ def test_build_relationship_provenance_handles_missing_delta_trace(dg_schemas, d
         dg_schemas.ExtractionRelationshipProvenance,
     )
     assert rows == []
+
+
+def test_build_relationship_provenance_disambiguates_same_path_by_ids(dg_schemas, dg_provenance):
+    """Two nodes that share a path but differ by ids must NOT collide
+    in the source/target lookup."""
+    from types import SimpleNamespace
+    delta_trace = {
+        "nodes": [
+            {"path": "/radars", "ids": {"id": "R1"}, "instance_id": "i_r1"},
+            {"path": "/radars", "ids": {"id": "R2"}, "instance_id": "i_r2"},
+        ],
+        "relationships": [
+            {"edge_label": "DETECTS",
+             "source_path": "/radars", "source_ids": {"id": "R2"},
+             "target_path": "/radars", "target_ids": {"id": "R1"},
+             "provenance": {"evidence_ids": ["#/texts/0"]}},
+        ],
+    }
+    ctx = SimpleNamespace(_delta_trace=delta_trace)
+    rows = dg_provenance.build_relationship_provenance_from_delta_trace(
+        ctx, dg_schemas.ExtractionRelationshipProvenance,
+    )
+    assert len(rows) == 1
+    # Critical: source resolves to R2's instance, target to R1's — NOT
+    # the path-only fallback that would silently pick whichever node
+    # happened to register last.
+    assert rows[0].source_instance_id == "i_r2"
+    assert rows[0].target_instance_id == "i_r1"
 ```
 
 **Note:** The exact key shape of `_delta_trace` depends on what `delta_trace.json` actually contains. The test fixture above assumes `{"relationships": [...], "nodes": [...]}` with normalized-IR-shaped entries. Before implementing, run a real `/extract-pass` with debug enabled and inspect `delta_trace.json` to confirm the actual structure. If the key names differ (`relationships` vs `edges`, etc.), adjust both the test and the implementation. The implementation function is also responsible for handling shape variants gracefully.
@@ -2393,16 +2497,25 @@ def build_relationship_provenance_from_delta_trace(
     relationships = delta_trace.get("relationships") or []
     nodes = delta_trace.get("nodes") or []
 
-    # Build lookup: path → instance_id, for resolving rel.source/target
-    # to the entity instance_ids exposed in ExtractionProvenance.
-    path_to_instance: dict[str, str] = {}
+    # Build lookup: (path, ids-frozenset) → instance_id. Keying by path
+    # ALONE collides when multiple nodes share a path but differ by ids
+    # (e.g. multiple RADAR_SYSTEM entries under /radars). Include the
+    # canonical id-fields tuple so source/target resolution is unambiguous.
+    def _node_key(node_path: str, ids_dict: dict | None) -> tuple:
+        if isinstance(ids_dict, dict):
+            id_items = tuple(sorted((str(k), str(v)) for k, v in ids_dict.items()))
+        else:
+            id_items = ()
+        return (str(node_path), id_items)
+
+    node_lookup: dict[tuple, str] = {}
     for n in nodes:
         if not isinstance(n, dict):
             continue
         path = n.get("path")
         instance_id = n.get("instance_id") or n.get("__delta_node_uid")
         if isinstance(path, str) and instance_id:
-            path_to_instance[path] = str(instance_id)
+            node_lookup[_node_key(path, n.get("ids"))] = str(instance_id)
 
     out: list[Any] = []
     for rel in relationships:
@@ -2412,11 +2525,13 @@ def build_relationship_provenance_from_delta_trace(
         if not label:
             continue
         prov = rel.get("provenance") if isinstance(rel.get("provenance"), dict) else {}
+        source_key = _node_key(rel.get("source_path") or "", rel.get("source_ids"))
+        target_key = _node_key(rel.get("target_path") or "", rel.get("target_ids"))
         out.append(
             provenance_cls(
                 relationship_type=str(label),
-                source_instance_id=path_to_instance.get(rel.get("source_path") or ""),
-                target_instance_id=path_to_instance.get(rel.get("target_path") or ""),
+                source_instance_id=node_lookup.get(source_key),
+                target_instance_id=node_lookup.get(target_key),
                 evidence_ids=[
                     eid for eid in (prov.get("evidence_ids") or [])
                     if isinstance(eid, str)
@@ -2569,7 +2684,9 @@ This satisfies acceptance criterion 3 (every production HybridChunker constructi
 
 - [ ] **Step 12.4: Extract `_build_native_chunk_meta` helper**
 
-In `app/workers/pipeline.py`, near the native-chunking path (around line 4524-4555), extract the per-chunk metadata construction into a module-level helper:
+In `app/workers/pipeline.py`, near the native-chunking path (around line 4524-4555), extract the per-chunk metadata construction into a module-level helper.
+
+`hashlib` and `uuid` are already imported at `app/workers/pipeline.py:30,32` — no new imports required for this helper.
 
 ```python
 def _build_native_chunk_meta(
@@ -2954,11 +3071,20 @@ These are acknowledged gaps that are NOT required for the spec's acceptance but 
 
 ## Open Questions for the Implementer
 
-- **delta_trace.json shape:** Task 11 assumes `context._delta_trace` is `{"relationships": [...], "nodes": [...]}` with normalized-IR-shaped entries. The exact key names depend on what the docling-graph library writes to `delta_trace.json`. Run a `/extract-pass` on a sample doc with `debug_dir` enabled and inspect `<debug_dir>/debug/delta_trace.json` BEFORE implementing Task 11 — adjust the reader if keys differ (`relationships` vs `edges`, etc.).
-- **Pipeline trace shape:** Task 5 assumes `context.trace_data.events: list[TraceEvent]`. Verified against `docker/docling-graph/repo/docling_graph/pipeline/context.py:65` and `pipeline/trace.py:24-32`. Re-confirm if upstream library version changes.
-- **doc_processor attribute path:** Task 5 reads `context.extractor.doc_processor.last_chunk_metadata`. Verified that `context.extractor` is set in stages.py:351; `doc_processor` is the conventional attribute on extractors. Confirm with a quick `grep -n "self.doc_processor\b" docker/docling-graph/repo/docling_graph/core/extractors/`.
-- **Normalizer kwargs:** Task 8 needs `catalog`, `dedup_policy`, `config` arguments. The `_minimal_normalizer_kwargs()` helper is a placeholder — read at least one passing test in `tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py` and copy the exact construction shapes.
-- **`build_auto_field_evidence` legacy callers:** Task 10 Step 10.5 references `legacy_input_chunks`. Find the existing call site in `main.py` (`grep -n build_auto_field_evidence docker/docling-graph/app/main.py`) and use the actual variable name.
+These items are unresolved at plan-write time. Each task that depends on them includes an inspection step (Task 11 Step 11.0, Task 4 Step 4.0b) — DO NOT skip those.
+
+- **delta_trace.json shape (Task 11 hard prerequisite):** assumed to be `{"relationships": [...], "nodes": [...]}` with normalized-IR-shaped entries. Task 11 Step 11.0 makes inspection mandatory before implementation. If the file is only stats/diagnostics, switch sources to a new `extract_delta_emitted` trace event added at the normalizer (see Step 11.0's escape hatch).
+- **doc_processor attribute identity (Task 4 hard prerequisite):** Task 5 reads `context.extractor.doc_processor.last_chunk_metadata`. Task 4 Step 4.0b makes verification mandatory (the extractor's `doc_processor` reference must be the same object strategy_ops receives, not a per-call copy). If the extractor reconstructs DocumentProcessor per call, fall back to setting the attribute on `extractor` directly.
+- **`build_auto_field_evidence` legacy caller variable name (Task 10):** Step 10.5 references `legacy_input_chunks`. Find the existing call site in `main.py` (`grep -n build_auto_field_evidence docker/docling-graph/app/main.py`) and use the actual variable name.
+
+### Verified during plan revision (no further investigation needed)
+
+- **Pipeline trace shape:** `context.trace_data: EventTrace | None` at `pipeline/context.py:65`; `EventTrace.events: list[TraceEvent]` with `(sequence, timestamp, stage, event_type, payload)` at `pipeline/trace.py:24-32`. Helpers in Task 5 handle TraceEvent dataclass directly.
+- **Normalizer kwargs (Task 8):** real construction is `build_delta_node_catalog(template)` from `contracts/delta/catalog.py` and `build_dedup_policy(template)` from `contracts/delta/helpers.py`. Step 8.2's `_minimal_normalizer_kwargs()` uses both correctly with a minimal `_MinTemplate` Pydantic model.
+- **Worker pipeline imports (Task 12):** `hashlib` and `uuid` already at `app/workers/pipeline.py:30,32`.
+- **graph_converter drops edge provenance:** confirmed at `core/converters/graph_converter.py:296` (`Edge(... properties={})`). Task 11 sources from `_delta_trace`, NOT from graph edges.
+- **trace_data is debug-only:** confirmed at `pipeline/orchestrator.py:95-97` (`if self.config.debug: context.trace_data = EventTrace()`). Task 5 uses dual-source (`doc_processor.last_chunk_metadata` primary, trace fallback).
+- **docling-graph service forces debug mode:** `app/main.py:650-652` creates `debug_dir` per-call; `config_builder.py:327-329` translates that into `config.debug=True`. Trace fallback works in production today, but the primary `doc_processor` source is the safety net.
 
 ## Global "Test File Exists" Convention
 
