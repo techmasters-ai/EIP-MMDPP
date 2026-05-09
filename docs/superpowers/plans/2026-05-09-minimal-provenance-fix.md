@@ -245,77 +245,100 @@ implicit behavior, but are now part of the contract."
 
 - [ ] **Step 2.1: Write failing test — metadata fields present**
 
+The existing tests in `test_document_processor.py` (lines 8-15, etc.) use `MagicMock` chunkers that yield synthetic `DocChunk`-like objects. Match that pattern — DO NOT try to build real `DoclingDocument` instances (it requires constructing many required Pydantic fields with no obvious sample fixture in the repo).
+
 Append to `docker/docling-graph/repo/tests/unit/core/extractors/test_document_processor.py`:
 
 ```python
-def test_extract_chunks_with_metadata_includes_evidence_fields(small_docling_doc):
+def _fake_doc_item(self_ref: str, text: str, page_no: int = 1, label="text"):
+    """Synthetic DoclingItem-shaped object for chunk-meta tests."""
+    from unittest.mock import MagicMock
+    item = MagicMock()
+    item.self_ref = self_ref
+    item.text = text
+    item.orig = text
+    item.label = label
+    prov = MagicMock()
+    prov.page_no = page_no
+    item.prov = [prov]
+    return item
+
+
+def _fake_doc_chunk(items, text=None):
+    """Synthetic DocChunk-shaped object — what HybridChunker.chunk yields."""
+    from unittest.mock import MagicMock
+    chunk = MagicMock()
+    chunk.text = text or " ".join(getattr(it, "text", "") for it in items)
+    chunk.meta = MagicMock()
+    chunk.meta.doc_items = items
+    return chunk
+
+
+def test_extract_chunks_with_metadata_includes_evidence_fields(monkeypatch):
     """Every chunk metadata row must carry chunk_kind, self_refs, evidence_ids,
     evidence_units, and chunker_config."""
     from docling_graph.core.extractors.document_processor import DocumentProcessor
     proc = DocumentProcessor(chunker_config={"chunk_max_tokens": 4096})
-    chunks, metadata = proc.extract_chunks_with_metadata(small_docling_doc)
-    assert len(chunks) == len(metadata)
-    for cmeta in metadata:
-        assert cmeta["chunk_kind"] == "graph_extraction"
-        assert isinstance(cmeta["self_refs"], list)
-        assert isinstance(cmeta["evidence_ids"], list)
-        assert isinstance(cmeta["evidence_units"], list)
-        assert "chunker_config" in cmeta
-        # evidence_ids must mirror self_refs (1:1 by construction)
-        assert cmeta["evidence_ids"] == cmeta["self_refs"]
-        # each evidence_unit must have the documented shape
-        for unit in cmeta["evidence_units"]:
-            assert {"evidence_id", "self_ref", "page_numbers", "text"} <= unit.keys()
-            assert unit["evidence_id"] == unit["self_ref"]
+
+    fake_items = [
+        _fake_doc_item("#/texts/0", "alpha"),
+        _fake_doc_item("#/texts/1", "beta"),
+    ]
+    fake_chunks = [_fake_doc_chunk(fake_items, text="alpha beta")]
+
+    # Patch the chunker so we don't need a real DoclingDocument.
+    monkeypatch.setattr(proc.chunker, "chunker", MagicMock())
+    proc.chunker.chunker.chunk = lambda dl_doc: iter(fake_chunks)
+    proc.chunker.chunker.contextualize = lambda chunk: chunk.text
+    # Pin token count so we don't trip the fallback split.
+    monkeypatch.setattr(proc.chunker.tokenizer, "count_tokens", lambda t: 10)
+
+    chunks, metadata = proc.extract_chunks_with_metadata(MagicMock())  # doc unused by mocks
+    assert len(chunks) == len(metadata) == 1
+    cmeta = metadata[0]
+    assert cmeta["chunk_kind"] == "graph_extraction"
+    assert cmeta["self_refs"] == ["#/texts/0", "#/texts/1"]
+    assert cmeta["evidence_ids"] == cmeta["self_refs"]
+    assert isinstance(cmeta["evidence_units"], list) and len(cmeta["evidence_units"]) == 2
+    for unit in cmeta["evidence_units"]:
+        assert {"evidence_id", "self_ref", "page_numbers", "text"} <= unit.keys()
+        assert unit["evidence_id"] == unit["self_ref"]
+    assert "chunk_max_tokens" in cmeta["chunker_config"]
 
 
-def test_extract_chunks_with_metadata_fallback_split_inherits_evidence(large_docling_doc):
-    """When a chunk exceeds chunk_max_tokens and is split via chunk_text_fallback,
+def test_extract_chunks_with_metadata_fallback_split_inherits_evidence(monkeypatch):
+    """When a chunk exceeds chunk_max_tokens and chunk_text_fallback fires,
     every sub-chunk inherits the parent's self_refs / evidence_ids / evidence_units."""
     from docling_graph.core.extractors.document_processor import DocumentProcessor
-    # Force fallback splitting by capping max_tokens very low.
-    proc = DocumentProcessor(chunker_config={"chunk_max_tokens": 64})
-    chunks, metadata = proc.extract_chunks_with_metadata(large_docling_doc)
-    # Find groups of sub-chunks that share a parent (same self_refs set).
-    from collections import defaultdict
-    by_refs = defaultdict(list)
+    proc = DocumentProcessor(chunker_config={"chunk_max_tokens": 5})
+
+    fake_items = [_fake_doc_item("#/texts/99", "long text")]
+    parent_chunk = _fake_doc_chunk(fake_items, text="this is a long text that will be split")
+
+    monkeypatch.setattr(proc.chunker, "chunker", MagicMock())
+    proc.chunker.chunker.chunk = lambda dl_doc: iter([parent_chunk])
+    proc.chunker.chunker.contextualize = lambda chunk: chunk.text
+    # First call: way over limit (forces fallback). Subsequent: small.
+    counts = iter([1000, 3, 3, 3])
+    monkeypatch.setattr(
+        proc.chunker.tokenizer, "count_tokens", lambda t: next(counts, 3)
+    )
+    # Force chunk_text_fallback to produce 3 sub-chunks deterministically.
+    monkeypatch.setattr(
+        proc.chunker, "chunk_text_fallback", lambda text: ["one", "two", "three"]
+    )
+
+    chunks, metadata = proc.extract_chunks_with_metadata(MagicMock())
+    assert len(chunks) == len(metadata) == 3
+    parent_refs = ["#/texts/99"]
     for cmeta in metadata:
-        by_refs[tuple(sorted(cmeta["self_refs"]))].append(cmeta)
-    fallback_groups = [g for g in by_refs.values() if len(g) > 1]
-    assert fallback_groups, "fixture should produce at least one fallback split"
-    for group in fallback_groups:
-        # All sub-chunks share evidence metadata.
-        first = group[0]
-        for sib in group[1:]:
-            assert sib["self_refs"] == first["self_refs"]
-            assert sib["evidence_ids"] == first["evidence_ids"]
-            assert sib["evidence_units"] == first["evidence_units"]
+        assert cmeta["self_refs"] == parent_refs
+        assert cmeta["evidence_ids"] == parent_refs
+        assert len(cmeta["evidence_units"]) == 1
+        assert cmeta["evidence_units"][0]["evidence_id"] == "#/texts/99"
 ```
 
-If fixtures `small_docling_doc` / `large_docling_doc` don't exist, add them to `tests/unit/core/extractors/conftest.py`:
-
-```python
-import pytest
-from docling_core.types.doc.document import DoclingDocument, TextItem
-# Use existing test fixtures elsewhere in repo if available; otherwise build
-# a minimal DoclingDocument with N TextItems where item.text length forces
-# the desired chunk count. See tests/fixtures/ for prior examples.
-
-@pytest.fixture
-def small_docling_doc():
-    """Tiny doc, 3-5 text items, fits in one HybridChunker chunk at 4096 tokens."""
-    # If a sample DoclingDocument JSON exists in tests/fixtures, prefer
-    # loading that via DoclingDocument.model_validate(json.load(f)).
-    ...
-
-@pytest.fixture
-def large_docling_doc():
-    """Doc with at least one text item whose enriched length exceeds 64 tokens
-    so chunk_text_fallback() fires and produces 2+ sub-chunks for one source item."""
-    ...
-```
-
-If realistic fixtures are non-trivial to build, search `docker/docling-graph/repo/tests/fixtures/` for existing JSON exports of DoclingDocument and reuse them; reach for the simplest one that satisfies each constraint.
+Both test bodies depend on the actual `DocumentProcessor.__init__` accepting `chunker_config={"chunk_max_tokens": …}` and exposing `proc.chunker.chunker.chunk` / `proc.chunker.tokenizer.count_tokens` / `proc.chunker.chunk_text_fallback` — verify that shape against `document_processor.py:42-72` before writing. Adjust the monkeypatch targets if any path differs.
 
 - [ ] **Step 2.2: Run tests — verify they fail**
 
@@ -580,6 +603,15 @@ once per chunk; fallback sub-chunks share the parent's evidence units."
 
 **Steps:**
 
+- [ ] **Step 4.0: Inventory `chunk_created` consumers — pre-flight before widening payload**
+
+```bash
+cd /home/josh/development/EIP-MMDPP/.worktrees/provenance
+grep -rn '"chunk_created"' docker/docling-graph/ app/ tests/ docker/docling-graph/repo/ 2>/dev/null | grep -v "\.git/"
+```
+
+The widened payload is additive (new keys, all old keys preserved), so dict-key consumers are safe. Flag any consumer that does `assert payload == { … exact-key set … }` — those need a one-line update. If grep returns nothing beyond the emit site itself, the widening is fully safe.
+
 - [ ] **Step 4.1: Write failing test — trace payload widened**
 
 Create or append `docker/docling-graph/repo/tests/unit/core/extractors/contracts/delta/test_strategy_ops.py`:
@@ -710,44 +742,79 @@ re-chunking with a bare HybridChunker()."
 Create `docker/docling-graph/tests/test_main_provenance_source.py`:
 
 ```python
-def test_chunk_to_self_refs_built_from_trace_events(monkeypatch):
+# Use the dg_app_module conftest fixture — bare `from app.main import ...`
+# is forbidden because the repo-root `app/` package shadows
+# `docker/docling-graph/app/`. See docker/docling-graph/tests/conftest.py.
+
+def test_chunk_to_self_refs_built_from_trace_events(dg_app_module):
     """main.py must build context._chunk_to_self_refs from chunk_created
-    trace events (extraction-time), NOT by re-chunking with HybridChunker()."""
-    from app.main import _chunk_to_self_refs_from_trace
+    trace events (extraction-time), NOT by re-chunking with HybridChunker().
+
+    Trace events are TraceEvent dataclass instances per
+    docling_graph.pipeline.trace.TraceEvent (event_type, stage, payload, ...).
+    """
+    from docling_graph.pipeline.trace import TraceEvent
     trace_events = [
-        ("chunk_created", "extraction", {
-            "chunk_id": 0,
-            "self_refs": ["#/texts/0", "#/texts/1"],
-            "evidence_units": [],
-        }),
-        ("chunk_created", "extraction", {
-            "chunk_id": 1,
-            "self_refs": ["#/texts/2"],
-            "evidence_units": [],
-        }),
+        TraceEvent(
+            sequence=0, timestamp=0.0, stage="extraction",
+            event_type="chunk_created",
+            payload={
+                "chunk_id": 0,
+                "self_refs": ["#/texts/0", "#/texts/1"],
+                "evidence_units": [],
+            },
+        ),
+        TraceEvent(
+            sequence=1, timestamp=0.0, stage="extraction",
+            event_type="chunk_created",
+            payload={
+                "chunk_id": 1,
+                "self_refs": ["#/texts/2"],
+                "evidence_units": [],
+            },
+        ),
     ]
-    out = _chunk_to_self_refs_from_trace(trace_events)
+    out = dg_app_module._chunk_to_self_refs_from_trace(trace_events)
     assert out == {0: ["#/texts/0", "#/texts/1"], 1: ["#/texts/2"]}
 
 
 def test_no_production_path_calls_bare_hybridchunker():
-    """Grep main.py for `HybridChunker()` (no args) — only diagnostic
-    fallback paths may use it, marked with a `# diagnostic-only:` comment."""
-    import pathlib
-    main_py = pathlib.Path("docker/docling-graph/app/main.py").read_text()
-    # Naive but effective: any line with `HybridChunker()` must include
-    # the diagnostic-only marker on the same line or the prior line.
-    lines = main_py.splitlines()
+    """Grep production source for `HybridChunker()` (no args) and for
+    minimally-configured `HybridChunker(tokenizer=…)` — only diagnostic
+    fallback paths may construct a HybridChunker without merge_peers,
+    marked with a `# diagnostic-only:` comment.
+
+    Covers: docker/docling-graph/app/main.py and app/workers/pipeline.py."""
+    import pathlib, re
+    paths = [
+        "docker/docling-graph/app/main.py",
+        "app/workers/pipeline.py",
+    ]
     bad = []
-    for i, line in enumerate(lines):
-        if "HybridChunker()" not in line:
-            continue
-        prev = lines[i - 1] if i > 0 else ""
-        if "diagnostic-only" in line or "diagnostic-only" in prev:
-            continue
-        bad.append((i + 1, line.strip()))
-    assert not bad, f"production HybridChunker() call sites: {bad}"
+    # Match any HybridChunker( construction.
+    pat = re.compile(r"\bHybridChunker\s*\(")
+    for p in paths:
+        src = pathlib.Path(p).read_text()
+        lines = src.splitlines()
+        for i, line in enumerate(lines):
+            if not pat.search(line):
+                continue
+            # Walk forward to the closing paren and capture the full call.
+            call_end = i
+            while call_end < len(lines) and lines[call_end].count(")") < lines[call_end].count("("):
+                call_end += 1
+            full_call = "\n".join(lines[i:call_end + 1])
+            # Allow if call passes merge_peers explicitly OR is marked diagnostic-only.
+            prev = lines[i - 1] if i > 0 else ""
+            if "diagnostic-only" in line or "diagnostic-only" in prev:
+                continue
+            if "merge_peers" in full_call:
+                continue
+            bad.append((p, i + 1, line.strip()))
+    assert not bad, f"production HybridChunker construction without merge_peers: {bad}"
 ```
+
+Note: this regression test is tightened beyond just `HybridChunker()` — it also catches partial-arg constructions like `HybridChunker(tokenizer=hf_tok)` that omit `merge_peers`. This catches the `app/workers/pipeline.py:4503` case fixed by Task 12.
 
 - [ ] **Step 5.2: Run tests — verify they fail**
 
@@ -763,6 +830,21 @@ Expected: FAIL — `_chunk_to_self_refs_from_trace` doesn't exist; the second te
 In `docker/docling-graph/app/main.py`, ABOVE `_build_chunk_to_self_refs_map`, add:
 
 ```python
+def _trace_event_payload(evt):
+    """Return (event_type, payload) from a trace event, supporting the
+    TraceEvent dataclass shape used by docling_graph.pipeline.trace and
+    the dict/tuple fallbacks some test harnesses emit. Returns
+    (None, None) for shapes we don't recognize."""
+    # TraceEvent dataclass — the production shape.
+    if hasattr(evt, "event_type") and hasattr(evt, "payload"):
+        return evt.event_type, evt.payload
+    if isinstance(evt, tuple) and len(evt) >= 3:
+        return evt[0], evt[2]
+    if isinstance(evt, dict):
+        return evt.get("event") or evt.get("name"), evt.get("payload") or evt
+    return None, None
+
+
 def _chunk_to_self_refs_from_trace(trace_events) -> dict[int, list[str]]:
     """Build {chunk_id: [self_ref, ...]} from chunk_created trace events.
 
@@ -772,16 +854,8 @@ def _chunk_to_self_refs_from_trace(trace_events) -> dict[int, list[str]]:
     """
     out: dict[int, list[str]] = {}
     for evt in trace_events or []:
-        # trace_events may be tuples (name, scope, payload) OR dicts —
-        # support both shapes the framework emits.
-        if isinstance(evt, tuple) and len(evt) >= 3:
-            name, _scope, payload = evt[0], evt[1], evt[2]
-        elif isinstance(evt, dict):
-            name = evt.get("event") or evt.get("name")
-            payload = evt.get("payload") or evt
-        else:
-            continue
-        if name != "chunk_created":
+        name, payload = _trace_event_payload(evt)
+        if name != "chunk_created" or not isinstance(payload, dict):
             continue
         cid = payload.get("chunk_id")
         refs = payload.get("self_refs")
@@ -795,14 +869,8 @@ def _chunk_to_evidence_units_from_trace(trace_events) -> dict[int, list[dict]]:
     """Build {chunk_id: [evidence_unit, ...]} from chunk_created trace events."""
     out: dict[int, list[dict]] = {}
     for evt in trace_events or []:
-        if isinstance(evt, tuple) and len(evt) >= 3:
-            name, _scope, payload = evt[0], evt[1], evt[2]
-        elif isinstance(evt, dict):
-            name = evt.get("event") or evt.get("name")
-            payload = evt.get("payload") or evt
-        else:
-            continue
-        if name != "chunk_created":
+        name, payload = _trace_event_payload(evt)
+        if name != "chunk_created" or not isinstance(payload, dict):
             continue
         cid = payload.get("chunk_id")
         units = payload.get("evidence_units")
@@ -858,7 +926,10 @@ except AttributeError:
 with:
 
 ```python
-trace_events = getattr(getattr(context, "trace", None), "events", None) or []
+# context.trace_data: EventTrace | None  (defined in docling_graph.pipeline.context)
+# EventTrace.events: list[TraceEvent]
+trace_data = getattr(context, "trace_data", None)
+trace_events = getattr(trace_data, "events", None) or []
 chunk_to_self_refs = _chunk_to_self_refs_from_trace(trace_events)
 chunk_to_evidence_units = _chunk_to_evidence_units_from_trace(trace_events)
 
@@ -874,7 +945,7 @@ except AttributeError:
     pass
 ```
 
-The exact attribute path to trace events depends on how the docling-graph framework exposes them — verify by reading `context.trace` shape via a one-off `print` test if needed. If the framework uses `context.delta_trace` or `context._trace`, adjust accordingly. The failing-fast warning lets us catch wiring bugs immediately.
+Note: the `Context` class at `docker/docling-graph/repo/docling_graph/pipeline/context.py:65` declares `trace_data: EventTrace | None = None`. Verify this is still the shape (`grep -n "trace_data" docker/docling-graph/repo/docling_graph/pipeline/context.py`) before applying.
 
 - [ ] **Step 5.6: Confirm fallback at line 596 is updated**
 
@@ -1135,11 +1206,41 @@ appended to chunk text by the document processor."
 
 **Steps:**
 
-- [ ] **Step 8.1: Write failing tests — node + rel evidence preserved, validation, fallback**
+- [ ] **Step 8.1: Read the real signature first**
+
+```bash
+cd /home/josh/development/EIP-MMDPP/.worktrees/provenance/docker/docling-graph/repo
+sed -n '510,525p' docling_graph/core/extractors/contracts/delta/ir_normalizer.py
+```
+
+Note the actual signature: `normalize_delta_ir_batch_results(*, batch_results: list[dict], batch_plan: list[list[tuple]], chunk_metadata: list[dict]|None, catalog: DeltaNodeCatalog, dedup_policy: dict, config: DeltaIrNormalizerConfig) -> tuple[list[dict], dict]`.
+
+The return is a tuple `(normalized_per_batch, stats)` where `normalized_per_batch` is a `list[dict]` with one entry per batch shaped `{"nodes": [...], "relationships": [...]}` and `stats` is the second element. Tests must read assertions from the tuple-unpacked result.
+
+**Build helper for minimal kwargs.** Look at existing test file `tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py` to copy the conventions used by passing tests for `catalog`, `dedup_policy`, `config`. If those tests use a fixture `minimal_catalog` / `minimal_config`, reuse it.
+
+- [ ] **Step 8.2: Write failing tests — node + rel evidence preserved, validation, fallback**
 
 Append to `tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py`:
 
 ```python
+def _minimal_normalizer_kwargs():
+    """Build the minimal set of catalog/dedup_policy/config kwargs needed
+    by normalize_delta_ir_batch_results. Adapt to whatever the existing
+    tests in this file use — copy from any passing test as a starting point."""
+    from docling_graph.core.extractors.contracts.delta.ir_normalizer import (
+        DeltaIrNormalizerConfig,
+    )
+    from docling_graph.core.extractors.contracts.delta.delta_node_catalog import (
+        DeltaNodeCatalog,
+    )
+    return {
+        "catalog": DeltaNodeCatalog(),  # adjust to match existing tests
+        "dedup_policy": {},
+        "config": DeltaIrNormalizerConfig(attach_provenance=True),
+    }
+
+
 def test_normalizer_preserves_valid_node_evidence_ids():
     """When LLM emits evidence_ids that exist in the batch, preserve them
     verbatim on the normalized node."""
@@ -1151,18 +1252,23 @@ def test_normalizer_preserves_valid_node_evidence_ids():
         "self_refs": ["#/texts/0", "#/texts/1"],
         "evidence_ids": ["#/texts/0", "#/texts/1"],
     }]
-    batch_plan = {0: [(0, 0, 0)]}  # exact tuple shape: (chunk_index, ?, ?) — match prod
-    raw_results = {
-        0: {"nodes": [{
-            "path": "/foo", "ids": {"id": "X"},
-            "evidence_ids": ["#/texts/1"],
-            "property_evidence": {"name": ["#/texts/1"]},
-        }], "relationships": []},
-    }
-    out = normalize_delta_ir_batch_results(
-        raw_results=raw_results, batch_plan=batch_plan, chunk_metadata=chunk_metadata,
+    # batch_plan is list[list[tuple]] — one inner list per batch index.
+    # Each inner tuple shape is project-specific; verify the existing tests'
+    # tuple shape and copy it. Below is the minimum: one batch, one chunk_index=0.
+    batch_plan = [[(0,)]]  # adjust tuple arity to match production
+    batch_results = [{"nodes": [{
+        "path": "/foo", "ids": {"id": "X"},
+        "evidence_ids": ["#/texts/1"],
+        "property_evidence": {"name": ["#/texts/1"]},
+    }], "relationships": []}]
+
+    normalized_per_batch, stats = normalize_delta_ir_batch_results(
+        batch_results=batch_results,
+        batch_plan=batch_plan,
+        chunk_metadata=chunk_metadata,
+        **_minimal_normalizer_kwargs(),
     )
-    node = out["nodes"][0]
+    node = normalized_per_batch[0]["nodes"][0]
     assert node["provenance"]["evidence_ids"] == ["#/texts/1"]
     assert node["provenance"]["property_evidence"] == {"name": ["#/texts/1"]}
     assert "#/texts/0" in node["provenance"]["self_refs"]
@@ -1170,7 +1276,8 @@ def test_normalizer_preserves_valid_node_evidence_ids():
 
 def test_normalizer_falls_back_when_evidence_id_invalid():
     """Hallucinated evidence_ids (not in batch) get rejected; node falls back
-    to batch-level evidence_ids and a diagnostic counter increments."""
+    to batch-level evidence_ids and the existing stats dict gets an
+    invalid_evidence_ids counter."""
     from docling_graph.core.extractors.contracts.delta.ir_normalizer import (
         normalize_delta_ir_batch_results,
     )
@@ -1179,20 +1286,21 @@ def test_normalizer_falls_back_when_evidence_id_invalid():
         "self_refs": ["#/texts/0"],
         "evidence_ids": ["#/texts/0"],
     }]
-    batch_plan = {0: [(0, 0, 0)]}
-    raw_results = {
-        0: {"nodes": [{
-            "path": "/foo", "ids": {"id": "X"},
-            "evidence_ids": ["#/texts/999"],  # not in batch
-        }], "relationships": []},
-    }
-    out = normalize_delta_ir_batch_results(
-        raw_results=raw_results, batch_plan=batch_plan, chunk_metadata=chunk_metadata,
+    batch_plan = [[(0,)]]
+    batch_results = [{"nodes": [{
+        "path": "/foo", "ids": {"id": "X"},
+        "evidence_ids": ["#/texts/999"],  # not in batch
+    }], "relationships": []}]
+
+    normalized_per_batch, stats = normalize_delta_ir_batch_results(
+        batch_results=batch_results,
+        batch_plan=batch_plan,
+        chunk_metadata=chunk_metadata,
+        **_minimal_normalizer_kwargs(),
     )
-    node = out["nodes"][0]
+    node = normalized_per_batch[0]["nodes"][0]
     assert node["provenance"]["evidence_ids"] == ["#/texts/0"], "fallback to batch IDs"
-    diag = out.get("diagnostics") or {}
-    assert diag.get("invalid_evidence_ids", 0) >= 1
+    assert stats.get("invalid_evidence_ids", 0) >= 1
 
 
 def test_normalizer_preserves_relationship_evidence_ids():
@@ -1204,26 +1312,28 @@ def test_normalizer_preserves_relationship_evidence_ids():
         "self_refs": ["#/texts/0", "#/texts/1"],
         "evidence_ids": ["#/texts/0", "#/texts/1"],
     }]
-    batch_plan = {0: [(0, 0, 0)]}
-    raw_results = {
-        0: {"nodes": [
-            {"path": "/a", "ids": {"id": "A"}},
-            {"path": "/b", "ids": {"id": "B"}},
-        ], "relationships": [
-            {"edge_label": "REL", "source_path": "/a", "target_path": "/b",
-             "evidence_ids": ["#/texts/0"]},
-        ]},
-    }
-    out = normalize_delta_ir_batch_results(
-        raw_results=raw_results, batch_plan=batch_plan, chunk_metadata=chunk_metadata,
+    batch_plan = [[(0,)]]
+    batch_results = [{"nodes": [
+        {"path": "/a", "ids": {"id": "A"}},
+        {"path": "/b", "ids": {"id": "B"}},
+    ], "relationships": [
+        {"edge_label": "REL", "source_path": "/a", "target_path": "/b",
+         "evidence_ids": ["#/texts/0"]},
+    ]}]
+
+    normalized_per_batch, stats = normalize_delta_ir_batch_results(
+        batch_results=batch_results,
+        batch_plan=batch_plan,
+        chunk_metadata=chunk_metadata,
+        **_minimal_normalizer_kwargs(),
     )
-    rel = out["relationships"][0]
+    rel = normalized_per_batch[0]["relationships"][0]
     assert rel["provenance"]["evidence_ids"] == ["#/texts/0"]
 ```
 
-The exact `batch_plan` tuple shape and the `out` dict shape need to match the production code — verify by reading the function signature and existing tests in this file before adopting these literals. Adjust the test wiring (not the assertions) to match.
+**Adapt before running:** the `batch_plan` inner-tuple arity (here `(0,)`), `DeltaNodeCatalog()` constructor, and `dedup_policy` shape are project-specific. Read at least one passing test in this file FIRST to confirm the shapes; copy them. Only the new evidence-related assertions (`provenance.evidence_ids`, `provenance.property_evidence`, `stats.invalid_evidence_ids`) are intrinsic to this task.
 
-- [ ] **Step 8.2: Run tests — verify fail**
+- [ ] **Step 8.3: Run tests — verify fail**
 
 ```bash
 pytest tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py::test_normalizer_preserves_valid_node_evidence_ids tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py::test_normalizer_falls_back_when_evidence_id_invalid tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py::test_normalizer_preserves_relationship_evidence_ids -v 2>&1 | tail -15
@@ -1231,7 +1341,7 @@ pytest tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py::test_no
 
 Expected: 3 FAIL — provenance dict missing `evidence_ids` / `self_refs`.
 
-- [ ] **Step 8.3: Extend provenance dict in the normalizer**
+- [ ] **Step 8.4: Extend provenance dict in the normalizer**
 
 In `docker/docling-graph/repo/docling_graph/core/extractors/contracts/delta/ir_normalizer.py`, locate the provenance dict construction (around lines 558-562):
 
@@ -1267,7 +1377,7 @@ provenance = {
 }
 ```
 
-- [ ] **Step 8.4: Add per-node evidence preservation + validation**
+- [ ] **Step 8.5: Add per-node evidence preservation + validation**
 
 At the node-build site (around line 742), update:
 
@@ -1301,8 +1411,11 @@ if config.attach_provenance:
         node_prov["property_evidence"] = {}
 
     if invalid_evidence:
-        diagnostics["invalid_evidence_ids"] = (
-            diagnostics.get("invalid_evidence_ids", 0) + len(invalid_evidence)
+        # PIGGYBACK on the existing `stats` dict — do NOT introduce a new
+        # return-shape key. The existing return is tuple[list[dict], dict];
+        # adding a new top-level dict key would break callers.
+        stats["invalid_evidence_ids"] = (
+            stats.get("invalid_evidence_ids", 0) + len(invalid_evidence)
         )
 
     normalized_node["provenance"] = node_prov
@@ -1319,8 +1432,8 @@ if config.attach_provenance:
     )
     rel_prov["evidence_ids"] = valid_evidence or list(batch_evidence_ids)
     if invalid_evidence:
-        diagnostics["invalid_evidence_ids"] = (
-            diagnostics.get("invalid_evidence_ids", 0) + len(invalid_evidence)
+        stats["invalid_evidence_ids"] = (
+            stats.get("invalid_evidence_ids", 0) + len(invalid_evidence)
         )
     normalized_rel["provenance"] = rel_prov
 ```
@@ -1345,9 +1458,9 @@ def _partition_evidence(
     return valid, invalid
 ```
 
-The `diagnostics` variable: if the existing function already has a diagnostics dict accumulator (read its return shape first), use it. Otherwise, initialize `diagnostics: dict = {}` near the top of the function and include it in the return value: `return {"nodes": ..., "relationships": ..., "diagnostics": diagnostics}`.
+**Stats dict:** the existing `normalize_delta_ir_batch_results` already returns `tuple[list[dict], dict]` where the second element is the `stats` accumulator. Find its initialization in the function (likely near the top: `stats: dict = {}` or similar) and reuse it. DO NOT change the return shape — callers depend on the existing tuple unpacking.
 
-- [ ] **Step 8.5: Run tests — verify pass**
+- [ ] **Step 8.6: Run tests — verify pass**
 
 ```bash
 pytest tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py -v 2>&1 | tail -15
@@ -1355,7 +1468,7 @@ pytest tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py -v 2>&1 
 
 Expected: 3 new tests PASS, all pre-existing tests still PASS.
 
-- [ ] **Step 8.6: Run full subrepo unit tests — no regression**
+- [ ] **Step 8.7: Run full subrepo unit tests — no regression**
 
 ```bash
 pytest tests/unit -x -q 2>&1 | tail -5
@@ -1363,7 +1476,7 @@ pytest tests/unit -x -q 2>&1 | tail -5
 
 Expected: baseline + 14.
 
-- [ ] **Step 8.7: Commit**
+- [ ] **Step 8.8: Commit**
 
 ```bash
 git add docling_graph/core/extractors/contracts/delta/ir_normalizer.py tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py
@@ -1395,14 +1508,19 @@ the batch-level set so provenance is never empty."
 
 - [ ] **Step 9.1: Write failing tests — backward compat + new fields**
 
-Create `docker/docling-graph/tests/test_extraction_provenance_schema.py`:
+**Important:** Bare `from app.schemas import ...` / `from app.provenance import ...` is FORBIDDEN by `docker/docling-graph/tests/conftest.py:18-103` (the repo-root `app/` shadows the docling-graph service `app/`). Use the `dg_schemas` and `dg_provenance` fixtures defined there. If `test_extraction_provenance_schema.py` already exists, APPEND to it; check `ls docker/docling-graph/tests/` first.
+
+```bash
+ls docker/docling-graph/tests/ | grep -E "extraction_provenance|provenance"
+```
+
+If `test_extraction_provenance_schema.py` exists, append. If not, create it.
 
 ```python
-def test_extraction_provenance_backward_compat():
+def test_extraction_provenance_backward_compat(dg_schemas):
     """Existing callers must construct ExtractionProvenance with no new
     fields and not break."""
-    from app.schemas import ExtractionProvenance
-    p = ExtractionProvenance(
+    p = dg_schemas.ExtractionProvenance(
         instance_id="i1",
         ontology_name="RADAR_SYSTEM",
         identity_values={"designation": "AN/MPQ-65"},
@@ -1413,9 +1531,8 @@ def test_extraction_provenance_backward_compat():
     assert p.evidence_text is None
 
 
-def test_extraction_provenance_accepts_new_fields():
-    from app.schemas import ExtractionProvenance
-    p = ExtractionProvenance(
+def test_extraction_provenance_accepts_new_fields(dg_schemas):
+    p = dg_schemas.ExtractionProvenance(
         instance_id="i1",
         ontology_name="RADAR_SYSTEM",
         identity_values={},
@@ -1432,40 +1549,39 @@ def test_extraction_provenance_accepts_new_fields():
 Append to `docker/docling-graph/tests/test_provenance.py` (or create):
 
 ```python
-def test_resolve_element_uid_prefers_provenance_self_refs():
+def test_resolve_element_uid_prefers_provenance_self_refs(dg_provenance):
     """Resolution order: direct → nested provenance.element_uid →
     provenance.self_refs[0] → provenance.evidence_ids[0] (if self_ref-shaped)
     → chunk_index lookup."""
-    from app.provenance import _resolve_element_uid
     node_data = {
         "provenance": {
             "self_refs": ["#/texts/9", "#/texts/10"],
         },
     }
-    assert _resolve_element_uid(node_data, chunk_to_self_refs={}) == "#/texts/9"
+    assert dg_provenance._resolve_element_uid(node_data, chunk_to_self_refs={}) == "#/texts/9"
 
 
-def test_resolve_element_uid_falls_back_to_evidence_ids():
-    from app.provenance import _resolve_element_uid
+def test_resolve_element_uid_falls_back_to_evidence_ids(dg_provenance):
     node_data = {
         "provenance": {
             "evidence_ids": ["#/texts/9"],
         },
     }
-    assert _resolve_element_uid(node_data, chunk_to_self_refs={}) == "#/texts/9"
+    assert dg_provenance._resolve_element_uid(node_data, chunk_to_self_refs={}) == "#/texts/9"
 
 
-def test_resolve_element_uid_skips_non_selfref_evidence():
+def test_resolve_element_uid_skips_non_selfref_evidence(dg_provenance):
     """evidence_ids that aren't shaped like Docling self_refs (don't start
     with '#/') get ignored at the resolver level."""
-    from app.provenance import _resolve_element_uid
     node_data = {
         "provenance": {
             "evidence_ids": ["llm-generated-noise-id"],
         },
     }
-    assert _resolve_element_uid(node_data, chunk_to_self_refs={}) is None
+    assert dg_provenance._resolve_element_uid(node_data, chunk_to_self_refs={}) is None
 ```
+
+If a `dg_provenance` fixture doesn't exist yet but `dg_schemas` does, model the new fixture on `dg_schemas` in `docker/docling-graph/tests/conftest.py` — it's a one-line `import_module(...)` shim against the swapped sys.path.
 
 - [ ] **Step 9.2: Run tests — verify fail**
 
@@ -1566,7 +1682,7 @@ def _resolve_element_uid(
 
 - [ ] **Step 9.5: Populate the new `ExtractionProvenance` fields in `build_provenance_from_context`**
 
-In `docker/docling-graph/app/provenance.py`, locate the `provenance_cls(...)` construction in `build_provenance_from_context` (around line 318) and extend the kwargs:
+In `docker/docling-graph/app/provenance.py`, locate the `provenance_cls(...)` construction in `build_provenance_from_context` (around line 318) and extend the kwargs to carry the new evidence/page metadata:
 
 ```python
 prov_dict = data.get("provenance") if isinstance(data.get("provenance"), dict) else {}
@@ -1578,7 +1694,7 @@ out.append(
         element_uid=element_uid,
         page=_resolve_page(data),
         chunk_index=_resolve_chunk_index(data),
-        # NEW:
+        # NEW — additive, all optional:
         evidence_ids=[
             eid for eid in (prov_dict.get("evidence_ids") or [])
             if isinstance(eid, str)
@@ -1587,37 +1703,16 @@ out.append(
             p for p in (prov_dict.get("page_numbers") or [])
             if isinstance(p, int)
         }),
-        evidence_text=_join_evidence_text(
-            chunk_to_self_refs=None,  # see Step 9.6 if we have evidence_units
-            evidence_units_for_node=data.get("evidence_units"),
-        ),
+        # evidence_text intentionally left None — joining evidence-unit text
+        # to entities requires threading {chunk_index → evidence_units}
+        # through this function (signature change). Deferred; see "Open
+        # Questions" in the plan footer.
+        evidence_text=None,
     )
 )
 ```
 
-The `_join_evidence_text` helper (place near `_resolve_element_uid`):
-
-```python
-def _join_evidence_text(
-    chunk_to_self_refs=None,
-    evidence_units_for_node=None,
-    cap: int = 500,
-) -> str | None:
-    """Concatenate evidence-unit text into a single snippet, capped at `cap`
-    chars. Returns None if no text available."""
-    if not evidence_units_for_node:
-        return None
-    parts = [
-        u.get("text", "") for u in evidence_units_for_node
-        if isinstance(u, dict) and isinstance(u.get("text"), str)
-    ]
-    joined = " ".join(p.strip() for p in parts if p.strip())
-    if not joined:
-        return None
-    return joined[:cap] + ("…" if len(joined) > cap else "")
-```
-
-(If you want richer wiring of evidence_units to nodes, that's Task 10 territory — for this task, leaving `_join_evidence_text` accepting `None` and returning `None` is fine.)
+Defer the `evidence_text` joining to a future task — wiring requires changing `build_provenance_from_context`'s signature to accept `chunk_to_evidence_units`, which ripples to every caller in `main.py`. Out of scope for the minimal fix; document in the acceptance criteria and the plan footer.
 
 - [ ] **Step 9.6: Run tests — verify pass**
 
@@ -1664,12 +1759,13 @@ self_refs and evidence_ids over the chunk_index → re-chunk lookup."
 
 - [ ] **Step 10.1: Write failing test — field provenance new fields + evidence-unit input**
 
+Use `dg_schemas` and `dg_provenance` fixtures (NOT bare `from app.…`) — see Task 9 Step 9.1 note.
+
 Create `docker/docling-graph/tests/test_field_provenance.py`:
 
 ```python
-def test_field_provenance_backward_compat():
-    from app.schemas import ExtractionFieldProvenance
-    p = ExtractionFieldProvenance(
+def test_field_provenance_backward_compat(dg_schemas):
+    p = dg_schemas.ExtractionFieldProvenance(
         instance_id="i1",
         field_name="diameter",
         value=0.37,
@@ -1680,9 +1776,8 @@ def test_field_provenance_backward_compat():
     assert p.document_id is None
 
 
-def test_field_provenance_accepts_new_fields():
-    from app.schemas import ExtractionFieldProvenance
-    p = ExtractionFieldProvenance(
+def test_field_provenance_accepts_new_fields(dg_schemas):
+    p = dg_schemas.ExtractionFieldProvenance(
         instance_id="i1",
         field_name="diameter",
         value=0.37,
@@ -1697,24 +1792,22 @@ def test_field_provenance_accepts_new_fields():
     assert p.document_id == "doc-uuid-abc"
 
 
-def test_build_auto_field_evidence_accepts_evidence_units():
+def test_build_auto_field_evidence_accepts_evidence_units(dg_schemas, dg_provenance):
     """build_auto_field_evidence must accept evidence-unit-shaped inputs
     (dicts with evidence_id/text/page_numbers) in addition to the legacy
     (element_uid, text) tuple shape. The extra metadata flows into the
     emitted ExtractionFieldProvenance."""
-    from app.provenance import build_auto_field_evidence
-    from app.schemas import ExtractionFieldProvenance
     units = [
         {"evidence_id": "#/texts/12", "self_ref": "#/texts/12",
          "text": "diameter: 0.37 m", "page_numbers": [3]},
     ]
     primary_entities = [{"instance_id": "i1", "diameter": 0.37}]
-    rows = build_auto_field_evidence(
+    rows = dg_provenance.build_auto_field_evidence(
         primary_entities=primary_entities,
         instance_ids=["i1"],
         input_chunks=units,  # accepts evidence-unit dicts now
         skip_fields=set(),
-        provenance_cls=ExtractionFieldProvenance,
+        provenance_cls=dg_schemas.ExtractionFieldProvenance,
     )
     assert any(
         r.field_name == "diameter" and r.evidence_id == "#/texts/12" and r.page == 3
@@ -1877,12 +1970,13 @@ preserved unchanged."
 
 - [ ] **Step 11.1: Write failing tests**
 
+Use `dg_schemas` / `dg_provenance` fixtures — see Task 9 Step 9.1 note.
+
 Create `docker/docling-graph/tests/test_relationship_provenance.py`:
 
 ```python
-def test_relationship_provenance_schema():
-    from app.schemas import ExtractionRelationshipProvenance
-    p = ExtractionRelationshipProvenance(
+def test_relationship_provenance_schema(dg_schemas):
+    p = dg_schemas.ExtractionRelationshipProvenance(
         relationship_type="HAS_PART",
         source_instance_id="i1",
         target_instance_id="i2",
@@ -1895,9 +1989,8 @@ def test_relationship_provenance_schema():
     assert p.evidence_ids == ["#/texts/0"]
 
 
-def test_relationship_provenance_defaults():
-    from app.schemas import ExtractionRelationshipProvenance
-    p = ExtractionRelationshipProvenance(relationship_type="REL")
+def test_relationship_provenance_defaults(dg_schemas):
+    p = dg_schemas.ExtractionRelationshipProvenance(relationship_type="REL")
     assert p.source_instance_id is None
     assert p.evidence_ids == []
     assert p.self_refs == []
@@ -1905,28 +1998,24 @@ def test_relationship_provenance_defaults():
     assert p.supporting_snippet is None
 
 
-def test_extract_pass_response_includes_relationship_provenance():
-    from app.schemas import ExtractPassResponse, ExtractionRelationshipProvenance
-    resp = ExtractPassResponse(
+def test_extract_pass_response_includes_relationship_provenance(dg_schemas):
+    resp = dg_schemas.ExtractPassResponse(
         bundle_key="x", pass_name="y", pass_output={},
         relationship_provenance=[
-            ExtractionRelationshipProvenance(relationship_type="REL"),
+            dg_schemas.ExtractionRelationshipProvenance(relationship_type="REL"),
         ],
     )
     assert len(resp.relationship_provenance) == 1
     assert resp.relationship_provenance[0].relationship_type == "REL"
 
 
-def test_extract_pass_response_relationship_provenance_default_empty():
+def test_extract_pass_response_relationship_provenance_default_empty(dg_schemas):
     """Backward compat: callers not setting relationship_provenance get []."""
-    from app.schemas import ExtractPassResponse
-    resp = ExtractPassResponse(bundle_key="x", pass_name="y", pass_output={})
+    resp = dg_schemas.ExtractPassResponse(bundle_key="x", pass_name="y", pass_output={})
     assert resp.relationship_provenance == []
 
 
-def test_build_relationship_provenance_from_normalized_rels():
-    from app.provenance import build_relationship_provenance_from_context
-    from app.schemas import ExtractionRelationshipProvenance
+def test_build_relationship_provenance_from_normalized_rels(dg_schemas, dg_provenance):
     from types import SimpleNamespace
     import networkx as nx
     g = nx.DiGraph()
@@ -1938,8 +2027,8 @@ def test_build_relationship_provenance_from_normalized_rels():
         "page_numbers": [3],
     })
     ctx = SimpleNamespace(knowledge_graph=g)
-    rows = build_relationship_provenance_from_context(
-        ctx, ExtractionRelationshipProvenance,
+    rows = dg_provenance.build_relationship_provenance_from_context(
+        ctx, dg_schemas.ExtractionRelationshipProvenance,
     )
     assert len(rows) == 1
     assert rows[0].relationship_type == "HAS_PART"
@@ -2117,7 +2206,7 @@ def test_embedding_chunk_metadata_includes_evidence_fields():
     in their persisted metadata."""
     # This is a unit-level test that exercises just the chunk-meta
     # construction part of pipeline.py — extract that into a small
-    # helper in Step 12.3 so the test can call it directly without
+    # helper in Step 12.4 so the test can call it directly without
     # spinning up the full Celery task.
     from app.workers.pipeline import _build_native_chunk_meta
     from types import SimpleNamespace
@@ -2141,7 +2230,23 @@ def test_embedding_chunk_metadata_includes_evidence_fields():
     assert meta["modality"] == "text"
 ```
 
-- [ ] **Step 12.3: Extract `_build_native_chunk_meta` helper**
+- [ ] **Step 12.3: Make pipeline.py's HybridChunker construction explicit**
+
+In `app/workers/pipeline.py:4503`, the embedding-pipeline's HybridChunker is currently constructed as `HybridChunker(tokenizer=hf_tok)` — non-explicit, depends on upstream defaults. Mirror the explicit-knob policy from Task 1:
+
+```python
+chunker = HybridChunker(
+    tokenizer=hf_tok,
+    merge_peers=True,
+    repeat_table_header=True,
+    omit_header_on_overflow=False,
+    always_emit_headings=False,
+)
+```
+
+This satisfies acceptance criterion 3 (every production HybridChunker construction is explicit) for the embedding pipeline AND makes the Task 5 regression test pass (which now flags any production `HybridChunker(` line that omits `merge_peers`).
+
+- [ ] **Step 12.4: Extract `_build_native_chunk_meta` helper**
 
 In `app/workers/pipeline.py`, near the native-chunking path (around line 4524-4555), extract the per-chunk metadata construction into a module-level helper:
 
@@ -2197,7 +2302,7 @@ all_chunk_metas.append(
 )
 ```
 
-- [ ] **Step 12.4: Persist evidence in the DB row**
+- [ ] **Step 12.5: Persist evidence in the DB row**
 
 In the persistence loop (around lines 4564-4600), enrich the `properties` field of `_TCR` (or whatever shape your codebase uses) with the new keys. The exact field names depend on `TextChunk` schema — ideally a `properties: dict` JSON column already exists; add `self_refs`, `evidence_ids`, `page_numbers` to it:
 
@@ -2222,7 +2327,7 @@ text_chunk_records.append(_TCR(
 
 Inspect `_TCR` to confirm the shape — if it has a flat schema with no JSON bag, you may need a separate persistence path or a small migration. Per the spec, this is allowed to be additive: `If embedding is outside /extract-pass, this service should at least expose evidence metadata in diagnostics/response so the caller can persist it.` So the minimum required is that the metadata exists in `meta` and is available; downstream persistence can be done in a follow-up if the schema delta is large.
 
-- [ ] **Step 12.5: Run test — verify pass**
+- [ ] **Step 12.6: Run test — verify pass**
 
 ```bash
 pytest tests/unit/workers/test_embedding_chunk_evidence.py -v 2>&1 | tail -10
@@ -2230,7 +2335,7 @@ pytest tests/unit/workers/test_embedding_chunk_evidence.py -v 2>&1 | tail -10
 
 Expected: PASS.
 
-- [ ] **Step 12.6: Run all parent app unit tests — no regression**
+- [ ] **Step 12.7: Run all parent app unit tests — no regression**
 
 ```bash
 pytest tests/unit -x -q 2>&1 | tail -5
@@ -2238,7 +2343,7 @@ pytest tests/unit -x -q 2>&1 | tail -5
 
 Expected: parent app baseline + 1.
 
-- [ ] **Step 12.7: Commit**
+- [ ] **Step 12.8: Commit**
 
 ```bash
 git add app/workers/pipeline.py tests/unit/workers/test_embedding_chunk_evidence.py
@@ -2345,9 +2450,23 @@ future changes don't silently regress the trace-based provenance source."
 
 - [ ] Graph extraction chunks can remain large (4096 tokens) — confirmed in Task 1's new `chunker_config` summary
 - [ ] Embedding/RAG chunks can be smaller and independent — confirmed in Task 12 (independent `EMBEDDING_CHUNK_MAX_TOKENS=512` path)
-- [ ] Every production `HybridChunker` construction is explicit — Task 1 (DocumentChunker) + Task 5 regression test (no bare `HybridChunker()` in production paths)
+- [ ] Every production `HybridChunker` construction is explicit — Task 1 (`DocumentChunker`), Task 12 Step 12.3 (embedding pipeline), and Task 5 regression test (catches any production `HybridChunker(` line that omits `merge_peers`)
 - [ ] Production provenance does not depend on re-running `HybridChunker` — Task 5 (replaces `_build_chunk_to_self_refs_map` with trace-based source)
-- [ ] Entity provenance resolves to document/page/self_ref/evidence — Task 9 (`ExtractionProvenance` carries all 4 axes)
+- [ ] Entity provenance resolves to document/page/self_ref/evidence — Task 9 (`ExtractionProvenance` carries all 4 axes); `evidence_text` deferred (see below)
 - [ ] Field provenance resolves to document/page/self_ref/snippet/evidence — Task 10
 - [ ] Relationship provenance resolves to document/page/self_ref/evidence — Task 11
-- [ ] Diagnostics report when exact evidence IDs are missing and batch-level provenance was used — Task 8 (`invalid_evidence_ids` counter)
+- [ ] Diagnostics report when exact evidence IDs are missing and batch-level provenance was used — Task 8 (`stats["invalid_evidence_ids"]` counter, piggybacks on the existing return tuple — no shape change)
+
+## Deferred / Out-of-scope
+
+These are acknowledged gaps in the minimal fix that are NOT required for the spec's acceptance but warrant future work:
+
+- **`ExtractionProvenance.evidence_text`** — Task 9 leaves this as `None`. Populating it requires threading `{chunk_index → evidence_units}` through `build_provenance_from_context` (signature change rippling to every caller in `main.py`). Out of scope for the minimal fix.
+- **`_build_chunk_to_self_refs_map` deletion** — Task 5 marks it `diagnostic-only` but keeps the function. After one release of trace-based provenance running cleanly, the function can be deleted. Track in a follow-up.
+- **EVIDENCE marker token cost measurement** — Task 3 acknowledges marker blocks may push chunk sizes higher; the minimal fix doesn't quantify the impact on a real document. Worth a one-time benchmark before declaring acceptance criterion 1 (chunks "remain large") fully clean.
+
+## Open Questions for the Implementer
+
+- **Pipeline trace shape:** Task 5 assumes `context.trace_data.events: list[TraceEvent]`. Confirm against `docker/docling-graph/repo/docling_graph/pipeline/context.py` and `pipeline/trace.py` BEFORE implementing — these were the names at the time of plan writing.
+- **Normalizer kwargs:** Task 8 needs `catalog`, `dedup_policy`, `config` arguments to call the real `normalize_delta_ir_batch_results`. Read at least one passing test in `tests/unit/core/extractors/contracts/delta/test_ir_normalizer.py` and copy the construction shapes — the `_minimal_normalizer_kwargs()` helper in the plan is a placeholder.
+- **`build_auto_field_evidence` legacy callers:** Task 10 Step 10.5 references `legacy_input_chunks`. Find the existing call site in `main.py` (`grep -n build_auto_field_evidence docker/docling-graph/app/main.py`) and rename or wire to whatever variable currently holds the `(element_uid, text)` tuple list.
