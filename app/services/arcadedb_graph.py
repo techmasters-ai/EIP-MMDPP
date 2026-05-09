@@ -8,6 +8,7 @@ for Celery workers.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
@@ -228,6 +229,10 @@ def _build_upsert_relationship_script(
             pk = f"p_{k}_{i}"
             params[pk] = v
             extra_parts.append(f"{k} = :{pk}")
+        if record.provenance is not None:
+            prov_key = f"provenance_{i}"
+            params[prov_key] = json.dumps(record.provenance)
+            extra_parts.append(f"provenance = :{prov_key}")
         extra = (", " + ", ".join(extra_parts)) if extra_parts else ""
 
         doc_ids_expr = f"[:{doc_id_param_key}]" if doc_id_param_key else "[]"
@@ -1163,11 +1168,20 @@ class ArcadeDBGraphStore:
         ]
         edges: list[dict] = []
         for r in edge_rows:
+            raw_prov = r.get("provenance")
+            if isinstance(raw_prov, str):
+                try:
+                    provenance = json.loads(raw_prov)
+                except (ValueError, TypeError):
+                    provenance = None
+            else:
+                provenance = raw_prov  # already a dict or None
             edges.append({
                 "id": str(r.get("edge_rid", "")),
                 "rel_type": str(r.get("@type", r.get("@class", ""))),
                 "from": str(r.get("@out", r.get("out", ""))),
                 "to": str(r.get("@in", r.get("in", ""))),
+                "provenance": provenance,
             })
 
         return {"nodes": nodes, "edges": edges}
