@@ -1116,6 +1116,10 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
                         "snippet": row.snippet,
                         "element_uid": row.element_uid,
                         "value": row.value,
+                        # Fix B: surface evidence metadata added in Task 12.5.
+                        "evidence_id": row.evidence_id,
+                        "page": row.page,
+                        "document_id": row.document_id,
                     }
                     for row in rows
                 ]
@@ -1149,7 +1153,10 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
     return identity_to_rid
 
 
-def _import_graph_phase_domain_edges(merged, ontology, tracker, provenance) -> None:
+def _import_graph_phase_domain_edges(
+    merged, ontology, tracker, provenance,
+    relationship_provenance_rows=None,
+) -> None:
     """Spec §5.6 phase 3 — domain edge upsert (identity-based).
 
     Builds RelationshipRecord list in pure Python, calls tracker.mark()
@@ -1157,9 +1164,41 @@ def _import_graph_phase_domain_edges(merged, ontology, tracker, provenance) -> N
     upserts.  An empty edges list still calls upsert_relationships_batch_sync
     with an empty list to match graph_store semantics.
 
+    Fix A (code-review): relationship_provenance_rows (collected from all
+    rehydrated pass results) is plumbed here so RelationshipRecord.provenance
+    can be populated.  Matching is by rel_type only because MergedEdgeRecord
+    does not carry source/target instance_ids — the join is therefore a
+    best-effort aggregation of all provenance rows that share the same
+    relationship_type.
+    TODO(Fix-A): improve join precision when MergedEdgeRecord exposes
+    source_instance_id / target_instance_id (currently None after merge).
+    At that point build a (rel_type, src_id, tgt_id) → prov dict and
+    replace the rel_type-only grouping below.
+
     Task 4.4.
     """
     from app.services.graph_store import RelationshipRecord
+
+    # Build a rel_type → aggregated provenance dict (best-effort; see TODO above).
+    prov_by_rel_type: dict[str, dict] = {}
+    for row in (relationship_provenance_rows or []):
+        rt = getattr(row, "relationship_type", None)
+        if not rt:
+            continue
+        existing = prov_by_rel_type.setdefault(rt, {
+            "evidence_ids": [],
+            "self_refs": [],
+            "page_numbers": [],
+        })
+        existing["evidence_ids"] = sorted(set(
+            existing["evidence_ids"] + list(getattr(row, "evidence_ids", []) or [])
+        ))
+        existing["self_refs"] = sorted(set(
+            existing["self_refs"] + list(getattr(row, "self_refs", []) or [])
+        ))
+        existing["page_numbers"] = sorted(set(
+            existing["page_numbers"] + list(getattr(row, "page_numbers", []) or [])
+        ))
 
     rel_records = [
         RelationshipRecord(
@@ -1169,6 +1208,7 @@ def _import_graph_phase_domain_edges(merged, ontology, tracker, provenance) -> N
             to_identity=e.to_identity.as_upsert_identity_dict(),
             rel_type=e.rel_type,
             extraction_confidence=e.confidence,
+            provenance=prov_by_rel_type.get(e.rel_type) or None,
         )
         for e in merged.edges
     ]
@@ -6072,8 +6112,15 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         identity_to_rid = _import_graph_phase_nodes(
             merged, ontology, document_id, tracker, provenance_envelope,
         )
+        # Collect relationship provenance from all rehydrated pass results (Fix A).
+        all_rel_provenance = [
+            row
+            for pr in rehydrated.values()
+            for row in (getattr(pr, "relationship_provenance", None) or [])
+        ]
         _import_graph_phase_domain_edges(
             merged, ontology, tracker, provenance_envelope,
+            relationship_provenance_rows=all_rel_provenance,
         )
         _ensure_structural_document_vertex(document_id)
         _import_graph_phase_structural_edges(

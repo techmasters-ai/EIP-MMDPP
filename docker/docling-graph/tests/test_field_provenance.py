@@ -113,3 +113,29 @@ def test_build_auto_field_evidence_accepts_evidence_units(dg_schemas, dg_provena
         r.field_name == "diameter" and r.evidence_id == "#/texts/12" and r.page == 3
         for r in rows
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix D — unified _resolve_instance_id helper
+# ---------------------------------------------------------------------------
+
+def test_resolve_instance_id_unified_order(dg_provenance):
+    """Both entity and relationship lookup use the same fallback chain."""
+    fn = dg_provenance._resolve_instance_id
+    assert fn({"instance_id": "i1"}) == "i1"
+    assert fn({"node_uid": "u1"}) == "u1"
+    assert fn({"__delta_node_uid": "d1"}) == "d1"
+    assert fn({}, fallback="nx_node") == "nx_node"
+    assert fn({}) is None
+
+
+def test_resolve_instance_id_instance_id_wins(dg_provenance):
+    """instance_id takes priority over node_uid and __delta_node_uid."""
+    fn = dg_provenance._resolve_instance_id
+    assert fn({"instance_id": "i1", "node_uid": "u1", "__delta_node_uid": "d1"}) == "i1"
+
+
+def test_resolve_instance_id_fallback_skipped_when_key_present(dg_provenance):
+    """Explicit fallback is not used when a key resolves."""
+    fn = dg_provenance._resolve_instance_id
+    assert fn({"node_uid": "u1"}, fallback="nx_node") == "u1"

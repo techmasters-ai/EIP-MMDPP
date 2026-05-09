@@ -54,6 +54,10 @@ class RelationshipRecord:
     rel_type: str
     properties: dict[str, Any] = field(default_factory=dict)
     extraction_confidence: float = 1.0
+    # Per-relationship provenance dict (evidence_ids, self_refs, page_numbers, …).
+    # Populated by _import_graph_phase_domain_edges when relationship_provenance
+    # rows are available from the docling-graph service (Task 12.5 / Fix A).
+    provenance: dict | None = None
 
 
 @dataclass

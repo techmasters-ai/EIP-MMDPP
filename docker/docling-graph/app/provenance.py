@@ -46,6 +46,26 @@ from app._numeric_evidence import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_instance_id(node_data: dict, fallback: str | None = None) -> str | None:
+    """Unified resolver for entity instance_id.
+
+    Used by both entity-row construction and relationship endpoint lookup so
+    both sides resolve the same node to the same ID. Fallback chain:
+      1. node_data["instance_id"]
+      2. node_data["node_uid"]
+      3. node_data["__delta_node_uid"]
+      4. fallback (e.g. networkx node id) if provided
+    Returns None when nothing matches (caller decides whether to UUID or skip).
+    """
+    for key in ("instance_id", "node_uid", "__delta_node_uid"):
+        v = node_data.get(key) if isinstance(node_data, dict) else None
+        if v:
+            return str(v)
+    if fallback:
+        return str(fallback)
+    return None
+
+
 def _find_model_class(annotation: Any) -> type[BaseModel] | None:
     """Return the first BaseModel subclass reached through the annotation
     (unwraps Optional / List / etc.)."""
@@ -356,12 +376,7 @@ def build_provenance_from_context(
         # a fresh UUID so aggregation keeps instances distinct even when
         # identity collapses (empty-identity components, duplicate
         # extractions).
-        instance_id = (
-            data.get("instance_id")
-            or data.get("node_uid")
-            or str(node_id)
-            or str(uuid.uuid4())
-        )
+        instance_id = _resolve_instance_id(data, fallback=str(node_id)) or str(uuid.uuid4())
 
         prov_dict = data.get("provenance") if isinstance(data.get("provenance"), dict) else {}
         out.append(
@@ -544,9 +559,9 @@ def build_relationship_provenance_from_delta_trace(
         if not isinstance(n, dict):
             continue
         path = n.get("path")
-        instance_id = n.get("instance_id") or n.get("__delta_node_uid")
+        instance_id = _resolve_instance_id(n)  # no fallback — rel lookup needs a real source
         if isinstance(path, str) and instance_id:
-            node_lookup[_node_key(path, n.get("ids"))] = str(instance_id)
+            node_lookup[_node_key(path, n.get("ids"))] = instance_id
 
     out: list[Any] = []
     for rel in relationships:

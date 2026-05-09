@@ -1444,7 +1444,20 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 )
                 skip_fields.update(graph_id_fields)
 
-                # Collect input chunks (element_uid, text) once.
+                # Fix C: build evidence_units ONCE, BEFORE the gate, so
+                # table-only docs (no doc.texts) also get field provenance.
+                # evidence_units_by_chunk comes from the chunker and covers
+                # all element types (text, table, picture).
+                evidence_units_by_chunk = getattr(context, "_chunk_to_evidence_units", None) or {}
+                all_evidence_units: list[dict] = []
+                for units in evidence_units_by_chunk.values():
+                    for u in units:
+                        u_copy = dict(u)
+                        u_copy.setdefault("document_id", body.document_id)
+                        all_evidence_units.append(u_copy)
+
+                # Build legacy text-resolver tuples (preserves fallback for
+                # docs where _chunk_to_evidence_units is empty).
                 input_chunks_for_resolver: list[tuple[str, str]] = []
                 doc = getattr(context, "docling_document", None)
                 if doc is not None:
@@ -1454,14 +1467,9 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                         if self_ref and txt:
                             input_chunks_for_resolver.append((str(self_ref), str(txt)))
 
-                if input_chunks_for_resolver:
-                    evidence_units_by_chunk = getattr(context, "_chunk_to_evidence_units", None) or {}
-                    all_evidence_units: list[dict] = []
-                    for units in evidence_units_by_chunk.values():
-                        for u in units:
-                            u_copy = dict(u)
-                            u_copy.setdefault("document_id", body.document_id)
-                            all_evidence_units.append(u_copy)
+                # Run field-evidence builder if EITHER source has content
+                # (fixes table-only docs that previously fell through the gate).
+                if all_evidence_units or input_chunks_for_resolver:
                     field_provenance_rows = build_auto_field_evidence(
                         primary_entities=primary_entities,
                         instance_ids=instance_ids,
