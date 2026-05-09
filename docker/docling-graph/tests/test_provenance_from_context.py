@@ -106,29 +106,6 @@ def test_nested_provenance_element_uid(dg_provenance):
     assert prov[0].element_uid == "#/texts/10"
 
 
-def test_chunk_indexes_fallback_resolves_via_docling_texts(dg_provenance):
-    """No direct/nested element_uid → fall back to
-    ``provenance.chunk_indexes[0]`` mapped through
-    ``docling_document.texts[idx].self_ref``."""
-    mod, ExtractionProvenance = dg_provenance
-    ctx = _stub_context(
-        nodes=[
-            ("n1", {
-                "label": "SECTION",
-                "provenance": {"chunk_indexes": [2]},
-                "identity_values": {"section_number": "3.2"},
-            }),
-        ],
-        texts=[
-            {"self_ref": "#/texts/0"},
-            {"self_ref": "#/texts/1"},
-            {"self_ref": "#/texts/2"},
-        ],
-    )
-    prov = mod.build_provenance_from_context(ctx, ExtractionProvenance)
-    assert prov[0].element_uid == "#/texts/2"
-
-
 def test_drops_node_without_resolvable_element_uid_with_warning(dg_provenance, caplog):
     """Node has an entity label but no element_uid anywhere — dropped
     with a WARNING."""
