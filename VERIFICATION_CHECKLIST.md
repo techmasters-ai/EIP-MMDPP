@@ -550,3 +550,20 @@ Run against all 30 Known Fragile Features listed above.
 | `DEFAULT_ONTOLOGY_BUNDLE_KEY` | `air_defense_v3` | Bundle resolution falls back to system default; wrong value = unknown bundle error |
 | `PASS_MAX_RETRIES` | `3` | Per-pass retry budget; exhausted = IngestFailed for required passes |
 | `STRUCTURED_OUTPUT_THRESHOLD_CHARS` | `8000` | Schema size ceiling for structured LLM output; exceeded = fallback to JSON mode |
+
+---
+
+## Provenance Pipeline (Pass B → response)
+
+- [ ] /extract-pass response includes non-empty `provenance` for at least one entity per pass on a known-good fixture
+- [ ] /extract-pass response includes `field_provenance` rows that resolve to evidence_id when LLM cited valid IDs
+- [ ] /extract-pass response includes `relationship_provenance` for at least one edge
+- [ ] No log warnings of `no chunk_created trace events found`
+- [ ] No log warnings of `delta_trace present but yielded 0 relationship_provenance rows`
+- [ ] `_build_chunk_to_self_refs_map` is NOT in the production call stack (search logs for the diagnostic-only warning)
+- [ ] Diagnostics counter `invalid_evidence_ids` reports a tractable rate (single-digit per pass; spikes indicate prompt drift)
+
+## Provenance Pipeline (Pass A — embedding)
+
+- [ ] TextChunk rows in PostgreSQL carry `self_refs` and `evidence_ids` in their properties JSON
+- [ ] Retrieval API responses can dereference an evidence_id back to a DoclingDocument self_ref
