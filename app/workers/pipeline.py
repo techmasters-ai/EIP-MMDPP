@@ -2650,6 +2650,7 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
     from app.services.extraction_merge import (
         ExtractionMetadata,
         ExtractionProvenance,
+        ExtractionRelationshipProvenance,
         FieldEvidenceRow,
         PassResult,
     )
@@ -2697,6 +2698,15 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         chunk_index = raw.get("chunk_index")
         if chunk_index is not None and not isinstance(chunk_index, int):
             chunk_index = None
+        evidence_ids = raw.get("evidence_ids") or []
+        if not isinstance(evidence_ids, list):
+            evidence_ids = []
+        page_numbers = raw.get("page_numbers") or []
+        if not isinstance(page_numbers, list):
+            page_numbers = []
+        evidence_text = raw.get("evidence_text")
+        if evidence_text is not None and not isinstance(evidence_text, str):
+            evidence_text = None
         provenance_rows.append(ExtractionProvenance(
             instance_id=instance_id,
             ontology_name=ontology_name,
@@ -2704,6 +2714,9 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             element_uid=element_uid,
             page=page,
             chunk_index=chunk_index,
+            evidence_ids=evidence_ids,
+            page_numbers=page_numbers,
+            evidence_text=evidence_text,
         ))
 
     # Phase 3 task 32: parse field_provenance rows from the response
@@ -2732,11 +2745,23 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         element_uid = raw.get("element_uid")
         if element_uid is not None and not isinstance(element_uid, str):
             element_uid = None
+        evidence_id = raw.get("evidence_id")
+        if evidence_id is not None and not isinstance(evidence_id, str):
+            evidence_id = None
+        fe_page = raw.get("page")
+        if fe_page is not None and not isinstance(fe_page, int):
+            fe_page = None
+        fe_document_id = raw.get("document_id")
+        if fe_document_id is not None and not isinstance(fe_document_id, str):
+            fe_document_id = None
         row = FieldEvidenceRow(
             chunk_id=None,  # resolved later from element_uid → chunk vertex
             snippet=snippet,
             element_uid=element_uid,
             value=raw.get("value"),
+            evidence_id=evidence_id,
+            page=fe_page,
+            document_id=fe_document_id,
         )
         field_evidence.setdefault(instance_id, {}).setdefault(field_name, []).append(row)
 
@@ -2759,6 +2784,43 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
             )
             table_overlay_obj = None
 
+    # Phase 8 Task 12.5: parse relationship_provenance rows.
+    relationship_provenance_rows: list[ExtractionRelationshipProvenance] = []
+    for raw in response_json.get("relationship_provenance") or []:
+        if not isinstance(raw, dict):
+            logger.warning(
+                "_parse_pass_response: dropping non-dict relationship_provenance row: %r", raw,
+            )
+            continue
+        rel_type = raw.get("relationship_type")
+        if not (isinstance(rel_type, str) and rel_type):
+            logger.warning(
+                "_parse_pass_response: dropping relationship_provenance row missing "
+                "relationship_type: %r", raw,
+            )
+            continue
+        rp_evidence_ids = raw.get("evidence_ids") or []
+        if not isinstance(rp_evidence_ids, list):
+            rp_evidence_ids = []
+        rp_self_refs = raw.get("self_refs") or []
+        if not isinstance(rp_self_refs, list):
+            rp_self_refs = []
+        rp_page_numbers = raw.get("page_numbers") or []
+        if not isinstance(rp_page_numbers, list):
+            rp_page_numbers = []
+        rp_snippet = raw.get("supporting_snippet")
+        if rp_snippet is not None and not isinstance(rp_snippet, str):
+            rp_snippet = None
+        relationship_provenance_rows.append(ExtractionRelationshipProvenance(
+            relationship_type=rel_type,
+            source_instance_id=raw.get("source_instance_id"),
+            target_instance_id=raw.get("target_instance_id"),
+            evidence_ids=rp_evidence_ids,
+            self_refs=rp_self_refs,
+            page_numbers=rp_page_numbers,
+            supporting_snippet=rp_snippet,
+        ))
+
     return PassResult(
         pass_name=pass_def.name,
         template_instance=template_instance,
@@ -2770,6 +2832,7 @@ def _parse_pass_response(response_json: dict, pass_def, manifest) -> "object":
         provenance=provenance_rows,
         field_evidence=field_evidence,
         table_overlay=table_overlay_obj,
+        relationship_provenance=relationship_provenance_rows,
     )
 
 

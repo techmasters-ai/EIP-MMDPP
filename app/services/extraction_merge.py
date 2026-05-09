@@ -151,6 +151,9 @@ class FieldEvidenceRow:
     snippet: str
     element_uid: str | None
     value: Any = None
+    evidence_id: str | None = None
+    page: int | None = None
+    document_id: str | None = None
 
 
 @dataclass
@@ -175,6 +178,21 @@ class ExtractionProvenance:
     element_uid: str
     page: int | None = None
     chunk_index: int | None = None
+    evidence_ids: list[str] = field(default_factory=list)
+    page_numbers: list[int] = field(default_factory=list)
+    evidence_text: str | None = None
+
+
+@dataclass
+class ExtractionRelationshipProvenance:
+    """Worker-side mirror of docling-graph ExtractionRelationshipProvenance."""
+    relationship_type: str
+    source_instance_id: str | None = None
+    target_instance_id: str | None = None
+    evidence_ids: list[str] = field(default_factory=list)
+    self_refs: list[str] = field(default_factory=list)
+    page_numbers: list[int] = field(default_factory=list)
+    supporting_snippet: str | None = None
 
 
 @dataclass
@@ -236,6 +254,12 @@ class PassResult:
     # found no qualifying table OR the parser-side kill switch was off.
     # Consumed by merge_and_resolve._extract_doc_overlay (Task 8).
     table_overlay: TableOverlay | None = None
+    # Phase 8 Task 12.5: relationship-level provenance rows parsed from
+    # the docling-graph response's ``relationship_provenance`` list.
+    # Each row links a relationship triple back to source elements.
+    relationship_provenance: list["ExtractionRelationshipProvenance"] = field(
+        default_factory=list,
+    )
     _walker_entities_cache: list[Any] | None = field(default=None, init=False, repr=False)
 
     def _cached_entities(self) -> list[Any]:
