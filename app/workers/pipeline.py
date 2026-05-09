@@ -1153,9 +1153,60 @@ def _import_graph_phase_nodes(merged, ontology, document_id, tracker, provenance
     return identity_to_rid
 
 
+def _instance_to_identity_map(
+    entity_provenance_rows,
+) -> "dict[str, Any]":
+    """Build {instance_id: LogicalIdentity} from ExtractionProvenance rows.
+
+    ExtractionProvenance carries BOTH ``instance_id`` (the per-instance UUID
+    used in ExtractionRelationshipProvenance.source/target_instance_id) AND
+    ``ontology_name`` + ``identity_values`` (the components that define a
+    LogicalIdentity).  This map lets the relationship-provenance join step
+    convert per-instance UUIDs into LogicalIdentity keys that match
+    MergedEdgeRecord.from_identity / to_identity.
+
+    Rows where ``instance_id`` or ``ontology_name`` is absent are silently
+    skipped — they cannot be matched and will fall back to the rel_type-only
+    bucket in the caller.  Rows where LogicalIdentity construction fails
+    (e.g. identity_values not a dict) are also skipped.
+    """
+    from app.services.extraction_merge import LogicalIdentity
+
+    out: dict[str, Any] = {}
+    for p in entity_provenance_rows or []:
+        instance_id = getattr(p, "instance_id", None)
+        ontology_name = getattr(p, "ontology_name", None)
+        identity_values = getattr(p, "identity_values", None) or {}
+        if not instance_id or not ontology_name:
+            continue
+        if not isinstance(identity_values, dict):
+            continue
+        try:
+            # LogicalIdentity is frozen; build from identity_values dict.
+            # We don't have the canonical field order from the ontology here,
+            # so we sort keys to get a stable (deterministic) ordering.
+            # The resulting identity compares equal to MergedEdgeRecord
+            # identities built from the same values, because
+            # merge_and_resolve sorts keys the same way when it lacks an
+            # explicit ordering override.
+            sorted_items = sorted(identity_values.items())
+            identity = LogicalIdentity(
+                entity_type=str(ontology_name),
+                identity_field_names=tuple(str(k) for k, _ in sorted_items),
+                identity_tuple=tuple(v for _, v in sorted_items),
+                scope="global",      # provenance rows don't carry scope;
+                document_id=None,    # default to global/no-doc for matching.
+            )
+            out[str(instance_id)] = identity
+        except Exception:
+            continue
+    return out
+
+
 def _import_graph_phase_domain_edges(
     merged, ontology, tracker, provenance,
     relationship_provenance_rows=None,
+    entity_provenance_rows=None,
 ) -> None:
     """Spec §5.6 phase 3 — domain edge upsert (identity-based).
 
@@ -1166,52 +1217,83 @@ def _import_graph_phase_domain_edges(
 
     Fix A (code-review): relationship_provenance_rows (collected from all
     rehydrated pass results) is plumbed here so RelationshipRecord.provenance
-    can be populated.  Matching is by rel_type only because MergedEdgeRecord
-    does not carry source/target instance_ids — the join is therefore a
-    best-effort aggregation of all provenance rows that share the same
-    relationship_type.
-    TODO(Fix-A): improve join precision when MergedEdgeRecord exposes
-    source_instance_id / target_instance_id (currently None after merge).
-    At that point build a (rel_type, src_id, tgt_id) → prov dict and
-    replace the rel_type-only grouping below.
+    can be populated.
+
+    Composite-key matching: ``entity_provenance_rows`` (ExtractionProvenance
+    list from the same passes) is used to build an instance_id →
+    LogicalIdentity map via ``_instance_to_identity_map``.  Each
+    relationship_provenance row's source/target instance_ids are resolved to
+    LogicalIdentity values that can be matched directly against
+    MergedEdgeRecord.from_identity / to_identity, giving a precise
+    (from_identity, rel_type, to_identity) composite key.
+
+    Rows whose source or target instance_id cannot be resolved (e.g. entity
+    provenance was not provided, or the instance was not retained after
+    merge) fall back to a ``__rel_type_fallback__`` bucket keyed by
+    (sentinel, rel_type).  MergedEdgeRecord edges that find no composite
+    match also try this fallback, so behavior degrades gracefully rather
+    than silently dropping provenance.
 
     Task 4.4.
     """
     from app.services.graph_store import RelationshipRecord
 
-    # Build a rel_type → aggregated provenance dict (best-effort; see TODO above).
-    prov_by_rel_type: dict[str, dict] = {}
+    # Build instance_id → LogicalIdentity map from entity provenance rows.
+    id_to_identity = _instance_to_identity_map(entity_provenance_rows)
+
+    # Sentinel used as the "from_identity" slot in the fallback bucket key.
+    _FALLBACK = "__rel_type_fallback__"
+
+    # Build provenance buckets keyed by composite (from_identity, rel_type,
+    # to_identity) where resolvable, or (_FALLBACK, rel_type) otherwise.
+    provenance_by_triple: dict[tuple, dict] = {}
+
     for row in (relationship_provenance_rows or []):
         rt = getattr(row, "relationship_type", None)
         if not rt:
             continue
-        existing = prov_by_rel_type.setdefault(rt, {
+        src_id_str = str(row.source_instance_id) if getattr(row, "source_instance_id", None) else ""
+        tgt_id_str = str(row.target_instance_id) if getattr(row, "target_instance_id", None) else ""
+        src_identity = id_to_identity.get(src_id_str)
+        tgt_identity = id_to_identity.get(tgt_id_str)
+
+        if src_identity is not None and tgt_identity is not None:
+            key: tuple = (src_identity, rt, tgt_identity)
+        else:
+            key = (_FALLBACK, rt)
+
+        bucket = provenance_by_triple.setdefault(key, {
             "evidence_ids": [],
             "self_refs": [],
             "page_numbers": [],
         })
-        existing["evidence_ids"] = sorted(set(
-            existing["evidence_ids"] + list(getattr(row, "evidence_ids", []) or [])
+        bucket["evidence_ids"] = sorted(set(
+            bucket["evidence_ids"] + list(getattr(row, "evidence_ids", []) or [])
         ))
-        existing["self_refs"] = sorted(set(
-            existing["self_refs"] + list(getattr(row, "self_refs", []) or [])
+        bucket["self_refs"] = sorted(set(
+            bucket["self_refs"] + list(getattr(row, "self_refs", []) or [])
         ))
-        existing["page_numbers"] = sorted(set(
-            existing["page_numbers"] + list(getattr(row, "page_numbers", []) or [])
+        bucket["page_numbers"] = sorted(set(
+            bucket["page_numbers"] + list(getattr(row, "page_numbers", []) or [])
         ))
 
-    rel_records = [
-        RelationshipRecord(
+    rel_records = []
+    for e in merged.edges:
+        triple_key = (e.from_identity, e.rel_type, e.to_identity)
+        fallback_key = (_FALLBACK, e.rel_type)
+        rel_prov = (
+            provenance_by_triple.get(triple_key)
+            or provenance_by_triple.get(fallback_key)
+        )
+        rel_records.append(RelationshipRecord(
             from_type=e.from_identity.entity_type,
             from_identity=e.from_identity.as_upsert_identity_dict(),
             to_type=e.to_identity.entity_type,
             to_identity=e.to_identity.as_upsert_identity_dict(),
             rel_type=e.rel_type,
             extraction_confidence=e.confidence,
-            provenance=prov_by_rel_type.get(e.rel_type) or None,
-        )
-        for e in merged.edges
-    ]
+            provenance=rel_prov or None,
+        ))
 
     tracker.mark()  # idempotent — phase 2 likely already marked
     graph_store = get_graph_store()
@@ -6112,15 +6194,24 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         identity_to_rid = _import_graph_phase_nodes(
             merged, ontology, document_id, tracker, provenance_envelope,
         )
-        # Collect relationship provenance from all rehydrated pass results (Fix A).
+        # Collect relationship + entity provenance from all rehydrated pass results.
+        # entity_provenance_rows is used by _import_graph_phase_domain_edges to build
+        # an instance_id → LogicalIdentity map, enabling composite-key matching of
+        # relationship provenance rows (Fix A upgrade: per-edge instead of per-rel_type).
         all_rel_provenance = [
             row
             for pr in rehydrated.values()
             for row in (getattr(pr, "relationship_provenance", None) or [])
         ]
+        all_entity_provenance = [
+            row
+            for pr in rehydrated.values()
+            for row in (getattr(pr, "provenance", None) or [])
+        ]
         _import_graph_phase_domain_edges(
             merged, ontology, tracker, provenance_envelope,
             relationship_provenance_rows=all_rel_provenance,
+            entity_provenance_rows=all_entity_provenance,
         )
         _ensure_structural_document_vertex(document_id)
         _import_graph_phase_structural_edges(
