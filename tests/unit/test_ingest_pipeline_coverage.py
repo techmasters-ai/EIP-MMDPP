@@ -538,6 +538,125 @@ class TestFinalizeDocument:
 
         mock_update.assert_called_once_with(DOC_ID, "PENDING_HUMAN_REVIEW", stage=None)
 
+    # -----------------------------------------------------------------------
+    # CHANGED 2026-05-06 (Task 8): mode-scoped REQUIRED_STAGES tests
+    # -----------------------------------------------------------------------
+
+    @patch("app.workers.pipeline._update_document_status")
+    @patch("app.workers.pipeline._get_db")
+    def test_finalize_full_mode_requires_all_11_stages(self, mock_get_db, mock_update):
+        """full mode: only 8 of 11 required stages present → PARTIAL_COMPLETE
+        (the 3 missing stages cause the missing-stages check to fire)."""
+        from app.workers.pipeline import finalize_document
+        from app.models.ingest import PipelineRun
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        # db.get(PipelineRun, ...) returns a full-mode run
+        mock_run = SimpleNamespace(mode="full")
+        mock_db.get.return_value = mock_run
+
+        # 8 of 11 stages present — missing: detect_and_translate, purge_document_derivations,
+        # derive_canonicalization
+        present = [
+            "prepare_document", "derive_document_metadata",
+            "derive_picture_descriptions",
+            "derive_text_embeddings", "derive_image_embeddings",
+            "derive_document_anchors",
+            "derive_ontology_graph", "derive_structure_links",
+        ]
+        stages = [_make_stage_run(name, "COMPLETE") for name in present]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = stages
+
+        finalize_document.run(DOC_ID, RUN_ID)
+
+        mock_update.assert_called_once_with(DOC_ID, "PARTIAL_COMPLETE", stage=None)
+
+    @patch("app.workers.pipeline._update_document_status")
+    @patch("app.workers.pipeline._get_db")
+    def test_finalize_full_mode_with_all_stages_complete(self, mock_get_db, mock_update):
+        """full mode: all 11 required stages COMPLETE → COMPLETE."""
+        from app.workers.pipeline import finalize_document
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        mock_run = SimpleNamespace(mode="full")
+        mock_db.get.return_value = mock_run
+
+        required = [
+            "prepare_document", "detect_and_translate", "derive_document_metadata",
+            "derive_picture_descriptions", "purge_document_derivations",
+            "derive_text_embeddings", "derive_image_embeddings",
+            "derive_document_anchors",
+            "derive_ontology_graph", "derive_structure_links",
+            "derive_canonicalization",
+        ]
+        stages = [_make_stage_run(name, "COMPLETE") for name in required]
+        mock_db.execute.return_value.scalars.return_value.all.side_effect = [
+            stages,  # StageRun query
+            [],      # Artifact review query (no review artifacts)
+        ]
+
+        finalize_document.run(DOC_ID, RUN_ID)
+
+        mock_update.assert_called_once_with(DOC_ID, "COMPLETE", stage=None)
+
+    @patch("app.workers.pipeline._update_document_status")
+    @patch("app.workers.pipeline._get_db")
+    def test_finalize_graph_only_mode_requires_only_3_stages(self, mock_get_db, mock_update):
+        """graph_only mode: only the 3 graph-only stages present and all COMPLETE
+        → COMPLETE (the bug this fix addresses: pre-Task-8 it would return
+        PARTIAL_COMPLETE because the full 11-stage set was used)."""
+        from app.workers.pipeline import finalize_document
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        mock_run = SimpleNamespace(mode="graph_only")
+        mock_db.get.return_value = mock_run
+
+        graph_only_stages = [
+            "derive_document_anchors",
+            "derive_ontology_graph",
+            "derive_structure_links",
+        ]
+        stages = [_make_stage_run(name, "COMPLETE") for name in graph_only_stages]
+        mock_db.execute.return_value.scalars.return_value.all.side_effect = [
+            stages,  # StageRun query
+            [],      # Artifact review query
+        ]
+
+        finalize_document.run(DOC_ID, RUN_ID)
+
+        # graph_only run with all 3 required stages complete → COMPLETE, not PARTIAL_COMPLETE
+        mock_update.assert_called_once_with(DOC_ID, "COMPLETE", stage=None)
+
+    @patch("app.workers.pipeline._update_document_status")
+    @patch("app.workers.pipeline._get_db")
+    def test_finalize_graph_only_mode_with_missing_graph_stage(self, mock_get_db, mock_update):
+        """graph_only mode: derive_structure_links missing → PARTIAL_COMPLETE."""
+        from app.workers.pipeline import finalize_document
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+
+        mock_run = SimpleNamespace(mode="graph_only")
+        mock_db.get.return_value = mock_run
+
+        # Only 2 of 3 required graph_only stages present
+        stages = [
+            _make_stage_run("derive_document_anchors", "COMPLETE"),
+            _make_stage_run("derive_ontology_graph", "COMPLETE"),
+            # derive_structure_links missing
+        ]
+        mock_db.execute.return_value.scalars.return_value.all.return_value = stages
+
+        finalize_document.run(DOC_ID, RUN_ID)
+
+        mock_update.assert_called_once_with(DOC_ID, "PARTIAL_COMPLETE", stage=None)
+
 
 # ===========================================================================
 # derive_document_metadata

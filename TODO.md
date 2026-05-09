@@ -493,6 +493,87 @@ Bundle with the next `docker/docling-graph/app/main.py` change. Specifically: if
 
 ---
 
+**#84. Parser-side `_table_facts.py` emits zero `sustain_mass_kg` facts on SA-2 Sustainer band (silent regression vs 2026-05-06 baseline)**
+**Status:** Open. Surfaced 2026-05-08 during PR #2 (per-pass-fanin) acceptance run on doc `38bebd4a-9137-4f02-ab64-ec08c94b804c` (run `ba94d7fb`).
+**Files:** `docker/docling-graph/app/_table_facts.py` (section detection — `detect_section_context` from commit `b888a3b`, `extract_label_rows`, fact emission path), `docker/docling-graph/app/_alias_map.py` (ALIAS_MAP keyed on `(label_normalized, section_ctx, pass_name)`), `pipeline_pass_outputs.extract_pass_response_json->'table_overlay'->'facts'` (post-run inspection).
+
+**Observation:**
+ALIAS_MAP entries for sustain_mass_kg require `section_ctx ∈ {"2nd Stage", "Sustainer"}`. In the post-merge `table_overlay.facts[]` JSON for missile_propulsion in this run, every fact has `section_ctx: null` and **zero facts have `schema_field == "sustain_mass_kg"`** (vs 9 expected per the 2026-05-06 baseline at `/tmp/baseline_2026-05-06_pre_overlay/expected_overrides.md`):
+
+| schema_field | facts emitted (this run) | expected per baseline |
+|---|---|---|
+| booster_mass_kg | 9 | 9 |
+| sustain_mass_kg | **0** | **9** |
+| total_mass_kg | 10 | 10 |
+| body_length_m | 10 | 10 |
+
+Booster facts still emit despite `section_ctx=null` because there is an effective default-to-booster fallback path. Sustain has no such fallback, so when section detection produces null the second "Weight" row in the SA-2 table (the Sustainer band) is silently dropped at lookup time. Net effect: **all 8 expected `sustain_mass_kg` overlay corrections + 1 silent apply never fire**, and ArcadeDB ends up with the LLM's raw sustain values (mostly equal to each variant's booster value because the LLM filled both fields from the same booster row).
+
+Confirmed via:
+- 0 `FIELD_OVERLAY_OVERRIDE` log lines with `field=sustain_mass_kg` in this run (vs 8 expected).
+- `TABLE_OVERLAY_APPLIED ... field_overlay_applied=144 conflicts_overridden=6` — the 6 conflicts are all on entity=1D (booster_mass_kg, max_intercept_km×3, total_mass_kg×2). No sustain in any overlay log.
+- ArcadeDB MISSILE_SYSTEM rows for SA-2 variants show sustain_mass_kg=1032 for 13DM/13DA/13DAM (matches their booster_mass_kg values), 1011 for 20D/20DP/20DSU (same pattern), 1007 for 1D (5Ya23's LLM value via cross-variant assignment), and `null` for 13D.
+
+**What needs to be done:**
+
+1. **Add a `git show 8d91986 -- docker/docling-graph/app/_table_facts.py docker/docling-graph/app/_alias_map.py` diff against current HEAD** to identify what changed in section detection between the 2026-05-06 baseline and now. The 9 baseline sustain facts proved section detection USED to work; the regression is somewhere in this diff (or in a `detect_section_context` path that was added/altered after).
+2. **Add an integration test** under `docker/docling-graph/tests/test_table_overlay_*` that exercises the SA-2 PDF table (or a synthetic version with two `Weight` rows in distinct sections) and asserts the parser emits ≥1 `sustain_mass_kg` fact. Currently no test in that directory specifically guards against this — the drift was invisible until live ingest.
+3. **Implement fix.** Most likely either: (a) restore the prior section-header detection logic, (b) add fallback ALIAS_MAP entries with `section_ctx=None` that disambiguate by row-position-within-table (e.g., second `Weight` row → sustain), or (c) emit a WARNING when ALIAS_MAP lookup misses on a recognized label so future regressions surface immediately.
+4. **Regenerate the merge notes baseline** at `/tmp/baseline_2026-05-06_pre_overlay/expected_overrides.md` from a known-good run (post-fix) so future acceptance runs have a current reference.
+
+**Why this matters:**
+A1's overlay phase is supposed to correct LLM mis-extraction of numeric fields by writing the table-derived "ground truth" over the LLM's value. With sustain_mass_kg facts missing, half of the propulsion correction is silently disabled. The pipeline still completes and writes to ArcadeDB — but the data is the LLM's raw output, defeating the entire point of Mechanism A1 for that field on every SA-2-style ingest.
+
+This is the same soft-fail class as #77/#78/#83: a real degradation hidden behind a successful pipeline run, with no operator-visible signal. Per the standing rule, it deserves a TODO with a concrete fix sketch.
+
+**Estimated lift:** Investigation ~1h (diff `8d91986..HEAD`). Test ~2h. Fix ~2-4h depending on whether section detection or fallback ALIAS_MAP is the right intervention. Total ~half a day.
+
+**When to do it:**
+Soon — every SA-2 ingest is silently producing wrong sustain_mass_kg values until this is fixed. Bundle with the next `docker/docling-graph/app/_table_facts.py` change, or pull forward as its own focused commit if the data-quality impact is operationally meaningful.
+
+**Acceptance:**
+- `pipeline_pass_outputs.extract_pass_response_json->'table_overlay'->'facts'` for missile_propulsion contains ≥9 facts with `schema_field="sustain_mass_kg"` on a fresh SA-2 ingest.
+- Re-running the SA-2 acceptance produces a 1D MISSILE_SYSTEM vertex with sustain_mass_kg matching the table value for the Sustainer-band Weight row (verify exact value against fresh baseline).
+- ≥8 `FIELD_OVERLAY_OVERRIDE pass=missile_propulsion ... field=sustain_mass_kg` log lines fire (count varies with LLM stochasticity but >0 is the contract).
+- Drift-guard test in `docker/docling-graph/tests/` fails before fix, passes after.
+
+---
+
+**#85. `5Ya23` MISSILE_SYSTEM dropped between parser facts and ArcadeDB write (cross-bug companion to #84)**
+**Status:** Open. Surfaced 2026-05-08 during the same PR #2 acceptance run.
+**Files:** `app/services/extraction_merge.py` (identity canonicalization, entity-merge phase), `app/services/table_overlay.py` (`apply_identity_rewrite`), `app/services/arcadedb_graph.py` (graph write path), and parser-side `_alias_map.py` (`MISSILE_IDENTITY_LABELS`, `CANONICAL_PRIORITY`).
+
+**Observation:**
+The parser's `table_overlay.facts[]` includes a fact `entity=5Ya23 schema_field=booster_mass_kg value=1007.0` (one of 9 SA-2 variants the parser correctly extracts). But ArcadeDB has **zero** MISSILE_SYSTEM vertices with `system_name="5Ya23"` after merge — even broad search (`system_name LIKE "5%" OR name LIKE "5%"`) returns empty. The other 8 expected variants (1D, 13D, 13DM, 13DA, 13DAM, 20D, 20DP, 20DSU) all wrote successfully.
+
+So `5Ya23` is being dropped somewhere between (a) the parser's fact emission and (b) the ArcadeDB graph write. Most likely culprits:
+1. **Identity rewrite (Phase 0 of A1)** — `IDENTITY_REWRITE rewrites=56 unique_canonicals=10 passes_touched=6` fires globally. If `5Ya23` is being rewritten to a canonical form the rest of the pipeline doesn't handle, or collapsed into another variant by mistake, it'd disappear here.
+2. **Entity-merge canonicalization** — `merge_and_resolve` builds a `LogicalIdentity` per entity instance and merges across passes. If 5Ya23 ends up with a LogicalIdentity that collides with another variant (e.g., maps to "20DSU" via some alias rule), its instance gets merged away.
+3. **Identity gate (`IDENTITY_FILTER`)** — substring-matching the variant name against batch evidence text could drop 5Ya23 if the doc never contains the literal string "5Ya23" verbatim and the LLM was emitting it from canonicalization rather than verbatim quote (similar to #83).
+4. **Validation / Pydantic coercion** — the 5Ya23 value of 1007.0 might trip a coerce-to-int validator that rejects exactly that value. Less likely but worth a quick check.
+
+**What needs to be done:**
+
+1. **Trace `5Ya23` through merge logs.** Re-run with `LOG_LEVEL=DEBUG` on worker-graph (or grep merge-phase logs from this run for "5Ya23") and identify the phase where it disappears: parser → identity rewrite → instance build → LogicalIdentity merge → graph write.
+2. **Inspect `_alias_map.py:MISSILE_IDENTITY_LABELS` and `CANONICAL_PRIORITY`** for any rule that maps "5Ya23" to another variant (e.g., a Cyrillic-aware alias or a "5Ya23 → 20DP" rule that's overzealous).
+3. **Write a focused unit test** that constructs a synthetic PassResult containing a 5Ya23 entity and asserts `merge_and_resolve` produces a vertex with `system_name="5Ya23"` (parametrize for all 9 SA-2 variants — a drift-guard against cross-collapse regressions).
+4. **Implement fix at the identified phase** (most likely in identity rewrite or canonicalization, depending on what step 1 reveals).
+
+**Why this matters:**
+5Ya23 is a real SA-2 variant (the export designation for some configurations of S-75). Silently dropping a canonical entity from the graph means downstream queries ("show me all SA-2 variants with sustain mass < 1100 kg") will be wrong by exactly one row per ingest. Combined with #84, this is the second silent data-quality regression in the SA-2 propulsion path. Both are invisible from the pipeline-status field — they require comparing emitted parser facts against the ArcadeDB final state, which no current automated check does.
+
+**Estimated lift:** Investigation ~30min (focused log grep + alias-map read). Fix likely ~1-2h. Test ~1h. Total ~half a day.
+
+**When to do it:**
+Pair with #84 — same run produced both deltas, same investigation tooling, same acceptance regenerator (the fresh baseline). Filing as a separate item because the fix probably touches different files (worker-side merge vs. parser-side fact extraction).
+
+**Acceptance:**
+- Fresh SA-2 ingest produces a MISSILE_SYSTEM vertex with `system_name="5Ya23"` (and matching booster/sustain mass values from the table).
+- All 9 SA-2 variants present in ArcadeDB post-ingest (1D, 13D, 13DM, 13DA, 13DAM, 20D, 20DP, 20DSU, 5Ya23).
+- Drift-guard unit test in `tests/unit/` constructs synthetic per-variant PassResults and asserts each variant survives `merge_and_resolve` with the expected `system_name` populated.
+
+---
+
 ## Completed Items (Reference)
 
 ### Gaps/Bugs Fixed

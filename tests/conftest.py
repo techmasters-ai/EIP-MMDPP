@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -279,6 +280,76 @@ def mock_docling_graph(monkeypatch):
         fake_extract,
     )
     return MagicMock()
+
+
+# ---------------------------------------------------------------------------
+# Shared pipeline-run factory fixture
+# ---------------------------------------------------------------------------
+
+_FACTORY_DUMMY_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
+@pytest.fixture
+def pipeline_run_factory(db_session):
+    """Return a callable that creates one Source → Document → PipelineRun chain.
+
+    Usage::
+
+        def test_something(pipeline_run_factory):
+            run_id = pipeline_run_factory()
+            # or with custom status:
+            run_id = pipeline_run_factory(status="FAILED")
+
+    All rows are rolled back after the test by the ``db_session`` fixture.
+    """
+    def _make(status: str = "PROCESSING") -> "uuid.UUID":
+        source_id = uuid.uuid4()
+        document_id = uuid.uuid4()
+        pipeline_run_id = uuid.uuid4()
+
+        db_session.execute(
+            text(
+                "INSERT INTO ingest.sources (id, name, created_by) "
+                "VALUES (:id, :name, :created_by)"
+            ),
+            {
+                "id": source_id,
+                "name": f"test-source-{source_id}",
+                "created_by": _FACTORY_DUMMY_USER_ID,
+            },
+        )
+        db_session.execute(
+            text(
+                "INSERT INTO ingest.documents "
+                "(id, source_id, filename, storage_bucket, storage_key, uploaded_by, retry_count) "
+                "VALUES (:id, :source_id, :filename, :bucket, :key, :user_id, :retry_count)"
+            ),
+            {
+                "id": document_id,
+                "source_id": source_id,
+                "filename": "test.pdf",
+                "bucket": "test-bucket",
+                "key": f"test/{document_id}.pdf",
+                "user_id": _FACTORY_DUMMY_USER_ID,
+                "retry_count": 0,
+            },
+        )
+        db_session.execute(
+            text(
+                "INSERT INTO ingest.pipeline_runs (id, document_id, pipeline_version, status) "
+                "VALUES (:id, :document_id, :version, :status)"
+            ),
+            {
+                "id": pipeline_run_id,
+                "document_id": document_id,
+                "version": "v2",
+                "status": status,
+            },
+        )
+        db_session.flush()
+        return pipeline_run_id
+
+    return _make
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 from app.models.base import Base
-from app.models.ingest import Source, Document, Artifact, WatchDir, WatchLog
+from app.models.ingest import Source, Document, Artifact, WatchDir, WatchLog, PipelineRun, StageRun, PipelinePassOutput
 from app.models.retrieval import TextChunk, ImageChunk, Chunk  # Chunk = TextChunk (deprecated alias)
 from app.models.governance import Feedback, Patch, PatchApproval, PatchEvent
 from app.models.trusted_data import TrustedDataSubmission
@@ -13,6 +13,9 @@ __all__ = [
     "Artifact",
     "WatchDir",
     "WatchLog",
+    "PipelineRun",
+    "StageRun",
+    "PipelinePassOutput",
     "TextChunk",
     "ImageChunk",
     "Chunk",

@@ -30,7 +30,7 @@ Task graph (manifest-first, parallel derivations, idempotent):
 import hashlib
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 import redis as redis_lib
@@ -141,6 +141,24 @@ class WorkerInvariantError(Exception):
 class GateResult:
     passed: bool
     failures: list  # list[tuple[str, str]] — (pass_name, reason_description)
+
+
+@dataclass
+class PassAttemptOutcome:
+    """Rich result of one attempt at one pass.
+
+    Returned by ``_execute_pass_attempt``; consumed by ``_run_single_pass``
+    (in-process retry loop) and by Task 5's per-pass Celery task (Celery as
+    retry boundary).  The caller decides retry/persistence — the helper is
+    stateless.
+    """
+    execution_status: Literal["COMPLETE", "FAILED", "SKIPPED"]
+    skip_reason: str | None        # "NO_UPSTREAM_ENDPOINTS" etc.; set iff SKIPPED
+    yield_status: str | None       # "HIT"/"EMPTY"/"DEGRADED"/"BRIDGES_ONLY"; set iff COMPLETE
+    pass_result: "PassResult | None"  # populated iff COMPLETE; forward-stringed to avoid eager import
+    raw_response_payload: dict | None  # literal /extract-pass JSON; set when HTTP call succeeded
+    counts: dict | None            # _count_pass_output result; set iff COMPLETE
+    error: Exception | None        # PassRetryable/PassTransportError/PassTerminal; set iff FAILED
 
 
 @_dataclass
@@ -574,6 +592,139 @@ def _build_pre_merge_walk_summary(
     return PreMergeWalkSummary(entities=entities, raw_edge_count=edge_count)
 
 
+def _execute_pass_attempt(
+    *,
+    pipeline_run_id,
+    pass_def,
+    manifest,
+    ontology: dict,
+    bundle_key: str,
+    doc_json: dict,
+    upstream_refs: dict,
+    document_id: str,
+) -> "PassAttemptOutcome":
+    """One attempt at one pass.  Does NOT retry — the caller decides retry.
+    Does NOT write StageRun or pipeline_pass_outputs — the caller persists.
+    Returns rich metadata so the caller can decide what to do.
+
+    r4: introduced to allow Task 5's per-pass Celery task to invoke this
+    helper directly, with Celery as the retry boundary instead of the
+    in-process ``while True`` loop in ``_run_single_pass``.
+
+    Note: ``pipeline_run_id`` is currently accepted but unused inside this
+    helper. It's reserved for Task 5's Celery task, which will use it to
+    correlate StageRun and pipeline_pass_outputs writes after the helper
+    returns.
+    """
+    # 1. Skip check
+    if _should_skip(pass_def, upstream_refs, ontology):
+        return PassAttemptOutcome(
+            execution_status="SKIPPED",
+            skip_reason="NO_UPSTREAM_ENDPOINTS",
+            yield_status=None,
+            pass_result=None,
+            raw_response_payload=None,
+            counts=None,
+            error=None,
+        )
+
+    # 2. Compute selected_refs ONCE — reused for both the request body and the
+    #    upstream-refs attachment below, eliminating any drift surface.
+    selected_refs = (
+        _select_upstream_refs_for_pass(pass_def, upstream_refs, ontology)
+        if pass_def.input_mode == "document_plus_entity_refs"
+        else None
+    )
+
+    # 3. Build request + call HTTP
+    request_body = _build_extract_pass_request(
+        bundle_key=bundle_key,
+        pass_def=pass_def,
+        doc_json=doc_json,
+        upstream_refs=selected_refs,
+        document_id=document_id,
+    )
+    try:
+        raw_payload = _call_extract_pass(request_body, timeout=settings.docling_graph_timeout)
+    except (PassRetryable, PassTransportError, PassTerminal) as exc:
+        # PassTransportError is a subclass of PassRetryable, so the tuple catches all
+        # three; the caller (_run_single_pass) uses order-dependent isinstance checks
+        # to distinguish them.
+        return PassAttemptOutcome(
+            execution_status="FAILED",
+            skip_reason=None,
+            yield_status=None,
+            pass_result=None,
+            raw_response_payload=None,
+            counts=None,
+            error=exc,
+        )
+
+    # 4. Parse response
+    try:
+        pass_result = _parse_pass_response(raw_payload, pass_def, manifest)
+    except PassTerminal as exc:
+        return PassAttemptOutcome(
+            execution_status="FAILED",
+            skip_reason=None,
+            yield_status=None,
+            pass_result=None,
+            raw_response_payload=raw_payload,  # captured — useful forensic data
+            counts=None,
+            error=exc,
+        )
+
+    # 5. Attach upstream refs as LogicalIdentity objects so merge_and_resolve
+    #    can resolve from_ref_id / to_ref_id (extraction_merge.py:384).
+    #    Only document_plus_entity_refs passes use this — document_only passes
+    #    do not consume upstream refs.
+    if pass_def.input_mode == "document_plus_entity_refs":
+        from app.services.extraction_merge import logical_identity_from_dict
+        # Reuse the same selection that built the request body above —
+        # ensures the merge side sees exactly the refs the LLM was
+        # told about, and removes a drift surface where future edits
+        # could cause the two sites to disagree.
+        selected = selected_refs or {}
+        pass_result.upstream_refs = {}
+        for ref_id, ref in selected.items():
+            identity = logical_identity_from_dict(
+                ref.entity_type,
+                ref.identity_values or {},
+                ontology,
+                document_id,
+            )
+            if identity is not None:
+                pass_result.upstream_refs[ref_id] = identity
+
+    # 6. Compute pre_merge_walk + yield_status + counts
+    # Plan Task 34b: build the single shared pre-merge carrier and
+    # attach it to PassResult. classify_yield and _count_pass_output
+    # consume pass_result.pre_merge_walk — the walker runs ONCE per
+    # PassResult for the whole pre-merge phase.
+    pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+        pass_result, pass_def, ontology, document_id,
+    )
+    yield_status_val = classify_yield(pass_result, pass_def, ontology)
+    # classify_yield returns a YieldStatus enum; normalise to string
+    yield_str = (
+        yield_status_val.value
+        if hasattr(yield_status_val, "value")
+        else str(yield_status_val)
+    )
+    counts = _count_pass_output(pass_result, pass_def, ontology)
+
+    # 7. Return COMPLETE outcome
+    return PassAttemptOutcome(
+        execution_status="COMPLETE",
+        skip_reason=None,
+        yield_status=yield_str,
+        pass_result=pass_result,
+        raw_response_payload=raw_payload,
+        counts=counts,
+        error=None,
+    )
+
+
 def _run_single_pass(
     *,
     pipeline_run_id,
@@ -592,6 +743,11 @@ def _run_single_pass(
     optionally extends upstream_refs for downstream passes that depend on this
     one.  Writes a StageRun row for every attempt (including failures) so
     operators can audit retry history.
+
+    r4: now wraps _execute_pass_attempt for the per-attempt logic. The retry
+    loop, StageRun writes, and pass_results population stay here. The helper
+    can be invoked independently by Task 5's Celery task without going through
+    this wrapper.
     """
     max_retries = getattr(settings, "pass_max_retries", 3)
     max_transport_retries = getattr(settings, "pass_max_transport_retries", 3)
@@ -599,138 +755,99 @@ def _run_single_pass(
     transport_attempt = 0
 
     while True:
-        if _should_skip(pass_def, upstream_refs, ontology):
+        outcome = _execute_pass_attempt(
+            pipeline_run_id=pipeline_run_id,
+            pass_def=pass_def,
+            manifest=manifest,
+            ontology=ontology,
+            bundle_key=bundle_key,
+            doc_json=doc_json,
+            upstream_refs=upstream_refs,
+            document_id=document_id,
+        )
+
+        if outcome.execution_status == "SKIPPED":
             _write_stage_run(
                 pipeline_run_id=pipeline_run_id,
                 pass_def=pass_def,
                 attempt=attempt,
                 execution_status="SKIPPED",
                 yield_status=None,
-                skip_reason="NO_UPSTREAM_ENDPOINTS",
+                skip_reason=outcome.skip_reason,
                 counts=None,
                 error=None,
             )
             return
 
-        try:
-            selected_refs = (
-                _select_upstream_refs_for_pass(pass_def, upstream_refs, ontology)
-                if pass_def.input_mode == "document_plus_entity_refs"
-                else None
-            )
-            request_body = _build_extract_pass_request(
-                bundle_key=bundle_key,
-                pass_def=pass_def,
-                doc_json=doc_json,
-                upstream_refs=selected_refs,
-                document_id=document_id,
-            )
-            response = _call_extract_pass(
-                request_body,
-                timeout=settings.docling_graph_timeout,
-            )
-            pass_result = _parse_pass_response(response, pass_def, manifest)
-
-            # Attach the filtered, ordered upstream refs AS LogicalIdentity objects
-            # so merge_and_resolve can resolve from_ref_id / to_ref_id directly
-            # (extraction_merge.py:384). Only document_plus_entity_refs passes use
-            # this — document_only passes do not consume upstream refs.
-            if pass_def.input_mode == "document_plus_entity_refs":
-                from app.services.extraction_merge import logical_identity_from_dict
-                # Reuse the same selection that built the request body above —
-                # ensures the merge side sees exactly the refs the LLM was
-                # told about, and removes a drift surface where future edits
-                # could cause the two sites to disagree.
-                selected = selected_refs or {}
-                pass_result.upstream_refs = {}
-                for ref_id, ref in selected.items():
-                    identity = logical_identity_from_dict(
-                        ref.entity_type,
-                        ref.identity_values or {},
-                        ontology,
-                        document_id,
-                    )
-                    if identity is not None:
-                        pass_result.upstream_refs[ref_id] = identity
-
-        # Order-dependent: PassTransportError is a subclass of PassRetryable,
-        # so this branch MUST precede `except PassRetryable` below — flipping
-        # them would route transport errors through the business-retry budget
-        # and revive the bug the separate counter exists to fix.
-        except PassTransportError as exc:
-            transport_attempt += 1
-            _write_stage_run(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                attempt=attempt,
-                execution_status="FAILED",
-                yield_status=None,
-                skip_reason=None,
-                counts=None,
-                error=f"[transport-retry {transport_attempt}/{max_transport_retries}] {exc}",
-            )
-            if transport_attempt >= max_transport_retries:
+        if outcome.execution_status == "FAILED":
+            # Order-dependent: PassTransportError is a subclass of PassRetryable;
+            # check the more specific class first so transport errors use their own
+            # counter and do not burn the business-retry budget.
+            if isinstance(outcome.error, PassTransportError):
+                transport_attempt += 1
+                _write_stage_run(
+                    pipeline_run_id=pipeline_run_id,
+                    pass_def=pass_def,
+                    attempt=attempt,
+                    execution_status="FAILED",
+                    yield_status=None,
+                    skip_reason=None,
+                    counts=None,
+                    error=f"[transport-retry {transport_attempt}/{max_transport_retries}] {outcome.error}",
+                )
+                if transport_attempt >= max_transport_retries:
+                    if pass_def.required:
+                        raise IngestFailed(
+                            f"Required pass {pass_def.name} exhausted transport retries"
+                        ) from outcome.error
+                    return
+                _backoff(transport_attempt)
+                continue
+            elif isinstance(outcome.error, PassRetryable):
+                _write_stage_run(
+                    pipeline_run_id=pipeline_run_id,
+                    pass_def=pass_def,
+                    attempt=attempt,
+                    execution_status="FAILED",
+                    yield_status=None,
+                    skip_reason=None,
+                    counts=None,
+                    error=str(outcome.error),
+                )
+                if attempt >= max_retries:
+                    if pass_def.required:
+                        raise IngestFailed(
+                            f"Required pass {pass_def.name} exhausted retries"
+                        ) from outcome.error
+                    return
+                _backoff(attempt)
+                attempt += 1
+                continue
+            elif isinstance(outcome.error, PassTerminal):
+                _write_stage_run(
+                    pipeline_run_id=pipeline_run_id,
+                    pass_def=pass_def,
+                    attempt=attempt,
+                    execution_status="FAILED",
+                    yield_status=None,
+                    skip_reason=None,
+                    counts=None,
+                    error=str(outcome.error),
+                )
                 if pass_def.required:
                     raise IngestFailed(
-                        f"Required pass {pass_def.name} exhausted transport retries"
-                    ) from exc
+                        f"Required pass {pass_def.name} terminal failure"
+                    ) from outcome.error
                 return
-            _backoff(transport_attempt)
-            continue
-        except PassRetryable as exc:
-            _write_stage_run(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                attempt=attempt,
-                execution_status="FAILED",
-                yield_status=None,
-                skip_reason=None,
-                counts=None,
-                error=str(exc),
-            )
-            if attempt >= max_retries:
-                if pass_def.required:
-                    raise IngestFailed(
-                        f"Required pass {pass_def.name} exhausted retries"
-                    ) from exc
-                return
-            _backoff(attempt)
-            attempt += 1
-            continue
+            else:
+                # Defensive: _execute_pass_attempt should always set outcome.error for
+                # FAILED outcomes. If it didn't, surface a diagnostic instead of raising
+                # None (which would produce TypeError: exceptions must derive from BaseException).
+                raise outcome.error or RuntimeError(
+                    f"_execute_pass_attempt returned FAILED with error=None for pass {pass_def.name}"
+                )
 
-        except PassTerminal as exc:
-            _write_stage_run(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                attempt=attempt,
-                execution_status="FAILED",
-                yield_status=None,
-                skip_reason=None,
-                counts=None,
-                error=str(exc),
-            )
-            if pass_def.required:
-                raise IngestFailed(
-                    f"Required pass {pass_def.name} terminal failure"
-                ) from exc
-            return
-
-        # Plan Task 34b: build the single shared pre-merge carrier and
-        # attach it to PassResult. classify_yield and _count_pass_output
-        # (rewritten in Task 35c) consume pass_result.pre_merge_walk —
-        # the walker runs ONCE per PassResult for the whole pre-merge phase.
-        pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
-            pass_result, pass_def, ontology, document_id,
-        )
-
-        yield_status_val = classify_yield(pass_result, pass_def, ontology)
-        # classify_yield returns a YieldStatus enum; normalise to string
-        yield_str = (
-            yield_status_val.value
-            if hasattr(yield_status_val, "value")
-            else str(yield_status_val)
-        )
-        counts = _count_pass_output(pass_result, pass_def, ontology)
+        # COMPLETE outcome — write StageRun and populate pass_results
         # Plan Task 36 pre-merge JSONB shape: all 5 authoritative-shape keys
         # are present on every write. counts_authoritative=False so readers
         # know the values are provisional; _apply_post_merge_yield_updates
@@ -738,13 +855,17 @@ def _run_single_pass(
         # Top-level StageRun columns (relationships_extracted / _rejected)
         # are mirrored into the JSONB block so the two projections never
         # drift — lockstep contract pinned by test_counts_authoritative_lifecycle.
+        # Build the StageRun-bound counts dict on a shallow copy so we don't
+        # inject "metrics" into outcome.counts (which Task 5's Celery caller
+        # inspects directly without expecting that key).
+        counts = dict(outcome.counts)
         counts["metrics"] = {
             "counts_authoritative": False,
             "relationships_extracted": counts["relationships_extracted"],
             "relationships_rejected": counts["relationships_rejected"],
             "rejection_sample": [],
             "rejections_by_reason": _build_rejections_by_reason(
-                getattr(pass_result, "pre_merge_rejections", None),
+                getattr(outcome.pass_result, "pre_merge_rejections", None),
             ),
         }
         _write_stage_run(
@@ -752,15 +873,15 @@ def _run_single_pass(
             pass_def=pass_def,
             attempt=attempt,
             execution_status="COMPLETE",
-            yield_status=yield_str,
+            yield_status=outcome.yield_status,
             skip_reason=None,
             counts=counts,
             error=None,
         )
-        pass_results[pass_def.name] = pass_result
+        pass_results[pass_def.name] = outcome.pass_result
 
         if _any_downstream_pass_depends_on(manifest, pass_def.name):
-            _extend_upstream_refs(upstream_refs, pass_result, pass_def, ontology)
+            _extend_upstream_refs(upstream_refs, outcome.pass_result, pass_def, ontology)
         return
 
 
@@ -2054,6 +2175,12 @@ def start_ingest_pipeline(
     # in a simple chain.  The derivation stages (chunks, embed, graph) lose
     # parallelism but each takes only 10-60s vs 20+ min for picture descriptions,
     # so the throughput impact is negligible.
+    #
+    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
+    # from 13 → 9 stages. The downstream chain (collect_derivations →
+    # derive_structure_links → derive_canonicalization → finalize_document) is
+    # now dispatched by derive_ontology_graph_merge after the per-pass fan-in
+    # completes. See app/workers/pipeline.py (derive_ontology_graph_merge).
     pipeline = chain(
         prepare_document.si(document_id, run_id),
         detect_and_translate.si(document_id, run_id),
@@ -2064,10 +2191,6 @@ def start_ingest_pipeline(
         derive_image_embeddings.si(document_id, run_id),
         derive_document_anchors.si(document_id, run_id),
         derive_ontology_graph.si(document_id, run_id),
-        collect_derivations.si(document_id, run_id),
-        derive_structure_links.si(document_id, run_id),
-        derive_canonicalization.si(document_id, run_id),
-        finalize_document.si(document_id, run_id),
     )
     result = pipeline.apply_async()
     return IngestDispatchResult(
@@ -2116,8 +2239,10 @@ def reingest_graph_only(doc_id, request) -> dict:
     Resolves the bundle via graph_only precedence (explicit →
     inherited from latest run → source default → system default),
     creates a new PipelineRun with mode='graph_only' and the bundle
-    snapshot, then dispatches the 3-stage graph-only chain
-    (derive_ontology_graph, derive_structure_links, finalize_document).
+    snapshot, then dispatches a 2-stage chain ending at
+    derive_ontology_graph. The downstream chain
+    (derive_structure_links → finalize_document) is dispatched by
+    derive_ontology_graph_merge after the per-pass fan-in completes.
 
     Returns a dict matching the legacy route's response shape:
         {
@@ -2196,13 +2321,13 @@ def reingest_graph_only(doc_id, request) -> dict:
     finally:
         db.close()
 
-    # Same 3-stage chain the legacy reingest route used to build inline,
-    # but now with the newly-created run_id.
+    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
+    # from 4 → 2 stages. Downstream stages (derive_structure_links →
+    # finalize_document) are now dispatched by derive_ontology_graph_merge in
+    # graph_only mode after the per-pass fan-in completes.
     result = celery_chain(
         derive_document_anchors.si(doc_id_str, run_id),
         derive_ontology_graph.si(doc_id_str, run_id),
-        derive_structure_links.si(doc_id_str, run_id),
-        finalize_document.si(doc_id_str, run_id),
     ).apply_async()
 
     return {
@@ -2327,10 +2452,15 @@ def _write_stage_run(
     skip_reason: str | None,
     counts: dict | None,
     error: str | None,
-) -> None:
+) -> uuid.UUID | None:
     """Upsert a per-pass StageRun row targeting the partial unique index
     uq_stage_runs_run_pass_attempt (WHERE pass_name IS NOT NULL) added in
     migration 0015.
+
+    Returns the UUID of the inserted or updated StageRun row so callers can
+    populate pipeline_pass_outputs.stage_run_id for direct FK linkage.
+    Returns None only if the upsert fails (stale run_id / FK violation) and
+    the exception is swallowed.
 
     Maps execution_status to the legacy celery-level status column so the
     existing monitoring queries still work:
@@ -2391,17 +2521,20 @@ def _write_stage_run(
                 if k not in ("pipeline_run_id", "stage_name", "pass_name", "attempt")
             },
         )
+        .returning(StageRun.id)
     )
     db = _get_db()
     try:
-        db.execute(stmt)
+        row = db.execute(stmt).fetchone()
         db.commit()
+        return row[0] if row else None
     except Exception as exc:
         db.rollback()
         logger.debug(
             "_write_stage_run skipped (stale run_id %s, pass %s): %s",
             pipeline_run_id, pass_def.name, exc,
         )
+        return None
     finally:
         db.close()
 
@@ -5160,138 +5293,696 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
 
 
 # ---------------------------------------------------------------------------
-# New bundle_passes branch — spec §5.4 orchestrator. Task 4.6.
+# Per-pass Celery fan-in — Task 5 helpers + derive_ontology_graph_pass task
 # ---------------------------------------------------------------------------
+# Import note: pass_outputs_store and run_phase_dispatch are imported here at
+# module level so the task and helpers can reference them directly. Placing the
+# imports here (after the main pipeline body) avoids circular-import risk from
+# placing them at the top of a very large module.
+from app.services.pass_outputs_store import (  # noqa: E402
+    save_pass_output,
+    is_pass_already_resolved,
+    count_terminal_passes,
+    load_pass_output,
+    load_completed_pass_outputs,
+)
+from app.services.run_phase_dispatch import (  # noqa: E402
+    claim_phase,
+    mark_phase_dispatched,
+    mark_phase_terminal,
+    read_phase_state,
+    is_run_cancelled,
+)
 
-def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id: str) -> dict:
-    """New path: fixed per-pass templates, merge, import, rollback. Spec §5.4."""
-    from app.models.ingest import PipelineRun, StageRun
-    from datetime import datetime
-    from types import SimpleNamespace
 
-    # 1. Stage-summary row
+def _phase_key(pass_name: str) -> str:
+    """Map pass_name to the dispatched_phases JSONB key.
+
+    Entity passes use the ``entity_pass_<name>`` prefix; ``system_links`` and
+    ``merge`` are stored as top-level keys (no prefix) because they aren't
+    per-entity extraction passes.
+    """
+    if pass_name in ("system_links", "merge"):
+        return pass_name
+    return f"entity_pass_{pass_name}"
+
+
+def _retry_delay(retries: int) -> int:
+    """Celery countdown-compatible delay: 30s × 2^retries, capped at 300s.
+
+    Sequence: retries=0 → 30s; retries=1 → 60s; retries=2 → 120s;
+    retries=3 → 240s; retries=4+ → 300s (cap).
+
+    Note: Celery's ``self.request.retries`` starts at 0 on the first retry,
+    so we use 2^retries directly (not 2^(retries-1) like _backoff).
+    """
+    return min(30 * (2 ** retries), 300)
+
+
+def _save_terminal_pass_output(
+    db,
+    *,
+    run_id: str,
+    stage_run_id,
+    pass_name: str,
+    attempt: int,
+    outcome: "PassAttemptOutcome",
+    override_status: str | None = None,
+    override_diagnostics_extra: dict | None = None,
+) -> None:
+    """Write the single terminal ``pipeline_pass_outputs`` row for this pass.
+
+    Upserts by (run_id, pass_name) — overwrites any prior terminal write
+    (defensive; a pass should only terminalize once in normal operation, but
+    the upsert is safe if it does).
+
+    ``override_status`` lets the caller force ``FAILED`` even when
+    ``outcome.execution_status`` says otherwise (used for retry-exhaustion).
+    ``override_diagnostics_extra`` is merged into the diagnostics dict pulled
+    from ``raw_response_payload``; used to add ``{"retry_exhausted": True}``.
+
+    IMPORTANT: counts keys from ``_count_pass_output`` are:
+      ``primary_entities_extracted``, ``bridge_entities_extracted``,
+      ``relationships_extracted``, ``relationships_rejected``
+    NOT the shorter forms ``primary_entities`` / ``bridge_entities``.
+    """
+    diagnostics = (outcome.raw_response_payload or {}).get("diagnostics", {}) or {}
+    if override_diagnostics_extra:
+        diagnostics = {**diagnostics, **override_diagnostics_extra}
+    save_pass_output(
+        db,
+        pipeline_run_id=run_id,
+        stage_run_id=stage_run_id,
+        pass_name=pass_name,
+        attempt=attempt,
+        execution_status=override_status or outcome.execution_status,
+        skip_reason=outcome.skip_reason,
+        yield_status=outcome.yield_status,
+        extract_pass_response=outcome.raw_response_payload or {},
+        primary_entities_extracted=(outcome.counts or {}).get("primary_entities_extracted", 0),
+        bridge_entities_extracted=(outcome.counts or {}).get("bridge_entities_extracted", 0),
+        relationships_extracted=(outcome.counts or {}).get("relationships_extracted", 0),
+        relationships_rejected=(outcome.counts or {}).get("relationships_rejected", 0),
+        diagnostics=diagnostics,
+        field_provenance=(outcome.raw_response_payload or {}).get("field_provenance", []),
+    )
+
+
+def _rehydrate_upstream_refs_from_persisted_passes(
+    db,
+    run_id: str,
+    pass_def,
+    manifest,
+    ontology: dict,
+    document_id: str,
+) -> dict:
+    """Build the upstream_refs dict for a ``document_plus_entity_refs`` pass.
+
+    The per-pass Celery task runs in isolation — it has no in-memory
+    ``pass_results`` dict from prior passes.  For passes like ``system_links``
+    that declare ``input_mode='document_plus_entity_refs'`` and non-empty
+    ``depends_on``, we must reconstruct upstream_refs by loading each
+    dependency's persisted row from ``pipeline_pass_outputs`` and re-parsing
+    the stored response JSON through ``_parse_pass_response``.
+
+    Algorithm:
+    1. Early-exit if the pass doesn't need upstream refs.
+    2. For each dependency pass name in ``pass_def.depends_on``:
+       a. Load the persisted row.  Skip if missing or not COMPLETE.
+       b. Re-parse the stored ``extract_pass_response_json`` through
+          ``_parse_pass_response`` to get a live PassResult object.
+       c. Attach ``pre_merge_walk`` via ``_build_pre_merge_walk_summary`` so
+          ``_extend_upstream_refs`` sees entity counts.
+       d. Call ``_extend_upstream_refs`` to merge the dependency's entities
+          into the accumulating ``upstream_refs`` dict.
+    3. Return the accumulated dict (may be empty if all deps were missing/FAILED).
+
+    Contract: a ``system_links`` task running at time T sees the same upstream
+    refs it would have seen if dependencies A, B, C had run in-process at T-1.
+    """
+    upstream_refs: dict = {}
+
+    # Early-exit: only document_plus_entity_refs passes with dependencies need this.
+    if getattr(pass_def, "input_mode", None) != "document_plus_entity_refs":
+        return upstream_refs
+    depends_on = list(getattr(pass_def, "depends_on", None) or [])
+    if not depends_on:
+        return upstream_refs
+
+    # Build a fast lookup of dep_pass_name → dep_pass_def from the manifest.
+    manifest_by_name = {p.name: p for p in manifest.passes}
+
+    for dep_pass_name in depends_on:
+        dep_row = load_pass_output(db, run_id, dep_pass_name)
+        if dep_row is None:
+            logger.warning(
+                "_rehydrate_upstream_refs: dependency '%s' has no terminal row "
+                "(run_id=%s) — skipping",
+                dep_pass_name, run_id,
+            )
+            continue
+        if dep_row.execution_status != "COMPLETE":
+            logger.warning(
+                "_rehydrate_upstream_refs: dependency '%s' is %s, not COMPLETE "
+                "(run_id=%s) — skipping",
+                dep_pass_name, dep_row.execution_status, run_id,
+            )
+            continue
+
+        dep_pass_def = manifest_by_name.get(dep_pass_name)
+        if dep_pass_def is None:
+            logger.warning(
+                "_rehydrate_upstream_refs: dependency '%s' not in manifest "
+                "(run_id=%s) — skipping",
+                dep_pass_name, run_id,
+            )
+            continue
+
+        try:
+            dep_pass_result = _parse_pass_response(
+                dep_row.extract_pass_response_json, dep_pass_def, manifest
+            )
+        except PassTerminal as exc:
+            logger.warning(
+                "_rehydrate_upstream_refs: re-parsing dependency '%s' raised "
+                "PassTerminal: %s (run_id=%s) — skipping",
+                dep_pass_name, exc, run_id,
+            )
+            continue
+
+        # Attach pre_merge_walk so _extend_upstream_refs can walk entities.
+        dep_pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+            dep_pass_result, dep_pass_def, ontology, document_id,
+        )
+        _extend_upstream_refs(upstream_refs, dep_pass_result, dep_pass_def, ontology)
+
+    return upstream_refs
+
+
+def _update_summary_stage_run(
+    db,
+    run_id: str,
+    status: str,
+    *,
+    error: str | None = None,
+) -> None:
+    """Update the summary StageRun for ``derive_ontology_graph`` (pass_name IS NULL).
+
+    The summary row is created by the Task-8 dispatcher with status=RUNNING.
+    This helper advances it to a terminal status (COMPLETE or FAILED) at the
+    end of the fan-in lifecycle — called by ``derive_ontology_graph_merge``
+    on success (Task 6) or by ``derive_ontology_graph_pass`` on required-pass
+    terminal failure (this task).
+
+    Design choice: resilient to a missing summary row (logs a warning and
+    returns) so that tests that don't pre-seed the summary row still pass.
+    Task 8's dispatcher will always create the row in production; the
+    resilience here is defensive and avoids coupling Task 5 tests to Task 8
+    fixtures.
+    """
+    import datetime
+    from app.models.ingest import StageRun
+    from sqlalchemy import select
+
+    row = db.execute(
+        select(StageRun).where(
+            StageRun.pipeline_run_id == uuid.UUID(str(run_id)),
+            StageRun.stage_name == "derive_ontology_graph",
+            StageRun.pass_name.is_(None),
+        )
+    ).scalars().first()
+
+    if row is None:
+        logger.warning(
+            "_update_summary_stage_run: no summary StageRun found "
+            "(run_id=%s stage=derive_ontology_graph pass_name=NULL) — skipping update",
+            run_id,
+        )
+        return
+
+    row.status = status
+    if hasattr(row, "execution_status"):
+        row.execution_status = status
+    row.finished_at = datetime.datetime.now(datetime.timezone.utc)
+    if error and status in ("FAILED", "COMPLETE"):
+        row.error_message = error
+
+
+def _try_advance_phase(db, document_id: str, run_id: str) -> None:
+    """Decide whether to dispatch the next entity pass, system_links, or merge.
+
+    Called by each finishing pass (COMPLETE / SKIPPED / FAILED-optional) so
+    the fan-in automatically advances to the next stage without a separate
+    coordinator task.
+
+    Three mutually exclusive branches (return after the first successful
+    dispatch so we do exactly one dispatch per finisher):
+
+    1. If in-flight entity passes < concurrency cap → dispatch the next
+       not-yet-dispatched entity pass.
+    2. If all entity passes resolved AND the bundle defines system_links AND
+       system_links not yet dispatched → dispatch system_links.
+    3. If system_links resolved (or bundle has no system_links and all entity
+       passes are terminal) AND merge not yet dispatched → dispatch merge.
+
+    Forward reference: ``derive_ontology_graph_merge`` is defined later in
+    this module (Task 6).  We use ``celery_app.send_task(...)`` with the
+    registered task name rather than a direct ``.delay()`` call to avoid a
+    Python forward-reference at function-definition time.  The name is
+    resolved at call time via Celery's task registry — so as long as the
+    module is fully loaded before this branch runs, the dispatch succeeds.
+
+    Note: ``mark_phase_dispatched`` and friends use raw SQL (``jsonb_set``)
+    that bypasses the ORM identity map.  We expire ``dispatched_phases``
+    before reading it so the in_flight count reflects the latest DB state and
+    cannot underreport, which would allow dispatching above the concurrency cap.
+    """
+    from app.models.ingest import PipelineRun
+    run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+    if run is None:
+        logger.warning("_try_advance_phase: run_id=%s not found — skipping", run_id)
+        return
+
+    # Expire the identity-map cache so the dispatched_phases JSONB read
+    # reflects the latest state from raw-SQL UPDATEs (jsonb_set bypasses
+    # the ORM identity map). Without this, in_flight counts can be stale
+    # and dispatch may exceed the concurrency cap.
+    db.expire(run, ["dispatched_phases"])
+    db.refresh(run, ["dispatched_phases"])
+
+    manifest = load_bundle_manifest(run.ontology_bundle_key)
+    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+
+    # Branch 1: dispatch next entity pass if cap allows.
+    in_flight = sum(
+        1 for k, v in (run.dispatched_phases or {}).items()
+        if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+    )
+    if in_flight < settings.pass_concurrency_per_document:
+        completed_or_terminal = {
+            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
+            if k.startswith("entity_pass_") and v.get("state") == "completed"
+        }
+        in_flight_names = {
+            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
+            if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+        }
+        next_pass = next(
+            (p for p in entity_passes
+             if p not in completed_or_terminal and p not in in_flight_names),
+            None,
+        )
+        if next_pass is not None:
+            _claim_and_dispatch_pass(db, document_id, run_id, next_pass)
+            return  # one dispatch per finisher
+
+    # Branch 2: dispatch system_links if all entity passes resolved AND
+    # the bundle defines a system_links pass (not all bundles do — guard
+    # against StopIteration in the per-pass task body).
+    n_resolved = count_terminal_passes(db, run_id, entity_passes)
+    has_system_links = any(p.name == "system_links" for p in manifest.passes)
+    if n_resolved >= len(entity_passes) and has_system_links:
+        sl_state = read_phase_state(db, run_id, "system_links")
+        if sl_state is None:
+            _claim_and_dispatch_pass(db, document_id, run_id, "system_links")
+            return
+
+    # Branch 3: dispatch merge if (a) system_links is resolved, OR
+    # (b) the bundle has no system_links and all entity passes are terminal.
+    # send_task is used (not .delay) because derive_ontology_graph_merge is
+    # defined later in this same file (forward reference). queue="graph" is
+    # MANDATORY: without it the message routes to the default "celery" queue
+    # where any subscribed worker may grab it. Stale celery processes (e.g.
+    # workers started before per-pass-fanin commits) ack-drop with KeyError
+    # on the unregistered task name, silently losing the merge dispatch.
+    if has_system_links:
+        sl_pass = load_pass_output(db, run_id, "system_links")
+        sl_resolved = sl_pass is not None and sl_pass.execution_status in (
+            "COMPLETE", "SKIPPED", "FAILED"
+        )
+    else:
+        sl_resolved = (n_resolved >= len(entity_passes))
+
+    if sl_resolved:
+        merge_state = read_phase_state(db, run_id, "merge")
+        if merge_state is None:
+            if claim_phase(db, run_id, "merge"):
+                celery_app.send_task(
+                    "app.workers.pipeline.derive_ontology_graph_merge",
+                    args=[document_id, run_id],
+                    queue="graph",
+                )
+                mark_phase_dispatched(db, run_id, "merge", "<send_task>")
+                db.commit()
+
+
+def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) -> None:
+    """Claim a phase slot and dispatch the corresponding Celery task.
+
+    Used by both the initial dispatcher (Task 8) and the follow-up dispatch in
+    ``_try_advance_phase``.  Pattern: claim_phase → .delay() → mark_phase_dispatched.
+    If the claim fails (another worker won), returns without dispatching.
+
+    A crash between claim and mark_phase_dispatched leaves the phase in
+    'claimed' state — the reconciler (Task 9) will reclaim it after the
+    stale-claim threshold (``phase_claim_stale_seconds``).
+    """
+    phase_key = _phase_key(pass_name)
+    if not claim_phase(db, run_id, phase_key):
+        return  # another worker won the claim
+    async_result = derive_ontology_graph_pass.delay(document_id, run_id, pass_name)
+    mark_phase_dispatched(db, run_id, phase_key, async_result.id)
+    db.commit()
+
+
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    queue="graph",
+    soft_time_limit=settings.pass_soft_time_limit,
+    name="app.workers.pipeline.derive_ontology_graph_pass",
+)
+@guard_stage_run("derive_ontology_graph_pass")
+def derive_ontology_graph_pass(
+    self, document_id: str, run_id: str, pass_name: str,
+) -> dict:
+    """One Celery task per pass attempt. Celery is the retry boundary.
+
+    Pass-output write semantics (r4): ``pipeline_pass_outputs`` has at most ONE
+    row per (run_id, pass_name) — the terminal one. Intermediate retry attempts
+    only update ``StageRun``. The fan-in counter (``count_terminal_passes``)
+    therefore counts pass-resolved passes, not failed attempts that may still retry.
+
+    Order of operations:
+    1. Cancel check — bail early if run is terminal/cancelled.
+    2. Already-resolved check — idempotency guard; advances phase + returns.
+    3. Mark phase dispatched (compare-and-reset; benign if reconciler reset us).
+    4. Execute one attempt via ``_execute_pass_attempt``.
+    5. Write per-attempt StageRun audit row (always, regardless of outcome).
+    6. Branch on outcome:
+       - COMPLETE / SKIPPED → write terminal pass-output, advance phase.
+       - FAILED + retryable + retries remain → commit StageRun; raise self.retry().
+       - FAILED + exhausted OR non-retryable terminal → write terminal pass-output,
+         mark phase failed, terminalize run if pass required.
+    """
     db = _get_db()
     try:
-        run = db.get(PipelineRun, uuid.UUID(pipeline_run_id))
-        if run is None:
-            # Parent pipeline_run was hard-deleted (cascade from document
-            # delete) while this task was queued. Inserting the stage_runs
-            # row would FK-violate; nothing else this task does is useful.
-            # Exit cleanly so the chain doesn't keep retrying.
-            logger.warning(
-                "derive_ontology_graph: pipeline_run %s not found "
-                "(document likely deleted); skipping orphaned task",
-                pipeline_run_id,
-            )
-            return {
-                "stage": "derive_ontology_graph",
-                "status": "skipped",
-                "reason": "orphaned_run",
-            }
-        stage_summary = StageRun(
-            pipeline_run_id=uuid.UUID(pipeline_run_id),
-            stage_name="derive_ontology_graph",
-            pass_name=None,
-            attempt=self.request.retries + 1,
-            status="RUNNING",
-            started_at=datetime.utcnow(),
-        )
-        db.add(stage_summary)
-        db.flush()
-        stage_summary_id = stage_summary.id
-        run_document_id = str(run.document_id)
-        run_mode = run.mode
-        bundle_key = run.ontology_bundle_key
+        # 1. Cancel check
+        if is_run_cancelled(db, run_id):
+            return {"pass_name": pass_name, "skipped": "cancelled"}
+
+        # 2. Already-resolved idempotency guard
+        if is_pass_already_resolved(db, run_id, pass_name):
+            mark_phase_terminal(db, run_id, _phase_key(pass_name), result="succeeded")
+            db.commit()
+            _try_advance_phase(db, document_id, run_id)
+            return {"pass_name": pass_name, "skipped": "already_resolved"}
+
+        # 3. Compare-and-reset advance to 'dispatched'. Returns False if the
+        # reconciler reclaimed the phase under us — we proceed anyway because any
+        # new dispatch will see our terminal write and skip.
+        mark_phase_dispatched(db, run_id, _phase_key(pass_name), self.request.id)
         db.commit()
+
+        # 4. Execute one attempt
+        from app.models.ingest import PipelineRun
+        run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+        if run is None:
+            # Run hard-deleted between cancel-check and here (edge case)
+            return {"pass_name": pass_name, "skipped": "run_missing"}
+
+        bundle_key = run.ontology_bundle_key
+        manifest = load_bundle_manifest(bundle_key)
+        ontology = load_ontology(bundle_key=bundle_key)
+        pass_def = next(p for p in manifest.passes if p.name == pass_name)
+        doc_json = _build_docling_document_json(document_id)
+        upstream_refs = _rehydrate_upstream_refs_from_persisted_passes(
+            db, run_id, pass_def, manifest, ontology, document_id,
+        )
+
+        attempt_n = self.request.retries + 1
+        outcome = _execute_pass_attempt(
+            pipeline_run_id=run_id,
+            pass_def=pass_def,
+            manifest=manifest,
+            ontology=ontology,
+            bundle_key=bundle_key,
+            doc_json=doc_json,
+            upstream_refs=upstream_refs,
+            document_id=document_id,
+        )
+
+        # 5. ALWAYS write StageRun (per-attempt audit; matches existing shape).
+        # _write_stage_run manages its own DB session and commit — returns the
+        # UUID of the inserted/upserted row so pipeline_pass_outputs.stage_run_id
+        # can be populated for direct FK linkage (Issue #2 fix).
+        stage_run_id = _write_stage_run(
+            pipeline_run_id=run_id,
+            pass_def=pass_def,
+            attempt=attempt_n,
+            execution_status=outcome.execution_status,
+            yield_status=outcome.yield_status,
+            skip_reason=outcome.skip_reason,
+            counts=outcome.counts,
+            error=str(outcome.error) if outcome.error else None,
+        )
+
+        # 6. Branch: COMPLETE / SKIPPED → terminal write + advance.
+        #    FAILED with retry pending → no pass-output write; self.retry().
+        #    FAILED with retry exhausted → terminal write + terminalize if required.
+        if outcome.execution_status in ("COMPLETE", "SKIPPED"):
+            # Second cancel-check: narrow the race window before save.  The targeted
+            # FK swallow in save_pass_output catches the residual race where
+            # cancel_document fires AFTER this check but BEFORE db.commit().
+            if is_run_cancelled(db, run_id):
+                return {"pass_name": pass_name, "skipped": "cancelled_mid_extraction"}
+            _save_terminal_pass_output(
+                db,
+                run_id=run_id,
+                stage_run_id=stage_run_id,
+                pass_name=pass_name,
+                attempt=attempt_n,
+                outcome=outcome,
+            )
+            db.commit()
+            mark_phase_terminal(
+                db, run_id, _phase_key(pass_name),
+                result="succeeded" if outcome.execution_status == "COMPLETE" else "skipped",
+            )
+            db.commit()
+            _try_advance_phase(db, document_id, run_id)
+            return {"pass_name": pass_name, "execution_status": outcome.execution_status}
+
+        # FAILED branch
+        is_retryable = isinstance(outcome.error, (PassRetryable, PassTransportError))
+        retries_left = self.request.retries < self.max_retries
+
+        if is_retryable and retries_left:
+            # Pending Celery retry. Phase stays in 'dispatched' for the next
+            # attempt. NO pipeline_pass_outputs write — fan-in counter must not
+            # count this attempt as resolved.
+            # Defensive: any pending writes on this session (none expected in the
+            # retry branch since _write_stage_run uses its own session, but the
+            # flush is harmless insurance) flush before Celery raises.
+            db.commit()
+            raise self.retry(
+                exc=outcome.error,
+                countdown=_retry_delay(self.request.retries),
+            )
+
+        # Terminal failure: non-retryable PassTerminal OR retryable after exhausting
+        # Celery retries. r4: do NOT rely on Celery's MaxRetriesExceededError — it
+        # would re-raise without running this cleanup.
+        # Second cancel-check: narrow the race window before save.  The targeted
+        # FK swallow in save_pass_output catches the residual race where
+        # cancel_document fires AFTER this check but BEFORE db.commit().
+        if is_run_cancelled(db, run_id):
+            return {"pass_name": pass_name, "skipped": "cancelled_mid_extraction"}
+        _save_terminal_pass_output(
+            db,
+            run_id=run_id,
+            stage_run_id=stage_run_id,
+            pass_name=pass_name,
+            attempt=attempt_n,
+            outcome=outcome,
+            override_status="FAILED",
+            override_diagnostics_extra={"retry_exhausted": is_retryable},
+        )
+        db.commit()
+        mark_phase_terminal(db, run_id, _phase_key(pass_name), result="failed")
+        db.commit()
+
+        if pass_def.required:
+            _update_summary_stage_run(
+                db, run_id, "FAILED",
+                error=(
+                    f"required pass {pass_name} "
+                    f"{'retry-exhausted' if is_retryable else 'terminal failure'}"
+                ),
+            )
+            db.commit()
+            _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
+            raise IngestFailed(f"Required pass {pass_name} terminal failure")
+
+        # Optional terminal — phase done with result=failed; run continues.
+        _try_advance_phase(db, document_id, run_id)
+        return {
+            "pass_name": pass_name,
+            "execution_status": "FAILED",
+            "reason": "retry_exhausted" if is_retryable else "terminal",
+        }
     finally:
         db.close()
 
+
+# ---------------------------------------------------------------------------
+# Per-pass Celery fan-in — Task 6 helpers + derive_ontology_graph_merge task
+# ---------------------------------------------------------------------------
+
+
+def _assert_stage_run_pass_output_consistency(db, run_id) -> None:
+    """Raise WorkerInvariantError if any pass has a COMPLETE StageRun row
+    but no matching COMPLETE pipeline_pass_outputs row.
+
+    Detects the crash window between _write_stage_run() and
+    _save_terminal_pass_output() in derive_ontology_graph_pass.
+    """
+    from sqlalchemy import select
+    from app.models.ingest import StageRun, PipelinePassOutput
+
+    # Find passes with at least one COMPLETE StageRun row
+    complete_stage_run_passes = set(
+        row[0] for row in db.execute(
+            select(StageRun.pass_name)
+            .where(StageRun.pipeline_run_id == uuid.UUID(str(run_id)))
+            .where(StageRun.execution_status == "COMPLETE")
+            .where(StageRun.pass_name.is_not(None))
+            .distinct()
+        )
+    )
+    # Find passes with a COMPLETE pipeline_pass_outputs row
+    complete_pass_output_passes = set(
+        row[0] for row in db.execute(
+            select(PipelinePassOutput.pass_name)
+            .where(PipelinePassOutput.pipeline_run_id == uuid.UUID(str(run_id)))
+            .where(PipelinePassOutput.execution_status == "COMPLETE")
+        )
+    )
+    missing = complete_stage_run_passes - complete_pass_output_passes
+    if missing:
+        raise WorkerInvariantError(
+            f"COMPLETE StageRun rows exist without matching pipeline_pass_outputs "
+            f"rows for run_id={run_id}, passes={sorted(missing)}. "
+            f"This indicates a crash between _write_stage_run and "
+            f"_save_terminal_pass_output in derive_ontology_graph_pass."
+        )
+
+
+def _rehydrate_pass_result(
+    row: "PipelinePassOutput", manifest, ontology, document_id: str,
+):
+    """Rebuild a PassResult from a persisted pipeline_pass_outputs row.
+
+    Reuses _parse_pass_response (the live-request parsing path) so the
+    rehydrated PassResult is structurally identical to one built in-process.
+    Then attaches pre_merge_walk via _build_pre_merge_walk_summary so
+    classify_yield and merge_and_resolve work as if the pass had just run.
+
+    If _parse_pass_response raises PassTerminal (corrupt persisted JSON), let
+    it propagate — the merge task's outer except handler catches it before
+    re-raising.
+    """
+    pass_def = next(p for p in manifest.passes if p.name == row.pass_name)
+    pass_result = _parse_pass_response(row.extract_pass_response_json, pass_def, manifest)
+    pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
+        pass_result, pass_def, ontology, document_id,
+    )
+    # Note: for document_plus_entity_refs passes, upstream_refs is intentionally
+    # not re-attached here — merge_and_resolve does not require it (it resolves
+    # refs by identity_dict / ref_id lookup against pass_result entities). If a
+    # future merge path needs upstream_refs to be present on rehydrated PassResults,
+    # rehydrate them via _select_upstream_refs_for_pass + logical_identity_from_dict
+    # the same way _execute_pass_attempt does.
+    return pass_result
+
+
+@celery_app.task(
+    bind=True, max_retries=1, default_retry_delay=30, queue="graph",
+    soft_time_limit=settings.graph_soft_time_limit,
+    name="app.workers.pipeline.derive_ontology_graph_merge",
+)
+@guard_stage_run("derive_ontology_graph_merge")
+def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
+    """Fan-in. Loads COMPLETE pass outputs from pipeline_pass_outputs,
+    rehydrates via _parse_pass_response, runs merge_and_resolve + graph
+    imports + downstream chain dispatch.
+
+    Rollback contract (preserves pipeline.py:5478-5483 behavior): if
+    `tracker.any_mutation_attempted` is True at exception time, call
+    `_attempt_rollback(document_id)` BEFORE re-raising, so a Celery
+    retry (or operator-driven graph_only reingest) starts from a clean
+    graph state.
+    """
+    db = _get_db()
     tracker = GraphWriteTracker()
-
-    def _terminalize_failure(exc_type, error_msg, should_rollback):
-        rollback_note = _attempt_rollback(run_document_id) if should_rollback else ""
-        db2 = _get_db()
-        try:
-            from datetime import datetime as dt
-            row = db2.get(StageRun, stage_summary_id)
-            if row:
-                row.status = "FAILED"
-                row.execution_status = "FAILED"
-                row.rollback_executed = should_rollback
-                row.error_message = f"{exc_type}: {error_msg}{rollback_note}"
-                row.finished_at = dt.utcnow()
-            run_row = db2.get(PipelineRun, uuid.UUID(pipeline_run_id))
-            if run_row:
-                run_row.status = "FAILED"
-                run_row.finished_at = dt.utcnow()
-            db2.commit()
-        except Exception as bookkeeping_exc:
-            db2.rollback()
-            logger.error(
-                "derive_ontology_graph: bookkeeping also failed: %s", bookkeeping_exc
-            )
-        finally:
-            db2.close()
-        _update_document_pipeline_status(run_document_id, "PARTIAL_COMPLETE")
-
     try:
+        if is_run_cancelled(db, run_id):
+            return {"merge": "skipped_cancelled"}
+
+        _assert_stage_run_pass_output_consistency(db, run_id)
+
+        from app.models.ingest import PipelineRun
+        run = db.get(PipelineRun, uuid.UUID(str(run_id)))
+        bundle_key = run.ontology_bundle_key
+        run_mode = run.mode  # "full" or "graph_only"
         manifest = load_bundle_manifest(bundle_key)
         ontology = load_ontology(bundle_key=bundle_key)
-        doc_json = _build_docling_document_json(run_document_id)
 
-        pass_results: dict = {}
-        upstream_refs: dict = {}
-
-        for pass_def in manifest.passes:
-            _run_single_pass(
-                pipeline_run_id=pipeline_run_id,
-                pass_def=pass_def,
-                manifest=manifest,
-                ontology=ontology,
-                bundle_key=bundle_key,
-                doc_json=doc_json,
-                pass_results=pass_results,
-                upstream_refs=upstream_refs,
-                document_id=run_document_id,
-            )
-
-        gate = check_required_pass_gate(pipeline_run_id)
+        # Note: check_required_pass_gate opens and closes its own DB session
+        # internally (see pipeline.py:1316). This is intentional — the gate's
+        # query is independent of the merge task's session lifetime.
+        gate = check_required_pass_gate(run_id)
         if not gate.passed:
+            _update_summary_stage_run(
+                db, run_id, "FAILED",
+                error=f"Required passes failed: {gate.failures}",
+            )
+            mark_phase_terminal(db, run_id, "merge", result="failed")
+            db.commit()
+            _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
             raise IngestFailed(f"Required passes failed: {gate.failures}")
 
-        merged = merge_and_resolve(
-            pass_results=pass_results,
-            manifest=manifest,
-            ontology=ontology,
-            document_id=run_document_id,
-            pipeline_run_id=str(pipeline_run_id),
-        )
+        completed_outputs = load_completed_pass_outputs(db, run_id)
+        rehydrated = {
+            row.pass_name: _rehydrate_pass_result(row, manifest, ontology, document_id)
+            for row in completed_outputs.values()
+        }
 
-        _apply_post_merge_yield_updates(pipeline_run_id, merged, manifest)
-        _write_pipeline_run_metrics(pipeline_run_id, merged, manifest)
+        merged = merge_and_resolve(
+            pass_results=rehydrated, manifest=manifest, ontology=ontology,
+            document_id=document_id, pipeline_run_id=run_id,
+        )
+        _apply_post_merge_yield_updates(run_id, merged, manifest)
+        _write_pipeline_run_metrics(run_id, merged, manifest)
 
         provenance_envelope = _build_provenance_envelope(
-            run_document_id, str(pipeline_run_id), merged.entities, db,
+            document_id, run_id, merged.entities, db,
         )
         identity_to_rid = _import_graph_phase_nodes(
-            merged, ontology, run_document_id, tracker, provenance_envelope,
+            merged, ontology, document_id, tracker, provenance_envelope,
         )
-        _import_graph_phase_domain_edges(merged, ontology, tracker, provenance_envelope)
-
-        # Ensure the structural Document vertex exists before phase 4 references
-        # it. The chain creates this vertex in `derive_structure_links` which
-        # runs AFTER derive_ontology_graph, but phase 4 (_import_graph_phase_
-        # structural_edges) needs it to exist now for MENTIONED_IN edges. The
-        # upsert is idempotent — derive_structure_links will later update it
-        # with full document metadata (summary, classification, etc.).
-        _ensure_structural_document_vertex(run_document_id)
-
+        _import_graph_phase_domain_edges(
+            merged, ontology, tracker, provenance_envelope,
+        )
+        _ensure_structural_document_vertex(document_id)
         _import_graph_phase_structural_edges(
-            merged, identity_to_rid, run_document_id, str(pipeline_run_id), tracker,
+            merged, identity_to_rid, document_id, run_id, tracker,
         )
 
         # Build a detachment-safe snapshot so _upsert_document_graph_extraction
         # can access run metadata after the original DB session was closed.
+        from types import SimpleNamespace
         run_snapshot = SimpleNamespace(
             ontology_bundle_key=bundle_key,
             ontology_name=getattr(manifest, "ontology_name", None),
@@ -5300,29 +5991,26 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
             extraction_profile_version=getattr(manifest, "extraction_profile_version", None),
         )
 
-        # Phase 8 Task 53: build element_uid → artifact_id map once and
-        # persist into the audit blob so derive_structure_links can
-        # read from the snapshot instead of re-querying Postgres
-        # (snapshot-consistency contract: the audit blob is the
-        # ingestion's view-of-the-world).
+        # Build element_uid → artifact_id map; persist into audit blob so
+        # derive_structure_links can read from the snapshot.
         element_uid_to_artifact_id: dict[str, str] = {}
         try:
             db_elem = _get_db()
             try:
                 element_uid_to_artifact_id = _build_element_uid_to_artifact_id(
-                    db_elem, run_document_id,
+                    db_elem, document_id,
                 )
             finally:
                 db_elem.close()
         except Exception as exc:
             logger.warning(
-                "derive_ontology_graph: element_uid_to_artifact_id build failed for %s: %s",
-                run_document_id, exc,
+                "derive_ontology_graph_merge: element_uid_to_artifact_id build "
+                "failed for %s: %s", document_id, exc,
             )
 
         _upsert_document_graph_extraction(
-            document_id=run_document_id,
-            pipeline_run_id=pipeline_run_id,
+            document_id=document_id,
+            pipeline_run_id=run_id,
             run=run_snapshot,
             merged=merged,
             manifest=manifest,
@@ -5330,70 +6018,542 @@ def _derive_ontology_graph_bundle_passes(self, pipeline_run_id: str, document_id
             element_uid_to_artifact_id=element_uid_to_artifact_id,
         )
 
-        # Success terminalization
-        db3 = _get_db()
-        try:
-            from datetime import datetime as dt
-            row = db3.get(StageRun, stage_summary_id)
-            if row:
-                row.status = "COMPLETE"
-                row.execution_status = "COMPLETE"
-                row.rollback_executed = False
-                row.finished_at = dt.utcnow()
+        _update_summary_stage_run(db, run_id, "COMPLETE")
+        mark_phase_terminal(db, run_id, "merge", result="succeeded")
 
-            run_row = db3.get(PipelineRun, uuid.UUID(pipeline_run_id))
-            if run_row and run_mode == "graph_only":
-                run_row.status = "COMPLETE"
-                run_row.finished_at = dt.utcnow()
-            db3.commit()
-        finally:
-            db3.close()
+        db.commit()
 
+        # CHANGED 2026-05-06 (Task 7): dispatch the downstream chain for both
+        # modes. After the outer-chain trim, the merge task is the single
+        # dispatcher for downstream stages. finalize_document (the last stage
+        # in each chain) sets run.status=COMPLETE for both modes — the merge
+        # task no longer sets run.status directly in graph_only mode.
         if run_mode == "graph_only":
-            _update_document_pipeline_status(run_document_id, "COMPLETE")
+            # graph_only is a shorter chain — no collect_derivations, no
+            # derive_canonicalization (matches the legacy reingest_graph_only
+            # chain shape pre-Task-7).
+            celery_chain(
+                derive_structure_links.si(document_id, run_id),
+                finalize_document.si(document_id, run_id),
+            ).apply_async()
+        else:
+            # full mode — 4-stage downstream chain.
+            celery_chain(
+                collect_derivations.si(document_id, run_id),
+                derive_structure_links.si(document_id, run_id),
+                derive_canonicalization.si(document_id, run_id),
+                finalize_document.si(document_id, run_id),
+            ).apply_async()
 
         return {
-            "stage": "derive_ontology_graph",
-            "status": "ok",
+            "merge": "ok",
             "entities": len(merged.entities),
             "edges": len(merged.edges),
         }
-
-    except IngestFailed as exc:
-        _terminalize_failure("gate_failed", str(exc), should_rollback=False)
-        raise
-    except SoftTimeLimitExceeded as exc:
-        # Celery's soft-timeout inside the helper. Engage self.retry so Celery's
-        # max_retries=2 budget applies. On exhaustion self.retry re-raises
-        # SoftTimeLimitExceeded, which reaches guard_stage_run (post-Task 0
-        # the guard terminalizes unconditionally on any Exception). Stage_run
-        # FAILED row is written by the guard — skip it here to avoid NameError
-        # if SoftTimeLimitExceeded fires before stage_summary_id is assigned.
-        logger.warning(
-            "derive_ontology_graph: soft time limit for run=%s doc=%s — retrying via Celery",
-            pipeline_run_id, document_id,
-        )
-        raise self.retry(exc=exc)
     except Exception as exc:
-        logger.exception("derive_ontology_graph bundle_passes failure")
-        _terminalize_failure(
-            "unexpected_failure", str(exc),
-            should_rollback=tracker.any_mutation_attempted,
-        )
+        if tracker.any_mutation_attempted:
+            rollback_note = _attempt_rollback(document_id)
+            logger.info(
+                "derive_ontology_graph_merge: rolled back partial graph state "
+                "for doc=%s run=%s before re-raising %s%s",
+                document_id, run_id, type(exc).__name__, rollback_note,
+            )
+        try:
+            mark_phase_terminal(db, run_id, "merge", result="failed")
+            db.commit()
+        except Exception:
+            logger.exception("merge: mark_phase_terminal failed in error path")
         raise
+    finally:
+        db.close()
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="graph",
-                 soft_time_limit=settings.graph_soft_time_limit,
-                 time_limit=settings.graph_time_limit)
+# ---------------------------------------------------------------------------
+# Task 9: reconcile_ontology_graph_runs — beat-scheduled safety net
+# ---------------------------------------------------------------------------
+
+
+def _get_processing_ontology_graph_runs(db) -> list:
+    """Query all PipelineRun rows where status='PROCESSING' AND mode IN ('full', 'graph_only')
+    AND the derive_ontology_graph stage has been past initial dispatch (i.e.,
+    dispatched_phases is non-empty OR there is a RUNNING summary StageRun).
+
+    The mode filter avoids scanning runs from other unrelated pipeline stages
+    that happen to be in PROCESSING.
+    """
+    from app.models.ingest import PipelineRun
+    from sqlalchemy import select, text as sa_text
+
+    # Use a CTE to find run IDs that have a RUNNING derive_ontology_graph summary StageRun.
+    # Combined with the dispatched_phases non-empty check using Postgres JSONB operator.
+    stmt = select(PipelineRun).where(
+        PipelineRun.status == "PROCESSING",
+        PipelineRun.mode.in_(["full", "graph_only"]),
+        sa_text(
+            "("
+            "  dispatched_phases != '{}'::jsonb"
+            "  OR id IN ("
+            "    SELECT pipeline_run_id FROM ingest.stage_runs"
+            "    WHERE stage_name = 'derive_ontology_graph'"
+            "      AND pass_name IS NULL"
+            "      AND status = 'RUNNING'"
+            "  )"
+            ")"
+        ),
+    )
+    return db.execute(stmt).scalars().all()
+
+
+def _has_pending_retry_for_pass(
+    db,
+    pipeline_run_id,
+    pass_name: str,
+    *,
+    countdown_buffer_seconds: int = 600,
+) -> bool:
+    """True if the latest StageRun for this pass indicates a pending Celery retry.
+
+    Returns True when ALL of:
+    - Latest StageRun has execution_status='FAILED'
+    - attempt < (pass_max_retries + pass_max_transport_retries)
+    - finished_at > now - countdown_buffer_seconds (the Celery countdown is
+      still pending in the broker's countdown queue)
+
+    The check uses ``attempt < (pass_max_retries + pass_max_transport_retries)``
+    as a conservative upper bound.  In practice, only ``pass_max_retries``
+    contributes to Celery's ``self.request.retries`` counter — transport-class
+    retries loop internally inside ``_execute_pass_attempt`` without going
+    through Celery.  Using the combined sum errs on the side of waiting longer
+    rather than racing a retry.  Branch 3 of the reconciler (promote-when-
+    pass-output-exists) handles the exhausted-but-recently-finished case
+    first, so this conservative bound has no functional impact.
+
+    The countdown_buffer_seconds defaults to 10 min — covers the worst case of
+    _retry_delay (300s capped) + a generous safety margin.  Used by the
+    reconciler to avoid revoking a task whose retry is genuinely pending.
+    """
+    from app.models.ingest import StageRun
+    from sqlalchemy import select
+    from datetime import datetime, timedelta, timezone
+
+    max_attempts = settings.pass_max_retries + settings.pass_max_transport_retries
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=countdown_buffer_seconds)
+
+    row = db.execute(
+        select(StageRun)
+        .where(
+            StageRun.pipeline_run_id == uuid.UUID(str(pipeline_run_id)),
+            StageRun.stage_name == "derive_ontology_graph",
+            StageRun.pass_name == pass_name,
+        )
+        .order_by(StageRun.attempt.desc())
+        .limit(1)
+    ).scalars().first()
+
+    if row is None:
+        return False
+
+    if row.execution_status != "FAILED":
+        return False
+
+    if row.attempt >= max_attempts:
+        return False
+
+    if row.finished_at is None:
+        return False
+
+    # finished_at within the countdown buffer → retry is pending
+    return row.finished_at > cutoff
+
+
+@celery_app.task(
+    bind=True, queue="graph",
+    soft_time_limit=120,
+    name="app.workers.pipeline.reconcile_ontology_graph_runs",
+)
+def reconcile_ontology_graph_runs(self) -> dict:
+    """Beat-scheduled safety net for the per-pass fan-in.
+
+    Scans PROCESSING runs every reconciler_period_seconds (default 60s); repairs:
+      - Stale claimed phases (>30s, dispatcher crashed before .delay)
+      - Stale dispatched phases (>2h, task crashed; pending-retry-aware)
+      - Completed-but-not-marked-terminal (task wrote output but didn't mark)
+      - Stuck-without-advance (finisher crashed between save and _try_advance_phase)
+
+    Returns a dict summarizing actions taken: {
+        "scanned_runs": N,
+        "stale_claimed_reclaimed": [...phase keys...],
+        "stale_dispatched_reclaimed": [...],
+        "promoted_to_terminal": [...],
+        "stuck_advances": [...],
+        "skipped_pending_retry": [...],
+    }
+    """
+    from datetime import datetime, timezone, timedelta  # local; matches file's style
+    from app.models.ingest import PipelineRun
+    from app.services.run_phase_dispatch import reclaim_stale_phase
+
+    stale_claimed_threshold_s = settings.phase_claim_stale_seconds
+    stale_dispatched_threshold_s = 2 * settings.pass_soft_time_limit
+
+    summary: dict = {
+        "scanned_runs": 0,
+        "stale_claimed_reclaimed": [],
+        "stale_dispatched_reclaimed": [],
+        "promoted_to_terminal": [],
+        "stuck_advances": [],
+        "skipped_pending_retry": [],
+    }
+
+    db = _get_db()
+    try:
+        runs = _get_processing_ontology_graph_runs(db)
+        summary["scanned_runs"] = len(runs)
+
+        for run in runs:
+            run_id = str(run.id)
+            document_id = str(run.document_id)
+
+            # Load the manifest to know which passes are entity passes.
+            if not run.ontology_bundle_key:
+                logger.debug(
+                    "reconcile_ontology_graph_runs: run_id=%s has no ontology_bundle_key, skipping",
+                    run_id,
+                )
+                continue
+
+            try:
+                manifest = load_bundle_manifest(run.ontology_bundle_key)
+            except Exception:
+                logger.warning(
+                    "reconcile_ontology_graph_runs: could not load manifest for run_id=%s "
+                    "bundle_key=%s; skipping",
+                    run_id, run.ontology_bundle_key, exc_info=True,
+                )
+                continue
+
+            entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+
+            dispatched_phases = run.dispatched_phases or {}
+
+            # ----------------------------------------------------------------
+            # Branch 4: stuck-without-advance check (fast path)
+            # All entity passes have terminal pass-output rows but no system_links
+            # or merge phase has been started yet (finisher crashed between
+            # saving the pass-output and calling _try_advance_phase).
+            # ----------------------------------------------------------------
+            n_terminal = count_terminal_passes(db, run_id, entity_passes)
+            if n_terminal >= len(entity_passes) and entity_passes:
+                # Check if merge or system_links has not been started / is still running.
+                merge_absent = "merge" not in dispatched_phases
+                sl_entry = dispatched_phases.get("system_links")
+                # sl_blocking is True only when system_links is in-progress (claimed
+                # or dispatched). A completed system_links is NOT blocking — it means
+                # we should proceed to dispatch merge.  An absent system_links is also
+                # not blocking — _try_advance_phase will dispatch it first.
+                sl_blocking = sl_entry is not None and sl_entry.get("state") != "completed"
+                # Only advance if no follow-up is already in progress.
+                # _try_advance_phase has its own idempotency via claim_phase.
+                if merge_absent and not sl_blocking:
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stuck-without-advance "
+                        "run_id=%s — all %d entity passes terminal, no follow-up; advancing",
+                        run_id, len(entity_passes),
+                    )
+                    try:
+                        _try_advance_phase(db, document_id, run_id)
+                        db.commit()
+                        summary["stuck_advances"].append(run_id)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: _try_advance_phase failed for "
+                            "run_id=%s", run_id, exc_info=True,
+                        )
+                        db.rollback()
+                    continue
+
+            # ----------------------------------------------------------------
+            # Per-phase inspection: iterate every entry in dispatched_phases.
+            # ----------------------------------------------------------------
+            for phase_key, phase_entry in dispatched_phases.items():
+                state = (phase_entry or {}).get("state")
+                if state not in ("claimed", "dispatched"):
+                    # Completed or missing state — no action needed.
+                    continue
+
+                # Map phase_key back to pass_name for pass-output queries.
+                if phase_key.startswith("entity_pass_"):
+                    pass_name = phase_key[len("entity_pass_"):]
+                else:
+                    pass_name = phase_key  # "system_links" or "merge"
+
+                if state == "claimed":
+                    # --------------------------------------------------------
+                    # Branch 1: stale claimed repair
+                    # --------------------------------------------------------
+                    claimed_at_raw = phase_entry.get("claimed_at")
+                    if claimed_at_raw is None:
+                        continue
+                    claimed_at = datetime.fromisoformat(claimed_at_raw)
+                    age_s = (datetime.now(timezone.utc) - claimed_at).total_seconds()
+                    if age_s < stale_claimed_threshold_s:
+                        continue  # still fresh
+
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stale claimed phase "
+                        "run_id=%s phase=%s age=%.0fs — reclaiming",
+                        run_id, phase_key, age_s,
+                    )
+                    try:
+                        reclaimed = reclaim_stale_phase(
+                            db, run_id, phase_key,
+                            claim_threshold_s=stale_claimed_threshold_s,
+                            dispatch_threshold_s=stale_dispatched_threshold_s,
+                        )
+                        if reclaimed:
+                            db.commit()
+                            summary["stale_claimed_reclaimed"].append(phase_key)
+                            _try_advance_phase(db, document_id, run_id)
+                            db.commit()
+                        else:
+                            db.rollback()
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: reclaim failed for "
+                            "run_id=%s phase=%s", run_id, phase_key, exc_info=True,
+                        )
+                        db.rollback()
+
+                elif state == "dispatched":
+                    dispatched_at_raw = phase_entry.get("dispatched_at")
+                    if dispatched_at_raw is None:
+                        continue
+                    dispatched_at = datetime.fromisoformat(dispatched_at_raw)
+                    age_s = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
+
+                    # --------------------------------------------------------
+                    # Branch 3: promote completed-but-not-marked-terminal
+                    # Check BEFORE the stale-dispatched threshold — a task
+                    # that wrote a pass-output row but crashed before
+                    # mark_phase_terminal must be promoted regardless of age.
+                    # --------------------------------------------------------
+                    try:
+                        pass_output = load_pass_output(db, run_id, pass_name)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: load_pass_output failed for "
+                            "run_id=%s pass=%s", run_id, pass_name, exc_info=True,
+                        )
+                        continue
+
+                    if pass_output is not None:
+                        # Task completed AND wrote the pass-output row, but
+                        # crashed before mark_phase_terminal. Promote it.
+                        exec_status = pass_output.execution_status
+                        result = (
+                            "succeeded" if exec_status == "COMPLETE"
+                            else "skipped" if exec_status == "SKIPPED"
+                            else "failed"
+                        )
+                        logger.info(
+                            "reconcile_ontology_graph_runs: promote dispatched-with-output "
+                            "run_id=%s phase=%s exec_status=%s → result=%s",
+                            run_id, phase_key, exec_status, result,
+                        )
+                        try:
+                            mark_phase_terminal(db, run_id, phase_key, result=result)
+                            db.commit()
+                            summary["promoted_to_terminal"].append(phase_key)
+                            _try_advance_phase(db, document_id, run_id)
+                            db.commit()
+                        except Exception:
+                            logger.warning(
+                                "reconcile_ontology_graph_runs: promote failed for "
+                                "run_id=%s phase=%s", run_id, phase_key, exc_info=True,
+                            )
+                            db.rollback()
+                        continue
+
+                    # --------------------------------------------------------
+                    # Branch 2: stale dispatched repair (pending-retry-aware)
+                    # --------------------------------------------------------
+                    if age_s < stale_dispatched_threshold_s:
+                        continue  # still within the expected completion window
+
+                    # Check for pending Celery retry before revoking.
+                    try:
+                        pending = _has_pending_retry_for_pass(db, run_id, pass_name)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: _has_pending_retry_for_pass "
+                            "failed for run_id=%s pass=%s; skipping reclaim",
+                            run_id, pass_name, exc_info=True,
+                        )
+                        continue
+
+                    if pending:
+                        logger.debug(
+                            "reconcile_ontology_graph_runs: skipping stale dispatched "
+                            "run_id=%s phase=%s — pending Celery retry detected",
+                            run_id, phase_key,
+                        )
+                        summary["skipped_pending_retry"].append(phase_key)
+                        continue
+
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stale dispatched phase "
+                        "run_id=%s phase=%s age=%.0fs — revoking + reclaiming",
+                        run_id, phase_key, age_s,
+                    )
+                    try:
+                        reclaimed = reclaim_stale_phase(
+                            db, run_id, phase_key,
+                            claim_threshold_s=stale_claimed_threshold_s,
+                            dispatch_threshold_s=stale_dispatched_threshold_s,
+                        )
+                        if reclaimed:
+                            db.commit()
+                            summary["stale_dispatched_reclaimed"].append(phase_key)
+                            _try_advance_phase(db, document_id, run_id)
+                            db.commit()
+                        else:
+                            db.rollback()
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: reclaim (dispatched) failed for "
+                            "run_id=%s phase=%s", run_id, phase_key, exc_info=True,
+                        )
+                        db.rollback()
+
+        no_actions = (
+            summary["scanned_runs"] == 0
+            or not any([
+                summary["stale_claimed_reclaimed"],
+                summary["stale_dispatched_reclaimed"],
+                summary["promoted_to_terminal"],
+                summary["stuck_advances"],
+                summary["skipped_pending_retry"],
+            ])
+        )
+        log_method = logger.debug if no_actions else logger.info
+        log_method(
+            "reconcile_ontology_graph_runs: scan complete — "
+            "scanned=%d stale_claimed=%d stale_dispatched=%d promoted=%d "
+            "stuck=%d skipped=%d",
+            summary["scanned_runs"],
+            len(summary["stale_claimed_reclaimed"]),
+            len(summary["stale_dispatched_reclaimed"]),
+            len(summary["promoted_to_terminal"]),
+            len(summary["stuck_advances"]),
+            len(summary["skipped_pending_retry"]),
+        )
+        return summary
+    except Exception:
+        logger.exception("reconcile_ontology_graph_runs: unexpected error in reconciler scan")
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+# CHANGED 2026-05-06 (Task 8): replaced monolithic ~225-line helper
+# (_derive_ontology_graph_bundle_passes) with a thin ~50-line dispatcher.
+# soft_time_limit dropped from 8 h (settings.graph_soft_time_limit) to 10 min
+# because this task only does manifest-load + initial pass dispatch.
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    queue="graph",
+    soft_time_limit=600,
+    name="app.workers.pipeline.derive_ontology_graph",
+)
 @guard_stage_run("derive_ontology_graph")
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
-    """Dispatch graph extraction via the bundle-passes orchestrator.
+    """Thin dispatcher: create summary StageRun then fan-out to per-pass tasks.
 
     Callers always dispatch as derive_ontology_graph.si(document_id, run_id),
-    where run_id IS the pipeline_run_id. The legacy path was removed in Task 5.2.
+    where run_id IS the pipeline_run_id.
+
+    Steps:
+    1. Resolve run_id + PipelineRun (orphaned-run safety net).
+    2. Create the derive_ontology_graph summary StageRun with status=RUNNING
+       so finalize_document's REQUIRED_STAGES gate sees this stage as in-flight.
+    3. Load the manifest; identify entity passes (p.depends_on empty).
+    4. Dispatch the first pass_concurrency_per_document entity passes via
+       claim_phase → .delay → mark_phase_dispatched (same flow used by
+       _try_advance_phase follow-ups in derive_ontology_graph_pass).
+    5. Return immediately — per-pass tasks handle extraction.
     """
-    return _derive_ontology_graph_bundle_passes(self, run_id, document_id)
+    from app.models.ingest import PipelineRun, StageRun
+    from datetime import datetime, timezone
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    db = _get_db()
+    try:
+        if not run_id:
+            run_id = _get_pipeline_run_id(db, document_id)
+        run = db.get(PipelineRun, uuid.UUID(str(run_id))) if run_id else None
+        if run is None:
+            logger.warning(
+                "derive_ontology_graph: pipeline_run %s not found "
+                "(document likely deleted); skipping orphaned task",
+                run_id,
+            )
+            return {
+                "stage": "derive_ontology_graph",
+                "status": "skipped",
+                "reason": "orphaned_run",
+            }
+
+        # Idempotent insert — when two dispatcher copies race (e.g., Celery
+        # redelivery after worker crash), both can safely fire this; the partial
+        # unique index uq_stage_runs_summary_row (WHERE pass_name IS NULL) guards
+        # against duplicates without raising IntegrityError on the second copy.
+        stmt = (
+            pg_insert(StageRun)
+            .values(
+                id=uuid.uuid4(),
+                pipeline_run_id=uuid.UUID(str(run_id)),
+                stage_name="derive_ontology_graph",
+                pass_name=None,
+                attempt=self.request.retries + 1,
+                status="RUNNING",
+                execution_status="RUNNING",
+                started_at=datetime.now(timezone.utc),
+            )
+            .on_conflict_do_nothing(
+                index_elements=["pipeline_run_id", "stage_name", "attempt"],
+                index_where=sa.text("pass_name IS NULL"),
+            )
+        )
+        db.execute(stmt)
+
+        bundle_key = run.ontology_bundle_key
+        db.commit()
+    finally:
+        db.close()
+
+    manifest = load_bundle_manifest(bundle_key)
+    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+
+    # Second session: _claim_and_dispatch_pass commits phase records
+    # independently. Using a single session would interleave the RUNNING
+    # StageRun commit with phase claim commits and risk dirty reads.
+    db2 = _get_db()
+    try:
+        for pass_name in entity_passes[: settings.pass_concurrency_per_document]:
+            _claim_and_dispatch_pass(db2, document_id, str(run_id), pass_name)
+    finally:
+        db2.close()
+
+    return {
+        "stage": "derive_ontology_graph",
+        "status": "dispatched",
+        "entity_passes_dispatched": min(
+            len(entity_passes), settings.pass_concurrency_per_document
+        ),
+    }
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30, queue="graph",
@@ -6047,8 +7207,12 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
             _update_document_status(document_id, STATUS_COMPLETE, stage=None)
             return
 
-        # Check for failed, missing, or stuck stages
-        REQUIRED_STAGES = {
+        # CHANGED 2026-05-06 (Task 8): mode-scoped required stages. graph_only runs
+        # (re-extraction without re-converting the source PDF) skip the
+        # prepare/translate/metadata/picture/embedding/canonicalization stages —
+        # only the graph extraction path runs. Using the full set for graph_only
+        # caused those runs to always resolve to PARTIAL_COMPLETE (the bug fixed here).
+        _FULL_REQUIRED_STAGES = {
             "prepare_document",
             "detect_and_translate",
             "derive_document_metadata",
@@ -6061,6 +7225,16 @@ def finalize_document(self, document_id: str, run_id: str | None = None) -> None
             "derive_structure_links",
             "derive_canonicalization",
         }
+        _GRAPH_ONLY_REQUIRED_STAGES = {
+            "derive_document_anchors",
+            "derive_ontology_graph",
+            "derive_structure_links",
+        }
+        run_row = db.get(PipelineRun, uuid.UUID(run_id))
+        run_mode = run_row.mode if run_row is not None else "full"
+        REQUIRED_STAGES = (
+            _GRAPH_ONLY_REQUIRED_STAGES if run_mode == "graph_only" else _FULL_REQUIRED_STAGES
+        )
 
         all_stages = db.execute(
             select(StageRun).where(StageRun.pipeline_run_id == uuid.UUID(run_id))
