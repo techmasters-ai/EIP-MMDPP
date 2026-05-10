@@ -2931,6 +2931,27 @@ def _update_stage_run(
     attempt: int = 1, metrics: dict | None = None, error: str | None = None,
 ) -> None:
     """Upsert a StageRun record."""
+    # ── lifecycle interception (spec 2026-05-10) ────────────────────────
+    # When a lifecycle-wrapped stage is mid-body, defer terminal writes to
+    # the wrapper's Tx-3 / Tx-4 so the body's COMPLETE commit cannot escape
+    # before the successor row is inserted in the same transaction.
+    ctx = _CTX.get()
+    if (
+        ctx is not None
+        and str(ctx.pipeline_run_id) == str(pipeline_run_id)
+        and ctx.stage_name == stage_name
+        and ctx.intercept_terminal
+    ):
+        if status == "RUNNING":
+            return                          # wrapper already wrote RUNNING via CLAIM
+        if status in ("COMPLETE", "FAILED"):
+            ctx.pending_status = status
+            ctx.pending_metrics = metrics
+            ctx.pending_error = error
+            return
+        # Other statuses fall through (defensive)
+    # ─────────────────────────────────────────────────────────────────────
+
     from app.models.ingest import StageRun
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
