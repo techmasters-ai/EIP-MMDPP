@@ -3972,7 +3972,10 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30,
                  soft_time_limit=settings.prepare_soft_time_limit,
                  time_limit=settings.prepare_time_limit)
-@guard_stage_run("prepare_document")
+@guard_stage_run("prepare_document",
+    lifecycle=True,
+    next_stage="detect_and_translate",
+    next_task="app.workers.pipeline.detect_and_translate")
 def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     """Validate + detect + Docling convert + persist document_elements.
 
@@ -4592,7 +4595,10 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     time_limit=settings.doc_analysis_time_limit,
     queue="ingest",
 )
-@guard_stage_run("derive_document_metadata")
+@guard_stage_run("derive_document_metadata",
+    lifecycle=True,
+    next_stage="purge_document_derivations",
+    next_task="app.workers.pipeline.purge_document_derivations")
 def derive_document_metadata(self, document_id: str, run_id: str | None = None) -> dict:
     """Extract document metadata (summary, date, classification, source) via LLM."""
     import json as json_mod
@@ -4754,7 +4760,10 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
     time_limit=settings.translation_time_limit,
     queue="ingest",
 )
-@guard_stage_run("detect_and_translate")
+@guard_stage_run("detect_and_translate",
+    lifecycle=True,
+    next_stage="derive_document_metadata",
+    next_task="app.workers.pipeline.derive_document_metadata")
 def detect_and_translate(self, document_id: str, run_id: str | None = None) -> dict:
     """Detect non-English elements and translate them via Ollama."""
     import json as json_mod
@@ -5064,7 +5073,10 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
     time_limit=settings.picture_desc_time_limit,
     queue="ingest",
 )
-@guard_stage_run("derive_picture_descriptions")
+@guard_stage_run("derive_picture_descriptions",
+    lifecycle=True,
+    next_stage="derive_text_embeddings",
+    next_task="app.workers.pipeline.derive_text_chunks_and_embeddings")
 def derive_picture_descriptions(self, document_id: str, run_id: str | None = None) -> dict:
     """Enrich picture items with LLM-generated descriptions using document summary context."""
     import json as json_mod
@@ -5282,7 +5294,10 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
 
 @celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,
                  time_limit=settings.finalize_time_limit, queue="ingest")
-@guard_stage_run("purge_document_derivations")
+@guard_stage_run("purge_document_derivations",
+    lifecycle=True,
+    next_stage="derive_picture_descriptions",
+    next_task="app.workers.pipeline.derive_picture_descriptions")
 def purge_document_derivations(self, document_id: str, run_id: str | None = None) -> str:
     """Delete stale derived data for a document before re-deriving.
 
@@ -5408,7 +5423,10 @@ def _build_native_chunk_meta(
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
-@guard_stage_run("derive_text_embeddings")
+@guard_stage_run("derive_text_embeddings",
+    lifecycle=True,
+    next_stage="derive_image_embeddings",
+    next_task="app.workers.pipeline.derive_image_embeddings")
 def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
 
@@ -5889,7 +5907,10 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
-@guard_stage_run("derive_image_embeddings")
+@guard_stage_run("derive_image_embeddings",
+    lifecycle=True,
+    next_stage="derive_document_anchors",
+    next_task="app.workers.pipeline.derive_document_anchors")
 def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read image document_elements → CLIP embed → upsert image_chunks.
 
@@ -6104,7 +6125,10 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
     soft_time_limit=settings.finalize_soft_time_limit,
     time_limit=settings.finalize_time_limit,
 )
-@guard_stage_run("derive_document_anchors")
+@guard_stage_run("derive_document_anchors",
+    lifecycle=True,
+    next_stage="derive_ontology_graph",
+    next_task="app.workers.pipeline.derive_ontology_graph")
 def derive_document_anchors(self, document_id: str, run_id: str | None = None) -> dict:
     """Emit ontology DOCUMENT / SECTION / FIGURE / TABLE vertices and
     their structural edges (HAS_SECTION / HAS_FIGURE / HAS_TABLE /
@@ -7544,7 +7568,11 @@ def reconcile_ontology_graph_runs(self) -> dict:
     soft_time_limit=600,
     name="app.workers.pipeline.derive_ontology_graph",
 )
-@guard_stage_run("derive_ontology_graph")
+@guard_stage_run("derive_ontology_graph",
+    lifecycle=True,
+    next_stage=None,
+    next_task=None,
+    intercept_terminal=False)
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
     """Thin dispatcher: create summary StageRun then fan-out to per-pass tasks.
 
