@@ -1,0 +1,31 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-10-pipeline-stage-dispatch-ledger.md",
+  "specPath": "docs/superpowers/specs/2026-05-10-pipeline-stage-dispatch-ledger-design.md",
+  "lastUpdated": "2026-05-10T00:00:00Z",
+  "tasks": [
+    {"id": 1,  "subject": "Task 1: Alembic migration 0020_stage_dispatch_columns",                    "status": "pending"},
+    {"id": 2,  "subject": "Task 2: Extend StageRun model + StageRunStatus enum",                       "status": "pending", "blockedBy": [1]},
+    {"id": 3,  "subject": "Task 3: Add settings max_stage_dispatches + stale_dispatched_threshold",    "status": "pending"},
+    {"id": 4,  "subject": "Task 4: Create _stage_lifecycle module (_LifecycleCtx + _CTX)",             "status": "pending"},
+    {"id": 5,  "subject": "Task 5: STAGE_SUCCESSORS table + LEDGER_SEQUENTIAL_STAGES",                 "status": "pending", "blockedBy": [2]},
+    {"id": 6,  "subject": "Task 6: _resolve_queue 3-tier helper",                                      "status": "pending"},
+    {"id": 7,  "subject": "Task 7: _seed_first_stage helper",                                          "status": "pending", "blockedBy": [2, 6]},
+    {"id": 8,  "subject": "Task 8: _claim_tx1 helper with 6-outcome disambiguation",                   "status": "pending", "blockedBy": [2]},
+    {"id": 9,  "subject": "Task 9: _tx3_complete_and_enqueue_next (single-tx commit)",                 "status": "pending", "blockedBy": [4, 7]},
+    {"id": 10, "subject": "Task 10: _tx4_finalize_failure (retryable + terminal)",                     "status": "pending", "blockedBy": [3, 4]},
+    {"id": 11, "subject": "Task 11: _finalize_after_body body-return contract",                        "status": "pending", "blockedBy": [9, 10]},
+    {"id": 12, "subject": "Task 12: Extend _update_stage_run with _CTX interception",                  "status": "pending", "blockedBy": [4]},
+    {"id": 13, "subject": "Task 13: Extend guard_stage_run with lifecycle kwargs + _CTX management",   "status": "pending", "blockedBy": [8, 11, 12]},
+    {"id": 14, "subject": "Task 14: Dispatcher module skeleton + Celery registration",                 "status": "pending"},
+    {"id": 15, "subject": "Task 15: _run_dispatch_tick + _publish + _undo_claim",                      "status": "pending", "blockedBy": [14]},
+    {"id": 16, "subject": "Task 16: Beat schedule entry (5s cadence)",                                 "status": "pending", "blockedBy": [14]},
+    {"id": 17, "subject": "Task 17: Stale-DISPATCHED reset in _sweep_stale_runs",                      "status": "pending", "blockedBy": [1, 3]},
+    {"id": 18, "subject": "Task 18: Ledger-aware stale-RUNNING CTE + legacy SELECT partitioning",      "status": "pending", "blockedBy": [1, 3, 5]},
+    {"id": 19, "subject": "Task 19: _assert_ledger_wiring + _assert_threshold_envelope (no-op stub)",  "status": "pending", "blockedBy": [5]},
+    {"id": 20, "subject": "Task 20: Wire lifecycle=True on all 9 stage decorators (grep-based)",       "status": "pending", "blockedBy": [5, 13]},
+    {"id": 21, "subject": "Task 21: Rewrite start_ingest_pipeline (seed-and-go, no chain)",            "status": "pending", "blockedBy": [7]},
+    {"id": 22, "subject": "Task 22: Rewrite reingest_graph_only + enable startup assertions",          "status": "pending", "blockedBy": [7, 19, 20]},
+    {"id": 23, "subject": "Task 23: Headline integration regression test (worker death recovery)",     "status": "pending", "blockedBy": [22]},
+    {"id": 24, "subject": "Task 24: Append dispatch-ledger section to VERIFICATION_CHECKLIST.md",      "status": "pending"}
+  ]
+}
