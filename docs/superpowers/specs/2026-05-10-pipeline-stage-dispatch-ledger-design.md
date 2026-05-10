@@ -1,6 +1,6 @@
 # Pipeline Stage Dispatch Ledger — Design
 
-**Status:** Approved (revised after second review pass)
+**Status:** Approved (revised after sixth review pass)
 **Date:** 2026-05-10
 **Author:** Josh (with Claude)
 **Scope:** v1 covers sequential stages 1–9 of the ingest pipeline. Per-pass fan-in inside stage 9 and the post-merge tail (stages 10–12) are out of scope and remain on their existing chain mechanisms.
@@ -48,7 +48,7 @@ State machine on `ingest.stage_runs` (summary rows, `pass_name IS NULL`):
       │                                              │                   inserts next-stage PENDING
       │                                              │                   AND flips self → COMPLETE
       │                                              │                       │
-      │  stale RUNNING > threshold (attempt+=1)      │                       │
+      │  stale RUNNING > threshold (dispatch_attempt+=1) │                   │
       ├──────────────────────────────────────────────┘                       │
       │                                                                      │
       └─── retryable failure (Tx-4: status=PENDING, available_at advances) ──┘
@@ -83,7 +83,7 @@ Boundary of v1:
               └──────────────────────────────────────────────────┘
 ```
 
-> **Note on stage names.** The persisted `stage_runs.stage_name` for the text-embedding stage is `derive_text_embeddings` (the `@guard_stage_run("derive_text_embeddings")` decoration on `pipeline.py:4828`), even though the function is `derive_text_chunks_and_embeddings`. The ledger keys on the persisted name throughout this design.
+> **Note on stage names.** The persisted `stage_runs.stage_name` for the text-embedding stage is `derive_text_embeddings` (the `@guard_stage_run("derive_text_embeddings")` decoration on `pipeline.py:4829`), even though the function is `derive_text_chunks_and_embeddings`. The ledger keys on the persisted name throughout this design.
 
 ### Components added/changed
 
@@ -99,6 +99,7 @@ Boundary of v1:
   - rewrite `start_ingest_pipeline` and `reingest_graph_only` to seed-and-go
   - extend `_sweep_stale_runs`: stale-RUNNING resets to PENDING in same run; stale-DISPATCHED resets to PENDING; remove the `start_ingest_pipeline` re-dispatch branch for ledger-managed stages
 - `app/workers/celery_app.py` — beat schedule entry for the dispatcher (5s); add `app.workers.dispatcher` to `include`
+- `app/config.py` — new setting `max_stage_dispatches` (default 5); existing `stale_stage_run_threshold_seconds` (default 34200 = ~9.5h) and `stale_dispatched_threshold_seconds` (new, default 600 = 10min) are referenced by the new sweeper logic
 
 ## Schema changes
 
@@ -212,15 +213,28 @@ LEDGER_FANOUT_STAGES     = ["derive_ontology_graph"]
 
 `derive_ontology_graph` is in `STAGE_SUCCESSORS` (the dispatcher and lifecycle wrapper both target it) but is excluded from `LEDGER_SEQUENTIAL_STAGES`. The stale-RUNNING sweeper's new ledger logic targets only `LEDGER_SEQUENTIAL_STAGES`. Stage 9's RUNNING state — which legitimately persists for 30+ minutes while per-pass fan-in is active — is owned by the existing `reconcile_ontology_graph_runs` reconciler (`pipeline.py:6668`), unchanged from today.
 
-Queue resolution comes from `celery_app.conf.task_routes` (the codebase's existing single source of truth at `celery_app.py:48-58`):
+Queue resolution comes from a single helper that consults both `celery_app.conf.task_routes` and, as fallback, the task's `queue=` decorator argument. Not every ledger stage is in `task_routes` — `detect_and_translate`, `derive_document_metadata`, and `derive_picture_descriptions` route to the default `celery` queue without explicit `task_routes` entries, and `derive_text_chunks_and_embeddings` / `derive_image_embeddings` / `derive_document_anchors` / `derive_ontology_graph` use both `task_routes` *and* `queue=` decorators. The helper unifies the two sources:
 
 ```python
 def _resolve_queue(task_name: str) -> str:
+    """Return the queue Celery will actually route this task to."""
+    # 1. Explicit task_routes entry wins (matches Celery's own precedence).
     routes = celery_app.conf.task_routes or {}
-    return (routes.get(task_name, {}) or {}).get("queue", "celery")
+    entry = routes.get(task_name)
+    if entry and entry.get("queue"):
+        return entry["queue"]
+    # 2. Decorator-level queue= argument.
+    task = celery_app.tasks.get(task_name)
+    if task is not None:
+        decorator_queue = getattr(task, "queue", None)
+        if decorator_queue:
+            return decorator_queue
+    # 3. Celery's broker default (`celery_app.conf.task_default_queue`,
+    #    which is "celery" unless overridden).
+    return celery_app.conf.task_default_queue or "celery"
 ```
 
-The dispatcher does NOT pass `queue=` to `apply_async`; it lets `task_routes` handle routing. The `queue_name` column on the ledger row is set at insert time via `_resolve_queue` purely for observability.
+The dispatcher does NOT pass `queue=` to `apply_async`; routing precedence inside Celery already follows the same order this helper does, so observability written via `_resolve_queue` matches the runtime destination. The `queue_name` column on the ledger row is set at insert time purely for observability.
 
 ## Stage-task contract
 
@@ -261,7 +275,7 @@ Stage 9:
 class _LifecycleCtx:
     pipeline_run_id: str        # always stored as str
     stage_name: str
-    attempt: int
+    dispatch_attempt: int       # ledger retry counter (NOT Celery retry counter)
     intercept_terminal: bool    # False for stage 9; True otherwise
     next_stage: str | None
     next_task:  str | None
@@ -272,6 +286,66 @@ class _LifecycleCtx:
 _CTX: ContextVar[_LifecycleCtx | None] = ContextVar(
     "stage_lifecycle_ctx", default=None,
 )
+```
+
+**Critical ordering:** `_CTX` is set **only after** CLAIM successfully transitioned a ledger row to RUNNING (1 row updated). The 5 zero-row CLAIM outcomes return early without ever touching `_CTX`, and the legacy-run path (no ledger row at all) runs the body inline without `_CTX`. This guarantees `_CTX` is non-`None` only when there is a live ledger row in RUNNING state that this wrapper invocation owns.
+
+`_CTX.reset(token)` is called in a `finally` block. Celery's prefork worker reuses the same process across many task invocations and does **not** reset Python ContextVars between tasks; without the explicit reset, the ContextVar would leak into subsequent task runs in the same worker process and cause `_update_stage_run` interception to fire on the wrong stage/run.
+
+```python
+def wrapper(self, document_id, run_id=None, *args, **kwargs):
+    # Non-lifecycle invocation — pass through to legacy body unchanged.
+    if not (lifecycle and run_id):
+        return fn(self, document_id, run_id, *args, **kwargs)
+
+    # Tx-1 CLAIM + follow-up SELECT to disambiguate 5 zero-row outcomes.
+    claim = _claim_tx1(
+        run_id=run_id,
+        stage_name=stage_name,
+        celery_task_id=self.request.id,
+        is_celery_retry=(self.request.retries > 0),
+    )
+
+    if claim.outcome == "legacy":
+        # No ledger row at all (pre-deploy chain run). Body owns its own writes.
+        return fn(self, document_id, run_id, *args, **kwargs)
+
+    if claim.outcome != "proceed":
+        # already_complete | concurrent_running | stale_pending | terminal_failed
+        return claim.early_result
+
+    # CLAIM succeeded; row is now RUNNING. Set _CTX only at this point.
+    ctx = _LifecycleCtx(
+        pipeline_run_id=str(run_id),         # normalize at construction
+        stage_name=stage_name,
+        dispatch_attempt=claim.dispatch_attempt,
+        intercept_terminal=intercept_terminal,
+        next_stage=next_stage,
+        next_task=next_task,
+    )
+    token = _CTX.set(ctx)
+    try:
+        result = fn(self, document_id, run_id, *args, **kwargs)
+        if intercept_terminal:
+            _finalize_after_body(ctx, result)
+        return result
+    except CeleryRetry:
+        raise                                   # row stays RUNNING; Celery republishes
+    except Exception as exc:
+        if intercept_terminal:
+            _tx4_finalize_failure(
+                ctx,
+                error=str(exc),
+                celery_retries=self.request.retries,
+                max_retries=self.max_retries,
+            )
+        raise
+    finally:
+        _CTX.reset(token)
+
+# guard_stage_run decorator additionally sets:
+wrapper.stage_name = stage_name      # existing marker (pre-design)
+wrapper._lifecycle = lifecycle       # NEW — read by module-load assertion
 ```
 
 ### Tx-1: CLAIM (stage entry)
@@ -289,19 +363,39 @@ WHERE pipeline_run_id = :run_id
         status IN ('DISPATCHED', 'PENDING')
      OR (status = 'RUNNING' AND :is_celery_retry)   -- Celery-retry re-entry branch
   )
-RETURNING id, attempt;
+RETURNING id, attempt, dispatch_attempt;
 ```
 
-Five outcomes:
+Six outcomes, packaged into the `_claim_tx1` return value (`outcome` ∈ {`proceed`, `legacy`, `already_complete`, `concurrent_running`, `stale_pending`, `terminal_failed`}). When the UPDATE returns 0 rows, the wrapper issues a single follow-up SELECT to disambiguate:
 
-| Result | Meaning | Action |
-|---|---|---|
-| 1 row updated, `is_celery_retry=False` | First worker to claim a freshly-dispatched row | Set `_CTX`, run body |
-| 1 row updated, `is_celery_retry=True` | Celery republished after `self.retry()`; same attempt continues | Set `_CTX`, run body |
-| 0 rows + summary `COMPLETE` | Re-dispatched after success (lost ack, retry storm) | Do NOT set `_CTX`. Return early as `{"status":"skipped","reason":"already_complete"}` |
-| 0 rows + summary `RUNNING` and `is_celery_retry=False` | Concurrent dispatch race | Do NOT set `_CTX`. Return early without touching anything; the other worker owns it |
-| 0 rows + summary `FAILED` | Stage hard-failed previously | Do NOT set `_CTX`. Return early; do not run |
-| 0 rows + no summary at all | **Legacy run** from before deploy (drained chain) | Do NOT set `_CTX`. Run body inline; existing inline `_update_stage_run` writes commit through to DB as today |
+```python
+if rowcount == 0:
+    row = db.execute(text("""
+        SELECT status FROM ingest.stage_runs
+        WHERE pipeline_run_id = :run_id
+          AND stage_name      = :stage_name
+          AND pass_name       IS NULL
+    """), {"run_id": run_id, "stage_name": stage_name}).first()
+    if row is None:
+        outcome = "no_row"          # legacy run
+    else:
+        outcome = row.status        # "COMPLETE" | "RUNNING" | "FAILED" | "PENDING"
+```
+
+| UPDATE rowcount | Follow-up SELECT | `outcome` | Wrapper action | `claim.early_result` |
+|---|---|---|---|---|
+| 1 | (not run) | `proceed` | Set `_CTX`, run body | n/a (body runs) |
+| 0 | row.status = `COMPLETE` | `already_complete` | Return early; `_CTX` never set | `{"stage": stage_name, "status": "skipped", "reason": "already_complete"}` |
+| 0 | row.status = `RUNNING` (and `is_celery_retry=False`) | `concurrent_running` | Return early without touching anything; `_CTX` never set | `None` |
+| 0 | row.status = `PENDING` | `stale_pending` | Return; dispatcher will republish on next tick; `_CTX` never set | `None` |
+| 0 | row.status = `FAILED` | `terminal_failed` | Return; do not run body; `_CTX` never set | `{"stage": stage_name, "status": "terminal_failed", "reason": "stage_previously_failed"}` |
+| 0 | no row | `legacy` | Run body inline; existing inline `_update_stage_run` writes commit through to DB as today; `_CTX` never set | n/a (body runs) |
+
+`None` is preferred for `concurrent_running` and `stale_pending` so that observability won't conflate "wrapper skipped because of race" with "stage genuinely chose to skip" (which would produce a dict via the legitimate `{"status":"skipped",...}` body-return path that the wrapper then treats as Tx-3 success). `terminal_failed` uses the distinct status value `"terminal_failed"` rather than `"skipped"` to keep log-grep distinct: `"skipped"` is exclusively the success-advance signal (either legitimate body-return or `already_complete` race recovery), while `"terminal_failed"` marks a no-op return for a stage of an already-FAILED pipeline_run.
+
+**Note on `concurrent_running` and broker re-delivery.** With `task_acks_late=True` + `task_reject_on_worker_lost=True` (set in `app/workers/celery_app.py:65-66`), the broker can rarely re-deliver a task message after the original worker started but before it ack'd. In that rare case the second worker sees status=RUNNING and `is_celery_retry=False` (retries=0 for the redelivery), and falls into the `concurrent_running` branch — the early-return without touching anything is the safe outcome the design needs in both the redelivery case and the genuine-concurrent-execution case.
+
+Because `_CTX` is set *only* on `proceed`, the contradiction the previous draft had — wrapper sets `_CTX` before CLAIM, then the table claimed certain outcomes wouldn't set `_CTX` — is gone.
 
 The `pass_name IS NULL` clause keeps the wrapper from ever touching per-pass rows under stage 9.
 
@@ -309,7 +403,31 @@ The `pass_name IS NULL` clause keeps the wrapper from ever touching per-pass row
 
 ### Tx-3: ENQUEUE_NEXT (stage success)
 
-After the body returns successfully, the wrapper runs **one transaction** containing two writes:
+After the body returns successfully, the wrapper runs **one SQLAlchemy transaction** wrapping two statements. The transaction boundary is explicit and the bind dicts make the `_CTX` plumbing load-bearing:
+
+```python
+def _tx3_complete_and_enqueue_next(ctx: _LifecycleCtx) -> None:
+    db = _get_db()
+    try:
+        with db.begin():       # one transaction; one commit on context exit
+            db.execute(text(<3a INSERT>), {
+                "run_id":     ctx.pipeline_run_id,
+                "next_stage": ctx.next_stage,
+                "next_queue": _resolve_queue(ctx.next_task),
+                "next_task":  ctx.next_task,
+            })
+            db.execute(text(<3b UPDATE>), {
+                "run_id":     ctx.pipeline_run_id,
+                "stage_name": ctx.stage_name,
+                "metrics":    ctx.pending_metrics,   # populated by interception
+            })
+    finally:
+        db.close()
+```
+
+The metrics passed to Tx-3b are precisely what the stage body wrote via `_update_stage_run("COMPLETE", metrics=...)` — the interception stashed them in `ctx.pending_metrics` rather than committing them, and Tx-3b is now the durable write. The `_resolve_queue` lookup uses `ctx.next_task` (a fully-qualified task path) and returns the actual runtime queue for that task (see "Successor table and queue resolution").
+
+The SQL for the two statements:
 
 ```sql
 -- 3a: insert successor PENDING row (idempotent on the partial unique index)
@@ -331,9 +449,9 @@ SET status      = 'COMPLETE',
 WHERE pipeline_run_id = :run_id
   AND stage_name      = :stage_name
   AND pass_name       IS NULL;
-
-COMMIT;
 ```
+
+Both statements run inside the `with db.begin():` block and commit together. Any exception inside the block rolls both back atomically — the database guarantee the design depends on.
 
 Conflict target uses index inference (`(pipeline_run_id, stage_name, attempt) WHERE pass_name IS NULL`), matching the actual partial unique index from migration 0016. There is no `ON CONFLICT ON CONSTRAINT <name>` because the underlying object is an index, not a named constraint.
 
@@ -375,30 +493,32 @@ WHERE id = :run_id AND status = 'PROCESSING';
 
 Tx-4 never touches `attempt` — that stays 1 for the ledger row's lifetime. `error_message` (existing column) carries the last error across retries. No new column added beyond `dispatch_attempt`.
 
-### Body return-value contract
+### Body return-value contract — `_finalize_after_body`
 
-Inside the wrapper, after the body returns normally (no exception):
+The wrapper's success path calls `_finalize_after_body(ctx, result)`. This is the function whose call appears in the wrapper skeleton above:
 
 ```python
-result = body(...)
+def _finalize_after_body(ctx: _LifecycleCtx, result) -> None:
+    """Decide between Tx-3 (success, enqueue next stage) and Tx-4 (failure)
+    based on the body's return value and any `_update_stage_run` interception
+    that occurred during the body.
+    """
+    if not ctx.intercept_terminal:        # stage 9: merge owns finalization
+        return
 
-if not ctx.intercept_terminal:        # stage 9: merge owns finalization
-    return result
+    if ctx.pending_status == "FAILED" or (
+        isinstance(result, dict) and result.get("status") in ("FAILED", "failed")
+    ):
+        _tx4_finalize_failure(ctx, error=ctx.pending_error or "stage returned failure status")
+        return
 
-if ctx.pending_status == "FAILED" or (
-    isinstance(result, dict) and result.get("status") in ("FAILED", "failed")
-):
-    _tx4_finalize_failure(ctx, error=ctx.pending_error or "stage returned failure status")
-    return result   # Celery sees the dict; pipeline_run is FAILED at the ledger level
-
-# Normal success — including bodies that return {"status":"skipped",...}.
-# A skipped result is a legitimate no-op completion (e.g., translation disabled,
-# no pictures to describe). Pipeline must advance. Skip metadata is preserved
-# in the row's `metrics` column via the wrapper's interception of the body's
-# `_update_stage_run("COMPLETE", metrics={"skipped": True, "reason": "..."})`
-# call.
-_tx3_complete_and_enqueue_next(ctx)
-return result
+    # Normal success — including bodies that return {"status":"skipped",...}.
+    # A skipped result is a legitimate no-op completion (e.g., translation disabled,
+    # no pictures to describe). Pipeline must advance. Skip metadata is preserved
+    # in the row's `metrics` column via the wrapper's interception of the body's
+    # `_update_stage_run("COMPLETE", metrics={"skipped": True, "reason": "..."})`
+    # call.
+    _tx3_complete_and_enqueue_next(ctx)
 ```
 
 The only way to halt the pipeline from inside a stage body is to raise an exception (Tx-4) or to return a dict with `status in {"FAILED","failed"}` (also Tx-4). A `skipped` return is treated as success — three existing stages (`detect_and_translate`, `derive_document_metadata`, `derive_picture_descriptions`) routinely return `{"status":"skipped",...}` on legitimate no-op completions and the pipeline must advance for them.
@@ -459,7 +579,7 @@ New (design) failure mode:
 
 1. **No orphans on success path.** Successor PENDING is committed in the same tx as `self → COMPLETE`.
 2. **No orphans on worker death.** Body crashes between RUNNING and COMPLETE → row stays RUNNING → sweeper resets to PENDING → dispatcher republishes.
-3. **No double-execution.** CLAIM is a conditional UPDATE; only one worker can flip DISPATCHED→RUNNING (and Celery retry re-entry is single-threaded by Celery's scheduler).
+3. **No double-execution.** CLAIM is a conditional UPDATE; only one worker can flip DISPATCHED→RUNNING. Celery retry re-entry is single-threaded by Celery's scheduler under normal conditions. Under pathological conditions (`task_acks_late=True` + `task_reject_on_worker_lost=True`, set in `app/workers/celery_app.py:65-66`, can cause broker-redelivery after worker crash mid-`self.retry()`), the design *tolerates* the resulting concurrent re-entry rather than preventing it at the CLAIM level: both re-entrant workers would see RUNNING + `is_celery_retry=True`, both would pass CLAIM. This is the same race that exists in the pre-design code today; the pre-design implementation has not produced visible duplicate-execution incidents, and v1 inherits the same posture. A follow-up could tighten CLAIM with `AND celery_task_id = :prior_task_id` once the wrapper has access to the prior id, but is out of scope for v1.
 4. **No premature COMPLETE.** A lifecycle-wrapped stage cannot leave the ledger in a state where `status='COMPLETE'` but the successor row does not exist. The body's terminal-status writes are intercepted; the only commit that flips the row to COMPLETE also inserts the successor.
 5. **No double-retry under Celery `self.retry()`.** When a stage raises `CeleryRetry`, the wrapper passes through unchanged; the row stays RUNNING; Celery's scheduler republishes; the next attempt's CLAIM re-enters via the `is_celery_retry` branch. Tx-4 only fires for non-`CeleryRetry` exceptions or for return-dict-as-failure.
 
@@ -485,20 +605,33 @@ Also: `app.workers.dispatcher` must be added to the `include=` list passed to `C
 ```python
 # app/workers/dispatcher.py  (new file)
 
+from app.services.redis_utils import get_redis   # existing helper
+
 DISPATCH_BATCH_LIMIT = 50
 DISPATCH_LOCK_KEY    = "dispatcher:pipeline_stages"
 DISPATCH_LOCK_TTL    = 30  # seconds
 
 @celery_app.task(bind=True, name="app.workers.dispatcher.dispatch_pending_pipeline_stages")
 def dispatch_pending_pipeline_stages(self) -> dict:
-    redis = _redis_from_celery()
+    redis = get_redis()
     if not redis.set(DISPATCH_LOCK_KEY, self.request.id, nx=True, ex=DISPATCH_LOCK_TTL):
         return {"skipped": "another dispatcher tick is in flight"}
     try:
         return _run_dispatch_tick()
     finally:
         _release_lock_if_owner(redis, DISPATCH_LOCK_KEY, self.request.id)
+
+
+def _release_lock_if_owner(redis, key: str, token: str) -> None:
+    """Lua-CAS release: only the holder of the lock can release it."""
+    redis.eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('del', KEYS[1]) else return 0 end",
+        1, key, token,
+    )
 ```
+
+`get_redis` is the existing helper at `app/services/redis_utils.py`. No new Redis-connection plumbing is introduced.
 
 ### Claim query
 
@@ -547,6 +680,45 @@ def _run_dispatch_tick() -> dict:
             logger.exception("dispatcher: failed to publish stage_run=%s", row.id)
 
     return {"claimed": len(rows), "published": published}
+
+# Race note: if apply_async() succeeds (broker has accepted the message) and a
+# subsequent line inside _publish raises (e.g., the celery_task_id write fails
+# on a transient DB blip), _undo_claim is invoked. Three subcases:
+#   - Worker had not yet picked up the message → row at status='DISPATCHED'.
+#     _undo_claim's WHERE status='DISPATCHED' matches → flips row to PENDING.
+#     Broker delivers the original message to a worker → CLAIM sees PENDING and
+#     is_celery_retry=False → proceeds → body runs once. A subsequent dispatcher
+#     tick would see status=RUNNING (the worker's CLAIM moved it) and skip via
+#     SKIP LOCKED + the WHERE-clause filter.
+#   - Worker picked up the message between DISPATCHED and _undo_claim, ran CLAIM,
+#     row is now status='RUNNING'. _undo_claim's WHERE status='DISPATCHED' finds
+#     0 rows → no-op. Body runs once.
+#   - Worker is mid-body (RUNNING and writing to other tables) when _undo_claim
+#     fires. Same as above: _undo_claim is a no-op because status != 'DISPATCHED'.
+# In every subcase exactly one body execution happens. PENDING ↔ RUNNING are
+# mutually exclusive states, so no second dispatcher tick can re-publish while
+# a worker is mid-body.
+
+
+def _undo_claim(stage_run_id: uuid.UUID, *, error: str) -> None:
+    """Return a stage_run from DISPATCHED back to PENDING after a publish failure.
+
+    Does NOT bump dispatch_attempt — the stage body never ran; this isn't a real
+    attempt. available_at is left at its prior value so the next tick retries
+    immediately.
+    """
+    db = _get_db()
+    try:
+        db.execute(text("""
+            UPDATE ingest.stage_runs
+            SET status        = 'PENDING',
+                dispatched_at = NULL,
+                error_message = COALESCE(error_message, '') || ' publish_failed: ' || :err
+            WHERE id = :id AND status = 'DISPATCHED'
+        """), {"id": stage_run_id, "err": error})
+        db.commit()
+    finally:
+        db.close()
 ```
 
 ### Publish helper
@@ -583,7 +755,7 @@ def _publish(task_name, document_id, run_id, stage_run_id):
 
 ### Stale-row sweeping (extends `_sweep_stale_runs`)
 
-The existing sweeper (`pipeline.py:1814`) is the only place in the codebase that's allowed to repair stale ledger state. v1 changes its behavior in four ways:
+The existing sweeper (`pipeline.py:1970` (entry point) / `pipeline.py:1814` (helper body)) is the only place in the codebase that's allowed to repair stale ledger state. v1 changes its behavior in four ways:
 
 1. **Stale RUNNING for `LEDGER_SEQUENTIAL_STAGES` (stages 1–8): reset to PENDING or terminalize based on dispatch cap.** Stage 9 is *excluded* — it legitimately stays RUNNING for the entire per-pass fan-in window, and is the existing `reconcile_ontology_graph_runs` reconciler's responsibility. A single CTE handles retryable and terminal cases atomically:
 
@@ -653,14 +825,32 @@ The existing sweeper (`pipeline.py:1814`) is the only place in the codebase that
 
 4. **Stale RUNNING for stages outside `STAGE_SUCCESSORS`** (per-pass rows, post-merge stages 10–12): existing FAILED+`start_ingest_pipeline` path is preserved.
 
-### Stale threshold constraint vs. Celery retries
+### Stale threshold constraint
 
-`stale_stage_run_threshold_seconds` (the RUNNING threshold) must exceed `max_retries × default_retry_delay` for any wrapped stage; otherwise the sweeper would preempt Celery's own retry timer mid-cycle. The largest configured product across stages 1–9 today is roughly:
+`stale_stage_run_threshold_seconds` must exceed two things simultaneously for every ledger-wrapped stage:
 
-- `derive_picture_descriptions` — `max_retries = settings.picture_desc_max_retries` (default 3) × `settings.picture_desc_retry_delay` (default 300s) = 15 min.
-- Most other stages: 2 retries × 60s = 2 min.
+1. **The stage's `time_limit`** — the maximum wall-clock duration of a single attempt. A healthy long-running attempt cannot be preempted by the sweeper while it's still inside Celery's hard time limit. Current per-stage time limits (`app/config.py`):
+   - `picture_desc_time_limit = 21600` (6 hours)
+   - `translation_time_limit = 8100` (~2.25 hours)
+   - `embed_time_limit = 4500` (75 minutes)
 
-Setting `stale_stage_run_threshold_seconds = 30 * 60` (30 min) gives 2× margin over the worst case. Document the constraint in `app/settings.py` next to the setting, and add a startup assertion in `celery_app.py` that fails loud if any wrapped stage's `max_retries × default_retry_delay` exceeds the threshold.
+2. **The stage's full retry envelope** — `max_retries × default_retry_delay`, the time over which Celery's own retry machinery may legitimately keep the row in RUNNING/PENDING limbo.
+
+Today's setting `stale_stage_run_threshold_seconds = 34200` (~9.5 hours) was calibrated against the largest `time_limit` (`picture_desc_time_limit + margin`). v1 **keeps this setting unchanged** and uses it for the new ledger sweeper too. Reusing the existing value avoids introducing a parallel knob to keep in sync.
+
+The startup assertion in `celery_app.py` fails loud if for any task whose name appears in `STAGE_SUCCESSORS`:
+
+```python
+# task.run is the registered task's call target — the wrapped function whose
+# `stage_name` and `_lifecycle` markers were set by guard_stage_run.
+envelope = task.time_limit + task.max_retries * task.default_retry_delay
+assert settings.stale_stage_run_threshold_seconds >= envelope, (
+    f"stale_stage_run_threshold_seconds ({settings.stale_stage_run_threshold_seconds}) "
+    f"must exceed envelope ({envelope}) for ledger stage {task.run.stage_name}"
+)
+```
+
+Setting the threshold to 30 minutes (as an earlier draft of this spec proposed) would have preempted healthy long-running attempts of `derive_picture_descriptions`, `translation`, and `embed` mid-execution — a critical bug caught in third review.
 
 ### Observability
 
@@ -758,7 +948,9 @@ This is the path that resumes the two stalled docs (`Radar Basics.pdf`, `radar2_
 
 ### Watcher
 
-No change. `app/workers/watcher.py:178` calls `start_ingest_pipeline(document_id)` and stores the returned `pipeline_run_id`; it discards `celery_task_id`.
+`app/workers/watcher.py:178-191` calls `start_ingest_pipeline(document_id)` and stores both `pipeline_run_id` and `celery_task_id` on the `Document` row. Under the new design, `celery_task_id` will always be the empty string `""` for newly-watcher-ingested documents (because the new entry point returns `celery_task_id=""`). The `Document.celery_task_id` column is `Optional[str]` (`app/models/ingest.py:78`), so empty-string writes are accepted. This matches the existing fallback behavior when `start_ingest_pipeline` returns the row of an already-active run (which also produces `celery_task_id=""`). Watcher code itself needs no changes.
+
+**Downstream consumers of `Document.celery_task_id`:** any code that filters or joins on a non-empty value should treat `""` and `NULL` equivalently. The implementation task includes auditing this column's consumers before merging.
 
 ### Modes that don't change in v1
 
@@ -847,7 +1039,7 @@ def test_legacy_stage_unaffected_when_no_lifecycle_ctx():
 | Test | What it asserts |
 |---|---|
 | `test_stage_successors_form_a_dag` | Every key in `STAGE_SUCCESSORS` reachable from `prepare_document`; no cycles |
-| `test_resolve_queue_matches_task_routes` | `_resolve_queue` returns the queue from `task_routes` for every task in `STAGE_SUCCESSORS` |
+| `test_resolve_queue_returns_actual_runtime_queue` | For every task in `STAGE_SUCCESSORS`, `_resolve_queue` returns the same queue name that an `apply_async()` call (without `queue=` override) would route to. Covers task_routes entries (`prepare_document → ingest`, `derive_image_embeddings → embed`, etc.) AND decorator-only fallbacks (`detect_and_translate → celery`, `derive_document_metadata → celery`, `derive_picture_descriptions → celery`) AND the broker default |
 | `test_claim_first_dispatched_then_complete_skips_body` | Re-dispatch after success → wrapper returns early, `_CTX` not set |
 | `test_claim_running_concurrent_no_retry_skips_body` | RUNNING + `is_celery_retry=False` → skip, `_CTX` not set |
 | `test_claim_running_celery_retry_proceeds` | RUNNING + `is_celery_retry=True` → CLAIM succeeds, body runs |
@@ -881,6 +1073,12 @@ def test_legacy_stage_unaffected_when_no_lifecycle_ctx():
 | `test_stale_threshold_exceeds_celery_retry_envelope` | Startup assertion fails if any wrapped stage's max_retries × default_retry_delay > threshold |
 | `test_drain_legacy_run_completes_without_lifecycle` | Pre-deploy PROCESSING run with no ledger row finishes normally; existing inline writes commit |
 | `test_lifecycle_enforcement_assertion` | Define a `STAGE_SUCCESSORS` key whose registered task lacks `task.run._lifecycle is True` → `RuntimeError` at import |
+| `test_ctx_var_reset_between_tasks` | Run two synthetic tasks back-to-back in the same process; assert `_CTX.get() is None` at the start of the second wrapper invocation regardless of what the first did |
+| `test_reingest_graph_only_seeds_pending_then_dispatcher_publishes` | Call `reingest_graph_only` from a test fixture; assert one PENDING row for `derive_document_anchors` exists with `task_name` set; dispatcher tick publishes it; row reaches RUNNING within 5s |
+| `test_claim_zero_rows_disambiguation` | Force each of the 5 zero-row outcomes (COMPLETE / RUNNING+no-retry / PENDING / FAILED / no-row); assert correct `outcome` value and `_CTX` is never set |
+| `test_ctx_never_set_on_zero_row_claim` | For each zero-row outcome, assert `_CTX.get() is None` both during the early-return and after the wrapper exits |
+| `test_undo_claim_returns_to_pending_without_attempt_bump` | Publish failure path: `_undo_claim` writes status='PENDING', `dispatched_at=NULL`, `dispatch_attempt` unchanged |
+| `test_startup_assertion_envelope_exceeds_threshold` | Patch a stage's `time_limit` to threshold+1; module load must raise `RuntimeError` naming the offending stage |
 
 ### Explicitly NOT tested in v1
 
@@ -890,6 +1088,8 @@ def test_legacy_stage_unaffected_when_no_lifecycle_ctx():
 - Backfill of in-flight runs (drain rollout means nothing to backfill-test)
 
 ## Live-system verification after deploy
+
+This section covers checks the implementer must perform post-deploy. Functional equivalence to the old chain is verified here rather than in unit tests because the old chain code path is removed by this change — there's no in-process branch to A/B against.
 
 ```bash
 # 1. New ingest goes through the dispatcher.
@@ -909,7 +1109,24 @@ docker exec eip-mmdpp-redis-1 redis-cli LLEN celery
 # 4. Stale-DISPATCHED detection alive.
 docker logs eip-mmdpp-worker-1 --since 30m | grep "stale; reset by dispatcher sweeper"
 # Empty on healthy systems.
+
+# 5. Functional equivalence to old chain (manual A/B).
+#    Capture a baseline from the most recent pre-deploy successful ingest of
+#    each document type (PDF, jpg, txt, handwritten). For each, record:
+#      - Final stage_runs row count and per-stage metrics
+#      - text_chunks and image_chunks counts
+#      - ArcadeDB element/edge counts for that document
+#    Re-ingest the same documents post-deploy and diff. The intermediate
+#    stage_runs row sequence WILL differ (one row per stage now, vs one per
+#    Celery attempt before), but terminal counts and downstream graph state
+#    must match within ±1 (rounding/timing noise on counts).
+
+# 6. Single-doc latency observation (AC12 verification).
+#    Time a fresh ingest of one small-fixture document end-to-end.
+#    Expected: within ~20s of pre-deploy median for the same doc.
 ```
+
+Steps 5 and 6 replace the originally-planned `test_functional_equivalence_to_old_chain` and AC12 unit assertions — both are properties that can only be observed in a live environment, not unit-tested against a code branch that no longer exists.
 
 ## Observability summary
 
@@ -927,7 +1144,9 @@ docker logs eip-mmdpp-worker-1 --since 30m | grep "stale; reset by dispatcher sw
 | Beat is the only trigger; if beat dies, all new ingests stall | Existing `eip-mmdpp-beat-1` already runs scan-watch-directories, community-detection, and stale-sweep; beat being down is an existing top-priority alert |
 | Dispatcher publish loop could amplify a broken broker | `_undo_claim` returns rows to PENDING; LIMIT 50 per tick caps amplification |
 | Stage author forgets to add `lifecycle=True` to `guard_stage_run` | Module-load assertion: iterate `STAGE_SUCCESSORS` keys; for each persisted stage name `s`, locate the registered Celery task whose `task.run.stage_name == s` (the marker `guard_stage_run` sets via `wrapper.stage_name = stage_name`) and assert `task.run._lifecycle is True`. Raise `RuntimeError` at import time on any mismatch |
-| Stale-RUNNING sweeper preempts Celery's own retries | Startup assertion: `stale_stage_run_threshold_seconds` > max(`max_retries × default_retry_delay`) over all wrapped stages. Default 30 min covers current configuration with 2× margin |
+| Stale-RUNNING sweeper preempts Celery's own retries or healthy long-running attempts | Startup assertion: `stale_stage_run_threshold_seconds` ≥ `time_limit + max_retries × default_retry_delay` for every ledger-wrapped stage. Existing setting (34200s / 9.5h) is reused unchanged — it was calibrated against `picture_desc_time_limit=21600` |
+| `_CTX` ContextVar leaks across Celery task invocations in the same prefork worker | Wrapper uses `try/finally` around the body; `_CTX.reset(token)` is in the `finally` block. Test `test_ctx_var_reset_between_tasks` asserts |
+| Watcher writes empty `celery_task_id` to `Document` | Empty-string writes are already accepted (existing fallback behavior). Audit `Document.celery_task_id` consumers during implementation; treat `""` and `NULL` equivalently |
 | Concurrent `start_ingest_pipeline` for same document | Existing `FOR UPDATE` guard on PROCESSING runs prevents this; `_seed_first_stage` is idempotent via `ON CONFLICT DO NOTHING` |
 | Migration creates index that locks the table | Partial index on summary rows is small; `CREATE INDEX CONCURRENTLY` not needed at current table size, can be added if it grows |
 | `_update_stage_run` ID type mismatch silently bypasses interception | Comparison uses `str()` on both sides; test `test_update_stage_run_normalizes_uuid_vs_str` covers both directions |
@@ -944,6 +1163,6 @@ docker logs eip-mmdpp-worker-1 --since 30m | grep "stale; reset by dispatcher sw
 7. Stage 9's summary row is never modified by the ledger sweeper while in RUNNING state — only `reconcile_ontology_graph_runs` (existing) may modify it during fan-in.
 8. All existing pipeline tests still pass.
 9. The headline regression test, the death-window tests, the skipped-advances tests, and the attempt-invariance test all pass.
-10. Documents that complete successfully under the new model produce identical *terminal* `pipeline_runs`, downstream graph state, and chunk/embedding state to documents under the old chain. The *intermediate* stage_runs row sequence differs by design (one row per stage instead of one per Celery attempt; no transient `COMPLETE`-without-successor window), and tests assert the new sequence.
+10. Documents that complete successfully under the new model produce identical *terminal* `pipeline_runs`, downstream graph state, and chunk/embedding state to documents under the old chain. The *intermediate* stage_runs row sequence differs by design (one row per stage instead of one per Celery attempt; no transient `COMPLETE`-without-successor window), and tests assert the new sequence. Functional equivalence to the old chain is verified in **Live-system verification step 5** rather than unit-tested, because the old chain code path is removed by this change.
 11. Pre-deploy PROCESSING runs complete without modification under the legacy code path; their existing inline `_update_stage_run` writes commit through to the DB as today.
-12. No measurable change in successful-document end-to-end latency beyond the expected ~20s mean (8 handoffs × 2.5s avg dispatcher latency).
+12. No measurable change in successful-document end-to-end latency beyond the expected ~20s mean (8 handoffs × 2.5s avg dispatcher latency). Verified in **Live-system verification step 6** rather than unit-tested.
