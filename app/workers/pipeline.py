@@ -2864,66 +2864,141 @@ def reingest_graph_only(doc_id, request) -> dict:
 import functools
 
 
-def guard_stage_run(stage_name: str):
-    """Wrap a pipeline task so uncaught exceptions mark the stage_run FAILED.
+def guard_stage_run(
+    stage_name: str,
+    *,
+    lifecycle: bool = False,
+    next_stage: str | None = None,
+    next_task: str | None = None,
+    intercept_terminal: bool = True,
+):
+    """Wrap a pipeline task with FAILED-on-uncaught-exception safety net.
+
+    Lifecycle additions (v1, spec 2026-05-10):
+    - `lifecycle=True` enables Tx-1 CLAIM, _CTX, Tx-3 / Tx-4.
+    - `next_stage` / `next_task` describe the successor (for Tx-3a).
+    - `intercept_terminal=False` is for stage 9 (derive_ontology_graph), whose
+      summary row's COMPLETE is owned by derive_ontology_graph_merge.
+
+    Without `lifecycle=True`, behaves exactly as before: pass CeleryRetry /
+    SoftTimeLimitExceeded through, terminalize other exceptions.
+
+    Original safety-net rationale: silent-orphan case observed on 2026-04-23 —
+    a task marked RUNNING then died with no log entry and no status update.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(self, document_id, run_id=None, *args, **kwargs):
+            # Non-lifecycle invocation — preserve existing behavior unchanged.
+            if not (lifecycle and run_id):
+                return _guard_existing_body(
+                    self, fn, stage_name, document_id, run_id, *args, **kwargs
+                )
+
+            # Tx-1 CLAIM
+            db = _get_db()
+            try:
+                claim = _claim_tx1(
+                    db, run_id, stage_name,
+                    celery_task_id=str(self.request.id),
+                    is_celery_retry=(self.request.retries > 0),
+                )
+                db.commit()
+            finally:
+                db.close()
+
+            if claim.outcome == "legacy":
+                return _guard_existing_body(
+                    self, fn, stage_name, document_id, run_id, *args, **kwargs
+                )
+            if claim.outcome != "proceed":
+                return claim.early_result
+
+            ctx = _LifecycleCtx(
+                pipeline_run_id=str(run_id),
+                stage_name=stage_name,
+                dispatch_attempt=claim.dispatch_attempt,
+                intercept_terminal=intercept_terminal,
+                next_stage=next_stage,
+                next_task=next_task,
+            )
+            token = _CTX.set(ctx)
+            try:
+                result = fn(self, document_id, run_id, *args, **kwargs)
+                if intercept_terminal:
+                    _finalize_after_body(ctx, result)
+                return result
+            except CeleryRetry:
+                # Re-raise without Tx-4; row stays RUNNING for Celery to republish.
+                raise
+            except Exception as exc:
+                if intercept_terminal:
+                    _tx4_finalize_failure(
+                        ctx,
+                        error=f"{type(exc).__name__}: {exc!r}",
+                        celery_retries=self.request.retries,
+                        max_retries=self.max_retries,
+                    )
+                raise
+            finally:
+                _CTX.reset(token)
+
+        wrapper.stage_name = stage_name                  # pre-existing marker
+        wrapper._lifecycle = lifecycle                   # NEW
+        wrapper._intercept_terminal = intercept_terminal # NEW
+        return wrapper
+    return decorator
+
+
+def _guard_existing_body(self, fn, stage_name, document_id, run_id, *args, **kwargs):
+    """Pre-design guard_stage_run body — preserved for non-lifecycle invocations.
 
     CeleryRetry and SoftTimeLimitExceeded are passed through untouched — those
     are Celery's own control-flow exceptions and the task's existing except
     branches handle them. Any other exception triggers a defensive FAILED
     status write (scoped to the current run_id, if any) and a full traceback
     log, then re-raises so Celery's retry / failure machinery still runs.
-
-    This is a narrow safety net for the silent-orphan case observed on
-    2026-04-23: a task marked RUNNING, then died in a way that left no log
-    entry and no status update. The sweeper catches such orphans eventually;
-    this decorator catches them immediately.
     """
-    def decorator(fn):
-        @functools.wraps(fn)
-        def wrapper(self, document_id, run_id=None, *args, **kwargs):
+    try:
+        return fn(self, document_id, run_id, *args, **kwargs)
+    except CeleryRetry:
+        raise
+    # NOTE: SoftTimeLimitExceeded is intentionally NOT passed through here.
+    # When a task's body calls self.retry(exc=SoftTimeLimitExceeded) on retry
+    # exhaustion, Celery 5 re-raises the provided `exc` itself (not
+    # MaxRetriesExceededError), so SoftTimeLimitExceeded reaches this wrapper
+    # on the final attempt. Letting it fall through to `except Exception`
+    # ensures terminalization on exhaustion.
+    except Exception as exc:
+        logger.exception(
+            "guard_stage_run: %s raised unhandled exception "
+            "(document_id=%s run_id=%s)",
+            stage_name, document_id, run_id,
+        )
+        if run_id:
             try:
-                return fn(self, document_id, run_id, *args, **kwargs)
-            except CeleryRetry:
-                raise
-            # NOTE: SoftTimeLimitExceeded is intentionally NOT passed through
-            # here. When a task's body calls self.retry(exc=SoftTimeLimitExceeded)
-            # on retry exhaustion, Celery 5 re-raises the provided `exc` itself
-            # (not MaxRetriesExceededError), so SoftTimeLimitExceeded reaches
-            # this wrapper on the final attempt. Letting it fall through to
-            # `except Exception` ensures terminalization on exhaustion.
-            except Exception as exc:
+                db = _get_db()
+                try:
+                    _update_stage_run(
+                        db, run_id, stage_name, "FAILED",
+                        attempt=self.request.retries + 1,
+                        error=f"unhandled exception: {exc!r}",
+                    )
+                    db.commit()
+                finally:
+                    db.close()
+            except Exception:
                 logger.exception(
-                    "guard_stage_run: %s raised unhandled exception "
-                    "(document_id=%s run_id=%s)",
-                    stage_name, document_id, run_id,
+                    "guard_stage_run: FAILED-status write also failed "
+                    "for run_id=%s stage=%s",
+                    run_id, stage_name,
                 )
-                if run_id:
-                    try:
-                        db = _get_db()
-                        try:
-                            _update_stage_run(
-                                db, run_id, stage_name, "FAILED",
-                                attempt=self.request.retries + 1,
-                                error=f"unhandled exception: {exc!r}",
-                            )
-                            db.commit()
-                        finally:
-                            db.close()
-                    except Exception:
-                        logger.exception(
-                            "guard_stage_run: FAILED-status write also failed "
-                            "for run_id=%s stage=%s",
-                            run_id, stage_name,
-                        )
-                # Unconditional terminalization: reaching this branch means the
-                # task did not convert the exception via self.retry (which
-                # raises CeleryRetry and is pass-through). The helper preserves
-                # existing terminal statuses.
-                _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
-                raise
-        wrapper.stage_name = stage_name  # surfaced for test introspection
-        return wrapper
-    return decorator
+        # Unconditional terminalization: reaching this branch means the task
+        # did not convert the exception via self.retry (which raises
+        # CeleryRetry and is pass-through). The helper preserves existing
+        # terminal statuses.
+        _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
+        raise
 
 
 def _update_stage_run(
