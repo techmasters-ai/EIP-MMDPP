@@ -33,6 +33,7 @@ celery_app = Celery(
         "app.workers.watcher",
         "app.workers.trusted_data_tasks",
         "app.workers.community_tasks",
+        "app.workers.dispatcher",
     ],
 )
 
