@@ -2309,6 +2309,33 @@ LEDGER_SEQUENTIAL_STAGES = [s for s in STAGE_SUCCESSORS if s != "derive_ontology
 LEDGER_FANOUT_STAGES     = ["derive_ontology_graph"]
 
 
+def _resolve_queue(task_name: str) -> str:
+    """Return the queue Celery will actually route a task to.
+
+    3-tier precedence (matches Celery's own lookup order):
+    1. Explicit `task_routes[task_name]["queue"]` from celery_app.conf
+    2. The task's decorator `queue=` argument (via celery_app.tasks[name].queue,
+       which Celery exposes through Task._get_exec_options() and apply_async()
+       honors at send time)
+    3. Broker default (celery_app.conf.task_default_queue, "celery" unless overridden)
+
+    All current ledger stages resolve via tiers 1–2; tier 3 is the safety net
+    for any task that is neither in task_routes nor decorated with queue=.
+    The helper unifies the lookup so the ledger's queue_name column matches
+    the runtime destination.
+    """
+    routes = celery_app.conf.task_routes or {}
+    entry = routes.get(task_name)
+    if entry and entry.get("queue"):
+        return entry["queue"]
+    task = celery_app.tasks.get(task_name)
+    if task is not None:
+        decorator_queue = getattr(task, "queue", None)
+        if decorator_queue:
+            return decorator_queue
+    return celery_app.conf.task_default_queue or "celery"
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,
