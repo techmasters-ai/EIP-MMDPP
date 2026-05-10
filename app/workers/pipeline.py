@@ -2336,6 +2336,38 @@ def _resolve_queue(task_name: str) -> str:
     return celery_app.conf.task_default_queue or "celery"
 
 
+def _seed_first_stage(
+    db,
+    *,
+    pipeline_run_id: str,
+    stage_name: str,
+    task_name: str,
+) -> None:
+    """Insert the initial PENDING ledger row for a pipeline_run.
+
+    Idempotent on the partial unique index (pipeline_run_id, stage_name, attempt)
+    WHERE pass_name IS NULL — a second call is a no-op.
+
+    Caller is responsible for db.commit().
+    """
+    queue = _resolve_queue(task_name)
+    db.execute(text("""
+        INSERT INTO ingest.stage_runs
+            (id, pipeline_run_id, stage_name, attempt, status,
+             queue_name, task_name, available_at, dispatch_attempt)
+        VALUES (gen_random_uuid(), :run_id, :stage, 1, 'PENDING',
+                :queue, :task, NOW(), 1)
+        ON CONFLICT (pipeline_run_id, stage_name, attempt)
+        WHERE pass_name IS NULL
+        DO NOTHING
+    """), {
+        "run_id": pipeline_run_id,
+        "stage":  stage_name,
+        "queue":  queue,
+        "task":   task_name,
+    })
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,
