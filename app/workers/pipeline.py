@@ -1835,6 +1835,71 @@ def _sweep_stale_runs() -> int:
         )
         db.commit()
 
+        # ── ledger stale-RUNNING (spec 2026-05-10) ──────────────────────────
+        # Sequential stages 1–8 (LEDGER_SEQUENTIAL_STAGES): under cap → reset
+        # to PENDING with attempt bump; at/over cap → terminalize stage_run +
+        # pipeline_run. Stage 9 (derive_ontology_graph) is intentionally
+        # excluded — `reconcile_ontology_graph_runs` is its sole owner during
+        # fan-in and its summary row legitimately stays RUNNING.
+        db.execute(
+            text(
+                """
+                WITH stale AS (
+                    SELECT sr.id, sr.pipeline_run_id,
+                           sr.dispatch_attempt + 1 AS next_attempt
+                    FROM ingest.stage_runs sr
+                    JOIN ingest.pipeline_runs pr ON pr.id = sr.pipeline_run_id
+                    WHERE sr.status     = 'RUNNING'
+                      AND sr.pass_name  IS NULL
+                      AND sr.stage_name = ANY(:ledger_sequential_stages)
+                      AND sr.started_at < NOW() - make_interval(secs => :threshold)
+                      AND pr.status     = 'PROCESSING'
+                ),
+                retryable AS (
+                    UPDATE ingest.stage_runs sr
+                    SET status           = 'PENDING',
+                        dispatch_attempt = s.next_attempt,
+                        started_at       = NULL,
+                        dispatched_at    = NULL,
+                        available_at     = NOW(),
+                        error_message    = COALESCE(sr.error_message, '')
+                                           || ' stale; reset by sweeper'
+                    FROM stale s
+                    WHERE sr.id = s.id AND s.next_attempt <= :max_dispatches
+                    RETURNING sr.id
+                ),
+                terminal AS (
+                    UPDATE ingest.stage_runs sr
+                    SET status           = 'FAILED',
+                        finished_at      = NOW(),
+                        dispatch_attempt = s.next_attempt,
+                        error_message    = COALESCE(sr.error_message, '')
+                                           || ' stale; max dispatches reached'
+                    FROM stale s
+                    WHERE sr.id = s.id AND s.next_attempt > :max_dispatches
+                    RETURNING sr.pipeline_run_id
+                )
+                UPDATE ingest.pipeline_runs pr
+                SET status        = 'FAILED',
+                    finished_at   = NOW(),
+                    error_message = COALESCE(pr.error_message, '')
+                                    || ' stage exceeded max dispatches'
+                FROM terminal t
+                WHERE pr.id = t.pipeline_run_id AND pr.status = 'PROCESSING'
+                """
+            ),
+            {
+                "ledger_sequential_stages": LEDGER_SEQUENTIAL_STAGES,
+                "threshold": threshold,
+                "max_dispatches": settings.max_stage_dispatches,
+            },
+        )
+        db.commit()
+
+        # Legacy stale-RUNNING handler. Excludes every ledger-owned stage:
+        #   • LEDGER_SEQUENTIAL_STAGES (1–8) — owned by the CTE above.
+        #   • LEDGER_FANOUT_STAGES (stage 9, derive_ontology_graph) — owned
+        #     by reconcile_ontology_graph_runs during per-pass fan-in.
         stale_rows = db.execute(
             text(
                 """
@@ -1844,9 +1909,15 @@ def _sweep_stale_runs() -> int:
                 WHERE sr.status = 'RUNNING'
                   AND sr.started_at < NOW() - make_interval(secs => :threshold)
                   AND pr.status = 'PROCESSING'
+                  AND sr.stage_name <> ALL(:ledger_excluded_stages)
                 """
             ),
-            {"threshold": threshold},
+            {
+                "threshold": threshold,
+                "ledger_excluded_stages": (
+                    LEDGER_SEQUENTIAL_STAGES + LEDGER_FANOUT_STAGES
+                ),
+            },
         ).fetchall()
 
         if not stale_rows:
