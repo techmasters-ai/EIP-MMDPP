@@ -3996,27 +3996,64 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
         base_key = f"artifacts/{document_id}"
         bucket = settings.minio_bucket_derived
 
-        try:
-            original_md = download_bytes_sync(bucket, f"{base_key}/docling_document.md").decode("utf-8")
-        except Exception:
-            # TODO #86: surface as a real degradation, not a silent skip. Without
-            # markdown the document has no summary/date/source/classification,
-            # downstream stages take their own skip branches, and graph extraction
-            # runs against an empty anchor set (see TODO #87). Tag the doc as
-            # PARTIAL_COMPLETE so the UI distinguishes it from clean completes.
-            logger.warning(
-                "derive_document_metadata: no markdown available for %s — "
-                "escalating to PARTIAL_COMPLETE (downstream stages will skip)",
-                document_id,
+        # Defensive: try the download up to 3 times with a 2s sleep between
+        # attempts. Observed (2026-05-09) on a .txt doc whose markdown DID
+        # land in MinIO at prepare_document time but which `download_bytes_sync`
+        # raised on (transient — exception was swallowed without logging).
+        # Capture the last exception so the swallow doesn't mask repeat bugs.
+        original_md = None
+        _md_last_exc: Exception | None = None
+        for _md_attempt in range(3):
+            try:
+                original_md = download_bytes_sync(bucket, f"{base_key}/docling_document.md").decode("utf-8")
+                break
+            except Exception as _md_exc:
+                _md_last_exc = _md_exc
+                if _md_attempt < 2:
+                    import time as _time
+                    _time.sleep(2.0)
+        if original_md is None:
+            # Distinguish "expected skip for image-only/no-text doc" from
+            # "real bug where text exists but markdown is missing".
+            # If the document has any text-bearing element, missing markdown
+            # IS a real degradation — escalate to PARTIAL_COMPLETE. If it has
+            # only image elements (or no elements yet), skipping is the correct
+            # outcome and the document is COMPLETE for what it can do.
+            logger.info(
+                "derive_document_metadata: markdown download failed for %s "
+                "after 3 attempts (last_exc=%s)",
+                document_id, type(_md_last_exc).__name__ if _md_last_exc else "None",
             )
-            _update_document_status(
-                document_id, STATUS_PARTIAL_COMPLETE,
-                stage="derive_document_metadata", error="no_markdown",
-            )
+            from app.models.ingest import DocumentElement as _DE
+            from sqlalchemy import select as _sa_sel, func as _sa_func
+            text_element_count = db.execute(
+                _sa_sel(_sa_func.count(_DE.id)).where(
+                    _DE.document_id == uuid.UUID(document_id),
+                    _DE.element_type.in_(("text", "heading", "table", "equation")),
+                    _DE.content_text.isnot(None),
+                )
+            ).scalar() or 0
+            if text_element_count > 0:
+                logger.warning(
+                    "derive_document_metadata: no markdown for %s but doc "
+                    "has %d text elements — escalating to PARTIAL_COMPLETE",
+                    document_id, text_element_count,
+                )
+                _update_document_status(
+                    document_id, STATUS_PARTIAL_COMPLETE,
+                    stage="derive_document_metadata", error="no_markdown_with_text_elements",
+                )
+            else:
+                logger.info(
+                    "derive_document_metadata: no markdown for %s — expected "
+                    "(doc has 0 text elements; image-only or empty)",
+                    document_id,
+                )
             if run_id:
                 _update_stage_run(db, run_id, "derive_document_metadata", "COMPLETE",
                                   attempt=self.request.retries + 1,
-                                  metrics={"skipped": True, "reason": "no_markdown"})
+                                  metrics={"skipped": True, "reason": "no_markdown",
+                                           "text_element_count": text_element_count})
                 db.commit()
             return {"stage": "derive_document_metadata", "status": "skipped", "reason": "no_markdown"}
 
@@ -4129,24 +4166,40 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
         ).scalars().all()
 
         if not elements:
-            # TODO #86: same root cause as derive_document_metadata's no_markdown
-            # branch — prepare_document landed an empty document. Surface as
-            # PARTIAL_COMPLETE so the UI flags the doc instead of marking it
-            # clean. Don't escalate if a previous stage already escalated; the
-            # status helper handles that idempotently via stage attribution.
-            logger.warning(
-                "detect_and_translate: no eligible elements for %s — "
-                "escalating to PARTIAL_COMPLETE (no parsed text to translate)",
-                document_id,
-            )
-            _update_document_status(
-                document_id, STATUS_PARTIAL_COMPLETE,
-                stage="detect_and_translate", error="no_elements",
-            )
+            # Distinguish image-only / no-text docs (legitimate skip) from
+            # docs that should have text but don't (real bug). Image-only
+            # docs have element_type='image' rows but no text-eligible ones,
+            # and that's the correct shape for them — they go through picture
+            # description + image embedding instead. Only escalate when the
+            # doc has NO elements of any kind (truly empty extraction).
+            from app.models.ingest import DocumentElement as _DE
+            from sqlalchemy import select as _sa_sel, func as _sa_func
+            any_element_count = db.execute(
+                _sa_sel(_sa_func.count(_DE.id)).where(
+                    _DE.document_id == uuid.UUID(document_id),
+                )
+            ).scalar() or 0
+            if any_element_count == 0:
+                logger.warning(
+                    "detect_and_translate: no elements at all for %s — "
+                    "escalating to PARTIAL_COMPLETE (extraction produced nothing)",
+                    document_id,
+                )
+                _update_document_status(
+                    document_id, STATUS_PARTIAL_COMPLETE,
+                    stage="detect_and_translate", error="no_elements_at_all",
+                )
+            else:
+                logger.info(
+                    "detect_and_translate: no text-eligible elements for %s "
+                    "(has %d non-text elements) — expected for image-only docs",
+                    document_id, any_element_count,
+                )
             if run_id:
                 _update_stage_run(db, run_id, "detect_and_translate", "COMPLETE",
                                   attempt=self.request.retries + 1,
-                                  metrics={"skipped": True, "reason": "no_elements"})
+                                  metrics={"skipped": True, "reason": "no_elements",
+                                           "any_element_count": any_element_count})
                 db.commit()
             return {"stage": "detect_and_translate", "status": "skipped", "reason": "no_elements"}
 
@@ -5226,6 +5279,34 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
+        # Backstop: when the source document is an image (image/jpeg, image/png,
+        # etc.) but Docling's parse produced no element_type='image' row — only
+        # text fragments from layout/OCR detection — the JPEG never reaches
+        # CLIP and is invisible to image-similarity retrieval. Fall back to
+        # embedding the source bytes directly so image-MIME docs always have
+        # at least one ImageChunk vertex. Observed on cw_radar.jpg (2026-05-10).
+        if not elements and doc_obj is not None \
+                and (doc_obj.mime_type or "").startswith("image/") \
+                and doc_obj.storage_key:
+            from types import SimpleNamespace as _NS
+            synthetic = _NS(
+                element_uid=f"source-image-{document_id}",
+                element_order=0,
+                element_type="image",
+                page_number=None,
+                bounding_box=None,
+                content_text=None,
+                storage_bucket=doc_obj.storage_bucket,
+                storage_key=doc_obj.storage_key,
+                artifact_id=None,
+            )
+            elements = [synthetic]
+            logger.info(
+                "derive_image_embeddings: no image elements for %s "
+                "(image-MIME=%s) — using source-bytes backstop",
+                document_id, doc_obj.mime_type,
+            )
+
         chunks_created = 0
         if elements:
             from PIL import Image
@@ -5280,7 +5361,7 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                         chunk_id=str(chunk_id),
                         document_id=document_id,
                         properties={
-                            "artifact_id": str(elem.artifact_id),
+                            "artifact_id": str(elem.artifact_id) if elem.artifact_id is not None else "",
                             "modality": "image",
                             "page_number": elem.page_number,
                             "classification": doc_classification,
@@ -6852,6 +6933,67 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         db.execute(stmt)
 
         bundle_key = run.ontology_bundle_key
+
+        # Empty-content short-circuit: read the prior derive_document_anchors
+        # stage_run metrics and skip dispatch entirely when the document has
+        # no text blocks to extract entities from. Empirically (2026-05-09)
+        # image-only / picture-description-only docs produce 200-2000 chars of
+        # natural-language description that the structured-output extractors
+        # cannot find a root_instance in — every pass fails the quality gate
+        # and burns ~10-20 minutes of LLM pool time per doc. Skip dispatch,
+        # mark the summary stage_run COMPLETE with metrics, and let
+        # derive_ontology_graph_merge close out the chain.
+        anchors_metrics = db.execute(
+            sa.text(
+                "SELECT metrics FROM ingest.stage_runs "
+                "WHERE pipeline_run_id = :run_id "
+                "  AND stage_name = 'derive_document_anchors' "
+                "  AND status = 'COMPLETE' "
+                "  AND pass_name IS NULL "
+                "ORDER BY started_at DESC NULLS LAST LIMIT 1"
+            ),
+            {"run_id": str(run_id)},
+        ).scalar()
+        if isinstance(anchors_metrics, dict):
+            text_blocks = int(anchors_metrics.get("text_block_count", 0) or 0)
+            tables = int(anchors_metrics.get("table_count", 0) or 0)
+            figures = int(anchors_metrics.get("figure_count", 0) or 0)
+            if text_blocks == 0 and tables == 0 and figures == 0:
+                logger.warning(
+                    "derive_ontology_graph: skipping dispatch for %s — "
+                    "anchors had 0 text_blocks/tables/figures (image-only "
+                    "or empty doc); avoiding wasted extraction passes",
+                    document_id,
+                )
+                # Mark the summary stage_run COMPLETE so finalize_document's
+                # REQUIRED_STAGES gate is satisfied without dispatching passes.
+                db.execute(
+                    sa.text(
+                        "UPDATE ingest.stage_runs "
+                        "SET status = 'COMPLETE', execution_status = 'COMPLETE', "
+                        "    finished_at = NOW(), "
+                        "    metrics = COALESCE(metrics, '{}'::jsonb) || "
+                        "      '{\"skipped\": true, \"reason\": \"empty_anchor_set\"}'::jsonb "
+                        "WHERE pipeline_run_id = :run_id "
+                        "  AND stage_name = 'derive_ontology_graph' "
+                        "  AND pass_name IS NULL"
+                    ),
+                    {"run_id": str(run_id)},
+                )
+                db.commit()
+                # Still need to dispatch the merge step so the downstream
+                # finalize chain (collect_derivations → ... → finalize_document)
+                # fires. derive_ontology_graph_merge handles the empty-pass case.
+                from celery import chain as _celery_chain
+                _celery_chain(
+                    derive_ontology_graph_merge.si(document_id, str(run_id))
+                ).apply_async()
+                return {
+                    "stage": "derive_ontology_graph",
+                    "status": "skipped",
+                    "reason": "empty_anchor_set",
+                }
+
         db.commit()
     finally:
         db.close()
