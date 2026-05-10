@@ -2368,6 +2368,97 @@ def _seed_first_stage(
     })
 
 
+@dataclass(frozen=True)
+class _ClaimResult:
+    """Outcome of a Tx-1 CLAIM attempt.
+
+    outcome ∈ {proceed, legacy, already_complete, concurrent_running,
+               stale_pending, terminal_failed}
+    early_result is what the wrapper returns to Celery (None or dict).
+    dispatch_attempt is populated only when outcome == "proceed".
+    """
+    outcome: str
+    early_result: dict | None = None
+    dispatch_attempt: int = 0
+
+
+def _claim_tx1(
+    db,
+    pipeline_run_id: str,
+    stage_name: str,
+    *,
+    celery_task_id: str,
+    is_celery_retry: bool,
+) -> _ClaimResult:
+    """Tx-1 CLAIM: atomically transition a ledger row to RUNNING.
+
+    Returns a _ClaimResult describing one of 6 outcomes. The caller
+    (guard_stage_run wrapper) reads `outcome` to decide whether to set
+    `_CTX` (only on `proceed`), return early (the 4 zero-row outcomes
+    with dict/None payload), or run the body inline (legacy).
+    """
+    update = db.execute(text("""
+        UPDATE ingest.stage_runs
+        SET status         = 'RUNNING',
+            started_at     = COALESCE(started_at, NOW()),
+            celery_task_id = :celery_task_id
+        WHERE pipeline_run_id = :run_id
+          AND stage_name      = :stage_name
+          AND pass_name       IS NULL
+          AND (
+                status IN ('DISPATCHED', 'PENDING')
+             OR (status = 'RUNNING' AND :is_celery_retry)
+          )
+        RETURNING id, attempt, dispatch_attempt
+    """), {
+        "run_id": pipeline_run_id,
+        "stage_name": stage_name,
+        "celery_task_id": celery_task_id,
+        "is_celery_retry": is_celery_retry,
+    }).first()
+
+    if update is not None:
+        return _ClaimResult(outcome="proceed", dispatch_attempt=update.dispatch_attempt)
+
+    # 0 rows updated — follow-up SELECT to disambiguate.
+    current = db.execute(text("""
+        SELECT status FROM ingest.stage_runs
+        WHERE pipeline_run_id = :run_id
+          AND stage_name      = :stage_name
+          AND pass_name       IS NULL
+    """), {"run_id": pipeline_run_id, "stage_name": stage_name}).first()
+
+    if current is None:
+        return _ClaimResult(outcome="legacy", early_result=None)
+
+    if current.status == "COMPLETE":
+        return _ClaimResult(
+            outcome="already_complete",
+            early_result={
+                "stage": stage_name,
+                "status": "skipped",
+                "reason": "already_complete",
+            },
+        )
+    if current.status == "RUNNING":
+        return _ClaimResult(outcome="concurrent_running", early_result=None)
+    if current.status == "PENDING":
+        return _ClaimResult(outcome="stale_pending", early_result=None)
+    if current.status == "FAILED":
+        return _ClaimResult(
+            outcome="terminal_failed",
+            early_result={
+                "stage": stage_name,
+                "status": "terminal_failed",
+                "reason": "stage_previously_failed",
+            },
+        )
+
+    # Defensive: unexpected status (e.g. DISPATCHED visible to follow-up means
+    # CLAIM raced — treat as concurrent and skip).
+    return _ClaimResult(outcome="concurrent_running", early_result=None)
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,
