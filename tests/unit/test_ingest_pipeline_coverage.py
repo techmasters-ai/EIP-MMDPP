@@ -689,12 +689,39 @@ class TestDeriveDocumentMetadata:
 
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
+        mock_db.execute.return_value.scalar.return_value = 1
 
         with patch("app.services.storage.download_bytes_sync", side_effect=Exception("not found")):
             result = derive_document_metadata.run(DOC_ID, RUN_ID)
 
         assert result["status"] == "skipped"
-        assert result["reason"] == "no_markdown"
+        assert result["reason"] == "no_markdown_with_text_elements"
+        mock_update.assert_any_call(
+            DOC_ID,
+            "PARTIAL_COMPLETE",
+            stage="derive_document_metadata",
+            error="no_markdown_with_text_elements",
+        )
+
+    @patch("app.workers.pipeline._update_document_status")
+    @patch("app.workers.pipeline._get_db")
+    @patch("app.workers.pipeline.settings")
+    def test_no_text_elements_skips_before_markdown_download(self, mock_settings, mock_get_db, mock_update):
+        from app.workers.pipeline import derive_document_metadata
+
+        mock_settings.doc_analysis_enabled = True
+        mock_settings.minio_bucket_derived = "derived"
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+        mock_db.execute.return_value.scalar.return_value = 0
+
+        with patch("app.services.storage.download_bytes_sync") as mock_download:
+            result = derive_document_metadata.run(DOC_ID, RUN_ID)
+
+        assert result["status"] == "skipped"
+        assert result["reason"] == "no_text_elements"
+        mock_download.assert_not_called()
 
     @patch("app.workers.pipeline._update_document_status")
     @patch("app.workers.pipeline._get_db")

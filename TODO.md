@@ -845,3 +845,39 @@ The following is the complete standalone review for reference when addressing th
 > - [IBM/docling-graph README](https://raw.githubusercontent.com/IBM/docling-graph/main/README.md)
 > - [docling-project/docling README](https://raw.githubusercontent.com/docling-project/docling/main/README.md)
 > - [ArcadeData/arcadedb repo](https://github.com/ArcadeData/arcadedb)
+
+---
+
+### Code Quality Cleanups
+
+**#86. Replace stringly-typed StageRun status / skip_reason values with enums**
+**Status:** Open. Dedicated cleanup PR — should NOT be mixed with feature work.
+**Files:** `app/workers/pipeline.py` (heavy), `app/models/ingest.py` (StageRun + PipelinePassOutput), test files.
+
+**Observation:**
+StageRun.status, StageRun.execution_status, StageRun.skip_reason, and PipelinePassOutput.execution_status are `String(N)` columns populated with raw string literals scattered across pipeline.py. The strings are matched at multiple call sites:
+- Status values: `"PENDING"`, `"RUNNING"`, `"COMPLETE"`, `"FAILED"` (legacy celery-level column)
+- Execution status: `"COMPLETE"`, `"SKIPPED"`, `"FAILED"`
+- Skip reasons: `"NO_UPSTREAM_ENDPOINTS"`, `"EMPTY_ANCHOR_SET"`, `"disabled"`, `"no_elements"`, `"no_markdown"`, `"no_text_elements"`, `"no_markdown_with_text_elements"`
+
+A casing inconsistency (uppercase `"EMPTY_ANCHOR_SET"` for the column vs lowercase `"empty_anchor_set"` in the metrics JSON) was caught during 2026-05-10 review — exactly the class of bug enums prevent.
+
+The doc-level status already uses module constants (`STATUS_PROCESSING`, `STATUS_COMPLETE`, `STATUS_PARTIAL_COMPLETE`, `STATUS_FAILED`, `STATUS_PENDING_REVIEW`). Extending the same pattern to StageRun/PipelinePassOutput is the natural next step.
+
+**What needs to be done:**
+1. Add `class StageRunStatus(str, Enum)`, `class ExecutionStatus(str, Enum)`, `class SkipReason(str, Enum)` (or string-constant equivalents) in a new `app/models/enums.py` (or alongside the existing `STATUS_*` constants in pipeline.py).
+2. Update `_write_stage_run`, `_update_stage_run`, `check_required_pass_gate`, and the synthetic-StageRun short-circuit to accept/emit enum values.
+3. Replace every raw-string literal in SQL strings, dict literals, and gate `set` membership checks with the enum.
+4. Update tests that hardcode `"COMPLETE"`/`"SKIPPED"`/etc.
+5. Decide whether to migrate the DB columns to `Enum(...)` (stricter, requires alembic) or keep `String(N)` + Python-side validation (simpler).
+
+**Why this matters:**
+- Catches casing/typo mismatches at type-check time.
+- Single source of truth for the authorized skip-reason set; today it's duplicated between writers and the gate's `set` literal.
+- Better IDE autocompletion and refactor safety.
+
+**Acceptance:**
+- No raw `"COMPLETE"`/`"SKIPPED"`/`"FAILED"` string literals in pipeline.py outside the enum definitions.
+- `check_required_pass_gate` uses an enum-backed authorized set.
+- Adding a new authorized skip reason is a one-line enum change, not a multi-file find-and-replace.
+- Existing tests pass without touching their string literals if the enum is `StrEnum` (auto-coerces); otherwise tests are updated.

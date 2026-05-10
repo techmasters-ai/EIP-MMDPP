@@ -168,14 +168,23 @@ def translate_elements(
                         batch_num, len(batch_indices), input_chars, output_chars,
                         bool(translated and _BOUNDARY_STRIPPED in translated))
             if input_chars > 0 and output_chars == 0:
+                # Recall recovery: when the batched call returned literally
+                # nothing (rare — model refused, hit early stop, or both
+                # `content` and `reasoning_content` were empty), the OLD
+                # behavior was to log ERROR and drop. Fall through to
+                # individual per-element translation instead, matching the
+                # other failure modes (no-boundary / wrong-boundary count).
                 logger.error(
                     "TRANSLATION_SILENT_DROP batch=%d batch_size=%d input_chars=%d "
-                    "output_chars=0 — non-empty source but empty translation; %d elements "
-                    "kept as-is, search recall degraded.",
+                    "output_chars=0 — empty batched response; falling back to "
+                    "individual per-element translation for %d elements.",
                     batch_num, len(batch_indices), input_chars, len(batch_indices),
                 )
-
-            if translated and _BOUNDARY_STRIPPED in translated:
+                _translate_individually(
+                    model, prompt, elements, batch_indices, result,
+                    timeout=timeout, max_tokens=max_tokens, think=think,
+                )
+            elif translated and _BOUNDARY_STRIPPED in translated:
                 parts = translated.split(_BOUNDARY_STRIPPED)
                 if len(parts) == len(batch_indices):
                     for idx, part in zip(batch_indices, parts):

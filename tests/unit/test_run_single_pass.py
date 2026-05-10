@@ -424,6 +424,32 @@ class TestCheckRequiredPassGate:
 
         assert result.passed is True
 
+    def test_empty_anchor_set_skip_passes_gate(self):
+        from app.workers.pipeline import check_required_pass_gate
+
+        manifest = _fake_manifest([
+            _fake_pass_def(name="system_links", required=True),
+        ])
+
+        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline._get_db") as mock_get_db:
+            session = MagicMock()
+            mock_get_db.return_value = session
+            q = MagicMock()
+            q.filter.return_value = q
+            q.order_by.return_value = q
+            q.first.return_value = SimpleNamespace(
+                execution_status="SKIPPED",
+                skip_reason="EMPTY_ANCHOR_SET",
+                error_message=None,
+            )
+            session.query = MagicMock(return_value=q)
+            session.get = MagicMock(return_value=SimpleNamespace(ontology_bundle_key="air_defense_v3"))
+
+            result = check_required_pass_gate("00000000-0000-0000-0000-000000000001")
+
+        assert result.passed is True
+
     def test_unauthorized_skip_fails_gate(self):
         from app.workers.pipeline import check_required_pass_gate
 

@@ -28,6 +28,7 @@ Task graph (manifest-first, parallel derivations, idempotent):
 """
 
 import hashlib
+import json
 import logging
 import uuid
 from typing import Any, Literal, Optional
@@ -1495,7 +1496,12 @@ def check_required_pass_gate(pipeline_run_id) -> GateResult:
                 failures.append((pass_name, f"FAILED: {latest.error_message}"))
                 continue
             if latest.execution_status == "SKIPPED":
-                if latest.skip_reason in {"NO_UPSTREAM_ENDPOINTS"}:
+                # EMPTY_ANCHOR_SET: synthesized by derive_ontology_graph when
+                # the prior anchors stage produced 0 text_blocks/tables/figures.
+                # Authorized so docs with no extractable graph content (image-
+                # only / picture-description-only) can finalize as COMPLETE
+                # rather than falling out the FAILED branch of this gate.
+                if latest.skip_reason in {"NO_UPSTREAM_ENDPOINTS", "EMPTY_ANCHOR_SET"}:
                     continue
                 failures.append(
                     (pass_name, f"unauthorized skip: {latest.skip_reason}")
@@ -2053,6 +2059,33 @@ def _update_document_status(
         db.commit()
     finally:
         db.close()
+
+
+def _get_markdown_chars(db, run_id, document_id: str) -> int:
+    """Read markdown size from prepare_document.metrics, falling back to a
+    MinIO read when the metric is missing (older runs / 5xx-fallback path).
+    """
+    row = db.execute(
+        sa.text(
+            "SELECT metrics FROM ingest.stage_runs "
+            "WHERE pipeline_run_id = :run_id "
+            "  AND stage_name = 'prepare_document' "
+            "  AND status = 'COMPLETE' "
+            "  AND pass_name IS NULL "
+            "ORDER BY started_at DESC NULLS LAST LIMIT 1"
+        ),
+        {"run_id": str(run_id)},
+    ).scalar()
+    if isinstance(row, dict) and "markdown_chars" in row:
+        return int(row.get("markdown_chars") or 0)
+    try:
+        from app.services.storage import download_bytes_sync
+        return len(download_bytes_sync(
+            settings.minio_bucket_derived,
+            f"artifacts/{document_id}/docling_document.md",
+        ))
+    except Exception:
+        return 0
 
 
 def _deterministic_artifact_id(document_id: str, element_uid: str) -> uuid.UUID:
@@ -3513,6 +3546,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             "text/markdown",
             "text/csv",
             "text/asciidoc",
+            "text/plain",
         }
         if mime_type not in _DOCLING_MIMES:
             logger.info("prepare_document: %s not supported by Docling (mime=%s), using legacy extraction", document_id, mime_type)
@@ -3579,7 +3613,15 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 document_id,
             )
 
-            _update_stage_run(db, run_id, "prepare_document", "COMPLETE", attempt=self.request.retries + 1, metrics={"fallback": True, "reason": "unsupported_format"})
+            _update_stage_run(
+                db, run_id, "prepare_document", "COMPLETE",
+                attempt=self.request.retries + 1,
+                metrics={
+                    "fallback": True,
+                    "reason": "unsupported_format",
+                    "markdown_chars": len(fallback_md.encode("utf-8")) if fallback_md else 0,
+                },
+            )
             db.commit()
             return document_id
 
@@ -3792,12 +3834,15 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
             )
 
         # Persist DoclingDocument markdown and JSON to MinIO for the viewer
+        markdown_chars = 0
         try:
             from app.services.storage import upload_bytes_sync
             _docling_base = f"artifacts/{document_id}"
             if result.markdown:
+                _md_bytes = _normalize_text(result.markdown).encode("utf-8")
+                markdown_chars = len(_md_bytes)
                 upload_bytes_sync(
-                    _normalize_text(result.markdown).encode("utf-8"),
+                    _md_bytes,
                     settings.minio_bucket_derived,
                     f"{_docling_base}/docling_document.md",
                     content_type="text/markdown; charset=utf-8",
@@ -3840,6 +3885,7 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
                 "processing_time_ms": result.processing_time_ms,
                 "stale_elements_removed": stale_elem_count,
                 "stale_artifacts_removed": stale_art_count,
+                "markdown_chars": markdown_chars,
             },
         )
         db.commit()
@@ -3991,16 +4037,41 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
             _update_stage_run(db, run_id, "derive_document_metadata", "RUNNING", attempt=self.request.retries + 1)
             db.commit()
 
+        # Image-only / handwritten-only docs have no markdown to summarize;
+        # skip without attempting MinIO download.
+        from app.models.ingest import DocumentElement as _DE
+        from sqlalchemy import select as _sa_sel, func as _sa_func
+        text_element_count = db.execute(
+            _sa_sel(_sa_func.count(_DE.id)).where(
+                _DE.document_id == uuid.UUID(document_id),
+                _DE.element_type.in_(("text", "heading", "table", "equation")),
+                _DE.content_text.isnot(None),
+            )
+        ).scalar() or 0
+        if text_element_count == 0:
+            logger.info(
+                "derive_document_metadata: no text elements for %s — "
+                "skipping (image-only / handwritten-only doc; no markdown "
+                "to summarize)",
+                document_id,
+            )
+            if run_id:
+                _update_stage_run(db, run_id, "derive_document_metadata", "COMPLETE",
+                                  attempt=self.request.retries + 1,
+                                  metrics={"skipped": True, "reason": "no_text_elements",
+                                           "text_element_count": 0})
+                db.commit()
+            return {"stage": "derive_document_metadata", "status": "skipped",
+                    "reason": "no_text_elements"}
+
         # Load markdown from MinIO
         from app.services.storage import download_bytes_sync
         base_key = f"artifacts/{document_id}"
         bucket = settings.minio_bucket_derived
 
-        # Defensive: try the download up to 3 times with a 2s sleep between
-        # attempts. Observed (2026-05-09) on a .txt doc whose markdown DID
-        # land in MinIO at prepare_document time but which `download_bytes_sync`
-        # raised on (transient — exception was swallowed without logging).
-        # Capture the last exception so the swallow doesn't mask repeat bugs.
+        # Retry the markdown read — observed transient swallow on a freshly-
+        # written object. Exception type is captured so a recurring failure
+        # mode (NoSuchKey vs ConnectError) is visible.
         original_md = None
         _md_last_exc: Exception | None = None
         for _md_attempt in range(3):
@@ -4013,49 +4084,28 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
                     import time as _time
                     _time.sleep(2.0)
         if original_md is None:
-            # Distinguish "expected skip for image-only/no-text doc" from
-            # "real bug where text exists but markdown is missing".
-            # If the document has any text-bearing element, missing markdown
-            # IS a real degradation — escalate to PARTIAL_COMPLETE. If it has
-            # only image elements (or no elements yet), skipping is the correct
-            # outcome and the document is COMPLETE for what it can do.
-            logger.info(
+            logger.warning(
                 "derive_document_metadata: markdown download failed for %s "
-                "after 3 attempts (last_exc=%s)",
-                document_id, type(_md_last_exc).__name__ if _md_last_exc else "None",
+                "after 3 attempts (last_exc=%s) — doc has %d text elements; "
+                "escalating to PARTIAL_COMPLETE",
+                document_id,
+                type(_md_last_exc).__name__ if _md_last_exc else "None",
+                text_element_count,
             )
-            from app.models.ingest import DocumentElement as _DE
-            from sqlalchemy import select as _sa_sel, func as _sa_func
-            text_element_count = db.execute(
-                _sa_sel(_sa_func.count(_DE.id)).where(
-                    _DE.document_id == uuid.UUID(document_id),
-                    _DE.element_type.in_(("text", "heading", "table", "equation")),
-                    _DE.content_text.isnot(None),
-                )
-            ).scalar() or 0
-            if text_element_count > 0:
-                logger.warning(
-                    "derive_document_metadata: no markdown for %s but doc "
-                    "has %d text elements — escalating to PARTIAL_COMPLETE",
-                    document_id, text_element_count,
-                )
-                _update_document_status(
-                    document_id, STATUS_PARTIAL_COMPLETE,
-                    stage="derive_document_metadata", error="no_markdown_with_text_elements",
-                )
-            else:
-                logger.info(
-                    "derive_document_metadata: no markdown for %s — expected "
-                    "(doc has 0 text elements; image-only or empty)",
-                    document_id,
-                )
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="derive_document_metadata",
+                error="no_markdown_with_text_elements",
+            )
             if run_id:
                 _update_stage_run(db, run_id, "derive_document_metadata", "COMPLETE",
                                   attempt=self.request.retries + 1,
-                                  metrics={"skipped": True, "reason": "no_markdown",
+                                  metrics={"skipped": True,
+                                           "reason": "no_markdown_with_text_elements",
                                            "text_element_count": text_element_count})
                 db.commit()
-            return {"stage": "derive_document_metadata", "status": "skipped", "reason": "no_markdown"}
+            return {"stage": "derive_document_metadata", "status": "skipped",
+                    "reason": "no_markdown_with_text_elements"}
 
         try:
             translated_md = download_bytes_sync(bucket, f"{base_key}/docling_document_translated.md").decode("utf-8")
@@ -4743,6 +4793,16 @@ def _build_native_chunk_meta(
             pn = getattr(p, "page_no", None)
             if pn is not None:
                 page_numbers.add(pn)
+    # HybridChunker exposes the heading hierarchy for each chunk via
+    # chunk.meta.headings (list of section header strings ordered outermost
+    # → innermost). Joining with " / " yields the section_path form used
+    # by retrieval (section filter / section ranking / display crumbs).
+    headings: list[str] = []
+    for h in (getattr(getattr(chunk, "meta", None), "headings", None) or []):
+        if isinstance(h, str) and h.strip():
+            headings.append(h.strip())
+    from app.services.docling_anchors import _build_section_path_string
+    section_path = _build_section_path_string(tuple(headings))
     chunk_key = hashlib.sha256(
         f"{document_id}:native:{chunk_idx}:{model_version}".encode()
     ).hexdigest()
@@ -4758,6 +4818,8 @@ def _build_native_chunk_meta(
         # (per ir_normalizer._attach_evidence_to_prov) filters this down per-node.
         "evidence_ids": list(self_refs),
         "document_id": document_id,
+        "section_path": section_path,
+        "headings": headings,
     }
 
 
@@ -4922,6 +4984,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                             "page_numbers": meta["page_numbers"],
                             "self_refs": meta["self_refs"],
                             "evidence_ids": meta["evidence_ids"],
+                            "section_path": meta.get("section_path"),
+                            "headings": meta.get("headings", []),
                         },
                         embedding=embedding,
                     ))
@@ -5089,6 +5153,19 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             ).hexdigest()
             chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
 
+            # Synthesize a page-scoped section_path so image-description
+            # chunks are filterable by document region. Uses the canonical
+            # `" > "` separator from _build_section_path_string so all
+            # TextChunk section_path values share one convention.
+            from app.services.docling_anchors import _build_section_path_string
+            if img_elem.section_path:
+                img_section_path = img_elem.section_path
+            elif img_elem.page_number is not None:
+                img_section_path = _build_section_path_string(
+                    ("Image Descriptions", f"page {img_elem.page_number}")
+                )
+            else:
+                img_section_path = "Image Descriptions"
             img_desc_texts.append(desc_text)
             img_desc_chunk_metas.append({
                 "chunk_id": chunk_id,
@@ -5097,6 +5174,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                 "chunk_index": chunk_index,
                 "page_number": img_elem.page_number,
                 "section_text": desc_text,
+                "section_path": img_section_path,
                 "element_order": img_elem.element_order,
                 "sec_idx": sec_idx,
             })
@@ -5143,6 +5221,7 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "modality": "image_description",
                         "page_number": meta["page_number"],
                         "classification": doc_classification,
+                        "section_path": meta["section_path"],
                     },
                     embedding=emb,
                 ))
@@ -5279,17 +5358,31 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
             ).order_by(DocumentElement.element_order)
         ).scalars().all()
 
-        # Backstop: when the source document is an image (image/jpeg, image/png,
-        # etc.) but Docling's parse produced no element_type='image' row — only
-        # text fragments from layout/OCR detection — the JPEG never reaches
-        # CLIP and is invisible to image-similarity retrieval. Fall back to
-        # embedding the source bytes directly so image-MIME docs always have
-        # at least one ImageChunk vertex. Observed on cw_radar.jpg (2026-05-10).
+        # Source-bytes backstop: when an image-MIME doc has no
+        # element_type='image' row (Docling parsed only text fragments),
+        # the source JPEG never reaches CLIP. Synthesize an Artifact +
+        # element pointing at the source bytes so the per-element loop
+        # below embeds it.
         if not elements and doc_obj is not None \
                 and (doc_obj.mime_type or "").startswith("image/") \
                 and doc_obj.storage_key:
-            from types import SimpleNamespace as _NS
-            synthetic = _NS(
+            from app.models.ingest import Artifact
+            from types import SimpleNamespace
+            backstop_artifact_id = _deterministic_artifact_id(
+                document_id, "source-image"
+            )
+            db.execute(
+                pg_insert(Artifact).values(
+                    id=backstop_artifact_id,
+                    document_id=uuid.UUID(document_id),
+                    artifact_type="image",
+                    storage_bucket=doc_obj.storage_bucket,
+                    storage_key=doc_obj.storage_key,
+                    classification=doc_classification,
+                ).on_conflict_do_nothing(index_elements=["id"])
+            )
+            db.flush()
+            elements = [SimpleNamespace(
                 element_uid=f"source-image-{document_id}",
                 element_order=0,
                 element_type="image",
@@ -5298,13 +5391,12 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
                 content_text=None,
                 storage_bucket=doc_obj.storage_bucket,
                 storage_key=doc_obj.storage_key,
-                artifact_id=None,
-            )
-            elements = [synthetic]
+                artifact_id=backstop_artifact_id,
+            )]
             logger.info(
-                "derive_image_embeddings: no image elements for %s "
-                "(image-MIME=%s) — using source-bytes backstop",
-                document_id, doc_obj.mime_type,
+                "derive_image_embeddings: source-bytes backstop for %s "
+                "(image-MIME=%s, artifact_id=%s)",
+                document_id, doc_obj.mime_type, backstop_artifact_id,
             )
 
         chunks_created = 0
@@ -5625,16 +5717,15 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
             and text_block_count == 0
         )
         if empty_anchor_set:
+            # No PARTIAL escalation here — the empty_anchor_set short-circuit
+            # in derive_ontology_graph handles graf cleanly, and
+            # finalize_document derives the final status from stage outcomes.
             logger.warning(
-                "derive_document_anchors: empty-anchor-set fallback fired for "
-                "%s — escalating to PARTIAL_COMPLETE (graph extraction will "
-                "run against an empty anchor set)",
+                "derive_document_anchors: empty-anchor-set fallback fired "
+                "for %s (counts all 0) — derive_ontology_graph short-"
+                "circuit will skip extraction; doc may still finalize "
+                "COMPLETE if upstream stages succeeded",
                 document_id,
-            )
-            _update_document_status(
-                document_id, STATUS_PARTIAL_COMPLETE,
-                stage="derive_document_anchors",
-                error="empty_anchor_set_fallback",
             )
 
         logger.info(
@@ -6934,16 +7025,12 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
 
         bundle_key = run.ontology_bundle_key
 
-        # Empty-content short-circuit: read the prior derive_document_anchors
-        # stage_run metrics and skip dispatch entirely when the document has
-        # no text blocks to extract entities from. Empirically (2026-05-09)
-        # image-only / picture-description-only docs produce 200-2000 chars of
-        # natural-language description that the structured-output extractors
-        # cannot find a root_instance in — every pass fails the quality gate
-        # and burns ~10-20 minutes of LLM pool time per doc. Skip dispatch,
-        # mark the summary stage_run COMPLETE with metrics, and let
-        # derive_ontology_graph_merge close out the chain.
-        anchors_metrics = db.execute(
+        # Skip extraction dispatch entirely when the doc has no
+        # extractable content. Every pass would fail the structured-output
+        # quality gate against tiny picture-description blurbs and burn
+        # LLM time. Synthesize SKIPPED rows for required passes so the
+        # merge gate is satisfied and the chain finalizes COMPLETE.
+        anchors_metrics_row = db.execute(
             sa.text(
                 "SELECT metrics FROM ingest.stage_runs "
                 "WHERE pipeline_run_id = :run_id "
@@ -6954,45 +7041,80 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             ),
             {"run_id": str(run_id)},
         ).scalar()
-        if isinstance(anchors_metrics, dict):
-            text_blocks = int(anchors_metrics.get("text_block_count", 0) or 0)
-            tables = int(anchors_metrics.get("table_count", 0) or 0)
-            figures = int(anchors_metrics.get("figure_count", 0) or 0)
-            if text_blocks == 0 and tables == 0 and figures == 0:
-                logger.warning(
-                    "derive_ontology_graph: skipping dispatch for %s — "
-                    "anchors had 0 text_blocks/tables/figures (image-only "
-                    "or empty doc); avoiding wasted extraction passes",
-                    document_id,
+        anchors_metrics = anchors_metrics_row if isinstance(anchors_metrics_row, dict) else {}
+        text_blocks = int(anchors_metrics.get("text_block_count") or 0)
+        tables = int(anchors_metrics.get("table_count") or 0)
+        figures = int(anchors_metrics.get("figure_count") or 0)
+        # The anchor walker only emits TEXT_BLOCK for text near pictures, so
+        # pure-text docs report all-zero anchor counts. Use markdown size
+        # (cached on prepare_document.metrics) as the actual "is this doc
+        # empty?" signal. Falls back to a MinIO read if the metric is
+        # missing (legacy 5xx-fallback path).
+        if anchors_metrics and text_blocks == 0 and tables == 0 and figures == 0:
+            markdown_chars = _get_markdown_chars(db, run_id, document_id)
+        else:
+            markdown_chars = -1  # not consulted
+        if (
+            anchors_metrics
+            and text_blocks == 0 and tables == 0 and figures == 0
+            and markdown_chars < 5000
+        ):
+            logger.warning(
+                "derive_ontology_graph: skipping extraction dispatch for %s "
+                "(text_blocks=0, tables=0, figures=0, markdown=%d chars) — "
+                "synthesizing required pass StageRuns and dispatching merge",
+                document_id, markdown_chars,
+            )
+            # Required passes per the manifest gate. Each needs ONE StageRun
+            # row whose execution_status='SKIPPED' and skip_reason is
+            # authorized so the gate accepts it.
+            # Synthesize one StageRun per required pass so the merge gate
+            # (check_required_pass_gate) is satisfied. SKIPPED + skip_reason
+            # avoids the COMPLETE-with-no-pass_output consistency assertion.
+            manifest_skip = load_bundle_manifest(bundle_key)
+            required_passes = [p for p in manifest_skip.passes if p.required]
+            skip_metrics = {
+                "skipped": True,
+                "reason": "empty_anchor_set",
+                "synthetic": True,
+            }
+            for pass_def in required_passes:
+                _write_stage_run(
+                    pipeline_run_id=run_id,
+                    pass_def=pass_def,
+                    attempt=1,
+                    execution_status="SKIPPED",
+                    yield_status=None,
+                    skip_reason="EMPTY_ANCHOR_SET",
+                    counts={"metrics": skip_metrics},
+                    error=None,
                 )
-                # Mark the summary stage_run COMPLETE so finalize_document's
-                # REQUIRED_STAGES gate is satisfied without dispatching passes.
-                db.execute(
-                    sa.text(
-                        "UPDATE ingest.stage_runs "
-                        "SET status = 'COMPLETE', execution_status = 'COMPLETE', "
-                        "    finished_at = NOW(), "
-                        "    metrics = COALESCE(metrics, '{}'::jsonb) || "
-                        "      '{\"skipped\": true, \"reason\": \"empty_anchor_set\"}'::jsonb "
-                        "WHERE pipeline_run_id = :run_id "
-                        "  AND stage_name = 'derive_ontology_graph' "
-                        "  AND pass_name IS NULL"
-                    ),
-                    {"run_id": str(run_id)},
-                )
-                db.commit()
-                # Still need to dispatch the merge step so the downstream
-                # finalize chain (collect_derivations → ... → finalize_document)
-                # fires. derive_ontology_graph_merge handles the empty-pass case.
-                from celery import chain as _celery_chain
-                _celery_chain(
-                    derive_ontology_graph_merge.si(document_id, str(run_id))
-                ).apply_async()
-                return {
-                    "stage": "derive_ontology_graph",
-                    "status": "skipped",
-                    "reason": "empty_anchor_set",
-                }
+            db.execute(
+                sa.text(
+                    "UPDATE ingest.stage_runs "
+                    "SET status = 'COMPLETE', execution_status = 'COMPLETE', "
+                    "    finished_at = NOW(), "
+                    "    metrics = COALESCE(metrics, '{}'::jsonb) || CAST(:metrics AS jsonb) "
+                    "WHERE pipeline_run_id = :run_id "
+                    "  AND stage_name = 'derive_ontology_graph' "
+                    "  AND pass_name IS NULL"
+                ),
+                {
+                    "run_id": str(run_id),
+                    "metrics": json.dumps({
+                        "skipped": True,
+                        "reason": "empty_anchor_set",
+                    }),
+                },
+            )
+            db.commit()
+            derive_ontology_graph_merge.si(document_id, str(run_id)).apply_async()
+            return {
+                "stage": "derive_ontology_graph",
+                "status": "skipped",
+                "reason": "empty_anchor_set",
+                "required_passes_synthesized": len(required_passes),
+            }
 
         db.commit()
     finally:
@@ -7810,5 +7932,3 @@ def _maybe_trigger_post_ingest_community_detection(document_id: str) -> None:
             "post-ingest community detection trigger failed for %s: %s",
             document_id, exc,
         )
-
-
