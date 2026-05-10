@@ -86,6 +86,7 @@ _redis_client = get_redis()
 # ---------------------------------------------------------------------------
 
 import sqlalchemy as sa  # noqa: E402 — used by _write_stage_run partial-index upsert
+from sqlalchemy import text  # noqa: E402 — used by dispatch-ledger helpers
 from dataclasses import dataclass as _dataclass  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 
@@ -2271,6 +2272,41 @@ def _chord_error_handler(self, request, exc, traceback, document_id: str, run_id
             db.rollback()
         finally:
             db.close()
+
+
+# ── dispatch ledger v1 (spec 2026-05-10) ──────────────────────────────────
+
+
+@dataclass(frozen=True)
+class StageEdge:
+    """Edge in the sequential pipeline graph.
+
+    next_stage is the persisted stage_name (matches @guard_stage_run argument).
+    next_task is the fully-qualified Celery task path. These can differ —
+    e.g. derive_text_embeddings (persisted) ↔ derive_text_chunks_and_embeddings (task).
+    """
+    next_stage: str | None
+    next_task:  str | None
+
+
+STAGE_SUCCESSORS: dict[str, StageEdge] = {
+    "prepare_document":            StageEdge("detect_and_translate",        "app.workers.pipeline.detect_and_translate"),
+    "detect_and_translate":        StageEdge("derive_document_metadata",    "app.workers.pipeline.derive_document_metadata"),
+    "derive_document_metadata":    StageEdge("purge_document_derivations",  "app.workers.pipeline.purge_document_derivations"),
+    "purge_document_derivations":  StageEdge("derive_picture_descriptions", "app.workers.pipeline.derive_picture_descriptions"),
+    "derive_picture_descriptions": StageEdge("derive_text_embeddings",      "app.workers.pipeline.derive_text_chunks_and_embeddings"),
+    "derive_text_embeddings":      StageEdge("derive_image_embeddings",     "app.workers.pipeline.derive_image_embeddings"),
+    "derive_image_embeddings":     StageEdge("derive_document_anchors",     "app.workers.pipeline.derive_document_anchors"),
+    "derive_document_anchors":     StageEdge("derive_ontology_graph",       "app.workers.pipeline.derive_ontology_graph"),
+    "derive_ontology_graph":       StageEdge(None, None),
+}
+
+# Stages 1–8 (sequential). Stage 9 (derive_ontology_graph) is in STAGE_SUCCESSORS
+# but excluded here because its summary row legitimately stays RUNNING for the
+# entire per-pass fan-in window; the existing reconcile_ontology_graph_runs
+# reconciler owns its stale-RUNNING handling.
+LEDGER_SEQUENTIAL_STAGES = [s for s in STAGE_SUCCESSORS if s != "derive_ontology_graph"]
+LEDGER_FANOUT_STAGES     = ["derive_ontology_graph"]
 
 
 def start_ingest_pipeline(
