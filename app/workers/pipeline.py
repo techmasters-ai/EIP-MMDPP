@@ -2832,41 +2832,30 @@ def start_ingest_pipeline(
             use_case_key=use_case_key,
             extraction_profile_version=manifest.extraction_profile_version,
         )
+
+        # ── seed first ledger row (spec 2026-05-10) ───────────────────────
+        # The dispatcher will pick up this PENDING row within 5s and publish
+        # the prepare_document task. From there, each stage's lifecycle wrapper
+        # commits the next stage's PENDING row in the same transaction as its
+        # own COMPLETE — no chain to lose.
+        _seed_first_stage(
+            db,
+            pipeline_run_id=run_id,
+            stage_name="prepare_document",
+            task_name="app.workers.pipeline.prepare_document",
+        )
         db.commit()
     finally:
         db.close()
 
     logger.info(
-        "start_ingest_pipeline: document_id=%s pipeline_run_id=%s bundle=%s",
+        "start_ingest_pipeline: document_id=%s pipeline_run_id=%s bundle=%s "
+        "(ledger seed; dispatcher will publish within 5s)",
         document_id, run_id, resolved_key,
     )
-
-    # Fully sequential pipeline — no chords.  Celery 5.x chords with Redis
-    # silently drop callbacks regardless of positioning, so we run every stage
-    # in a simple chain.  The derivation stages (chunks, embed, graph) lose
-    # parallelism but each takes only 10-60s vs 20+ min for picture descriptions,
-    # so the throughput impact is negligible.
-    #
-    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
-    # from 13 → 9 stages. The downstream chain (collect_derivations →
-    # derive_structure_links → derive_canonicalization → finalize_document) is
-    # now dispatched by derive_ontology_graph_merge after the per-pass fan-in
-    # completes. See app/workers/pipeline.py (derive_ontology_graph_merge).
-    pipeline = chain(
-        prepare_document.si(document_id, run_id),
-        detect_and_translate.si(document_id, run_id),
-        derive_document_metadata.si(document_id, run_id),
-        purge_document_derivations.si(document_id, run_id),
-        derive_picture_descriptions.si(document_id, run_id),
-        derive_text_chunks_and_embeddings.si(document_id, run_id),
-        derive_image_embeddings.si(document_id, run_id),
-        derive_document_anchors.si(document_id, run_id),
-        derive_ontology_graph.si(document_id, run_id),
-    )
-    result = pipeline.apply_async()
     return IngestDispatchResult(
         pipeline_run_id=run_id,
-        celery_task_id=result.id,
+        celery_task_id="",
     )
 
 
