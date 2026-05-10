@@ -2510,6 +2510,82 @@ def _tx3_complete_and_enqueue_next(ctx: _LifecycleCtx) -> None:
         db.close()
 
 
+def _tx4_finalize_failure(
+    ctx: _LifecycleCtx,
+    *,
+    error: str,
+    celery_retries: int,
+    max_retries: int,
+    backoff_seconds: int = 60,
+) -> None:
+    """Tx-4: handle failure of a lifecycle-wrapped stage.
+
+    Retryable if ``ctx.dispatch_attempt + 1 <= settings.max_stage_dispatches``:
+    status → PENDING, dispatch_attempt += 1, available_at advances by backoff,
+    and started_at / dispatched_at are cleared so the next CLAIM is clean.
+
+    Terminal otherwise: stage_run → FAILED and pipeline_run → FAILED in a
+    single ``with db.begin():`` block. The pipeline_run UPDATE is gated on
+    ``status = 'PROCESSING'`` so an earlier FAILED message is preserved.
+
+    ``max_stage_dispatches`` is read inside the function via ``get_settings()``
+    so tests can monkeypatch the live cached `Settings` instance.
+    """
+    _settings = get_settings()
+
+    next_dispatch_attempt = ctx.dispatch_attempt + 1
+    db = _get_db()
+    try:
+        if next_dispatch_attempt <= _settings.max_stage_dispatches:
+            db.execute(text("""
+                UPDATE ingest.stage_runs
+                SET status           = 'PENDING',
+                    dispatch_attempt = :next_da,
+                    available_at     = NOW() + (:backoff || ' seconds')::interval,
+                    started_at       = NULL,
+                    dispatched_at    = NULL,
+                    error_message    = :err
+                WHERE pipeline_run_id = :run_id
+                  AND stage_name      = :stage_name
+                  AND pass_name       IS NULL
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "stage_name": ctx.stage_name,
+                "next_da":    next_dispatch_attempt,
+                "backoff":    str(backoff_seconds),
+                "err":        error,
+            })
+            db.commit()
+            return
+
+        # Terminal — atomic stage_run FAILED + pipeline_run FAILED.
+        with db.begin():
+            db.execute(text("""
+                UPDATE ingest.stage_runs
+                SET status           = 'FAILED',
+                    dispatch_attempt = :next_da,
+                    finished_at      = NOW(),
+                    error_message    = :err
+                WHERE pipeline_run_id = :run_id
+                  AND stage_name      = :stage_name
+                  AND pass_name       IS NULL
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "stage_name": ctx.stage_name,
+                "next_da":    next_dispatch_attempt,
+                "err":        error,
+            })
+            db.execute(text("""
+                UPDATE ingest.pipeline_runs
+                SET status        = 'FAILED',
+                    finished_at   = NOW(),
+                    error_message = :err
+                WHERE id = :run_id AND status = 'PROCESSING'
+            """), {"run_id": ctx.pipeline_run_id, "err": error})
+    finally:
+        db.close()
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,
