@@ -99,6 +99,11 @@ celery_app.conf.update(
             "schedule": settings.reconciler_period_seconds,
             "options": {"queue": "graph"},
         },
+        "dispatch-pending-pipeline-stages": {
+            "task": "app.workers.dispatcher.dispatch_pending_pipeline_stages",
+            "schedule": 5.0,
+            "options": {"queue": "celery"},
+        },
     },
 )
 
