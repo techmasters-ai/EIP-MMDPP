@@ -2586,6 +2586,32 @@ def _tx4_finalize_failure(
         db.close()
 
 
+def _finalize_after_body(ctx: _LifecycleCtx, result) -> None:
+    """Body-return contract: Tx-3 on success, Tx-4 on failure dict / pending FAILED.
+
+    skipped is treated as success — detect_and_translate, derive_document_metadata,
+    derive_picture_descriptions all return {"status":"skipped",...} on legitimate
+    no-op completions and the pipeline must advance.
+    """
+    if not ctx.intercept_terminal:
+        return  # stage 9: merge owns finalization
+
+    failed = (
+        ctx.pending_status == "FAILED"
+        or (isinstance(result, dict) and result.get("status") in ("FAILED", "failed"))
+    )
+    if failed:
+        _tx4_finalize_failure(
+            ctx,
+            error=ctx.pending_error or "stage returned failure status",
+            celery_retries=0,
+            max_retries=0,
+        )
+        return
+
+    _tx3_complete_and_enqueue_next(ctx)
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,
