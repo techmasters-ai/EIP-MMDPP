@@ -2459,6 +2459,57 @@ def _claim_tx1(
     return _ClaimResult(outcome="concurrent_running", early_result=None)
 
 
+from app.workers._stage_lifecycle import _LifecycleCtx, _CTX  # noqa: E402
+
+
+def _tx3_complete_and_enqueue_next(ctx: _LifecycleCtx) -> None:
+    """Tx-3: insert successor PENDING + flip self → COMPLETE, single transaction.
+
+    The central durability guarantee. Both writes commit together; any exception
+    inside the `with db.begin():` block rolls both back atomically, leaving the
+    ledger row in RUNNING for the stale-RUNNING sweeper to recover.
+    """
+    db = _get_db()
+    try:
+        with db.begin():
+            # 3a: insert successor PENDING (idempotent via partial unique index)
+            db.execute(text("""
+                INSERT INTO ingest.stage_runs
+                    (id, pipeline_run_id, stage_name, attempt, status,
+                     queue_name, task_name, available_at, dispatch_attempt)
+                VALUES (gen_random_uuid(), :run_id, :next_stage, 1, 'PENDING',
+                        :next_queue, :next_task, NOW(), 1)
+                ON CONFLICT (pipeline_run_id, stage_name, attempt)
+                WHERE pass_name IS NULL
+                DO NOTHING
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "next_stage": ctx.next_stage,
+                "next_queue": _resolve_queue(ctx.next_task),
+                "next_task":  ctx.next_task,
+            })
+            # 3b: flip self → COMPLETE with metrics stashed by interception.
+            # CAST(:metrics AS jsonb) is required because psycopg2 cannot
+            # adapt a Python dict directly when bound via raw text(); we
+            # serialize to JSON text and let Postgres parse it back.
+            db.execute(text("""
+                UPDATE ingest.stage_runs
+                SET status      = 'COMPLETE',
+                    finished_at = NOW(),
+                    metrics     = CAST(:metrics AS jsonb)
+                WHERE pipeline_run_id = :run_id
+                  AND stage_name      = :stage_name
+                  AND pass_name       IS NULL
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "stage_name": ctx.stage_name,
+                "metrics":    json.dumps(ctx.pending_metrics)
+                              if ctx.pending_metrics is not None else None,
+            })
+    finally:
+        db.close()
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,
