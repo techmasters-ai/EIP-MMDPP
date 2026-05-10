@@ -2977,22 +2977,29 @@ def reingest_graph_only(doc_id, request) -> dict:
             use_case_key=resolved_use_case,
             extraction_profile_version=manifest.extraction_profile_version,
         )
+
+        # ── seed first ledger row for graph_only (spec 2026-05-10) ─────────
+        # Dispatcher picks up derive_document_anchors PENDING within 5s;
+        # the lifecycle wrapper's Tx-3 commits derive_ontology_graph as the
+        # next stage's PENDING when anchors complete.
+        _seed_first_stage(
+            db,
+            pipeline_run_id=run_id,
+            stage_name="derive_document_anchors",
+            task_name="app.workers.pipeline.derive_document_anchors",
+        )
         db.commit()
     finally:
         db.close()
 
-    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
-    # from 4 → 2 stages. Downstream stages (derive_structure_links →
-    # finalize_document) are now dispatched by derive_ontology_graph_merge in
-    # graph_only mode after the per-pass fan-in completes.
-    result = celery_chain(
-        derive_document_anchors.si(doc_id_str, run_id),
-        derive_ontology_graph.si(doc_id_str, run_id),
-    ).apply_async()
-
+    logger.info(
+        "reingest_graph_only: document_id=%s pipeline_run_id=%s bundle=%s "
+        "(ledger seed; dispatcher will publish within 5s)",
+        doc_id_str, run_id, resolved_key,
+    )
     return {
         "pipeline_run_id": run_id,
-        "celery_task_id": result.id,
+        "celery_task_id": "",
         "ontology_bundle_key": resolved_key,
     }
 

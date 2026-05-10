@@ -25,9 +25,16 @@ def test_assert_threshold_envelope_raises_on_misconfiguration(monkeypatch):
         _assert_threshold_envelope()
 
 
-def test_post_register_ledger_checks_is_noop_in_chunk_5():
-    """Until Task 22 activates the body, this must be a no-op."""
+def test_post_register_ledger_checks_runs_assertions_in_chunk_6():
+    """Task 22 (Chunk 6) replaces the no-op body with real assertion calls.
+
+    Calling the function with a fully loaded pipeline module must succeed
+    (no re-entry guard, no RuntimeError) — wiring + threshold envelope are
+    valid in the deployed config.
+    """
     from app.workers.celery_app import _post_register_ledger_checks
-    # Should not raise; should not do anything observable.
+    # Should not raise. _assert_ledger_wiring / _assert_threshold_envelope
+    # both have their own dedicated tests; this asserts the entry-point glue
+    # is wired correctly.
     result = _post_register_ledger_checks()
     assert result is None
