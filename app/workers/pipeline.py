@@ -1813,6 +1813,28 @@ def _sweep_stale_runs() -> int:
 
     db = _get_db()
     try:
+        # ── stale DISPATCHED reset (ledger v1, spec 2026-05-10) ──────────
+        # The dispatcher published a Celery task but a worker did not pick it up
+        # within stale_dispatched_threshold_seconds. Reset to PENDING so the next
+        # tick republishes. dispatch_attempt is unchanged — the stage didn't run.
+        db.execute(
+            text(
+                """
+                UPDATE ingest.stage_runs
+                SET status        = 'PENDING',
+                    dispatched_at = NULL,
+                    error_message = COALESCE(error_message, '')
+                                    || ' stale; reset by dispatcher sweeper'
+                WHERE status        = 'DISPATCHED'
+                  AND pass_name     IS NULL
+                  AND task_name     IS NOT NULL
+                  AND dispatched_at < NOW() - make_interval(secs => :dispatched_threshold)
+                """
+            ),
+            {"dispatched_threshold": settings.stale_dispatched_threshold_seconds},
+        )
+        db.commit()
+
         stale_rows = db.execute(
             text(
                 """
