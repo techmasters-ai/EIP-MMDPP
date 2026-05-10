@@ -2705,6 +2705,60 @@ def _finalize_after_body(ctx: _LifecycleCtx, result) -> None:
     _tx3_complete_and_enqueue_next(ctx)
 
 
+def _assert_ledger_wiring() -> None:
+    """Module-load check: every STAGE_SUCCESSORS key has a registered task
+    whose wrapper carries ``_lifecycle=True``. Raises RuntimeError on mismatch.
+
+    NOTE: Until Task 20 wires lifecycle=True on all 9 stage decorators, this
+    function will raise. That's expected; the check is called only after
+    Task 22 enables ``_post_register_ledger_checks`` in celery_app.py.
+    """
+    for stage_name in STAGE_SUCCESSORS:
+        match = None
+        for task_name, task in celery_app.tasks.items():
+            run = getattr(task, "run", None)
+            if run is None:
+                continue
+            if getattr(run, "stage_name", None) == stage_name:
+                match = task
+                break
+        if match is None:
+            raise RuntimeError(
+                f"_assert_ledger_wiring: STAGE_SUCCESSORS lists {stage_name!r} "
+                f"but no registered Celery task has stage_name={stage_name!r}"
+            )
+        if not getattr(match.run, "_lifecycle", False):
+            raise RuntimeError(
+                f"_assert_ledger_wiring: task for stage {stage_name!r} is missing "
+                f"@guard_stage_run(..., lifecycle=True)"
+            )
+
+
+def _assert_threshold_envelope() -> None:
+    """Module-load check: ``stale_stage_run_threshold_seconds`` exceeds every
+    ledger stage's ``time_limit + max_retries * default_retry_delay``.
+
+    Raises RuntimeError on misconfiguration.
+    """
+    _settings = get_settings()
+    threshold = _settings.stale_stage_run_threshold_seconds
+    for stage_name in STAGE_SUCCESSORS:
+        for task_name, task in celery_app.tasks.items():
+            if getattr(getattr(task, "run", None), "stage_name", None) != stage_name:
+                continue
+            time_limit = task.time_limit or 0
+            max_retries = task.max_retries or 0
+            retry_delay = task.default_retry_delay or 0
+            envelope = time_limit + max_retries * retry_delay
+            if threshold < envelope:
+                raise RuntimeError(
+                    f"_assert_threshold_envelope: "
+                    f"stale_stage_run_threshold_seconds ({threshold}) "
+                    f"must exceed envelope ({envelope}) "
+                    f"for ledger stage {stage_name!r}"
+                )
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,

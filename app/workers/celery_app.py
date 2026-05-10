@@ -108,3 +108,13 @@ celery_app.conf.update(
 )
 
 
+def _post_register_ledger_checks() -> None:
+    """Re-enabled in Task 22 once stage decorators carry ``_lifecycle=True``.
+
+    Until then, this is a no-op so worker boot stays green during the rollout.
+    """
+    pass
+
+
+# Do NOT call _post_register_ledger_checks() at module load yet.
+# Task 22 replaces the body and adds the call.
