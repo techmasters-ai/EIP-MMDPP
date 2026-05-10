@@ -3999,7 +3999,20 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
         try:
             original_md = download_bytes_sync(bucket, f"{base_key}/docling_document.md").decode("utf-8")
         except Exception:
-            logger.info("derive_document_metadata: no markdown available for %s, skipping", document_id)
+            # TODO #86: surface as a real degradation, not a silent skip. Without
+            # markdown the document has no summary/date/source/classification,
+            # downstream stages take their own skip branches, and graph extraction
+            # runs against an empty anchor set (see TODO #87). Tag the doc as
+            # PARTIAL_COMPLETE so the UI distinguishes it from clean completes.
+            logger.warning(
+                "derive_document_metadata: no markdown available for %s — "
+                "escalating to PARTIAL_COMPLETE (downstream stages will skip)",
+                document_id,
+            )
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="derive_document_metadata", error="no_markdown",
+            )
             if run_id:
                 _update_stage_run(db, run_id, "derive_document_metadata", "COMPLETE",
                                   attempt=self.request.retries + 1,
@@ -4116,7 +4129,20 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
         ).scalars().all()
 
         if not elements:
-            logger.info("detect_and_translate: no eligible elements for %s", document_id)
+            # TODO #86: same root cause as derive_document_metadata's no_markdown
+            # branch — prepare_document landed an empty document. Surface as
+            # PARTIAL_COMPLETE so the UI flags the doc instead of marking it
+            # clean. Don't escalate if a previous stage already escalated; the
+            # status helper handles that idempotently via stage attribution.
+            logger.warning(
+                "detect_and_translate: no eligible elements for %s — "
+                "escalating to PARTIAL_COMPLETE (no parsed text to translate)",
+                document_id,
+            )
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="detect_and_translate", error="no_elements",
+            )
             if run_id:
                 _update_stage_run(db, run_id, "detect_and_translate", "COMPLETE",
                                   attempt=self.request.retries + 1,
@@ -5504,11 +5530,39 @@ def derive_document_anchors(self, document_id: str, run_id: str | None = None) -
             )
             db.commit()
 
+        # TODO #87: when the synthetic-section fallback fires AND every other
+        # per-type count is zero, the document has no usable anchored content.
+        # Graph extraction will run against an empty anchor set and any LLM-
+        # produced entities will reference null anchors. Flag the doc as
+        # degraded so the UI surfaces the regression and downstream operators
+        # can filter.
+        empty_anchor_set = (
+            fallback_fired
+            and figure_count == 0
+            and table_count == 0
+            and image_count == 0
+            and text_block_count == 0
+        )
+        if empty_anchor_set:
+            logger.warning(
+                "derive_document_anchors: empty-anchor-set fallback fired for "
+                "%s — escalating to PARTIAL_COMPLETE (graph extraction will "
+                "run against an empty anchor set)",
+                document_id,
+            )
+            _update_document_status(
+                document_id, STATUS_PARTIAL_COMPLETE,
+                stage="derive_document_anchors",
+                error="empty_anchor_set_fallback",
+            )
+
         logger.info(
             "derive_document_anchors: document_id=%s sections=%d figures=%d "
-            "tables=%d images=%d text_blocks=%d document_emitted=%s edges=%d",
+            "tables=%d images=%d text_blocks=%d document_emitted=%s edges=%d "
+            "fallback_fired=%s",
             document_id, section_count, figure_count, table_count,
             image_count, text_block_count, document_ontology_emitted, len(merged.edges),
+            fallback_fired,
         )
 
         return {"stage": "derive_document_anchors", "status": "ok", **metrics}

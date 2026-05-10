@@ -38,29 +38,34 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Map pipeline_stage to a 0–100 progress percentage. */
+/** Map pipeline_stage to a 0–100 progress percentage.
+ *  Order MUST match the chain in app/workers/pipeline.py:start_ingest_pipeline. */
 const STAGE_PROGRESS: Record<string, number> = {
-  prepare_document: 10,
-  derive_document_metadata: 20,
-  derive_picture_descriptions: 30,
-  purge_document_derivations: 35,
+  prepare_document: 8,
+  detect_and_translate: 16,
+  derive_document_metadata: 24,
+  purge_document_derivations: 32,
+  derive_picture_descriptions: 40,
   derive_text_chunks_and_embeddings: 50,
-  derive_image_embeddings: 55,
-  derive_ontology_graph: 60,
-  collect_derivations: 70,
-  derive_structure_links: 80,
-  derive_canonicalization: 90,
-  finalize_document: 95,
+  derive_image_embeddings: 58,
+  derive_document_anchors: 64,
+  derive_ontology_graph: 72,
+  collect_derivations: 80,
+  derive_structure_links: 86,
+  derive_canonicalization: 92,
+  finalize_document: 97,
 };
 
 /** Human-readable short label for each stage. */
 const STAGE_LABEL: Record<string, string> = {
   prepare_document: "Converting",
+  detect_and_translate: "Translating",
   derive_document_metadata: "Metadata",
-  derive_picture_descriptions: "Images",
   purge_document_derivations: "Purging",
+  derive_picture_descriptions: "Images",
   derive_text_chunks_and_embeddings: "Embedding",
   derive_image_embeddings: "Embedding",
+  derive_document_anchors: "Anchors",
   derive_ontology_graph: "Graph",
   collect_derivations: "Collecting",
   derive_structure_links: "Linking",

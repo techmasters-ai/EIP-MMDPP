@@ -22,11 +22,26 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable, Iterator, Literal, Mapping, Optional
 
 import httpx
+
+
+# TODO #88: Opt-in fail-fast for the legacy schema-strip retry path. When the
+# pool exhausts and the docling-graph LLM backend re-issues the call with
+# structured_output=False, the client today strips the structured-output
+# schema and re-prompts — silently producing JSON that is not validated
+# against the original Pydantic schema. Setting this env to "false" turns
+# that into a hard failure so the caller can reschedule under structured
+# output rather than absorbing schema-unvalidated output into the graph.
+# Default "true" preserves existing behavior.
+_LEGACY_RETRY_ENABLED = (
+    os.environ.get("OLLAMA_LEGACY_RETRY_ENABLED", "true").strip().lower()
+    not in {"false", "0", "no", "off"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,16 +107,16 @@ def _build_keepalive_http_client(timeout_s: float) -> httpx.Client:
 # Ollama goes silent for this long mid-response (or never sends a byte after
 # accepting the request — the silent-request-loss class), httpx raises
 # ReadTimeout from inside _stream_chat_with_watchdog and the retry path
-# engages on a different pool URL. Sized > the longest legitimate gap
-# between SSE chunks we observe in practice (~tens of seconds for hard
-# constrained-decode prompts) but well below the connection-level 600s
-# ceiling.
-_STREAM_NO_PROGRESS_SECONDS = 120.0
+# engages on a different pool URL. Raised to 1200s (was 120s) to tolerate
+# first-token latency under heavy GPU contention with gemma4:31b.
+_STREAM_NO_PROGRESS_SECONDS = 1200.0
 
 # Absolute wall-clock ceiling for one streamed chat completion. The
 # no-progress watchdog catches silent sockets; this catches pathological
-# generations that keep streaming low-value JSON forever.
-_STREAM_MAX_WALL_SECONDS = 600.0
+# generations that keep streaming low-value JSON forever. Must remain
+# strictly greater than _STREAM_NO_PROGRESS_SECONDS or the no-progress
+# watchdog never fires.
+_STREAM_MAX_WALL_SECONDS = 1800.0
 # Attach a stream handler when the host process hasn't configured logging.
 # Without this, _maybe_strip_legacy_schema and _post_chat_with_retry log
 # silently in production (the api and docling-graph processes don't call
@@ -452,9 +467,33 @@ class OllamaChatClient:
             stripped = user[:idx].rstrip() + "\n\n" + tail.lstrip()
         else:
             stripped = user[:idx].rstrip()
-        logger.info(
+        # TODO #88: opt-in fail-fast — refuse the legacy retry when the
+        # operator has disabled it via OLLAMA_LEGACY_RETRY_ENABLED=false.
+        # Forces the caller (LlmBackend) to surface the failure instead of
+        # producing schema-unvalidated output.
+        if not _LEGACY_RETRY_ENABLED:
+            msg = (
+                "OLLAMA_LEGACY_RETRY_ENABLED=false: refusing to strip "
+                "structured-output schema and re-prompt without validation"
+            )
+            logger.error(msg)
+            if self._client_error_cls is not None:
+                raise self._client_error_cls(
+                    msg,
+                    details={
+                        "schema_validated": False,
+                        "legacy_retry_blocked": True,
+                        "model": self.model,
+                        "provider": self.provider,
+                    },
+                )
+            raise RuntimeError(msg)
+        # TODO #88: severity bumped from INFO → WARNING. Schema strip is a
+        # recall regression (no Pydantic validation) and deserves the same
+        # log tier as OllamaPool failures so it's easy to grep.
+        logger.warning(
             "OllamaChatClient: stripped %d-char schema embedding from "
-            "legacy retry prompt",
+            "legacy retry prompt (schema_validated=False)",
             len(user) - len(stripped),
         )
         return {**prompt, "user": stripped}
@@ -950,9 +989,10 @@ class OllamaChatClient:
         `reasoning_content` if `content` is empty (preserves current behavior
         for community reports + global synthesis on thinking models).
 
-        Uses streaming (_stream_chat_with_watchdog) so the per-recv 120s
-        watchdog catches Ollama's silent-request-loss class (peer alive at
-        TCP, request abandoned at app layer).
+        Uses streaming (_stream_chat_with_watchdog) so the per-recv
+        no-progress watchdog (_STREAM_NO_PROGRESS_SECONDS) catches Ollama's
+        silent-request-loss class (peer alive at TCP, request abandoned at
+        app layer).
         """
         excluded: set[str] = set()
         last_exc: Exception | None = None
