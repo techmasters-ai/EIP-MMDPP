@@ -481,6 +481,15 @@ class Settings(BaseSettings):
     # so the sweeper only fires after Celery's own timeout should already have
     # killed + retried. max time_limit = graph_time_limit = 32400, so 34200.
     stale_stage_run_threshold_seconds: int = 34200
+    # ── dispatch ledger v1 (spec 2026-05-10) ─────────────────────────────
+    # Maximum dispatch_attempt before a stage_run is terminalized to FAILED.
+    # Counts ledger retries (Tx-4 + sweeper resets), NOT Celery retries.
+    max_stage_dispatches: int = 5
+
+    # How long a DISPATCHED row may sit before the sweeper resets it to
+    # PENDING. Should be longer than a worker's accept-and-start time but
+    # MUCH shorter than any stage's expected runtime.
+    stale_dispatched_threshold_seconds: int = 600
     # Max chain-level sweeper-triggered retries per document. Beyond this, the
     # document is permanently FAILED for operator triage.
     max_doc_retry_count: int = 3
