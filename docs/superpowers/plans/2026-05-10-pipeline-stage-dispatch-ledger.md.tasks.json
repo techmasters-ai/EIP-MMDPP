@@ -25,7 +25,7 @@
     {"id": 20, "subject": "Task 20: Wire lifecycle=True on all 9 stage decorators (grep-based)",       "status": "completed", "commit": "0f582da", "blockedBy": [5, 13]},
     {"id": 21, "subject": "Task 21: Rewrite start_ingest_pipeline (seed-and-go, no chain)",            "status": "completed", "commit": "5c7d10f", "blockedBy": [7]},
     {"id": 22, "subject": "Task 22: Rewrite reingest_graph_only + enable startup assertions",          "status": "completed", "commit": "a09e582", "blockedBy": [7, 19, 20]},
-    {"id": 23, "subject": "Task 23: Headline integration regression test (worker death recovery)",     "status": "pending", "blockedBy": [22]},
-    {"id": 24, "subject": "Task 24: Append dispatch-ledger section to VERIFICATION_CHECKLIST.md",      "status": "pending"}
+    {"id": 23, "subject": "Task 23: Headline integration regression test (worker death recovery)",     "status": "completed", "commit": "7fd8bd4", "blockedBy": [22]},
+    {"id": 24, "subject": "Task 24: Append dispatch-ledger section to VERIFICATION_CHECKLIST.md",      "status": "completed", "commit": "0e63d0e"}
   ]
 }
