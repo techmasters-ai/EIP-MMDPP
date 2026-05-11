@@ -178,13 +178,23 @@ Compute per-pass per-doc `max(exact) − min(exact)` across the 3 runs:
 
 - [ ] **Step 7: Remove the temporary instrumentation hook**
 
-Revert the change to `docker/docling-graph/app/main.py` from Step 2:
+Revert the change to `docker/docling-graph/app/main.py` from Step 2.
 
+If the hook was NEVER committed (preferred — keep it as a working-tree change throughout):
 ```bash
-git checkout main -- docker/docling-graph/app/main.py
+git checkout HEAD -- docker/docling-graph/app/main.py
 ```
 
-Verify the file is restored to its baseline state. The CAPTURE_BASELINE_TEXTS hook is no longer in the codebase.
+If the hook WAS committed in error:
+```bash
+git revert <hook-commit-sha>   # or manually remove the lines and commit
+```
+
+Verify the file matches `main`'s version:
+```bash
+git diff main -- docker/docling-graph/app/main.py
+```
+Expected: no diff.
 
 - [ ] **Step 8: Commit baseline fixtures**
 
@@ -1541,7 +1551,7 @@ embedding_table_summary_max_tokens: int = 300
 min_table_normalization_tokens: int = 256
 ```
 
-(These settings entries make pydantic-settings recognize the env vars and document them; the runtime reads via `config.py` go through `os.environ.get` so they stay fresh without settings reload.)
+(These settings entries are **documentation-only** for pydantic-settings discovery; they are NOT the runtime read path. All runtime flag checks go through `app/services/table_normalization/config.py`, which reads `os.environ.get` directly so values stay fresh across the rollout flag flip without a process restart. Do not change the runtime read path to use `settings.*`.)
 
 - [ ] **Step 6: Add 8 new vars to `.env`**
 
@@ -2482,7 +2492,14 @@ def test_write_and_read_chunk_metadata(db):
     pass  # Filled in Step 6 after migration applied
 ```
 
-- [ ] **Step 4: Write the migration**
+- [ ] **Step 4: Determine the previous revision id**
+
+```bash
+PREV_REV=$(grep -E "^revision = " alembic/versions/$(ls -1 alembic/versions/ | sort | tail -1) | head -1 | sed -E "s/^revision = ['\"]([^'\"]+)['\"].*/\\1/")
+echo "down_revision should be: $PREV_REV"
+```
+
+- [ ] **Step 5: Write the migration**
 
 ```python
 # alembic/versions/0021_chunk_metadata.py
@@ -3197,7 +3214,7 @@ def _build_native_chunk_meta(
 
 - [ ] **Step 2: Insert substitution call between native_chunks creation and the loop**
 
-In `app/workers/pipeline.py` around line 5534 (just after `native_chunks = list(chunker.chunk(doc_obj_dl))`), insert:
+In `app/workers/pipeline.py` around line 5534 (just after `native_chunks = list(chunker.chunk(doc_obj_dl))`), insert the block below. **Variable names in the existing code:** the loaded JSON is `doc_dict` (line 5511); the parsed DoclingDocument is `doc_obj_dl` (line 5533). The block below uses `doc_dict` (the JSON form, which is what `normalize_tables` expects). Read the surrounding code first to confirm and adjust if names have drifted.
 
 ```python
 # Table normalization substitution (spec 2026-05-11 §10.1).
@@ -3983,6 +4000,8 @@ This must be placed at the actual field-provenance assembly site. Locate it via:
 grep -n "field_provenance" docker/docling-graph/app/main.py
 ```
 
+**If multiple sites surface:** wrap the response-serialization site (the latest point in the request lifecycle that touches `field_provenance` before returning). Wrapping earlier risks the rows being rebuilt downstream without `cell_refs`.
+
 - [ ] **Step 8: Rebuild docling-graph image (required — COPY semantics)**
 
 ```bash
@@ -4308,7 +4327,7 @@ Decide whether to:
 - (a) Run the full ingest command from baseline + capture via temp hook
 - (b) Refactor the sanitizer into a testable pure function and call directly
 
-Pick the simpler option for your environment. Document the choice in the test file's docstring.
+**Prefer option (b)** for CI runnability — this is the Phase 1 merge gate; running the full ingest stack in CI is fragile. Option (a) is fine for local development if option (b) requires substantial refactoring. Document the choice in the test file's docstring.
 
 - [ ] **Step 3: Implement `_reproduce_texts_for_doc`**
 
@@ -4430,7 +4449,7 @@ def test_synthesize_table_facts_still_emits(sa2_doc):
 
 - [ ] **Step 2: Capture the EXPECTED count once on the new code**
 
-Run the synthesizer once on the fixture, observe the count, commit. Future drift fails the test.
+Run the synthesizer once on the fixture, observe the actual count, **replace the `EXPECTED = 12` placeholder in the test with the observed value**, then commit. Future drift fails the test.
 
 - [ ] **Step 3: Run + commit**
 

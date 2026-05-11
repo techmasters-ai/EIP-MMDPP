@@ -1221,7 +1221,7 @@ This is the merge-gate. `evidence_id` remains the synthesized chunk's `#/texts/N
 - `□ Phase 2 flip: SA-2 missile_propulsion ✓ exact ≥ today-baseline ✓ exact (§15.2)`
 - `□ Phase 2 flip: missile_propulsion wrong count ≤ today-baseline wrong + 1`
 - `□ Phase 2 flip: no other pass regresses by >1 ✓ exact (per-pass)`
-- `□ Phase 2 flip: corpus-wide ✓ exact sum ≥ today-baseline sum − 2`
+- `□ Phase 2 flip: corpus-wide ✓ exact sum ≥ today-baseline sum − 1`
 - `□ Phase 2 flip: variance-mode (strict / median) decision recorded in baseline.meta.json`
 - `□ Phase 2 flip: legacy-path smoke test passes (ingest one doc forcing legacy chunker; verify text_chunks rows carry non-NULL chunk_metadata for tables)`
 - `□ .env + .env.example contain all 8 new variables`
