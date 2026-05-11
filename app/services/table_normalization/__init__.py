@@ -4,9 +4,11 @@ from app.services.table_normalization.models import (
     NormalizedColumn, TableSection, NormalizedTable,
     GraphTableChunk, EmbeddingTableChunk,
 )
+from app.services.table_normalization.normalize import normalize_tables
 
 __all__ = [
     "Shape", "ChunkKind", "CellRef", "NormalizedCell", "NormalizedRow",
     "NormalizedColumn", "TableSection", "NormalizedTable",
     "GraphTableChunk", "EmbeddingTableChunk",
+    "normalize_tables",
 ]
