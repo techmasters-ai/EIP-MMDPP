@@ -182,7 +182,7 @@ class NormalizedTable:
     columns: tuple[NormalizedColumn, ...]
     sections: tuple[TableSection, ...]
     cells: tuple[NormalizedCell, ...]
-    raw_markdown: str                # captured for OTHER fallback + small-table whole rendering. SOURCE: the matching `#/texts/N` element whose ref points to this table, or `doc_json["tables"][i]["text"]` if no flat-text mirror is present.
+    raw_markdown: str                # captured for OTHER fallback + small-table whole rendering. Source resolution rule: §8 step 7.
 ```
 
 All `frozen=True`. Immutable post-construction. Row-major tables represented identically: `NormalizedColumn` corresponds to a *row* in the source, with its row-header text as the identity.
@@ -281,10 +281,10 @@ def normalize_tables(doc_json: dict) -> list[NormalizedTable]:
 
 6. **Merged-cell handling.** Column span → value replicated across each spanned column. Row span → value replicated down.
 
-7. **`raw_markdown` capture.** For every table including OTHER, capture the Docling-generated flat text representation. **Source resolution (explicit):**
-   - First preference: locate the `#/texts/N` element whose ref points to this table (Docling generally generates a flat-text mirror of each table); use that element's `.text`.
-   - Fallback: `doc_json["tables"][i]["text"]` if present.
-   - Final fallback: `doc_json["tables"][i].get("data", {}).get("table_markdown", "")` or empty string. Logged at DEBUG when fallback fires.
+7. **`raw_markdown` capture.** For every table including OTHER, capture the Docling-generated flat text representation. **Lookup rule (precise):**
+   - **First preference:** scan `doc_json["texts"]` for any element whose `prov[0].$ref == "#/tables/{table_index}"` (Docling-graph convention for cross-references). Use that element's `text` field. If multiple matches, use the first.
+   - **Second preference:** `doc_json["tables"][table_index].get("text", "")` if non-empty.
+   - **Final fallback:** `doc_json["tables"][table_index].get("data", {}).get("table_markdown", "")`, or `""` if absent. Logged at DEBUG when this fires — operational signal that the table's flat-text mirror is missing.
 
 **Error handling.** Per-table exception caught, logged at WARNING with `table_index` + `self_ref`, produces `NormalizedTable(shape=OTHER, cells=(), raw_markdown=...)` for that table. Other tables continue. No table failure breaks the pipeline.
 
@@ -310,10 +310,14 @@ def normalize_tables(doc_json: dict) -> list[NormalizedTable]:
 ```python
 def render_for_graph(
     table: NormalizedTable,
-    token_limit_whole: int = 1500,
-    token_limit_column: int = 1200,
+    token_limit_whole: int,                 # caller passes from config (DOCLING_GRAPH_TABLE_WHOLE_LIMIT; default 1500)
+    token_limit_column: int,                # caller passes from config (DOCLING_GRAPH_TABLE_COLUMN_LIMIT; default 1200)
 ) -> list[GraphTableChunk]: ...
 ```
+
+(Function-signature defaults removed deliberately — same rationale as
+`render_for_embedding`. `table_normalization/config.py` is the single source
+of truth for thresholds.)
 
 ```python
 @dataclass(frozen=True)
@@ -423,10 +427,15 @@ def _suppress_raw_table_texts(doc_json: dict, normalized: list[NormalizedTable])
 ```python
 def render_for_embedding(
     table: NormalizedTable,
-    token_limit: int = 512,                 # from existing app/config.py:400 (embedding_chunk_max_tokens)
-    summary_limit: int = 300,               # from new EMBEDDING_TABLE_SUMMARY_MAX_TOKENS
+    token_limit: int,                       # caller passes settings.embedding_chunk_max_tokens (app/config.py:400; default 512)
+    summary_limit: int,                     # caller passes settings.embedding_table_summary_max_tokens (new; default 300)
 ) -> list[EmbeddingTableChunk]: ...
 ```
+
+(Function-signature defaults removed deliberately. The single source of truth
+for these values is `app/services/table_normalization/config.py`, which reads
+the env vars. Hardcoded signature defaults would silently drift if env values
+were re-tuned.)
 
 ```python
 @dataclass(frozen=True)
@@ -461,7 +470,8 @@ class EmbeddingTableChunk:
 
 ```python
 def is_table_normalization_enabled_embedding() -> bool:
-    return os.environ.get("EMBEDDING_TABLE_NORMALIZATION_ENABLED", "true").lower() != "false"
+    # Default "false" matches §12 (master switches ship disabled).
+    return os.environ.get("EMBEDDING_TABLE_NORMALIZATION_ENABLED", "false").lower() == "true"
 
 # In structure_aware_chunk(...):
 elif etype == "table":
@@ -563,11 +573,11 @@ class TextChunk(Base, TimestampMixin):
 
 (In-memory `StructuredChunk` also gains a `metadata` field — see §10.1 — but that is not a DB schema change.)
 
-### 11.4 ArcadeDB mirroring (--blow-away mandatory)
+### 11.4 ArcadeDB mirroring
 
-`TextChunk` vertices in ArcadeDB gain one new property: `chunk_kind: str | None`, populated from `chunk_metadata.chunk_kind`. **This property cannot be added in-place to an existing populated vertex type without rebuilding the schema.** The user's `./manage.sh --blow-away` flow handles this; any deployment path that skips blow-away will fail at ArcadeDB write time with a schema mismatch. Documented in the rollout section (§13) and added to `VERIFICATION_CHECKLIST.md` (§14).
+`TextChunk` vertices in ArcadeDB gain one new property: `chunk_kind: str | None`, populated from `chunk_metadata.chunk_kind`. `arcadedb_schema.py` gains a new index declaration for `chunk_kind` on `TextChunk`. `arcadedb_client.py` / `arcadedb_graph.py` write path includes the property when present.
 
-`arcadedb_schema.py` gains a new index declaration for `chunk_kind` on `TextChunk`. `arcadedb_client.py` / `arcadedb_graph.py` write path includes the property when present.
+**Migration posture:** ArcadeDB supports `CREATE PROPERTY ... IF NOT EXISTS` and `CREATE INDEX ... IF NOT EXISTS` for in-place schema additions on existing populated vertex types. The schema-bootstrap path in `arcadedb_schema.py` should add the property + index idempotently on startup. **However**, since the user's rollout flow (§13) uses `./manage.sh --blow-away` followed by re-ingest, the in-place migration path is not exercised in this rollout. Still, the schema-bootstrap code should be written defensively (idempotent property/index creation) so future fresh deployments behave correctly. **Implementation must verify** by reading `arcadedb_schema.py` patterns for existing properties — follow the convention used there rather than inventing a new approach (per `feedback_prefer_native_libraries`).
 
 ### 11.5 Retrieval surfacing (`/v1/retrieval/query`)
 
@@ -600,7 +610,9 @@ Additive; backwards-compatible.
 
 Result: extracted `Missile.max_range_m` on `S-75M2` → `ExtractionFieldProvenance.evidence_ids` contains *both* the graph-chunk self_ref AND the underlying cell ref. Two-hop provenance, both traceable.
 
-No code changes to the field-provenance walker — cell refs appear as additional entries in `evidence_ids`. (Provenance plumbing is fresh — recent commits added this surface; spot-check during implementation.)
+**Expectation:** no code changes to the field-provenance walker — cell refs appear as additional entries in `evidence_ids` simply by being present in the chunk-trace map.
+
+**If this expectation does not hold during implementation** (e.g., the walker filters refs by prefix and rejects `#/tables/...` pointers, or the chunk-trace map's value type can't carry the new refs), this is a **blocker**, not a workaround opportunity. Stop, file a follow-up issue, and either (a) add a single targeted change to the walker with its own test, or (b) deferred provenance-wiring to a follow-up PR and ship the rest of the spec — but do not silently drop `cell_refs` on the floor. The integration test `test_graph_provenance_cell_refs.py` is the gate that detects this.
 
 ## 12. Configuration
 
@@ -632,11 +644,9 @@ No code changes to the field-provenance walker — cell refs appear as additiona
 
 ### Phase 2 — Behavior changes, gated on regression check
 
-5. Capture current-production extraction outputs on SA-2 corpus (call this the "today baseline" — distinct from the §19 fixture, which is `texts[]`/chunk-level, while this is extraction-level).
-6. Flip `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED=true` + `EMBEDDING_TABLE_NORMALIZATION_ENABLED=true`. Run `./manage.sh --blow-away` and re-ingest.
-7. Score extraction against the today-baseline.
-8. **Merge gate (§15.1) on the flag flip itself, not on the code merge:** new path must produce **no regression vs today-baseline** on the SA-2 `missile_propulsion` ✓ exact count. Strict criterion: new ✓ exact ≥ today-baseline ✓ exact AND no other pass regresses by more than 1 ✓ exact (each pass independently — i.e., for every individual pass, new ≥ today − 1).
-9. If criterion fails: flip flags back to `false` (cost: another `--blow-away` + re-ingest). File a follow-up issue with the captured comparison data.
+5. Flip `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED=true` + `EMBEDDING_TABLE_NORMALIZATION_ENABLED=true`. Run `./manage.sh --blow-away` and re-ingest.
+6. Score extraction against the §19 `sa2_<docid>_extraction_today.json` baseline fixtures (the same fixtures captured in Step 0 — there is only one baseline, not two).
+7. **Flip gate (§15.2):** new path must satisfy *all* the conditions in §15.2 before the flip is considered shipped. If any condition fails: flip flags back to `false` (cost: one `--blow-away` + re-ingest), confirm rollback by re-running `test_master_kill_switch_byte_equality.py` against the §19 baseline, file a follow-up issue with comparison data.
 
 ### A/B experimentation (post-flip, optional)
 
@@ -662,14 +672,17 @@ No code changes to the field-provenance walker — cell refs appear as additiona
 | Retrieval surfacing | `/v1/retrieval/query` returns `table_chunk` block when `chunk_metadata` non-null; absent otherwise | `tests/integration/test_retrieval_table_chunk_surfacing.py` |
 | Graph provenance | `ExtractionFieldProvenance.evidence_ids` includes underlying cell refs for SA-2 propulsion extraction | `tests/integration/test_graph_provenance_cell_refs.py` |
 | End-to-end SA-2 | Ingest → extract → score → cell_refs traceable | `tests/integration/test_sa2_table_pipeline_e2e.py` |
-| Experimental-path drift guard | `DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS=true` produces the same `synthesize_table_facts()` output the existing `test_table_facts_*.py` tests expect. Specific assertion: count of `TextItem`s emitted matches an empirically-determined fixture for SA-2; first 3 emitted items match snapshot. **This guards against `_table_facts.py` rotting on disk; it is NOT a baseline-matching test.** | `tests/integration/test_experimental_table_facts_drift.py` |
+| Experimental-path drift guard | `DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS=true` produces non-empty `synthesize_table_facts()` output on SA-2 fixture. **Assertion: count of `TextItem`s emitted > 0 AND `TextItem` count is within ±10% of a recorded fixture value.** Count-based, not text-content snapshot — tolerates whitespace/cosmetic drift but catches catastrophic rot (the path stops emitting anything, or emits 10× too much). **This guards against `_table_facts.py` rotting on disk; it is NOT a baseline-matching test.** | `tests/integration/test_experimental_table_facts_drift.py` |
+| Disallowed-combination fallback | Both `*_ENABLED` master flags AND `DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS=true` simultaneously → falls back to today's raw-blob behavior (per §9.1 row 4). Asserted: `texts[]` byte-identical to §19 baseline; ERROR log emitted. | `tests/integration/test_disallowed_combination_fallback.py` |
 
 **Additions to `VERIFICATION_CHECKLIST.md`:**
-- `□ Step 0 baseline fixture committed to tests/fixtures/sa2_today_baseline.json (commit SHA recorded)`
-- `□ Phase 1 merge: master kill-switch byte-equality test passes`
-- `□ Phase 2 flip: SA-2 missile_propulsion ✓ exact ≥ today-baseline ✓ exact`
-- `□ Phase 2 flip: no other pass regresses by >1 ✓ exact`
-- `□ ArcadeDB chunk_kind property requires --blow-away (documented)`
+- `□ Step 0 baseline fixtures committed under tests/fixtures/sa2/ (main_sha recorded in baseline.meta.json)`
+- `□ Phase 1 merge: master kill-switch byte-equality test passes against §19 baseline`
+- `□ Phase 2 flip: SA-2 missile_propulsion ✓ exact ≥ today-baseline ✓ exact (§15.2)`
+- `□ Phase 2 flip: missile_propulsion wrong count ≤ today-baseline wrong + 1`
+- `□ Phase 2 flip: no other pass regresses by >1 ✓ exact (per-pass)`
+- `□ Phase 2 flip: corpus-wide ✓ exact sum ≥ today-baseline sum − 2`
+- `□ Phase 2 flip: variance-mode (strict / median) decision recorded in baseline.meta.json`
 - `□ .env + .env.example contain all 7 new variables`
 
 ## 15. Success Criteria (acceptance gates)
@@ -683,10 +696,19 @@ No code changes to the field-provenance walker — cell refs appear as additiona
 
 ### 15.2 Phase 2 flip gate (production-flip time)
 
-- SA-2 `missile_propulsion` ✓ exact ≥ today-baseline ✓ exact (no regression).
+All conditions must hold. Each is checked against the §19 baseline fixture.
+
+**Extraction-quality gates (all required):**
+- SA-2 `missile_propulsion` ✓ exact ≥ today-baseline ✓ exact (strict no-regression on the pass the new approach is most likely to affect).
+- SA-2 `missile_propulsion` `wrong` count ≤ today-baseline `wrong` count + 1 (guards the case where today-baseline is at ✓0 floor and ✓ exact comparison is trivially satisfied).
 - For every other pass: new ✓ exact ≥ today-baseline ✓ exact − 1 (≤1-count regression allowed per individual pass, not summed).
-- `/v1/retrieval/query` for *"S-75M2 max range"* returns top-1 result with populated `table_chunk` block and correct `cell_refs`.
-- Extracted `Missile.max_range_m` on `S-75M2` has `ExtractionFieldProvenance.evidence_ids` containing both graph-chunk self_ref AND underlying cell ref.
+- **Corpus-wide guard:** sum of ✓ exact across all passes ≥ sum of today-baseline ✓ exact − 2 (prevents the "every pass loses 1" scenario where each individual pass passes the per-pass gate but corpus-level quality silently degrades).
+
+**Retrieval gate (relaxed from rev. 2 "top-1" to top-3, less brittle to embedding-score variance):**
+- `/v1/retrieval/query` for *"S-75M2 max range"* returns *within top 3 results* at least one chunk with `chunk_kind == "table_entity_column"`, `entity_display_name` containing "S-75M2", and `cell_refs` pointing to cells in the SA-2 variants table.
+
+**Provenance gate:**
+- Extracted `Missile.max_range_m` on `S-75M2` has `ExtractionFieldProvenance.evidence_ids` containing both the graph-chunk self_ref AND the underlying cell ref.
 
 ### 15.3 Functional (informational, not merge-gating)
 
@@ -728,29 +750,50 @@ None at design time. All decisions locked through brainstorming clarifying quest
 
 ### Procedure
 1. On current `main`, ingest the SA-2 corpus.
-2. For each SA-2 document, capture and commit under `tests/fixtures/`:
-   - **`sa2_<docid>_texts_today.json`** — full `doc_json["texts"]` after sanitization but before `run_extraction_pass`. This is the chunk-level baseline for `test_master_kill_switch_byte_equality.py` (§15.1).
-   - **`sa2_<docid>_extraction_today.json`** — the full pass-result outputs across all passes for that document. This is the extraction-level baseline for the Phase 2 flip gate (§15.2).
-3. Record in `tests/fixtures/sa2_today_baseline.meta.json`:
+2. **Run the corpus N=3 times** (the LLM variance check determines whether the §15.2 gate compares against best-of-3, median-of-3, or strict single-run; see decision rule below).
+3. For each SA-2 document, capture and commit:
+   - **`tests/fixtures/sa2/<docid>_texts_today.json`** — full `doc_json["texts"]` after sanitization but before `run_extraction_pass`. Deterministic (pure function of input + sanitizer); single run sufficient. This is the chunk-level baseline for `test_master_kill_switch_byte_equality.py` (§15.1).
+   - **`tests/fixtures/sa2/<docid>_extraction_counts_today.json`** — per-pass `{exact, wrong, null}` counts only, across all 3 runs:
+     ```json
+     {
+       "missile_propulsion": {"runs": [{"exact": 3, "wrong": 12, "null": 5}, ...]},
+       "kinematics":         {"runs": [...]},
+       "speed_timing":       {"runs": [...]},
+       ...
+     }
+     ```
+     **Raw extraction JSON is NOT committed** — too large for git. The counts file is the only artifact the §15.2 gate reads.
+   - Optionally: `tests/fixtures/sa2/<docid>_extraction_full_today.json` written but `.gitignore`d for local debugging only.
+4. Record in `tests/fixtures/sa2/baseline.meta.json`:
    ```json
    {
      "captured_at": "2026-05-11T...",
      "main_sha": "<git rev-parse HEAD>",
-     "docling_graph_image_sha": "<docker compose images --format json>",
+     "docling_graph_image_id": "<docker compose images docling-graph --format json | jq -r '.[].ID'>",
      "corpus_files": ["...", "..."],
-     "extraction_pass_counts": {"<doc_id>": {"missile_propulsion": {"exact": N, "wrong": N, "null": N}}, ...}
+     "temperature": 0,
+     "runs_per_doc": 3,
+     "comparison_mode": "median"   // or "best" or "strict" — see decision rule
    }
    ```
-4. Commit the fixtures on `feat/table-aware-chunking` with message `test(baseline): capture today's SA-2 production behavior pre-rewrite (sha <SHA>)`.
+5. Commit fixtures on `feat/table-aware-chunking` with message `test(baseline): capture today's SA-2 production behavior pre-rewrite (sha <SHA>)`.
+
+### Variance / comparison-mode decision rule
+
+After Step 2 (3 runs):
+- Compute per-pass per-doc `max(exact) − min(exact)` across the 3 runs.
+- **If `max − min ≤ 1` for every (pass, doc) pair**: comparison mode = `strict` (use run-0 counts; §15.2 gates compare strict equality / tolerance against run-0).
+- **If `max − min ≥ 2` anywhere**: comparison mode = `median` (use the median of 3 runs as the baseline; §15.2 gates apply to median values).
+- Record the decision in `baseline.meta.json`. The Phase 2 flip (§13) likewise runs N=3 and compares against the recorded mode.
+
+This eliminates the rev. 2 ambiguity where "strict vs median" was a fallback without a decision rule.
 
 ### Why this matters
 
 Without this, the merge gate at §15.1 and the flip gate at §15.2 are aspirational. With it, both gates have concrete, version-controlled targets to assert against. The fixture also doubles as the regression target for any future change to the table-chunking layer.
 
-### Captured artifacts are stable
+### What's captured vs. what's not
 
-The procedure captures *deterministic* outputs only:
-- `doc_json["texts"]` after sanitization — pure function of input doc + sanitizer, no LLM call.
-- Extraction outputs — captured with `temperature=0` runs (or whichever temperature the user's `think_true_*.csv` runs use, recorded in the meta file) to keep variance low.
-
-If LLM-output variance is too high to make ✓ exact comparison meaningful even at `T=0`, the comparison should be median-of-N runs (N=3) with the threshold relaxed by 1.
+- **Captured & committed:** `doc_json["texts"]` per doc (deterministic), per-pass ✓ exact / wrong / null counts across 3 runs, baseline metadata.
+- **Not committed:** full extraction JSON per pass per run (too large; reproducible from the recorded `main_sha`).
+- **Captured & gitignored:** optional debugging dumps for local inspection.
