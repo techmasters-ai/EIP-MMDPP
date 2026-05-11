@@ -100,6 +100,17 @@ class ExtractPassRequest(BaseModel):
             "config_builder.py:42-44."
         ),
     )
+    think: Optional[bool | str] = Field(
+        default=None,
+        description=(
+            "Per-request override for the LLM's thinking-mode toggle. When None "
+            "(default), uses the service-wide DOCLING_GRAPH_LLM_THINK. Accepts bool "
+            "(True/False) or string ('true'/'false', or 'low'/'medium'/'high' for "
+            "gpt-oss-class models). Used by the extraction_walkthrough notebook to "
+            "A/B thinking-mode against the same input. Production worker callers "
+            "omit this field and inherit the service default."
+        ),
+    )
 
 
 class ExtractionProvenance(BaseModel):

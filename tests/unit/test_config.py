@@ -149,3 +149,17 @@ class TestIngestDispatchResult:
         # Both fields are required
         with pytest.raises(TypeError):
             IngestDispatchResult(pipeline_run_id="run-1")  # type: ignore[call-arg]
+
+
+# --- Task 3: dispatch ledger v1 settings (spec 2026-05-10) ---------------
+
+class TestDispatchLedgerSettings:
+    def test_max_stage_dispatches_default(self):
+        from app.config import Settings
+        s = Settings(_env_file=None, postgres_password="test")
+        assert s.max_stage_dispatches == 5
+
+    def test_stale_dispatched_threshold_default(self):
+        from app.config import Settings
+        s = Settings(_env_file=None, postgres_password="test")
+        assert s.stale_dispatched_threshold_seconds == 600

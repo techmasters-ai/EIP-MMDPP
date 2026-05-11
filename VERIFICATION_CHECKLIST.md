@@ -567,3 +567,63 @@ Run against all 30 Known Fragile Features listed above.
 
 - [ ] TextChunk rows in PostgreSQL carry `self_refs` and `evidence_ids` in their properties JSON
 - [ ] Retrieval API responses can dereference an evidence_id back to a DoclingDocument self_ref
+
+## Pipeline Stage Dispatch Ledger (2026-05-10)
+
+After deploying the dispatch-ledger feature (spec:
+`docs/superpowers/specs/2026-05-10-pipeline-stage-dispatch-ledger-design.md`),
+verify the following:
+
+- [ ] **Dispatcher beat is firing.**
+  ```bash
+  docker logs eip-mmdpp-beat-1 --since 2m | grep DISPATCHER_TICK
+  ```
+  Expected: roughly one entry every 5s (~24 in 2 minutes). If empty, beat is
+  not running or the `dispatch-pending-pipeline-stages` schedule entry was
+  not picked up.
+
+- [ ] **Pre-deploy stalled docs resume after manual reingest.** Pick a doc
+  that was stuck mid-pipeline before deploy and re-ingest it via graph_only:
+
+  ```bash
+  curl -sX POST http://localhost:8005/v1/documents/<doc-id>/reingest \
+       -H "content-type: application/json" \
+       -d '{"mode":"graph_only"}'
+  ```
+
+  Then watch `/v1/documents/<doc-id>/stages`. The new `derive_document_anchors`
+  row should reach `COMPLETE` within minutes; `derive_ontology_graph` should
+  follow.
+
+- [ ] **Functional equivalence (manual A/B).** Pick one document of each type
+  (PDF, jpg, txt, handwritten) from the pre-deploy baseline. Record:
+  - Final stage_runs row count and per-stage metrics
+  - text_chunks and image_chunks counts
+  - ArcadeDB element/edge counts for that document
+
+  Re-ingest each post-deploy and diff against baseline. Terminal counts must
+  match within ±1 (rounding/timing noise on counts is acceptable; stage_runs
+  shape will differ by design — one row per stage now vs one per Celery
+  attempt before).
+
+- [ ] **Single-doc latency.** Time a fresh ingest of one small fixture
+  document end-to-end. Expected: within ~20s of the pre-deploy median for the
+  same doc (8 handoffs × ~2.5s avg dispatcher latency).
+
+- [ ] **Stale-DISPATCHED alarm is alive (negative check).**
+  ```bash
+  docker logs eip-mmdpp-worker-1 --since 30m | grep "stale; reset by dispatcher sweeper"
+  ```
+  Expected on a healthy system: empty. Non-empty entries indicate broker or
+  worker problems and warrant investigation.
+
+- [ ] **Stale-RUNNING ledger sweep alarm (negative check).**
+  ```bash
+  docker logs eip-mmdpp-worker-1 --since 30m | grep "stale; reset by sweeper"
+  ```
+  Expected: empty on a healthy system.
+
+- [ ] **Module-load assertions pass.** Worker boot logs should contain no
+  `RuntimeError: _assert_ledger_wiring` or `RuntimeError: _assert_threshold_envelope`.
+  If either fires, fix the offending stage's decorator or the
+  `stale_stage_run_threshold_seconds` setting before the worker can accept tasks.

@@ -33,6 +33,7 @@ celery_app = Celery(
         "app.workers.watcher",
         "app.workers.trusted_data_tasks",
         "app.workers.community_tasks",
+        "app.workers.dispatcher",
     ],
 )
 
@@ -98,7 +99,40 @@ celery_app.conf.update(
             "schedule": settings.reconciler_period_seconds,
             "options": {"queue": "graph"},
         },
+        "dispatch-pending-pipeline-stages": {
+            "task": "app.workers.dispatcher.dispatch_pending_pipeline_stages",
+            "schedule": 5.0,
+            "options": {"queue": "celery"},
+        },
     },
 )
 
 
+def _post_register_ledger_checks() -> None:
+    """Run module-load checks on ledger wiring once all stage decorators are
+    registered. Activated in Task 22 (Chunk 6) after Task 20 wired all 9
+    stage decorators with lifecycle=True.
+
+    Triggers ``celery_app.finalize()`` first so the ``include=[...]`` modules
+    (notably ``app.workers.pipeline``) finish loading and register their
+    stage decorators before we inspect the task registry.
+
+    Skips silently if invoked during a re-entrant import — i.e. ``pipeline.py``
+    is mid-load and our assertion helpers aren't yet bound. The same checks
+    will fire on the next clean entry (worker boot imports celery_app first,
+    so re-entry never happens in production).
+    """
+    pipeline_mod = sys.modules.get("app.workers.pipeline")
+    if pipeline_mod is not None and not hasattr(pipeline_mod, "_assert_ledger_wiring"):
+        # Re-entrant import: pipeline.py is mid-execution (it imported us at
+        # its line 43, before its assertion helpers were defined). Defer.
+        return
+
+    celery_app.finalize()
+    # Imported here so pipeline.py finishes registering all tasks first.
+    from app.workers.pipeline import _assert_ledger_wiring, _assert_threshold_envelope
+    _assert_ledger_wiring()
+    _assert_threshold_envelope()
+
+
+_post_register_ledger_checks()  # run at module load

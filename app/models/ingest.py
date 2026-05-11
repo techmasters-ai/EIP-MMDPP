@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 import sqlalchemy as sa
@@ -19,6 +20,20 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
+
+
+class StageRunStatus(str, Enum):
+    """Lifecycle states for a stage_runs summary row.
+
+    Ledger semantics: PENDING -> DISPATCHED -> RUNNING -> COMPLETE (success)
+    or -> FAILED (terminal). DISPATCHED added in spec
+    docs/superpowers/specs/2026-05-10-pipeline-stage-dispatch-ledger-design.md
+    """
+    PENDING = "PENDING"          # ledger row exists, awaiting dispatcher
+    DISPATCHED = "DISPATCHED"    # NEW - published to Celery, not yet running
+    RUNNING = "RUNNING"          # claimed by a worker; body in progress
+    COMPLETE = "COMPLETE"        # finished successfully
+    FAILED = "FAILED"            # terminal failure (max dispatch_attempts hit)
 
 
 class Source(Base, TimestampMixin):
@@ -320,6 +335,26 @@ class StageRun(Base):
     schema_size_chars: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     structured_output_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     rollback_executed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # ── dispatch ledger columns (migration 0020) ─────────────────────────
+    # Set on ledger rows by _seed_first_stage / Tx-3a; NULL on legacy non-ledger rows.
+    queue_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    task_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    celery_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    available_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        server_default=func.now(),
+    )
+    dispatched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Ledger retry counter. Starts at 1, incremented by Tx-4 and the
+    # stale-RUNNING sweeper. Distinct from `attempt`, which legacy code
+    # mutates per Celery retry.
+    dispatch_attempt: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=sa.text("1")
+    )
 
     pipeline_run: Mapped["PipelineRun"] = relationship(back_populates="stage_runs")
 

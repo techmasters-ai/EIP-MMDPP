@@ -86,6 +86,7 @@ _redis_client = get_redis()
 # ---------------------------------------------------------------------------
 
 import sqlalchemy as sa  # noqa: E402 — used by _write_stage_run partial-index upsert
+from sqlalchemy import text  # noqa: E402 — used by dispatch-ledger helpers
 from dataclasses import dataclass as _dataclass  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 
@@ -1812,6 +1813,105 @@ def _sweep_stale_runs() -> int:
 
     db = _get_db()
     try:
+        # ── stale DISPATCHED reset (ledger v1, spec 2026-05-10) ──────────
+        # The dispatcher published a Celery task but a worker did not pick it up
+        # within stale_dispatched_threshold_seconds. Reset to PENDING so the next
+        # tick republishes. dispatch_attempt is unchanged — the stage didn't run.
+        db.execute(
+            text(
+                """
+                UPDATE ingest.stage_runs
+                SET status        = 'PENDING',
+                    dispatched_at = NULL,
+                    error_message = LEFT(
+                        COALESCE(error_message, '')
+                        || ' stale; reset by dispatcher sweeper',
+                        10000
+                    )
+                WHERE status        = 'DISPATCHED'
+                  AND pass_name     IS NULL
+                  AND task_name     IS NOT NULL
+                  AND dispatched_at < NOW() - make_interval(secs => :dispatched_threshold)
+                """
+            ),
+            {"dispatched_threshold": settings.stale_dispatched_threshold_seconds},
+        )
+        db.commit()
+
+        # ── ledger stale-RUNNING (spec 2026-05-10) ──────────────────────────
+        # Sequential stages 1–8 (LEDGER_SEQUENTIAL_STAGES): under cap → reset
+        # to PENDING with attempt bump; at/over cap → terminalize stage_run +
+        # pipeline_run. Stage 9 (derive_ontology_graph) is intentionally
+        # excluded — `reconcile_ontology_graph_runs` is its sole owner during
+        # fan-in and its summary row legitimately stays RUNNING.
+        db.execute(
+            text(
+                """
+                WITH stale AS (
+                    SELECT sr.id, sr.pipeline_run_id,
+                           sr.dispatch_attempt + 1 AS next_attempt
+                    FROM ingest.stage_runs sr
+                    JOIN ingest.pipeline_runs pr ON pr.id = sr.pipeline_run_id
+                    WHERE sr.status     = 'RUNNING'
+                      AND sr.pass_name  IS NULL
+                      AND sr.stage_name = ANY(:ledger_sequential_stages)
+                      AND sr.started_at < NOW() - make_interval(secs => :threshold)
+                      AND pr.status     = 'PROCESSING'
+                ),
+                retryable AS (
+                    UPDATE ingest.stage_runs sr
+                    SET status           = 'PENDING',
+                        dispatch_attempt = s.next_attempt,
+                        started_at       = NULL,
+                        dispatched_at    = NULL,
+                        available_at     = NOW(),
+                        error_message    = LEFT(
+                            COALESCE(sr.error_message, '')
+                            || ' stale; reset by sweeper',
+                            10000
+                        )
+                    FROM stale s
+                    WHERE sr.id = s.id AND s.next_attempt <= :max_dispatches
+                    RETURNING sr.id
+                ),
+                terminal AS (
+                    UPDATE ingest.stage_runs sr
+                    SET status           = 'FAILED',
+                        finished_at      = NOW(),
+                        dispatch_attempt = s.next_attempt,
+                        error_message    = LEFT(
+                            COALESCE(sr.error_message, '')
+                            || ' stale; max dispatches reached',
+                            10000
+                        )
+                    FROM stale s
+                    WHERE sr.id = s.id AND s.next_attempt > :max_dispatches
+                    RETURNING sr.pipeline_run_id
+                )
+                UPDATE ingest.pipeline_runs pr
+                SET status        = 'FAILED',
+                    finished_at   = NOW(),
+                    error_message = LEFT(
+                        COALESCE(pr.error_message, '')
+                        || ' stage exceeded max dispatches',
+                        10000
+                    )
+                FROM terminal t
+                WHERE pr.id = t.pipeline_run_id AND pr.status = 'PROCESSING'
+                """
+            ),
+            {
+                "ledger_sequential_stages": LEDGER_SEQUENTIAL_STAGES,
+                "threshold": threshold,
+                "max_dispatches": settings.max_stage_dispatches,
+            },
+        )
+        db.commit()
+
+        # Legacy stale-RUNNING handler. Excludes every ledger-owned stage:
+        #   • LEDGER_SEQUENTIAL_STAGES (1–8) — owned by the CTE above.
+        #   • LEDGER_FANOUT_STAGES (stage 9, derive_ontology_graph) — owned
+        #     by reconcile_ontology_graph_runs during per-pass fan-in.
         stale_rows = db.execute(
             text(
                 """
@@ -1819,11 +1919,18 @@ def _sweep_stale_runs() -> int:
                 FROM ingest.stage_runs sr
                 JOIN ingest.pipeline_runs pr ON pr.id = sr.pipeline_run_id
                 WHERE sr.status = 'RUNNING'
+                  AND sr.pass_name IS NULL
                   AND sr.started_at < NOW() - make_interval(secs => :threshold)
                   AND pr.status = 'PROCESSING'
+                  AND sr.stage_name <> ALL(:ledger_excluded_stages)
                 """
             ),
-            {"threshold": threshold},
+            {
+                "threshold": threshold,
+                "ledger_excluded_stages": (
+                    LEDGER_SEQUENTIAL_STAGES + LEDGER_FANOUT_STAGES
+                ),
+            },
         ).fetchall()
 
         if not stale_rows:
@@ -1839,7 +1946,10 @@ def _sweep_stale_runs() -> int:
                     UPDATE ingest.stage_runs
                     SET status = 'FAILED',
                         finished_at = NOW(),
-                        error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                        error_message = LEFT(
+                            COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep',
+                            10000
+                        )
                     WHERE id = :id
                     """
                 ),
@@ -1853,7 +1963,10 @@ def _sweep_stale_runs() -> int:
                     UPDATE ingest.pipeline_runs
                     SET status = 'FAILED',
                         finished_at = COALESCE(finished_at, NOW()),
-                        error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                        error_message = LEFT(
+                            COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep',
+                            10000
+                        )
                     WHERE id = :id AND status = 'PROCESSING'
                     """
                 ),
@@ -2273,6 +2386,411 @@ def _chord_error_handler(self, request, exc, traceback, document_id: str, run_id
             db.close()
 
 
+# ── dispatch ledger v1 (spec 2026-05-10) ──────────────────────────────────
+
+
+@dataclass(frozen=True)
+class StageEdge:
+    """Edge in the sequential pipeline graph.
+
+    next_stage is the persisted stage_name (matches @guard_stage_run argument).
+    next_task is the fully-qualified Celery task path. These can differ —
+    e.g. derive_text_embeddings (persisted) ↔ derive_text_chunks_and_embeddings (task).
+    """
+    next_stage: str | None
+    next_task:  str | None
+
+
+STAGE_SUCCESSORS: dict[str, StageEdge] = {
+    "prepare_document":            StageEdge("detect_and_translate",        "app.workers.pipeline.detect_and_translate"),
+    "detect_and_translate":        StageEdge("derive_document_metadata",    "app.workers.pipeline.derive_document_metadata"),
+    "derive_document_metadata":    StageEdge("purge_document_derivations",  "app.workers.pipeline.purge_document_derivations"),
+    "purge_document_derivations":  StageEdge("derive_picture_descriptions", "app.workers.pipeline.derive_picture_descriptions"),
+    "derive_picture_descriptions": StageEdge("derive_text_embeddings",      "app.workers.pipeline.derive_text_chunks_and_embeddings"),
+    "derive_text_embeddings":      StageEdge("derive_image_embeddings",     "app.workers.pipeline.derive_image_embeddings"),
+    "derive_image_embeddings":     StageEdge("derive_document_anchors",     "app.workers.pipeline.derive_document_anchors"),
+    "derive_document_anchors":     StageEdge("derive_ontology_graph",       "app.workers.pipeline.derive_ontology_graph"),
+    "derive_ontology_graph":       StageEdge(None, None),
+}
+
+# Stages 1–8 (sequential). Stage 9 (derive_ontology_graph) is in STAGE_SUCCESSORS
+# but excluded here because its summary row legitimately stays RUNNING for the
+# entire per-pass fan-in window; the existing reconcile_ontology_graph_runs
+# reconciler owns its stale-RUNNING handling.
+LEDGER_SEQUENTIAL_STAGES = [s for s in STAGE_SUCCESSORS if s != "derive_ontology_graph"]
+LEDGER_FANOUT_STAGES     = ["derive_ontology_graph"]
+
+
+def _resolve_queue(task_name: str) -> str:
+    """Return the queue Celery will actually route a task to.
+
+    3-tier precedence (matches Celery's own lookup order):
+    1. Explicit `task_routes[task_name]["queue"]` from celery_app.conf
+    2. The task's decorator `queue=` argument (via celery_app.tasks[name].queue,
+       which Celery exposes through Task._get_exec_options() and apply_async()
+       honors at send time)
+    3. Broker default (celery_app.conf.task_default_queue, "celery" unless overridden)
+
+    All current ledger stages resolve via tiers 1–2; tier 3 is the safety net
+    for any task that is neither in task_routes nor decorated with queue=.
+    The helper unifies the lookup so the ledger's queue_name column matches
+    the runtime destination.
+    """
+    routes = celery_app.conf.task_routes or {}
+    entry = routes.get(task_name)
+    if entry and entry.get("queue"):
+        return entry["queue"]
+    task = celery_app.tasks.get(task_name)
+    if task is not None:
+        decorator_queue = getattr(task, "queue", None)
+        if decorator_queue:
+            return decorator_queue
+    return celery_app.conf.task_default_queue or "celery"
+
+
+def _seed_first_stage(
+    db,
+    *,
+    pipeline_run_id: str,
+    stage_name: str,
+    task_name: str,
+) -> None:
+    """Insert the initial PENDING ledger row for a pipeline_run.
+
+    Idempotent on the partial unique index (pipeline_run_id, stage_name, attempt)
+    WHERE pass_name IS NULL — a second call is a no-op.
+
+    Caller is responsible for db.commit().
+    """
+    queue = _resolve_queue(task_name)
+    db.execute(text("""
+        INSERT INTO ingest.stage_runs
+            (id, pipeline_run_id, stage_name, attempt, status,
+             queue_name, task_name, available_at, dispatch_attempt)
+        VALUES (gen_random_uuid(), :run_id, :stage, 1, 'PENDING',
+                :queue, :task, NOW(), 1)
+        ON CONFLICT (pipeline_run_id, stage_name, attempt)
+        WHERE pass_name IS NULL
+        DO NOTHING
+    """), {
+        "run_id": pipeline_run_id,
+        "stage":  stage_name,
+        "queue":  queue,
+        "task":   task_name,
+    })
+
+
+@dataclass(frozen=True)
+class _ClaimResult:
+    """Outcome of a Tx-1 CLAIM attempt.
+
+    outcome ∈ {proceed, legacy, already_complete, concurrent_running,
+               stale_pending, terminal_failed}
+    early_result is what the wrapper returns to Celery (None or dict).
+    dispatch_attempt is populated only when outcome == "proceed".
+    """
+    outcome: str
+    early_result: dict | None = None
+    dispatch_attempt: int = 0
+
+
+def _claim_tx1(
+    db,
+    pipeline_run_id: str,
+    stage_name: str,
+    *,
+    celery_task_id: str,
+    is_celery_retry: bool,
+) -> _ClaimResult:
+    """Tx-1 CLAIM: atomically transition a ledger row to RUNNING.
+
+    Returns a _ClaimResult describing one of 6 outcomes. The caller
+    (guard_stage_run wrapper) reads `outcome` to decide whether to set
+    `_CTX` (only on `proceed`), return early (the 4 zero-row outcomes
+    with dict/None payload), or run the body inline (legacy).
+    """
+    update = db.execute(text("""
+        UPDATE ingest.stage_runs
+        SET status         = 'RUNNING',
+            started_at     = COALESCE(started_at, NOW()),
+            celery_task_id = :celery_task_id
+        WHERE pipeline_run_id = :run_id
+          AND stage_name      = :stage_name
+          AND pass_name       IS NULL
+          AND (
+                status IN ('DISPATCHED', 'PENDING')
+             OR (status = 'RUNNING' AND :is_celery_retry)
+          )
+        RETURNING id, attempt, dispatch_attempt
+    """), {
+        "run_id": pipeline_run_id,
+        "stage_name": stage_name,
+        "celery_task_id": celery_task_id,
+        "is_celery_retry": is_celery_retry,
+    }).first()
+
+    if update is not None:
+        return _ClaimResult(outcome="proceed", dispatch_attempt=update.dispatch_attempt)
+
+    # 0 rows updated — follow-up SELECT to disambiguate.
+    current = db.execute(text("""
+        SELECT status FROM ingest.stage_runs
+        WHERE pipeline_run_id = :run_id
+          AND stage_name      = :stage_name
+          AND pass_name       IS NULL
+    """), {"run_id": pipeline_run_id, "stage_name": stage_name}).first()
+
+    if current is None:
+        return _ClaimResult(outcome="legacy", early_result=None)
+
+    if current.status == "COMPLETE":
+        return _ClaimResult(
+            outcome="already_complete",
+            early_result={
+                "stage": stage_name,
+                "status": "skipped",
+                "reason": "already_complete",
+            },
+        )
+    if current.status == "RUNNING":
+        return _ClaimResult(outcome="concurrent_running", early_result=None)
+    if current.status == "PENDING":
+        return _ClaimResult(outcome="stale_pending", early_result=None)
+    if current.status == "FAILED":
+        return _ClaimResult(
+            outcome="terminal_failed",
+            early_result={
+                "stage": stage_name,
+                "status": "terminal_failed",
+                "reason": "stage_previously_failed",
+            },
+        )
+
+    # Defensive: unexpected status (e.g. DISPATCHED visible to follow-up means
+    # CLAIM raced — treat as concurrent and skip).
+    return _ClaimResult(outcome="concurrent_running", early_result=None)
+
+
+from app.workers._stage_lifecycle import _LifecycleCtx, _CTX  # noqa: E402
+
+
+def _tx3_complete_and_enqueue_next(ctx: _LifecycleCtx) -> None:
+    """Tx-3: insert successor PENDING + flip self → COMPLETE, single transaction.
+
+    The central durability guarantee. Both writes commit together; any exception
+    inside the `with db.begin():` block rolls both back atomically, leaving the
+    ledger row in RUNNING for the stale-RUNNING sweeper to recover.
+    """
+    assert ctx.next_stage is not None and ctx.next_task is not None, (
+        f"_tx3 called on terminal stage {ctx.stage_name!r}; "
+        "intercept_terminal=False should have skipped finalization"
+    )
+    db = _get_db()
+    try:
+        with db.begin():
+            # 3a: insert successor PENDING (idempotent via partial unique index)
+            db.execute(text("""
+                INSERT INTO ingest.stage_runs
+                    (id, pipeline_run_id, stage_name, attempt, status,
+                     queue_name, task_name, available_at, dispatch_attempt)
+                VALUES (gen_random_uuid(), :run_id, :next_stage, 1, 'PENDING',
+                        :next_queue, :next_task, NOW(), 1)
+                ON CONFLICT (pipeline_run_id, stage_name, attempt)
+                WHERE pass_name IS NULL
+                DO NOTHING
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "next_stage": ctx.next_stage,
+                "next_queue": _resolve_queue(ctx.next_task),
+                "next_task":  ctx.next_task,
+            })
+            # 3b: flip self → COMPLETE with metrics stashed by interception.
+            # CAST(:metrics AS jsonb) is required because psycopg2 cannot
+            # adapt a Python dict directly when bound via raw text(); we
+            # serialize to JSON text and let Postgres parse it back.
+            # Defensive: only flip COMPLETE if we still own the RUNNING claim;
+            # out-of-band sweeper or concurrent retry could have transitioned
+            # the row.
+            db.execute(text("""
+                UPDATE ingest.stage_runs
+                SET status      = 'COMPLETE',
+                    finished_at = NOW(),
+                    metrics     = CAST(:metrics AS jsonb)
+                WHERE pipeline_run_id = :run_id
+                  AND stage_name      = :stage_name
+                  AND pass_name       IS NULL
+                  AND status          = 'RUNNING'
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "stage_name": ctx.stage_name,
+                "metrics":    json.dumps(ctx.pending_metrics)
+                              if ctx.pending_metrics is not None else None,
+            })
+    finally:
+        db.close()
+
+
+def _tx4_finalize_failure(
+    ctx: _LifecycleCtx,
+    *,
+    error: str,
+    celery_retries: int,
+    max_retries: int,
+    backoff_seconds: int = 60,
+) -> None:
+    """Tx-4: handle failure of a lifecycle-wrapped stage.
+
+    Retryable if ``ctx.dispatch_attempt + 1 <= settings.max_stage_dispatches``:
+    status → PENDING, dispatch_attempt += 1, available_at advances by backoff,
+    and started_at / dispatched_at are cleared so the next CLAIM is clean.
+
+    Terminal otherwise: stage_run → FAILED and pipeline_run → FAILED in a
+    single ``with db.begin():`` block. The pipeline_run UPDATE is gated on
+    ``status = 'PROCESSING'`` so an earlier FAILED message is preserved.
+
+    ``max_stage_dispatches`` is read inside the function via ``get_settings()``
+    so tests can monkeypatch the live cached `Settings` instance.
+    """
+    _settings = get_settings()
+
+    next_dispatch_attempt = ctx.dispatch_attempt + 1
+    db = _get_db()
+    try:
+        if next_dispatch_attempt <= _settings.max_stage_dispatches:
+            db.execute(text("""
+                UPDATE ingest.stage_runs
+                SET status           = 'PENDING',
+                    dispatch_attempt = :next_da,
+                    available_at     = NOW() + (:backoff || ' seconds')::interval,
+                    started_at       = NULL,
+                    dispatched_at    = NULL,
+                    error_message    = LEFT(:err, 10000)
+                WHERE pipeline_run_id = :run_id
+                  AND stage_name      = :stage_name
+                  AND pass_name       IS NULL
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "stage_name": ctx.stage_name,
+                "next_da":    next_dispatch_attempt,
+                "backoff":    str(backoff_seconds),
+                "err":        error,
+            })
+            db.commit()
+            return
+
+        # Terminal — atomic stage_run FAILED + pipeline_run FAILED.
+        with db.begin():
+            db.execute(text("""
+                UPDATE ingest.stage_runs
+                SET status           = 'FAILED',
+                    dispatch_attempt = :next_da,
+                    finished_at      = NOW(),
+                    error_message    = LEFT(:err, 10000)
+                WHERE pipeline_run_id = :run_id
+                  AND stage_name      = :stage_name
+                  AND pass_name       IS NULL
+            """), {
+                "run_id":     ctx.pipeline_run_id,
+                "stage_name": ctx.stage_name,
+                "next_da":    next_dispatch_attempt,
+                "err":        error,
+            })
+            db.execute(text("""
+                UPDATE ingest.pipeline_runs
+                SET status        = 'FAILED',
+                    finished_at   = NOW(),
+                    error_message = LEFT(:err, 10000)
+                WHERE id = :run_id AND status = 'PROCESSING'
+            """), {"run_id": ctx.pipeline_run_id, "err": error})
+    finally:
+        db.close()
+
+
+def _finalize_after_body(ctx: _LifecycleCtx, result) -> None:
+    """Body-return contract: Tx-3 on success, Tx-4 on failure dict / pending FAILED.
+
+    skipped is treated as success — detect_and_translate, derive_document_metadata,
+    derive_picture_descriptions all return {"status":"skipped",...} on legitimate
+    no-op completions and the pipeline must advance.
+    """
+    if not ctx.intercept_terminal:
+        return  # stage 9: merge owns finalization
+
+    failed = (
+        ctx.pending_status == "FAILED"
+        or (isinstance(result, dict) and result.get("status") in ("FAILED", "failed"))
+    )
+    if failed:
+        _tx4_finalize_failure(
+            ctx,
+            error=ctx.pending_error or "stage returned failure status",
+            celery_retries=0,
+            max_retries=0,
+        )
+        return
+
+    _tx3_complete_and_enqueue_next(ctx)
+
+
+def _assert_ledger_wiring() -> None:
+    """Module-load check: every STAGE_SUCCESSORS key has a registered task
+    whose wrapper carries ``_lifecycle=True``. Raises RuntimeError on mismatch.
+
+    NOTE: Until Task 20 wires lifecycle=True on all 9 stage decorators, this
+    function will raise. That's expected; the check is called only after
+    Task 22 enables ``_post_register_ledger_checks`` in celery_app.py.
+    """
+    for stage_name in STAGE_SUCCESSORS:
+        match = None
+        for task_name, task in celery_app.tasks.items():
+            run = getattr(task, "run", None)
+            if run is None:
+                continue
+            if getattr(run, "stage_name", None) == stage_name:
+                match = task
+                break
+        if match is None:
+            raise RuntimeError(
+                f"_assert_ledger_wiring: STAGE_SUCCESSORS lists {stage_name!r} "
+                f"but no registered Celery task has stage_name={stage_name!r}"
+            )
+        if not getattr(match.run, "_lifecycle", False):
+            raise RuntimeError(
+                f"_assert_ledger_wiring: task for stage {stage_name!r} is missing "
+                f"@guard_stage_run(..., lifecycle=True)"
+            )
+
+
+def _assert_threshold_envelope() -> None:
+    """Module-load check: ``stale_stage_run_threshold_seconds`` exceeds every
+    ledger stage's ``time_limit + max_retries * default_retry_delay``.
+
+    Raises RuntimeError on misconfiguration.
+    """
+    _settings = get_settings()
+    threshold = _settings.stale_stage_run_threshold_seconds
+    for stage_name in STAGE_SUCCESSORS:
+        for task_name, task in celery_app.tasks.items():
+            if getattr(getattr(task, "run", None), "stage_name", None) != stage_name:
+                continue
+            time_limit = task.time_limit or 0
+            max_retries = task.max_retries or 0
+            retry_delay = task.default_retry_delay or 0
+            # time_limit is the hard ceiling — soft_time_limit fires earlier
+            # and the task typically converts the signal via self.retry(), so
+            # the worst-case wall-clock is bounded by
+            # time_limit + max_retries × default_retry_delay. soft_time_limit
+            # is intentionally omitted from this calculation.
+            envelope = time_limit + max_retries * retry_delay
+            if threshold < envelope:
+                raise RuntimeError(
+                    f"_assert_threshold_envelope: "
+                    f"stale_stage_run_threshold_seconds ({threshold}) "
+                    f"must exceed envelope ({envelope}) "
+                    f"for ledger stage {stage_name!r}"
+                )
+
+
 def start_ingest_pipeline(
     document_id: str,
     *,
@@ -2346,41 +2864,30 @@ def start_ingest_pipeline(
             use_case_key=use_case_key,
             extraction_profile_version=manifest.extraction_profile_version,
         )
+
+        # ── seed first ledger row (spec 2026-05-10) ───────────────────────
+        # The dispatcher will pick up this PENDING row within 5s and publish
+        # the prepare_document task. From there, each stage's lifecycle wrapper
+        # commits the next stage's PENDING row in the same transaction as its
+        # own COMPLETE — no chain to lose.
+        _seed_first_stage(
+            db,
+            pipeline_run_id=run_id,
+            stage_name="prepare_document",
+            task_name="app.workers.pipeline.prepare_document",
+        )
         db.commit()
     finally:
         db.close()
 
     logger.info(
-        "start_ingest_pipeline: document_id=%s pipeline_run_id=%s bundle=%s",
+        "start_ingest_pipeline: document_id=%s pipeline_run_id=%s bundle=%s "
+        "(ledger seed; dispatcher will publish within 5s)",
         document_id, run_id, resolved_key,
     )
-
-    # Fully sequential pipeline — no chords.  Celery 5.x chords with Redis
-    # silently drop callbacks regardless of positioning, so we run every stage
-    # in a simple chain.  The derivation stages (chunks, embed, graph) lose
-    # parallelism but each takes only 10-60s vs 20+ min for picture descriptions,
-    # so the throughput impact is negligible.
-    #
-    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
-    # from 13 → 9 stages. The downstream chain (collect_derivations →
-    # derive_structure_links → derive_canonicalization → finalize_document) is
-    # now dispatched by derive_ontology_graph_merge after the per-pass fan-in
-    # completes. See app/workers/pipeline.py (derive_ontology_graph_merge).
-    pipeline = chain(
-        prepare_document.si(document_id, run_id),
-        detect_and_translate.si(document_id, run_id),
-        derive_document_metadata.si(document_id, run_id),
-        purge_document_derivations.si(document_id, run_id),
-        derive_picture_descriptions.si(document_id, run_id),
-        derive_text_chunks_and_embeddings.si(document_id, run_id),
-        derive_image_embeddings.si(document_id, run_id),
-        derive_document_anchors.si(document_id, run_id),
-        derive_ontology_graph.si(document_id, run_id),
-    )
-    result = pipeline.apply_async()
     return IngestDispatchResult(
         pipeline_run_id=run_id,
-        celery_task_id=result.id,
+        celery_task_id="",
     )
 
 
@@ -2502,22 +3009,29 @@ def reingest_graph_only(doc_id, request) -> dict:
             use_case_key=resolved_use_case,
             extraction_profile_version=manifest.extraction_profile_version,
         )
+
+        # ── seed first ledger row for graph_only (spec 2026-05-10) ─────────
+        # Dispatcher picks up derive_document_anchors PENDING within 5s;
+        # the lifecycle wrapper's Tx-3 commits derive_ontology_graph as the
+        # next stage's PENDING when anchors complete.
+        _seed_first_stage(
+            db,
+            pipeline_run_id=run_id,
+            stage_name="derive_document_anchors",
+            task_name="app.workers.pipeline.derive_document_anchors",
+        )
         db.commit()
     finally:
         db.close()
 
-    # CHANGED 2026-05-06 (Task 7 of per-pass-celery-fanin): outer chain trimmed
-    # from 4 → 2 stages. Downstream stages (derive_structure_links →
-    # finalize_document) are now dispatched by derive_ontology_graph_merge in
-    # graph_only mode after the per-pass fan-in completes.
-    result = celery_chain(
-        derive_document_anchors.si(doc_id_str, run_id),
-        derive_ontology_graph.si(doc_id_str, run_id),
-    ).apply_async()
-
+    logger.info(
+        "reingest_graph_only: document_id=%s pipeline_run_id=%s bundle=%s "
+        "(ledger seed; dispatcher will publish within 5s)",
+        doc_id_str, run_id, resolved_key,
+    )
     return {
         "pipeline_run_id": run_id,
-        "celery_task_id": result.id,
+        "celery_task_id": "",
         "ontology_bundle_key": resolved_key,
     }
 
@@ -2525,66 +3039,141 @@ def reingest_graph_only(doc_id, request) -> dict:
 import functools
 
 
-def guard_stage_run(stage_name: str):
-    """Wrap a pipeline task so uncaught exceptions mark the stage_run FAILED.
+def guard_stage_run(
+    stage_name: str,
+    *,
+    lifecycle: bool = False,
+    next_stage: str | None = None,
+    next_task: str | None = None,
+    intercept_terminal: bool = True,
+):
+    """Wrap a pipeline task with FAILED-on-uncaught-exception safety net.
+
+    Lifecycle additions (v1, spec 2026-05-10):
+    - `lifecycle=True` enables Tx-1 CLAIM, _CTX, Tx-3 / Tx-4.
+    - `next_stage` / `next_task` describe the successor (for Tx-3a).
+    - `intercept_terminal=False` is for stage 9 (derive_ontology_graph), whose
+      summary row's COMPLETE is owned by derive_ontology_graph_merge.
+
+    Without `lifecycle=True`, behaves exactly as before: pass CeleryRetry /
+    SoftTimeLimitExceeded through, terminalize other exceptions.
+
+    Original safety-net rationale: silent-orphan case observed on 2026-04-23 —
+    a task marked RUNNING then died with no log entry and no status update.
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(self, document_id, run_id=None, *args, **kwargs):
+            # Non-lifecycle invocation — preserve existing behavior unchanged.
+            if not (lifecycle and run_id):
+                return _guard_existing_body(
+                    self, fn, stage_name, document_id, run_id, *args, **kwargs
+                )
+
+            # Tx-1 CLAIM
+            db = _get_db()
+            try:
+                claim = _claim_tx1(
+                    db, run_id, stage_name,
+                    celery_task_id=str(self.request.id),
+                    is_celery_retry=(self.request.retries > 0),
+                )
+                db.commit()
+            finally:
+                db.close()
+
+            if claim.outcome == "legacy":
+                return _guard_existing_body(
+                    self, fn, stage_name, document_id, run_id, *args, **kwargs
+                )
+            if claim.outcome != "proceed":
+                return claim.early_result
+
+            ctx = _LifecycleCtx(
+                pipeline_run_id=str(run_id),
+                stage_name=stage_name,
+                dispatch_attempt=claim.dispatch_attempt,
+                intercept_terminal=intercept_terminal,
+                next_stage=next_stage,
+                next_task=next_task,
+            )
+            token = _CTX.set(ctx)
+            try:
+                result = fn(self, document_id, run_id, *args, **kwargs)
+                if intercept_terminal:
+                    _finalize_after_body(ctx, result)
+                return result
+            except CeleryRetry:
+                # Re-raise without Tx-4; row stays RUNNING for Celery to republish.
+                raise
+            except Exception as exc:
+                if intercept_terminal:
+                    _tx4_finalize_failure(
+                        ctx,
+                        error=f"{type(exc).__name__}: {exc!r}",
+                        celery_retries=self.request.retries,
+                        max_retries=self.max_retries,
+                    )
+                raise
+            finally:
+                _CTX.reset(token)
+
+        wrapper.stage_name = stage_name                  # pre-existing marker
+        wrapper._lifecycle = lifecycle                   # NEW
+        wrapper._intercept_terminal = intercept_terminal # NEW
+        return wrapper
+    return decorator
+
+
+def _guard_existing_body(self, fn, stage_name, document_id, run_id, *args, **kwargs):
+    """Pre-design guard_stage_run body — preserved for non-lifecycle invocations.
 
     CeleryRetry and SoftTimeLimitExceeded are passed through untouched — those
     are Celery's own control-flow exceptions and the task's existing except
     branches handle them. Any other exception triggers a defensive FAILED
     status write (scoped to the current run_id, if any) and a full traceback
     log, then re-raises so Celery's retry / failure machinery still runs.
-
-    This is a narrow safety net for the silent-orphan case observed on
-    2026-04-23: a task marked RUNNING, then died in a way that left no log
-    entry and no status update. The sweeper catches such orphans eventually;
-    this decorator catches them immediately.
     """
-    def decorator(fn):
-        @functools.wraps(fn)
-        def wrapper(self, document_id, run_id=None, *args, **kwargs):
+    try:
+        return fn(self, document_id, run_id, *args, **kwargs)
+    except CeleryRetry:
+        raise
+    # NOTE: SoftTimeLimitExceeded is intentionally NOT passed through here.
+    # When a task's body calls self.retry(exc=SoftTimeLimitExceeded) on retry
+    # exhaustion, Celery 5 re-raises the provided `exc` itself (not
+    # MaxRetriesExceededError), so SoftTimeLimitExceeded reaches this wrapper
+    # on the final attempt. Letting it fall through to `except Exception`
+    # ensures terminalization on exhaustion.
+    except Exception as exc:
+        logger.exception(
+            "guard_stage_run: %s raised unhandled exception "
+            "(document_id=%s run_id=%s)",
+            stage_name, document_id, run_id,
+        )
+        if run_id:
             try:
-                return fn(self, document_id, run_id, *args, **kwargs)
-            except CeleryRetry:
-                raise
-            # NOTE: SoftTimeLimitExceeded is intentionally NOT passed through
-            # here. When a task's body calls self.retry(exc=SoftTimeLimitExceeded)
-            # on retry exhaustion, Celery 5 re-raises the provided `exc` itself
-            # (not MaxRetriesExceededError), so SoftTimeLimitExceeded reaches
-            # this wrapper on the final attempt. Letting it fall through to
-            # `except Exception` ensures terminalization on exhaustion.
-            except Exception as exc:
+                db = _get_db()
+                try:
+                    _update_stage_run(
+                        db, run_id, stage_name, "FAILED",
+                        attempt=self.request.retries + 1,
+                        error=f"unhandled exception: {exc!r}",
+                    )
+                    db.commit()
+                finally:
+                    db.close()
+            except Exception:
                 logger.exception(
-                    "guard_stage_run: %s raised unhandled exception "
-                    "(document_id=%s run_id=%s)",
-                    stage_name, document_id, run_id,
+                    "guard_stage_run: FAILED-status write also failed "
+                    "for run_id=%s stage=%s",
+                    run_id, stage_name,
                 )
-                if run_id:
-                    try:
-                        db = _get_db()
-                        try:
-                            _update_stage_run(
-                                db, run_id, stage_name, "FAILED",
-                                attempt=self.request.retries + 1,
-                                error=f"unhandled exception: {exc!r}",
-                            )
-                            db.commit()
-                        finally:
-                            db.close()
-                    except Exception:
-                        logger.exception(
-                            "guard_stage_run: FAILED-status write also failed "
-                            "for run_id=%s stage=%s",
-                            run_id, stage_name,
-                        )
-                # Unconditional terminalization: reaching this branch means the
-                # task did not convert the exception via self.retry (which
-                # raises CeleryRetry and is pass-through). The helper preserves
-                # existing terminal statuses.
-                _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
-                raise
-        wrapper.stage_name = stage_name  # surfaced for test introspection
-        return wrapper
-    return decorator
+        # Unconditional terminalization: reaching this branch means the task
+        # did not convert the exception via self.retry (which raises
+        # CeleryRetry and is pass-through). The helper preserves existing
+        # terminal statuses.
+        _terminalize_doc_and_run(document_id, run_id, "PARTIAL_COMPLETE")
+        raise
 
 
 def _update_stage_run(
@@ -2592,6 +3181,27 @@ def _update_stage_run(
     attempt: int = 1, metrics: dict | None = None, error: str | None = None,
 ) -> None:
     """Upsert a StageRun record."""
+    # ── lifecycle interception (spec 2026-05-10) ────────────────────────
+    # When a lifecycle-wrapped stage is mid-body, defer terminal writes to
+    # the wrapper's Tx-3 / Tx-4 so the body's COMPLETE commit cannot escape
+    # before the successor row is inserted in the same transaction.
+    ctx = _CTX.get()
+    if (
+        ctx is not None
+        and str(ctx.pipeline_run_id) == str(pipeline_run_id)
+        and ctx.stage_name == stage_name
+        and ctx.intercept_terminal
+    ):
+        if status == "RUNNING":
+            return                          # wrapper already wrote RUNNING via CLAIM
+        if status in ("COMPLETE", "FAILED"):
+            ctx.pending_status = status
+            ctx.pending_metrics = metrics
+            ctx.pending_error = error
+            return
+        # Other statuses fall through (defensive)
+    # ─────────────────────────────────────────────────────────────────────
+
     from app.models.ingest import StageRun
     from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -3390,7 +4000,10 @@ def _get_pipeline_run_id(db, document_id: str) -> str | None:
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30,
                  soft_time_limit=settings.prepare_soft_time_limit,
                  time_limit=settings.prepare_time_limit)
-@guard_stage_run("prepare_document")
+@guard_stage_run("prepare_document",
+    lifecycle=True,
+    next_stage="detect_and_translate",
+    next_task="app.workers.pipeline.detect_and_translate")
 def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     """Validate + detect + Docling convert + persist document_elements.
 
@@ -4010,7 +4623,10 @@ def prepare_document(self, document_id: str, run_id: str | None = None) -> str:
     time_limit=settings.doc_analysis_time_limit,
     queue="ingest",
 )
-@guard_stage_run("derive_document_metadata")
+@guard_stage_run("derive_document_metadata",
+    lifecycle=True,
+    next_stage="purge_document_derivations",
+    next_task="app.workers.pipeline.purge_document_derivations")
 def derive_document_metadata(self, document_id: str, run_id: str | None = None) -> dict:
     """Extract document metadata (summary, date, classification, source) via LLM."""
     import json as json_mod
@@ -4172,7 +4788,10 @@ def derive_document_metadata(self, document_id: str, run_id: str | None = None) 
     time_limit=settings.translation_time_limit,
     queue="ingest",
 )
-@guard_stage_run("detect_and_translate")
+@guard_stage_run("detect_and_translate",
+    lifecycle=True,
+    next_stage="derive_document_metadata",
+    next_task="app.workers.pipeline.derive_document_metadata")
 def detect_and_translate(self, document_id: str, run_id: str | None = None) -> dict:
     """Detect non-English elements and translate them via Ollama."""
     import json as json_mod
@@ -4482,7 +5101,10 @@ def detect_and_translate(self, document_id: str, run_id: str | None = None) -> d
     time_limit=settings.picture_desc_time_limit,
     queue="ingest",
 )
-@guard_stage_run("derive_picture_descriptions")
+@guard_stage_run("derive_picture_descriptions",
+    lifecycle=True,
+    next_stage="derive_text_embeddings",
+    next_task="app.workers.pipeline.derive_text_chunks_and_embeddings")
 def derive_picture_descriptions(self, document_id: str, run_id: str | None = None) -> dict:
     """Enrich picture items with LLM-generated descriptions using document summary context."""
     import json as json_mod
@@ -4700,7 +5322,10 @@ def derive_picture_descriptions(self, document_id: str, run_id: str | None = Non
 
 @celery_app.task(bind=True, soft_time_limit=settings.finalize_soft_time_limit,
                  time_limit=settings.finalize_time_limit, queue="ingest")
-@guard_stage_run("purge_document_derivations")
+@guard_stage_run("purge_document_derivations",
+    lifecycle=True,
+    next_stage="derive_picture_descriptions",
+    next_task="app.workers.pipeline.derive_picture_descriptions")
 def purge_document_derivations(self, document_id: str, run_id: str | None = None) -> str:
     """Delete stale derived data for a document before re-deriving.
 
@@ -4826,7 +5451,10 @@ def _build_native_chunk_meta(
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
-@guard_stage_run("derive_text_embeddings")
+@guard_stage_run("derive_text_embeddings",
+    lifecycle=True,
+    next_stage="derive_image_embeddings",
+    next_task="app.workers.pipeline.derive_image_embeddings")
 def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read text/table/heading document_elements → chunk → BGE embed → upsert text_chunks.
 
@@ -5307,7 +5935,10 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60, queue="embed",
                  soft_time_limit=settings.embed_soft_time_limit,
                  time_limit=settings.embed_time_limit)
-@guard_stage_run("derive_image_embeddings")
+@guard_stage_run("derive_image_embeddings",
+    lifecycle=True,
+    next_stage="derive_document_anchors",
+    next_task="app.workers.pipeline.derive_document_anchors")
 def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -> dict:
     """Read image document_elements → CLIP embed → upsert image_chunks.
 
@@ -5522,7 +6153,10 @@ def derive_image_embeddings(self, document_id: str, run_id: str | None = None) -
     soft_time_limit=settings.finalize_soft_time_limit,
     time_limit=settings.finalize_time_limit,
 )
-@guard_stage_run("derive_document_anchors")
+@guard_stage_run("derive_document_anchors",
+    lifecycle=True,
+    next_stage="derive_ontology_graph",
+    next_task="app.workers.pipeline.derive_ontology_graph")
 def derive_document_anchors(self, document_id: str, run_id: str | None = None) -> dict:
     """Emit ontology DOCUMENT / SECTION / FIGURE / TABLE vertices and
     their structural edges (HAS_SECTION / HAS_FIGURE / HAS_TABLE /
@@ -6962,7 +7596,11 @@ def reconcile_ontology_graph_runs(self) -> dict:
     soft_time_limit=600,
     name="app.workers.pipeline.derive_ontology_graph",
 )
-@guard_stage_run("derive_ontology_graph")
+@guard_stage_run("derive_ontology_graph",
+    lifecycle=True,
+    next_stage=None,
+    next_task=None,
+    intercept_terminal=False)
 def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> dict:
     """Thin dispatcher: create summary StageRun then fan-out to per-pass tasks.
 
@@ -7004,6 +7642,18 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # redelivery after worker crash), both can safely fire this; the partial
         # unique index uq_stage_runs_summary_row (WHERE pass_name IS NULL) guards
         # against duplicates without raising IntegrityError on the second copy.
+        #
+        # NOTE on multi-attempt-row behavior (Stage 9 only):
+        # Because `attempt = self.request.retries + 1`, each Celery retry of
+        # derive_ontology_graph inserts a NEW summary row (attempt=2, 3, …).
+        # Stage 9 is the only ledger stage that may produce multiple summary
+        # rows for the same pipeline_run. This is intentional and correct:
+        # ``derive_ontology_graph_merge`` finalizes the stage by UPDATE-ing
+        # every row WHERE pass_name IS NULL (no attempt filter), flipping all
+        # attempts together. Downstream consumers (status views, reconcile)
+        # treat the row-set as a single logical record. Do NOT add an attempt
+        # filter to the merge UPDATE, and do NOT change this INSERT to
+        # collapse attempts — both would break the documented behavior.
         stmt = (
             pg_insert(StageRun)
             .values(
