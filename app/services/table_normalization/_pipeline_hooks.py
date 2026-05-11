@@ -121,6 +121,31 @@ def _classify_native_chunk(
     return (("table_dominant" if dominant_share >= 0.8 else "table_mixed"), dominant_idx)
 
 
+def _suppress_raw_table_texts(
+    doc_json: dict,
+    normalized: list[NormalizedTable],
+) -> None:
+    """Blank the flat-text mirrors of normalized non-OTHER tables in-place.
+
+    Per §9.2 invariant:
+    - len(doc_json['texts']) is UNCHANGED. No element is removed; no
+      index shifts. This preserves self_ref stability for any code that
+      references texts by index (children refs, prov entries, etc.).
+    - doc_json['tables'] is NOT touched. The Phase 0/0.5 overlay
+      machinery reads tables[] directly and must remain functional.
+    - Tables with shape == OTHER keep their flat text (the OTHER
+      fallback depends on it).
+    """
+    non_other = {nt.table_index for nt in normalized if nt.shape != Shape.OTHER}
+    if not non_other:
+        return
+    target_refs = {f"#/tables/{i}" for i in non_other}
+    for t in doc_json.get("texts") or []:
+        if t.get("self_ref") in target_refs:
+            t["text"] = ""
+            t["orig"] = ""
+
+
 def _substitute_table_chunks(
     native_chunks: list[Any],
     normalized_by_table_idx: dict[int, NormalizedTable],
