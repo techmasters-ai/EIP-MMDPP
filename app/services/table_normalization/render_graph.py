@@ -2,15 +2,18 @@
 shared column-rendering helper used by both renderers (single source
 of truth for chunk text format).
 
-Task 6 implements only _render_column_as_text + the helpers used by
-Tasks 7/8. Task 7 will add render_for_graph and _render_whole_table /
-_render_column_section.
+`render_for_graph` is the public entry point — emits one
+GraphTableChunk per entity column (or per (column, section) when a
+column overflows its budget), or a single TABLE_WHOLE chunk for small
+tables and Shape.OTHER passthroughs. See §9 of the design spec.
 """
 from __future__ import annotations
 
 from app.services.table_normalization.models import (
     NormalizedTable, NormalizedColumn, TableSection,
+    GraphTableChunk, ChunkKind, Shape,
 )
+from app.services.table_normalization.tokens import count_bge_m3_tokens
 
 
 def _render_column_as_text(
@@ -72,3 +75,131 @@ def _render_row_line(label: str, value: str, unit: str | None) -> str:
     if unit:
         return f"- {label}: {value} {unit}"
     return f"- {label}: {value}"
+
+
+def render_for_graph(
+    table: NormalizedTable,
+    token_limit_whole: int,
+    token_limit_column: int,
+) -> list[GraphTableChunk]:
+    """Render a NormalizedTable into graph-side chunks per §9 of the spec.
+
+    Decision tree:
+      1. Shape.OTHER → one TABLE_WHOLE chunk carrying raw_markdown.
+      2. Whole-table render fits within `token_limit_whole` → one TABLE_WHOLE.
+      3. Otherwise emit one TABLE_ENTITY_COLUMN per column, splitting any
+         column that exceeds `token_limit_column` into per-section
+         TABLE_ENTITY_SECTION chunks (identity header repeated).
+    """
+    # 1. Shape.OTHER → raw_markdown passthrough
+    if table.shape == Shape.OTHER:
+        return [GraphTableChunk(
+            text=table.raw_markdown,
+            table_ref=table.self_ref,
+            page_numbers=table.page_numbers,
+            chunk_kind=ChunkKind.TABLE_WHOLE,
+            entity_display_name=None,
+            section=None,
+            column_index=None,
+            cell_refs=(),
+            row_labels=(),
+        )]
+
+    # 2. Whole-table rendering check
+    whole_text = _render_whole_table(table)
+    whole_tokens = count_bge_m3_tokens(whole_text)
+    if whole_tokens <= token_limit_whole:
+        return [GraphTableChunk(
+            text=whole_text,
+            table_ref=table.self_ref,
+            page_numbers=table.page_numbers,
+            chunk_kind=ChunkKind.TABLE_WHOLE,
+            entity_display_name=None,
+            section=None,
+            column_index=None,
+            cell_refs=tuple(c.cell_ref.self_ref for c in table.cells),
+            row_labels=tuple(sorted({c.row_label or "" for c in table.cells})),
+        )]
+
+    # 3. Per-column emission
+    out: list[GraphTableChunk] = []
+    for col in table.columns:
+        col_text = _render_column_as_text(col, table, table.sections)
+        col_tokens = count_bge_m3_tokens(col_text)
+        col_cells = [c for c in table.cells if c.col_idx == col.col_idx]
+        col_refs = tuple(c.cell_ref.self_ref for c in col_cells)
+        col_row_labels = tuple(sorted({c.row_label or "" for c in col_cells}))
+
+        if col_tokens <= token_limit_column:
+            out.append(GraphTableChunk(
+                text=col_text,
+                table_ref=table.self_ref,
+                page_numbers=table.page_numbers,
+                chunk_kind=ChunkKind.TABLE_ENTITY_COLUMN,
+                entity_display_name=col.display_name,
+                section=None,
+                column_index=col.col_idx,
+                cell_refs=col_refs,
+                row_labels=col_row_labels,
+            ))
+        else:
+            # Column overflows budget → split by section; identity header repeats
+            for section in table.sections:
+                sec_cells = [c for c in col_cells if c.section == section.name]
+                if not sec_cells:
+                    continue
+                sec_text = _render_column_section(col, table, section)
+                out.append(GraphTableChunk(
+                    text=sec_text,
+                    table_ref=table.self_ref,
+                    page_numbers=table.page_numbers,
+                    chunk_kind=ChunkKind.TABLE_ENTITY_SECTION,
+                    entity_display_name=col.display_name,
+                    section=section.name,
+                    column_index=col.col_idx,
+                    cell_refs=tuple(c.cell_ref.self_ref for c in sec_cells),
+                    row_labels=tuple(sorted({c.row_label or "" for c in sec_cells})),
+                ))
+    return out
+
+
+def _render_whole_table(table: NormalizedTable) -> str:
+    """Whole-table rendering: identity header + each column block stacked."""
+    parts: list[str] = []
+    caption = table.caption or table.self_ref
+    parts.append(f"TABLE: {caption}")
+    if table.page_numbers:
+        parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
+    parts.append("")
+    for col in table.columns:
+        parts.append(_render_column_as_text(col, table, table.sections).rstrip())
+        parts.append("")
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _render_column_section(
+    column: NormalizedColumn,
+    table: NormalizedTable,
+    section: TableSection,
+) -> str:
+    """Single section of one column with identity header repeated.
+
+    Used when a per-column render exceeds the column token budget — we
+    split per section so each chunk still carries the full entity
+    identity needed to interpret the values."""
+    parts: list[str] = []
+    caption = table.caption or table.self_ref
+    parts.append(f"TABLE: {caption}")
+    if table.page_numbers:
+        parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
+    parts.append("")
+    parts.append("ENTITY:")
+    for k, v in column.identity.items():
+        parts.append(f"- {k}: {v}")
+    parts.append("")
+    parts.append(f"{section.name.upper()}:")
+    for c in table.cells:
+        if c.col_idx != column.col_idx or c.section != section.name:
+            continue
+        parts.append(_render_row_line(c.row_label or "", c.value, c.unit))
+    return "\n".join(parts).rstrip() + "\n"

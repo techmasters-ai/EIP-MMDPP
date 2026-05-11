@@ -5,10 +5,12 @@ from app.services.table_normalization.models import (
     GraphTableChunk, EmbeddingTableChunk,
 )
 from app.services.table_normalization.normalize import normalize_tables
+from app.services.table_normalization.render_graph import render_for_graph
 
 __all__ = [
     "Shape", "ChunkKind", "CellRef", "NormalizedCell", "NormalizedRow",
     "NormalizedColumn", "TableSection", "NormalizedTable",
     "GraphTableChunk", "EmbeddingTableChunk",
     "normalize_tables",
+    "render_for_graph",
 ]
