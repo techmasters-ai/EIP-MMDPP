@@ -1,6 +1,6 @@
 # Table-Aware Chunking — Design
 
-**Status:** Draft 2026-05-11 (rev. 4 after second review pass)
+**Status:** Draft 2026-05-11 (rev. 5 after third review pass)
 **Branch:** `feat/table-aware-chunking`
 **Related:**
 - `2026-05-05-section-aware-table-fact-synthesis-design.md` — prior spec for `_table_facts.py`, which was **built, then reverted from production** on 2026-05-06 (see §1 below). Modules remain on disk; not currently called by `run_extraction_pass`.
@@ -515,41 +515,65 @@ def _substitute_table_chunks(
 ) -> list:
     """Replace native HybridChunker table chunks with normalized chunks.
 
-    A native chunk is treated as a 'table chunk' when ANY doc_item it
-    references has a self_ref matching '#/tables/{i}' for some i in
-    normalized_by_table_idx whose NormalizedTable has shape != OTHER.
+    Classification per native chunk:
+    - "table_dominant": ≥80% of doc_items reference '#/tables/{i}' for some
+      i in normalized_by_table_idx. These are substituted entirely.
+    - "table_mixed": some doc_items reference such tables but <80%. We emit
+      normalized chunks AND keep the native chunk (so surrounding prose is
+      not discarded).
+    - "non_table": no qualifying doc_items. Pass through unchanged.
 
-    For such chunks, render_fn is called on the NormalizedTable and the
-    resulting EmbeddingTableChunks replace the native chunk in place.
-    Multiple native chunks pointing to the same table index produce only
-    ONE substitution (the first occurrence); subsequent native chunks for
-    the same table are dropped — the normalized chunks already cover all
-    its content.
+    For table_dominant chunks pointing to a table index already substituted
+    (by a prior native chunk), DROP the chunk — the normalized rendering
+    is content-complete (NormalizedTable.cells covers every spec cell), so
+    a second native chunk referencing the same table cannot add new content.
+    Content-coverage assertion is in test_hybrid_chunker_substitution.py.
     """
     seen_table_idx: set[int] = set()
     out: list = []
     for nc in native_chunks:
-        table_idx = _table_idx_for_native_chunk(nc, normalized_by_table_idx)
-        if table_idx is None:
-            out.append(nc)               # not a normalizable-table chunk; preserve
+        cls, table_idx = _classify_native_chunk(nc, normalized_by_table_idx)
+
+        if cls == "non_table":
+            out.append(nc)
             continue
-        if table_idx in seen_table_idx:
-            continue                     # already substituted for this table; drop
-        seen_table_idx.add(table_idx)
-        nt = normalized_by_table_idx[table_idx]
-        for etc in render_fn(nt, token_limit=token_limit, summary_limit=summary_limit):
-            out.append(_NormalizedTableChunkAdapter(etc))  # ducktypes the HybridChunker chunk interface (see below)
+
+        if cls == "table_dominant":
+            if table_idx in seen_table_idx:
+                continue                                    # subsequent chunks for same table — drop
+            seen_table_idx.add(table_idx)
+            nt = normalized_by_table_idx[table_idx]
+            parent_headings = tuple(getattr(getattr(nc, "meta", None), "headings", None) or [])
+            for etc in render_fn(nt, token_limit=token_limit, summary_limit=summary_limit):
+                out.append(_NormalizedTableChunkAdapter(
+                    etc=etc,
+                    parent_headings=parent_headings,
+                    parent_table_ref=f"#/tables/{table_idx}",
+                ))
+            continue
+
+        # cls == "table_mixed": emit normalized chunks (if table not already seen) AND keep native
+        if table_idx not in seen_table_idx:
+            seen_table_idx.add(table_idx)
+            nt = normalized_by_table_idx[table_idx]
+            parent_headings = tuple(getattr(getattr(nc, "meta", None), "headings", None) or [])
+            for etc in render_fn(nt, token_limit=token_limit, summary_limit=summary_limit):
+                out.append(_NormalizedTableChunkAdapter(
+                    etc=etc,
+                    parent_headings=parent_headings,
+                    parent_table_ref=f"#/tables/{table_idx}",
+                ))
+        out.append(nc)                                       # keep native chunk for its non-table content
     return out
 
 
-def _table_idx_for_native_chunk(nc, normalized_by_table_idx) -> int | None:
-    """Return the matching normalized-table index if this native chunk
-    references a normalized table whose shape != OTHER; else None.
-
-    Iterates nc.meta.doc_items; for each, parses self_ref of form
-    '#/tables/N' to extract N; returns the first match in
-    normalized_by_table_idx (or None)."""
-    for item in (getattr(getattr(nc, "meta", None), "doc_items", None) or []):
+def _classify_native_chunk(nc, normalized_by_table_idx) -> tuple[str, int | None]:
+    """Return (classification, table_idx_or_None) per the rules above."""
+    items = getattr(getattr(nc, "meta", None), "doc_items", None) or []
+    if not items:
+        return ("non_table", None)
+    table_idx_counts: dict[int, int] = {}
+    for item in items:
         ref = getattr(item, "self_ref", None) or ""
         if not ref.startswith("#/tables/"):
             continue
@@ -558,50 +582,186 @@ def _table_idx_for_native_chunk(nc, normalized_by_table_idx) -> int | None:
         except (ValueError, IndexError):
             continue
         if idx in normalized_by_table_idx and normalized_by_table_idx[idx].shape != Shape.OTHER:
-            return idx
-    return None
+            table_idx_counts[idx] = table_idx_counts.get(idx, 0) + 1
+    if not table_idx_counts:
+        return ("non_table", None)
+    dominant_idx = max(table_idx_counts, key=table_idx_counts.get)
+    dominant_share = table_idx_counts[dominant_idx] / len(items)
+    if dominant_share >= 0.8:
+        return ("table_dominant", dominant_idx)
+    return ("table_mixed", dominant_idx)
 ```
 
-**The adapter (`_NormalizedTableChunkAdapter`)** wraps an `EmbeddingTableChunk` to satisfy the duck-typed interface the rest of `pipeline.py:5559-5623` reads off native chunks: `.text`, `.meta.doc_items[].self_ref`, `.meta.doc_items[].prov[].page_no`, `.meta.headings`. The adapter populates these from the underlying `EmbeddingTableChunk`:
-- `.text` → `etc.text`.
-- `.meta.doc_items` → synthetic items whose `self_ref` is each entry in `etc.cell_refs` (so existing `_build_native_chunk_meta` at `pipeline.py:5411-5420` produces correct `self_refs`).
-- `.meta.doc_items[].prov[].page_no` → page numbers from `etc.page_numbers`.
-- `.meta.headings` → `[etc.table_caption]` if caption present, else `[]`.
-
-The existing `_build_native_chunk_meta` then produces the correct `self_refs`, `page_numbers`, `evidence_ids`, and `section_path` *without modification*. The new metadata fields (`chunk_kind`, `table_ref`, `entity_display_name`, `section`, `column_index`, `row_labels`) are passed separately: `_build_native_chunk_meta` gains an optional parameter `extra_metadata: dict | None = None` that, when present, populates the returned dict's `chunk_metadata` key, which then flows into the new Postgres column.
+**The adapter (`_NormalizedTableChunkAdapter`)** wraps an `EmbeddingTableChunk` plus the parent native chunk's metadata, satisfying the duck-typed interface that `pipeline.py:5559-5623` reads:
 
 ```python
-# pipeline.py:5435 modification — add chunk_metadata to the return dict
-return {
-    "chunk_id": chunk_id,
-    "chunk_index": chunk_idx,
-    ...
-    "chunk_metadata": extra_metadata,   # new
-}
+@dataclass(frozen=True)
+class _NormalizedTableChunkAdapter:
+    etc: EmbeddingTableChunk
+    parent_headings: tuple[str, ...]   # from the native chunk being substituted
+    parent_table_ref: str              # "#/tables/{N}" — the table-level self_ref
+
+    @property
+    def text(self) -> str:
+        return self.etc.text
+
+    @property
+    def meta(self) -> "_AdapterMeta":
+        return _AdapterMeta(
+            doc_items=(_AdapterDocItem(
+                self_ref=self.parent_table_ref,            # CRITICAL: today-shape only; cell refs do NOT appear here
+                prov=tuple(_AdapterProv(page_no=p) for p in self.etc.page_numbers),
+            ),),
+            headings=self.parent_headings,                  # preserves document section hierarchy from the native chunk
+        )
+
+    @property
+    def extra_metadata(self) -> dict:
+        return {
+            "chunk_kind": self.etc.chunk_kind.value,
+            "table_ref": self.etc.table_ref,
+            "entity_display_name": self.etc.entity_display_name,
+            "section": self.etc.section,
+            "column_index": self.etc.column_index,
+            "cell_refs": list(self.etc.cell_refs),         # CRITICAL: cell refs live here, NOT on doc_items.self_ref
+            "row_labels": list(self.etc.row_labels),
+            "table_caption": self.etc.table_caption if hasattr(self.etc, "table_caption") else None,
+            "page_numbers": list(self.etc.page_numbers),
+        }
 ```
 
-And `pipeline.py:5594` modification — write the column:
+**Why `self_refs` shape preservation matters.** `TextChunk.self_refs` is read by:
+- `provenance.py:_resolve_element_uid` (line 184) — returns `self_refs[0]` as `element_uid`. Today's `element_uid`s are `#/texts/N` or `#/tables/N` shape; cell-level refs would be a *new shape* with no consumer.
+- The retrieval response (`/v1/retrieval/query`) — `self_refs` flows through unchanged; UI / clients parsing the format break if cell refs leak in.
+- ArcadeDB `TextChunk` vertex's `self_refs` property — write-once during ingest; rebuild requires `--blow-away`.
+
+The adapter exposes ONE synthetic `doc_item` with `self_ref = parent_table_ref` (e.g., `"#/tables/3"`). `_build_native_chunk_meta` (`pipeline.py:5411-5420`) then writes `self_refs = ["#/tables/3"]` — today's shape. Cell refs are read separately via `extra_metadata.cell_refs` and written into the new `chunk_metadata` Postgres column. Two channels; no pollution.
+
+**`_build_native_chunk_meta` changes (signature unchanged at the call site; reads adapter ducktyped):**
+
+```python
+# pipeline.py:5399 — _build_native_chunk_meta signature stays the same;
+# implementation reads chunk.extra_metadata duck-typedly if present.
+def _build_native_chunk_meta(chunk_idx, chunk, document_id, model_version) -> dict:
+    # ... existing logic for self_refs/page_numbers/section_path/headings ...
+    extra = getattr(chunk, "extra_metadata", None)   # NEW: ducktyped read; None for native chunks
+    return {
+        "chunk_id": chunk_id,
+        "chunk_index": chunk_idx,
+        "page_number": min(page_numbers) if page_numbers else None,
+        "page_numbers": sorted(page_numbers),
+        "modality": "text",
+        "self_refs": self_refs,                     # today-shape (table-level), NOT cell refs
+        "evidence_ids": list(self_refs),            # alias as today
+        "document_id": document_id,
+        "section_path": section_path,
+        "headings": headings,
+        "chunk_metadata": extra,                    # NEW: populated only for normalized chunks
+    }
+```
+
+**Postgres write at `pipeline.py:5594`:**
+
 ```python
 chunk_values = {
-    ...
+    "id": meta["chunk_id"],
+    "artifact_id": None,
+    "document_id": uuid.UUID(document_id),
+    "chunk_index": meta["chunk_index"],
+    "chunk_text": text,
+    "modality": meta["modality"],
+    "page_number": meta["page_number"],
     "bounding_box": None,
-    "chunk_metadata": meta.get("chunk_metadata"),   # new
+    "chunk_metadata": meta.get("chunk_metadata"),     # NEW
 }
+
+stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
+    index_elements=["id"],
+    set_={
+        "chunk_text": chunk_values["chunk_text"],
+        "modality": chunk_values["modality"],
+        "chunk_metadata": chunk_values["chunk_metadata"],   # NEW — without this, re-runs leave stale chunk_metadata
+    },
+)
 ```
 
-ArcadeDB write at `pipeline.py:5603-5618` adds the `chunk_kind` property to `properties`:
+The `chunk_metadata` is included in the upsert `set_` clause so retries / config-change re-runs update the column rather than leaving stale prior values.
+
+**ArcadeDB write at `pipeline.py:5603-5618`:**
+
 ```python
 properties={
-    ...
+    "artifact_id": None,
+    "modality": meta["modality"],
+    "page_number": meta["page_number"],
+    "classification": doc_classification,
+    "page_numbers": meta["page_numbers"],
+    "self_refs": meta["self_refs"],                # today-shape only
+    "evidence_ids": meta["evidence_ids"],
     "section_path": meta.get("section_path"),
     "headings": meta.get("headings", []),
-    "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),   # new
+    "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),   # NEW
 },
 ```
 
 ### 10.2 Integration in `app/services/chunking.py` (legacy fallback path)
 
-When `use_native_chunking is False` at `pipeline.py:5636-5664` (HybridChunker failed or no enrichment), the legacy `structure_aware_chunk` runs. We integrate there as well — the legacy path is rarer but real.
+When `use_native_chunking is False` at `pipeline.py:5636-5664` (HybridChunker failed or no enrichment), the legacy `structure_aware_chunk` runs. The legacy path is rarer but real.
+
+**Required code changes in `pipeline.py:5636-5664` to make the legacy path normalization-aware:**
+
+1. **Compute normalized tables in the legacy branch.** No `doc_dict` is loaded here today; attempt to load `docling_document.json` for normalization. If unavailable, `normalized_tables = []` and the legacy path reduces to today's behavior:
+   ```python
+   if not use_native_chunking:
+       normalized_tables: list[NormalizedTable] = []
+       if is_table_normalization_enabled_embedding():
+           try:
+               _raw = download_bytes_sync(
+                   settings.minio_bucket_derived,
+                   f"artifacts/{document_id}/docling_document.json",
+               )
+               normalized_tables = normalize_tables(_json_mod.loads(_raw))
+           except Exception as exc:
+               logger.debug("Legacy path: docling_document.json unavailable (%s); normalization off.", exc)
+       # ... existing elements query + element_dicts build ...
+   ```
+
+2. **Thread element metadata into element_dicts** (pipeline.py:5647-5658):
+   ```python
+   element_dicts = [
+       {
+           "element_type": elem.element_type,
+           "content_text": elem.translated_text or elem.content_text,
+           "page_number": elem.page_number,
+           "section_path": elem.section_path,
+           "element_uid": str(elem.element_uid) if elem.element_uid else "",
+           "element_order": elem.element_order,
+           "heading_level": elem.heading_level,
+           "element_metadata": elem.element_metadata or {},   # NEW — needed by normalized_table_for
+       }
+       for elem in elements
+       if (elem.translated_text or elem.content_text)
+   ]
+   structured_chunks = structure_aware_chunk(
+       element_dicts,
+       max_chunk_tokens=settings.embedding_chunk_max_tokens,
+       overlap_tokens=settings.embedding_chunk_overlap_tokens,
+       normalized_tables=normalized_tables,                    # NEW
+   )
+   ```
+
+3. **`structure_aware_chunk` signature change** (kw-only with default to preserve other callers):
+   ```python
+   def structure_aware_chunk(
+       elements: list[dict],
+       max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
+       overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
+       *,
+       normalized_tables: list[NormalizedTable] | tuple[NormalizedTable, ...] = (),
+   ) -> list[StructuredChunk]: ...
+   ```
+
+**The integration body in `structure_aware_chunk`:**
 
 ```python
 def is_table_normalization_enabled_embedding() -> bool:
@@ -646,24 +806,25 @@ elif etype == "table":
 
 `StructuredChunk` gains optional `metadata: dict | None = None` (kw-only with default; existing call sites unchanged).
 
-**`normalized_table_for(elem, normalized_tables)`** — lookup function from a `DocumentElement` dict to a `NormalizedTable`. The bridge: `DocumentElement.element_uid` doesn't carry the table index directly, but `DocumentElement.metadata` (a JSONB field already on the model) stores the docling self_ref for elements derived from docling. The function:
+**`normalized_table_for(elem, normalized_tables)`** — lookup from a `DocumentElement` dict to a `NormalizedTable`:
 
 ```python
-def normalized_table_for(elem: dict, normalized_tables: list[NormalizedTable]) -> NormalizedTable | None:
-    # Try direct self_ref in element metadata (preferred).
-    ref = (elem.get("metadata") or {}).get("self_ref", "")
-    if ref.startswith("#/tables/"):
-        try:
-            idx = int(ref.split("/")[-1])
-        except (ValueError, IndexError):
-            return None
-        return next((nt for nt in normalized_tables if nt.table_index == idx), None)
-    # Legacy fallback: match by content_text fuzzy heuristic — log warning.
-    logger.debug("normalized_table_for: element has no self_ref; using None.")
-    return None
+def normalized_table_for(elem: dict, normalized_tables) -> NormalizedTable | None:
+    if not normalized_tables:
+        return None
+    ref = (elem.get("element_metadata") or {}).get("self_ref", "")
+    if not ref.startswith("#/tables/"):
+        return None
+    try:
+        idx = int(ref.split("/")[-1])
+    except (ValueError, IndexError):
+        return None
+    return next((nt for nt in normalized_tables if nt.table_index == idx), None)
 ```
 
-If `DocumentElement.metadata` does NOT carry `self_ref` today, the **implementation spike at §20** must verify and either (a) add `self_ref` to the docling-import path so the metadata field is populated, or (b) introduce an alternative bridge (e.g., match by `content_text` substring). The legacy path's success depends on this; the spike resolves before any other code lands.
+The bridge depends on `DocumentElement.element_metadata` carrying `self_ref` for table elements. The §20.2 spike verifies this. **If it doesn't**, the spec requires fix (a) — extend the docling-import path in `app/services/docling_anchors.py` to populate `element_metadata.self_ref` from the source docling element. Option (b) (substring match) is **rejected** as too brittle (silently wrong for duplicated tables). The spike resolves which fix is needed.
+
+**Until the spike confirms** the bridge works (with whichever fix), the legacy path silently falls through to today's opaque-chunk behavior for tables. This is acceptable as Phase 1's "code merges, behavior unchanged" state — the master kill-switch covers it. After the spike's fix lands, the legacy path normalization activates when the embedding flag is flipped.
 
 ### 10.3 Master kill-switch correctness
 
@@ -790,25 +951,48 @@ Additive; backwards-compatible.
 - `chunk_to_self_refs: dict[int, list[str]]` — chunk_index → list of `self_ref` strings.
 - `chunk_to_evidence_units: dict[int, list[dict]]` — chunk_index → list of evidence-unit dicts.
 
-The walker's `_resolve_element_uid` (lines 175-223) resolves a node's `element_uid` via a 5-step priority:
-1. Direct `element_uid` on the node.
-2. `provenance.element_uid`.
-3. `provenance.self_refs[0]` — **authoritative when set by the library**.
-4. `provenance.evidence_ids[0]` if it starts with `'#/'`.
-5. `provenance.chunk_indexes[0]` → first `self_ref` via `chunk_to_self_refs`.
+The walker's `_resolve_element_uid` (lines 175-223) has a 5-step resolution: direct `element_uid` → `provenance.element_uid` → `provenance.self_refs[0]` → `provenance.evidence_ids[0]` (if starts `#/`) → `chunk_to_self_refs[provenance.chunk_indexes[0]]`.
 
-**The flow we need:** when an entity is extracted from one of our `GraphTableChunk`-derived TextItems, its `provenance.self_refs` (and `evidence_ids`) must include the underlying `cell_refs`.
+**The flow we need:** when an entity is extracted from one of our `GraphTableChunk`-derived TextItems, its `provenance.evidence_ids` must include the underlying `cell_refs` (so the §15.2 provenance gate passes).
 
-**Mechanism:** `_text_item_from_chunk(gtc)` (the helper in the new module that converts a `GraphTableChunk` to a docling `TextItem`) constructs the TextItem so:
-- The TextItem's own `self_ref` is `#/texts/{N}` (synthetic, assigned at append time by docling's normal mechanism).
-- The TextItem's `prov: list[ProvenanceItem]` is populated with entries pointing to each cell in `gtc.cell_refs` — each `prov` entry's `$ref` is set to the cell's self_ref.
-- When the graph-extraction library records this chunk's creation, it populates `chunk_to_self_refs[chunk_index]` with both the synthetic TextItem's `self_ref` AND the cell refs from `prov[].$ref`. (This is how the library handles tables today — the prior `_table_facts.py` work used the same mechanism for its synthesized items; see `_table_facts.py:823` for the `prov` construction pattern.)
+**Verified state of `prov` handling in the codebase:**
 
-**What this assumes:** the graph-extraction library indexes `prov[].$ref` into `chunk_to_self_refs[chunk_index]` when building the chunk-creation trace. This is the load-bearing assumption.
+Reading the production chunk-trace builders:
+- `main.py:765-774` (production, `doc_processor.last_chunk_metadata.self_refs`): reads `self_refs` directly. Does NOT flatten `prov[].$ref`.
+- `main.py:952-975` (`_chunk_maps_from_trace`, fallback): reads `payload.get("self_refs")` from `chunk_created` trace events. Does NOT flatten `prov[].$ref`.
+- `_table_facts.py:823` (the only prior precedent for synthesized TextItems): emits `"prov": []` — empty. The reverted code carried no cells and so never needed cell-level provenance.
 
-**§20 spike resolves this assumption before any other code lands.** The spike: construct a single TextItem with `self_ref` + `prov` referencing a known cell, run it through a single extraction pass on a fixture, inspect `chunk_to_self_refs` and the resulting `ExtractionProvenance.evidence_ids`. If the cell ref appears, ship the spec as written. If it doesn't, fix the gap — likely options: (a) extend `_chunk_maps_from_trace` (`main.py:953`) to flatten `prov[].$ref` into the per-chunk ref list, or (b) post-process `chunk_to_self_refs` to merge in our cell refs before the walker runs. The spike's outcome determines which.
+**Conclusion: `prov[].$ref` does NOT flow into `chunk_to_self_refs` today.** The §20.1 spike will confirm this; it is not a fishing expedition. The spec commits to the fix now rather than treating the spike as a hopeful contingency.
+
+**The commit: fix path (a) — extend the chunk-trace builders.**
+
+Two specific edits (both small, both tested):
+
+1. **`main.py:765-774`** — when building `chunk_to_self_refs[int(cid)]` from `last_chunk_metadata`, ALSO flatten any `prov[].$ref` strings from the chunk's text items into the same list:
+   ```python
+   # main.py around line 771
+   refs = list(cmeta.get("self_refs") or [])
+   # NEW: flatten prov[].$ref for synthesized-table TextItems
+   for tref in (cmeta.get("text_refs") or []):
+       text_item = _find_text_item_by_self_ref(body.docling_document_json, tref)
+       if text_item:
+           for p in (text_item.get("prov") or []):
+               r = p.get("$ref")
+               if isinstance(r, str) and r.startswith("#/tables/"):
+                   refs.append(r)
+   chunk_to_self_refs[int(cid)] = [r for r in refs if isinstance(r, str)]
+   ```
+2. **`main.py:953` `_chunk_maps_from_trace`** — same flattening when building from trace events. Symmetric fix.
+
+The `_find_text_item_by_self_ref` helper is a one-line scan over `doc_json["texts"]`.
+
+**Caveat:** the spec assumes `last_chunk_metadata` includes `text_refs` (a list of `#/texts/N` self_refs the chunk was assembled from). If it doesn't, the spike resolves this with a minor adjustment — the list may come from a different field on the chunk metadata (e.g., `chunk_text_refs` or the doc_items list). The spike documents the actual field name.
+
+**Alternative fallback path (b) — only if (a) is infeasible:** post-process `chunk_to_self_refs` AFTER the trace map is built and BEFORE the walker runs, merging cell refs from synthesized TextItems via a separate map maintained by `_text_item_from_chunk` (which records `(chunk_index, cell_refs)` at TextItem creation). Both paths are ~15 LOC plus tests; the spike picks one.
 
 **`test_graph_provenance_cell_refs.py`** is the merge-gate test: extract an entity from a SA-2 column chunk; assert its `ExtractionFieldProvenance.evidence_ids` contains a `#/tables/N/data/table_cells/M` cell ref.
+
+**Critical: cell refs do NOT pollute `TextChunk.self_refs`.** This is a separate concern from the provenance flow. See §10.1 adapter design — `cell_refs` flow through `chunk_metadata.cell_refs` only; the chunk's `self_refs` stays today-shaped (`#/texts/N` or `#/tables/N`).
 
 ## 12. Configuration
 
@@ -849,6 +1033,12 @@ The walker's `_resolve_element_uid` (lines 175-223) resolves a node's `element_u
 
 - Set `DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS=true` (and turn the new-path master switch off) to run the reverted `_table_facts.py` codepath. Useful for comparison data; not a rollback target.
 
+### Gate enforcement model
+
+- **Phase 1 merge gate (§15.1):** CI-enforced. The unit + integration test files listed in §14 are required checks on the PR. CI runs `pytest tests/unit/test_table_normalization_*.py tests/unit/test_hybrid_chunker_substitution.py tests/unit/test_normalized_table_chunk_adapter.py tests/unit/test_suppress_raw_table_texts_invariant.py tests/integration/test_master_kill_switch_byte_equality.py tests/integration/test_chunk_metadata_persistence.py tests/integration/test_disallowed_combination_fallback.py` against the §19 baseline fixtures. Failure blocks merge.
+- **Phase 2 flip gate (§15.2):** human-enforced via the verification checklist. The user runs `./manage.sh --blow-away` + re-ingest + scoring (3 runs per the §19 procedure), pastes the per-pass count comparison into the PR-description (or a follow-up ops issue), and a reviewer confirms each checkbox in `VERIFICATION_CHECKLIST.md`. No automated CI gate, by design: the re-ingest is a manual `--blow-away` step, and the comparison data lives outside the repo (the user's existing `think_true_*.csv` infrastructure).
+- **Rollback authority:** the user is the rollback decision-maker. If Phase 2 fails any gate, flip the master flags back to `false` and re-blow-away. The `test_master_kill_switch_byte_equality.py` test reruns against the §19 baseline as the rollback verification.
+
 ### Container rebuild posture
 - `app/services/table_normalization/` is under bind-mounted `./app` — no rebuild for `api`/`worker`/`worker-graph`.
 - `docker compose build docling-graph` required to pick up the new module (COPY into image).
@@ -864,7 +1054,7 @@ The walker's `_resolve_element_uid` (lines 175-223) resolves a node's `element_u
 | Shared helper byte-equality | `_render_column_as_text` produces byte-identical output called from either renderer for the same column | `tests/unit/test_render_column_byte_equality.py` |
 | Token sizing | bge-m3 tokenizer agrees with chunk-size budget within ±5% | `tests/unit/test_table_normalization_tokens.py` |
 | Suppression invariant | `_suppress_raw_table_texts` mutates only `doc_json["texts"]`; `doc_json["tables"]` byte-identical pre/post; OTHER tables' texts preserved | `tests/unit/test_suppress_raw_table_texts_invariant.py` |
-| Master kill-switch byte equality | With both `*_NORMALIZATION_ENABLED=false`, on SA-2: (a) `doc_json["texts"]` after sanitization is byte-identical to §19 fixture; (b) HybridChunker path produces the same `(chunk_text, modality, self_refs, page_numbers)` tuples as today on the same input; (c) legacy `structure_aware_chunk` path produces the same `StructuredChunk` field tuples as today. The new `metadata` field on `StructuredChunk` is `None` in this state and is excluded from the comparison. | `tests/integration/test_master_kill_switch_byte_equality.py` |
+| Master kill-switch byte equality | With both `*_NORMALIZATION_ENABLED=false`, on SA-2: (a) `doc_json["texts"]` after sanitization is byte-identical to §19 fixture; (b) HybridChunker path produces the same `(chunk_text, modality, self_refs, page_numbers)` tuples as today; (c) legacy `structure_aware_chunk` path produces the same `StructuredChunk` field tuples as today; (d) all persisted `TextChunk` rows have `chunk_metadata IS NULL`; (e) all ArcadeDB `TextChunk` vertices have `chunk_kind` absent or `None`. The new `metadata` field on `StructuredChunk` is `None` in this state and is excluded from the chunk-tuple comparison (the chunks themselves are unchanged; the metadata column being NULL is asserted separately). | `tests/integration/test_master_kill_switch_byte_equality.py` |
 | HybridChunker substitution unit | `_substitute_table_chunks` replaces native table chunks with `EmbeddingTableChunk` outputs when shape != OTHER; preserves non-table chunks; drops duplicate native chunks for same table; preserves OTHER tables unchanged | `tests/unit/test_hybrid_chunker_substitution.py` |
 | Adapter ducktyping | `_NormalizedTableChunkAdapter` produces `.text`, `.meta.doc_items[].self_ref`, `.meta.doc_items[].prov[].page_no`, `.meta.headings` such that existing `_build_native_chunk_meta` returns the correct `self_refs`/`page_numbers`/`section_path` | `tests/unit/test_normalized_table_chunk_adapter.py` |
 | Storage round-trip | Write/read `chunk_metadata`; partial index returns matching rows | `tests/integration/test_chunk_metadata_persistence.py` |
@@ -904,8 +1094,10 @@ All conditions must hold. Each is checked against the §19 baseline fixture.
 - **Per-pass tolerance (tightened from rev. 2):** at most ONE non-propulsion pass may regress by exactly 1 ✓ exact. All other non-propulsion passes must satisfy new ✓ exact ≥ today-baseline ✓ exact. (Rev. 2 allowed every pass to regress by 1 individually, which compounded badly — see review I-2.)
 - **Corpus-wide guard:** sum of ✓ exact across all passes ≥ sum of today-baseline ✓ exact − 1 (combined with the per-pass rule above, allows at most one ✓-loss across the corpus).
 
-**Retrieval gate (relaxed from rev. 2 "top-1" to top-3, less brittle to embedding-score variance):**
-- `/v1/retrieval/query` for *"S-75M2 max range"* returns *within top 3 results* at least one chunk with `chunk_kind == "table_entity_column"`, `entity_display_name` containing "S-75M2", and `cell_refs` pointing to cells in the SA-2 variants table.
+**Retrieval gate (relaxed: top-3, accept column OR section chunks):**
+- `/v1/retrieval/query` for *"S-75M2 max range"* returns *within top 3 results* at least one chunk with `chunk_kind in {"table_entity_column", "table_entity_section"}`, `entity_display_name` containing "S-75M2", and `cell_refs` pointing to cells in the SA-2 variants table.
+
+**Why section-or-column:** per the token-budget reality check (§16 advisory note + rev. 4 review): SA-2 per-column rendering ≈ 800-1,100 bge-m3 tokens, exceeding the embedding budget of 512 tokens. So `TABLE_ENTITY_SECTION` (not `TABLE_ENTITY_COLUMN`) is the *common* case for SA-2-class wide variants tables on the embedding side. The gate accepts either; the chunk's `entity_display_name` carries the variant identity in both cases.
 
 **Provenance gate:**
 - Extracted `Missile.max_range_m` on `S-75M2` has `ExtractionFieldProvenance.evidence_ids` containing both the graph-chunk self_ref AND the underlying cell ref.
@@ -913,8 +1105,8 @@ All conditions must hold. Each is checked against the §19 baseline fixture.
 ### 15.3 Functional (informational, not merge-gating)
 
 - SA-2 sample table → `Shape.HYBRID`, 4 identity rows, 2+ sections, all data columns extracted to `NormalizedColumn`.
-- Graph renderer for SA-2 emits ≥1 chunk per entity column (count depends on whether columns exceed `DOCLING_GRAPH_TABLE_COLUMN_LIMIT`; assertion is "≥1 per column," not a snapshot count).
-- Embedding renderer for SA-2 emits 1 `TABLE_SUMMARY` + N `TABLE_ENTITY_COLUMN` chunks. `TABLE_WHOLE` not emitted (table > 512 tokens — verified by token sizing test).
+- Graph renderer for SA-2 emits ≥1 chunk per entity column. Most columns at ~800-1,100 bge-m3 tokens fit within `DOCLING_GRAPH_TABLE_COLUMN_LIMIT=1200`, so the common output is one `TABLE_ENTITY_COLUMN` per variant. Columns exceeding the limit emit multiple `TABLE_ENTITY_SECTION` chunks per variant.
+- Embedding renderer for SA-2 emits **1 `TABLE_SUMMARY` + multiple `TABLE_ENTITY_SECTION` per variant** (most variants exceed the 512-token embedding limit at per-column granularity). `TABLE_WHOLE` is NOT emitted (table far exceeds 512 tokens). `TABLE_ENTITY_COLUMN` may appear for unusually-sparse variant columns; section-split is the dominant case.
 
 ## 16. Risks & Mitigations
 
@@ -926,7 +1118,7 @@ All conditions must hold. Each is checked against the §19 baseline fixture.
 | **Shape detection misclassifies a real table as OTHER.** Heuristic floor (4×4) and reliance on Docling's `row_header`/`column_header` flags assume clean parsing. | OTHER fallback is *additive-not-destructive*: raw markdown preserved as one chunk. The `other_with_dimensions_warning` diagnostic surfaces 4×4+ tables that fell to OTHER for operational visibility. |
 | **`_suppress_raw_table_texts` could break the Phase 0/0.5 overlay.** The merge-time overlay machinery reads `doc_json["tables"]` directly; the suppression only touches `doc_json["texts"]`. Spec asserts the invariant (§9.2). | `test_suppress_raw_table_texts_invariant.py` is a merge gate (§15.1). |
 | **`_table_facts.py` + `_alias_map.py` rot on disk.** Code that doesn't run in production rots; the experimental path could become fictional. | `test_experimental_table_facts_drift.py` runs the experimental path on every CI build (§14). Failure surfaces drift. |
-| **ArcadeDB `chunk_kind` property requires --blow-away.** Deployments skipping blow-away fail at vertex write. | Documented in §11.4 + verification checklist + .env.example. User's standard flow (`./manage.sh --blow-away`) covers this. |
+| **ArcadeDB `chunk_kind` schema bootstrap on in-place restart.** The user's `--blow-away` flow covers this rollout, but the in-place-restart path's safety on a populated `TextChunk` vertex bucket is asserted but not tested. | `arcadedb_schema.py:199` runs `CREATE PROPERTY ... IF NOT EXISTS` idempotently on every startup, so an in-place restart picks up the new schema for future writes. Existing rows have NULL `chunk_kind` (ok per spec). A merge-gate smoke test bootstraps an old-schema bucket, writes one row, restarts the schema loop with the new declaration, writes one new-shape row, asserts both succeed and the partial index returns matching rows. If the smoke test fails, §13 Phase 1 must add an explicit "restart docling-graph + arcadedb to bootstrap schema before flipping flags" step. |
 | **`bge-m3` tokenizer load adds startup cost.** First call loads HF tokenizer (~tens of MB). | Lazy-load + module-level cache. Same model the embedding pipeline already pulls. Not measurable in steady-state. |
 
 ## 17. Known Limitations
