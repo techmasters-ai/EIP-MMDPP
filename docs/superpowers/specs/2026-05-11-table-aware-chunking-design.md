@@ -1,6 +1,6 @@
 # Table-Aware Chunking — Design
 
-**Status:** Draft 2026-05-11 (rev. 6 — spike-grounded fixes)
+**Status:** Draft 2026-05-11 (rev. 7 — final tactical fixes)
 **Branch:** `feat/table-aware-chunking`
 **Related:**
 - `2026-05-05-section-aware-table-fact-synthesis-design.md` — prior spec for `_table_facts.py`, which was **built, then reverted from production** on 2026-05-06 (see §1 below). Modules remain on disk; not currently called by `run_extraction_pass`.
@@ -407,6 +407,11 @@ else:
 
 **Critical:** `main.py:379` documents an existing pipeline invariant — *"Removing an element shifts all subsequent indices, but the [sanitizer] blanks content"*. Following the same pattern, suppression **blanks the text in place** rather than removing list entries. This preserves `self_ref` stability throughout `doc_json` (children references, parent backlinks, cell `prov` entries, OCR provenance — all of which may carry numeric `#/texts/N` pointers).
 
+**Scope of suppression — explicit:**
+- **What is blanked:** entries in `doc_json["texts"]` whose `self_ref` matches `#/tables/{i}` for some `i` in normalized non-OTHER tables. These are the *flattened-text mirrors* Docling emits alongside each structured table.
+- **What is NOT touched:** `doc_json["tables"]` itself — every cell, header, prov entry, and data field within `tables[i]` is preserved. The Phase 0/0.5 overlay machinery (`extract_table_overlay` at `main.py:1185`) reads from `tables[]` directly and remains fully functional.
+- **What this means:** the LLM no longer sees the flattened table text via `texts[]`, but the structured table is still present in `tables[]` and reachable by any code path that consumes it. The synthesized per-column TextItems we appended carry the data the LLM does see.
+
 ```python
 def _suppress_raw_table_texts(doc_json: dict, normalized: list[NormalizedTable]) -> None:
     """Blank flat-text mirrors of normalized tables in-place.
@@ -589,14 +594,23 @@ def _substitute_table_chunks(
 
 
 def _normalized_table_size_tokens(nt: NormalizedTable) -> int:
-    """Approximate the rendered size of a NormalizedTable's full content.
+    """Rendered size of a NormalizedTable's full content in bge-m3 tokens.
 
-    Uses _render_column_as_text on each NormalizedColumn and sums tokens
-    via tokens.py (bge-m3). For a quick rough estimate without full
-    rendering: count cells × avg-tokens-per-cell-rendering (~15) as a
-    cheap fallback. The exact mechanism is implementer's choice; the
-    test asserts threshold behavior at 256 tokens regardless of method."""
-    ...
+    **Contract (one canonical definition):** sum of bge-m3 token counts
+    of `_render_column_as_text(column, nt, nt.sections)` across every
+    NormalizedColumn in nt.columns. Identity-row repetition is part of
+    each column's rendering, so the sum approximately equals the cost
+    of emitting all per-column chunks (plus per-chunk overhead).
+
+    No cheap fallback. The threshold test in tests/unit/test_table_size_threshold.py
+    asserts behavior at 256 ± 0 tokens using THIS function — implementer
+    choice is not permitted at the boundary."""
+    from app.services.table_normalization.tokens import count_bge_m3_tokens
+    from app.services.table_normalization.render_graph import _render_column_as_text
+    return sum(
+        count_bge_m3_tokens(_render_column_as_text(col, nt, nt.sections))
+        for col in nt.columns
+    )
 
 
 def _classify_native_chunk(nc, normalized_by_table_idx) -> tuple[str, int | None]:
@@ -712,7 +726,9 @@ stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
     set_={
         "chunk_text": chunk_values["chunk_text"],
         "modality": chunk_values["modality"],
-        "chunk_metadata": chunk_values["chunk_metadata"],   # NEW — without this, re-runs leave stale chunk_metadata
+        "chunk_index": chunk_values["chunk_index"],          # NEW — re-run safety
+        "page_number": chunk_values["page_number"],          # NEW — re-run safety
+        "chunk_metadata": chunk_values["chunk_metadata"],    # NEW — without this, re-runs leave stale chunk_metadata
     },
 )
 ```
@@ -858,6 +874,8 @@ The bridge depends on `DocumentElement.element_metadata` carrying `self_ref` for
 
 **Until the spike confirms** the bridge works (with whichever fix), the legacy path silently falls through to today's opaque-chunk behavior for tables. This is acceptable as Phase 1's "code merges, behavior unchanged" state — the master kill-switch covers it. After the spike's fix lands, the legacy path normalization activates when the embedding flag is flipped.
 
+**Phase 2 legacy-path smoke test (operational requirement):** the embedding-side flag flip activates BOTH paths (primary HybridChunker + legacy fallback). Since the legacy path is rare in production (only fires when HybridChunker raises or `enrichments.version is None`), Phase 2 silently activating broken legacy behavior is a real risk. **Before declaring Phase 2 done**, manually ingest one document via the legacy path (force by temporarily setting an enrichment flag off or by selecting a doc whose docling_document.json doesn't enrich), and verify the resulting `text_chunks` rows for table elements carry non-NULL `chunk_metadata` with valid `chunk_kind`. Add to `VERIFICATION_CHECKLIST.md`.
+
 ### 10.3 Master kill-switch correctness
 
 With `EMBEDDING_TABLE_NORMALIZATION_ENABLED=false`:
@@ -992,84 +1010,125 @@ Additive; backwards-compatible.
 
 Cell-level provenance lives on TWO independent surfaces. Each addresses a different consumer.
 
-#### Channel A: Field-level cell_refs via new `cell_refs` field on `ExtractionFieldProvenance`
+#### Channel A: Field-level cell_refs via new fields on `ExtractionFieldProvenance`
 
 The walker's existing `evidence_id` (singular) carries the chunk-level self_ref (`#/texts/N` of the synthesized TextItem) — **unchanged from today**. Trying to override this would require library-internal modification and would break the existing 5-step resolution in `_resolve_element_uid`.
 
-Instead, **add a new optional field** `cell_refs: list[str] = []` to `ExtractionFieldProvenance` (`docker/docling-graph/app/schemas.py:195-233`):
+Instead, **add two new optional fields** to `ExtractionFieldProvenance` (`docker/docling-graph/app/schemas.py:195-233`):
 
 ```python
 class ExtractionFieldProvenance(BaseModel):
     # ... existing fields ...
     evidence_id: Optional[str] = Field(default=None, ...)            # unchanged
     # NEW:
+    chunk_index: Optional[int] = Field(
+        default=None,
+        description=(
+            "Library chunk_id (0..N-1, sequential per pass) the field was "
+            "extracted from. Required for the cell_refs lookup. None for "
+            "rows where chunk_index cannot be determined."
+        ),
+    )
     cell_refs: list[str] = Field(
         default_factory=list,
         description=(
             "Cell-level self_refs of the form '#/tables/{N}/data/table_cells/{M}' "
             "when the field was extracted from a chunk synthesized from a "
             "NormalizedTable. Empty for prose chunks. Populated post-construction "
-            "by the field-provenance builder via the chunk_id → cell_refs map "
-            "maintained by _text_item_from_chunk."
+            "by the field-provenance builder via the two-hop lookup described below."
         ),
     )
 ```
 
-Additive; backwards-compatible (defaults to empty list).
+Additive; backwards-compatible (both default to None / empty).
+
+**Why `chunk_index` on `ExtractionFieldProvenance`:** the existing `ExtractionProvenance` (entity-level) already carries `chunk_index: Optional[int]` (`schemas.py:170`). Field-level rows currently don't, but the reader needs it for the two-hop lookup. Adding it is one optional field; alternative is joining field rows → entity rows via `instance_id`, which works but adds query complexity at every read site.
 
 #### Channel B: Chunk-level cell_refs via `TextChunk.chunk_metadata.cell_refs` (§11.2)
 
 The embedding-side `TextChunk` row already carries `chunk_metadata.cell_refs` per §11.2 — the JSONB payload includes the cell refs the chunk was rendered from. Retrieval responses surface this via the `table_chunk` block on `/v1/retrieval/query` (§11.5).
 
-#### How channel A gets populated
+#### How channel A gets populated — two-hop lookup
 
-A new module-level map maintained by `_text_item_from_chunk`:
+The writer (`_text_item_from_chunk`) knows the docling `#/texts/N` index for the synthesized TextItem it creates (it hand-rolls the self_ref). It does NOT know the library `chunk_id` — that's assigned later at `extract_chunks_with_metadata` time.
+
+So the bridge keys by **`text_idx`**, and the reader composes via the existing `chunk_to_self_refs` map (built at `main.py:765-774`):
+
+```
+ExtractionFieldProvenance.chunk_index
+        │
+        │  (lookup in chunk_to_self_refs)
+        ▼
+chunk_to_self_refs[chunk_index] = ['#/texts/142', '#/texts/143', ...]
+        │
+        │  (filter for #/texts/ refs synthesized by us; first match)
+        ▼
+'#/texts/142' → strip prefix → 142
+        │
+        │  (lookup in bridge map)
+        ▼
+_TEXT_IDX_TO_CELL_REFS[142] = ['#/tables/3/data/table_cells/42', ...]
+```
+
+**Bridge module** (`app/services/table_normalization/_provenance_bridge.py`, new):
 
 ```python
-# app/services/table_normalization/_provenance_bridge.py (new module)
+_TEXT_IDX_TO_CELL_REFS: dict[int, list[str]] = {}
 
-_CHUNK_ID_TO_CELL_REFS: dict[int, list[str]] = {}
-
-def record_chunk_cell_refs(chunk_id: int, cell_refs: list[str]) -> None:
-    """Record cell_refs at TextItem-creation time for later provenance enrichment."""
+def record_text_idx_cell_refs(text_idx: int, cell_refs: list[str]) -> None:
+    """Called by _text_item_from_chunk at TextItem-creation time. Keyed
+    by the docling text position (e.g., 142 for #/texts/142)."""
     if cell_refs:
-        _CHUNK_ID_TO_CELL_REFS[int(chunk_id)] = list(cell_refs)
+        _TEXT_IDX_TO_CELL_REFS[int(text_idx)] = list(cell_refs)
 
-def cell_refs_for_chunk(chunk_id: int) -> list[str]:
-    """Look up cell_refs for a chunk_id; empty if not a normalized-table chunk."""
-    return list(_CHUNK_ID_TO_CELL_REFS.get(int(chunk_id), ()))
+def cell_refs_for_text_idx(text_idx: int) -> list[str]:
+    return list(_TEXT_IDX_TO_CELL_REFS.get(int(text_idx), ()))
 
 def reset() -> None:
     """Per-pass reset. Called at the start of each run_extraction_pass."""
-    _CHUNK_ID_TO_CELL_REFS.clear()
+    _TEXT_IDX_TO_CELL_REFS.clear()
 ```
 
-`_text_item_from_chunk(gtc, *, next_text_idx)` constructs the TextItem and calls `record_chunk_cell_refs(next_text_idx, gtc.cell_refs)`. The synthesized TextItem's own `self_ref` is `#/texts/{next_text_idx}` (hand-rolled, mirroring `_table_facts.py:818-826`'s pattern — caller threads `next_text_idx` and bumps it).
+`_text_item_from_chunk(gtc, *, next_text_idx)` constructs the TextItem with `self_ref=f"#/texts/{next_text_idx}"` (hand-rolled, mirroring `_table_facts.py:818-826`'s pattern) and calls `record_text_idx_cell_refs(next_text_idx, gtc.cell_refs)`. Caller threads `next_text_idx` and bumps it after each call.
 
-**Critical: the chunk_id used in `_CHUNK_ID_TO_CELL_REFS` is the docling-graph library's `chunk_id` (assigned at `extract_chunks_with_metadata` time, `document_processor.py:333`), NOT the docling `#/texts/N` index.** These are different keyspaces. The bridge happens at the field-provenance builder: when building `ExtractionFieldProvenance`, look up `chunk_id` (from the provenance row) → `cell_refs`.
-
-Field-provenance builder modification (in the library or post-construction wrapper):
+**Field-provenance builder modification** (post-construction wrapper, called once on the assembled list before response serialization):
 
 ```python
-# Wherever ExtractionFieldProvenance rows are constructed for the response,
-# add the cell_refs lookup. Post-construction wrapper is the safest path:
+import re
+_TEXTS_REF_RE = re.compile(r"^#/texts/(\d+)$")
 
-def _enrich_field_provenance_with_cell_refs(rows: list[ExtractionFieldProvenance]) -> list[ExtractionFieldProvenance]:
-    from app.services.table_normalization._provenance_bridge import cell_refs_for_chunk
+def _enrich_field_provenance_with_cell_refs(
+    rows: list[ExtractionFieldProvenance],
+    chunk_to_self_refs: dict[int, list[str]],
+) -> list[ExtractionFieldProvenance]:
+    from app.services.table_normalization._provenance_bridge import cell_refs_for_text_idx
     out: list[ExtractionFieldProvenance] = []
     for r in rows:
-        cell_refs = cell_refs_for_chunk(getattr(r, "chunk_index", None) or 0)
+        ci = getattr(r, "chunk_index", None)
+        if ci is None:
+            out.append(r); continue
+        # Look up the chunk's self_refs; find first #/texts/N; check bridge.
+        cell_refs: list[str] = []
+        for ref in (chunk_to_self_refs.get(int(ci), []) or []):
+            m = _TEXTS_REF_RE.match(ref)
+            if not m: continue
+            crefs = cell_refs_for_text_idx(int(m.group(1)))
+            if crefs:
+                cell_refs = crefs
+                break
         if cell_refs:
             r = r.model_copy(update={"cell_refs": cell_refs})
         out.append(r)
     return out
 ```
 
-Called once on the assembled `field_provenance` list before the response is serialized. ~10 LOC, no library modification needed.
+Called at `main.py` after `context._chunk_to_self_refs` is built (around `:794`) and before the response is serialized. ~25 LOC including imports; no library modification needed.
 
-**Per-pass reset:** `reset()` is called at the start of every `run_extraction_pass` invocation to clear the map. Without this, cross-pass leakage (one pass's cell_refs surfacing in another pass's provenance) is a risk.
+**Per-pass reset:** `reset()` is called at the start of every `run_extraction_pass` to clear `_TEXT_IDX_TO_CELL_REFS`. Without this, cross-pass leakage is a risk.
 
-**Module-level state caveat:** `_CHUNK_ID_TO_CELL_REFS` is process-global state. In the docling-graph service (single-process FastAPI worker per container), this is safe; in a multi-process worker pool, each process maintains its own map. Per-pass reset prevents cross-pass leakage within a process. Multi-pass concurrency *within a single process* is not a concern (`run_extraction_pass` is called sequentially per request).
+**Module-level state caveat:** `_TEXT_IDX_TO_CELL_REFS` is process-global state. In the docling-graph service (single-process FastAPI worker per container), this is safe; in a multi-process pool, each process maintains its own map. Per-pass reset prevents cross-pass leakage within a process. Multi-pass concurrency *within a single process* is not a concern (`run_extraction_pass` is sequential per request).
+
+**Populating `ExtractionFieldProvenance.chunk_index`:** the existing builder (in `_field_provenance_helpers.py` or wherever rows are constructed for the response) populates it from the source chunk's index — same source that fills `chunk_index` on the entity-level `ExtractionProvenance` today. One-line change at the builder.
 
 #### §15.2 gate text (corrected)
 
@@ -1164,7 +1223,8 @@ This is the merge-gate. `evidence_id` remains the synthesized chunk's `#/texts/N
 - `□ Phase 2 flip: no other pass regresses by >1 ✓ exact (per-pass)`
 - `□ Phase 2 flip: corpus-wide ✓ exact sum ≥ today-baseline sum − 2`
 - `□ Phase 2 flip: variance-mode (strict / median) decision recorded in baseline.meta.json`
-- `□ .env + .env.example contain all 7 new variables`
+- `□ Phase 2 flip: legacy-path smoke test passes (ingest one doc forcing legacy chunker; verify text_chunks rows carry non-NULL chunk_metadata for tables)`
+- `□ .env + .env.example contain all 8 new variables`
 
 ## 15. Success Criteria (acceptance gates)
 
@@ -1185,8 +1245,14 @@ All conditions must hold. Each is checked against the §19 baseline fixture.
 - **Per-pass tolerance (tightened from rev. 2):** at most ONE non-propulsion pass may regress by exactly 1 ✓ exact. All other non-propulsion passes must satisfy new ✓ exact ≥ today-baseline ✓ exact. (Rev. 2 allowed every pass to regress by 1 individually, which compounded badly — see review I-2.)
 - **Corpus-wide guard:** sum of ✓ exact across all passes ≥ sum of today-baseline ✓ exact − 1 (combined with the per-pass rule above, allows at most one ✓-loss across the corpus).
 
-**Retrieval gate (relaxed: top-3, accept column OR section chunks):**
+**Retrieval gate (two parts — presence AND non-regression):**
+
+*Presence (proves new behavior shipped):*
 - `/v1/retrieval/query` for *"S-75M2 max range"* returns *within top 3 results* at least one chunk with `chunk_kind in {"table_entity_column", "table_entity_section"}`, `entity_display_name` containing "S-75M2", and `cell_refs` pointing to cells in the SA-2 variants table.
+
+*Non-regression (proves new behavior doesn't hurt baseline retrieval):*
+- For the same query, the new path's top-3 results MUST also include the SA-2 variants table (whether as a new normalized chunk or as a preserved native chunk). Compared to today-baseline: if today-baseline's top-3 for the same query includes the SA-2 table chunk, the new path's top-3 must also include some SA-2-attributed chunk. If today-baseline's top-3 does NOT include it, the presence gate is the only signal.
+- This avoids the "presence-only" failure mode where the new code emits the right chunks but vector ranking pushes them out of top-3.
 
 **Why section-or-column:** per the token-budget reality check (§16 advisory note + rev. 4 review): SA-2 per-column rendering ≈ 800-1,100 bge-m3 tokens, exceeding the embedding budget of 512 tokens. So `TABLE_ENTITY_SECTION` (not `TABLE_ENTITY_COLUMN`) is the *common* case for SA-2-class wide variants tables on the embedding side. The gate accepts either; the chunk's `entity_display_name` carries the variant identity in both cases.
 
@@ -1343,4 +1409,4 @@ A single commit or PR adds:
 1. `tests/spike/test_provenance_e2e.py` — exercises the channel-A flow end-to-end on a minimal fixture.
 2. `tests/spike/test_legacy_element_bridge.py` — verifies the legacy bridge (skippable if legacy path isn't exercised in CI).
 
-Spike work is gated as Phase 1 Step 0b in the rollout (§13). Estimated time: 1 hour.
+Spike work is gated as Phase 1 Step 0b in the rollout (§13). **Time budget:** 1 hour assumes the channel-A bridge mechanism (§11.6) works as designed. If the §20.1 end-to-end verification fails for any reason (e.g., `chunk_to_self_refs` doesn't contain the synthesized chunk's `#/texts/N` ref, or the bridge map isn't read at the right point), the fix becomes a 3–4 hour debug-and-restructure loop, not a debugging session. Replan accordingly.
