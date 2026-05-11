@@ -208,6 +208,7 @@ def build_pipeline_config(
     temperature_override: float | None = None,
     llm_batch_token_size_override: int | None = None,
     model_override: str | None = None,
+    think_override: bool | str | None = None,
 ) -> Any:
     """Build a PipelineConfig from environment variables.
 
@@ -257,12 +258,15 @@ def build_pipeline_config(
         from app.ollama_clients import get_docling_graph_client
         llm_client: Any | None = get_docling_graph_client()
         needs_override = (
-            temperature_override is not None or model_override is not None
+            temperature_override is not None
+            or model_override is not None
+            or think_override is not None
         )
         if needs_override and hasattr(llm_client, "with_runtime_defaults"):
             llm_client = llm_client.with_runtime_defaults(
                 temperature=temperature_override,
                 model=model_override,
+                think=think_override,
             )
     except ImportError:
         llm_client = None

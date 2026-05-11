@@ -505,6 +505,7 @@ def run_extraction_pass(
     temperature: float | None = None,
     llm_batch_token_size: int | None = None,
     model: str | None = None,
+    think: bool | str | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -663,6 +664,7 @@ def run_extraction_pass(
             temperature_override=temperature,
             llm_batch_token_size_override=llm_batch_token_size,
             model_override=model,
+            think_override=think,
         )
 
         # Capture the library's print() + logging output to stdout/stderr during
@@ -1237,6 +1239,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.temperature,
                     body.llm_batch_token_size,
                     body.model,
+                    body.think,
                 )
             except Exception as exc:
                 logger.exception(
