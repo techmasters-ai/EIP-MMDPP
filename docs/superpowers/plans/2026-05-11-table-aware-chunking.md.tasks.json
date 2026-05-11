@@ -14,11 +14,11 @@
     {"id": "9", "subject": "Task 9: Provenance bridge module", "status": "completed", "blockedBy": ["1"]},
     {"id": "10", "subject": "Task 10: Alembic migration — chunk_metadata column + partial index", "status": "pending"},
     {"id": "11", "subject": "Task 11: ArcadeDB schema — chunk_kind property on TextChunk vertex", "status": "pending"},
-    {"id": "12", "subject": "Task 12: _pipeline_hooks.py — substitution + adapter + size-threshold", "status": "pending", "blockedBy": ["7", "8"]},
+    {"id": "12", "subject": "Task 12: _pipeline_hooks.py — substitution + adapter + size-threshold", "status": "completed", "blockedBy": ["7", "8"]},
     {"id": "13", "subject": "Task 13: Integrate HybridChunker primary path (pipeline.py:5500-5634)", "status": "pending", "blockedBy": ["10", "11", "12"]},
     {"id": "14", "subject": "Task 14: Integrate legacy structure_aware_chunk path", "status": "pending", "blockedBy": ["12"]},
-    {"id": "15", "subject": "Task 15: Suppression helper — _suppress_raw_table_texts", "status": "pending", "blockedBy": ["12"]},
-    {"id": "16", "subject": "Task 16: Add chunk_index + cell_refs to ExtractionFieldProvenance", "status": "pending"},
+    {"id": "15", "subject": "Task 15: Suppression helper — _suppress_raw_table_texts", "status": "completed", "blockedBy": ["12"]},
+    {"id": "16", "subject": "Task 16: Add chunk_index + cell_refs to ExtractionFieldProvenance", "status": "completed"},
     {"id": "17", "subject": "Task 17: Graph-side integration in docling-graph + field-provenance enrichment", "status": "pending", "blockedBy": ["0b", "7", "9", "15", "16"]},
     {"id": "18", "subject": "Task 18: /v1/retrieval/query table_chunk block", "status": "pending", "blockedBy": ["10"]},
     {"id": "19", "subject": "Task 19: Master kill-switch byte-equality test (Phase 1 merge gate)", "status": "pending", "blockedBy": ["0a", "13", "14", "17"]},
@@ -30,5 +30,5 @@
     {"id": "25", "subject": "Task 25: Phase 1 merge", "status": "pending", "blockedBy": ["19", "20", "21", "22", "23", "24"]},
     {"id": "26", "subject": "Task 26: Phase 2 flip — operational, not committed (user-driven)", "status": "pending", "blockedBy": ["25"]}
   ],
-  "lastUpdated": "2026-05-11T19:00:00Z"
+  "lastUpdated": "2026-05-11T20:00:00Z"
 }
