@@ -223,6 +223,11 @@ __marimo__/
 # Git worktrees
 .worktrees/
 
+# Experiment artifacts (A/B baselines, sweep outputs)
+think_true_*.csv
+think_false_*.csv
+sweep_results_*.csv
+
 # Upstream source repos (cloned by manage.sh)
 docker/arcadedb/repo/
 docker/docling/repo/
