@@ -1823,8 +1823,11 @@ def _sweep_stale_runs() -> int:
                 UPDATE ingest.stage_runs
                 SET status        = 'PENDING',
                     dispatched_at = NULL,
-                    error_message = COALESCE(error_message, '')
-                                    || ' stale; reset by dispatcher sweeper'
+                    error_message = LEFT(
+                        COALESCE(error_message, '')
+                        || ' stale; reset by dispatcher sweeper',
+                        10000
+                    )
                 WHERE status        = 'DISPATCHED'
                   AND pass_name     IS NULL
                   AND task_name     IS NOT NULL
@@ -1862,8 +1865,11 @@ def _sweep_stale_runs() -> int:
                         started_at       = NULL,
                         dispatched_at    = NULL,
                         available_at     = NOW(),
-                        error_message    = COALESCE(sr.error_message, '')
-                                           || ' stale; reset by sweeper'
+                        error_message    = LEFT(
+                            COALESCE(sr.error_message, '')
+                            || ' stale; reset by sweeper',
+                            10000
+                        )
                     FROM stale s
                     WHERE sr.id = s.id AND s.next_attempt <= :max_dispatches
                     RETURNING sr.id
@@ -1873,8 +1879,11 @@ def _sweep_stale_runs() -> int:
                     SET status           = 'FAILED',
                         finished_at      = NOW(),
                         dispatch_attempt = s.next_attempt,
-                        error_message    = COALESCE(sr.error_message, '')
-                                           || ' stale; max dispatches reached'
+                        error_message    = LEFT(
+                            COALESCE(sr.error_message, '')
+                            || ' stale; max dispatches reached',
+                            10000
+                        )
                     FROM stale s
                     WHERE sr.id = s.id AND s.next_attempt > :max_dispatches
                     RETURNING sr.pipeline_run_id
@@ -1882,8 +1891,11 @@ def _sweep_stale_runs() -> int:
                 UPDATE ingest.pipeline_runs pr
                 SET status        = 'FAILED',
                     finished_at   = NOW(),
-                    error_message = COALESCE(pr.error_message, '')
-                                    || ' stage exceeded max dispatches'
+                    error_message = LEFT(
+                        COALESCE(pr.error_message, '')
+                        || ' stage exceeded max dispatches',
+                        10000
+                    )
                 FROM terminal t
                 WHERE pr.id = t.pipeline_run_id AND pr.status = 'PROCESSING'
                 """
@@ -1907,6 +1919,7 @@ def _sweep_stale_runs() -> int:
                 FROM ingest.stage_runs sr
                 JOIN ingest.pipeline_runs pr ON pr.id = sr.pipeline_run_id
                 WHERE sr.status = 'RUNNING'
+                  AND sr.pass_name IS NULL
                   AND sr.started_at < NOW() - make_interval(secs => :threshold)
                   AND pr.status = 'PROCESSING'
                   AND sr.stage_name <> ALL(:ledger_excluded_stages)
@@ -1933,7 +1946,10 @@ def _sweep_stale_runs() -> int:
                     UPDATE ingest.stage_runs
                     SET status = 'FAILED',
                         finished_at = NOW(),
-                        error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                        error_message = LEFT(
+                            COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep',
+                            10000
+                        )
                     WHERE id = :id
                     """
                 ),
@@ -1947,7 +1963,10 @@ def _sweep_stale_runs() -> int:
                     UPDATE ingest.pipeline_runs
                     SET status = 'FAILED',
                         finished_at = COALESCE(finished_at, NOW()),
-                        error_message = COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep'
+                        error_message = LEFT(
+                            COALESCE(error_message, '') || 'stale; swept by periodic_stale_run_sweep',
+                            10000
+                        )
                     WHERE id = :id AND status = 'PROCESSING'
                     """
                 ),
@@ -2562,6 +2581,10 @@ def _tx3_complete_and_enqueue_next(ctx: _LifecycleCtx) -> None:
     inside the `with db.begin():` block rolls both back atomically, leaving the
     ledger row in RUNNING for the stale-RUNNING sweeper to recover.
     """
+    assert ctx.next_stage is not None and ctx.next_task is not None, (
+        f"_tx3 called on terminal stage {ctx.stage_name!r}; "
+        "intercept_terminal=False should have skipped finalization"
+    )
     db = _get_db()
     try:
         with db.begin():
@@ -2585,6 +2608,9 @@ def _tx3_complete_and_enqueue_next(ctx: _LifecycleCtx) -> None:
             # CAST(:metrics AS jsonb) is required because psycopg2 cannot
             # adapt a Python dict directly when bound via raw text(); we
             # serialize to JSON text and let Postgres parse it back.
+            # Defensive: only flip COMPLETE if we still own the RUNNING claim;
+            # out-of-band sweeper or concurrent retry could have transitioned
+            # the row.
             db.execute(text("""
                 UPDATE ingest.stage_runs
                 SET status      = 'COMPLETE',
@@ -2593,6 +2619,7 @@ def _tx3_complete_and_enqueue_next(ctx: _LifecycleCtx) -> None:
                 WHERE pipeline_run_id = :run_id
                   AND stage_name      = :stage_name
                   AND pass_name       IS NULL
+                  AND status          = 'RUNNING'
             """), {
                 "run_id":     ctx.pipeline_run_id,
                 "stage_name": ctx.stage_name,
@@ -2637,7 +2664,7 @@ def _tx4_finalize_failure(
                     available_at     = NOW() + (:backoff || ' seconds')::interval,
                     started_at       = NULL,
                     dispatched_at    = NULL,
-                    error_message    = :err
+                    error_message    = LEFT(:err, 10000)
                 WHERE pipeline_run_id = :run_id
                   AND stage_name      = :stage_name
                   AND pass_name       IS NULL
@@ -2658,7 +2685,7 @@ def _tx4_finalize_failure(
                 SET status           = 'FAILED',
                     dispatch_attempt = :next_da,
                     finished_at      = NOW(),
-                    error_message    = :err
+                    error_message    = LEFT(:err, 10000)
                 WHERE pipeline_run_id = :run_id
                   AND stage_name      = :stage_name
                   AND pass_name       IS NULL
@@ -2672,7 +2699,7 @@ def _tx4_finalize_failure(
                 UPDATE ingest.pipeline_runs
                 SET status        = 'FAILED',
                     finished_at   = NOW(),
-                    error_message = :err
+                    error_message = LEFT(:err, 10000)
                 WHERE id = :run_id AND status = 'PROCESSING'
             """), {"run_id": ctx.pipeline_run_id, "err": error})
     finally:
@@ -2749,6 +2776,11 @@ def _assert_threshold_envelope() -> None:
             time_limit = task.time_limit or 0
             max_retries = task.max_retries or 0
             retry_delay = task.default_retry_delay or 0
+            # time_limit is the hard ceiling — soft_time_limit fires earlier
+            # and the task typically converts the signal via self.retry(), so
+            # the worst-case wall-clock is bounded by
+            # time_limit + max_retries × default_retry_delay. soft_time_limit
+            # is intentionally omitted from this calculation.
             envelope = time_limit + max_retries * retry_delay
             if threshold < envelope:
                 raise RuntimeError(
@@ -7610,6 +7642,18 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # redelivery after worker crash), both can safely fire this; the partial
         # unique index uq_stage_runs_summary_row (WHERE pass_name IS NULL) guards
         # against duplicates without raising IntegrityError on the second copy.
+        #
+        # NOTE on multi-attempt-row behavior (Stage 9 only):
+        # Because `attempt = self.request.retries + 1`, each Celery retry of
+        # derive_ontology_graph inserts a NEW summary row (attempt=2, 3, …).
+        # Stage 9 is the only ledger stage that may produce multiple summary
+        # rows for the same pipeline_run. This is intentional and correct:
+        # ``derive_ontology_graph_merge`` finalizes the stage by UPDATE-ing
+        # every row WHERE pass_name IS NULL (no attempt filter), flipping all
+        # attempts together. Downstream consumers (status views, reconcile)
+        # treat the row-set as a single logical record. Do NOT add an attempt
+        # filter to the merge UPDATE, and do NOT change this INSERT to
+        # collapse attempts — both would break the documented behavior.
         stmt = (
             pg_insert(StageRun)
             .values(

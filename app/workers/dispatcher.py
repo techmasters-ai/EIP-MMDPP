@@ -99,6 +99,8 @@ def _publish(task_name, document_id, run_id, stage_run_id):
     task = celery_app.tasks[task_name]
     result = task.apply_async(
         args=[str(document_id), str(run_id)],
+        # Reserved for future observability tooling (worker logs correlating
+        # Celery task ids to ledger rows). Not consumed yet.
         headers={"stage_run_id": str(stage_run_id)},
     )
     db = _get_db()
@@ -125,7 +127,10 @@ def _undo_claim(stage_run_id, *, error: str) -> None:
             UPDATE ingest.stage_runs
             SET status        = 'PENDING',
                 dispatched_at = NULL,
-                error_message = COALESCE(error_message, '') || ' publish_failed: ' || :err
+                error_message = LEFT(
+                    COALESCE(error_message, '') || ' publish_failed: ' || :err,
+                    10000
+                )
             WHERE id = :id AND status = 'DISPATCHED'
         """), {"id": stage_run_id, "err": error})
         db.commit()
