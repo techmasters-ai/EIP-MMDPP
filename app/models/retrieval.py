@@ -47,6 +47,11 @@ class TextChunk(Base, TimestampMixin):
         String(100), nullable=False, default="UNCLASSIFIED"
     )
 
+    # Optional structured metadata for normalized table chunks (spec
+    # 2026-05-11-table-aware-chunking-design.md §11.2). NULL for prose /
+    # heading / equation / image chunks.
+    chunk_metadata: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     artifact: Mapped["Artifact"] = relationship(
         back_populates="text_chunks",
         primaryjoin="TextChunk.artifact_id == Artifact.id",
