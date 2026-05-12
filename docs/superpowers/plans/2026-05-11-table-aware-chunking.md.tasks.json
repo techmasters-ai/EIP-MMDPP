@@ -1,7 +1,7 @@
 {
   "planPath": "docs/superpowers/plans/2026-05-11-table-aware-chunking.md",
   "tasks": [
-    {"id": "0a", "subject": "Task 0a: Capture today's baseline (§19)", "status": "pending"},
+    {"id": "0a", "subject": "Task 0a: Capture today's baseline (§19)", "status": "completed"},
     {"id": "0b", "subject": "Task 0b: Implementation spike — channel-A provenance verification (§20.1)", "status": "pending", "blockedBy": ["0a"]},
     {"id": "1", "subject": "Task 1: NormalizedTable data model + ChunkKind enum", "status": "completed"},
     {"id": "2", "subject": "Task 2: Shape detection (detect.py)", "status": "completed", "blockedBy": ["1"]},
@@ -19,7 +19,7 @@
     {"id": "14", "subject": "Task 14: Integrate legacy structure_aware_chunk path", "status": "completed", "blockedBy": ["12"]},
     {"id": "15", "subject": "Task 15: Suppression helper — _suppress_raw_table_texts", "status": "completed", "blockedBy": ["12"]},
     {"id": "16", "subject": "Task 16: Add chunk_index + cell_refs to ExtractionFieldProvenance", "status": "completed"},
-    {"id": "17", "subject": "Task 17: Graph-side integration in docling-graph + field-provenance enrichment", "status": "code-committed-rebuild-pending", "blockedBy": ["0b", "7", "9", "15", "16"]},
+    {"id": "17", "subject": "Task 17: Graph-side integration in docling-graph + field-provenance enrichment", "status": "code-committed-rebuild-pending", "blockedBy": ["7", "9", "15", "16"]},
     {"id": "18", "subject": "Task 18: /v1/retrieval/query table_chunk block", "status": "completed", "blockedBy": ["10"]},
     {"id": "19", "subject": "Task 19: Master kill-switch byte-equality test (Phase 1 merge gate)", "status": "pending", "blockedBy": ["0a", "13", "14", "17"]},
     {"id": "20", "subject": "Task 20: Disallowed-combination fallback test", "status": "pending", "blockedBy": ["17"]},
@@ -30,5 +30,5 @@
     {"id": "25", "subject": "Task 25: Phase 1 merge", "status": "pending", "blockedBy": ["19", "20", "21", "22", "23", "24"]},
     {"id": "26", "subject": "Task 26: Phase 2 flip — operational, not committed (user-driven)", "status": "pending", "blockedBy": ["25"]}
   ],
-  "lastUpdated": "2026-05-12T13:40:00Z"
+  "lastUpdated": "2026-05-12T18:50:00Z"
 }
