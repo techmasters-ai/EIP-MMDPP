@@ -222,17 +222,26 @@ def main() -> int:
                 runs.append(metrics)
                 print(f"  → entities={metrics['entity_count']} avg_fill={metrics['avg_fill_num']:.2f}/{metrics['schema_size']} "
                       f"json_fail={'.' if not metrics['json_fail'] else 'F'} elapsed={metrics['elapsed_s']}s")
-                # Capture upstream entities from radar_identity + missile_identity for system_links
+                # Capture upstream entities from radar_identity + missile_identity for
+                # system_links. Notebook cell 39 specifies the exact EntityRef shape:
+                #   ref_id, entity_type, identity_values, display_label
+                # Identity key is `system_name`; entity_type is RADAR_SYSTEM / MISSILE_SYSTEM.
                 if pass_name in ("radar_identity", "missile_identity") and r_idx == 0:
                     pass_output = response.get("pass_output") or {}
-                    for k, v in pass_output.items():
-                        if isinstance(v, list):
-                            for ent in v:
-                                if isinstance(ent, dict) and ent.get("name"):
-                                    upstream_entities.append({
-                                        "entity_type": ent.get("entity_type") or k.rstrip("s"),
-                                        "name": ent.get("name"),
-                                    })
+                    et = "RADAR_SYSTEM" if pass_name == "radar_identity" else "MISSILE_SYSTEM"
+                    list_key = "radar_systems" if pass_name == "radar_identity" else "missile_systems"
+                    for ent in (pass_output.get(list_key) or []):
+                        if not isinstance(ent, dict):
+                            continue
+                        name = ent.get("system_name") or ent.get("name")
+                        if not name:
+                            continue
+                        upstream_entities.append({
+                            "ref_id":          f"{et}:{name}",
+                            "entity_type":     et,
+                            "identity_values": {"system_name": name},
+                            "display_label":   name,
+                        })
             except Exception as exc:
                 print(f"[error] {pass_name} run {r_idx + 1} failed: {exc}", flush=True)
                 runs.append({

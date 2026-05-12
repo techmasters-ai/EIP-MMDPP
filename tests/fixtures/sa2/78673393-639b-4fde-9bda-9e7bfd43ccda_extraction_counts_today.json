@@ -1,0 +1,67 @@
+{
+  "radar_identity": {
+    "runs": [
+      {
+        "pass_name": "radar_identity",
+        "entity_count": 13,
+        "avg_fill_num": 2.77,
+        "schema_size": 11,
+        "json_fail": false,
+        "relationships": 0,
+        "elapsed_s": 1483.4
+      }
+    ]
+  },
+  "radar_power_rf": {
+    "runs": [
+      {
+        "pass_name": "radar_power_rf",
+        "entity_count": 32,
+        "avg_fill_num": 1.72,
+        "schema_size": 5,
+        "json_fail": false,
+        "relationships": 0,
+        "elapsed_s": 1492.5
+      }
+    ]
+  },
+  "missile_identity": {
+    "runs": [
+      {
+        "pass_name": "missile_identity",
+        "entity_count": 27,
+        "avg_fill_num": 1.67,
+        "schema_size": 10,
+        "json_fail": false,
+        "relationships": 0,
+        "elapsed_s": 1797.5
+      }
+    ]
+  },
+  "missile_kinematics": {
+    "runs": [
+      {
+        "pass_name": "missile_kinematics",
+        "entity_count": 28,
+        "avg_fill_num": 2.07,
+        "schema_size": 6,
+        "json_fail": false,
+        "relationships": 0,
+        "elapsed_s": 1875.2
+      }
+    ]
+  },
+  "system_links": {
+    "runs": [
+      {
+        "pass_name": "system_links",
+        "entity_count": 0,
+        "avg_fill_num": 0.0,
+        "schema_size": 0,
+        "json_fail": false,
+        "relationships": 31,
+        "elapsed_s": 1534.9
+      }
+    ]
+  }
+}
