@@ -52,8 +52,14 @@ def test_text_item_dict_shape_matches_docling_convention():
 
     bridge.reset()
     item, _ = _text_item_from_chunk(chunks[0], next_text_idx=5)
-    assert set(item.keys()) == {"self_ref", "label", "prov", "orig", "text"}
+    assert set(item.keys()) == {
+        "self_ref", "parent", "children", "content_layer",
+        "label", "prov", "orig", "text",
+    }
     assert item["label"] == "text"
+    assert item["parent"] == {"$ref": "#/body"}
+    assert item["children"] == []
+    assert item["content_layer"] == "body"
     assert item["prov"] == []
     assert item["orig"] == item["text"]
     assert item["text"] == chunks[0].text

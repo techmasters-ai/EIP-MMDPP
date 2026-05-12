@@ -609,17 +609,33 @@ def run_extraction_pass(
         )
         _normalized = normalize_tables(docling_document_json)
         _texts_list = docling_document_json.setdefault("texts", [])
+        # CRITICAL: also update body.children so the chunker walks these
+        # synthesized items. Mirrors _table_facts.py:974-975. Without this,
+        # appended items in texts[] are orphaned (not reachable from the
+        # doc body tree) and HybridChunker skips them.
+        _body = docling_document_json.setdefault("body", {})
+        _body_children = _body.setdefault("children", [])
         _next_text_idx = len(_texts_list)
+        _synth_count = 0
         for _nt in _normalized:
             for _gtc in render_for_graph(
                 _nt,
                 token_limit_whole=table_whole_limit(),
                 token_limit_column=table_column_limit(),
             ):
+                _captured_idx = _next_text_idx
                 _ti, _next_text_idx = _text_item_from_chunk(
                     _gtc, next_text_idx=_next_text_idx,
                 )
                 _texts_list.append(_ti)
+                _body_children.append({"$ref": f"#/texts/{_captured_idx}"})
+                _synth_count += 1
+        if _synth_count:
+            logger.info(
+                "table_normalization: synthesized %d TextItems for pass=%s "
+                "(normalized %d tables)",
+                _synth_count, pass_name, len(_normalized),
+            )
         if is_suppress_raw_table_markdown_enabled():
             _suppress_raw_table_texts(docling_document_json, _normalized)
     elif _exp_on:
@@ -1547,10 +1563,13 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     )
 
         # Spec 2026-05-11-table-aware-chunking §11.6 channel-A enrichment.
-        # For field-provenance rows that came from synthesized table-chunk
-        # TextItems, populate cell_refs via the two-hop lookup:
-        #   chunk_index → chunk_to_self_refs → first #/texts/N → bridge[N]
-        # No-op when no rows have non-None chunk_index (today's prose case).
+        # For field-provenance rows whose evidence_id matches a synthesized
+        # table-chunk TextItem (#/texts/N), populate cell_refs from the
+        # process-local bridge map. Uses evidence_id directly rather than
+        # going through chunk_to_self_refs because build_auto_field_evidence
+        # (library code) does not populate chunk_index on ExtractionField
+        # Provenance rows, so the two-hop lookup short-circuits on every row.
+        # evidence_id IS already the chunk's self_ref, so single-hop works.
         if field_provenance_rows:
             try:
                 import re as _re
@@ -1558,26 +1577,29 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     cell_refs_for_text_idx,
                 )
                 _TEXTS_REF_RE = _re.compile(r"^#/texts/(\d+)$")
-                _chunk_to_self_refs = getattr(context, "_chunk_to_self_refs", None) or {}
                 _enriched_rows: list[ExtractionFieldProvenance] = []
+                _enriched_count = 0
                 for _r in field_provenance_rows:
-                    _ci = getattr(_r, "chunk_index", None)
-                    if _ci is None:
+                    _eid = getattr(_r, "evidence_id", None) or getattr(_r, "element_uid", None)
+                    if not _eid:
                         _enriched_rows.append(_r)
                         continue
-                    _cell_refs: list[str] = []
-                    for _ref in (_chunk_to_self_refs.get(int(_ci), []) or []):
-                        _m = _TEXTS_REF_RE.match(_ref)
-                        if not _m:
-                            continue
-                        _crefs = cell_refs_for_text_idx(int(_m.group(1)))
-                        if _crefs:
-                            _cell_refs = _crefs
-                            break
+                    _m = _TEXTS_REF_RE.match(_eid)
+                    if not _m:
+                        _enriched_rows.append(_r)
+                        continue
+                    _cell_refs = cell_refs_for_text_idx(int(_m.group(1)))
                     if _cell_refs:
                         _r = _r.model_copy(update={"cell_refs": _cell_refs})
+                        _enriched_count += 1
                     _enriched_rows.append(_r)
                 field_provenance_rows = _enriched_rows
+                if _enriched_count:
+                    logger.info(
+                        "field-provenance cell_refs enrichment: %d/%d rows "
+                        "received cell_refs (pass=%s).",
+                        _enriched_count, len(field_provenance_rows), pass_name,
+                    )
             except Exception as _exc:
                 # Enrichment is best-effort — never fail the response over it.
                 logger.warning(

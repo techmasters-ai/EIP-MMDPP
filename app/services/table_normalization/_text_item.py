@@ -36,6 +36,13 @@ def _text_item_from_chunk(
 
     return ({
         "self_ref": f"#/texts/{next_text_idx}",
+        # parent / children / content_layer are REQUIRED by DoclingDocument's
+        # TextItem Pydantic model; without them the library raises a
+        # ValidationError during "Input Normalization". Matches the shape
+        # _table_facts.py:818-826 uses for its synthesized TextItems.
+        "parent": {"$ref": "#/body"},
+        "children": [],
+        "content_layer": "body",
         "label": "text",
         "prov": [],  # empty — cell refs flow through the bridge, not prov[].$ref
         "orig": gtc.text,
