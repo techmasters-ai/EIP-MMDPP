@@ -5687,6 +5687,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             ).scalars().all()
 
             # Convert ORM objects to dicts for structure-aware chunker
+            # Spec 2026-05-11-table-aware-chunking §10.2: element_metadata
+            # is threaded through so structure_aware_chunk can resolve
+            # element → NormalizedTable via metadata.self_ref.
             element_dicts = [
                 {
                     "element_type": elem.element_type,
@@ -5696,14 +5699,41 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     "element_uid": str(elem.element_uid) if elem.element_uid else "",
                     "element_order": elem.element_order,
                     "heading_level": elem.heading_level,
+                    "element_metadata": elem.element_metadata or {},
                 }
                 for elem in elements
                 if (elem.translated_text or elem.content_text)
             ]
+
+            # Best-effort: load docling_document.json for normalization.
+            # If unreadable, normalized_tables stays empty → today's
+            # behavior preserved on this path.
+            normalized_tables: list = []
+            from app.services.table_normalization.config import (
+                is_table_normalization_enabled_embedding,
+            )
+            if is_table_normalization_enabled_embedding():
+                try:
+                    _raw = download_bytes_sync(
+                        settings.minio_bucket_derived,
+                        f"artifacts/{document_id}/docling_document.json",
+                    )
+                    from app.services.table_normalization import (
+                        normalize_tables as _normalize,
+                    )
+                    normalized_tables = _normalize(_json_mod.loads(_raw))
+                except Exception as exc:
+                    logger.debug(
+                        "Legacy path: docling_document.json unavailable for "
+                        "normalization (%s); tables pass through as today's "
+                        "opaque chunks.", exc,
+                    )
+
             structured_chunks = structure_aware_chunk(
                 element_dicts,
                 max_chunk_tokens=settings.embedding_chunk_max_tokens,
                 overlap_tokens=settings.embedding_chunk_overlap_tokens,
+                normalized_tables=normalized_tables,
             )
 
             # Build a lookup from element_uid to the ORM element for artifact_id / bounding_box
@@ -5754,6 +5784,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "modality": sc.modality,
                         "page_number": sc.page_number,
                         "bounding_box": bounding_box,
+                        # Spec 2026-05-11 §10.2: populated for normalized-table
+                        # chunks; NULL for prose/heading/etc.
+                        "chunk_metadata": sc.metadata,
                     }
 
                     stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
@@ -5761,6 +5794,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         set_={
                             "chunk_text": chunk_values["chunk_text"],
                             "modality": chunk_values["modality"],
+                            "chunk_index": chunk_values["chunk_index"],
+                            "page_number": chunk_values["page_number"],
+                            "chunk_metadata": chunk_values["chunk_metadata"],
                         },
                     )
                     db.execute(stmt)
@@ -5774,6 +5810,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                             "modality": sc.modality,
                             "page_number": sc.page_number,
                             "classification": doc_classification,
+                            # Spec 2026-05-11 §11.4 — filterable in retrieval.
+                            "chunk_kind": (sc.metadata or {}).get("chunk_kind"),
                         },
                         embedding=embedding,
                     ))
