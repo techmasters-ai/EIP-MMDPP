@@ -2,7 +2,7 @@
   "planPath": "docs/superpowers/plans/2026-05-11-table-aware-chunking.md",
   "tasks": [
     {"id": "0a", "subject": "Task 0a: Capture today's baseline (§19)", "status": "completed"},
-    {"id": "0b", "subject": "Task 0b: Implementation spike — channel-A provenance verification (§20.1)", "status": "pending", "blockedBy": ["0a"]},
+    {"id": "0b", "subject": "Task 0b: Implementation spike — channel-A provenance verification (§20.1)", "status": "completed", "blockedBy": ["0a"]},
     {"id": "1", "subject": "Task 1: NormalizedTable data model + ChunkKind enum", "status": "completed"},
     {"id": "2", "subject": "Task 2: Shape detection (detect.py)", "status": "completed", "blockedBy": ["1"]},
     {"id": "3", "subject": "Task 3: Normalization pipeline (normalize.py)", "status": "completed", "blockedBy": ["2"]},
@@ -19,7 +19,7 @@
     {"id": "14", "subject": "Task 14: Integrate legacy structure_aware_chunk path", "status": "completed", "blockedBy": ["12"]},
     {"id": "15", "subject": "Task 15: Suppression helper — _suppress_raw_table_texts", "status": "completed", "blockedBy": ["12"]},
     {"id": "16", "subject": "Task 16: Add chunk_index + cell_refs to ExtractionFieldProvenance", "status": "completed"},
-    {"id": "17", "subject": "Task 17: Graph-side integration in docling-graph + field-provenance enrichment", "status": "code-committed-rebuild-pending", "blockedBy": ["7", "9", "15", "16"]},
+    {"id": "17", "subject": "Task 17: Graph-side integration in docling-graph + field-provenance enrichment", "status": "completed", "blockedBy": ["7", "9", "15", "16"]},
     {"id": "18", "subject": "Task 18: /v1/retrieval/query table_chunk block", "status": "completed", "blockedBy": ["10"]},
     {"id": "19", "subject": "Task 19: Master kill-switch byte-equality test (Phase 1 merge gate)", "status": "pending", "blockedBy": ["0a", "13", "14", "17"]},
     {"id": "20", "subject": "Task 20: Disallowed-combination fallback test", "status": "pending", "blockedBy": ["17"]},
