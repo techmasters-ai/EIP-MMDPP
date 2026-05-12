@@ -5432,6 +5432,10 @@ def _build_native_chunk_meta(
         f"{document_id}:native:{chunk_idx}:{model_version}".encode()
     ).hexdigest()
     chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+    # Spec 2026-05-11-table-aware-chunking §10.1: normalized table chunks
+    # are wrapped in _NormalizedTableChunkAdapter which exposes
+    # .extra_metadata. Native chunks return None here.
+    extra_metadata = getattr(chunk, "extra_metadata", None)
     return {
         "chunk_id": chunk_id,
         "chunk_index": chunk_idx,
@@ -5445,6 +5449,7 @@ def _build_native_chunk_meta(
         "document_id": document_id,
         "section_path": section_path,
         "headings": headings,
+        "chunk_metadata": extra_metadata,
     }
 
 
@@ -5532,6 +5537,36 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     )
                     doc_obj_dl = _DLDoc.model_validate(enriched)
                     native_chunks = list(chunker.chunk(doc_obj_dl))
+                    # Spec 2026-05-11-table-aware-chunking §10.1:
+                    # post-process native chunks to substitute normalized
+                    # table chunks. Only fires when
+                    # EMBEDDING_TABLE_NORMALIZATION_ENABLED=true.
+                    from app.services.table_normalization.config import (
+                        is_table_normalization_enabled_embedding,
+                    )
+                    if is_table_normalization_enabled_embedding():
+                        from app.services.table_normalization import (
+                            normalize_tables, render_for_embedding,
+                        )
+                        from app.services.table_normalization.config import (
+                            embedding_chunk_max_tokens,
+                            embedding_table_summary_max_tokens,
+                            min_table_normalization_tokens,
+                        )
+                        from app.services.table_normalization._pipeline_hooks import (
+                            _substitute_table_chunks,
+                        )
+                        normalized_by_table_idx = {
+                            nt.table_index: nt for nt in normalize_tables(doc_dict)
+                        }
+                        native_chunks = _substitute_table_chunks(
+                            native_chunks,
+                            normalized_by_table_idx,
+                            render_for_embedding,
+                            token_limit=embedding_chunk_max_tokens(),
+                            summary_limit=embedding_table_summary_max_tokens(),
+                            min_table_tokens=min_table_normalization_tokens(),
+                        )
                     use_native_chunking = True
                 except Exception as exc:
                     logger.warning("Native HybridChunker failed for %s: %s, falling back", document_id, exc)
@@ -5589,6 +5624,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "modality": meta["modality"],
                         "page_number": meta["page_number"],
                         "bounding_box": None,
+                        # Spec 2026-05-11-table-aware-chunking §11.2: populated
+                        # only for normalized-table chunks; NULL for prose.
+                        "chunk_metadata": meta.get("chunk_metadata"),
                     }
 
                     stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
@@ -5596,6 +5634,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         set_={
                             "chunk_text": chunk_values["chunk_text"],
                             "modality": chunk_values["modality"],
+                            "chunk_index": chunk_values["chunk_index"],
+                            "page_number": chunk_values["page_number"],
+                            "chunk_metadata": chunk_values["chunk_metadata"],
                         },
                     )
                     db.execute(stmt)
@@ -5614,6 +5655,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                             "evidence_ids": meta["evidence_ids"],
                             "section_path": meta.get("section_path"),
                             "headings": meta.get("headings", []),
+                            # Spec 2026-05-11 §11.4 — ArcadeDB filterable.
+                            "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),
                         },
                         embedding=embedding,
                     ))
