@@ -4,9 +4,26 @@ import uuid
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import APIModel
+
+
+class TableChunkBlock(BaseModel):
+    """Optional per-result block surfacing normalized-table chunk metadata
+    when TextChunk.chunk_metadata is non-NULL.
+
+    Spec: docs/superpowers/specs/2026-05-11-table-aware-chunking-design.md §11.5.
+    Additive; clients that don't know about it ignore it.
+    """
+    kind: str = Field(description="ChunkKind value: table_summary | table_whole | table_entity_column | table_entity_section")
+    table_ref: str = Field(description="Source table self_ref (e.g. '#/tables/3').")
+    table_caption: Optional[str] = None
+    entity_display_name: Optional[str] = None
+    section: Optional[str] = None
+    column_index: Optional[int] = None
+    cell_refs: list[str] = Field(default_factory=list)
+    row_labels: list[str] = Field(default_factory=list)
 
 
 class QueryStrategy(str, Enum):
@@ -73,6 +90,14 @@ class QueryResultItem(APIModel):
     page_numbers: list[int] = Field(
         default_factory=list,
         description="All pages this chunk's source items span (sorted, deduped). Distinct from page_number which is a single representative page.",
+    )
+    # Spec 2026-05-11-table-aware-chunking §11.5 — populated only when the
+    # underlying TextChunk.chunk_metadata is non-NULL (i.e., the chunk was
+    # produced by the table normalization layer). Backwards-compatible:
+    # clients ignoring this field see no change.
+    table_chunk: Optional[TableChunkBlock] = Field(
+        default=None,
+        description="Normalized-table chunk metadata (cell_refs, entity, kind). None for prose chunks.",
     )
 
 

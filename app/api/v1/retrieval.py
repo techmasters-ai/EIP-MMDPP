@@ -105,6 +105,10 @@ async def unified_query(
     # Backfill page_number from Postgres for results missing it
     await _backfill_page_numbers(db, results)
 
+    # Spec 2026-05-11-table-aware-chunking §11.5 — populate table_chunk
+    # block for results whose underlying TextChunk has chunk_metadata.
+    await _backfill_table_chunk_metadata(db, results)
+
     # Populate document names from ingest.documents
     await _backfill_document_names(db, results)
 
@@ -929,6 +933,45 @@ async def _backfill_content_text(
         cid = str(r.chunk_id)
         if cid in text_map:
             r.content_text = text_map[cid]
+
+
+async def _backfill_table_chunk_metadata(
+    db: AsyncSession, results: list[QueryResultItem]
+) -> None:
+    """Batch-fill table_chunk block from text_chunks.chunk_metadata.
+
+    Spec 2026-05-11-table-aware-chunking §11.5. Only fires for results
+    whose underlying TextChunk has chunk_metadata IS NOT NULL — the
+    partial expression index ix_text_chunks_chunk_kind keeps this fast.
+    """
+    from app.schemas.retrieval import TableChunkBlock
+
+    candidates = [r for r in results if r.chunk_id is not None and r.table_chunk is None]
+    if not candidates:
+        return
+
+    chunk_ids = [str(r.chunk_id) for r in candidates]
+    sql = text("""
+        SELECT id::text, chunk_metadata
+        FROM retrieval.text_chunks
+        WHERE id = ANY(:ids) AND chunk_metadata IS NOT NULL
+    """)
+    rows = (await db.execute(sql, {"ids": chunk_ids})).fetchall()
+    by_id: dict[str, dict] = {row[0]: row[1] for row in rows if row[1]}
+    for r in candidates:
+        cm = by_id.get(str(r.chunk_id))
+        if not cm:
+            continue
+        r.table_chunk = TableChunkBlock(
+            kind=cm.get("chunk_kind", "unknown"),
+            table_ref=cm.get("table_ref", ""),
+            table_caption=cm.get("table_caption"),
+            entity_display_name=cm.get("entity_display_name"),
+            section=cm.get("section"),
+            column_index=cm.get("column_index"),
+            cell_refs=cm.get("cell_refs") or [],
+            row_labels=cm.get("row_labels") or [],
+        )
 
 
 async def _backfill_page_numbers(
