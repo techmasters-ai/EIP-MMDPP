@@ -35,6 +35,10 @@ _STRUCTURAL_VERTEX_TYPES = {
         ("modality", "STRING"),
         ("classification", "STRING"),
         ("text_embedding", "ARRAY_OF_FLOATS"),
+        # Spec 2026-05-11-table-aware-chunking §11.4 — populated from
+        # chunk_metadata.chunk_kind on the Postgres TextChunk row. NULL
+        # for prose / heading / non-table chunks.
+        ("chunk_kind", "STRING"),
     ],
     "ImageChunk": [
         ("chunk_id", "STRING"),
@@ -349,6 +353,19 @@ async def sync_schema_from_ontology(
     ]
     await _run_ddl_batch(client, database, unique_ddl, phase="unique_indexes", report=report)
     report.indexes_created += len(unique_ddl)
+
+    # --- Phase 7b: non-unique secondary indexes for filtering ---
+    # Spec 2026-05-11-table-aware-chunking §11.4 — TextChunk.chunk_kind
+    # enables fast filtering by chunk_kind in retrieval queries.
+    secondary_indexes = [
+        ("TextChunk", "chunk_kind"),
+    ]
+    secondary_ddl = [
+        f"CREATE INDEX IF NOT EXISTS ON {stype} ({sprop}) NOTUNIQUE"
+        for stype, sprop in secondary_indexes
+    ]
+    await _run_ddl_batch(client, database, secondary_ddl, phase="secondary_indexes", report=report)
+    report.indexes_created += len(secondary_ddl)
 
     # --- Phase 8: BucketSelectionStrategy 'thread' for write-heavy types ---
     # Eliminates contention and ConcurrentModificationException on parallel
