@@ -79,6 +79,13 @@ def main() -> int:
             rows_with_cells.append(r)
 
     print(f"[info] field_provenance rows with non-empty cell_refs: {len(rows_with_cells)}")
+
+    # Always save the response for the regression gate (Task 22).
+    out_path = Path("tests/fixtures/spike/missile_kinematics_response_with_normalization.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(response, indent=2, ensure_ascii=False, default=str))
+    print(f"[info] full response saved to {out_path}")
+
     if rows_with_cells:
         print("[info] sample (up to 3):")
         for r in rows_with_cells[:3]:
@@ -108,11 +115,6 @@ def main() -> int:
         print("[debug] checking diagnostics for normalization signals…")
         norm_diag = diag.get("service_table_normalization")
         print(f"  service_table_normalization: {norm_diag}")
-        # Save the full response for offline debugging
-        out_path = Path("tests/fixtures/spike/missile_kinematics_response_with_normalization.json")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(response, indent=2, ensure_ascii=False, default=str))
-        print(f"[debug] full response saved to {out_path}")
         return 1
 
 
