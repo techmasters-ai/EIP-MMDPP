@@ -93,6 +93,15 @@ COPY docker/docling-graph/repo /app/repo
 COPY docker/docling-graph/patches /app/patches
 COPY ontology_bundles /app/ontology_bundles
 
+# Spec 2026-05-11-table-aware-chunking §5 — mirror the shared
+# table_normalization module into the docling-graph image so the
+# integration block at app/main.py can import it. The empty
+# app/services/__init__.py is required for Python to recognize
+# `app.services` as a package (docling-graph's app/ has its own
+# __init__.py from line 91's COPY).
+COPY app/services/__init__.py /app/app/services/__init__.py
+COPY app/services/table_normalization /app/app/services/table_normalization
+
 # Apply local patches to the vendored docling-graph library, then install
 # the patched source as an editable package so Python imports from /app/repo
 # instead of the un-patched site-packages copy that pip install pulled

@@ -573,6 +573,71 @@ def run_extraction_pass(
     # tests; re-enable when the corpus has more variants-table documents to
     # amortize the maintenance cost. See TODO #84.
 
+    # Spec 2026-05-11-table-aware-chunking §9.1 — flag-matrix integration.
+    # Reset bridge state per-pass to prevent cross-pass cell_refs leakage.
+    from app.services.table_normalization.config import (
+        is_table_normalization_enabled_graph,
+        is_experimental_table_facts_enabled,
+        is_suppress_raw_table_markdown_enabled,
+        table_whole_limit,
+        table_column_limit,
+    )
+    from app.services.table_normalization._provenance_bridge import (
+        reset as _bridge_reset,
+    )
+    _bridge_reset()
+
+    _norm_on = is_table_normalization_enabled_graph()
+    _exp_on = is_experimental_table_facts_enabled()
+    if _norm_on and _exp_on:
+        logger.error(
+            "Both DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED and "
+            "DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS are true; falling "
+            "back to today's production behavior (set only one)."
+        )
+    elif _norm_on:
+        # New path: normalize + render + append per-column TextItems +
+        # blank raw flattened table mirrors.
+        from app.services.table_normalization import (
+            normalize_tables, render_for_graph,
+        )
+        from app.services.table_normalization._text_item import (
+            _text_item_from_chunk,
+        )
+        from app.services.table_normalization._pipeline_hooks import (
+            _suppress_raw_table_texts,
+        )
+        _normalized = normalize_tables(docling_document_json)
+        _texts_list = docling_document_json.setdefault("texts", [])
+        _next_text_idx = len(_texts_list)
+        for _nt in _normalized:
+            for _gtc in render_for_graph(
+                _nt,
+                token_limit_whole=table_whole_limit(),
+                token_limit_column=table_column_limit(),
+            ):
+                _ti, _next_text_idx = _text_item_from_chunk(
+                    _gtc, next_text_idx=_next_text_idx,
+                )
+                _texts_list.append(_ti)
+        if is_suppress_raw_table_markdown_enabled():
+            _suppress_raw_table_texts(docling_document_json, _normalized)
+    elif _exp_on:
+        # Experimental path: re-enable the reverted _table_facts.py
+        # synthesizer. For A/B comparison only.
+        try:
+            from app._table_facts import synthesize_table_facts
+            synthesize_table_facts(
+                docling_document_json,
+                active_pass=pass_name,
+            )
+        except Exception as _exc:
+            logger.warning(
+                "experimental synthesize_table_facts failed: %s — continuing "
+                "with today's raw-blob behavior.", _exc,
+            )
+    # else: both flags off — today's production behavior, nothing inserted.
+
     if _is_empty(docling_document_json):
         logger.warning(
             "extract-pass short-circuit: DoclingDocument has no extractable content "
@@ -1480,6 +1545,45 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                         skip_fields=skip_fields,
                         provenance_cls=ExtractionFieldProvenance,
                     )
+
+        # Spec 2026-05-11-table-aware-chunking §11.6 channel-A enrichment.
+        # For field-provenance rows that came from synthesized table-chunk
+        # TextItems, populate cell_refs via the two-hop lookup:
+        #   chunk_index → chunk_to_self_refs → first #/texts/N → bridge[N]
+        # No-op when no rows have non-None chunk_index (today's prose case).
+        if field_provenance_rows:
+            try:
+                import re as _re
+                from app.services.table_normalization._provenance_bridge import (
+                    cell_refs_for_text_idx,
+                )
+                _TEXTS_REF_RE = _re.compile(r"^#/texts/(\d+)$")
+                _chunk_to_self_refs = getattr(context, "_chunk_to_self_refs", None) or {}
+                _enriched_rows: list[ExtractionFieldProvenance] = []
+                for _r in field_provenance_rows:
+                    _ci = getattr(_r, "chunk_index", None)
+                    if _ci is None:
+                        _enriched_rows.append(_r)
+                        continue
+                    _cell_refs: list[str] = []
+                    for _ref in (_chunk_to_self_refs.get(int(_ci), []) or []):
+                        _m = _TEXTS_REF_RE.match(_ref)
+                        if not _m:
+                            continue
+                        _crefs = cell_refs_for_text_idx(int(_m.group(1)))
+                        if _crefs:
+                            _cell_refs = _crefs
+                            break
+                    if _cell_refs:
+                        _r = _r.model_copy(update={"cell_refs": _cell_refs})
+                    _enriched_rows.append(_r)
+                field_provenance_rows = _enriched_rows
+            except Exception as _exc:
+                # Enrichment is best-effort — never fail the response over it.
+                logger.warning(
+                    "field-provenance cell_refs enrichment failed: %s — "
+                    "continuing with un-enriched rows.", _exc,
+                )
 
         relationship_provenance_rows = build_relationship_provenance_from_delta_trace(
             context, ExtractionRelationshipProvenance,
