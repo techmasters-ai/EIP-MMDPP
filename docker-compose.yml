@@ -306,6 +306,12 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables. Read by app/services/table_normalization/config.py
+      # in the api process serving /v1/retrieval/query (table_chunk block).
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     ports:
       - "${API_PORT:-8003}:8000"
     command: >
@@ -368,6 +374,12 @@ services:
       # Mechanism A1 kill switch (worker side — AUTHORITATIVE over cached overlays).
       # See docling-graph service for full rationale. Spec §4.3.
       DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables. Read by app/services/table_normalization/config.py
+      # in the worker's derive_text_chunks_and_embeddings task.
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
@@ -419,6 +431,11 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables (ingest worker queues derive_text_embeddings).
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
@@ -464,6 +481,11 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables (this worker is dedicated to the embed queue).
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
