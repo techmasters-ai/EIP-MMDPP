@@ -853,3 +853,147 @@ def test_embedding_logs_success_url_at_info(caplog):
         "OllamaEmbeddingClient: ok" in rec.message and "http://only" in rec.message
         for rec in caplog.records
     ), [r.message for r in caplog.records]
+
+
+# --- Truncation retry compare-and-keep-better tests (bug fix 2026-05-14) ---
+
+
+def _payload(content: str, finish_reason: str) -> dict:
+    """Helper: build a chat-completions response payload."""
+    return {
+        "choices": [{
+            "index": 0,
+            "message": {"content": content},
+            "finish_reason": finish_reason,
+        }],
+    }
+
+
+def test_truncation_retry_keeps_first_when_retry_is_near_empty():
+    """Bug 2026-05-14: when first attempt truncates mid-output with
+    substantive content (e.g. 902 chars containing 1+ complete entities)
+    and the retry "succeeds" with a near-empty 'I found nothing' response
+    (e.g. {"nodes":[],"relationships":[]} at 46 chars), the current code
+    discards the substantive first attempt. Fix: keep the first payload
+    when retry returns near-empty content (<100 chars) AND first content
+    is >5x the retry's length."""
+    pool = OllamaPool(urls=["http://only"])
+    client = OllamaChatClient(
+        pool=pool, model="m",
+        truncation_retry_max_tokens=16384,
+    )
+    first_content = "{" + "x" * 901  # 902 chars, finish=length
+    retry_content = '{"nodes": [], "relationships": []}'  # 34 chars, finish=stop
+
+    side_effects = [
+        _payload(first_content, "length"),   # First attempt: truncated
+        _payload(retry_content, "stop"),     # Retry: near-empty
+    ]
+    with patch.object(
+        OllamaChatClient, "_stream_chat_with_watchdog",
+        side_effect=side_effects,
+    ):
+        body = {"model": "m", "max_tokens": 8192,
+                "messages": [{"role": "user", "content": "go"}]}
+        result_payload, persisted = client._stream_with_truncation_retry(
+            "http://only", body, require_content=True, t0=time.time(),
+        )
+
+    # Bug-fix expectation: keep first attempt's substantive content
+    returned_content = result_payload["choices"][0]["message"]["content"]
+    assert returned_content == first_content, (
+        f"Expected first attempt's 902-char content to be returned, "
+        f"got {len(returned_content)} chars: {returned_content!r}"
+    )
+    assert persisted is False, "Should not flag as persisted truncation"
+
+
+def test_truncation_retry_uses_retry_when_retry_has_substantive_content():
+    """Existing behavior preserved: when retry succeeds with substantive
+    content, use the retry payload (model recovered cleanly)."""
+    pool = OllamaPool(urls=["http://only"])
+    client = OllamaChatClient(
+        pool=pool, model="m",
+        truncation_retry_max_tokens=16384,
+    )
+    first_content = ""  # First attempt: truncated empty
+    retry_content = "x" * 1800  # 1800 chars, finish=stop
+
+    with patch.object(
+        OllamaChatClient, "_stream_chat_with_watchdog",
+        side_effect=[
+            _payload(first_content, "length"),
+            _payload(retry_content, "stop"),
+        ],
+    ):
+        body = {"model": "m", "max_tokens": 8192,
+                "messages": [{"role": "user", "content": "go"}]}
+        result_payload, persisted = client._stream_with_truncation_retry(
+            "http://only", body, require_content=True, t0=time.time(),
+        )
+
+    returned_content = result_payload["choices"][0]["message"]["content"]
+    assert returned_content == retry_content
+    assert persisted is False
+
+
+def test_truncation_retry_uses_retry_when_first_is_empty_and_retry_is_small():
+    """Existing behavior preserved: when first attempt has 0 content and
+    retry returns small-but-real content (e.g. an actual `{"nodes":[]}`
+    in batches with no extractable entities), the retry is correct. The
+    compare-and-keep guard must not fire when first is empty/near-empty."""
+    pool = OllamaPool(urls=["http://only"])
+    client = OllamaChatClient(
+        pool=pool, model="m",
+        truncation_retry_max_tokens=16384,
+    )
+    first_content = ""  # 0 chars, finish=length
+    retry_content = '{"missile_systems": []}'  # 23 chars, finish=stop
+
+    with patch.object(
+        OllamaChatClient, "_stream_chat_with_watchdog",
+        side_effect=[
+            _payload(first_content, "length"),
+            _payload(retry_content, "stop"),
+        ],
+    ):
+        body = {"model": "m", "max_tokens": 8192,
+                "messages": [{"role": "user", "content": "go"}]}
+        result_payload, persisted = client._stream_with_truncation_retry(
+            "http://only", body, require_content=True, t0=time.time(),
+        )
+
+    returned_content = result_payload["choices"][0]["message"]["content"]
+    assert returned_content == retry_content
+    assert persisted is False
+
+
+def test_truncation_retry_kept_first_emits_distinct_diagnostic_outcome(tmp_path, monkeypatch):
+    """When the keep-first guard fires, the truncation diagnostic dump
+    must use outcome=recovered_kept_first (not recovered_content) so the
+    operator can distinguish the cases."""
+    monkeypatch.setenv("DOCLING_GRAPH_TRUNCATION_DIAG_DIR", str(tmp_path))
+    pool = OllamaPool(urls=["http://only"])
+    client = OllamaChatClient(
+        pool=pool, model="m",
+        truncation_retry_max_tokens=16384,
+    )
+    with patch.object(
+        OllamaChatClient, "_stream_chat_with_watchdog",
+        side_effect=[
+            _payload("{" + "x" * 901, "length"),
+            _payload('{"nodes":[]}', "stop"),
+        ],
+    ):
+        body = {"model": "m", "max_tokens": 8192,
+                "messages": [{"role": "user", "content": "go"}]}
+        client._stream_with_truncation_retry(
+            "http://only", body, require_content=True, t0=time.time(),
+        )
+
+    files = list(tmp_path.glob("trunc_*.json"))
+    assert files, "no diagnostic file was dumped"
+    fname = files[0].name
+    assert "recovered_kept_first" in fname, (
+        f"Expected outcome=recovered_kept_first in filename, got: {fname}"
+    )
