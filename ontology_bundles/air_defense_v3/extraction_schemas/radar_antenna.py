@@ -60,16 +60,14 @@ class RadarAntennaRecord(BaseModel):
         default=None,
         description=(
             "Peak antenna gain in dBi. Source labels such as 'Gain' or "
-            "'Antenna Gain' map here. Emit only when the source states "
-            "value AND unit. See Unit Policy in DELTA_SYSTEM_PROMPT for "
+            "'Antenna Gain' map here. See Unit Policy in DELTA_SYSTEM_PROMPT for "
             "dB-domain conversions."
         ),
     )
     antenna_dim_az_m: Optional[float] = Field(
         default=None,
         description=(
-            "Antenna aperture width (azimuth dimension) in meters. Emit "
-            "only when the source states value AND unit. Source labels "
+            "Antenna aperture width (azimuth dimension) in meters. Source labels "
             "such as 'Antenna Width', 'Azimuth Aperture', 'Horizontal "
             "Aperture', or width-like dimensions map here."
         ),
@@ -77,8 +75,7 @@ class RadarAntennaRecord(BaseModel):
     antenna_dim_el_m: Optional[float] = Field(
         default=None,
         description=(
-            "Antenna aperture height (elevation dimension) in meters. "
-            "Emit only when the source states value AND unit. Source "
+            "Antenna aperture height (elevation dimension) in meters. Source "
             "labels such as 'Antenna Height', 'Elevation Aperture', "
             "'Vertical Aperture', or height-like dimensions map here."
         ),
@@ -86,16 +83,14 @@ class RadarAntennaRecord(BaseModel):
     beamwidth_az_deg: Optional[float] = Field(
         default=None,
         description=(
-            "Main-beam 3 dB azimuth beamwidth in degrees. Emit only when "
-            "the source states value AND unit. Source labels such as "
+            "Main-beam 3 dB azimuth beamwidth in degrees. Source labels such as "
             "'Azimuth Beamwidth' or 'Horizontal Beamwidth' map here."
         ),
     )
     beamwidth_el_deg: Optional[float] = Field(
         default=None,
         description=(
-            "Main-beam 3 dB elevation beamwidth in degrees. Emit only "
-            "when the source states value AND unit. Source labels such "
+            "Main-beam 3 dB elevation beamwidth in degrees. Source labels such "
             "as 'Elevation Beamwidth' or 'Vertical Beamwidth' map here."
         ),
     )
@@ -109,8 +104,7 @@ class RadarAntennaRecord(BaseModel):
     coverage_limits_el_deg: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum elevation coverage angle in degrees. Emit only when "
-            "the source states value AND unit. Source labels such as "
+            "Maximum elevation coverage angle in degrees. Source labels such as "
             "'Elevation Coverage', 'Elevation Limit', or 'Elevation "
             "Coverage Limits' map here."
         ),

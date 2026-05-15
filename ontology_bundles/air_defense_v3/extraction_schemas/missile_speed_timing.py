@@ -52,8 +52,7 @@ class MissileSpeedTimingRecord(BaseModel):
     average_speed_mps: Optional[float] = Field(
         default=None,
         description=(
-            "Average flight speed in meters per second. Emit only when "
-            "the source states value AND unit. Source labels such as "
+            "Average flight speed in meters per second. Source labels such as "
             "'Average Speed' or 'average velocity' map here. See Unit "
             "Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
@@ -64,14 +63,12 @@ class MissileSpeedTimingRecord(BaseModel):
             "Maximum flight speed in meters per second. Source labels "
             "such as 'Speed', 'Velocity', 'Maximum Speed', or 'Maximum "
             "Velocity' map here only when the source implies a maximum. "
-            "Emit only when the source states value AND unit."
         ),
     )
     max_flyout_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum flyout time in seconds. Emit only when the source "
-            "states value AND unit. Source labels such as 'maximum "
+            "Maximum flyout time in seconds. Source labels such as 'maximum "
             "flyout time', 'max time of flight', or 'maximum flight "
             "time' map here."
         ),
@@ -81,22 +78,19 @@ class MissileSpeedTimingRecord(BaseModel):
         description=(
             "Total flight time in seconds. Source labels such as 'Time "
             "of Flight', 'Flight Time', or 'Flyout Time' map here when "
-            "they do not explicitly describe a maximum. Emit only when "
-            "the source states value AND unit."
+            "they do not explicitly describe a maximum. "
         ),
     )
     coast_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Coast time (post-burn) in seconds. Emit only when the "
-            "source states value AND unit."
+            "Coast time (post-burn) in seconds. "
         ),
     )
     intra_salvo_time_sec: Optional[float] = Field(
         default=None,
         description=(
             "Intra-salvo time (between launches in a salvo) in seconds. "
-            "Emit only when the source states value AND unit."
         ),
     )
     total_burn_time_sec: Optional[float] = Field(
@@ -106,15 +100,13 @@ class MissileSpeedTimingRecord(BaseModel):
             "'Burn Time' or 'Motor Burn Time' map here only when they "
             "describe the full missile motor burn. If the source is "
             "under a booster/ejector/sustainer stage label, use the "
-            "stage-specific field in missile_propulsion instead. Emit "
-            "only when the source states value AND unit."
+            "stage-specific field in missile_propulsion instead. "
         ),
     )
     ejector_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Ejector burn duration in seconds. Emit only when the source "
-            "states value AND unit."
+            "Ejector burn duration in seconds. "
         ),
     )
 

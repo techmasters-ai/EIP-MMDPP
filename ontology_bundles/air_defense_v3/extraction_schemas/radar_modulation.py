@@ -77,8 +77,7 @@ class RadarModulationRecord(BaseModel):
     frequency_excursion_mhz: Optional[float] = Field(
         default=None,
         description=(
-            "Frequency excursion (chirp bandwidth) in MHz. Emit only "
-            "when the source states value AND unit. Source labels such "
+            "Frequency excursion (chirp bandwidth) in MHz. Source labels such "
             "as 'Frequency Excursion', 'Chirp Bandwidth', 'Sweep Width', "
             "or 'Modulation Bandwidth' map here. See Unit Policy in "
             "DELTA_SYSTEM_PROMPT for conversions."

@@ -504,8 +504,15 @@ Before returning JSON, ensure:
 ## Unit Policy (mechanical conversions only)
 
 Every numeric field is named with its target unit (e.g. `nominal_rf_mhz`,
-`tx_peak_power_kw`, `gain_dbi`, `body_length_m`). Apply mechanical conversion
-ONLY when the source value AND its unit are both explicit in the batch:
+`tx_peak_power_kw`, `gain_dbi`, `body_length_m`). When the source value AND its
+unit are both explicit in the batch, apply mechanical conversion per the table
+below. When the source value is numeric but its unit is not stated, you MAY
+assume the unit declared by a preamble/header that applies to the value's
+table/section (e.g. a table-block hint such as "Numeric values are in SI base
+units (metres, kilograms, m/s, seconds) unless explicitly labeled otherwise"
+covers every unitless numeric in that block) and convert per the table below.
+Do NOT assume a unit from world knowledge alone — there must be an explicit
+preamble or column label tying the unit to the value.
 
 * **Frequency:** `*_mhz` accepts MHz. `kHz → MHz`: divide by 1000. `GHz → MHz`: multiply by 1000.
 * **Power (peak):** `*_peak_power_kw` accepts kW. `W → kW`: divide by 1000. `MW → kW`: multiply by 1000.
@@ -519,7 +526,8 @@ ONLY when the source value AND its unit are both explicit in the batch:
 
 Conversion guardrails:
 
-* If the source unit is missing, ambiguous, or implicit, emit `null`.
+* If the source unit is missing AND no preamble/column label declares it, emit `null`. If a table-block preamble or column label DOES declare the applicable unit, treat unitless numerics in that scope as carrying the declared unit and convert mechanically.
+* If the source value is ambiguous (e.g. could plausibly be one of two units with very different magnitudes) and no preamble disambiguates, emit `null`.
 * If the source value is a range ("2-5 km"), emit the upper bound only when the field name implies a maximum (`max_*`); otherwise emit `null`.
 * Never invent a value. Never copy a field's example annotation. Never compute from world knowledge."""
 

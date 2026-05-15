@@ -59,8 +59,7 @@ class RadarPowerRfRecord(BaseModel):
         description=(
             "Transmitter peak power in kilowatts. Source labels such as "
             "'Peak Power', 'Transmitter Power', 'Tx Power', or 'Pulse "
-            "Power' map here when they describe peak transmitter power. "
-            "Emit only when the source states value AND unit. See Unit "
+            "Power' map here when they describe peak transmitter power. See Unit "
             "Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
@@ -69,8 +68,7 @@ class RadarPowerRfRecord(BaseModel):
         description=(
             "Nominal carrier frequency in MHz. Source labels such as "
             "'Frequency', 'Operating Frequency', 'Carrier Frequency', "
-            "or 'RF' map here when they describe the radar carrier. "
-            "Emit only when the source states value AND unit. See Unit "
+            "or 'RF' map here when they describe the radar carrier. See Unit "
             "Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
     )

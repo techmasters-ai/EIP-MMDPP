@@ -68,8 +68,7 @@ class MissilePropulsionRecord(BaseModel):
     ejector_mass_kg: Optional[float] = Field(
         default=None,
         description=(
-            "Ejector-stage mass in kilograms. Emit only when the source "
-            "states value AND unit. See Unit Policy in "
+            "Ejector-stage mass in kilograms. See Unit Policy in "
             "DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
@@ -78,8 +77,7 @@ class MissilePropulsionRecord(BaseModel):
         description=(
             "Booster-stage burn time in seconds. Source labels such as "
             "'Burn Time' or 'Time' map here only under a '1st Stage', "
-            "'Booster', or equivalent section/row label. Emit only when "
-            "the source states value AND unit."
+            "'Booster', or equivalent section/row label. "
         ),
     )
     booster_thrust: Optional[str] = Field(
@@ -99,8 +97,7 @@ class MissilePropulsionRecord(BaseModel):
             "Booster-stage mass in kilograms. Source labels such as "
             "'Weight' or 'Mass' map here only under a '1st Stage', "
             "'Booster', or equivalent section/row label. Never copy "
-            "this value to total_mass_kg. Emit only when the source "
-            "states value AND unit."
+            "this value to total_mass_kg. "
         ),
     )
     sustain_time_sec: Optional[float] = Field(
@@ -109,7 +106,6 @@ class MissilePropulsionRecord(BaseModel):
             "Sustainer-stage burn time in seconds. Source labels such "
             "as 'Burn Time' or 'Time' map here only under a '2nd Stage', "
             "'Sustainer', 'Sustain', or equivalent section/row label. "
-            "Emit only when the source states value AND unit."
         ),
     )
     sustain_thrust: Optional[str] = Field(
@@ -129,8 +125,7 @@ class MissilePropulsionRecord(BaseModel):
             "Sustainer-stage mass in kilograms. Source labels such as "
             "'Weight' or 'Mass' map here only under a '2nd Stage', "
             "'Sustainer', 'Sustain', or equivalent section/row label. "
-            "Never copy this value to total_mass_kg. Emit only when the "
-            "source states value AND unit."
+            "Never copy this value to total_mass_kg. "
         ),
     )
 

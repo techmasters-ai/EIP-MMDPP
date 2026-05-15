@@ -52,8 +52,7 @@ class MissileAirframeRecord(BaseModel):
         description=(
             "Missile body length in meters. Source labels such as "
             "'Length', 'Overall Length', or 'Missile Length' map here "
-            "when they describe the missile variant. Emit only when the "
-            "source states value AND unit. See Unit Policy in "
+            "when they describe the missile variant. See Unit Policy in "
             "DELTA_SYSTEM_PROMPT for conversions."
         ),
     )
@@ -62,8 +61,7 @@ class MissileAirframeRecord(BaseModel):
         description=(
             "Missile body diameter in meters. Source labels such as "
             "'Diameter', 'Body Diameter', 'Calibre', or 'Caliber' map "
-            "here when they describe the missile variant. Emit only "
-            "when the source states value AND unit."
+            "here when they describe the missile variant. "
         ),
     )
     total_mass_kg: Optional[float] = Field(
@@ -72,8 +70,7 @@ class MissileAirframeRecord(BaseModel):
             "Total whole-missile mass at launch in kilograms. Source "
             "labels such as 'Weight', 'Mass', 'Launch Weight', or "
             "'Launch Mass' map here only when they describe the whole "
-            "missile. Do not use booster/sustainer stage weights. Emit "
-            "only when the source states value AND unit. See Unit "
+            "missile. Do not use booster/sustainer stage weights. See Unit "
             "Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
     )

@@ -16,16 +16,32 @@ from app.services.table_normalization.models import (
 from app.services.table_normalization.tokens import count_bge_m3_tokens
 
 
+# Hint emitted at the top of every synthesized table block. The Unit Policy in
+# the system prompt explicitly honors preambles declaring "the applicable unit"
+# for unitless numerics — this line is that preamble for spec-sheet tables
+# that omit a unit row (common in SAM/radar reference documents).
+UNIT_HINT = (
+    "UNITS: Numeric values in this block are in SI base units "
+    "(metres for length/range, kilograms for mass, m/s for speed, "
+    "seconds for time, degrees for angle, MHz for frequency) "
+    "unless a value is explicitly labeled with another unit."
+)
+
+
 def _render_column_as_text(
     column: NormalizedColumn,
     table: NormalizedTable,
     sections: tuple[TableSection, ...],
+    *,
+    emit_unit_hint: bool = False,
 ) -> str:
     """Produce the identity+sections+rows block for one entity column.
 
     Both the graph and embedding renderers call this helper; their outputs
     differ only by what they wrap around this block. See §9 of the spec
-    for the exact text format.
+    for the exact text format. The graph-side caller passes
+    emit_unit_hint=True so the LLM extraction prompt sees the SI-base unit
+    preamble for tables whose source rows omit explicit units.
     """
     parts: list[str] = []
 
@@ -34,6 +50,8 @@ def _render_column_as_text(
     parts.append(f"TABLE: {caption}")
     if table.page_numbers:
         parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
+    if emit_unit_hint:
+        parts.append(UNIT_HINT)
     parts.append("")
 
     # ENTITY block — full identity dict
@@ -106,7 +124,7 @@ def render_for_graph(
         )]
 
     # 2. Whole-table rendering check
-    whole_text = _render_whole_table(table)
+    whole_text = _render_whole_table(table, emit_unit_hint=True)
     whole_tokens = count_bge_m3_tokens(whole_text)
     if whole_tokens <= token_limit_whole:
         return [GraphTableChunk(
@@ -124,7 +142,7 @@ def render_for_graph(
     # 3. Per-column emission
     out: list[GraphTableChunk] = []
     for col in table.columns:
-        col_text = _render_column_as_text(col, table, table.sections)
+        col_text = _render_column_as_text(col, table, table.sections, emit_unit_hint=True)
         col_tokens = count_bge_m3_tokens(col_text)
         col_cells = [c for c in table.cells if c.col_idx == col.col_idx]
         col_refs = tuple(c.cell_ref.self_ref for c in col_cells)
@@ -148,7 +166,7 @@ def render_for_graph(
                 sec_cells = [c for c in col_cells if c.section == section.name]
                 if not sec_cells:
                     continue
-                sec_text = _render_column_section(col, table, section)
+                sec_text = _render_column_section(col, table, section, emit_unit_hint=True)
                 out.append(GraphTableChunk(
                     text=sec_text,
                     table_ref=table.self_ref,
@@ -163,16 +181,18 @@ def render_for_graph(
     return out
 
 
-def _render_whole_table(table: NormalizedTable) -> str:
+def _render_whole_table(table: NormalizedTable, *, emit_unit_hint: bool = False) -> str:
     """Whole-table rendering: identity header + each column block stacked."""
     parts: list[str] = []
     caption = table.caption or table.self_ref
     parts.append(f"TABLE: {caption}")
     if table.page_numbers:
         parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
+    if emit_unit_hint:
+        parts.append(UNIT_HINT)
     parts.append("")
     for col in table.columns:
-        parts.append(_render_column_as_text(col, table, table.sections).rstrip())
+        parts.append(_render_column_as_text(col, table, table.sections, emit_unit_hint=False).rstrip())
         parts.append("")
     return "\n".join(parts).rstrip() + "\n"
 
@@ -181,6 +201,8 @@ def _render_column_section(
     column: NormalizedColumn,
     table: NormalizedTable,
     section: TableSection,
+    *,
+    emit_unit_hint: bool = False,
 ) -> str:
     """Single section of one column with identity header repeated.
 
@@ -192,6 +214,8 @@ def _render_column_section(
     parts.append(f"TABLE: {caption}")
     if table.page_numbers:
         parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
+    if emit_unit_hint:
+        parts.append(UNIT_HINT)
     parts.append("")
     parts.append("ENTITY:")
     for k, v in column.identity.items():

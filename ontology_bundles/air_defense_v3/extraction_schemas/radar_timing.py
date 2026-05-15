@@ -47,8 +47,7 @@ class RadarTimingRecord(BaseModel):
     nominal_pri_usec: Optional[float] = Field(
         default=None,
         description=(
-            "Nominal Pulse Repetition Interval in microseconds. Emit "
-            "only when the source states value AND unit. Source labels "
+            "Nominal Pulse Repetition Interval in microseconds. Source labels "
             "such as 'PRI', 'Pulse Repetition Interval', or 'Pulse "
             "Interval' map here. See Unit Policy in DELTA_SYSTEM_PROMPT "
             "for conversions."
@@ -57,8 +56,7 @@ class RadarTimingRecord(BaseModel):
     nominal_pd_usec: Optional[float] = Field(
         default=None,
         description=(
-            "Nominal Pulse Duration in microseconds. Emit only when the "
-            "source states value AND unit. Source labels such as 'Pulse "
+            "Nominal Pulse Duration in microseconds. Source labels such as 'Pulse "
             "Width', 'Pulse Duration', 'Pulse Length', or 'PW' map here. "
             "See Unit Policy in DELTA_SYSTEM_PROMPT for conversions."
         ),
@@ -68,7 +66,7 @@ class RadarTimingRecord(BaseModel):
         description=(
             "Time to complete one full scan in seconds. Source labels "
             "such as 'Scan Period', 'Scan Time', or 'Rotation Period' "
-            "map here. Emit only when the source states value AND unit."
+            "map here. "
         ),
     )
     dwell_time: Optional[str] = Field(
