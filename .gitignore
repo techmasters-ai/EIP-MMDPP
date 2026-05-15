@@ -232,3 +232,6 @@ sweep_results_*.csv
 docker/arcadedb/repo/
 docker/docling/repo/
 docker/docling-graph/repo/
+
+# Local-only truncation diagnostic dumps (host bind-mount target)
+tmp/truncation_diag/
