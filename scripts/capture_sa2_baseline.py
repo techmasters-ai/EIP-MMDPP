@@ -217,6 +217,16 @@ def main() -> int:
                     temperature=args.temp,
                     upstream_entities=upstream_entities if pass_name == "system_links" else None,
                 )
+                # Save full response JSON for post-hoc inspection (added v7).
+                # Lets us enumerate every emitted entity/relationship and
+                # diagnose retry-discard / schema-leak / alias-resolution
+                # issues without re-running. Only saves run_1; later runs
+                # would overwrite (we typically pass --runs 1 anyway).
+                if r_idx == 0:
+                    resp_path = FIXTURE_DIR / f"{args.doc_id}_{pass_name}_response.json"
+                    resp_path.write_text(
+                        json.dumps(response, indent=2, ensure_ascii=False)
+                    )
                 metrics = compute_metrics(pass_name, response)
                 metrics["elapsed_s"] = round(elapsed, 1)
                 runs.append(metrics)
@@ -236,12 +246,36 @@ def main() -> int:
                         name = ent.get("system_name") or ent.get("name")
                         if not name:
                             continue
-                        upstream_entities.append({
+                        # Mirror _extend_upstream_refs / _collect_upstream_aliases
+                        # in app/workers/pipeline.py: harvest alias fields so
+                        # the relationship pass can resolve table-cell names
+                        # (e.g. industry designation 'SA-75') back to a ref
+                        # whose primary identity might be a different token
+                        # ('1D' via Missile Type).
+                        alias_candidates = [
+                            ent.get("nomenclature"),
+                            ent.get("name"),
+                            ent.get("dieqp"),
+                        ]
+                        aliases: list[str] = []
+                        seen_aliases: set[str] = set()
+                        for a in alias_candidates:
+                            if not isinstance(a, str):
+                                continue
+                            a = a.strip()
+                            if not a or a == name or a in seen_aliases:
+                                continue
+                            seen_aliases.add(a)
+                            aliases.append(a)
+                        entry: dict = {
                             "ref_id":          f"{et}:{name}",
                             "entity_type":     et,
                             "identity_values": {"system_name": name},
                             "display_label":   name,
-                        })
+                        }
+                        if aliases:
+                            entry["aliases"] = aliases
+                        upstream_entities.append(entry)
             except Exception as exc:
                 print(f"[error] {pass_name} run {r_idx + 1} failed: {exc}", flush=True)
                 runs.append({
