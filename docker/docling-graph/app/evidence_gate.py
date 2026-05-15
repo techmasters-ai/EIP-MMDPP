@@ -355,6 +355,7 @@ def apply_bundle_postprocessing(
     pass_output: dict[str, Any],
     evidence_text: str,
     upstream_entities: list[Any] | None = None,
+    cross_entity_hints: list[Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if bundle_key != "air_defense_v3" or not isinstance(pass_output, dict):
         return pass_output, {}
@@ -364,7 +365,9 @@ def apply_bundle_postprocessing(
     if pass_name in MISSILE_PASS_NAMES:
         return _postprocess_air_defense_missiles(pass_output, evidence_text)
     if pass_name == "system_links":
-        return _postprocess_air_defense_system_links(pass_output, evidence_text, upstream_entities)
+        return _postprocess_air_defense_system_links(
+            pass_output, evidence_text, upstream_entities, cross_entity_hints,
+        )
     return pass_output, {}
 
 
@@ -808,21 +811,37 @@ def _postprocess_air_defense_missiles(
 
 
 def _build_upstream_name_map(upstream_entities: list[Any] | None) -> dict[str, str]:
+    """Build name → ref_id lookup.
+
+    Registers each entity under its primary identity (``system_name``),
+    its display_label, AND each entry of ``aliases`` (typically populated
+    from upstream schema fields like ``nomenclature`` and ``name``). The
+    relationship pass uses this map to resolve chunk-cell names like
+    "SA-75" back to a ref_id whose primary identity might be a different
+    token ("1D" via Missile Type, etc.). Earlier registrations win on
+    conflict so primary identity takes precedence over aliases."""
     if not upstream_entities:
         return {}
     out: dict[str, str] = {}
+
+    def _maybe_register(name: Any, ref_id: str) -> None:
+        if not isinstance(name, str):
+            return
+        key = normalize_evidence_text(name)
+        if not key or key in out:
+            return
+        out[key] = ref_id
+
     for entity in upstream_entities:
         ref_id = getattr(entity, "ref_id", None)
         if not ref_id:
             continue
         identity_values = getattr(entity, "identity_values", None) or {}
-        system_name = identity_values.get("system_name")
-        if isinstance(system_name, str):
-            out[normalize_evidence_text(system_name)] = ref_id
-            continue
-        display_label = getattr(entity, "display_label", None)
-        if isinstance(display_label, str) and display_label.strip():
-            out[normalize_evidence_text(display_label)] = ref_id
+        _maybe_register(identity_values.get("system_name"), ref_id)
+        _maybe_register(getattr(entity, "display_label", None), ref_id)
+        aliases = getattr(entity, "aliases", None) or []
+        for alias in aliases:
+            _maybe_register(alias, ref_id)
     return out
 
 
@@ -830,51 +849,121 @@ def _postprocess_air_defense_system_links(
     pass_output: dict[str, Any],
     evidence_text: str,
     upstream_entities: list[Any] | None,
+    cross_entity_hints: list[Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Postprocess system_links output.
+
+    - Always promotes ``cross_entity_hints`` from the deterministic table
+      overlay into ASSOCIATED_WITH edges (resolving source/target by name
+      against the upstream catalog). v8a — closes the relationship-yield
+      gap on table-anchored radar↔missile pairings.
+    - Falls back to evidence-text heuristics (Spoon Rest → Fan Song,
+      Fan Song → SA-2) only when the LLM emitted ZERO relationships AND
+      no hint promotions resolved.
+    - Dedupes by ``(from_ref_id, to_ref_id)`` canonical-direction; the
+      first-emitted wins."""
     updated = dict(pass_output)
     relationships = updated.get("relationships")
     if not isinstance(relationships, list):
         return updated, {}
-    if relationships:
-        return updated, {}
 
     name_to_ref = _build_upstream_name_map(upstream_entities)
+    seen_pairs: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {}
+
+    # Carry forward LLM-emitted relationships first (they win on (from, to)
+    # collisions with derived/promoted edges).
+    for rel in relationships:
+        if not isinstance(rel, dict):
+            continue
+        f = rel.get("from_ref_id")
+        t = rel.get("to_ref_id")
+        if not isinstance(f, str) or not isinstance(t, str):
+            continue
+        if (f, t) in seen_pairs:
+            continue
+        seen_pairs.add((f, t))
+        out.append(rel)
+
+    # v8a: promote cross_entity_hints to ASSOCIATED_WITH edges.
+    promoted: list[dict[str, Any]] = []
+    if cross_entity_hints:
+        for hint in cross_entity_hints:
+            source_name = getattr(hint, "source_canonical", None) or (
+                hint.get("source_canonical") if isinstance(hint, dict) else None
+            )
+            target_name = getattr(hint, "target_alias", None) or (
+                hint.get("target_alias") if isinstance(hint, dict) else None
+            )
+            if not isinstance(source_name, str) or not isinstance(target_name, str):
+                continue
+            source_ref = name_to_ref.get(normalize_evidence_text(source_name))
+            target_ref = name_to_ref.get(normalize_evidence_text(target_name))
+            if not source_ref or not target_ref:
+                continue
+            if source_ref == target_ref:
+                continue
+            if (source_ref, target_ref) in seen_pairs:
+                continue
+            seen_pairs.add((source_ref, target_ref))
+            edge = {
+                "rel_type": "ASSOCIATED_WITH",
+                "from_ref_id": source_ref,
+                "to_ref_id": target_ref,
+                "confidence": 1.0,
+            }
+            promoted.append(edge)
+            out.append(edge)
+    if promoted:
+        stats["promoted_from_cross_entity_hints"] = promoted
+
+    # Legacy evidence-text fallback: only fires when nothing else produced
+    # edges (preserves the prior behavior for docs without table hints).
     derived: list[dict[str, Any]] = []
+    if not out:
+        spoon_rest_ref = name_to_ref.get("SPOON REST")
+        fan_song_ref = name_to_ref.get("FAN SONG")
+        sa2_ref = name_to_ref.get("SA-2")
 
-    spoon_rest_ref = name_to_ref.get("SPOON REST")
-    fan_song_ref = name_to_ref.get("FAN SONG")
-    sa2_ref = name_to_ref.get("SA-2")
-
-    if (
-        spoon_rest_ref
-        and fan_song_ref
-        and "SPOON REST ACQUISITION RADAR" in evidence_text
-        and "FAN SONG GUIDANCE RADAR" in evidence_text
-    ):
-        derived.append(
-            {
+        if (
+            spoon_rest_ref
+            and fan_song_ref
+            and "SPOON REST ACQUISITION RADAR" in evidence_text
+            and "FAN SONG GUIDANCE RADAR" in evidence_text
+            and (spoon_rest_ref, fan_song_ref) not in seen_pairs
+        ):
+            edge = {
                 "rel_type": "CUES",
                 "from_ref_id": spoon_rest_ref,
                 "to_ref_id": fan_song_ref,
                 "confidence": 0.95,
             }
-        )
+            seen_pairs.add((spoon_rest_ref, fan_song_ref))
+            derived.append(edge)
+            out.append(edge)
 
-    if (
-        fan_song_ref
-        and sa2_ref
-        and _entity_in_context("FAN SONG", evidence_text, ("MISSILE GUIDANCE", "GUIDED UP TO THREE SA-2S", "GUIDED UP TO THREE SA-2S AGAINST ONE TARGET"))
-    ):
-        derived.append(
-            {
+        if (
+            fan_song_ref
+            and sa2_ref
+            and _entity_in_context(
+                "FAN SONG", evidence_text,
+                ("MISSILE GUIDANCE", "GUIDED UP TO THREE SA-2S",
+                 "GUIDED UP TO THREE SA-2S AGAINST ONE TARGET"),
+            )
+            and (fan_song_ref, sa2_ref) not in seen_pairs
+        ):
+            edge = {
                 "rel_type": "ASSOCIATED_WITH",
                 "from_ref_id": fan_song_ref,
                 "to_ref_id": sa2_ref,
                 "confidence": 0.95,
             }
-        )
+            seen_pairs.add((fan_song_ref, sa2_ref))
+            derived.append(edge)
+            out.append(edge)
+    if derived:
+        stats["derived_relationships"] = derived
 
-    updated["relationships"] = derived
-    if not derived:
-        return updated, {}
-    return updated, {"derived_relationships": derived}
+    updated["relationships"] = out
+    return updated, stats

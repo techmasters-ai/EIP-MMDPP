@@ -213,6 +213,9 @@ async def lifespan(app: FastAPI):
     app.state.pipeline_version = _validate_library_surface()
     logger.info("docling-graph library version: %s", app.state.pipeline_version)
 
+    from app.services.table_normalization.config import validate_token_invariants
+    validate_token_invariants()
+
     app.state.extraction_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     yield
     logger.info("Shutting down")
@@ -484,15 +487,32 @@ def _render_upstream_entities_preamble(upstream_entities: list | None) -> str:
         display_label = getattr(entity, "display_label", None)
         if display_label is None and isinstance(entity, dict):
             display_label = entity.get("display_label")
+        aliases = getattr(entity, "aliases", None)
+        if aliases is None and isinstance(entity, dict):
+            aliases = entity.get("aliases")
+        # Filter aliases that duplicate the display_label so we don't repeat it.
+        if aliases:
+            primary = (display_label or "").strip()
+            aliases = [a for a in aliases if isinstance(a, str) and a.strip() and a.strip() != primary]
 
-        if display_label:
-            lines.append(f"  [{ref_id}] {entity_type} \u2014 {display_label}")
+        # v8a fix: format ref_id as 'REF=<id>' (not '[<id>]') because the
+        # LLM was copying surrounding square brackets into emitted ref_ids,
+        # producing malformed values like '[RADAR_SYSTEM:Fan Song]' that
+        # the merge layer rejects. The bare 'REF=' anchor is unambiguous.
+        if display_label and aliases:
+            lines.append(
+                f"  REF={ref_id} | TYPE={entity_type} | Primary={display_label} | Aliases: "
+                + ", ".join(aliases)
+            )
+        elif display_label:
+            lines.append(f"  REF={ref_id} | TYPE={entity_type} | Primary={display_label}")
         else:
-            lines.append(f"  [{ref_id}] {entity_type}")
+            lines.append(f"  REF={ref_id} | TYPE={entity_type}")
 
     lines.append(
         "Only emit from_ref_id and to_ref_id values from the list above "
-        "when referencing these upstream entities."
+        "when referencing these upstream entities. Match either the Primary "
+        "name or any of the Aliases when the document refers to the entity."
     )
     return "\n".join(lines)
 
@@ -572,6 +592,100 @@ def run_extraction_pass(
     # remain on disk in app/_table_facts.py + app/_alias_map.py with full
     # tests; re-enable when the corpus has more variants-table documents to
     # amortize the maintenance cost. See TODO #84.
+
+    # Spec 2026-05-11-table-aware-chunking §9.1 — flag-matrix integration.
+    # Reset bridge state per-pass to prevent cross-pass cell_refs leakage.
+    from app.services.table_normalization.config import (
+        is_table_normalization_enabled_graph,
+        is_experimental_table_facts_enabled,
+        is_suppress_raw_table_markdown_enabled,
+        table_whole_limit,
+        table_column_limit,
+    )
+    from app.services.table_normalization._provenance_bridge import (
+        reset as _bridge_reset,
+    )
+    _bridge_reset()
+
+    _norm_on = is_table_normalization_enabled_graph()
+    _exp_on = is_experimental_table_facts_enabled()
+    # v9: re-enable v8b's per-pass skip for system_links. Empirically (v6-v8a-prime),
+    # synthesized per-column chunks fragment the prose narrative the LLM uses for
+    # cross-system relationship inference: v8b (norm OFF for system_links) yielded
+    # 26 relationships vs v6/v7/v8a-prime (norm ON for system_links) yielding 8-17.
+    # cross_entity_hints promotion + alias plumbing run independently and add edges
+    # on TOP of the LLM's emissions regardless of this gate.
+    _norm_skipped_for_pass = pass_name == "system_links"
+    if _norm_on and _norm_skipped_for_pass:
+        logger.info(
+            "table_normalization: skipping for pass=%s (relationship-only "
+            "passes benefit from raw prose; entity passes keep normalization).",
+            pass_name,
+        )
+    if _norm_on and _exp_on:
+        logger.error(
+            "Both DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED and "
+            "DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS are true; falling "
+            "back to today's production behavior (set only one)."
+        )
+    elif _norm_on and not _norm_skipped_for_pass:
+        # New path: normalize + render + append per-column TextItems +
+        # blank raw flattened table mirrors.
+        from app.services.table_normalization import (
+            normalize_tables, render_for_graph,
+        )
+        from app.services.table_normalization._text_item import (
+            _text_item_from_chunk,
+        )
+        from app.services.table_normalization._pipeline_hooks import (
+            _suppress_raw_table_texts,
+        )
+        _normalized = normalize_tables(docling_document_json)
+        _texts_list = docling_document_json.setdefault("texts", [])
+        # CRITICAL: also update body.children so the chunker walks these
+        # synthesized items. Mirrors _table_facts.py:974-975. Without this,
+        # appended items in texts[] are orphaned (not reachable from the
+        # doc body tree) and HybridChunker skips them.
+        _body = docling_document_json.setdefault("body", {})
+        _body_children = _body.setdefault("children", [])
+        _next_text_idx = len(_texts_list)
+        _synth_count = 0
+        for _nt in _normalized:
+            for _gtc in render_for_graph(
+                _nt,
+                token_limit_whole=table_whole_limit(pass_name),
+                token_limit_column=table_column_limit(pass_name),
+            ):
+                _captured_idx = _next_text_idx
+                _ti, _next_text_idx = _text_item_from_chunk(
+                    _gtc, next_text_idx=_next_text_idx,
+                )
+                _texts_list.append(_ti)
+                _body_children.append({"$ref": f"#/texts/{_captured_idx}"})
+                _synth_count += 1
+        if _synth_count:
+            logger.info(
+                "table_normalization: synthesized %d TextItems for pass=%s "
+                "(normalized %d tables)",
+                _synth_count, pass_name, len(_normalized),
+            )
+        if is_suppress_raw_table_markdown_enabled():
+            _suppress_raw_table_texts(docling_document_json, _normalized)
+    elif _exp_on:
+        # Experimental path: re-enable the reverted _table_facts.py
+        # synthesizer. For A/B comparison only.
+        try:
+            from app._table_facts import synthesize_table_facts
+            synthesize_table_facts(
+                docling_document_json,
+                active_pass=pass_name,
+            )
+        except Exception as _exc:
+            logger.warning(
+                "experimental synthesize_table_facts failed: %s — continuing "
+                "with today's raw-blob behavior.", _exc,
+            )
+    # else: both flags off — today's production behavior, nothing inserted.
 
     if _is_empty(docling_document_json):
         logger.warning(
@@ -1322,12 +1436,22 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             evidence_text,
         )
         pass_output = filtered_pass_output
+        # v8a: hand cross_entity_hints to the postprocess so the
+        # deterministic table-overlay pairings (e.g. missile_variant →
+        # fan_song_variant) get promoted to ASSOCIATED_WITH edges in
+        # system_links. table_overlay_obj may be None when the overlay
+        # didn't produce anything; the postprocess accepts None.
+        _ceh = (
+            list(table_overlay_obj.cross_entity_hints)
+            if table_overlay_obj is not None else None
+        )
         pass_output, postprocess_stats = _apply_bundle_postprocessing(
             body.bundle_key,
             body.pass_name,
             pass_output,
             evidence_text,
             body.upstream_entities,
+            _ceh,
         )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
         filtered_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)
@@ -1480,6 +1604,51 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                         skip_fields=skip_fields,
                         provenance_cls=ExtractionFieldProvenance,
                     )
+
+        # Spec 2026-05-11-table-aware-chunking §11.6 channel-A enrichment.
+        # For field-provenance rows whose evidence_id matches a synthesized
+        # table-chunk TextItem (#/texts/N), populate cell_refs from the
+        # process-local bridge map. Uses evidence_id directly rather than
+        # going through chunk_to_self_refs because build_auto_field_evidence
+        # (library code) does not populate chunk_index on ExtractionField
+        # Provenance rows, so the two-hop lookup short-circuits on every row.
+        # evidence_id IS already the chunk's self_ref, so single-hop works.
+        if field_provenance_rows:
+            try:
+                import re as _re
+                from app.services.table_normalization._provenance_bridge import (
+                    cell_refs_for_text_idx,
+                )
+                _TEXTS_REF_RE = _re.compile(r"^#/texts/(\d+)$")
+                _enriched_rows: list[ExtractionFieldProvenance] = []
+                _enriched_count = 0
+                for _r in field_provenance_rows:
+                    _eid = getattr(_r, "evidence_id", None) or getattr(_r, "element_uid", None)
+                    if not _eid:
+                        _enriched_rows.append(_r)
+                        continue
+                    _m = _TEXTS_REF_RE.match(_eid)
+                    if not _m:
+                        _enriched_rows.append(_r)
+                        continue
+                    _cell_refs = cell_refs_for_text_idx(int(_m.group(1)))
+                    if _cell_refs:
+                        _r = _r.model_copy(update={"cell_refs": _cell_refs})
+                        _enriched_count += 1
+                    _enriched_rows.append(_r)
+                field_provenance_rows = _enriched_rows
+                if _enriched_count:
+                    logger.info(
+                        "field-provenance cell_refs enrichment: %d/%d rows "
+                        "received cell_refs (pass=%s).",
+                        _enriched_count, len(field_provenance_rows), pass_name,
+                    )
+            except Exception as _exc:
+                # Enrichment is best-effort — never fail the response over it.
+                logger.warning(
+                    "field-provenance cell_refs enrichment failed: %s — "
+                    "continuing with un-enriched rows.", _exc,
+                )
 
         relationship_provenance_rows = build_relationship_provenance_from_delta_trace(
             context, ExtractionRelationshipProvenance,

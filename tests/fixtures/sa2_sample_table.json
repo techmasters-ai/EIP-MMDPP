@@ -1,0 +1,45 @@
+{
+  "num_rows": 8,
+  "num_cols": 5,
+  "table_cells": [
+    {"text": "Industry Designation", "row_header": true, "column_header": false, "start_row_offset_idx": 0, "end_row_offset_idx": 0, "start_col_offset_idx": 0, "end_col_offset_idx": 0},
+    {"text": "S-75 Dvina", "row_header": false, "column_header": false, "start_row_offset_idx": 0, "end_row_offset_idx": 0, "start_col_offset_idx": 1, "end_col_offset_idx": 1},
+    {"text": "S-75M Volkhov", "row_header": false, "column_header": false, "start_row_offset_idx": 0, "end_row_offset_idx": 0, "start_col_offset_idx": 2, "end_col_offset_idx": 2},
+    {"text": "S-75M3", "row_header": false, "column_header": false, "start_row_offset_idx": 0, "end_row_offset_idx": 0, "start_col_offset_idx": 3, "end_col_offset_idx": 3},
+    {"text": "S-75M4", "row_header": false, "column_header": false, "start_row_offset_idx": 0, "end_row_offset_idx": 0, "start_col_offset_idx": 4, "end_col_offset_idx": 4},
+
+    {"text": "Military Designation", "row_header": true, "column_header": false, "start_row_offset_idx": 1, "end_row_offset_idx": 1, "start_col_offset_idx": 0, "end_col_offset_idx": 0},
+    {"text": "V-750", "row_header": false, "column_header": false, "start_row_offset_idx": 1, "end_row_offset_idx": 1, "start_col_offset_idx": 1, "end_col_offset_idx": 1},
+    {"text": "V-755", "row_header": false, "column_header": false, "start_row_offset_idx": 1, "end_row_offset_idx": 1, "start_col_offset_idx": 2, "end_col_offset_idx": 2},
+    {"text": "V-759", "row_header": false, "column_header": false, "start_row_offset_idx": 1, "end_row_offset_idx": 1, "start_col_offset_idx": 3, "end_col_offset_idx": 3},
+    {"text": "V-760", "row_header": false, "column_header": false, "start_row_offset_idx": 1, "end_row_offset_idx": 1, "start_col_offset_idx": 4, "end_col_offset_idx": 4},
+
+    {"text": "NATO Designation", "row_header": true, "column_header": false, "start_row_offset_idx": 2, "end_row_offset_idx": 2, "start_col_offset_idx": 0, "end_col_offset_idx": 0},
+    {"text": "SA-2A", "row_header": false, "column_header": false, "start_row_offset_idx": 2, "end_row_offset_idx": 2, "start_col_offset_idx": 1, "end_col_offset_idx": 1},
+    {"text": "SA-2B", "row_header": false, "column_header": false, "start_row_offset_idx": 2, "end_row_offset_idx": 2, "start_col_offset_idx": 2, "end_col_offset_idx": 2},
+    {"text": "SA-2D", "row_header": false, "column_header": false, "start_row_offset_idx": 2, "end_row_offset_idx": 2, "start_col_offset_idx": 3, "end_col_offset_idx": 3},
+    {"text": "SA-2E", "row_header": false, "column_header": false, "start_row_offset_idx": 2, "end_row_offset_idx": 2, "start_col_offset_idx": 4, "end_col_offset_idx": 4},
+
+    {"text": "1st Stage", "row_header": false, "column_header": false, "start_row_offset_idx": 3, "end_row_offset_idx": 3, "start_col_offset_idx": 0, "end_col_offset_idx": 4},
+
+    {"text": "Max Range", "row_header": true, "column_header": false, "start_row_offset_idx": 4, "end_row_offset_idx": 4, "start_col_offset_idx": 0, "end_col_offset_idx": 0},
+    {"text": "34000", "row_header": false, "column_header": false, "start_row_offset_idx": 4, "end_row_offset_idx": 4, "start_col_offset_idx": 1, "end_col_offset_idx": 1},
+    {"text": "43000", "row_header": false, "column_header": false, "start_row_offset_idx": 4, "end_row_offset_idx": 4, "start_col_offset_idx": 2, "end_col_offset_idx": 2},
+    {"text": "56000", "row_header": false, "column_header": false, "start_row_offset_idx": 4, "end_row_offset_idx": 4, "start_col_offset_idx": 3, "end_col_offset_idx": 3},
+    {"text": "76000", "row_header": false, "column_header": false, "start_row_offset_idx": 4, "end_row_offset_idx": 4, "start_col_offset_idx": 4, "end_col_offset_idx": 4},
+
+    {"text": "Min Range", "row_header": true, "column_header": false, "start_row_offset_idx": 5, "end_row_offset_idx": 5, "start_col_offset_idx": 0, "end_col_offset_idx": 0},
+    {"text": "7000", "row_header": false, "column_header": false, "start_row_offset_idx": 5, "end_row_offset_idx": 5, "start_col_offset_idx": 1, "end_col_offset_idx": 1},
+    {"text": "8000", "row_header": false, "column_header": false, "start_row_offset_idx": 5, "end_row_offset_idx": 5, "start_col_offset_idx": 2, "end_col_offset_idx": 2},
+    {"text": "9000", "row_header": false, "column_header": false, "start_row_offset_idx": 5, "end_row_offset_idx": 5, "start_col_offset_idx": 3, "end_col_offset_idx": 3},
+    {"text": "9500", "row_header": false, "column_header": false, "start_row_offset_idx": 5, "end_row_offset_idx": 5, "start_col_offset_idx": 4, "end_col_offset_idx": 4},
+
+    {"text": "2nd Stage", "row_header": false, "column_header": false, "start_row_offset_idx": 6, "end_row_offset_idx": 6, "start_col_offset_idx": 0, "end_col_offset_idx": 4},
+
+    {"text": "Weight", "row_header": true, "column_header": false, "start_row_offset_idx": 7, "end_row_offset_idx": 7, "start_col_offset_idx": 0, "end_col_offset_idx": 0},
+    {"text": "2300", "row_header": false, "column_header": false, "start_row_offset_idx": 7, "end_row_offset_idx": 7, "start_col_offset_idx": 1, "end_col_offset_idx": 1},
+    {"text": "2350", "row_header": false, "column_header": false, "start_row_offset_idx": 7, "end_row_offset_idx": 7, "start_col_offset_idx": 2, "end_col_offset_idx": 2},
+    {"text": "2400", "row_header": false, "column_header": false, "start_row_offset_idx": 7, "end_row_offset_idx": 7, "start_col_offset_idx": 3, "end_col_offset_idx": 3},
+    {"text": "2450", "row_header": false, "column_header": false, "start_row_offset_idx": 7, "end_row_offset_idx": 7, "start_col_offset_idx": 4, "end_col_offset_idx": 4}
+  ]
+}

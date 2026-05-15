@@ -3351,15 +3351,22 @@ def _build_extract_pass_request(
         "docling_document_json": doc_json,
     }
     if upstream_refs:
-        body["upstream_entities"] = [
-            {
+        entities: list[dict] = []
+        for ref_id, ref in upstream_refs.items():
+            entry: dict[str, Any] = {
                 "ref_id": ref_id,
                 "entity_type": getattr(ref, "entity_type", None),
                 "identity_values": getattr(ref, "identity_values", {}) or {},
                 "display_label": getattr(ref, "display_label", None),
             }
-            for ref_id, ref in upstream_refs.items()
-        ]
+            # Only include `aliases` when there's something to send — keeps
+            # the payload backward-compatible with consumers that haven't
+            # upgraded to accept the field.
+            aliases = getattr(ref, "aliases", None)
+            if aliases:
+                entry["aliases"] = list(aliases)
+            entities.append(entry)
+        body["upstream_entities"] = entities
     return body
 
 
@@ -3886,17 +3893,58 @@ def _extend_upstream_refs(
         display_label = build_display_label(
             entity_type, identity_values, scratch,
         )
+        aliases = _collect_upstream_aliases(
+            identity_values, scratch, display_label,
+        )
         ref = SimpleNamespace(
             pass_origin=pass_def.name,
             entity_type=entity_type,
             identity_values=identity_values,
             display_label=display_label,
+            aliases=aliases,
         )
         if not _is_valid_upstream_ref(ref, ontology):
             continue  # Drop refs with missing/empty identity.
         upstream_refs[f"E{counter:03d}"] = ref
         seen.add(dedupe_key)
         counter += 1
+
+
+# Alias-bearing fields (from radar_identity/missile_identity schemas) that
+# carry additional names for the same logical entity. Surface these to the
+# relationship pass so the LLM can match cell names like "SA-75" or
+# "RSNA-75" back to ref_ids whose primary identity is a different token
+# (e.g., system_name="1D").
+_UPSTREAM_ALIAS_FIELDS: tuple[str, ...] = ("nomenclature", "name", "dieqp")
+
+
+def _collect_upstream_aliases(
+    identity_values: dict, scratch: dict, display_label: str,
+) -> list[str]:
+    """Return a deduped list of non-identity, non-display-label name aliases.
+
+    Sources: ``_UPSTREAM_ALIAS_FIELDS`` keys in the scratch dict (the
+    non-identity properties merged across yielded entity instances). The
+    display_label is excluded so the relationship pass doesn't see
+    duplicate entries. Identity values are excluded since they're already
+    in ``identity_values``."""
+    identity_str_set: set[str] = {
+        str(v).strip() for v in identity_values.values() if v
+    }
+    out: list[str] = []
+    seen_local: set[str] = set()
+    for field in _UPSTREAM_ALIAS_FIELDS:
+        v = scratch.get(field)
+        if not isinstance(v, str):
+            continue
+        v = v.strip()
+        if not v or v == (display_label or "").strip() or v in identity_str_set:
+            continue
+        if v in seen_local:
+            continue
+        seen_local.add(v)
+        out.append(v)
+    return out
 
 
 def _endpoint_types_for_rel_types(
@@ -5432,6 +5480,10 @@ def _build_native_chunk_meta(
         f"{document_id}:native:{chunk_idx}:{model_version}".encode()
     ).hexdigest()
     chunk_id = uuid.UUID(hashlib.md5(chunk_key.encode()).hexdigest())
+    # Spec 2026-05-11-table-aware-chunking §10.1: normalized table chunks
+    # are wrapped in _NormalizedTableChunkAdapter which exposes
+    # .extra_metadata. Native chunks return None here.
+    extra_metadata = getattr(chunk, "extra_metadata", None)
     return {
         "chunk_id": chunk_id,
         "chunk_index": chunk_idx,
@@ -5445,6 +5497,7 @@ def _build_native_chunk_meta(
         "document_id": document_id,
         "section_path": section_path,
         "headings": headings,
+        "chunk_metadata": extra_metadata,
     }
 
 
@@ -5532,6 +5585,36 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     )
                     doc_obj_dl = _DLDoc.model_validate(enriched)
                     native_chunks = list(chunker.chunk(doc_obj_dl))
+                    # Spec 2026-05-11-table-aware-chunking §10.1:
+                    # post-process native chunks to substitute normalized
+                    # table chunks. Only fires when
+                    # EMBEDDING_TABLE_NORMALIZATION_ENABLED=true.
+                    from app.services.table_normalization.config import (
+                        is_table_normalization_enabled_embedding,
+                    )
+                    if is_table_normalization_enabled_embedding():
+                        from app.services.table_normalization import (
+                            normalize_tables, render_for_embedding,
+                        )
+                        from app.services.table_normalization.config import (
+                            embedding_chunk_max_tokens,
+                            embedding_table_summary_max_tokens,
+                            min_table_normalization_tokens,
+                        )
+                        from app.services.table_normalization._pipeline_hooks import (
+                            _substitute_table_chunks,
+                        )
+                        normalized_by_table_idx = {
+                            nt.table_index: nt for nt in normalize_tables(doc_dict)
+                        }
+                        native_chunks = _substitute_table_chunks(
+                            native_chunks,
+                            normalized_by_table_idx,
+                            render_for_embedding,
+                            token_limit=embedding_chunk_max_tokens(),
+                            summary_limit=embedding_table_summary_max_tokens(),
+                            min_table_tokens=min_table_normalization_tokens(),
+                        )
                     use_native_chunking = True
                 except Exception as exc:
                     logger.warning("Native HybridChunker failed for %s: %s, falling back", document_id, exc)
@@ -5589,6 +5672,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "modality": meta["modality"],
                         "page_number": meta["page_number"],
                         "bounding_box": None,
+                        # Spec 2026-05-11-table-aware-chunking §11.2: populated
+                        # only for normalized-table chunks; NULL for prose.
+                        "chunk_metadata": meta.get("chunk_metadata"),
                     }
 
                     stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
@@ -5596,6 +5682,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         set_={
                             "chunk_text": chunk_values["chunk_text"],
                             "modality": chunk_values["modality"],
+                            "chunk_index": chunk_values["chunk_index"],
+                            "page_number": chunk_values["page_number"],
+                            "chunk_metadata": chunk_values["chunk_metadata"],
                         },
                     )
                     db.execute(stmt)
@@ -5614,6 +5703,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                             "evidence_ids": meta["evidence_ids"],
                             "section_path": meta.get("section_path"),
                             "headings": meta.get("headings", []),
+                            # Spec 2026-05-11 §11.4 — ArcadeDB filterable.
+                            "chunk_kind": (meta.get("chunk_metadata") or {}).get("chunk_kind"),
                         },
                         embedding=embedding,
                     ))
@@ -5644,6 +5735,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
             ).scalars().all()
 
             # Convert ORM objects to dicts for structure-aware chunker
+            # Spec 2026-05-11-table-aware-chunking §10.2: element_metadata
+            # is threaded through so structure_aware_chunk can resolve
+            # element → NormalizedTable via metadata.self_ref.
             element_dicts = [
                 {
                     "element_type": elem.element_type,
@@ -5653,14 +5747,41 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                     "element_uid": str(elem.element_uid) if elem.element_uid else "",
                     "element_order": elem.element_order,
                     "heading_level": elem.heading_level,
+                    "element_metadata": elem.element_metadata or {},
                 }
                 for elem in elements
                 if (elem.translated_text or elem.content_text)
             ]
+
+            # Best-effort: load docling_document.json for normalization.
+            # If unreadable, normalized_tables stays empty → today's
+            # behavior preserved on this path.
+            normalized_tables: list = []
+            from app.services.table_normalization.config import (
+                is_table_normalization_enabled_embedding,
+            )
+            if is_table_normalization_enabled_embedding():
+                try:
+                    _raw = download_bytes_sync(
+                        settings.minio_bucket_derived,
+                        f"artifacts/{document_id}/docling_document.json",
+                    )
+                    from app.services.table_normalization import (
+                        normalize_tables as _normalize,
+                    )
+                    normalized_tables = _normalize(_json_mod.loads(_raw))
+                except Exception as exc:
+                    logger.debug(
+                        "Legacy path: docling_document.json unavailable for "
+                        "normalization (%s); tables pass through as today's "
+                        "opaque chunks.", exc,
+                    )
+
             structured_chunks = structure_aware_chunk(
                 element_dicts,
                 max_chunk_tokens=settings.embedding_chunk_max_tokens,
                 overlap_tokens=settings.embedding_chunk_overlap_tokens,
+                normalized_tables=normalized_tables,
             )
 
             # Build a lookup from element_uid to the ORM element for artifact_id / bounding_box
@@ -5711,6 +5832,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         "modality": sc.modality,
                         "page_number": sc.page_number,
                         "bounding_box": bounding_box,
+                        # Spec 2026-05-11 §10.2: populated for normalized-table
+                        # chunks; NULL for prose/heading/etc.
+                        "chunk_metadata": sc.metadata,
                     }
 
                     stmt = pg_insert(TextChunk).values(**chunk_values).on_conflict_do_update(
@@ -5718,6 +5842,9 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                         set_={
                             "chunk_text": chunk_values["chunk_text"],
                             "modality": chunk_values["modality"],
+                            "chunk_index": chunk_values["chunk_index"],
+                            "page_number": chunk_values["page_number"],
+                            "chunk_metadata": chunk_values["chunk_metadata"],
                         },
                     )
                     db.execute(stmt)
@@ -5731,6 +5858,8 @@ def derive_text_chunks_and_embeddings(self, document_id: str, run_id: str | None
                             "modality": sc.modality,
                             "page_number": sc.page_number,
                             "classification": doc_classification,
+                            # Spec 2026-05-11 §11.4 — filterable in retrieval.
+                            "chunk_kind": (sc.metadata or {}).get("chunk_kind"),
                         },
                         embedding=embedding,
                     ))

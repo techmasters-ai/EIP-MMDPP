@@ -47,6 +47,17 @@ class EntityRef(BaseModel):
         default=None,
         description="Human-readable label for prompt preamble rendering",
     )
+    aliases: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Additional names the LLM may match against in document chunks. "
+            "Populated from upstream-pass schema fields like ``nomenclature`` "
+            "and ``name`` that are aliases of ``identity_values`` (e.g., "
+            "Industry Designation 'SA-75', NATO 'SA-2A', common name "
+            "'Guideline' for the same missile). The relationship pass uses "
+            "these to resolve chunk-cell names back to upstream ref_ids."
+        ),
+    )
 
 
 class ExtractPassRequest(BaseModel):
@@ -230,6 +241,25 @@ class ExtractionFieldProvenance(BaseModel):
     document_id: Optional[str] = Field(
         default=None,
         description="Document UUID this field's evidence came from.",
+    )
+    # NEW (spec 2026-05-11 §11.6 — channel A cell-ref provenance):
+    chunk_index: Optional[int] = Field(
+        default=None,
+        description=(
+            "Library chunk_id (0..N-1, sequential per pass) the field was "
+            "extracted from. Required for the cell_refs lookup. None for "
+            "rows where chunk_index cannot be determined."
+        ),
+    )
+    cell_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Cell-level self_refs of the form '#/tables/{N}/data/table_cells/{M}' "
+            "when the field was extracted from a chunk synthesized from a "
+            "NormalizedTable. Empty for prose chunks. Populated post-construction "
+            "by _enrich_field_provenance_with_cell_refs via the two-hop lookup "
+            "(chunk_index → chunk_to_self_refs → first #/texts/N → bridge → cell_refs)."
+        ),
     )
 
 

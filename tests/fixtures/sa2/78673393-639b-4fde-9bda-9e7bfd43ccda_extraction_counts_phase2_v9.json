@@ -1,0 +1,97 @@
+{
+  "radar_identity": {
+    "runs": [
+      {
+        "pass_name": "radar_identity",
+        "entity_count": 24,
+        "avg_fill_num": 2.08,
+        "schema_size": 11,
+        "fields_filled_total": 50,
+        "fields_total": 264,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 79,
+        "relationship_provenance_count": 2,
+        "node_count": 25,
+        "edge_count": 24,
+        "elapsed_s": 4122.2
+      }
+    ]
+  },
+  "radar_power_rf": {
+    "runs": [
+      {
+        "pass_name": "radar_power_rf",
+        "entity_count": 42,
+        "avg_fill_num": 1.6,
+        "schema_size": 5,
+        "fields_filled_total": 67,
+        "fields_total": 193,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 0,
+        "relationship_provenance_count": 3,
+        "node_count": 43,
+        "edge_count": 42,
+        "elapsed_s": 2284.2
+      }
+    ]
+  },
+  "missile_identity": {
+    "runs": [
+      {
+        "pass_name": "missile_identity",
+        "entity_count": 44,
+        "avg_fill_num": 2.41,
+        "schema_size": 10,
+        "fields_filled_total": 106,
+        "fields_total": 440,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 1199,
+        "relationship_provenance_count": 7,
+        "node_count": 45,
+        "edge_count": 44,
+        "elapsed_s": 8116.0
+      }
+    ]
+  },
+  "missile_kinematics": {
+    "runs": [
+      {
+        "pass_name": "missile_kinematics",
+        "entity_count": 40,
+        "avg_fill_num": 1.5,
+        "schema_size": 6,
+        "fields_filled_total": 60,
+        "fields_total": 240,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 463,
+        "relationship_provenance_count": 1,
+        "node_count": 41,
+        "edge_count": 40,
+        "elapsed_s": 4841.2
+      }
+    ]
+  },
+  "system_links": {
+    "runs": [
+      {
+        "pass_name": "system_links",
+        "entity_count": 30,
+        "avg_fill_num": 3.0,
+        "schema_size": 3,
+        "fields_filled_total": 90,
+        "fields_total": 90,
+        "json_fail": false,
+        "relationships": 30,
+        "field_provenance_count": 0,
+        "relationship_provenance_count": 0,
+        "node_count": 1,
+        "edge_count": 30,
+        "elapsed_s": 1142.9
+      }
+    ]
+  }
+}

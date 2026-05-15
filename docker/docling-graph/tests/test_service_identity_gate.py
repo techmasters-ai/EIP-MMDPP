@@ -79,6 +79,65 @@ def test_system_links_schema_drops_incomplete_relationship_rows():
     assert model.relationships[0].to_ref_id == "E002"
 
 
+def test_system_links_strips_surrounding_brackets_from_ref_ids():
+    """v8a: the LLM has been observed to wrap ref_ids in '[…]' (copied
+    from the prompt preamble). The defensive strip should peel exactly
+    one surrounding pair so the merge layer sees the clean ref_id."""
+    model = SystemLinksPass.model_validate({
+        "relationships": [
+            {"rel_type": "ASSOCIATED_WITH",
+             "from_ref_id": "[RADAR_SYSTEM:Fan Song]",
+             "to_ref_id": "[MISSILE_SYSTEM:S-75]"},
+        ]
+    })
+    assert len(model.relationships) == 1
+    assert model.relationships[0].from_ref_id == "RADAR_SYSTEM:Fan Song"
+    assert model.relationships[0].to_ref_id == "MISSILE_SYSTEM:S-75"
+
+
+def test_system_links_leaves_bare_ref_ids_alone():
+    """Bracket strip must be idempotent: a clean ref_id passes through
+    unchanged."""
+    model = SystemLinksPass.model_validate({
+        "relationships": [
+            {"rel_type": "CUES",
+             "from_ref_id": "RADAR_SYSTEM:Spoon Rest",
+             "to_ref_id": "RADAR_SYSTEM:Fan Song"},
+        ]
+    })
+    assert model.relationships[0].from_ref_id == "RADAR_SYSTEM:Spoon Rest"
+    assert model.relationships[0].to_ref_id == "RADAR_SYSTEM:Fan Song"
+
+
+def test_system_links_dedups_pairs_with_same_from_to():
+    """v8a: when the LLM emits two rows with the same (from_ref_id,
+    to_ref_id) but different rel_types or confidences, keep only the
+    first. Avoids spurious duplicate edge volume."""
+    model = SystemLinksPass.model_validate({
+        "relationships": [
+            {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "A", "to_ref_id": "B", "confidence": 0.9},
+            {"rel_type": "CUES", "from_ref_id": "A", "to_ref_id": "B", "confidence": 0.8},
+            {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "C", "to_ref_id": "B", "confidence": 1.0},
+        ]
+    })
+    assert len(model.relationships) == 2
+    pairs = {(r.from_ref_id, r.to_ref_id) for r in model.relationships}
+    assert pairs == {("A", "B"), ("C", "B")}
+
+
+def test_system_links_does_not_strip_internal_brackets():
+    """Only ONE surrounding pair is stripped; internal '[' or ']' in a
+    weird ref_id stays put."""
+    model = SystemLinksPass.model_validate({
+        "relationships": [
+            {"rel_type": "CUES",
+             "from_ref_id": "[[NESTED:weird]]",
+             "to_ref_id": "B"},
+        ]
+    })
+    assert model.relationships[0].from_ref_id == "[NESTED:weird]"
+
+
 def test_summarize_pass_output_matches_filtered_entity_counts():
     summary = _EVIDENCE_GATE.summarize_pass_output(
         {"missile_systems": [{"system_name": "SA-2"}]},
@@ -373,6 +432,139 @@ def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence():
         {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E001", "to_ref_id": "E003", "confidence": 0.95},
     ]
     assert stats["derived_relationships"] == pass_output["relationships"]
+
+
+# --- v8a cross_entity_hints promotion tests ---------------------------------
+
+def test_apply_bundle_postprocessing_promotes_cross_entity_hints():
+    """v8a: cross_entity_hints from the table overlay should be promoted
+    into ASSOCIATED_WITH edges, resolving source/target by name against
+    the upstream catalog."""
+    upstream_entities = [
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:RSN-75", identity_values={"system_name": "RSN-75"}, display_label="RSN-75"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", identity_values={"system_name": "1D"}, display_label="1D"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:13D", identity_values={"system_name": "13D"}, display_label="13D"),
+    ]
+    hints = [
+        SimpleNamespace(source_canonical="1D", source_entity_type="MISSILE_SYSTEM",
+                        target_alias="Fan Song", target_entity_type="RADAR_SYSTEM",
+                        relationship_kind="associated_with"),
+        SimpleNamespace(source_canonical="13D", source_entity_type="MISSILE_SYSTEM",
+                        target_alias="RSN-75", target_entity_type="RADAR_SYSTEM",
+                        relationship_kind="associated_with"),
+    ]
+
+    pass_output, stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "system_links",
+        {"relationships": []},
+        "",
+        upstream_entities,
+        hints,
+    )
+
+    rels = pass_output["relationships"]
+    pair_set = {(r["from_ref_id"], r["to_ref_id"]) for r in rels}
+    assert ("MISSILE_SYSTEM:1D", "RADAR_SYSTEM:Fan Song") in pair_set
+    assert ("MISSILE_SYSTEM:13D", "RADAR_SYSTEM:RSN-75") in pair_set
+    assert "promoted_from_cross_entity_hints" in stats
+    assert len(stats["promoted_from_cross_entity_hints"]) == 2
+
+
+def test_apply_bundle_postprocessing_skips_hints_with_unknown_endpoints():
+    """Hints whose source or target name doesn't match any upstream ref
+    are silently dropped (no malformed edges with unknown refs)."""
+    upstream_entities = [
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+    ]
+    hints = [
+        SimpleNamespace(source_canonical="UNKNOWN_MISSILE", source_entity_type="MISSILE_SYSTEM",
+                        target_alias="Fan Song", target_entity_type="RADAR_SYSTEM",
+                        relationship_kind="associated_with"),
+        SimpleNamespace(source_canonical="Fan Song", source_entity_type="RADAR_SYSTEM",
+                        target_alias="UNKNOWN_TARGET", target_entity_type="MISSILE_SYSTEM",
+                        relationship_kind="associated_with"),
+    ]
+
+    pass_output, stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "system_links",
+        {"relationships": []},
+        "",
+        upstream_entities,
+        hints,
+    )
+
+    assert pass_output["relationships"] == []
+    assert "promoted_from_cross_entity_hints" not in stats
+
+
+def test_apply_bundle_postprocessing_preserves_llm_relationships_when_promoting_hints():
+    """LLM-emitted relationships are kept; hints are appended on top."""
+    upstream_entities = [
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", identity_values={"system_name": "1D"}, display_label="1D"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Spoon Rest", identity_values={"system_name": "Spoon Rest"}, display_label="Spoon Rest"),
+    ]
+    hints = [
+        SimpleNamespace(source_canonical="1D", source_entity_type="MISSILE_SYSTEM",
+                        target_alias="Fan Song", target_entity_type="RADAR_SYSTEM",
+                        relationship_kind="associated_with"),
+    ]
+    llm_emitted = {
+        "relationships": [
+            {"rel_type": "CUES", "from_ref_id": "RADAR_SYSTEM:Spoon Rest",
+             "to_ref_id": "RADAR_SYSTEM:Fan Song", "confidence": 0.9},
+        ],
+    }
+
+    pass_output, stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "system_links",
+        llm_emitted,
+        "",
+        upstream_entities,
+        hints,
+    )
+
+    assert len(pass_output["relationships"]) == 2
+    pair_set = {(r["from_ref_id"], r["to_ref_id"]) for r in pass_output["relationships"]}
+    assert ("RADAR_SYSTEM:Spoon Rest", "RADAR_SYSTEM:Fan Song") in pair_set
+    assert ("MISSILE_SYSTEM:1D", "RADAR_SYSTEM:Fan Song") in pair_set
+
+
+def test_apply_bundle_postprocessing_dedupes_when_hint_matches_llm_edge():
+    """If a hint resolves to the same (from, to) as an LLM-emitted edge,
+    the LLM edge is kept (first-seen wins) and the hint is dropped."""
+    upstream_entities = [
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", identity_values={"system_name": "1D"}, display_label="1D"),
+    ]
+    hints = [
+        SimpleNamespace(source_canonical="1D", source_entity_type="MISSILE_SYSTEM",
+                        target_alias="Fan Song", target_entity_type="RADAR_SYSTEM",
+                        relationship_kind="associated_with"),
+    ]
+    llm_emitted = {
+        "relationships": [
+            {"rel_type": "CUES", "from_ref_id": "MISSILE_SYSTEM:1D",
+             "to_ref_id": "RADAR_SYSTEM:Fan Song", "confidence": 0.85},
+        ],
+    }
+
+    pass_output, _stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "system_links",
+        llm_emitted,
+        "",
+        upstream_entities,
+        hints,
+    )
+
+    # Only one edge for that pair, and it's the LLM's CUES edge (kept first).
+    assert len(pass_output["relationships"]) == 1
+    assert pass_output["relationships"][0]["rel_type"] == "CUES"
 
 
 def test_status_is_not_inferred_from_operation_or_in_use_language():

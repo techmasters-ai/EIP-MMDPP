@@ -665,3 +665,159 @@ class TestExtendUpstreamRefsDedupe:
             f"expected 1 dedup'd ref across whitespace/case variants; "
             f"got {len(radar_refs)}: {radar_refs!r}"
         )
+
+
+# --- Item 2: alias plumbing tests ---------------------------------------
+
+class TestUpstreamAliasCollection:
+    """Verify _extend_upstream_refs harvests `nomenclature` and `name` from
+    extracted entities into ref.aliases, so the relationship pass can
+    match table-cell names back to ref_ids."""
+
+    def _pass_def(self, primary_types):
+        return SimpleNamespace(
+            name="missile_identity",
+            primary_entity_types=primary_types,
+        )
+
+    def test_aliases_populated_from_nomenclature_and_name(self):
+        refs: dict = {}
+        pass_result = _FakePassResult({
+            "MISSILE_SYSTEM": [
+                SimpleNamespace(
+                    system_name="1D",
+                    nomenclature="SA-75",
+                    name="SA-2A",
+                ),
+            ],
+        })
+        _extend_upstream_refs(
+            refs, pass_result,
+            self._pass_def(["MISSILE_SYSTEM"]),
+            ONTOLOGY,
+        )
+        assert len(refs) == 1
+        ref = next(iter(refs.values()))
+        assert ref.identity_values == {"system_name": "1D"}
+        assert "SA-75" in ref.aliases
+        assert "SA-2A" in ref.aliases
+
+    def test_aliases_excludes_identity_and_display_label(self):
+        """system_name is the identity — must not also appear in aliases.
+        display_label is what _NAME_LIKE_KEYS resolves to; aliases must
+        exclude it to avoid duplicates in the prompt preamble."""
+        refs: dict = {}
+        pass_result = _FakePassResult({
+            "MISSILE_SYSTEM": [
+                SimpleNamespace(
+                    system_name="SA-2",          # also the display_label by default
+                    nomenclature="SA-2",         # duplicate of identity — must be filtered
+                    name="Guideline",
+                ),
+            ],
+        })
+        _extend_upstream_refs(
+            refs, pass_result,
+            self._pass_def(["MISSILE_SYSTEM"]),
+            ONTOLOGY,
+        )
+        ref = next(iter(refs.values()))
+        assert "SA-2" not in ref.aliases  # filtered (matches identity)
+        assert ref.aliases == ["Guideline"]
+
+    def test_aliases_empty_when_no_alias_fields_present(self):
+        refs: dict = {}
+        pass_result = _FakePassResult({
+            "MISSILE_SYSTEM": [
+                SimpleNamespace(system_name="SA-2"),
+            ],
+        })
+        _extend_upstream_refs(
+            refs, pass_result,
+            self._pass_def(["MISSILE_SYSTEM"]),
+            ONTOLOGY,
+        )
+        ref = next(iter(refs.values()))
+        assert ref.aliases == []
+
+    def test_aliases_dedup_within_one_ref(self):
+        """If nomenclature and name happen to be the same string, only one
+        alias entry should be emitted."""
+        refs: dict = {}
+        pass_result = _FakePassResult({
+            "MISSILE_SYSTEM": [
+                SimpleNamespace(
+                    system_name="1D",
+                    nomenclature="SA-75",
+                    name="SA-75",           # same as nomenclature
+                ),
+            ],
+        })
+        _extend_upstream_refs(
+            refs, pass_result,
+            self._pass_def(["MISSILE_SYSTEM"]),
+            ONTOLOGY,
+        )
+        ref = next(iter(refs.values()))
+        assert ref.aliases == ["SA-75"]
+
+
+def test_build_extract_pass_request_includes_aliases_when_populated():
+    """Aliases harvested on the ref must be forwarded in the HTTP payload.
+    The relationship pass's name-map relies on them."""
+    from app.workers.pipeline import _build_extract_pass_request
+    from types import SimpleNamespace
+    ref = SimpleNamespace(
+        pass_origin="missile_identity",
+        entity_type="MISSILE_SYSTEM",
+        identity_values={"system_name": "1D"},
+        display_label="1D",
+        aliases=["SA-75", "SA-2A", "Guideline"],
+    )
+    pass_def = SimpleNamespace(name="system_links", primary_entity_types=[])
+    body = _build_extract_pass_request(
+        bundle_key="air_defense_v3",
+        pass_def=pass_def,
+        doc_json={"stub": True},
+        upstream_refs={"E020": ref},
+        document_id="doc-42",
+    )
+    assert body["upstream_entities"] == [
+        {
+            "ref_id": "E020",
+            "entity_type": "MISSILE_SYSTEM",
+            "identity_values": {"system_name": "1D"},
+            "display_label": "1D",
+            "aliases": ["SA-75", "SA-2A", "Guideline"],
+        },
+    ]
+
+
+def test_build_extract_pass_request_omits_aliases_when_empty_or_missing():
+    """Backward compat: refs with no aliases should not get an `aliases`
+    key in the payload at all (older consumers don't need to handle it)."""
+    from app.workers.pipeline import _build_extract_pass_request
+    from types import SimpleNamespace
+    ref_no_attr = SimpleNamespace(
+        pass_origin="radar_identity",
+        entity_type="RADAR_SYSTEM",
+        identity_values={"system_name": "Fan Song"},
+        display_label="Fan Song",
+    )
+    ref_empty = SimpleNamespace(
+        pass_origin="radar_identity",
+        entity_type="RADAR_SYSTEM",
+        identity_values={"system_name": "Spoon Rest"},
+        display_label="Spoon Rest",
+        aliases=[],
+    )
+    pass_def = SimpleNamespace(name="system_links", primary_entity_types=[])
+    body = _build_extract_pass_request(
+        bundle_key="air_defense_v3",
+        pass_def=pass_def,
+        doc_json={"stub": True},
+        upstream_refs={"E001": ref_no_attr, "E002": ref_empty},
+        document_id="doc-42",
+    )
+    for entry in body["upstream_entities"]:
+        assert "aliases" not in entry

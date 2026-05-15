@@ -627,3 +627,54 @@ verify the following:
   `RuntimeError: _assert_ledger_wiring` or `RuntimeError: _assert_threshold_envelope`.
   If either fires, fix the offending stage's decorator or the
   `stale_stage_run_threshold_seconds` setting before the worker can accept tasks.
+
+---
+
+## Table-aware chunking (spec 2026-05-11)
+
+Spec: `docs/superpowers/specs/2026-05-11-table-aware-chunking-design.md`.
+Plan: `docs/superpowers/plans/2026-05-11-table-aware-chunking.md`.
+
+- [ ] **Step 0a baseline fixtures committed** under `tests/fixtures/sa2/`
+  with `baseline.meta.json` recording the captured-at SHA, temperature,
+  runs_per_doc, comparison_mode.
+
+- [ ] **Step 0b provenance spike passes** — `tests/spike/test_provenance_e2e.py`
+  confirms channel-A flow populates `ExtractionFieldProvenance.cell_refs`
+  end-to-end on a minimal SA-2 fixture.
+
+- [ ] **Phase 1 merge gate: master kill-switch byte equality.** With both
+  `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED=false` and
+  `EMBEDDING_TABLE_NORMALIZATION_ENABLED=false` (defaults), running the
+  baseline-capture script produces output byte-identical to the §19
+  baseline fixture. Both HybridChunker primary path and legacy
+  `structure_aware_chunk` path covered.
+
+- [ ] **Phase 2 flip: missile_propulsion ✓ exact / entity-count
+  no-regression.** With master switches on, the metric for
+  `missile_propulsion` (or your primary table-extraction pass) is ≥ the
+  today-baseline value recorded in
+  `tests/fixtures/sa2/<docid>_extraction_counts_today.json`.
+
+- [ ] **Phase 2 flip: per-pass regression bound.** At most ONE
+  non-propulsion pass regresses by exactly 1 ✓ exact (or equivalent
+  entity-count delta); all others ≥ today-baseline.
+
+- [ ] **Phase 2 flip: corpus-wide guard.** Sum of ✓ exact (or entity
+  count) across all passes ≥ sum of today-baseline − 1.
+
+- [ ] **Phase 2 flip: variance-mode decision recorded** in
+  `tests/fixtures/sa2/baseline.meta.json` (strict vs median per §19
+  decision rule).
+
+- [ ] **Phase 2 flip: legacy-path smoke test passes.** Ingest one doc
+  forcing the legacy chunker; verify `text_chunks` rows for table
+  elements carry non-NULL `chunk_metadata`.
+
+- [ ] **`.env` and `.env.example` contain all 8 new variables** —
+  `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED`,
+  `DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS`,
+  `DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN`,
+  `DOCLING_GRAPH_TABLE_WHOLE_LIMIT`, `DOCLING_GRAPH_TABLE_COLUMN_LIMIT`,
+  `EMBEDDING_TABLE_NORMALIZATION_ENABLED`,
+  `EMBEDDING_TABLE_SUMMARY_MAX_TOKENS`, `MIN_TABLE_NORMALIZATION_TOKENS`.

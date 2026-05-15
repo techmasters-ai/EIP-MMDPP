@@ -178,6 +178,10 @@ services:
       # ChunkBatcher max tokens per batch (config_builder.py:44, default 1024).
       # Larger batches = fewer LLM calls + more cross-chunk context per call.
       DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE: ${DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE:-1024}
+      # Per-pass override: system_links needs MORE context per LLM call (many
+      # entities visible together) to do cross-system relationship inference.
+      DOCLING_GRAPH_SYSTEM_LINKS_CHUNK_MAX_TOKENS: ${DOCLING_GRAPH_SYSTEM_LINKS_CHUNK_MAX_TOKENS:-4096}
+      DOCLING_GRAPH_SYSTEM_LINKS_LLM_BATCH_TOKEN_SIZE: ${DOCLING_GRAPH_SYSTEM_LINKS_LLM_BATCH_TOKEN_SIZE:-4096}
       # Concurrent chunk batches per /extract-pass (config_builder.py:44).
       # Effective parallelism is min(this, OLLAMA_NUM_PARALLEL on the LLM host).
       DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-4}
@@ -199,6 +203,16 @@ services:
       # AUTHORITATIVE — even cached overlay payloads in pipeline_pass_outputs.metadata_json
       # are ignored when this is false.
       DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
+      # Spec 2026-05-11-table-aware-chunking §12. Master switches default
+      # false (code merges without changing behavior; Phase 2 flip activates).
+      DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED: ${DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED:-false}
+      DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS: ${DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS:-false}
+      DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN: ${DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN:-true}
+      DOCLING_GRAPH_TABLE_WHOLE_LIMIT: ${DOCLING_GRAPH_TABLE_WHOLE_LIMIT:-1500}
+      DOCLING_GRAPH_TABLE_COLUMN_LIMIT: ${DOCLING_GRAPH_TABLE_COLUMN_LIMIT:-1200}
+      DOCLING_GRAPH_SYSTEM_LINKS_TABLE_WHOLE_LIMIT: ${DOCLING_GRAPH_SYSTEM_LINKS_TABLE_WHOLE_LIMIT:-4096}
+      DOCLING_GRAPH_SYSTEM_LINKS_TABLE_COLUMN_LIMIT: ${DOCLING_GRAPH_SYSTEM_LINKS_TABLE_COLUMN_LIMIT:-4096}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
       # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,
       # LiteLLM reads OLLAMA_API_BASE / OLLAMA_BASE_URL
       OLLAMA_LLM_BASE_URL: ${OLLAMA_LLM_BASE_URL:-${OLLAMA_BASE_URL:-http://ollama:11434}}
@@ -251,6 +265,10 @@ services:
       # Bind-mount the live ontology bundles so schema/manifest edits don't
       # require an image rebuild — same pattern as api / worker services.
       - ./ontology_bundles:/app/ontology_bundles
+      # Truncation diagnostic dumps (host-visible). When the LLM hits the
+      # output cap, the chunk + response payload is dumped here so we can
+      # inspect what triggered it. Host path: ./tmp/truncation_diag.
+      - ./tmp/truncation_diag:/tmp/truncation_diag
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
@@ -298,6 +316,12 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables. Read by app/services/table_normalization/config.py
+      # in the api process serving /v1/retrieval/query (table_chunk block).
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     ports:
       - "${API_PORT:-8003}:8000"
     command: >
@@ -360,6 +384,12 @@ services:
       # Mechanism A1 kill switch (worker side — AUTHORITATIVE over cached overlays).
       # See docling-graph service for full rationale. Spec §4.3.
       DOCLING_GRAPH_TABLE_OVERLAY_ENABLED: ${DOCLING_GRAPH_TABLE_OVERLAY_ENABLED:-true}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables. Read by app/services/table_normalization/config.py
+      # in the worker's derive_text_chunks_and_embeddings task.
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
@@ -411,6 +441,11 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables (ingest worker queues derive_text_embeddings).
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info
@@ -456,6 +491,11 @@ services:
       COMMUNITY_REPORT_LLM_BASE_URLS: ${COMMUNITY_REPORT_LLM_BASE_URLS:-}
       PICTURE_DESCRIPTION_BASE_URLS: ${PICTURE_DESCRIPTION_BASE_URLS:-}
       TEXT_EMBEDDING_BASE_URLS: ${TEXT_EMBEDDING_BASE_URLS:-}
+      # Spec 2026-05-11-table-aware-chunking §12. Embedding-side master
+      # switch + tunables (this worker is dedicated to the embed queue).
+      EMBEDDING_TABLE_NORMALIZATION_ENABLED: ${EMBEDDING_TABLE_NORMALIZATION_ENABLED:-false}
+      EMBEDDING_TABLE_SUMMARY_MAX_TOKENS: ${EMBEDDING_TABLE_SUMMARY_MAX_TOKENS:-300}
+      MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
     command: >
       celery -A app.workers.celery_app worker
         --loglevel=info

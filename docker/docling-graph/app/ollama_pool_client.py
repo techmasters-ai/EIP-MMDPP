@@ -25,6 +25,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Mapping, Optional
 
 import httpx
@@ -819,6 +820,80 @@ class OllamaChatClient:
             }],
         }
 
+    def _dump_truncation_diagnostic(
+        self,
+        *,
+        url: str,
+        body: dict[str, Any],
+        first_payload: dict[str, Any] | None,
+        retry_payload: dict[str, Any] | None,
+        outcome: str,
+    ) -> None:
+        """Dump prompt + response payloads for a truncation event.
+
+        Writes one JSON file per event to
+        ``DOCLING_GRAPH_TRUNCATION_DIAG_DIR`` (default ``/tmp/truncation_diag``)
+        and emits a one-line ``TRUNCATION_DIAG:`` summary on stdout so an
+        external monitor can pick it up. Called from every outcome branch in
+        ``_stream_with_truncation_retry`` — both recovered and persisted —
+        so the operator can inspect what prompt produced the truncation.
+
+        Any exception is swallowed; diagnostic logging must never poison
+        the extraction path."""
+        try:
+            diag_dir = Path(
+                os.environ.get("DOCLING_GRAPH_TRUNCATION_DIAG_DIR", "/tmp/truncation_diag")
+            )
+            diag_dir.mkdir(parents=True, exist_ok=True)
+
+            def _extract(payload: dict | None) -> dict[str, Any]:
+                if not payload:
+                    return {}
+                choices = payload.get("choices") or [{}]
+                ch = choices[0] if choices else {}
+                msg = ch.get("message") or {}
+                return {
+                    "content": msg.get("content") or "",
+                    "reasoning_content": msg.get("reasoning_content") or "",
+                    "finish_reason": ch.get("finish_reason"),
+                }
+
+            first_info = _extract(first_payload)
+            retry_info = _extract(retry_payload) if retry_payload is not None else None
+            ts_ms = int(time.time() * 1000)
+            fname = diag_dir / f"trunc_{ts_ms}_{outcome}.json"
+            record = {
+                "timestamp_ms": ts_ms,
+                "url": url,
+                "model": body.get("model"),
+                "outcome": outcome,
+                "first_max_tokens": body.get("max_tokens"),
+                "request_messages": body.get("messages", []),
+                "first_response": first_info,
+                "retry_response": retry_info,
+            }
+            fname.write_text(json.dumps(record, indent=2, ensure_ascii=False))
+
+            def _msg_chars(m: Any) -> int:
+                if not isinstance(m, dict):
+                    return 0
+                content = m.get("content")
+                if isinstance(content, str):
+                    return len(content)
+                return len(json.dumps(content)) if content is not None else 0
+
+            prompt_chars = sum(_msg_chars(m) for m in body.get("messages", []))
+            first_len = len(first_info.get("content", ""))
+            retry_len = len(retry_info.get("content", "")) if retry_info is not None else None
+            retry_part = f" retry_len={retry_len}" if retry_len is not None else ""
+            print(
+                f"TRUNCATION_DIAG: outcome={outcome} prompt_chars={prompt_chars} "
+                f"first_len={first_len}{retry_part} saved={fname.name}",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("OllamaChatClient: TRUNCATION_DIAG_DUMP_FAILED: %s", exc)
+
     def _stream_with_truncation_retry(
         self,
         url: str,
@@ -876,6 +951,11 @@ class OllamaChatClient:
                 "final=truncated_no_retry_caller_non_strict",
                 url, body["model"], len(content_first), current_cap,
             )
+            self._dump_truncation_diagnostic(
+                url=url, body=body, first_payload=payload,
+                retry_payload=None,
+                outcome="truncated_no_retry_caller_non_strict",
+            )
             return payload, False
 
         # Always-bump retry on require_content=True. The earlier spin-skip
@@ -902,6 +982,11 @@ class OllamaChatClient:
                     url, body["model"], body.get("max_tokens") or 4096,
                     current_cap, last_content_len,
                 )
+                self._dump_truncation_diagnostic(
+                    url=url, body=body, first_payload=payload,
+                    retry_payload=last_payload,
+                    outcome="retry_cap_exhausted",
+                )
                 return last_payload, True
 
             bumped_body = dict(body)
@@ -922,12 +1007,48 @@ class OllamaChatClient:
                     url, body["model"], len(content_first), current_cap,
                     bumped_body["max_tokens"],
                 )
+                self._dump_truncation_diagnostic(
+                    url=url, body=body, first_payload=payload,
+                    retry_payload=retry_payload,
+                    outcome="retry_no_choices",
+                )
                 return payload, True
 
             retry_finish = retry_choices[0].get("finish_reason")
             retry_msg = retry_choices[0].get("message", {}) or {}
             retry_content = (retry_msg.get("content") or "").strip()
             if retry_finish != "length":
+                # Compare-and-keep-better guard (bug fix 2026-05-14):
+                # if retry returns NEAR-EMPTY content while the first
+                # (truncated) attempt has SUBSTANTIVELY MORE content,
+                # the model "changed its mind" between attempts. The
+                # first attempt's truncated content is more salvageable
+                # for downstream than the retry's clean-but-empty
+                # response. Keep first instead. Thresholds:
+                #   retry_content < 100 chars (near-empty bar)
+                #   first_content > 5 * retry_content (significantly more)
+                _RETRY_NEAR_EMPTY_THRESHOLD = 100
+                _KEEP_FIRST_RATIO = 5
+                if (
+                    len(retry_content) < _RETRY_NEAR_EMPTY_THRESHOLD
+                    and len(content_first) > len(retry_content) * _KEEP_FIRST_RATIO
+                    and len(content_first) > 0
+                ):
+                    logger.info(
+                        "OllamaChatClient: TRUNCATION_OUTCOME url=%s model=%s "
+                        "first_content_len=%d first_max_tokens=%d retry_ran=True "
+                        "retry_content_len=%d retry_finish_reason=%s "
+                        "retry_max_tokens=%d final=recovered_kept_first "
+                        "(retry near-empty; keeping first's truncated content)",
+                        url, body["model"], len(content_first), current_cap,
+                        len(retry_content), retry_finish, bumped_body["max_tokens"],
+                    )
+                    self._dump_truncation_diagnostic(
+                        url=url, body=body, first_payload=payload,
+                        retry_payload=retry_payload,
+                        outcome="recovered_kept_first",
+                    )
+                    return payload, False
                 outcome_label = (
                     "recovered_content" if retry_content else "recovered_clean_empty"
                 )
@@ -939,6 +1060,11 @@ class OllamaChatClient:
                     url, body["model"], len(content_first), current_cap,
                     len(retry_content), retry_finish, bumped_body["max_tokens"],
                     outcome_label,
+                )
+                self._dump_truncation_diagnostic(
+                    url=url, body=body, first_payload=payload,
+                    retry_payload=retry_payload,
+                    outcome=outcome_label,
                 )
                 return retry_payload, False
 
@@ -961,6 +1087,11 @@ class OllamaChatClient:
                     "retry_max_tokens=%d final=persisted_truncation",
                     url, body["model"], len(content_first), current_cap,
                     len(retry_content), bumped_body["max_tokens"],
+                )
+                self._dump_truncation_diagnostic(
+                    url=url, body=body, first_payload=payload,
+                    retry_payload=retry_payload,
+                    outcome="persisted_truncation",
                 )
                 return retry_payload, True
 

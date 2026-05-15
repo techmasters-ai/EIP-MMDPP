@@ -31,12 +31,17 @@ class StructuredChunk:
     section_path: Optional[str] = None
     element_uids: list[str] = field(default_factory=list)
     heading_text: Optional[str] = None
+    # Spec 2026-05-11-table-aware-chunking §10.2 — populated for normalized
+    # table chunks (chunk_kind, table_ref, cell_refs, ...); None for prose.
+    metadata: Optional[dict] = None
 
 
 def structure_aware_chunk(
     elements: list[dict],
     max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
     overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
+    *,
+    normalized_tables: "list | tuple" = (),
 ) -> list[StructuredChunk]:
     """Chunk document elements respecting structure.
 
@@ -111,19 +116,75 @@ def structure_aware_chunk(
             buffer_uids.append(uid)
 
         elif etype == "table":
-            # Tables are always their own chunk — never split
+            # Tables are always their own chunk — never split.
+            # Spec 2026-05-11-table-aware-chunking §10.2: when
+            # EMBEDDING_TABLE_NORMALIZATION_ENABLED=true AND the
+            # element's metadata carries a matching #/tables/N self_ref,
+            # substitute with normalized chunks. Otherwise fall back to
+            # today's opaque-table behavior.
             current_heading = buffer_heading  # save before flush clears it
             _flush_buffer()
-            chunks.append(StructuredChunk(
-                text=content,
-                chunk_index=chunk_index,
-                modality="table",
-                page_number=page,
-                section_path=section,
-                element_uids=[uid],
-                heading_text=current_heading,
-            ))
-            chunk_index += 1
+
+            from app.services.table_normalization.config import (
+                is_table_normalization_enabled_embedding,
+            )
+            nt = None
+            if is_table_normalization_enabled_embedding() and normalized_tables:
+                from app.services.table_normalization.models import Shape
+                ref = (elem.get("element_metadata") or {}).get("self_ref", "")
+                if ref.startswith("#/tables/"):
+                    try:
+                        idx = int(ref.split("/")[-1])
+                        nt = next(
+                            (t for t in normalized_tables if t.table_index == idx),
+                            None,
+                        )
+                        if nt is not None and nt.shape == Shape.OTHER:
+                            nt = None
+                    except (ValueError, IndexError):
+                        nt = None
+
+            if nt is None:
+                chunks.append(StructuredChunk(
+                    text=content,
+                    chunk_index=chunk_index,
+                    modality="table",
+                    page_number=page,
+                    section_path=section,
+                    element_uids=[uid],
+                    heading_text=current_heading,
+                ))
+                chunk_index += 1
+            else:
+                from app.services.table_normalization import render_for_embedding
+                from app.services.table_normalization.config import (
+                    embedding_chunk_max_tokens,
+                    embedding_table_summary_max_tokens,
+                )
+                for etc in render_for_embedding(
+                    nt,
+                    token_limit=embedding_chunk_max_tokens(),
+                    summary_limit=embedding_table_summary_max_tokens(),
+                ):
+                    chunks.append(StructuredChunk(
+                        text=etc.text,
+                        chunk_index=chunk_index,
+                        modality="table",
+                        page_number=etc.page_numbers[0] if etc.page_numbers else page,
+                        section_path=section,
+                        element_uids=[uid],
+                        heading_text=current_heading,
+                        metadata={
+                            "chunk_kind": etc.chunk_kind.value,
+                            "table_ref": etc.table_ref,
+                            "entity_display_name": etc.entity_display_name,
+                            "section": etc.section,
+                            "column_index": etc.column_index,
+                            "cell_refs": list(etc.cell_refs),
+                            "row_labels": list(etc.row_labels),
+                        },
+                    ))
+                    chunk_index += 1
 
         elif etype == "equation":
             # Equations are their own chunk

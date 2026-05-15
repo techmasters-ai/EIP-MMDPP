@@ -1,0 +1,28 @@
+{
+  "captured_at": "2026-05-12T18:46:21+00:00",
+  "current_sha": "526b2e96ec841d5c832ebfc126ba00be1a82eed4",
+  "docling_graph_image_id": "sha256:15696912fbd9b984b8735801faecd11821ded6bd6467b1b6e265e7bbf3fb1dbe",
+  "corpus_files": ["78673393-639b-4fde-9bda-9e7bfd43ccda"],
+  "corpus_filenames": ["SA-2 Guideline _ Зенитный Ракетный Комплекс С-75 Двина_Десна_Волхов.pdf"],
+  "temperature": 0.1,
+  "think": false,
+  "model": "gemma4:31b",
+  "runs_per_doc": 1,
+  "comparison_mode": "strict",
+  "passes": [
+    "radar_identity",
+    "radar_power_rf",
+    "missile_identity",
+    "missile_kinematics",
+    "system_links"
+  ],
+  "scoring_command": "python scripts/capture_sa2_baseline.py --doc-id 78673393-639b-4fde-9bda-9e7bfd43ccda --temp 0.1 --runs 1",
+  "system_links_capture_command": "python scripts/capture_system_links_only.py (uses ArcadeDB-resident RADAR_SYSTEM + MISSILE_SYSTEM names as upstream_entities)",
+  "notes": [
+    "Baseline captured with all table-norm master switches OFF (today's production behavior).",
+    "Metric shape mirrors notebook sweep: entity_count + avg_fill + json_fail + relationships.",
+    "Phase 2 flip-gate compares against this baseline at the same flag posture.",
+    "system_links was captured in a separate invocation because the in-script upstream_entities builder used the wrong shape; capture_system_links_only.py reads RADAR_SYSTEM + MISSILE_SYSTEM names directly from ArcadeDB instead.",
+    "comparison_mode=strict because runs_per_doc=1 (variance not measured)."
+  ]
+}

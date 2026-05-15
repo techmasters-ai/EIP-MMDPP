@@ -1,0 +1,30 @@
+[
+  {
+    "text": "TABLE: #/tables/0\n\nTABLE: #/tables/0\n\nENTITY:\n- Industry Designation: S-75 Dvina\n- Military Designation: V-750\n- NATO Designation: SA-2A\n\n1ST STAGE:\n- Max Range: 34000\n- Min Range: 7000\n\n2ND STAGE:\n- Weight: 2300\n\nTABLE: #/tables/0\n\nENTITY:\n- Industry Designation: S-75M Volkhov\n- Military Designation: V-755\n- NATO Designation: SA-2B\n\n1ST STAGE:\n- Max Range: 43000\n- Min Range: 8000\n\n2ND STAGE:\n- Weight: 2350\n\nTABLE: #/tables/0\n\nENTITY:\n- Industry Designation: S-75M3\n- Military Designation: V-759\n- NATO Designation: SA-2D\n\n1ST STAGE:\n- Max Range: 56000\n- Min Range: 9000\n\n2ND STAGE:\n- Weight: 2400\n\nTABLE: #/tables/0\n\nENTITY:\n- Industry Designation: S-75M4\n- Military Designation: V-760\n- NATO Designation: SA-2E\n\n1ST STAGE:\n- Max Range: 76000\n- Min Range: 9500\n\n2ND STAGE:\n- Weight: 2450\n",
+    "table_ref": "#/tables/0",
+    "page_numbers": [],
+    "chunk_kind": "table_whole",
+    "entity_display_name": null,
+    "section": null,
+    "column_index": null,
+    "cell_refs": [
+      "#/tables/0/data/table_cells/17",
+      "#/tables/0/data/table_cells/18",
+      "#/tables/0/data/table_cells/19",
+      "#/tables/0/data/table_cells/20",
+      "#/tables/0/data/table_cells/22",
+      "#/tables/0/data/table_cells/23",
+      "#/tables/0/data/table_cells/24",
+      "#/tables/0/data/table_cells/25",
+      "#/tables/0/data/table_cells/28",
+      "#/tables/0/data/table_cells/29",
+      "#/tables/0/data/table_cells/30",
+      "#/tables/0/data/table_cells/31"
+    ],
+    "row_labels": [
+      "Max Range",
+      "Min Range",
+      "Weight"
+    ]
+  }
+]

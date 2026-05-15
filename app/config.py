@@ -401,6 +401,21 @@ class Settings(BaseSettings):
     embedding_chunk_overlap_tokens: int = 64
     embedding_chunk_tokenizer_model: str = "BAAI/bge-m3"  # HuggingFace repo for HybridChunker tokenizer
 
+    # Table normalization (spec 2026-05-11-table-aware-chunking).
+    # Master switches default FALSE — code merges without changing behavior;
+    # Phase 2 flip activates the new path.
+    # NOTE: these settings entries are documentation-only for pydantic-settings
+    # discovery. Runtime reads go through app/services/table_normalization/config.py
+    # (os.environ.get) so runtime flag flips don't require settings reload.
+    docling_graph_table_normalization_enabled: bool = False
+    docling_graph_use_experimental_table_facts: bool = False
+    docling_graph_suppress_raw_table_markdown: bool = True
+    docling_graph_table_whole_limit: int = 1500
+    docling_graph_table_column_limit: int = 1200
+    embedding_table_normalization_enabled: bool = False
+    embedding_table_summary_max_tokens: int = 300
+    min_table_normalization_tokens: int = 256
+
     # Embedding batching
     embed_text_batch_size: int = 128
 

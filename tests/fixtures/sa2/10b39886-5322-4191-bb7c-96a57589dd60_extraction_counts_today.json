@@ -1,0 +1,97 @@
+{
+  "radar_identity": {
+    "runs": [
+      {
+        "pass_name": "radar_identity",
+        "entity_count": 2,
+        "avg_fill_num": 2.0,
+        "schema_size": 11,
+        "fields_filled_total": 4,
+        "fields_total": 22,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 5,
+        "relationship_provenance_count": 0,
+        "node_count": 3,
+        "edge_count": 2,
+        "elapsed_s": 696.5
+      }
+    ]
+  },
+  "radar_power_rf": {
+    "runs": [
+      {
+        "pass_name": "radar_power_rf",
+        "entity_count": 3,
+        "avg_fill_num": 1.33,
+        "schema_size": 5,
+        "fields_filled_total": 4,
+        "fields_total": 13,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 0,
+        "relationship_provenance_count": 0,
+        "node_count": 4,
+        "edge_count": 3,
+        "elapsed_s": 232.2
+      }
+    ]
+  },
+  "missile_identity": {
+    "runs": [
+      {
+        "pass_name": "missile_identity",
+        "entity_count": 1,
+        "avg_fill_num": 2.0,
+        "schema_size": 10,
+        "fields_filled_total": 2,
+        "fields_total": 10,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 1,
+        "relationship_provenance_count": 0,
+        "node_count": 2,
+        "edge_count": 1,
+        "elapsed_s": 252.9
+      }
+    ]
+  },
+  "missile_kinematics": {
+    "runs": [
+      {
+        "pass_name": "missile_kinematics",
+        "entity_count": 2,
+        "avg_fill_num": 1.0,
+        "schema_size": 6,
+        "fields_filled_total": 2,
+        "fields_total": 12,
+        "json_fail": false,
+        "relationships": 0,
+        "field_provenance_count": 0,
+        "relationship_provenance_count": 0,
+        "node_count": 3,
+        "edge_count": 2,
+        "elapsed_s": 186.4
+      }
+    ]
+  },
+  "system_links": {
+    "runs": [
+      {
+        "pass_name": "system_links",
+        "entity_count": 2,
+        "avg_fill_num": 3.0,
+        "schema_size": 3,
+        "fields_filled_total": 6,
+        "fields_total": 6,
+        "json_fail": false,
+        "relationships": 2,
+        "field_provenance_count": 0,
+        "relationship_provenance_count": 0,
+        "node_count": 1,
+        "edge_count": 2,
+        "elapsed_s": 119.8
+      }
+    ]
+  }
+}
