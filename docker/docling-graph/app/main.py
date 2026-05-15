@@ -213,6 +213,9 @@ async def lifespan(app: FastAPI):
     app.state.pipeline_version = _validate_library_surface()
     logger.info("docling-graph library version: %s", app.state.pipeline_version)
 
+    from app.services.table_normalization.config import validate_token_invariants
+    validate_token_invariants()
+
     app.state.extraction_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     yield
     logger.info("Shutting down")
@@ -484,15 +487,32 @@ def _render_upstream_entities_preamble(upstream_entities: list | None) -> str:
         display_label = getattr(entity, "display_label", None)
         if display_label is None and isinstance(entity, dict):
             display_label = entity.get("display_label")
+        aliases = getattr(entity, "aliases", None)
+        if aliases is None and isinstance(entity, dict):
+            aliases = entity.get("aliases")
+        # Filter aliases that duplicate the display_label so we don't repeat it.
+        if aliases:
+            primary = (display_label or "").strip()
+            aliases = [a for a in aliases if isinstance(a, str) and a.strip() and a.strip() != primary]
 
-        if display_label:
-            lines.append(f"  [{ref_id}] {entity_type} \u2014 {display_label}")
+        # v8a fix: format ref_id as 'REF=<id>' (not '[<id>]') because the
+        # LLM was copying surrounding square brackets into emitted ref_ids,
+        # producing malformed values like '[RADAR_SYSTEM:Fan Song]' that
+        # the merge layer rejects. The bare 'REF=' anchor is unambiguous.
+        if display_label and aliases:
+            lines.append(
+                f"  REF={ref_id} | TYPE={entity_type} | Primary={display_label} | Aliases: "
+                + ", ".join(aliases)
+            )
+        elif display_label:
+            lines.append(f"  REF={ref_id} | TYPE={entity_type} | Primary={display_label}")
         else:
-            lines.append(f"  [{ref_id}] {entity_type}")
+            lines.append(f"  REF={ref_id} | TYPE={entity_type}")
 
     lines.append(
         "Only emit from_ref_id and to_ref_id values from the list above "
-        "when referencing these upstream entities."
+        "when referencing these upstream entities. Match either the Primary "
+        "name or any of the Aliases when the document refers to the entity."
     )
     return "\n".join(lines)
 
@@ -589,13 +609,26 @@ def run_extraction_pass(
 
     _norm_on = is_table_normalization_enabled_graph()
     _exp_on = is_experimental_table_facts_enabled()
+    # v9: re-enable v8b's per-pass skip for system_links. Empirically (v6-v8a-prime),
+    # synthesized per-column chunks fragment the prose narrative the LLM uses for
+    # cross-system relationship inference: v8b (norm OFF for system_links) yielded
+    # 26 relationships vs v6/v7/v8a-prime (norm ON for system_links) yielding 8-17.
+    # cross_entity_hints promotion + alias plumbing run independently and add edges
+    # on TOP of the LLM's emissions regardless of this gate.
+    _norm_skipped_for_pass = pass_name == "system_links"
+    if _norm_on and _norm_skipped_for_pass:
+        logger.info(
+            "table_normalization: skipping for pass=%s (relationship-only "
+            "passes benefit from raw prose; entity passes keep normalization).",
+            pass_name,
+        )
     if _norm_on and _exp_on:
         logger.error(
             "Both DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED and "
             "DOCLING_GRAPH_USE_EXPERIMENTAL_TABLE_FACTS are true; falling "
             "back to today's production behavior (set only one)."
         )
-    elif _norm_on:
+    elif _norm_on and not _norm_skipped_for_pass:
         # New path: normalize + render + append per-column TextItems +
         # blank raw flattened table mirrors.
         from app.services.table_normalization import (
@@ -620,8 +653,8 @@ def run_extraction_pass(
         for _nt in _normalized:
             for _gtc in render_for_graph(
                 _nt,
-                token_limit_whole=table_whole_limit(),
-                token_limit_column=table_column_limit(),
+                token_limit_whole=table_whole_limit(pass_name),
+                token_limit_column=table_column_limit(pass_name),
             ):
                 _captured_idx = _next_text_idx
                 _ti, _next_text_idx = _text_item_from_chunk(
@@ -1403,12 +1436,22 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             evidence_text,
         )
         pass_output = filtered_pass_output
+        # v8a: hand cross_entity_hints to the postprocess so the
+        # deterministic table-overlay pairings (e.g. missile_variant →
+        # fan_song_variant) get promoted to ASSOCIATED_WITH edges in
+        # system_links. table_overlay_obj may be None when the overlay
+        # didn't produce anything; the postprocess accepts None.
+        _ceh = (
+            list(table_overlay_obj.cross_entity_hints)
+            if table_overlay_obj is not None else None
+        )
         pass_output, postprocess_stats = _apply_bundle_postprocessing(
             body.bundle_key,
             body.pass_name,
             pass_output,
             evidence_text,
             body.upstream_entities,
+            _ceh,
         )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
         filtered_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)

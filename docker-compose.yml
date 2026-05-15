@@ -178,6 +178,10 @@ services:
       # ChunkBatcher max tokens per batch (config_builder.py:44, default 1024).
       # Larger batches = fewer LLM calls + more cross-chunk context per call.
       DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE: ${DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE:-1024}
+      # Per-pass override: system_links needs MORE context per LLM call (many
+      # entities visible together) to do cross-system relationship inference.
+      DOCLING_GRAPH_SYSTEM_LINKS_CHUNK_MAX_TOKENS: ${DOCLING_GRAPH_SYSTEM_LINKS_CHUNK_MAX_TOKENS:-4096}
+      DOCLING_GRAPH_SYSTEM_LINKS_LLM_BATCH_TOKEN_SIZE: ${DOCLING_GRAPH_SYSTEM_LINKS_LLM_BATCH_TOKEN_SIZE:-4096}
       # Concurrent chunk batches per /extract-pass (config_builder.py:44).
       # Effective parallelism is min(this, OLLAMA_NUM_PARALLEL on the LLM host).
       DOCLING_GRAPH_PARALLEL_WORKERS: ${DOCLING_GRAPH_PARALLEL_WORKERS:-4}
@@ -206,6 +210,8 @@ services:
       DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN: ${DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN:-true}
       DOCLING_GRAPH_TABLE_WHOLE_LIMIT: ${DOCLING_GRAPH_TABLE_WHOLE_LIMIT:-1500}
       DOCLING_GRAPH_TABLE_COLUMN_LIMIT: ${DOCLING_GRAPH_TABLE_COLUMN_LIMIT:-1200}
+      DOCLING_GRAPH_SYSTEM_LINKS_TABLE_WHOLE_LIMIT: ${DOCLING_GRAPH_SYSTEM_LINKS_TABLE_WHOLE_LIMIT:-4096}
+      DOCLING_GRAPH_SYSTEM_LINKS_TABLE_COLUMN_LIMIT: ${DOCLING_GRAPH_SYSTEM_LINKS_TABLE_COLUMN_LIMIT:-4096}
       MIN_TABLE_NORMALIZATION_TOKENS: ${MIN_TABLE_NORMALIZATION_TOKENS:-256}
       # Ollama connection — config_builder reads OLLAMA_LLM_BASE_URL,
       # LiteLLM reads OLLAMA_API_BASE / OLLAMA_BASE_URL
@@ -259,6 +265,10 @@ services:
       # Bind-mount the live ontology bundles so schema/manifest edits don't
       # require an image rebuild — same pattern as api / worker services.
       - ./ontology_bundles:/app/ontology_bundles
+      # Truncation diagnostic dumps (host-visible). When the LLM hits the
+      # output cap, the chunk + response payload is dumped here so we can
+      # inspect what triggered it. Host path: ./tmp/truncation_diag.
+      - ./tmp/truncation_diag:/tmp/truncation_diag
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s

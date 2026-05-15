@@ -88,14 +88,16 @@ class SystemLinkRelationship(BaseModel):
     from_ref_id: Optional[str] = Field(
         default=None,
         description=(
-            "Upstream ref id of the edge source — a short token like "
-            "'E001', 'E002' that refers to an entity previously emitted "
-            "by an earlier pass (radar_identity, missile_identity). The "
-            "catalog of available ref ids is provided in the prompt's "
-            "'Upstream entities:' preamble. Emit only ref ids that "
-            "appear in that list — the merge layer rejects unknown ids."
+            "Upstream ref id of the edge source — a typed token like "
+            "'RADAR_SYSTEM:Fan Song' or 'MISSILE_SYSTEM:1D' that refers "
+            "to an entity previously emitted by an earlier pass "
+            "(radar_identity, missile_identity). The catalog of available "
+            "ref ids is provided in the prompt's 'Upstream entities:' "
+            "preamble (look for 'REF=<ref_id>' anchors). Emit only ref ids "
+            "that appear in that list — the merge layer rejects unknown "
+            "ids. Do NOT wrap the ref_id in square brackets."
         ),
-        examples=["E001", "E002"],
+        examples=["RADAR_SYSTEM:Fan Song", "MISSILE_SYSTEM:1D"],
     )
     to_ref_id: Optional[str] = Field(
         default=None,
@@ -105,9 +107,10 @@ class SystemLinkRelationship(BaseModel):
             "to_ref_id) pairs against PassResult.upstream_refs to build "
             "MergedEdgeRecord with real LogicalIdentity endpoints. "
             "from_ref_id and to_ref_id must be different refs — "
-            "self-loops are rejected."
+            "self-loops are rejected. Do NOT wrap the ref_id in square "
+            "brackets."
         ),
-        examples=["E002", "E003"],
+        examples=["MISSILE_SYSTEM:1D", "RADAR_SYSTEM:Spoon Rest"],
     )
     confidence: Optional[float] = Field(
         default=None,
@@ -132,6 +135,26 @@ class SystemLinkRelationship(BaseModel):
         normalize_enum({member.value for member in RelationshipType}),
     )
     _v_confidence = field_validator("confidence", mode="before")(coerce_optional_confidence)
+
+    @staticmethod
+    def _strip_ref_brackets(v: Any) -> Any:
+        """v8a defensive strip: if the LLM wrapped the ref_id in '[…]'
+        brackets despite our prompt format using REF= anchors, peel
+        exactly one surrounding pair off. Preserves any legitimate
+        internal characters."""
+        if isinstance(v, str):
+            stripped = v.strip()
+            if (
+                len(stripped) >= 2
+                and stripped[0] == "["
+                and stripped[-1] == "]"
+            ):
+                return stripped[1:-1].strip()
+            return stripped
+        return v
+
+    _v_from_ref_id = field_validator("from_ref_id", mode="before")(_strip_ref_brackets)
+    _v_to_ref_id = field_validator("to_ref_id", mode="before")(_strip_ref_brackets)
 
 
 class SystemLinksPass(BaseModel):
@@ -176,21 +199,36 @@ class SystemLinksPass(BaseModel):
         ),
         examples=[
             [
-                {"rel_type": "CUES", "from_ref_id": "E001", "to_ref_id": "E002"},
-                {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E002", "to_ref_id": "E003"},
+                {"rel_type": "CUES",
+                 "from_ref_id": "RADAR_SYSTEM:Spoon Rest",
+                 "to_ref_id": "RADAR_SYSTEM:Fan Song"},
+                {"rel_type": "ASSOCIATED_WITH",
+                 "from_ref_id": "RADAR_SYSTEM:Fan Song",
+                 "to_ref_id": "MISSILE_SYSTEM:S-75"},
             ],
-            [{"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E003", "to_ref_id": "E004"}],
         ],
     )
 
     @model_validator(mode="after")
     def _drop_incomplete_relationships(self) -> "SystemLinksPass":
+        """Drop rows missing required fields or self-loops, then dedup on
+        canonical-direction (from, to). v8a bonus: when the LLM emits both
+        ``A → B ASSOCIATED_WITH`` and ``A → B CUES`` (different rel_types
+        for the same logical pair), keep only the first — the merge layer
+        creates one edge per (source, target, rel_type) triple downstream,
+        but exposing the second to the merge layer needlessly increases
+        edge volume and confuses downstream callers."""
         cleaned: list[SystemLinkRelationship] = []
+        seen_pairs: set[tuple[str, str]] = set()
         for rel in self.relationships:
             if not rel.rel_type or not rel.from_ref_id or not rel.to_ref_id:
                 continue
             if rel.from_ref_id == rel.to_ref_id:
                 continue
+            pair_key = (rel.from_ref_id, rel.to_ref_id)
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
             cleaned.append(rel)
         self.relationships = cleaned
         return self

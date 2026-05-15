@@ -42,6 +42,11 @@ class DoclingGraphSettings(BaseSettings):
     # "Ollama/Local: Variable performance → conservative batching." 1024 is the
     # upstream default; our previous 2048 was aggressive for Ollama.
     docling_graph_llm_batch_token_size: int = 1024
+    # Per-pass overrides for system_links (relationship pass benefits from
+    # larger chunks/batches for cross-entity context). Default None means
+    # "use the global value above".
+    docling_graph_system_links_chunk_max_tokens: int | None = None
+    docling_graph_system_links_llm_batch_token_size: int | None = None
     docling_graph_parallel_workers: int = 4
     docling_graph_batch_split_max_retries: int = 1
 
@@ -271,6 +276,19 @@ def build_pipeline_config(
     except ImportError:
         llm_client = None
 
+    # Per-pass token-budget overrides. For system_links the relationship
+    # inference benefits from larger chunks/batches (more entities visible
+    # per LLM call) — env vars DOCLING_GRAPH_SYSTEM_LINKS_{CHUNK_MAX_TOKENS,
+    # LLM_BATCH_TOKEN_SIZE} when set replace the global values. The explicit
+    # request-body override (llm_batch_token_size_override) always wins.
+    _pass_chunk_max = settings.docling_graph_chunk_max_tokens
+    _pass_batch = settings.docling_graph_llm_batch_token_size
+    if pass_name == "system_links":
+        if settings.docling_graph_system_links_chunk_max_tokens is not None:
+            _pass_chunk_max = settings.docling_graph_system_links_chunk_max_tokens
+        if settings.docling_graph_system_links_llm_batch_token_size is not None:
+            _pass_batch = settings.docling_graph_system_links_llm_batch_token_size
+
     config_kwargs: dict[str, Any] = {
         "source": source,
         "backend": settings.docling_graph_backend,
@@ -278,11 +296,11 @@ def build_pipeline_config(
         "extraction_contract": settings.docling_graph_extraction_contract,
         "processing_mode": settings.docling_graph_processing_mode,
         "use_chunking": settings.docling_graph_use_chunking,
-        "chunk_max_tokens": settings.docling_graph_chunk_max_tokens,
+        "chunk_max_tokens": _pass_chunk_max,
         "llm_batch_token_size": (
             llm_batch_token_size_override
             if llm_batch_token_size_override is not None
-            else settings.docling_graph_llm_batch_token_size
+            else _pass_batch
         ),
         "parallel_workers": settings.docling_graph_parallel_workers,
         "staged_pass_retries": settings.docling_graph_batch_split_max_retries,

@@ -197,6 +197,24 @@ def install() -> None:
         result = original(*args, **kwargs)
         if isinstance(result, dict) and "system" in result:
             result["system"] = select_delta_system_prompt(*args, **kwargs)
+        # v9 prompt-header fix: the library prepends an unconditional
+        # "[Batch N/M — for context only; do not put this into any field.]"
+        # to EVERY user prompt — but every batch is actually an extraction
+        # batch. The contradictory directive put gemma4 into output-budget
+        # death-spirals (16K + 32K both finish_reason=length with content=0).
+        # Rewrite the header in-place to an honest, non-contradictory form
+        # that preserves the original "don't echo batch metadata into field
+        # values" intent without telling the model not to extract.
+        if isinstance(result, dict) and "user" in result and isinstance(result["user"], str):
+            user_text = result["user"]
+            if "— for context only; do not put this into any field." in user_text:
+                import re as _re
+                user_text = _re.sub(
+                    r"^(\[Batch \d+/\d+)\s*—\s*for context only;\s*do not put this into any field\.\]",
+                    r"\1] Extract only facts supported by this batch; do not copy batch metadata (this header, separators) into field values.",
+                    user_text, count=1,
+                )
+                result["user"] = user_text
         # Phase A item 5: inject numeric-candidate hint block after the
         # batch-document section. Pre-extracted regex spans tell the LLM
         # which numeric values appear verbatim, turning numeric extraction

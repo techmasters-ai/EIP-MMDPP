@@ -3351,15 +3351,22 @@ def _build_extract_pass_request(
         "docling_document_json": doc_json,
     }
     if upstream_refs:
-        body["upstream_entities"] = [
-            {
+        entities: list[dict] = []
+        for ref_id, ref in upstream_refs.items():
+            entry: dict[str, Any] = {
                 "ref_id": ref_id,
                 "entity_type": getattr(ref, "entity_type", None),
                 "identity_values": getattr(ref, "identity_values", {}) or {},
                 "display_label": getattr(ref, "display_label", None),
             }
-            for ref_id, ref in upstream_refs.items()
-        ]
+            # Only include `aliases` when there's something to send — keeps
+            # the payload backward-compatible with consumers that haven't
+            # upgraded to accept the field.
+            aliases = getattr(ref, "aliases", None)
+            if aliases:
+                entry["aliases"] = list(aliases)
+            entities.append(entry)
+        body["upstream_entities"] = entities
     return body
 
 
@@ -3886,17 +3893,58 @@ def _extend_upstream_refs(
         display_label = build_display_label(
             entity_type, identity_values, scratch,
         )
+        aliases = _collect_upstream_aliases(
+            identity_values, scratch, display_label,
+        )
         ref = SimpleNamespace(
             pass_origin=pass_def.name,
             entity_type=entity_type,
             identity_values=identity_values,
             display_label=display_label,
+            aliases=aliases,
         )
         if not _is_valid_upstream_ref(ref, ontology):
             continue  # Drop refs with missing/empty identity.
         upstream_refs[f"E{counter:03d}"] = ref
         seen.add(dedupe_key)
         counter += 1
+
+
+# Alias-bearing fields (from radar_identity/missile_identity schemas) that
+# carry additional names for the same logical entity. Surface these to the
+# relationship pass so the LLM can match cell names like "SA-75" or
+# "RSNA-75" back to ref_ids whose primary identity is a different token
+# (e.g., system_name="1D").
+_UPSTREAM_ALIAS_FIELDS: tuple[str, ...] = ("nomenclature", "name", "dieqp")
+
+
+def _collect_upstream_aliases(
+    identity_values: dict, scratch: dict, display_label: str,
+) -> list[str]:
+    """Return a deduped list of non-identity, non-display-label name aliases.
+
+    Sources: ``_UPSTREAM_ALIAS_FIELDS`` keys in the scratch dict (the
+    non-identity properties merged across yielded entity instances). The
+    display_label is excluded so the relationship pass doesn't see
+    duplicate entries. Identity values are excluded since they're already
+    in ``identity_values``."""
+    identity_str_set: set[str] = {
+        str(v).strip() for v in identity_values.values() if v
+    }
+    out: list[str] = []
+    seen_local: set[str] = set()
+    for field in _UPSTREAM_ALIAS_FIELDS:
+        v = scratch.get(field)
+        if not isinstance(v, str):
+            continue
+        v = v.strip()
+        if not v or v == (display_label or "").strip() or v in identity_str_set:
+            continue
+        if v in seen_local:
+            continue
+        seen_local.add(v)
+        out.append(v)
+    return out
 
 
 def _endpoint_types_for_rel_types(

@@ -47,6 +47,17 @@ class EntityRef(BaseModel):
         default=None,
         description="Human-readable label for prompt preamble rendering",
     )
+    aliases: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Additional names the LLM may match against in document chunks. "
+            "Populated from upstream-pass schema fields like ``nomenclature`` "
+            "and ``name`` that are aliases of ``identity_values`` (e.g., "
+            "Industry Designation 'SA-75', NATO 'SA-2A', common name "
+            "'Guideline' for the same missile). The relationship pass uses "
+            "these to resolve chunk-cell names back to upstream ref_ids."
+        ),
+    )
 
 
 class ExtractPassRequest(BaseModel):
