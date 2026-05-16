@@ -16,16 +16,50 @@ from app.services.table_normalization.models import (
 from app.services.table_normalization.tokens import count_bge_m3_tokens
 
 
-# Hint emitted at the top of every synthesized table block. The Unit Policy in
-# the system prompt explicitly honors preambles declaring "the applicable unit"
-# for unitless numerics — this line is that preamble for spec-sheet tables
-# that omit a unit row (common in SAM/radar reference documents).
-UNIT_HINT = (
+# Hints emitted at the top of every synthesized table block. The Unit Policy
+# in the system prompt explicitly honors preambles declaring "the applicable
+# unit" for unitless numerics — these lines are that preamble. The variant
+# used is picked per-table by `_pipeline_hooks.detect_unit_convention()`
+# (caption + adjacent prose regex) and, eventually, by the document-metadata
+# pass extension (docs/document_metadata_pass_extension.md).
+
+UNIT_HINT_METRIC = (
     "UNITS: Numeric values in this block are in SI base units "
     "(metres for length/range, kilograms for mass, m/s for speed, "
     "seconds for time, degrees for angle, MHz for frequency) "
     "unless a value is explicitly labeled with another unit."
 )
+
+UNIT_HINT_IMPERIAL = (
+    "UNITS: Numeric values in this block are in US customary / imperial "
+    "units (feet for length/altitude, nautical miles for range, pounds for "
+    "mass, knots for speed, seconds for time, degrees for angle, MHz for "
+    "frequency) unless a value is explicitly labeled with another unit."
+)
+
+UNIT_HINT_MIXED = (
+    "UNITS: Each numeric row may carry its own unit label — respect any "
+    "explicit unit on the row. When no unit is shown, do NOT assume a unit; "
+    "emit null."
+)
+
+# Back-compat alias — older callers still reference UNIT_HINT.
+UNIT_HINT = UNIT_HINT_METRIC
+
+
+def _unit_hint_for_convention(convention: str | None) -> str:
+    """Pick the synth-block UNIT_HINT preamble for a detected unit convention.
+
+    Defaults to metric — the modern technical norm and the right answer for
+    the bulk of documents we've measured. Imperial requires explicit caption
+    or prose evidence (see `_pipeline_hooks.detect_unit_convention`). Mixed
+    forces the LLM to respect labeled units only, with no assumption.
+    """
+    if convention == "imperial":
+        return UNIT_HINT_IMPERIAL
+    if convention == "mixed":
+        return UNIT_HINT_MIXED
+    return UNIT_HINT_METRIC
 
 
 def _render_column_as_text(
@@ -34,14 +68,17 @@ def _render_column_as_text(
     sections: tuple[TableSection, ...],
     *,
     emit_unit_hint: bool = False,
+    unit_hint_text: str | None = None,
 ) -> str:
     """Produce the identity+sections+rows block for one entity column.
 
     Both the graph and embedding renderers call this helper; their outputs
     differ only by what they wrap around this block. See §9 of the spec
     for the exact text format. The graph-side caller passes
-    emit_unit_hint=True so the LLM extraction prompt sees the SI-base unit
+    emit_unit_hint=True so the LLM extraction prompt sees the unit
     preamble for tables whose source rows omit explicit units.
+    `unit_hint_text` overrides the default metric preamble — used when the
+    table's unit convention has been detected as imperial or mixed.
     """
     parts: list[str] = []
 
@@ -51,7 +88,7 @@ def _render_column_as_text(
     if table.page_numbers:
         parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
     if emit_unit_hint:
-        parts.append(UNIT_HINT)
+        parts.append(unit_hint_text or UNIT_HINT_METRIC)
     parts.append("")
 
     # ENTITY block — full identity dict
@@ -99,6 +136,8 @@ def render_for_graph(
     table: NormalizedTable,
     token_limit_whole: int,
     token_limit_column: int,
+    *,
+    unit_convention: str | None = None,
 ) -> list[GraphTableChunk]:
     """Render a NormalizedTable into graph-side chunks per §9 of the spec.
 
@@ -123,8 +162,10 @@ def render_for_graph(
             row_labels=(),
         )]
 
+    _hint_text = _unit_hint_for_convention(unit_convention)
+
     # 2. Whole-table rendering check
-    whole_text = _render_whole_table(table, emit_unit_hint=True)
+    whole_text = _render_whole_table(table, emit_unit_hint=True, unit_hint_text=_hint_text)
     whole_tokens = count_bge_m3_tokens(whole_text)
     if whole_tokens <= token_limit_whole:
         return [GraphTableChunk(
@@ -142,7 +183,7 @@ def render_for_graph(
     # 3. Per-column emission
     out: list[GraphTableChunk] = []
     for col in table.columns:
-        col_text = _render_column_as_text(col, table, table.sections, emit_unit_hint=True)
+        col_text = _render_column_as_text(col, table, table.sections, emit_unit_hint=True, unit_hint_text=_hint_text)
         col_tokens = count_bge_m3_tokens(col_text)
         col_cells = [c for c in table.cells if c.col_idx == col.col_idx]
         col_refs = tuple(c.cell_ref.self_ref for c in col_cells)
@@ -166,7 +207,7 @@ def render_for_graph(
                 sec_cells = [c for c in col_cells if c.section == section.name]
                 if not sec_cells:
                     continue
-                sec_text = _render_column_section(col, table, section, emit_unit_hint=True)
+                sec_text = _render_column_section(col, table, section, emit_unit_hint=True, unit_hint_text=_hint_text)
                 out.append(GraphTableChunk(
                     text=sec_text,
                     table_ref=table.self_ref,
@@ -181,7 +222,12 @@ def render_for_graph(
     return out
 
 
-def _render_whole_table(table: NormalizedTable, *, emit_unit_hint: bool = False) -> str:
+def _render_whole_table(
+    table: NormalizedTable,
+    *,
+    emit_unit_hint: bool = False,
+    unit_hint_text: str | None = None,
+) -> str:
     """Whole-table rendering: identity header + each column block stacked."""
     parts: list[str] = []
     caption = table.caption or table.self_ref
@@ -189,7 +235,7 @@ def _render_whole_table(table: NormalizedTable, *, emit_unit_hint: bool = False)
     if table.page_numbers:
         parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
     if emit_unit_hint:
-        parts.append(UNIT_HINT)
+        parts.append(unit_hint_text or UNIT_HINT_METRIC)
     parts.append("")
     for col in table.columns:
         parts.append(_render_column_as_text(col, table, table.sections, emit_unit_hint=False).rstrip())
@@ -203,6 +249,7 @@ def _render_column_section(
     section: TableSection,
     *,
     emit_unit_hint: bool = False,
+    unit_hint_text: str | None = None,
 ) -> str:
     """Single section of one column with identity header repeated.
 
@@ -215,7 +262,7 @@ def _render_column_section(
     if table.page_numbers:
         parts.append(f"SOURCE: page {' '.join(str(p) for p in table.page_numbers)}")
     if emit_unit_hint:
-        parts.append(UNIT_HINT)
+        parts.append(unit_hint_text or UNIT_HINT_METRIC)
     parts.append("")
     parts.append("ENTITY:")
     for k, v in column.identity.items():

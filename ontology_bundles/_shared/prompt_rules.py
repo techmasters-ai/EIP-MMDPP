@@ -392,8 +392,11 @@ Missile aliases:
   may populate `max_intercept_km` when the row/column belongs to a missile
   variant; convert metres to kilometres when needed.
 * `Min Range` or `minimum range` may populate `min_intercept_km`.
-* `Altitude`, `Max Altitude`, `ceiling`, or `engagement altitude` may populate
-  `max_altitude_km`; `Min Altitude` may populate `min_altitude_km`.
+* `Altitude`, `Max Altitude`, `Max Alt`, `ceiling`, or `engagement altitude`
+  may populate `max_altitude_km`; `Min Altitude` or `Min Alt` may populate
+  `min_altitude_km`. Note that spec-sheet tables frequently use the
+  abbreviated `Max Alt` / `Min Alt` form — treat these as fully equivalent
+  to their unabbreviated counterparts.
 * `Length`, `Overall Length`, or `Missile Length` may populate
   `body_length_m`; convert mm/cm/ft/in to metres when needed.
 * `Diameter`, `Body Diameter`, `Calibre`, or `Caliber` may populate

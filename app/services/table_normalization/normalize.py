@@ -26,6 +26,69 @@ _DISPLAY_NAME_PREFERENCE = (
 )
 
 
+# 2026-05-16 (Option C): per-row unit detection from cell values.
+# Some tables encode units as a dedicated cell per row (typically the
+# column adjacent to the row label) rather than in the label itself or
+# inferred from context. Detecting this here lets the synth renderer
+# emit per-row units even when `_extract_unit(label)` returns None.
+#
+# Vocabulary is intentionally narrow — we only match well-known SI and
+# imperial units. Free-text values like "metres" are deliberately excluded
+# to avoid false positives on words that share spellings with unit names.
+_KNOWN_UNIT_TOKENS: frozenset[str] = frozenset({
+    # distance — SI
+    "m", "km", "mm", "cm", "µm", "um", "nm",
+    # distance — imperial
+    "ft", "in", "inch", "inches", "yd", "yard", "yards",
+    "nmi", "nautical", "mi", "mile", "miles",
+    # mass — SI
+    "kg", "g", "mg", "t", "tonne", "tonnes",
+    # mass — imperial
+    "lb", "lbs", "oz", "ton", "tons",
+    # time
+    "s", "sec", "ms", "min", "h", "hr", "hrs",
+    "μs", "us",
+    # speed
+    "m/s", "km/h", "kph", "kt", "kts", "knot", "knots", "mph",
+    # angle
+    "deg", "rad", "mil", "°",
+    # frequency
+    "hz", "khz", "mhz", "ghz",
+    # power
+    "w", "kw", "mw", "dbw", "dbm",
+    # gain / loss / ratio
+    "db", "dbi", "dbd",
+    # thrust / force
+    "n", "kn",
+    # pressure (occasionally in propellant specs)
+    "pa", "kpa", "mpa", "psi", "bar",
+})
+
+
+def _detect_row_unit_from_cells(row_idx: int, cells: list[dict]) -> str | None:
+    """Scan cells in row `row_idx` (skipping the label column) for a value
+    matching a known unit token. Returns the original-cased token, or None.
+
+    This catches SAM-spec table conventions where col-1 of each numeric
+    row contains the unit ('m' for distances, 'm/s' for speeds, 'kg' for
+    masses, etc.) rather than embedding the unit in the row label.
+    """
+    for c in cells:
+        if c.get("start_row_offset_idx") != row_idx:
+            continue
+        if c.get("start_col_offset_idx") == 0:
+            continue  # the label column is not a unit cell
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        # short tokens only — multi-word cells are values, not unit markers
+        if len(text) > 8:
+            continue
+        if text.lower() in _KNOWN_UNIT_TOKENS:
+            return text
+    return None
+
+
 def normalize_tables(doc_json: dict) -> list[NormalizedTable]:
     """Public entry. Returns one NormalizedTable per doc_json['tables'] entry."""
     tables = (doc_json or {}).get("tables") or []
@@ -161,7 +224,14 @@ def _build_rows(cells: list[dict], shape: Shape) -> tuple[NormalizedRow, ...]:
         label = (label_cell.get("text") if label_cell else "") or ""
         is_section = bool(label_cell and _is_section_header_cell(label_cell, num_cols))
         is_identity = (not is_section) and _is_identity_label(label)
+        # Unit detection priority:
+        #   1. Inline parenthesized label suffix: "Max Range (km)" → "km"
+        #   2. Per-row unit cell in an adjacent column: "Min Range, col 1 = m" → "m"
+        # (1) is the original v9 behavior; (2) was added 2026-05-16 for SAM-spec
+        # tables that use a dedicated unit column.
         unit = _extract_unit(label)
+        if unit is None and not is_section and not is_identity:
+            unit = _detect_row_unit_from_cells(r, cells)
         rows.append(NormalizedRow(
             row_idx=r, label=label.strip(),
             is_identity_row=is_identity, is_section_header=is_section,

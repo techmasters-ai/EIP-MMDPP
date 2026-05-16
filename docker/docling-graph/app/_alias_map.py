@@ -40,19 +40,27 @@ ALIAS_MAP: dict[tuple[str, str | None, str], str] = {
     ("min range km",     None, "missile_kinematics"): "min_intercept_km",
     ("min range m",      None, "missile_kinematics"): "min_intercept_km",
     ("minimum range",    None, "missile_kinematics"): "min_intercept_km",
-    # Altitude -> max_altitude_km. NOTE: §12b prose uses only the full word
-    # "Altitude" — the "Alt" abbreviation is NOT in §12b prose and would fail
-    # the drift guard. We only register the full forms. If real documents use
-    # "Max Alt km" labels we extend the alias map AFTER adding "(Alt is short
-    # for Altitude)" to §12b prose so the drift guard still passes.
+    # Altitude -> max_altitude_km. 2026-05-16: "Alt" abbreviations were
+    # withheld in the original alias-map design because §12b prose only
+    # carried the full word "Altitude" and the drift guard would have failed.
+    # §12b was updated to include "Max Alt" / "Min Alt" with an explicit
+    # equivalence note, so the abbreviated forms are now registered here.
     ("altitude",            None, "missile_kinematics"): "max_altitude_km",
     ("max altitude",        None, "missile_kinematics"): "max_altitude_km",
     ("max altitude km",     None, "missile_kinematics"): "max_altitude_km",
+    ("max altitude m",      None, "missile_kinematics"): "max_altitude_km",
+    ("max alt",             None, "missile_kinematics"): "max_altitude_km",
+    ("max alt km",          None, "missile_kinematics"): "max_altitude_km",
+    ("max alt m",           None, "missile_kinematics"): "max_altitude_km",
     ("ceiling",             None, "missile_kinematics"): "max_altitude_km",
     ("engagement altitude", None, "missile_kinematics"): "max_altitude_km",
     # Min Altitude -> min_altitude_km
     ("min altitude",        None, "missile_kinematics"): "min_altitude_km",
     ("min altitude km",     None, "missile_kinematics"): "min_altitude_km",
+    ("min altitude m",      None, "missile_kinematics"): "min_altitude_km",
+    ("min alt",             None, "missile_kinematics"): "min_altitude_km",
+    ("min alt km",          None, "missile_kinematics"): "min_altitude_km",
+    ("min alt m",           None, "missile_kinematics"): "min_altitude_km",
 
     # ============================================================
     # missile_airframe

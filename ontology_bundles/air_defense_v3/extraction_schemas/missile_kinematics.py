@@ -75,15 +75,16 @@ class MissileKinematicsRecord(BaseModel):
         default=None,
         description=(
             "Minimum engagement altitude in kilometers. Source labels such as "
-            "'Min Altitude' or 'minimum altitude' map here."
+            "'Min Altitude', 'Min Alt', 'minimum altitude', or 'floor' map here."
         ),
     )
     max_altitude_km: Optional[float] = Field(
         default=None,
         description=(
             "Maximum engagement altitude in kilometers. Source labels such as "
-            "'Altitude', 'Max Altitude', 'ceiling', or 'engagement "
-            "altitude' map here when they describe the missile variant."
+            "'Altitude', 'Max Altitude', 'Max Alt', 'ceiling', or "
+            "'engagement altitude' map here when they describe the missile "
+            "variant."
         ),
     )
     max_launch_angle_deg: Optional[float] = Field(

@@ -635,6 +635,38 @@ def _mechanically_supported_missile_fields(evidence_text: str) -> dict[str, floa
     weight_match = re.search(r"WEIGHT:\s*(?P<weight>[\d,]+(?:\.\d+)?)\s*LBS?\.?\b", evidence_text)
     if weight_match:
         supported["total_mass_kg"] = round(float(weight_match.group("weight").replace(",", "")) / 2.205, 1)
+
+    # 2026-05-16: synth-table-block altitude/range patterns.
+    # render_graph.py emits rows like:
+    #   - Min Alt: 1000
+    #   - Max Alt: 30000
+    #   - Min Range: 7000
+    #   - Max Range: 45000
+    # Source units per the synth block's UNITS preamble: metres for length/
+    # range unless otherwise labeled. We accept explicit `km` / `m` suffix
+    # too, defaulting to metres when absent (matches the SI-base hint).
+    _LINE = (
+        r"(?:^|\n)\s*-?\s*{label}\s*:\s*"
+        r"(?P<v>[\d,]+(?:\.\d+)?)\s*(?P<u>km|m)?\b"
+    )
+    _NUMERIC_FROM_SYNTH = (
+        # (regex_label, schema_field)
+        (r"Min\s+Alt(?:itude)?", "min_altitude_km"),
+        (r"Max\s+Alt(?:itude)?", "max_altitude_km"),
+        (r"Min\s+Range",         "min_intercept_km"),
+        (r"Max\s+Range",         "max_intercept_km"),
+    )
+    for label_re, field in _NUMERIC_FROM_SYNTH:
+        if field in supported:
+            continue  # museum-display notes take precedence
+        m = re.search(_LINE.format(label=label_re), evidence_text, re.IGNORECASE)
+        if not m:
+            continue
+        v = float(m.group("v").replace(",", ""))
+        u = (m.group("u") or "m").lower()
+        # SI-base assumption: metres → km when explicit unit absent or "m".
+        supported[field] = round(v if u == "km" else v / 1000.0, 3)
+
     return supported
 
 
@@ -727,10 +759,19 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
             item[field_name] = None
             cleared.append(field_name)
 
-    # PRESERVED: mechanical-support override for 4 numerics. Mechanical
+    # Mechanical-support override for kinematic numerics. Mechanical
     # conversion takes priority over the LLM's value when available;
     # otherwise fall back to the same evidence-verification predicate.
-    for field_name in ("min_intercept_km", "max_intercept_km", "max_altitude_km", "total_mass_kg"):
+    # 2026-05-16: min_altitude_km added (was previously hard-cleared by the
+    # below "unconditional-null" branch — see run history at
+    # docs/sa2_extraction_runs.md for the regression that exposed this).
+    for field_name in (
+        "min_intercept_km",
+        "max_intercept_km",
+        "min_altitude_km",
+        "max_altitude_km",
+        "total_mass_kg",
+    ):
         if field_name in supported_numeric:
             item[field_name] = supported_numeric[field_name]
         elif item.get(field_name) is not None:
@@ -739,11 +780,10 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
                 item[field_name] = None
                 cleared.append(field_name)
 
-    # PRESERVED: unconditional-null for fields whose Session 1 contract
-    # is "always null" (Session 2 may relax).
-    if item.get("min_altitude_km") is not None:
-        item["min_altitude_km"] = None
-        cleared.append("min_altitude_km")
+    # PRESERVED: unconditional-null for fields whose contract is "always
+    # null" until evidence support is wired up. min_altitude_km was removed
+    # from this list on 2026-05-16 once mechanical Min Alt parsing and
+    # evidence verification were added above.
     if item.get("max_launch_angle_deg") is not None:
         item["max_launch_angle_deg"] = None
         cleared.append("max_launch_angle_deg")

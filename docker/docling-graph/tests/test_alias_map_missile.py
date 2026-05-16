@@ -50,12 +50,17 @@ def test_kinematics_min_range_aliases():
 
 
 def test_kinematics_altitude_aliases():
-    """Only the full word 'Altitude' resolves — 'Alt' abbreviation is not in §12b prose."""
+    """Both full 'Altitude' and abbreviated 'Alt' resolve. 2026-05-16: §12b
+    prose was extended to include 'Max Alt' / 'Min Alt' with an explicit
+    equivalence note, so the abbreviated forms now satisfy the drift guard
+    and are registered in _alias_map.py."""
     assert _resolve("Max Altitude", None, "missile_kinematics") == "max_altitude_km"
     assert _resolve("Max Altitude km", None, "missile_kinematics") == "max_altitude_km"
     assert _resolve("Min Altitude", None, "missile_kinematics") == "min_altitude_km"
-    # "Max Alt" deliberately does NOT resolve (would require §12b prose update).
-    assert _resolve("Max Alt", None, "missile_kinematics") is None
+    assert _resolve("Max Alt", None, "missile_kinematics") == "max_altitude_km"
+    assert _resolve("Max Alt km", None, "missile_kinematics") == "max_altitude_km"
+    assert _resolve("Min Alt", None, "missile_kinematics") == "min_altitude_km"
+    assert _resolve("Min Alt m", None, "missile_kinematics") == "min_altitude_km"
 
 
 def test_kinematics_pass_isolation():

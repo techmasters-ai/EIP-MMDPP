@@ -639,38 +639,83 @@ def run_extraction_pass(
         )
         from app.services.table_normalization._pipeline_hooks import (
             _suppress_raw_table_texts,
+            _drop_raw_table_refs_from_body_children,
+            _replace_raw_table_refs_in_body_children,
+            detect_unit_convention,
+            is_table_relevant_for_pass,
         )
+        # 2026-05-16: per-pass + per-table synth-only policy. Generalization
+        # over the SA-2-specific "kinematics-only" allowlist. The decision
+        # to use synth-only depends BOTH on the pass being numeric/spec-shape
+        # AND on the specific table having row labels that match the pass.
+        # is_table_relevant_for_pass() handles that decision per-table.
+        # See docs/sa2_extraction_runs.md for the regression that motivated
+        # this design.
+
         _normalized = normalize_tables(docling_document_json)
         _texts_list = docling_document_json.setdefault("texts", [])
-        # CRITICAL: also update body.children so the chunker walks these
-        # synthesized items. Mirrors _table_facts.py:974-975. Without this,
-        # appended items in texts[] are orphaned (not reachable from the
-        # doc body tree) and HybridChunker skips them.
         _body = docling_document_json.setdefault("body", {})
         _body_children = _body.setdefault("children", [])
         _next_text_idx = len(_texts_list)
         _synth_count = 0
+        # Per-table decision: is THIS table relevant to the active pass?
+        # If yes → synth refs replace raw ref in-place at original position.
+        # If no  → synth refs are appended to end of body.children (v9
+        #          behavior) and the raw #/tables/N $ref is left in place.
+        _synth_only_table_refs: dict[str, list[str]] = {}  # synth-only tables
+        _append_synth_refs: list[str] = []                 # non-relevant: append-to-end
         for _nt in _normalized:
+            _table_ref = f"#/tables/{_nt.table_index}"
+            _is_relevant = is_table_relevant_for_pass(pass_name, _nt)
+            # 2026-05-16 (Option A): per-table unit-convention detection from
+            # caption + adjacent prose. Falls back to "metric" on no signal.
+            # Future: replaced by document_metadata.unit_convention.primary
+            # once the metadata-pass extension lands (see
+            # docs/document_metadata_pass_extension.md).
+            _unit_convention = detect_unit_convention(_nt.table_index, docling_document_json)
             for _gtc in render_for_graph(
                 _nt,
                 token_limit_whole=table_whole_limit(pass_name),
                 token_limit_column=table_column_limit(pass_name),
+                unit_convention=_unit_convention,
             ):
                 _captured_idx = _next_text_idx
                 _ti, _next_text_idx = _text_item_from_chunk(
                     _gtc, next_text_idx=_next_text_idx,
                 )
                 _texts_list.append(_ti)
-                _body_children.append({"$ref": f"#/texts/{_captured_idx}"})
+                _synth_ref = f"#/texts/{_captured_idx}"
+                if _is_relevant:
+                    _synth_only_table_refs.setdefault(_table_ref, []).append(_synth_ref)
+                else:
+                    _append_synth_refs.append(_synth_ref)
                 _synth_count += 1
+        # Append non-relevant synth refs at the end of body.children (v9
+        # behavior preserved for tables whose pass-mismatch means we want
+        # them as extra context, not as the sole table representation).
+        for _ref in _append_synth_refs:
+            _body_children.append({"$ref": _ref})
         if _synth_count:
             logger.info(
                 "table_normalization: synthesized %d TextItems for pass=%s "
-                "(normalized %d tables)",
+                "(normalized %d tables, synth-only=%d, append-to-end=%d)",
                 _synth_count, pass_name, len(_normalized),
+                len(_synth_only_table_refs), len(_append_synth_refs),
             )
+
         if is_suppress_raw_table_markdown_enabled():
             _suppress_raw_table_texts(docling_document_json, _normalized)
+            if _synth_only_table_refs:
+                _replaced = _replace_raw_table_refs_in_body_children(
+                    docling_document_json, _synth_only_table_refs,
+                )
+                if _replaced:
+                    logger.info(
+                        "table_normalization: replaced %d raw #/tables/N "
+                        "$refs in-place with synth refs for pass=%s "
+                        "(per-table relevance match).",
+                        _replaced, pass_name,
+                    )
     elif _exp_on:
         # Experimental path: re-enable the reverted _table_facts.py
         # synthesizer. For A/B comparison only.

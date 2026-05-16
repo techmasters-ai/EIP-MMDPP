@@ -1,9 +1,14 @@
 """Regression test for _clear_unsupported_missile_properties (spec §4.8 missile pattern).
 
-The function preserves three behaviors after this refactor:
-1. Mechanical-support extraction ("WEIGHT: X LBS" → total_mass_kg via lb→kg).
-2. Mechanical override for 4 fields (min/max_intercept_km, max_altitude_km, total_mass_kg).
-3. Unconditional-null for 3 fields (min_altitude_km, max_launch_angle_deg, missile_photo).
+The function preserves these behaviors:
+1. Mechanical-support extraction ("WEIGHT: X LBS" → total_mass_kg via lb→kg
+   plus synth-table-block "Min Alt: 3000" / "Max Alt: 30000" → km).
+2. Mechanical override for 5 fields: min/max_intercept_km,
+   min/max_altitude_km, total_mass_kg.
+3. Unconditional-null for 2 fields (max_launch_angle_deg, missile_photo).
+   2026-05-16: min_altitude_km removed from the unconditional-null set;
+   it now goes through the mechanical-support + evidence-verify path so
+   `Min Alt: 3000` in a synth table block can fill it (1000 m → 1.0 km).
 
 The CHANGED behavior: the strict_null_fields tuple loop is replaced with
 value_is_supported_by_text verification — values that appear in evidence
@@ -127,6 +132,61 @@ def test_unconditional_null_field():
     cleared = _clear(item, evidence)
     assert "max_launch_angle_deg" in cleared
     assert item["max_launch_angle_deg"] is None
+
+
+# --- 2026-05-16: min_altitude_km mechanical support tests -----------------
+
+def test_min_altitude_km_from_synth_block_metres():
+    """`Min Alt: 1000` in a synth table block converts to 1.0 km via the
+    SI-base assumption from the UNITS preamble."""
+    item = {"system_name": "20DP"}
+    evidence = (
+        "UNITS: Numeric values in this block are in SI base units...\n"
+        "ENTITY:\n- Missile Type: 20DP\n"
+        "GENERAL:\n- Min Alt: 1000\n- Max Alt: 30000\n"
+    )
+    cleared = _clear(item, evidence)
+    assert "min_altitude_km" not in cleared
+    assert item["min_altitude_km"] == 1.0
+    assert item["max_altitude_km"] == 30.0
+
+
+def test_min_altitude_km_sub_kilometre_value():
+    """Min Alt: 50 metres → 0.05 km (smallest values we expect from SAM specs)."""
+    item = {"system_name": "5Ya23"}
+    evidence = "ENTITY:\n- Missile Type: 5Ya23\nGENERAL:\n- Min Alt: 50\n"
+    cleared = _clear(item, evidence)
+    assert "min_altitude_km" not in cleared
+    assert item["min_altitude_km"] == 0.05
+
+
+def test_min_altitude_km_explicit_km_unit():
+    """`Min Altitude: 3 km` → 3.0 (no conversion needed)."""
+    item = {"system_name": "1D"}
+    evidence = "Min Altitude: 3 km"
+    cleared = _clear(item, evidence)
+    assert "min_altitude_km" not in cleared
+    assert item["min_altitude_km"] == 3.0
+
+
+def test_min_altitude_km_no_longer_unconditionally_nulled():
+    """The exact regression we're fixing: a value emitted by the LLM that is
+    supported by evidence should be preserved, not hard-cleared."""
+    item = {"system_name": "20DP", "min_altitude_km": 1.0}
+    evidence = "GENERAL:\n- Min Alt: 1000\n"
+    cleared = _clear(item, evidence)
+    assert "min_altitude_km" not in cleared
+    assert item["min_altitude_km"] == 1.0
+
+
+def test_min_altitude_km_unsupported_value_still_clears():
+    """If the LLM emits a min_altitude_km value that has NO matching Min Alt
+    row in evidence, it should still clear (evidence gate works both ways)."""
+    item = {"system_name": "Made-Up", "min_altitude_km": 99.0}
+    evidence = "Some unrelated prose about a missile but no altitude data."
+    cleared = _clear(item, evidence)
+    assert "min_altitude_km" in cleared
+    assert item["min_altitude_km"] is None
 
 
 def test_evidence_gate_missile_fields_matches_field_groups():
