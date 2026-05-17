@@ -1490,6 +1490,15 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             list(table_overlay_obj.cross_entity_hints)
             if table_overlay_obj is not None else None
         )
+        # 2026-05-16: thread the overlay's per-entity-type alias map into
+        # the postprocess so system_links hint resolution can fall back to
+        # alias → canonical → upstream_ref when the upstream catalog
+        # doesn't directly know the hint's source/target name. Closes the
+        # 30 → 19 relationship regression.
+        _alias_map_by_entity_type = (
+            dict(table_overlay_obj.alias_map_by_entity_type)
+            if table_overlay_obj is not None else None
+        )
         pass_output, postprocess_stats = _apply_bundle_postprocessing(
             body.bundle_key,
             body.pass_name,
@@ -1497,6 +1506,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             evidence_text,
             body.upstream_entities,
             _ceh,
+            alias_map_by_entity_type=_alias_map_by_entity_type,
         )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
         filtered_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)

@@ -223,11 +223,47 @@ PASS_TABLE_ROW_ALIASES: dict[str, frozenset[str]] = {
 }
 
 
+_ROW_LABEL_UNIT_SUFFIX = re.compile(
+    r"\s*[\(\[]\s*"
+    r"(?:m|km|mm|cm|ft|in|nm|nmi|mi|kg|g|lb|lbs|t|tonnes?|sec|secs|s|ms|"
+    r"min|h|hr|hrs|hz|khz|mhz|ghz|w|kw|mw|n|kn|deg|°|rad|mil|"
+    r"m/s|km/h|kt|kts|knots?|mph)"
+    r"\s*[\)\]]\s*$",
+    re.IGNORECASE,
+)
+
+
 def _normalize_row_label(label: str | None) -> str:
-    """Lowercased + whitespace-collapsed row label for alias matching."""
+    """Generic row-label normalizer for alias matching.
+
+    - lowercases
+    - collapses whitespace
+    - strips a trailing parenthesized/bracketed unit suffix like `(m)`,
+      `[km]`, `(kg)`, `[m/s]`, etc. so labels like `Max Range (m)` and
+      `Max Range km` and `Max Range` all collapse to `max range`.
+
+    Generalizes across docs that vary in unit-suffix style.
+    """
     if not label:
         return ""
-    return " ".join(label.lower().split())
+    text = " ".join(label.split()).lower()
+    text = _ROW_LABEL_UNIT_SUFFIX.sub("", text)
+    # Also strip trailing bare-token unit (no brackets): "max range km"
+    parts = text.rsplit(" ", 1)
+    if len(parts) == 2:
+        last = parts[1]
+        # Match against the same unit vocabulary as the bracketed form
+        if last in {
+            "m", "km", "mm", "cm", "ft", "in", "nm", "nmi", "mi",
+            "kg", "g", "lb", "lbs", "t",
+            "s", "sec", "ms", "min", "h", "hr", "hrs",
+            "hz", "khz", "mhz", "ghz",
+            "w", "kw", "mw", "n", "kn",
+            "deg", "°", "rad", "mil",
+            "m/s", "km/h", "kt", "kts", "knots", "mph",
+        }:
+            text = parts[0]
+    return text.strip()
 
 
 # 2026-05-16 (Option A): unit-convention detection from caption + adjacent
@@ -334,18 +370,117 @@ def detect_unit_convention(table_idx: int, doc_json: dict) -> str:
     return "metric"
 
 
+# 2026-05-16: entity-type qualification on table relevance. Pure row-label
+# matching false-triggers on cross-domain tables. Requiring identity-context
+# match prevents synth-only rewriting from clobbering a table that talks
+# about the WRONG entity type for the active pass.
+#
+# All keys here are GENERIC entity-type tokens, never specific equipment
+# names. The system must generalize across documents, so no `S-75`, `Fan
+# Song`, or other SA-2-specific identities appear in this module.
+
+PASS_ENTITY_TYPE: dict[str, str] = {
+    "missile_kinematics":   "MISSILE_SYSTEM",
+    "missile_airframe":     "MISSILE_SYSTEM",
+    "missile_speed_timing": "MISSILE_SYSTEM",
+    "missile_propulsion":   "MISSILE_SYSTEM",
+    "radar_antenna":        "RADAR_SYSTEM",
+    "radar_timing":         "RADAR_SYSTEM",
+    "radar_modulation":     "RADAR_SYSTEM",
+    "radar_power_rf":       "RADAR_SYSTEM",
+}
+
+# Row labels that signal "this table identifies entities of this type".
+# Only generic role/category labels — no equipment-specific names.
+IDENTITY_LABELS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
+    "MISSILE_SYSTEM": frozenset({
+        "missile type",
+        "missile designation",
+        "nato designation",
+        "military designation",
+        "industry designation",
+        "system designation",
+        "weapon designation",
+    }),
+    "RADAR_SYSTEM": frozenset({
+        "radar",
+        "radar type",
+        "radar designation",
+        "emitter",
+        "emitter name",
+        "emitter type",
+        "elnot",
+        "nomenclature",
+        "system designation",
+    }),
+}
+
+# Caption keywords as a STRICT fallback when the table lacks identity rows
+# (e.g. a small single-entity table where the caption is the only identity
+# context). Generic role words only — and tight enough to avoid common
+# false-positives:
+#   * `"weapon"` is omitted from MISSILE_SYSTEM — captions like "weapon mount
+#     specifications" or "small-arms weapon characteristics" would otherwise
+#     trigger missile passes on non-missile tables.
+#   * `"sensor"` is omitted from RADAR_SYSTEM — too broad (optical sensors,
+#     pressure sensors, communication sensors all share the word). Radar-
+#     specific terms only.
+_CAPTION_HINTS_BY_ENTITY_TYPE: dict[str, tuple[str, ...]] = {
+    "MISSILE_SYSTEM": ("missile", "sam", "interceptor", "warhead"),
+    "RADAR_SYSTEM":   ("radar", "emitter", "antenna"),
+}
+
+
+def _table_has_field_rows_for_pass(pass_name: str, normalized_table: Any) -> bool:
+    """Return True when at least one row label matches the pass's row-alias set."""
+    aliases = PASS_TABLE_ROW_ALIASES.get(pass_name)
+    if not aliases:
+        return False
+    row_labels = {
+        _normalize_row_label(c.row_label)
+        for c in getattr(normalized_table, "cells", ()) or ()
+        if c.row_label
+    }
+    return bool(row_labels & aliases)
+
+
+def _table_has_identity_context_for_entity_type(
+    entity_type: str,
+    normalized_table: Any,
+) -> bool:
+    """Return True when the table has either (a) a row label matching the
+    entity_type's identity hints, or (b) a caption containing a matching
+    generic keyword. Identity rows are read from `nt.rows` (not `nt.cells`)
+    because identity rows are excluded from spec cells during normalization.
+    """
+    hints = IDENTITY_LABELS_BY_ENTITY_TYPE.get(entity_type)
+    if not hints:
+        return False
+
+    rows = getattr(normalized_table, "rows", None) or ()
+    row_labels = {_normalize_row_label(getattr(r, "label", "")) for r in rows}
+    if row_labels & hints:
+        return True
+
+    caption = _normalize_row_label(getattr(normalized_table, "caption", None) or "")
+    if not caption:
+        return False
+    caption_hints = _CAPTION_HINTS_BY_ENTITY_TYPE.get(entity_type, ())
+    return any(kw in caption for kw in caption_hints)
+
+
 def is_table_relevant_for_pass(pass_name: str, normalized_table: Any) -> bool:
-    """Return True when `normalized_table` has row labels that match the
-    active pass's expected row aliases.
+    """Return True when the table is BOTH (a) row-label compatible with the
+    pass's expected field labels AND (b) identity-context compatible with
+    the pass's entity type.
 
-    A table is relevant when:
-      - the table is normalized non-OTHER (otherwise synth render is just
-        a passthrough TABLE_WHOLE chunk and won't help),
-      - the pass has an alias set defined,
-      - at least one row label in the table appears in that alias set.
+    The entity-type check (added 2026-05-16) prevents false positives like
+    a logistics table with `Weight` triggering missile_airframe, or a comms
+    table with `Frequency` triggering radar_power_rf.
 
-    Returns False for any pass not in PASS_TABLE_ROW_ALIASES (conservative —
-    new numeric passes need explicit alias entries to opt in).
+    Returns False for any pass not in PASS_TABLE_ROW_ALIASES, not in
+    PASS_ENTITY_TYPE, or not in SYNTH_ELIGIBLE_PASSES (conservative — new
+    numeric passes need explicit entries in all three maps to opt in).
     """
     if pass_name in RAW_ONLY_PASSES:
         return False
@@ -353,15 +488,14 @@ def is_table_relevant_for_pass(pass_name: str, normalized_table: Any) -> bool:
         return False
     if getattr(normalized_table, "shape", None) == Shape.OTHER:
         return False
-    aliases = PASS_TABLE_ROW_ALIASES.get(pass_name)
-    if not aliases:
+    entity_type = PASS_ENTITY_TYPE.get(pass_name)
+    if not entity_type:
         return False
-    row_labels = {
-        _normalize_row_label(c.row_label)
-        for c in normalized_table.cells
-        if c.row_label
-    }
-    return bool(row_labels & aliases)
+    if not _table_has_field_rows_for_pass(pass_name, normalized_table):
+        return False
+    if not _table_has_identity_context_for_entity_type(entity_type, normalized_table):
+        return False
+    return True
 
 
 def _replace_raw_table_refs_in_body_children(

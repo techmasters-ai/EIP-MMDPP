@@ -135,14 +135,18 @@ def test_unconditional_null_field():
 
 
 # --- 2026-05-16: min_altitude_km mechanical support tests -----------------
+# All fixtures include both (a) an ENTITY block with a missile-identity row
+# matching the item's system_name (entity-scoping requirement) AND (b) the
+# UNITS preamble (unit-evidence gate for bare-number inference). Generic
+# fixture names — no document-specific identities.
 
 def test_min_altitude_km_from_synth_block_metres():
-    """`Min Alt: 1000` in a synth table block converts to 1.0 km via the
-    SI-base assumption from the UNITS preamble."""
-    item = {"system_name": "20DP"}
+    """`Min Alt: 1000` in a synth table block with the SI UNITS preamble
+    converts to 1.0 km via the bare-number SI-base assumption."""
+    item = {"system_name": "M1"}
     evidence = (
-        "UNITS: Numeric values in this block are in SI base units...\n"
-        "ENTITY:\n- Missile Type: 20DP\n"
+        "UNITS: Numeric values in this block are in SI base units\n"
+        "ENTITY:\n- Missile Type: M1\n"
         "GENERAL:\n- Min Alt: 1000\n- Max Alt: 30000\n"
     )
     cleared = _clear(item, evidence)
@@ -153,17 +157,25 @@ def test_min_altitude_km_from_synth_block_metres():
 
 def test_min_altitude_km_sub_kilometre_value():
     """Min Alt: 50 metres → 0.05 km (smallest values we expect from SAM specs)."""
-    item = {"system_name": "5Ya23"}
-    evidence = "ENTITY:\n- Missile Type: 5Ya23\nGENERAL:\n- Min Alt: 50\n"
+    item = {"system_name": "M2"}
+    evidence = (
+        "UNITS: Numeric values in this block are in SI base units\n"
+        "ENTITY:\n- Missile Type: M2\n"
+        "GENERAL:\n- Min Alt: 50\n"
+    )
     cleared = _clear(item, evidence)
     assert "min_altitude_km" not in cleared
     assert item["min_altitude_km"] == 0.05
 
 
 def test_min_altitude_km_explicit_km_unit():
-    """`Min Altitude: 3 km` → 3.0 (no conversion needed)."""
-    item = {"system_name": "1D"}
-    evidence = "Min Altitude: 3 km"
+    """`Min Altitude: 3 km` → 3.0 with an explicit `km` suffix — no UNITS
+    preamble needed because the unit is on the row itself."""
+    item = {"system_name": "M3"}
+    evidence = (
+        "ENTITY:\n- Missile Type: M3\n"
+        "GENERAL:\n- Min Altitude: 3 km\n"
+    )
     cleared = _clear(item, evidence)
     assert "min_altitude_km" not in cleared
     assert item["min_altitude_km"] == 3.0
@@ -171,9 +183,14 @@ def test_min_altitude_km_explicit_km_unit():
 
 def test_min_altitude_km_no_longer_unconditionally_nulled():
     """The exact regression we're fixing: a value emitted by the LLM that is
-    supported by evidence should be preserved, not hard-cleared."""
-    item = {"system_name": "20DP", "min_altitude_km": 1.0}
-    evidence = "GENERAL:\n- Min Alt: 1000\n"
+    supported by evidence (entity-scoped + unit-gated) should be preserved,
+    not hard-cleared."""
+    item = {"system_name": "M4", "min_altitude_km": 1.0}
+    evidence = (
+        "UNITS: Numeric values in this block are in SI base units\n"
+        "ENTITY:\n- Missile Type: M4\n"
+        "GENERAL:\n- Min Alt: 1000\n"
+    )
     cleared = _clear(item, evidence)
     assert "min_altitude_km" not in cleared
     assert item["min_altitude_km"] == 1.0
@@ -187,6 +204,85 @@ def test_min_altitude_km_unsupported_value_still_clears():
     cleared = _clear(item, evidence)
     assert "min_altitude_km" in cleared
     assert item["min_altitude_km"] is None
+
+
+# --- Generalization tests: entity scoping + unit-evidence gating ----------
+
+def test_min_altitude_km_bare_no_units_preamble_NOT_inferred():
+    """Bare `Min Alt: 1000` with NO units preamble and NO km/m suffix
+    must NOT be mechanically filled — no unit evidence to authorize the
+    metres assumption."""
+    item = {"system_name": "M5"}
+    evidence = (
+        "ENTITY:\n- Missile Type: M5\n"
+        "GENERAL:\n- Min Alt: 1000\n"
+    )
+    cleared = _clear(item, evidence)
+    # min_altitude_km should NOT be in item (not mechanically filled) AND
+    # not in `cleared` (because nothing was emitted to clear).
+    assert item.get("min_altitude_km") is None
+
+
+def test_min_altitude_km_entity_scoping_no_cross_contamination():
+    """Two missiles in the same evidence text — each should get its own
+    `Min Alt`, not the first one applied to both."""
+    evidence = (
+        "UNITS: Numeric values in this block are in SI base units\n"
+        "ENTITY:\n- Missile Type: M-ALPHA\n"
+        "GENERAL:\n- Min Alt: 1000\n"
+        "ENTITY:\n- Missile Type: M-BETA\n"
+        "GENERAL:\n- Min Alt: 100\n"
+    )
+    alpha = {"system_name": "M-ALPHA"}
+    beta  = {"system_name": "M-BETA"}
+    _clear(alpha, evidence)
+    _clear(beta,  evidence)
+    assert alpha["min_altitude_km"] == 1.0
+    assert beta["min_altitude_km"] == 0.1, (
+        f"cross-contamination: beta should have 0.1 (from its own block), "
+        f"got {beta.get('min_altitude_km')}"
+    )
+
+
+def test_min_altitude_km_no_entity_block_no_inference():
+    """If the entity has no matching synth-block in evidence (e.g., a missile
+    extracted from prose), mechanical support is skipped entirely — no
+    false positive from a different entity's Min Alt row."""
+    item = {"system_name": "M-PROSE-ONLY"}
+    evidence = (
+        "UNITS: Numeric values in this block are in SI base units\n"
+        "ENTITY:\n- Missile Type: M-OTHER\n"
+        "GENERAL:\n- Min Alt: 1000\n"
+    )
+    _clear(item, evidence)
+    assert item.get("min_altitude_km") is None
+
+
+def test_min_altitude_km_alias_resolves_entity_block():
+    """If `system_name` doesn't match the identity row but `nomenclature`
+    does, the entity block still resolves via the alias path."""
+    item = {"system_name": "Canonical-X", "nomenclature": "Alt-Y"}
+    evidence = (
+        "UNITS: Numeric values in this block are in SI base units\n"
+        "ENTITY:\n- Missile Type: Alt-Y\n"
+        "GENERAL:\n- Min Alt: 500\n"
+    )
+    _clear(item, evidence)
+    assert item.get("min_altitude_km") == 0.5
+
+
+def test_min_altitude_km_production_normalized_evidence():
+    """Evidence that's been through normalize_evidence_text() (uppercased,
+    whitespace-collapsed, no newlines) still parses correctly."""
+    raw = (
+        "UNITS: Numeric values in this block are in SI base units\n"
+        "ENTITY:\n- Missile Type: M6\n"
+        "GENERAL:\n- Min Alt: 1000\n- Max Alt: 30000\n"
+    )
+    item = {"system_name": "M6"}
+    _clear(item, _eg.normalize_evidence_text(raw))
+    assert item.get("min_altitude_km") == 1.0
+    assert item.get("max_altitude_km") == 30.0
 
 
 def test_evidence_gate_missile_fields_matches_field_groups():

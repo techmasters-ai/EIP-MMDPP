@@ -439,12 +439,13 @@ def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence():
 def test_apply_bundle_postprocessing_promotes_cross_entity_hints():
     """v8a: cross_entity_hints from the table overlay should be promoted
     into ASSOCIATED_WITH edges, resolving source/target by name against
-    the upstream catalog."""
+    the upstream catalog. 2026-05-16: resolution is type-segregated, so
+    each upstream entity must declare its `entity_type`."""
     upstream_entities = [
-        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
-        SimpleNamespace(ref_id="RADAR_SYSTEM:RSN-75", identity_values={"system_name": "RSN-75"}, display_label="RSN-75"),
-        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", identity_values={"system_name": "1D"}, display_label="1D"),
-        SimpleNamespace(ref_id="MISSILE_SYSTEM:13D", identity_values={"system_name": "13D"}, display_label="13D"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", entity_type="RADAR_SYSTEM", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:RSN-75", entity_type="RADAR_SYSTEM", identity_values={"system_name": "RSN-75"}, display_label="RSN-75"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", entity_type="MISSILE_SYSTEM", identity_values={"system_name": "1D"}, display_label="1D"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:13D", entity_type="MISSILE_SYSTEM", identity_values={"system_name": "13D"}, display_label="13D"),
     ]
     hints = [
         SimpleNamespace(source_canonical="1D", source_entity_type="MISSILE_SYSTEM",
@@ -476,7 +477,7 @@ def test_apply_bundle_postprocessing_skips_hints_with_unknown_endpoints():
     """Hints whose source or target name doesn't match any upstream ref
     are silently dropped (no malformed edges with unknown refs)."""
     upstream_entities = [
-        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", entity_type="RADAR_SYSTEM", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
     ]
     hints = [
         SimpleNamespace(source_canonical="UNKNOWN_MISSILE", source_entity_type="MISSILE_SYSTEM",
@@ -503,9 +504,9 @@ def test_apply_bundle_postprocessing_skips_hints_with_unknown_endpoints():
 def test_apply_bundle_postprocessing_preserves_llm_relationships_when_promoting_hints():
     """LLM-emitted relationships are kept; hints are appended on top."""
     upstream_entities = [
-        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
-        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", identity_values={"system_name": "1D"}, display_label="1D"),
-        SimpleNamespace(ref_id="RADAR_SYSTEM:Spoon Rest", identity_values={"system_name": "Spoon Rest"}, display_label="Spoon Rest"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", entity_type="RADAR_SYSTEM", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", entity_type="MISSILE_SYSTEM", identity_values={"system_name": "1D"}, display_label="1D"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Spoon Rest", entity_type="RADAR_SYSTEM", identity_values={"system_name": "Spoon Rest"}, display_label="Spoon Rest"),
     ]
     hints = [
         SimpleNamespace(source_canonical="1D", source_entity_type="MISSILE_SYSTEM",
@@ -538,8 +539,8 @@ def test_apply_bundle_postprocessing_dedupes_when_hint_matches_llm_edge():
     """If a hint resolves to the same (from, to) as an LLM-emitted edge,
     the LLM edge is kept (first-seen wins) and the hint is dropped."""
     upstream_entities = [
-        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
-        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", identity_values={"system_name": "1D"}, display_label="1D"),
+        SimpleNamespace(ref_id="RADAR_SYSTEM:Fan Song", entity_type="RADAR_SYSTEM", identity_values={"system_name": "Fan Song"}, display_label="Fan Song"),
+        SimpleNamespace(ref_id="MISSILE_SYSTEM:1D", entity_type="MISSILE_SYSTEM", identity_values={"system_name": "1D"}, display_label="1D"),
     ]
     hints = [
         SimpleNamespace(source_canonical="1D", source_entity_type="MISSILE_SYSTEM",

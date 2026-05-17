@@ -148,6 +148,51 @@ recent entry is at the bottom.
 
 ---
 
+## Run OPTIONS-A+C-FULL — full 5-pass with per-pass+per-table relevance gate + caption/prose unit detection
+
+- **Date:** 2026-05-16 15:50 → 21:00 UTC (this session)
+- **Commit:** `b8a9ccd feat(extraction): per-pass+per-table synth-only policy + min_altitude_km unblock + unit-convention detection`
+- **Captured fixtures:** `tests/fixtures/sa2/78673393-..._{pass}_response.json` for all 5 passes; summary at `..._extraction_counts_today.json`
+- **Wall-clock:** 5h 10m total (radar_id 56.7m + rf 37.5m + missile_id 121m + kinematics 76m + system_links 14m)
+- **Changes vs V9-POST-FIX-GATED (Phase B kinematics-only):**
+  - **Step C (per-row unit detection)**: `_detect_row_unit_from_cells` in normalize.py — scans non-label columns for known unit tokens (m, km, m/s, kg, ft, lb, etc.) and promotes to NormalizedRow.unit
+  - **Step A (caption + adjacent-prose unit-convention)**: `detect_unit_convention(table_idx, doc_json)` in `_pipeline_hooks.py` — regex matches imperial/metric markers; metric is default. Threaded through `render_for_graph(..., unit_convention=...)`.
+  - **Three UNIT_HINT variants in render_graph.py**: `UNIT_HINT_METRIC` (default), `UNIT_HINT_IMPERIAL`, `UNIT_HINT_MIXED`
+- **Per-pass results:**
+
+| pass | v9 ent | new ent | Δent | v9 fills | new fills | Δfills | v9 avg | new avg | truncations |
+|------|------:|--------:|-----:|---------:|----------:|-------:|-------:|--------:|------------:|
+| `radar_identity` | 24 | 27 | **+3** | 26 | 29 | **+3** | 1.08 | 1.07 | 0 |
+| `radar_power_rf` | 42 | 43 | +1 | 25 | 23 | −2 | 0.60 | 0.53 | 0 |
+| `missile_identity` | 44 | 43 | −1 | 62 | 61 | −1 | 1.41 | 1.42 | 0 |
+| `missile_kinematics` | 40 | 45 | **+5** | 20 | 40 | **+20** | 0.50 | 0.89 | **1** (32K→65K, recovered) |
+| `system_links` | 30 rel | **19 rel** | **−11** | — | — | — | 1.00 | 1.00 | 0 |
+| **TOTAL ENT** | **150** | **158** | **+8 (+5%)** | | | | | | |
+| **TOTAL FILLS** | | | | **133** | **153** | **+20 (+15%)** | | | |
+| **TOTAL REL** | **30** | **19** | **−11 (−37%)** | | | | | | |
+
+- **`missile_kinematics` per-field detail vs v9 / vs Phase B (kinematics-only):**
+
+| field | v9 | Phase B | new | Δ vs v9 | Δ vs Phase B |
+|-------|---:|--------:|----:|--------:|-------------:|
+| `min_intercept_km` | 4 | 12 | 10 | +6 | −2 |
+| `max_intercept_km` | 10 | 13 | 10 | tied | −3 |
+| `min_altitude_km` | 0 | 11 | 10 | **+10** | −1 |
+| `max_altitude_km` | 6 | 13 | 10 | +4 | −3 |
+| `max_launch_angle_deg` | 0 | 0 | 0 | tied | tied |
+| **TOTAL** | **20** | **49** | **40** | **+20 (+100%)** | **−9 (−18%)** |
+
+- **Diagnostics:** 1 TRUNCATION_PERSISTS_RETRYING during kinematics (recovered at 65K). 0 HARD_TIMEOUT events. Per-pass synth-only / append-to-end classification: `radar_power_rf` saw 0 synth-only / 13 append-to-end (correct — no RF rows in SA-2 missile table); other passes likewise classified per `is_table_relevant_for_pass`.
+- **Verdict:** **Mixed — kinematics wins (+100% fills) but system_links regression persists (−37% relationships).** Total entities +5%, total fills +15%, but system_links is the blocker for ★STRONGEST★ designation.
+- **Root cause of system_links regression (per third-party diagnostic):** `cross_entity_hints_count=10` in both runs, but only `1` hint resolved this run vs `7` in v9. The resolution path in `evidence_gate.py:929` only checks `name_to_ref` from upstream entities; table-overlay alias clusters (`alias_map_by_entity_type`) are NOT consulted as fallback. When per-pass canonical-name cleanup reduces upstream entity-alias diversity, table-derived hints stop resolving.
+- **Revert if needed:** revert to `d48756c` (post-edit) or `364b593` (V9-POST-FIX-GATED baseline) per their entries above. Per-pass policy in `_pipeline_hooks.SYNTH_ELIGIBLE_PASSES` can also be narrowed in-place.
+- **Pending follow-up (handoff received 2026-05-16):**
+  1. **Fix system_links alias resolution** — wire `table_overlay_obj.alias_map_by_entity_type` into `_postprocess_air_defense_system_links` as fallback resolver
+  2. **Strengthen table relevance with entity-type qualification** — require BOTH row-label match AND identity context match (prevent false positives on logistics/comms tables)
+  3. **Make `min_altitude_km` deterministic in production-shape evidence** — fix regex for collapsed (no-newline) evidence; scope by entity via ENTITY block extraction
+
+---
+
 ## Append below as runs complete
 
 (Add new entries here. Update "★STRONGEST★" marker on the entry with the

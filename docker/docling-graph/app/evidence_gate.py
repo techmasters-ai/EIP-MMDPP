@@ -356,6 +356,7 @@ def apply_bundle_postprocessing(
     evidence_text: str,
     upstream_entities: list[Any] | None = None,
     cross_entity_hints: list[Any] | None = None,
+    alias_map_by_entity_type: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if bundle_key != "air_defense_v3" or not isinstance(pass_output, dict):
         return pass_output, {}
@@ -367,6 +368,7 @@ def apply_bundle_postprocessing(
     if pass_name == "system_links":
         return _postprocess_air_defense_system_links(
             pass_output, evidence_text, upstream_entities, cross_entity_hints,
+            alias_map_by_entity_type=alias_map_by_entity_type,
         )
     return pass_output, {}
 
@@ -630,42 +632,179 @@ def _enum_is_explicit(enum_value: Any, evidence_text: str, patterns_by_value: di
     return any(re.search(pattern, evidence_text) for pattern in patterns)
 
 
-def _mechanically_supported_missile_fields(evidence_text: str) -> dict[str, float]:
+# 2026-05-16: identity-row labels used to find an entity's synth-block in
+# normalized evidence text. Generic across docs — no specific equipment
+# names. Same set as IDENTITY_LABELS_BY_ENTITY_TYPE["MISSILE_SYSTEM"] in
+# `_pipeline_hooks.py`, plus name/display_name fallbacks.
+_MISSILE_IDENTITY_ROW_LABELS_RE = (
+    r"(?:MISSILE\s+TYPE|NATO\s+DESIGNATION|MILITARY\s+DESIGNATION|"
+    r"INDUSTRY\s+DESIGNATION|MISSILE\s+DESIGNATION|SYSTEM\s+DESIGNATION|"
+    r"WEAPON\s+DESIGNATION|DISPLAY\s+NAME|NAME|SYSTEM\s+NAME)"
+)
+
+# UNITS preamble marker — set by render_graph.py at the top of every
+# graph-side synth table block when unit_convention is metric. Presence in
+# a block authorizes bare-number → km/kg/etc. assumption.
+_SI_UNIT_HINT_MARKER = "UNITS: NUMERIC VALUES IN THIS BLOCK ARE IN SI BASE UNITS"
+
+
+def _extract_synth_block_for_entity(
+    evidence_text: str,
+    *,
+    system_name: str | None,
+    aliases: list[str] | None = None,
+) -> str | None:
+    """Find the synth ENTITY block whose identity row matches the given
+    `system_name` or any of its `aliases`. Returns the block substring
+    (from `ENTITY:` to the next `TABLE:`/`ENTITY:` boundary or EOT), or
+    None if no matching block exists.
+
+    Generalized over document layout: scans every ENTITY block, matches
+    against any generic missile-identity row label (Missile Type / NATO
+    Designation / Military Designation / Industry Designation / System
+    Designation / Weapon Designation / Name / Display Name / System Name).
+    No specific equipment names anywhere — purely structural matching.
+
+    Used by mechanical numeric support to scope per-row parsing to the
+    current entity's block, preventing cross-contamination on multi-entity
+    tables.
+    """
+    if not isinstance(system_name, str) or not system_name.strip():
+        return None
+    names = [system_name.strip()]
+    for a in aliases or ():
+        if isinstance(a, str) and a.strip():
+            names.append(a.strip())
+
+    entity_starts = [
+        m.start() for m in re.finditer(r"\bENTITY:", evidence_text, re.IGNORECASE)
+    ]
+    if not entity_starts:
+        return None
+    table_starts = [
+        m.start() for m in re.finditer(r"\bTABLE:", evidence_text, re.IGNORECASE)
+    ]
+
+    # Return the NARROW entity-scoped portion only: from this ENTITY: to
+    # the next ENTITY:/TABLE: boundary (or end of text). Sibling ENTITY
+    # blocks are excluded so multi-entity tables don't cross-contaminate.
+    # The chunk-level preamble (UNITS: etc.) is found separately by
+    # `_evidence_has_si_unit_hint` looking backward through evidence_text.
+    for i, ent_start in enumerate(entity_starts):
+        eff_end = len(evidence_text)
+        for nxt in entity_starts[i + 1:]:
+            if nxt > ent_start:
+                eff_end = nxt
+                break
+        for t in table_starts:
+            if t > ent_start and t < eff_end:
+                eff_end = t
+                break
+        block = evidence_text[ent_start:eff_end]
+        for name in names:
+            pattern = (
+                _MISSILE_IDENTITY_ROW_LABELS_RE
+                + r"\s*:\s*"
+                + re.escape(name)
+                + r"(?:\s|$)"
+            )
+            if re.search(pattern, block, re.IGNORECASE):
+                return block
+    return None
+
+
+def _evidence_has_si_unit_hint(evidence_text: str, block: str) -> bool:
+    """Return True if the synth-chunk that contains `block` has a SI
+    UNIT_HINT preamble. Looks at evidence_text from the most recent
+    TABLE: or UNITS: marker BEFORE block's start, up to block's start, for
+    the UNIT_HINT signature.
+
+    Defined per-chunk (not globally) so a doc with mixed-unit tables can
+    have one chunk be metric and another be imperial without
+    cross-contamination.
+    """
+    if _SI_UNIT_HINT_MARKER.lower() in block.lower():
+        return True
+    # block is a substring of evidence_text — find its start position.
+    block_start = evidence_text.find(block)
+    if block_start < 0:
+        return False
+    # Find most recent TABLE: or UNITS: preceding the block.
+    preamble_start = 0
+    for m in re.finditer(r"\b(?:TABLE|UNITS):", evidence_text[:block_start], re.IGNORECASE):
+        preamble_start = m.start()
+    preamble = evidence_text[preamble_start:block_start]
+    return _SI_UNIT_HINT_MARKER.lower() in preamble.lower()
+
+
+def _mechanically_supported_missile_fields(
+    evidence_text: str,
+    *,
+    system_name: str | None = None,
+    aliases: list[str] | None = None,
+) -> dict[str, float]:
+    """Extract mechanically-supported missile numeric values from evidence.
+
+    Two channels:
+    1. Museum-display range note (entity-agnostic — fine to apply globally).
+    2. Synth-table block per-entity numerics (`Min Alt: 1000`, `Max Range:
+       45000`, etc.) — ENTITY-SCOPED via `_extract_synth_block_for_entity`
+       when `system_name` is provided. Without `system_name`, the synth-
+       block channel is skipped to prevent cross-contamination (the first
+       `Min Alt` in the doc would otherwise apply to every missile).
+
+    Unit handling per the synth-block channel:
+    - Explicit `KM` suffix → value used as-is.
+    - Explicit `M` suffix → value / 1000.
+    - Bare numeric AND the block contains the SI UNIT_HINT preamble → value
+      / 1000 (SI-base metres assumption).
+    - Bare numeric AND no UNIT_HINT → skipped (no inference from arbitrary prose).
+    """
     supported = _extract_museum_display_range_notes(evidence_text)
+
+    # Existing WEIGHT pattern — kept entity-agnostic for backward compat.
     weight_match = re.search(r"WEIGHT:\s*(?P<weight>[\d,]+(?:\.\d+)?)\s*LBS?\.?\b", evidence_text)
     if weight_match:
         supported["total_mass_kg"] = round(float(weight_match.group("weight").replace(",", "")) / 2.205, 1)
 
-    # 2026-05-16: synth-table-block altitude/range patterns.
-    # render_graph.py emits rows like:
-    #   - Min Alt: 1000
-    #   - Max Alt: 30000
-    #   - Min Range: 7000
-    #   - Max Range: 45000
-    # Source units per the synth block's UNITS preamble: metres for length/
-    # range unless otherwise labeled. We accept explicit `km` / `m` suffix
-    # too, defaulting to metres when absent (matches the SI-base hint).
+    # Synth-table block channel — entity-scoped only.
+    block = _extract_synth_block_for_entity(
+        evidence_text, system_name=system_name, aliases=aliases,
+    )
+    if block is None:
+        return supported
+
+    has_si_hint = _evidence_has_si_unit_hint(evidence_text, block)
+
+    # Production-shape regex: works on normalized (no-newline, uppercased)
+    # evidence AND on raw mixed-case test fixtures. Case-insensitive.
     _LINE = (
-        r"(?:^|\n)\s*-?\s*{label}\s*:\s*"
-        r"(?P<v>[\d,]+(?:\.\d+)?)\s*(?P<u>km|m)?\b"
+        r"(?:^|\s|-\s)"
+        r"{label}\s*:\s*"
+        r"(?P<v>[\d,]+(?:\.\d+)?)\s*(?P<u>KM|M)?\b"
     )
     _NUMERIC_FROM_SYNTH = (
-        # (regex_label, schema_field)
-        (r"Min\s+Alt(?:itude)?", "min_altitude_km"),
-        (r"Max\s+Alt(?:itude)?", "max_altitude_km"),
-        (r"Min\s+Range",         "min_intercept_km"),
-        (r"Max\s+Range",         "max_intercept_km"),
+        (r"MIN\s+ALT(?:ITUDE)?", "min_altitude_km"),
+        (r"MAX\s+ALT(?:ITUDE)?", "max_altitude_km"),
+        (r"MIN\s+RANGE",          "min_intercept_km"),
+        (r"MAX\s+RANGE",          "max_intercept_km"),
     )
     for label_re, field in _NUMERIC_FROM_SYNTH:
         if field in supported:
             continue  # museum-display notes take precedence
-        m = re.search(_LINE.format(label=label_re), evidence_text, re.IGNORECASE)
+        m = re.search(_LINE.format(label=label_re), block, re.IGNORECASE)
         if not m:
             continue
         v = float(m.group("v").replace(",", ""))
-        u = (m.group("u") or "m").lower()
-        # SI-base assumption: metres → km when explicit unit absent or "m".
-        supported[field] = round(v if u == "km" else v / 1000.0, 3)
+        u = (m.group("u") or "").upper()
+        if u == "KM":
+            supported[field] = round(v, 3)
+        elif u == "M":
+            supported[field] = round(v / 1000.0, 3)
+        elif has_si_hint:
+            # SI-base assumption authorized by the block's UNIT_HINT preamble.
+            supported[field] = round(v / 1000.0, 3)
+        # else: bare numeric with no unit evidence — skip (no inference).
 
     return supported
 
@@ -714,7 +853,26 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
       resolver uses.
     """
     cleared: list[str] = []
-    supported_numeric = _mechanically_supported_missile_fields(evidence_text)
+    # 2026-05-16: pass system_name so the synth-block channel scopes per-
+    # entity and avoids cross-contamination on multi-entity tables.
+    # `aliases` is read from the item if present (LLM-emitted aliases) plus
+    # nomenclature/name fields that may appear as alternate identifiers in
+    # synth blocks. Generic — no equipment-specific names anywhere.
+    _aliases: list[str] = []
+    for k in ("nomenclature", "name", "display_label", "dieqp"):
+        v = item.get(k)
+        if isinstance(v, str) and v.strip():
+            _aliases.append(v)
+    raw_aliases = item.get("aliases")
+    if isinstance(raw_aliases, list):
+        for a in raw_aliases:
+            if isinstance(a, str) and a.strip():
+                _aliases.append(a)
+    supported_numeric = _mechanically_supported_missile_fields(
+        evidence_text,
+        system_name=item.get("system_name") if isinstance(item.get("system_name"), str) else None,
+        aliases=_aliases,
+    )
 
     # PRESERVED: exact-text branch for string fields. String properties
     # must either appear verbatim in the source text or be expressed by
@@ -851,15 +1009,20 @@ def _postprocess_air_defense_missiles(
 
 
 def _build_upstream_name_map(upstream_entities: list[Any] | None) -> dict[str, str]:
-    """Build name → ref_id lookup.
+    """Build name → ref_id lookup (TYPE-AGNOSTIC — preserved for backward
+    compatibility with callers that don't track entity_type).
 
     Registers each entity under its primary identity (``system_name``),
     its display_label, AND each entry of ``aliases`` (typically populated
     from upstream schema fields like ``nomenclature`` and ``name``). The
-    relationship pass uses this map to resolve chunk-cell names like
-    "SA-75" back to a ref_id whose primary identity might be a different
-    token ("1D" via Missile Type, etc.). Earlier registrations win on
-    conflict so primary identity takes precedence over aliases."""
+    relationship pass uses this map to resolve chunk-cell names back to a
+    ref_id whose primary identity might be a different token. Earlier
+    registrations win on conflict so primary identity takes precedence
+    over aliases.
+
+    For type-aware resolution (preventing cross-type ref leaks), use
+    `_build_upstream_name_map_by_type` instead.
+    """
     if not upstream_entities:
         return {}
     out: dict[str, str] = {}
@@ -885,11 +1048,110 @@ def _build_upstream_name_map(upstream_entities: list[Any] | None) -> dict[str, s
     return out
 
 
+def _build_upstream_name_map_by_type(
+    upstream_entities: list[Any] | None,
+) -> dict[str, dict[str, str]]:
+    """Build {entity_type → {normalized_name → ref_id}} lookup.
+
+    Per-type segregation prevents cross-type leaks during cross-entity-
+    hint resolution: if a missile name happens to collide with a radar
+    name in another part of the catalog, the resolver only sees the
+    name under its declared entity_type.
+
+    Returns an empty dict when input is empty. Entries with no `ref_id`
+    or no resolvable `entity_type` are skipped. Within a type, earlier
+    registrations win on conflict (primary identity beats aliases).
+    """
+    if not upstream_entities:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+
+    def _maybe_register(name: Any, ref_id: str, type_map: dict[str, str]) -> None:
+        if not isinstance(name, str):
+            return
+        key = normalize_evidence_text(name)
+        if not key or key in type_map:
+            return
+        type_map[key] = ref_id
+
+    for entity in upstream_entities:
+        ref_id = getattr(entity, "ref_id", None)
+        entity_type = getattr(entity, "entity_type", None)
+        if not ref_id or not isinstance(entity_type, str) or not entity_type:
+            continue
+        type_map = out.setdefault(entity_type, {})
+        identity_values = getattr(entity, "identity_values", None) or {}
+        _maybe_register(identity_values.get("system_name"), ref_id, type_map)
+        _maybe_register(getattr(entity, "display_label", None), ref_id, type_map)
+        aliases = getattr(entity, "aliases", None) or []
+        for alias in aliases:
+            _maybe_register(alias, ref_id, type_map)
+    return out
+
+
+def _resolve_ref(
+    name: str,
+    entity_type: str | None,
+    upstream_name_to_ref_by_type: dict[str, dict[str, str]],
+    alias_map_by_entity_type: dict[str, dict[str, str]] | None,
+) -> str | None:
+    """Resolve an entity name to an upstream ref_id WITHIN the same entity
+    type — never cross-types.
+
+    Strategy:
+      1. Direct hit in `upstream_name_to_ref_by_type[entity_type]` (per-type
+         segregation prevents a missile name from accidentally resolving to
+         a radar ref or vice versa).
+      2. If that misses, consult the table-overlay alias map for the same
+         entity_type to map `name → canonical_name`, then try the per-type
+         upstream lookup again on the canonical.
+      3. Return None if neither path resolves OR if `entity_type` is missing.
+
+    Why this matters: per-pass canonical-name cleanup (synth-only chunking)
+    can shrink the upstream alias diversity, leaving table-derived hints
+    that reference table-local aliases without a direct upstream match.
+    The overlay's alias_map_by_entity_type carries those table-local
+    aliases mapped to the canonical the upstream catalog knows.
+
+    Type segregation is critical because the same lexical token can denote
+    different entities in different domains (e.g. a designation that
+    appears in both a missile catalog and a radar catalog).
+    """
+    if not isinstance(name, str):
+        return None
+    key = normalize_evidence_text(name)
+    if not key:
+        return None
+    if not isinstance(entity_type, str) or not entity_type:
+        return None
+
+    # 1. Direct upstream hit — TYPE-SCOPED.
+    type_map = (upstream_name_to_ref_by_type or {}).get(entity_type) or {}
+    ref = type_map.get(key)
+    if ref:
+        return ref
+
+    # 2. Overlay alias fallback for THIS entity type.
+    by_type = alias_map_by_entity_type or {}
+    alias_map = by_type.get(entity_type) or {}
+    if not alias_map:
+        return None
+    # Try both normalized and original-cased keys — overlay alias maps may
+    # be built either way depending on producer.
+    canonical = alias_map.get(key) or alias_map.get(name)
+    if not isinstance(canonical, str):
+        return None
+    # Resolve the canonical through the SAME type's upstream map.
+    return type_map.get(normalize_evidence_text(canonical))
+
+
 def _postprocess_air_defense_system_links(
     pass_output: dict[str, Any],
     evidence_text: str,
     upstream_entities: list[Any] | None,
     cross_entity_hints: list[Any] | None = None,
+    *,
+    alias_map_by_entity_type: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Postprocess system_links output.
 
@@ -897,6 +1159,12 @@ def _postprocess_air_defense_system_links(
       overlay into ASSOCIATED_WITH edges (resolving source/target by name
       against the upstream catalog). v8a — closes the relationship-yield
       gap on table-anchored radar↔missile pairings.
+    - 2026-05-16: when a hint's source_name or target_name doesn't directly
+      hit the upstream catalog, falls back to the table-overlay
+      ``alias_map_by_entity_type`` to map alias → canonical → upstream ref.
+      Closes the system_links regression where per-pass canonical-name
+      cleanup made table-local aliases (e.g. `20DP`, `RSN- 75V`) stop
+      resolving against the smaller upstream alias set.
     - Falls back to evidence-text heuristics (Spoon Rest → Fan Song,
       Fan Song → SA-2) only when the LLM emitted ZERO relationships AND
       no hint promotions resolved.
@@ -907,7 +1175,12 @@ def _postprocess_air_defense_system_links(
     if not isinstance(relationships, list):
         return updated, {}
 
+    # Type-agnostic map: still used by the legacy evidence-text fallback
+    # heuristics below (Spoon Rest → Fan Song, etc.) which were never
+    # type-aware. New cross-entity-hint resolution uses the type-segregated
+    # map via _resolve_ref to prevent cross-type leaks.
     name_to_ref = _build_upstream_name_map(upstream_entities)
+    name_to_ref_by_type = _build_upstream_name_map_by_type(upstream_entities)
     seen_pairs: set[tuple[str, str]] = set()
     out: list[dict[str, Any]] = []
     stats: dict[str, Any] = {}
@@ -927,6 +1200,8 @@ def _postprocess_air_defense_system_links(
         out.append(rel)
 
     # v8a: promote cross_entity_hints to ASSOCIATED_WITH edges.
+    # 2026-05-16: use _resolve_ref so unmatched hints fall back to the
+    # overlay's alias_map_by_entity_type before being discarded.
     promoted: list[dict[str, Any]] = []
     if cross_entity_hints:
         for hint in cross_entity_hints:
@@ -936,10 +1211,22 @@ def _postprocess_air_defense_system_links(
             target_name = getattr(hint, "target_alias", None) or (
                 hint.get("target_alias") if isinstance(hint, dict) else None
             )
+            source_entity_type = getattr(hint, "source_entity_type", None) or (
+                hint.get("source_entity_type") if isinstance(hint, dict) else None
+            )
+            target_entity_type = getattr(hint, "target_entity_type", None) or (
+                hint.get("target_entity_type") if isinstance(hint, dict) else None
+            )
             if not isinstance(source_name, str) or not isinstance(target_name, str):
                 continue
-            source_ref = name_to_ref.get(normalize_evidence_text(source_name))
-            target_ref = name_to_ref.get(normalize_evidence_text(target_name))
+            source_ref = _resolve_ref(
+                source_name, source_entity_type,
+                name_to_ref_by_type, alias_map_by_entity_type,
+            )
+            target_ref = _resolve_ref(
+                target_name, target_entity_type,
+                name_to_ref_by_type, alias_map_by_entity_type,
+            )
             if not source_ref or not target_ref:
                 continue
             if source_ref == target_ref:
