@@ -265,6 +265,77 @@ def test_unit_suffix_stripped_from_row_labels():
     assert is_table_relevant_for_pass("missile_kinematics", nt) is True
 
 
+# --- Rec 3 part C — radar_power_rf relevance test cases --------------------
+# Per the handoff: these specific cases must hold to prevent false-positive
+# synth rewriting on cross-domain tables that happen to contain frequency-
+# like row labels.
+
+def test_radar_power_rf_relevant_with_radar_identity_and_frequency():
+    """Radar table with `Radar` identity hint + RF field row → relevant."""
+    nt = _fake_normalized(
+        ["Frequency", "Bandwidth"],
+        identity_labels=["Radar"],
+    )
+    assert is_table_relevant_for_pass("radar_power_rf", nt) is True
+
+
+def test_radar_power_rf_relevant_with_emitter_identity_and_peak_power():
+    """Radar table with `Emitter` identity hint + `Peak Power` row → relevant."""
+    nt = _fake_normalized(
+        ["Peak Power", "Bandwidth"],
+        identity_labels=["Emitter"],
+    )
+    assert is_table_relevant_for_pass("radar_power_rf", nt) is True
+
+
+def test_missile_table_with_frequency_row_NOT_relevant_to_radar_power_rf():
+    """Missile-identified table with a `Frequency` row → not relevant.
+    Prevents missile launch-detection-frequency type tables (or radar-
+    cued missile freq tables) from triggering radar_power_rf rewriting."""
+    nt = _fake_normalized(
+        ["Frequency", "Bandwidth"],
+        identity_labels=["Missile Type", "NATO Designation"],
+    )
+    assert is_table_relevant_for_pass("radar_power_rf", nt) is False
+
+
+def test_comms_table_with_frequency_but_no_radar_identity_NOT_relevant():
+    """Communications channel/callsign table with Frequency rows but no
+    radar identity → not relevant. Prevents tactical-voice-radio tables
+    from polluting radar_power_rf."""
+    nt = _fake_normalized(
+        ["Frequency", "Bandwidth"],
+        identity_labels=["Radio Channel", "Callsign", "Network ID"],
+        caption="Tactical voice radio assignments",
+    )
+    assert is_table_relevant_for_pass("radar_power_rf", nt) is False
+
+
+def test_radar_identity_only_table_with_no_rf_rows_NOT_relevant_to_radar_power_rf():
+    """A radar-identified table that contains only identity rows + non-RF
+    field rows (e.g. only antenna data, no power/freq) → not relevant
+    to radar_power_rf. Per-pass alias narrowness."""
+    nt = _fake_normalized(
+        ["Antenna Gain", "Beamwidth"],
+        identity_labels=["Radar", "Emitter"],
+    )
+    # Antenna-shaped → relevant to radar_antenna, NOT radar_power_rf
+    assert is_table_relevant_for_pass("radar_antenna", nt) is True
+    assert is_table_relevant_for_pass("radar_power_rf", nt) is False
+
+
+def test_electronics_specifications_with_freq_NOT_relevant_to_radar_power_rf():
+    """Generic electronics-specifications table that mentions Frequency
+    (e.g., crystal oscillator specs) without ANY radar identity context →
+    not relevant. Guards against the broadest false-positive class."""
+    nt = _fake_normalized(
+        ["Operating Frequency", "Power Consumption"],
+        identity_labels=["Component Part Number", "Manufacturer"],
+        caption="Crystal oscillator specifications",
+    )
+    assert is_table_relevant_for_pass("radar_power_rf", nt) is False
+
+
 # --- policy invariants -----------------------------------------------------
 
 def test_synth_eligible_and_raw_only_are_disjoint():

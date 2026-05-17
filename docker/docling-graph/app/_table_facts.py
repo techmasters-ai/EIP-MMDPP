@@ -1311,13 +1311,24 @@ def extract_table_overlay(doc_json: dict) -> tuple["TableOverlay", dict]:
         and c.get("start_col_offset_idx") >= label_width
     })
 
-    facts, hints = _emit_facts_and_hints(
+    facts, hints, target_alias_maps = _emit_facts_and_hints(
         winner_table,
         canonical_per_col=canonical_per_col,
         winner_entity_type=winner_entity_type,
         data_col_starts=data_col_starts,
         stats=stats,
     )
+
+    # 2026-05-17 (Rec 2): merge target-side alias maps from cross-entity
+    # rows so the resolver can bridge OCR-spaced and family-derived alias
+    # forms (e.g. `RSN- 75V` → `Fan Song`). Generic — works for any
+    # `<family> Variant` row, gated by upstream presence at resolution time.
+    for target_type, target_map in target_alias_maps.items():
+        if not target_map:
+            continue
+        existing = alias_map_by_entity_type.setdefault(target_type, {})
+        for alias_key, canonical in target_map.items():
+            existing.setdefault(alias_key, canonical)
 
     overlay = TableOverlay(
         alias_map_by_entity_type=alias_map_by_entity_type,
@@ -1327,6 +1338,52 @@ def extract_table_overlay(doc_json: dict) -> tuple["TableOverlay", dict]:
     return overlay, stats
 
 
+# 2026-05-17 (Rec 2): two generic alias-shape transforms used to register
+# target-side aliases for cross-entity rows. Both are document-agnostic:
+# OCR-space collapse handles common Docling artifacts; family-name strip
+# handles any `<X> Variant` label, not just specific equipment.
+
+def _normalize_target_alias_key(s: str) -> str:
+    """Match the resolver's `normalize_evidence_text` shape: uppercased +
+    whitespace-collapsed. Used so registered alias keys collide with
+    resolver lookups."""
+    if not s:
+        return ""
+    return " ".join(str(s).upper().split())
+
+
+def _normalize_ocr_spaces(alias: str) -> str:
+    """Collapse `<token>- <token>` (dash followed by whitespace) to
+    `<token>-<token>` — a common Docling OCR pattern in hyphenated
+    equipment designations. Generic — no equipment-specific logic.
+
+    Example: `RSN- 75V` → `RSN-75V`, `Some-  Token` → `Some-Token`.
+    """
+    if not alias:
+        return alias
+    import re as _re
+    return _re.sub(r"-\s+", "-", alias.strip())
+
+
+def _extract_cross_entity_family_name(label: str) -> str | None:
+    """If the cross-entity-row label is of the form `<family name>
+    Variant(s)`, return `<family name>` stripped. Otherwise return None.
+
+    Generic over any `<X> Variant` label — no equipment names hardcoded.
+    The returned family name is only USEFUL as a canonical bridge if the
+    same family name happens to be in the upstream catalog for the target
+    entity type; the resolver checks that at lookup time.
+    """
+    if not label:
+        return None
+    import re as _re
+    m = _re.match(r"^(.*?)\s+variants?\s*$", label.strip(), _re.IGNORECASE)
+    if not m:
+        return None
+    family = m.group(1).strip()
+    return family or None
+
+
 def _emit_facts_and_hints(
     table: dict,
     *,
@@ -1334,7 +1391,7 @@ def _emit_facts_and_hints(
     winner_entity_type: str,
     data_col_starts: list[int],
     stats: dict,
-) -> tuple[list, list]:
+) -> tuple[list, list, dict[str, dict[str, str]]]:
     """Walk spec rows + cross-entity-ref rows; emit TableFacts and
     CrossEntityHints. Wraps the existing _table_facts.py primitives:
     extract_label_rows, detect_section_context, resolve_alias,
@@ -1352,6 +1409,11 @@ def _emit_facts_and_hints(
 
     facts: list = []
     hints: list = []
+    # 2026-05-17 (Rec 2): {target_entity_type → {normalized_alias_key → canonical}}
+    # Built from cross-entity rows. Returned to caller for merging into the
+    # overlay's alias_map_by_entity_type. Empty dict when there are no
+    # cross-entity rows OR no family-name bridge available.
+    target_alias_maps: dict[str, dict[str, str]] = {}
 
     if winner_entity_type == "MISSILE_SYSTEM":
         candidate_passes = (
@@ -1368,7 +1430,7 @@ def _emit_facts_and_hints(
         )
         target_for_cross_ref = "MISSILE_SYSTEM"
     else:
-        return [], []
+        return [], [], {}
 
     # Map data_col_starts → canonical
     col_to_canonical = {
@@ -1379,11 +1441,11 @@ def _emit_facts_and_hints(
 
     shape = detect_table_shape(table)
     if shape == Shape.OTHER:
-        return [], []
+        return [], [], {}
 
     rows = extract_label_rows(table, shape)
     if not rows:
-        return [], []
+        return [], [], {}
 
     sectioned = detect_section_context(rows)
 
@@ -1400,6 +1462,13 @@ def _emit_facts_and_hints(
         # accidentally collapsed into the missile alias cluster).
         cross_target = _classify_cross_entity_ref(label_text)
         if cross_target == target_for_cross_ref:
+            # 2026-05-17 (Rec 2): family-name bridge — if the row label
+            # parses as `<family> Variant(s)`, that family name is the
+            # canonical we'll map all this row's aliases to. The resolver
+            # gates the actual lookup on upstream presence, so registering
+            # the bridge is safe even when no such canonical exists.
+            family_canonical = _extract_cross_entity_family_name(label_text)
+            target_map = target_alias_maps.setdefault(cross_target, {}) if family_canonical else None
             for entity_col, cell_text in row["data_cells"].items():
                 target_alias = (cell_text or "").strip()
                 if not target_alias:
@@ -1417,6 +1486,18 @@ def _emit_facts_and_hints(
                     ))
                 except Exception:
                     stats["facts_skipped_construct_fail"] += 1
+                # Register alias forms IFF we have a family_canonical
+                # bridge. setdefault preserves first-write-wins so a
+                # later identical alias on another row can't clobber.
+                if target_map is not None:
+                    raw_key = _normalize_target_alias_key(target_alias)
+                    target_map.setdefault(raw_key, family_canonical)
+                    ocr_norm = _normalize_ocr_spaces(target_alias)
+                    if ocr_norm and ocr_norm != target_alias:
+                        target_map.setdefault(
+                            _normalize_target_alias_key(ocr_norm),
+                            family_canonical,
+                        )
             continue
 
         # Identity rows produce alias_map only — already handled in
@@ -1465,4 +1546,4 @@ def _emit_facts_and_hints(
                 # section).
                 break
 
-    return facts, hints
+    return facts, hints, target_alias_maps

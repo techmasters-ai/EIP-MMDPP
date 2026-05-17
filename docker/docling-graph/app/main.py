@@ -643,6 +643,7 @@ def run_extraction_pass(
             _replace_raw_table_refs_in_body_children,
             detect_unit_convention,
             is_table_relevant_for_pass,
+            SYNTH_ELIGIBLE_PASSES,
         )
         # 2026-05-16: per-pass + per-table synth-only policy. Generalization
         # over the SA-2-specific "kinematics-only" allowlist. The decision
@@ -658,12 +659,26 @@ def run_extraction_pass(
         _body_children = _body.setdefault("children", [])
         _next_text_idx = len(_texts_list)
         _synth_count = 0
+        _skipped_count = 0
+        # 2026-05-17 (Rec 3 part B): differentiate per-pass behavior for
+        # non-relevant tables. Pass shape determines whether irrelevant
+        # synthesized table blocks should be appended as "extra context"
+        # or skipped entirely:
+        #   * Identity/prose passes (NOT in SYNTH_ELIGIBLE_PASSES) —
+        #     append irrelevant synth refs to end of body.children. v9
+        #     behavior preserved; identity passes quietly benefit from
+        #     the extra entity-name context.
+        #   * Numeric/spec passes (in SYNTH_ELIGIBLE_PASSES) — skip
+        #     irrelevant synth refs entirely. They're noise: irrelevant
+        #     synthesized blocks compete with prose evidence and can
+        #     destabilize entity naming for the pass.
+        _pass_is_numeric_spec = pass_name in SYNTH_ELIGIBLE_PASSES
+
         # Per-table decision: is THIS table relevant to the active pass?
         # If yes → synth refs replace raw ref in-place at original position.
-        # If no  → synth refs are appended to end of body.children (v9
-        #          behavior) and the raw #/tables/N $ref is left in place.
+        # If no  → behavior depends on pass shape (see above).
         _synth_only_table_refs: dict[str, list[str]] = {}  # synth-only tables
-        _append_synth_refs: list[str] = []                 # non-relevant: append-to-end
+        _append_synth_refs: list[str] = []                 # non-relevant: append-to-end (identity passes only)
         for _nt in _normalized:
             _table_ref = f"#/tables/{_nt.table_index}"
             _is_relevant = is_table_relevant_for_pass(pass_name, _nt)
@@ -673,6 +688,12 @@ def run_extraction_pass(
             # once the metadata-pass extension lands (see
             # docs/document_metadata_pass_extension.md).
             _unit_convention = detect_unit_convention(_nt.table_index, docling_document_json)
+            # If non-relevant AND pass is numeric/spec: skip synthesis entirely
+            # — we don't even need to render the chunks for a table whose
+            # content the pass doesn't care about.
+            if not _is_relevant and _pass_is_numeric_spec:
+                _skipped_count += 1
+                continue
             for _gtc in render_for_graph(
                 _nt,
                 token_limit_whole=table_whole_limit(pass_name),
@@ -690,17 +711,19 @@ def run_extraction_pass(
                 else:
                     _append_synth_refs.append(_synth_ref)
                 _synth_count += 1
-        # Append non-relevant synth refs at the end of body.children (v9
-        # behavior preserved for tables whose pass-mismatch means we want
-        # them as extra context, not as the sole table representation).
+        # Append non-relevant synth refs at the end of body.children.
+        # Only reachable for identity/prose passes (numeric/spec passes
+        # skipped non-relevant tables entirely above).
         for _ref in _append_synth_refs:
             _body_children.append({"$ref": _ref})
-        if _synth_count:
+        if _synth_count or _skipped_count:
             logger.info(
                 "table_normalization: synthesized %d TextItems for pass=%s "
-                "(normalized %d tables, synth-only=%d, append-to-end=%d)",
+                "(normalized %d tables, synth-only=%d, append-to-end=%d, "
+                "skipped-non-relevant=%d)",
                 _synth_count, pass_name, len(_normalized),
                 len(_synth_only_table_refs), len(_append_synth_refs),
+                _skipped_count,
             )
 
         if is_suppress_raw_table_markdown_enabled():

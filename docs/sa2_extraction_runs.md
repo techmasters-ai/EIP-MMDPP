@@ -148,6 +148,42 @@ recent entry is at the bottom.
 
 ---
 
+## Run OPTIONS-A+C+REVIEW-FIXES — Steps 1-3 from outside-reviewer handoff
+
+- **Date:** 2026-05-16 20:54 → 2026-05-17 02:39 (local)
+- **Commit:** `d9647e3 feat(extraction): restore system_links + generalize table relevance + production-shape deterministic min_altitude_km`
+- **Wall-clock:** 5h 45m
+- **Captured fixtures:** `tests/fixtures/sa2/78673393-..._{pass}_response.json` for all 5 passes; summary at `..._extraction_counts_today.json`
+- **Full handoff doc:** `docs/sa2_run_post_review_handoff.md` (stats + analysis + 5 ranked fixes)
+- **Changes vs OPTIONS-A+C-FULL:**
+  - Type-segregated `_resolve_ref` + `_build_upstream_name_map_by_type` for system_links cross-entity-hint resolution (prevents cross-type leak — fixed via outside review)
+  - Entity-type qualification on `is_table_relevant_for_pass` (row labels AND identity context AND caption-keyword scoping; logistics/comms/platform false positives blocked)
+  - Production-shape `_mechanically_supported_missile_fields` (entity-scoped via `_extract_synth_block_for_entity`; unit-evidence gated via `_evidence_has_si_unit_hint`)
+  - Narrowed caption hints (dropped `"sensor"`, `"weapon"` per review)
+- **Per-pass results vs v9:**
+
+| pass | v9 ent | new ent | Δent | v9 fills | new fills | Δfills | v9 avg | new avg | truncations | hard-timeouts |
+|------|------:|--------:|-----:|---------:|----------:|-------:|-------:|--------:|------:|------:|
+| `radar_identity` | 24 | **26** | **+2** | 26 | **32** | **+6** | 1.08 | **1.23** | 0 | 0 |
+| `radar_power_rf` | 42 | 42 | tied | 25 | 24 | −1 | 0.60 | 0.57 | 0 | 0 |
+| `missile_identity` | 44 | 43 | −1 | 62 | 61 | −1 | 1.41 | 1.42 | 0 | 0 |
+| `missile_kinematics` | 40 | **42** | **+2** | 20 | **44** | **+24** | 0.50 | **1.05** | 3 | **3** |
+| `system_links` | 30 rel | **8 rel** | **−22** | — | — | — | 1.00 | 1.00 | 0 | 0 |
+| **TOTAL ENT** | **150** | **153** | **+3 (+2%)** | | | | | | | |
+| **TOTAL FILLS** | | | | **133** | **161** | **+28 (+21%)** | | | | |
+| **TOTAL REL** | **30** | **8** | **−22 (−73%)** | | | | | | | |
+
+- **Verdict:** **Mixed — fills improved 21% but system_links regressed further (8 vs prior 19).** Diagnosis: NOT a regression from my type-segregation. Of 10 cross-entity hints, only 1 resolved because the overlay's `alias_map_by_entity_type` has only `MISSILE_SYSTEM` keys — no `RADAR_SYSTEM` bridge for OCR'd radar variants like `RSN- 75V`. The other 7 relationships are LLM-emitted prose CUES (stochastic vs prior run's 18).
+- **Diagnostics:** 3 TRUNCATION_PERSISTS_RETRYING (recovered at 65K). 3 BATCH_HARD_TIMEOUTs in `missile_kinematics` (batches 37/51/52 hung >3h, library soft-failed silently). 145 unit tests pass.
+- **★STRONGEST★ on:** total filled properties (+28 vs v9). Single-pass Phase B still ★STRONGEST★ on kinematics fill count (49 vs this run's 44 — likely dropped 5 due to the 3 hard-timeouts).
+- **Revert:** the per-table relevance + min_altitude fixes are pure wins and should stay. If system_links regression is unacceptable, revert ONLY the `_resolve_ref` change in `evidence_gate.py:1046-1101` and the call-site changes in `_postprocess_air_defense_system_links` — would restore prior 19-rel baseline (still below v9's 30 but closer). Better: implement Fix A from the handoff doc (populate RADAR_SYSTEM alias map).
+- **Pending follow-up (handoff doc):**
+  1. **Fix A** — populate `alias_map_by_entity_type["RADAR_SYSTEM"]` from cross-entity-ref columns (recovers ~9 promoted hints)
+  2. **Fix C** — add `service_postprocess.unresolved_hint_samples` diagnostic (observability)
+  3. **Fix B** — investigate the 3 hung kinematics batches (could add 5-10 fills)
+
+---
+
 ## Run OPTIONS-A+C-FULL — full 5-pass with per-pass+per-table relevance gate + caption/prose unit detection
 
 - **Date:** 2026-05-16 15:50 → 21:00 UTC (this session)

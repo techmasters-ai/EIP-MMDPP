@@ -1202,7 +1202,12 @@ def _postprocess_air_defense_system_links(
     # v8a: promote cross_entity_hints to ASSOCIATED_WITH edges.
     # 2026-05-16: use _resolve_ref so unmatched hints fall back to the
     # overlay's alias_map_by_entity_type before being discarded.
+    # 2026-05-17 (Rec 1): collect unresolved-hint diagnostics so the
+    # postprocess output exposes WHY hints fail to promote.
     promoted: list[dict[str, Any]] = []
+    unresolved_samples: list[dict[str, Any]] = []
+    unresolved_count = 0
+    _UNRESOLVED_SAMPLE_CAP = 20
     if cross_entity_hints:
         for hint in cross_entity_hints:
             source_name = getattr(hint, "source_canonical", None) or (
@@ -1228,6 +1233,23 @@ def _postprocess_air_defense_system_links(
                 name_to_ref_by_type, alias_map_by_entity_type,
             )
             if not source_ref or not target_ref:
+                unresolved_count += 1
+                if len(unresolved_samples) < _UNRESOLVED_SAMPLE_CAP:
+                    if not source_ref and not target_ref:
+                        reason = "both_unresolved"
+                    elif not source_ref:
+                        reason = "source_unresolved"
+                    else:
+                        reason = "target_unresolved"
+                    unresolved_samples.append({
+                        "source_alias": source_name,
+                        "source_type": source_entity_type,
+                        "target_alias": target_name,
+                        "target_type": target_entity_type,
+                        "source_resolved": source_ref is not None,
+                        "target_resolved": target_ref is not None,
+                        "reason": reason,
+                    })
                 continue
             if source_ref == target_ref:
                 continue
@@ -1244,6 +1266,14 @@ def _postprocess_air_defense_system_links(
             out.append(edge)
     if promoted:
         stats["promoted_from_cross_entity_hints"] = promoted
+    # Rec 1: always emit unresolved-hint diagnostics (including the count=0
+    # case) so downstream callers can distinguish "no hints were generated"
+    # from "hints generated, all resolved" from "hints generated, N failed".
+    if cross_entity_hints is not None:
+        stats["unresolved_cross_entity_hints"] = {
+            "count": unresolved_count,
+            "samples": unresolved_samples,
+        }
 
     # Legacy evidence-text fallback: only fires when nothing else produced
     # edges (preserves the prior behavior for docs without table hints).

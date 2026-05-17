@@ -170,6 +170,14 @@ services:
       DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS: ${DOCLING_GRAPH_LLM_MAX_OUTPUT_TOKENS:-8192}
       DOCLING_GRAPH_LLM_CONTEXT_LIMIT: ${DOCLING_GRAPH_LLM_CONTEXT_LIMIT:-131072}
       DOCLING_GRAPH_LLM_TIMEOUT: ${DOCLING_GRAPH_LLM_TIMEOUT:-72000}
+      # Per-batch hard timeout (seconds) used by the BATCH_HARD_TIMEOUT
+      # watchdog patch (docker/docling-graph/patches/0001-orchestrator-
+      # batch-hard-timeout.patch). Default 3600s (1h) per the patch.
+      # .env bumps to 10800s (3h) since v9 to allow the second-tier 65K
+      # truncation retry to complete. NOTE: this passthrough was missing
+      # prior to 2026-05-17 — the env var lived in .env but never reached
+      # the container, so the watchdog silently used its hardcoded default.
+      DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS: ${DOCLING_GRAPH_BATCH_HARD_TIMEOUT_SECONDS:-3600}
       # HybridChunker max tokens per chunk (config_builder.py:40, default 512).
       # Bumped to keep large spec tables atomic in a single chunk so in-table
       # section headers (e.g., "1st Stage" / "2nd Stage") stay co-located with
