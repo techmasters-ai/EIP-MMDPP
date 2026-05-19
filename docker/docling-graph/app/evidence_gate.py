@@ -462,6 +462,101 @@ _FALLBACK_RADAR_ROLE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _RADAR_ROLE_WINDOW_CHARS = 80
 
 
+# Step 7: precision filter — auxiliary-equipment label markers.
+# When an entity emitted into radar_identity is labeled in evidence_text
+# as one of these non-radar equipment classes, drop it from the radar
+# output. Generic, no equipment names — operates on context labels.
+#
+# Markers are matched as substring against the ~120-char window
+# following the entity name occurrence. "Radar" appearing as part of the
+# label (e.g. "Radar head van") is allowed via the explicit radar-
+# context whitelist below.
+_NON_RADAR_CONTEXT_MARKERS: tuple[str, ...] = (
+    "POWER GENERATOR",
+    "TRAINING EMULATOR",
+    "RADIO RELAY VAN", "RADIO RELAY",
+    "DECONTAMINATION VAN", "DECONTAMINATION",
+    "FUEL TANK",
+    "OXIDISER TANK", "OXIDIZER TANK",  # AmE + BrE
+    "OXIDISER", "OXIDIZER",  # standalone tank labels in tables
+    "TRANSPORTER/TRANSLOADER", "TRANSPORTER",
+    "TRANSLOADER",
+    "LAUNCHER, SINGLE RAIL", "SINGLE RAIL LAUNCHER",
+    "LAUNCHER,",  # table cell shape "<name> Launcher, <variant>"
+)
+
+# Context phrases that CONTAIN words from the non-radar markers above
+# but actually describe radar equipment. Whitelist — if any of these
+# substrings appear in the window, the entity is NOT auxiliary.
+_RADAR_CONTEXT_WHITELIST: tuple[str, ...] = (
+    "RADAR HEAD VAN",
+    "RADAR OPERATOR VAN",
+    "RADAR ELECTRONICS VAN",
+    "ACQUISITION RADAR", "ENGAGEMENT RADAR", "GUIDANCE RADAR",
+    "HEIGHTFINDING RADAR", "HEIGHT-FINDING RADAR", "HEIGHT FINDER",
+    "EARLY WARNING RADAR", "SURVEILLANCE RADAR", "SEARCH RADAR",
+    "TRACKING RADAR", "FIRE CONTROL RADAR", "FIRE-CONTROL RADAR",
+    "RANGEFINDING RADAR",
+)
+
+_NON_RADAR_CONTEXT_WINDOW_CHARS = 120
+
+
+def _is_non_radar_context(system_name: str, evidence_text: str) -> bool:
+    """True when the entity's emitted name appears in evidence_text in a
+    context labeled as auxiliary (non-radar) equipment.
+
+    Algorithm:
+      1. Find the entity name occurrence(s) in evidence_text.
+      2. For each occurrence, examine the ~120-char window after the name.
+      3. If any radar-context whitelist phrase is in the window → False
+         (this is a radar, not auxiliary).
+      4. Else if any non-radar marker is in the window → True (drop it).
+      5. Else → False (no evidence either way; let LLM emission stand).
+
+    Generic — no equipment names anywhere. Operates on context labels.
+    """
+    if not isinstance(system_name, str) or not system_name:
+        return False
+    normalized_name = normalize_evidence_text(system_name)
+    if not normalized_name or not evidence_text:
+        return False
+    found_match = False
+    for m in re.finditer(re.escape(normalized_name), evidence_text):
+        found_match = True
+        end = m.end()
+        window = evidence_text[end:end + _NON_RADAR_CONTEXT_WINDOW_CHARS]
+        # Whitelist first — if there's any genuine radar-context phrase
+        # in the window, this is a radar.
+        if any(w in window for w in _RADAR_CONTEXT_WHITELIST):
+            return False
+        # Otherwise, look for non-radar markers.
+        if any(marker in window for marker in _NON_RADAR_CONTEXT_MARKERS):
+            return True
+    if not found_match:
+        return False
+    return False
+
+
+# Step 5: missile launch-angle patterns. Anchored on explicit launch/
+# elevation context. Generic — no equipment names anywhere.
+# Label form: "MAX LAUNCH ANGLE: 60°" / "LAUNCH ANGLE: 60 DEGREES"
+_LAUNCH_ANGLE_LABEL_RE = re.compile(
+    r"\b(?:MAX\s+)?LAUNCH\s+ANGLE\s*:?\s*(\d+(?:\.\d+)?)\s*(?:DEGREES?|°)",
+    re.IGNORECASE,
+)
+# Elevation form: "LAUNCH ELEVATION 45°" / "LAUNCH ELEVATION: 45 DEGREES"
+_LAUNCH_ELEVATION_RE = re.compile(
+    r"\bLAUNCH\s+ELEVATION\s*:?\s*(\d+(?:\.\d+)?)\s*(?:DEGREES?|°)",
+    re.IGNORECASE,
+)
+# Prose form: "launched (the) (missile) at 60 degrees"
+_LAUNCHED_AT_RE = re.compile(
+    r"\bLAUNCHED?\s+(?:THE\s+)?(?:MISSILE\s+)?AT\s+(\d+(?:\.\d+)?)\s*DEGREES?",
+    re.IGNORECASE,
+)
+
+
 def _infer_radar_emitter_function(system_name: Any, evidence_text: str) -> str | None:
     """Infer `emitter_function` from prose context.
 
@@ -714,6 +809,7 @@ def _postprocess_air_defense_radars(
         "recalled_radars": recovered_names,
         "unsupported_properties_cleared": {},
         "display_name_canonicalized": [],
+        "non_radar_dropped": [],
     }
     cleaned_rows: list[Any] = []
 
@@ -723,6 +819,16 @@ def _postprocess_air_defense_radars(
             continue
         item = dict(row)
         system_name = item.get("system_name")
+        # Step 7: precision filter — drop entities labeled in evidence as
+        # auxiliary equipment (power generator, fuel tank, training
+        # emulator, radio relay, transloader, launcher, etc.) regardless
+        # of what the LLM emitted. Diagnostic records each drop.
+        if isinstance(system_name, str) and _is_non_radar_context(system_name, evidence_text):
+            stats["non_radar_dropped"].append({
+                "system_name": system_name,
+                "reason": "auxiliary_equipment_context_in_evidence",
+            })
+            continue
         inferred_emitter = _infer_radar_emitter_function(system_name, evidence_text)
         if inferred_emitter is not None:
             if item.get("emitter_function") != inferred_emitter:
@@ -766,6 +872,8 @@ def _postprocess_air_defense_radars(
         stats.pop("unsupported_properties_cleared")
     if not stats["display_name_canonicalized"]:
         stats.pop("display_name_canonicalized")
+    if not stats["non_radar_dropped"]:
+        stats.pop("non_radar_dropped")
     return updated, stats
 
 
@@ -942,6 +1050,21 @@ def _mechanically_supported_missile_fields(
     if weight_match:
         supported["total_mass_kg"] = round(float(weight_match.group("weight").replace(",", "")) / 2.205, 1)
 
+    # Step 5: launch-angle evidence patterns — entity-agnostic, anchored to
+    # explicit launch/elevation context so unrelated "N degrees" phrases
+    # (e.g. "rotated 360 degrees" referring to launcher azimuth) do not
+    # false-trigger. Generic — no equipment names. First match wins.
+    angle_match = (
+        _LAUNCH_ANGLE_LABEL_RE.search(evidence_text)
+        or _LAUNCH_ELEVATION_RE.search(evidence_text)
+        or _LAUNCHED_AT_RE.search(evidence_text)
+    )
+    if angle_match:
+        try:
+            supported["max_launch_angle_deg"] = float(angle_match.group(1))
+        except (ValueError, IndexError):
+            pass
+
     # Synth-table block channel — entity-scoped only.
     block = _extract_synth_block_for_entity(
         evidence_text, system_name=system_name, aliases=aliases,
@@ -1098,11 +1221,15 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
     # 2026-05-16: min_altitude_km added (was previously hard-cleared by the
     # below "unconditional-null" branch — see run history at
     # docs/sa2_extraction_runs.md for the regression that exposed this).
+    # 2026-05-19 (Step 5): max_launch_angle_deg added — evidence parser
+    # now reads anchored angle phrases (LAUNCH ANGLE / LAUNCHED AT N
+    # DEGREES / LAUNCH ELEVATION). Unconditional null branch removed.
     for field_name in (
         "min_intercept_km",
         "max_intercept_km",
         "min_altitude_km",
         "max_altitude_km",
+        "max_launch_angle_deg",
         "total_mass_kg",
     ):
         if field_name in supported_numeric:
@@ -1114,12 +1241,8 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
                 cleared.append(field_name)
 
     # PRESERVED: unconditional-null for fields whose contract is "always
-    # null" until evidence support is wired up. min_altitude_km was removed
-    # from this list on 2026-05-16 once mechanical Min Alt parsing and
-    # evidence verification were added above.
-    if item.get("max_launch_angle_deg") is not None:
-        item["max_launch_angle_deg"] = None
-        cleared.append("max_launch_angle_deg")
+    # null" until evidence support is wired up. min_altitude_km removed
+    # 2026-05-16; max_launch_angle_deg removed 2026-05-19 (Step 5).
     if item.get("missile_photo") is not None:
         item["missile_photo"] = None
         cleared.append("missile_photo")

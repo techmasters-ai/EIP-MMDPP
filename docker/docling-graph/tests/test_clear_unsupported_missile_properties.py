@@ -125,10 +125,22 @@ def test_text_field_preserved_by_exact_branch():
     assert item["nomenclature"] == "5V55K"
 
 
-def test_unconditional_null_field():
-    """max_launch_angle_deg always nulls regardless of evidence (Session 1 contract)."""
+def test_max_launch_angle_deg_preserved_when_evidence_supports():
+    """Step 5 (2026-05-19): max_launch_angle_deg evidence parser now reads
+    anchored angle phrases. The Session 1 unconditional-null contract was
+    superseded — explicit launch-angle phrases preserve the value."""
     item = {"system_name": "5V55K", "max_launch_angle_deg": 85.0}
-    evidence = "5V55K maximum launch angle is 85 degrees."
+    evidence = "5V55K maximum launch angle: 85 degrees."
+    cleared = _clear(item, evidence)
+    assert "max_launch_angle_deg" not in cleared
+    assert item["max_launch_angle_deg"] == 85.0
+
+
+def test_max_launch_angle_deg_still_clears_when_no_evidence():
+    """When evidence has NO anchored launch-angle phrase, the field still
+    clears — same evidence-discipline as other numeric fields."""
+    item = {"system_name": "5V55K", "max_launch_angle_deg": 85.0}
+    evidence = "5V55K is a Russian SAM missile."  # no launch-angle phrase
     cleared = _clear(item, evidence)
     assert "max_launch_angle_deg" in cleared
     assert item["max_launch_angle_deg"] is None
