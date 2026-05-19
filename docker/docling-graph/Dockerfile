@@ -101,6 +101,10 @@ COPY ontology_bundles /app/ontology_bundles
 # __init__.py from line 91's COPY).
 COPY app/services/__init__.py /app/app/services/__init__.py
 COPY app/services/table_normalization /app/app/services/table_normalization
+# Step 4 (2026-05-19): spec_overlay parses labeled prose key-value blocks
+# into structured facts that evidence_gate consumes for mechanical
+# numeric population. Generic — no equipment names.
+COPY app/services/spec_overlay.py /app/app/services/spec_overlay.py
 
 # Apply local patches to the vendored docling-graph library, then install
 # the patched source as an editable package so Python imports from /app/repo

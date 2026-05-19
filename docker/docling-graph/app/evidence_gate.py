@@ -538,6 +538,50 @@ def _is_non_radar_context(system_name: str, evidence_text: str) -> bool:
     return False
 
 
+# Step 4: spec fact overlay bridge — applies parsed prose spec facts to
+# the `supported` dict in `_mechanically_supported_missile_fields`.
+# Only fills fields that don't already have a value from the synth-block
+# or museum-display channels (those are entity-scoped / higher priority).
+# Generic — operates purely on canonical labels.
+_SPEC_OVERLAY_FIELD_MAP: dict[str, str] = {
+    "max_range":     "max_intercept_km",
+    "min_range":     "min_intercept_km",
+    "max_altitude":  "max_altitude_km",
+    "min_altitude":  "min_altitude_km",
+    "launch_angle":  "max_launch_angle_deg",
+    "weight":        "total_mass_kg",
+}
+
+
+def _apply_spec_overlay_to_supported(supported: dict[str, float], evidence_text: str) -> None:
+    """Parse prose spec facts from `evidence_text` and fill `supported`
+    fields that don't already have a value. Bridges
+    `app.services.spec_overlay` into the missile evidence path. Soft
+    import — if spec_overlay isn't available (older container image),
+    the function is a no-op."""
+    try:
+        from app.services.spec_overlay import parse_spec_facts_from_evidence_text
+    except Exception:
+        return
+    if not evidence_text:
+        return
+    facts = parse_spec_facts_from_evidence_text(evidence_text)
+    for fact in facts:
+        target_field = _SPEC_OVERLAY_FIELD_MAP.get(fact.label_canonical)
+        if not target_field or target_field in supported:
+            continue
+        # Prefer the metric-converted value matching the field's unit class
+        if target_field.endswith("_km") and fact.value_metric_km is not None:
+            supported[target_field] = round(fact.value_metric_km, 3)
+        elif target_field.endswith("_kg") and fact.value_metric_kg is not None:
+            supported[target_field] = round(fact.value_metric_kg, 3)
+        elif target_field == "max_launch_angle_deg":
+            try:
+                supported[target_field] = float(fact.value_raw)
+            except (ValueError, TypeError):
+                pass
+
+
 # Step 5: missile launch-angle patterns. Anchored on explicit launch/
 # elevation context. Generic — no equipment names anywhere.
 # Label form: "MAX LAUNCH ANGLE: 60°" / "LAUNCH ANGLE: 60 DEGREES"
@@ -1064,6 +1108,12 @@ def _mechanically_supported_missile_fields(
             supported["max_launch_angle_deg"] = float(angle_match.group(1))
         except (ValueError, IndexError):
             pass
+
+    # Step 4: spec fact overlay — parse labeled prose key-value blocks
+    # from evidence_text (single-line, bullet-pair, paired max/min forms).
+    # Generic, no equipment names; only fills fields the synth-block
+    # channel didn't already populate.
+    _apply_spec_overlay_to_supported(supported, evidence_text)
 
     # Synth-table block channel — entity-scoped only.
     block = _extract_synth_block_for_entity(
