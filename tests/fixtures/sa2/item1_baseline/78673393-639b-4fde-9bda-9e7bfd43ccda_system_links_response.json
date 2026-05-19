@@ -1,0 +1,1103 @@
+{
+  "bundle_key": "air_defense_v3",
+  "pass_name": "system_links",
+  "pass_output": {
+    "relationships": [
+      {
+        "rel_type": "CUES",
+        "from_ref_id": "RADAR_SYSTEM:Spoon Rest",
+        "to_ref_id": "RADAR_SYSTEM:Fan Song",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Vershina",
+        "to_ref_id": "RADAR_SYSTEM:Fan Song",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Side Net",
+        "to_ref_id": "RADAR_SYSTEM:Fan Song",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Fan Song",
+        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Spoon Rest",
+        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Konus",
+        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Vershina",
+        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Side Net",
+        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Amazonka",
+        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "CUES",
+        "from_ref_id": "RADAR_SYSTEM:Amazonka",
+        "to_ref_id": "RADAR_SYSTEM:Fan Song",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Fan Song E",
+        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "RADAR_SYSTEM:Konus",
+        "to_ref_id": "RADAR_SYSTEM:Fan Song",
+        "confidence": 0.9
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:1D",
+        "to_ref_id": "RADAR_SYSTEM:RSNA- 75",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:13D",
+        "to_ref_id": "RADAR_SYSTEM:RSN-75",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:13DM",
+        "to_ref_id": "RADAR_SYSTEM:RSN- 75M",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:13DA",
+        "to_ref_id": "RADAR_SYSTEM:RSN- 75V1",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:13DAM",
+        "to_ref_id": "RADAR_SYSTEM:RSN- 75V1",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:20D",
+        "to_ref_id": "RADAR_SYSTEM:RSN- 75V",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:20DP",
+        "to_ref_id": "RADAR_SYSTEM:RSN- 75V",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:20DSU",
+        "to_ref_id": "RADAR_SYSTEM:RSNA- 75M",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:5Ya23",
+        "to_ref_id": "RADAR_SYSTEM:RSN- 75M4",
+        "confidence": 1.0
+      },
+      {
+        "rel_type": "ASSOCIATED_WITH",
+        "from_ref_id": "MISSILE_SYSTEM:15D",
+        "to_ref_id": "RADAR_SYSTEM:RSN- 75M",
+        "confidence": 1.0
+      }
+    ]
+  },
+  "metadata": {
+    "node_count": 1,
+    "edge_count": 22,
+    "node_types": {
+      "SystemLinksPass": 1
+    },
+    "edge_types": {
+      "CUES": 2,
+      "ASSOCIATED_WITH": 20
+    },
+    "extraction_contract": "delta",
+    "gleaning_passes": 0,
+    "resolvers_applied": false,
+    "quality_gate_passed": true,
+    "validation_pass_applied": false,
+    "validation_pass_edges_added": 0,
+    "upstream_ref_count": 68,
+    "upstream_preamble_applied": true
+  },
+  "model": "gemma4:31b",
+  "provider": "ollama",
+  "provenance": [],
+  "field_provenance": [],
+  "relationship_provenance": [],
+  "diagnostics": {
+    "contract": "delta",
+    "context": "DoclingDocument",
+    "chunk_count": 19,
+    "batch_count": 9,
+    "parallel_workers": 2,
+    "llm_batch_token_size": 4096,
+    "batch_timings": [
+      {
+        "batch_index": 0,
+        "elapsed_seconds": 822.3357706069946
+      },
+      {
+        "batch_index": 1,
+        "elapsed_seconds": 81.36315774917603
+      },
+      {
+        "batch_index": 2,
+        "elapsed_seconds": 57.559002161026
+      },
+      {
+        "batch_index": 3,
+        "elapsed_seconds": 90.20494937896729
+      },
+      {
+        "batch_index": 4,
+        "elapsed_seconds": 466.19114542007446
+      },
+      {
+        "batch_index": 5,
+        "elapsed_seconds": 99.87619924545288
+      },
+      {
+        "batch_index": 6,
+        "elapsed_seconds": 64.08489799499512
+      },
+      {
+        "batch_index": 7,
+        "elapsed_seconds": 113.18004059791565
+      },
+      {
+        "batch_index": 8,
+        "elapsed_seconds": 17.415242433547974
+      }
+    ],
+    "batch_errors": {},
+    "path_counts": {
+      "": 1,
+      "relationships[]": 22
+    },
+    "normalizer_stats": {
+      "unknown_path_dropped": 0,
+      "path_alias_repaired": 0,
+      "id_key_mismatch": 0,
+      "id_missing_required": 0,
+      "id_backfilled_from_properties": 0,
+      "node_id_inferred": 0,
+      "parent_id_inferred": 0,
+      "nested_property_dropped": 0,
+      "parent_ref_repaired": 0,
+      "parent_ref_missing": 0,
+      "unknown_path_salvaged": 0,
+      "salvaged_properties": 0,
+      "property_field_repaired": 0,
+      "unknown_path_examples": [],
+      "id_missing_required_by_path": {}
+    },
+    "dedup_policy": {
+      "": {
+        "node_type": "SystemLinksPass",
+        "identity_fields": [],
+        "fallback_text_fields": [],
+        "allowed_match_fields": [],
+        "is_entity": true
+      },
+      "relationships[]": {
+        "node_type": "SystemLinkRelationship",
+        "identity_fields": [],
+        "fallback_text_fields": [],
+        "allowed_match_fields": [],
+        "is_entity": false
+      }
+    },
+    "merge_stats": {
+      "descriptor_length_mismatch": 0,
+      "non_dict_filled_objects": 0,
+      "missing_parent_descriptor": 0,
+      "parent_lookup_miss": 0,
+      "attached_list_items": 0,
+      "attached_scalar_items": 0,
+      "orphan_attached": 0,
+      "orphan_dropped": 0,
+      "parent_lookup_repaired_local_id": 0,
+      "parent_lookup_repaired_single_candidate": 0,
+      "parent_lookup_repaired_positional": 0,
+      "parent_lookup_repaired_canonical_id": 0,
+      "parent_lookup_repaired_best_effort": 0,
+      "attached_node_count": 20,
+      "parent_lookup_miss_examples": [],
+      "missing_parent_examples": []
+    },
+    "merge_core_stats": {
+      "node_inputs": 41,
+      "node_dedup_merges": 14,
+      "property_updates": 2,
+      "property_conflicts": 6,
+      "relationship_inputs": 0,
+      "relationship_dedup_replaced": 0,
+      "relationship_self_skipped": 0,
+      "relationship_keywords_capped": 0
+    },
+    "identity_filter": {
+      "identity_filter_dropped": 0,
+      "identity_filter_dropped_by_path": {}
+    },
+    "resolver": {
+      "enabled": true,
+      "mode": "semantic",
+      "merged_count": 0,
+      "merge_tiers": {
+        "resolver_fuzzy": 0,
+        "resolver_semantic": 0,
+        "resolver_identity": 0
+      },
+      "actions": [],
+      "skipped_reasons": []
+    },
+    "quality_gate": {
+      "ok": true,
+      "reasons": []
+    },
+    "diagnostics": {
+      "top_missing_id_paths": [],
+      "unknown_path_examples": [],
+      "parent_lookup_miss_examples": [],
+      "property_sparsity": {
+        "total_non_empty_properties": 73,
+        "root_non_empty_fields": 0,
+        "non_empty_properties_by_path": {
+          "": 1,
+          "relationships[]": 72
+        }
+      },
+      "orphan_count": 0,
+      "orphan_ratio": 0.0,
+      "orphans_by_parent_path": {},
+      "duplicate_canonical_identity_by_path": {},
+      "batch_split_retries": 0,
+      "split_batch_sizes": [],
+      "split_failures": 0
+    },
+    "quality_thresholds": {
+      "delta_quality_require_root": true,
+      "delta_quality_min_instances": 1,
+      "delta_quality_max_parent_lookup_miss": 4,
+      "delta_quality_adaptive_parent_lookup": true,
+      "delta_quality_require_relationships": false,
+      "delta_quality_require_structural_attachments": false,
+      "delta_quality_min_non_empty_properties": -1,
+      "delta_quality_min_root_non_empty_fields": -1,
+      "delta_quality_min_non_empty_by_path": {},
+      "delta_quality_max_orphan_ratio": -1.0,
+      "delta_quality_max_canonical_duplicates": -1
+    },
+    "library_log": "[LlmBackend] Initialized with:\n  • Client: OllamaChatClient\n  • Model: gemma4:31b\n[DocumentChunker] Initialized with:\n  • Tokenizer: sentence-transformers/all-MiniLM-L6-v2\n  • Chunk Max Tokens: 4096\n  • Merge Peers: True\n[DocumentProcessor] Initialized with Classic OCR pipeline (English, French)\n[ExtractorFactory] Created ManyToOneStrategy\n[Extraction] PATCH GATE: contract='delta' has_chunk_batches=True has_chunker=True => can_chunk_batch=True\n[Extraction] Using CHUNKED-BATCHES path (matches documented delta flow).\n[DocumentProcessor] Extracted 19 chunks with metadata\n[DeltaExtraction] Running delta extraction (19 chunks)...\n[DeltaExtraction] Calling LLM (batch mode)...\nTRUNCATION_DIAG: outcome=recovered_content prompt_chars=38971 first_len=0 retry_len=547 saved=trunc_1779112587817_recovered_content.json\nTRUNCATION_DIAG: outcome=recovered_content prompt_chars=43219 first_len=0 retry_len=2408 saved=trunc_1779112714828_recovered_content.json\nTRUNCATION_DIAG: outcome=recovered_content prompt_chars=44328 first_len=0 retry_len=2686 saved=trunc_1779113305725_recovered_content.json\n[LlmBackend] Successfully extracted data from DoclingDocument\n[GraphConverter] Pre-registering models for deterministic node IDs...\n[GraphConverter] Running automatic graph cleanup...\n[GraphCleaner] Starting cleanup: 1 nodes, 0 edges\n[GraphCleaner] Cleanup complete:\n  • Removed 0 phantom nodes\n  • Merged 0 duplicate nodes\n  • Removed 0 self-edges\n  • Removed 0 orphaned edges\n  • Removed 0 duplicate edges\n  • Capped keywords on 0 edges\n  • Result: 1 nodes (-0), 0 edges (-0)\nGraph has no edges (1 node(s) only). This can happen when extraction was salvaged and list entities were dropped.\n[GraphConverter] Graph structure validated successfully\n[GraphConverter] Final graph: 1 nodes, 0 edges\n  Registry: 1 entities across 1 classes\n[LlmBackend] Cleaned up resources\n[DocumentProcessor] Cleaned up resources\n",
+    "input_sanitize": {
+      "texts_in": 308,
+      "texts_dropped": 65
+    },
+    "service_identity_gate": {
+      "dropped_entities_by_field": {},
+      "dropped_entity_examples": {},
+      "evidence_text_nonempty": true
+    },
+    "service_pre_filter_counts": {
+      "node_count": 1,
+      "edge_count": 12,
+      "node_types": {
+        "SystemLinksPass": 1
+      },
+      "edge_types": {
+        "CUES": 2,
+        "ASSOCIATED_WITH": 10
+      },
+      "path_counts": {
+        "": 1,
+        "relationships[]": 12
+      }
+    },
+    "service_pre_filter_identity_examples": {},
+    "service_postprocess": {
+      "promoted_from_cross_entity_hints": [
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:1D",
+          "to_ref_id": "RADAR_SYSTEM:RSNA- 75",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:13D",
+          "to_ref_id": "RADAR_SYSTEM:RSN-75",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:13DM",
+          "to_ref_id": "RADAR_SYSTEM:RSN- 75M",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:13DA",
+          "to_ref_id": "RADAR_SYSTEM:RSN- 75V1",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:13DAM",
+          "to_ref_id": "RADAR_SYSTEM:RSN- 75V1",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:20D",
+          "to_ref_id": "RADAR_SYSTEM:RSN- 75V",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:20DP",
+          "to_ref_id": "RADAR_SYSTEM:RSN- 75V",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:20DSU",
+          "to_ref_id": "RADAR_SYSTEM:RSNA- 75M",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:5Ya23",
+          "to_ref_id": "RADAR_SYSTEM:RSN- 75M4",
+          "confidence": 1.0
+        },
+        {
+          "rel_type": "ASSOCIATED_WITH",
+          "from_ref_id": "MISSILE_SYSTEM:15D",
+          "to_ref_id": "RADAR_SYSTEM:RSN- 75M",
+          "confidence": 1.0
+        }
+      ],
+      "unresolved_cross_entity_hints": {
+        "count": 0,
+        "samples": []
+      }
+    },
+    "service_post_filter_counts": {
+      "node_count": 1,
+      "edge_count": 22,
+      "node_types": {
+        "SystemLinksPass": 1
+      },
+      "edge_types": {
+        "CUES": 2,
+        "ASSOCIATED_WITH": 20
+      },
+      "path_counts": {
+        "": 1,
+        "relationships[]": 22
+      }
+    },
+    "service_post_filter_identity_examples": {},
+    "service_table_overlay": {
+      "kill_switch_active_parser": false,
+      "tables_processed": 1,
+      "tables_skipped_unqualified": 0,
+      "tables_skipped_multi": 0,
+      "tables_skipped_other": 1,
+      "columns_skipped_no_canonical": 0,
+      "columns_with_canonical_via_fallback": 0,
+      "values_skipped_unparseable": 0,
+      "facts_skipped_construct_fail": 0,
+      "alias_map_size": 34,
+      "facts_count": 53,
+      "cross_entity_hints_count": 10
+    },
+    "raw_path_counts": {
+      "": 9,
+      "relationships[]": 18
+    }
+  },
+  "table_overlay": {
+    "alias_map_by_entity_type": {
+      "MISSILE_SYSTEM": {
+        "SA-75": "1D",
+        "SA-2A": "1D",
+        "1D": "1D",
+        "S-75": "15D",
+        "SA-2C": "20DP",
+        "13D": "13D",
+        "S-75M": "15D",
+        "SA-2D": "5Ya23",
+        "13DM": "13DM",
+        "S-75M1": "13DAM",
+        "13DA": "13DA",
+        "13DAM": "13DAM",
+        "S-75V": "20DP",
+        "20D": "20D",
+        "20DP": "20DP",
+        "S-75M2": "20DSU",
+        "20DSU": "20DSU",
+        "S-75M4": "5Ya23",
+        "5Ya23": "5Ya23",
+        "SA-2E": "15D",
+        "15D": "15D"
+      },
+      "RADAR_SYSTEM": {
+        "RSNA- 75": "Fan Song",
+        "RSNA-75": "Fan Song",
+        "RSN-75": "Fan Song",
+        "RSN- 75M": "Fan Song",
+        "RSN-75M": "Fan Song",
+        "RSN- 75V1": "Fan Song",
+        "RSN-75V1": "Fan Song",
+        "RSN- 75V": "Fan Song",
+        "RSN-75V": "Fan Song",
+        "RSNA- 75M": "Fan Song",
+        "RSNA-75M": "Fan Song",
+        "RSN- 75M4": "Fan Song",
+        "RSN-75M4": "Fan Song"
+      }
+    },
+    "facts": [
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 29.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "29000"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 34.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "34000"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 34.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "34000"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 45.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "45000"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 56.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "56000"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 76.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "76000"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 6.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "6000"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 6.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "6000"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.726,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10726"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.798,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10798"
+      },
+      {
+        "canonical_entity": "15D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 11.200000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "11200"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2163.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2163"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2283.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2283"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2283.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2283"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2289.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2289"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2289.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2289"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2391.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2391"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2391.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2391"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2397.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2397"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2406.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2406"
+      },
+      {
+        "canonical_entity": "15D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2450.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2450"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1135.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1135"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1007.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1007"
+      }
+    ],
+    "cross_entity_hints": [
+      {
+        "source_canonical": "1D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSNA- 75",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN-75",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DM",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DA",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V1",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DAM",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V1",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20DP",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20DSU",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSNA- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "5Ya23",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M4",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "15D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      }
+    ]
+  }
+}

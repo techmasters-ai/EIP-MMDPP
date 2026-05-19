@@ -1,21 +1,18 @@
 {
-  "captured_at": "2026-05-19T01:34:03+00:00",
+  "captured_at": "2026-05-18T04:51:59+00:00",
   "current_sha": "767d62fb43d647b2d06d33e4d34faee41e58f652",
   "corpus_files": [
-    "b77c48f9-3a27-473f-be05-fa7e73e5d6f5"
+    "78673393-639b-4fde-9bda-9e7bfd43ccda"
   ],
   "temperature": 0.1,
   "runs_per_doc": 1,
   "comparison_mode": "strict",
   "passes": [
     "radar_identity",
-    "radar_power_rf",
-    "missile_identity",
-    "missile_kinematics",
-    "system_links"
+    "missile_identity"
   ],
   "ingest_command": "doc was previously ingested via the standard pipeline (status COMPLETE in ingest.documents)",
-  "scoring_command": "python scripts/capture_sa2_baseline.py --doc-id b77c48f9-3a27-473f-be05-fa7e73e5d6f5 --temp 0.1 --runs 1",
+  "scoring_command": "python scripts/capture_sa2_baseline.py --doc-id 78673393-639b-4fde-9bda-9e7bfd43ccda --temp 0.1 --runs 1",
   "notes": [
     "Baseline captured with all master switches OFF (today's production behavior).",
     "Metric shape mirrors notebook sweep: entity_count + avg_fill + json_fail + relationships.",

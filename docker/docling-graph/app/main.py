@@ -694,11 +694,19 @@ def run_extraction_pass(
             if not _is_relevant and _pass_is_numeric_spec:
                 _skipped_count += 1
                 continue
+            # 2026-05-17 (Item 1): gate UNIT_HINT preamble to chunks that are
+            # actually numeric-extraction targets. Identity/raw-only passes
+            # receive synth context for entity-name visibility only; the
+            # UNITS: preamble biases the LLM toward unit-anchored fields
+            # and was implicated in the radar_identity/missile_identity
+            # pre-filter recall drop vs v9.
+            _emit_unit_hint = _is_relevant and _pass_is_numeric_spec
             for _gtc in render_for_graph(
                 _nt,
                 token_limit_whole=table_whole_limit(pass_name),
                 token_limit_column=table_column_limit(pass_name),
                 unit_convention=_unit_convention,
+                emit_unit_hint=_emit_unit_hint,
             ):
                 _captured_idx = _next_text_idx
                 _ti, _next_text_idx = _text_item_from_chunk(

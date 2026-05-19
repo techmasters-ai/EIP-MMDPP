@@ -138,8 +138,16 @@ def render_for_graph(
     token_limit_column: int,
     *,
     unit_convention: str | None = None,
+    emit_unit_hint: bool = True,
 ) -> list[GraphTableChunk]:
     """Render a NormalizedTable into graph-side chunks per §9 of the spec.
+
+    `emit_unit_hint` gates the UNITS: preamble. Caller should set this False
+    for identity / raw-only passes where the chunk is appended as context
+    rather than as a numeric-extraction target — the unit preamble can
+    bias the LLM toward unit-anchored field extraction at the expense of
+    entity-name recall. Numeric/spec passes (where chunks ARE the numeric
+    extraction target) should keep the default True.
 
     Decision tree:
       1. Shape.OTHER → one TABLE_WHOLE chunk carrying raw_markdown.
@@ -165,7 +173,7 @@ def render_for_graph(
     _hint_text = _unit_hint_for_convention(unit_convention)
 
     # 2. Whole-table rendering check
-    whole_text = _render_whole_table(table, emit_unit_hint=True, unit_hint_text=_hint_text)
+    whole_text = _render_whole_table(table, emit_unit_hint=emit_unit_hint, unit_hint_text=_hint_text)
     whole_tokens = count_bge_m3_tokens(whole_text)
     if whole_tokens <= token_limit_whole:
         return [GraphTableChunk(
@@ -183,7 +191,7 @@ def render_for_graph(
     # 3. Per-column emission
     out: list[GraphTableChunk] = []
     for col in table.columns:
-        col_text = _render_column_as_text(col, table, table.sections, emit_unit_hint=True, unit_hint_text=_hint_text)
+        col_text = _render_column_as_text(col, table, table.sections, emit_unit_hint=emit_unit_hint, unit_hint_text=_hint_text)
         col_tokens = count_bge_m3_tokens(col_text)
         col_cells = [c for c in table.cells if c.col_idx == col.col_idx]
         col_refs = tuple(c.cell_ref.self_ref for c in col_cells)
@@ -207,7 +215,7 @@ def render_for_graph(
                 sec_cells = [c for c in col_cells if c.section == section.name]
                 if not sec_cells:
                     continue
-                sec_text = _render_column_section(col, table, section, emit_unit_hint=True, unit_hint_text=_hint_text)
+                sec_text = _render_column_section(col, table, section, emit_unit_hint=emit_unit_hint, unit_hint_text=_hint_text)
                 out.append(GraphTableChunk(
                     text=sec_text,
                     table_ref=table.self_ref,

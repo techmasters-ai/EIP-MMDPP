@@ -1,0 +1,5189 @@
+[
+  {
+    "self_ref": "#/texts/0",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 23.999999,
+          "t": 777.2966554522894,
+          "r": 87.04556293705139,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "10/6/25, 8:33 PM",
+    "text": "10/6/25, 8:33 PM"
+  },
+  {
+    "self_ref": "#/texts/1",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 332.7421736357422,
+          "t": 777.2966554522894,
+          "r": 372.3054651781216,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "S-75 Dvina",
+    "text": "S-75 Dvina"
+  },
+  {
+    "self_ref": "#/texts/2",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "section_header",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 615.500958603023,
+          "r": 132.25228472007836,
+          "b": 584.6933764539683,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "S-75 DVINA",
+    "text": "S-75 DVINA",
+    "level": 1
+  },
+  {
+    "self_ref": "#/texts/3",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 575.6298772522222,
+          "r": 570.523149350286,
+          "b": 544.8378859848218,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          139
+        ]
+      }
+    ],
+    "orig": "The Soviet-made S-75 Dvina (NATO reporting name SA-2 Guideline) surface-to-air missile was a Cold War design adapted for nonnuclear warfare",
+    "text": "The Soviet-made S-75 Dvina (NATO reporting name SA-2 Guideline) surface-to-air missile was a Cold War design adapted for nonnuclear warfare"
+  },
+  {
+    "self_ref": "#/texts/4",
+    "parent": {
+      "$ref": "#/groups/0"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 532.0403706268517,
+          "r": 176.43847017212963,
+          "b": 519.3078172757747,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          24
+        ]
+      }
+    ],
+    "orig": "By JON GUTTMAN 8/30/2018",
+    "text": "By JON GUTTMAN 8/30/2018"
+  },
+  {
+    "self_ref": "#/texts/5",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 51.23670122513735,
+          "t": 493.7127865598344,
+          "r": 172.92305500185986,
+          "b": 480.9802332087575,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          21
+        ]
+      }
+    ],
+    "orig": "WEAPONS & GEAR MANUAL",
+    "text": "WEAPONS & GEAR MANUAL",
+    "hyperlink": "https://www.historynet.com/category/weapons-gear-manuals/"
+  },
+  {
+    "self_ref": "#/texts/6",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "caption",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 28.4999988125,
+          "t": 166.95519112692682,
+          "r": 557.4901448983912,
+          "b": 109.95232931823818,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          457
+        ]
+      }
+    ],
+    "orig": "The S-75's SM-63-1 launcher could be transported on four wheels, rotated 360 degrees and usually launched the missile at 60 degrees. The SAM's chief nemeses were the 'Wild Weasels,' various U.S. fighters equipped with missiles designed to lock onto and destroy the S-75's RSNA-75M control radar. (Illustrations by Jim Laurier, from F-105 Wild Weasel vs. SA-2 'Guideline' SAM, Vietnam 1965-1973, by Peter E. Davies (Osprey Publishing, Bloomsbury Publishing))",
+    "text": "The S-75's SM-63-1 launcher could be transported on four wheels, rotated 360 degrees and usually launched the missile at 60 degrees. The SAM's chief nemeses were the 'Wild Weasels,' various U.S. fighters equipped with missiles designed to lock onto and destroy the S-75's RSNA-75M control radar. (Illustrations by Jim Laurier, from F-105 Wild Weasel vs. SA-2 'Guideline' SAM, Vietnam 1965-1973, by Peter E. Davies (Osprey Publishing, Bloomsbury Publishing))"
+  },
+  {
+    "self_ref": "#/texts/7",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 48.0,
+          "t": 367.3333333333333,
+          "r": 102.66666666666667,
+          "b": 359.3333333333333,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          20
+        ]
+      }
+    ],
+    "orig": "Radio proximity fuze",
+    "text": "Radio proximity fuze"
+  },
+  {
+    "self_ref": "#/texts/8",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 150.66666666666666,
+          "t": 368.0,
+          "r": 228.0,
+          "b": 359.3333333333333,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          28
+        ]
+      }
+    ],
+    "orig": "AK-ZOF oxidizer melange tank",
+    "text": "AK-ZOF oxidizer melange tank"
+  },
+  {
+    "self_ref": "#/texts/9",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 242.66666666666666,
+          "t": 368.0,
+          "r": 302.6666666666667,
+          "b": 360.0,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          22
+        ]
+      }
+    ],
+    "orig": "12. Cruciform controls",
+    "text": "12. Cruciform controls"
+  },
+  {
+    "self_ref": "#/texts/10",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 48.33333333333333,
+          "t": 360.3333333333333,
+          "r": 94.33333333333333,
+          "b": 353.6666666666667,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "transmit antenna",
+    "text": "transmit antenna"
+  },
+  {
+    "self_ref": "#/texts/11",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 150.0,
+          "t": 360.0,
+          "r": 208.66666666666666,
+          "b": 351.3333333333333,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          21
+        ]
+      }
+    ],
+    "orig": "TG-02 propellent tank",
+    "text": "TG-02 propellent tank"
+  },
+  {
+    "self_ref": "#/texts/12",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 242.66666666666666,
+          "t": 360.0,
+          "r": 322.0,
+          "b": 351.0,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          28
+        ]
+      }
+    ],
+    "orig": "13. OT-155 Isonate turbopump",
+    "text": "13. OT-155 Isonate turbopump"
+  },
+  {
+    "self_ref": "#/texts/13",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 48.0,
+          "t": 353.3333333333333,
+          "r": 96.0,
+          "b": 345.33333333333337,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          17
+        ]
+      }
+    ],
+    "orig": "FR-15 Shmel radio",
+    "text": "FR-15 Shmel radio"
+  },
+  {
+    "self_ref": "#/texts/14",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 150.0,
+          "t": 352.0,
+          "r": 205.33333333333334,
+          "b": 344.0,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "Compressed air tank",
+    "text": "Compressed air tank"
+  },
+  {
+    "self_ref": "#/texts/15",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 252.66666666666666,
+          "t": 354.0,
+          "r": 330.6666666666667,
+          "b": 344.0,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          29
+        ]
+      }
+    ],
+    "orig": "gas-generator propellant tank",
+    "text": "gas-generator propellant tank"
+  },
+  {
+    "self_ref": "#/texts/16",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 48.0,
+          "t": 346.0,
+          "r": 86.66666666666667,
+          "b": 338.0,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          14
+        ]
+      }
+    ],
+    "orig": "proximity fuze",
+    "text": "proximity fuze"
+  },
+  {
+    "self_ref": "#/texts/17",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 150.66666666666666,
+          "t": 344.0,
+          "r": 212.0,
+          "b": 335.33333333333337,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          22
+        ]
+      }
+    ],
+    "orig": "AP-75 autopilot module",
+    "text": "AP-75 autopilot module"
+  },
+  {
+    "self_ref": "#/texts/18",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 242.66666666666666,
+          "t": 345.33333333333337,
+          "r": 327.3333333333333,
+          "b": 336.33333333333337,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          31
+        ]
+      }
+    ],
+    "orig": "14. Isayev S2.71V rocket engine",
+    "text": "14. Isayev S2.71V rocket engine"
+  },
+  {
+    "self_ref": "#/texts/19",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 48.0,
+          "t": 338.66666666666663,
+          "r": 100.0,
+          "b": 330.0,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "V-88 high-explosive",
+    "text": "V-88 high-explosive"
+  },
+  {
+    "self_ref": "#/texts/20",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 150.0,
+          "t": 336.0,
+          "r": 198.66666666666666,
+          "b": 328.0,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          15
+        ]
+      }
+    ],
+    "orig": "FR-ISYu command",
+    "text": "FR-ISYu command"
+  },
+  {
+    "self_ref": "#/texts/21",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 209.0,
+          "t": 335.0,
+          "r": 229.66666666666666,
+          "b": 328.33333333333337,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          6
+        ]
+      }
+    ],
+    "orig": "module",
+    "text": "module"
+  },
+  {
+    "self_ref": "#/texts/22",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 242.66666666666666,
+          "t": 336.66666666666663,
+          "r": 293.3333333333333,
+          "b": 328.66666666666663,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "15. Adapter fairing",
+    "text": "15. Adapter fairing"
+  },
+  {
+    "self_ref": "#/texts/23",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 48.0,
+          "t": 331.33333333333337,
+          "r": 110.0,
+          "b": 323.33333333333337,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          21
+        ]
+      }
+    ],
+    "orig": "fragmentation warhead",
+    "text": "fragmentation warhead"
+  },
+  {
+    "self_ref": "#/texts/24",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 140.0,
+          "t": 328.66666666666663,
+          "r": 172.0,
+          "b": 319.33333333333337,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          11
+        ]
+      }
+    ],
+    "orig": "10. Battery",
+    "text": "10. Battery"
+  },
+  {
+    "self_ref": "#/texts/25",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 242.66666666666666,
+          "t": 329.33333333333337,
+          "r": 332.0,
+          "b": 320.66666666666663,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          33
+        ]
+      }
+    ],
+    "orig": "16. PRD-18 boost power plant with",
+    "text": "16. PRD-18 boost power plant with"
+  },
+  {
+    "self_ref": "#/texts/26",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 48.0,
+          "t": 323.33333333333337,
+          "r": 102.66666666666667,
+          "b": 315.33333333333337,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          20
+        ]
+      }
+    ],
+    "orig": "Radio proximity fuze",
+    "text": "Radio proximity fuze"
+  },
+  {
+    "self_ref": "#/texts/27",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 252.0,
+          "t": 322.66666666666663,
+          "r": 328.0,
+          "b": 313.66666666666663,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          28
+        ]
+      }
+    ],
+    "orig": "14 tubes of NMF-2 propellant",
+    "text": "14 tubes of NMF-2 propellant"
+  },
+  {
+    "self_ref": "#/texts/28",
+    "parent": {
+      "$ref": "#/pictures/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 47.66666666666667,
+          "t": 316.33333333333337,
+          "r": 90.33333333333333,
+          "b": 309.66666666666663,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          15
+        ]
+      }
+    ],
+    "orig": "receive antenna",
+    "text": "receive antenna"
+  },
+  {
+    "self_ref": "#/texts/29",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "section_header",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 433.38586033635545,
+          "t": 747.7791955193336,
+          "r": 522.5346948248101,
+          "b": 733.2277059752456,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          13
+        ]
+      }
+    ],
+    "orig": "SUBSCRIBE NOW",
+    "text": "SUBSCRIBE NOW",
+    "hyperlink": "https://www.historynet.com/subscribe/?utm_source=historynet&utm_medium=website&utm_campaign=header",
+    "level": 1
+  },
+  {
+    "self_ref": "#/texts/30",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 23.999999,
+          "t": 25.796686764789342,
+          "r": 173.28056377417616,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "https://www.historynet.com/s-75-dvina/",
+    "text": "https://www.historynet.com/s-75-dvina/"
+  },
+  {
+    "self_ref": "#/texts/31",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 1,
+        "bbox": {
+          "l": 575.8593510058594,
+          "t": 25.796686764789342,
+          "r": 587.9910879145704,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "1/6",
+    "text": "1/6"
+  },
+  {
+    "self_ref": "#/texts/32",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 23.999999,
+          "t": 777.2966554522894,
+          "r": 87.04556293705139,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "10/6/25, 8:33 PM",
+    "text": "10/6/25, 8:33 PM"
+  },
+  {
+    "self_ref": "#/texts/33",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 332.7421736357422,
+          "t": 777.2966554522894,
+          "r": 372.3054651781216,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "S-75 Dvina",
+    "text": "S-75 Dvina"
+  },
+  {
+    "self_ref": "#/texts/34",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "section_header",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 78.77450195972894,
+          "t": 744.5960571815643,
+          "r": 195.8925426597705,
+          "b": 728.2256314444654,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          17
+        ]
+      }
+    ],
+    "orig": "Audio Coming Soon",
+    "text": "Audio Coming Soon",
+    "level": 1
+  },
+  {
+    "self_ref": "#/texts/35",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 591.2207702346017,
+          "r": 121.80629533435534,
+          "b": 576.6692806905139,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "Length:",
+    "text": "Length:"
+  },
+  {
+    "self_ref": "#/texts/36",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 121.8118315265068,
+          "t": 591.2207702346017,
+          "r": 160.1030931917238,
+          "b": 576.6692806905139,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "35 feet",
+    "text": "35 feet"
+  },
+  {
+    "self_ref": "#/texts/37",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 574.3306484423568,
+          "r": 177.46588679629886,
+          "b": 559.779158898269,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          17
+        ]
+      }
+    ],
+    "orig": "Booster diameter:",
+    "text": "Booster diameter:"
+  },
+  {
+    "self_ref": "#/texts/38",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 177.46600086958296,
+          "t": 574.3306484423568,
+          "r": 229.6331675403063,
+          "b": 559.779158898269,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      }
+    ],
+    "orig": "26 inches",
+    "text": "26 inches"
+  },
+  {
+    "self_ref": "#/texts/39",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 558.0901467190444,
+          "r": 123.69800053832398,
+          "b": 543.5386571749566,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "Weight:",
+    "text": "Weight:"
+  },
+  {
+    "self_ref": "#/texts/40",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 123.69978985184186,
+          "t": 558.0901467190444,
+          "r": 196.86273158862514,
+          "b": 543.5386571749566,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          12
+        ]
+      }
+    ],
+    "orig": "5,040 pounds",
+    "text": "5,040 pounds"
+  },
+  {
+    "self_ref": "#/texts/41",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 541.2000249267995,
+          "r": 152.8322255722714,
+          "b": 526.6485353827117,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          13
+        ]
+      }
+    ],
+    "orig": "Engine thrust",
+    "text": "Engine thrust"
+  },
+  {
+    "self_ref": "#/texts/42",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 524.9595232034872,
+          "r": 183.34886582403965,
+          "b": 510.4080336593993,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "Sustainer motor:",
+    "text": "Sustainer motor:"
+  },
+  {
+    "self_ref": "#/texts/43",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 183.3531827442837,
+          "t": 524.9595232034872,
+          "r": 256.2147077849791,
+          "b": 510.4080336593993,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          12
+        ]
+      }
+    ],
+    "orig": "6,834 pounds",
+    "text": "6,834 pounds"
+  },
+  {
+    "self_ref": "#/texts/44",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 508.0694014112422,
+          "r": 162.13481945421034,
+          "b": 493.51791186715434,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          15
+        ]
+      }
+    ],
+    "orig": "Booster rocket:",
+    "text": "Booster rocket:"
+  },
+  {
+    "self_ref": "#/texts/45",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 162.13902736820688,
+          "t": 508.0694014112422,
+          "r": 271.97178102701196,
+          "b": 493.51791186715434,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          20
+        ]
+      }
+    ],
+    "orig": "Up to 110,000 pounds",
+    "text": "Up to 110,000 pounds"
+  },
+  {
+    "self_ref": "#/texts/46",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 491.17927961899727,
+          "r": 174.41005755665267,
+          "b": 476.6277900749095,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          14
+        ]
+      }
+    ],
+    "orig": "Maximum speed:",
+    "text": "Maximum speed:"
+  },
+  {
+    "self_ref": "#/texts/47",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 174.41075973098515,
+          "t": 491.17927961899727,
+          "r": 215.01987730042853,
+          "b": 476.6277900749095,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          6
+        ]
+      }
+    ],
+    "orig": "Mach 3",
+    "text": "Mach 3"
+  },
+  {
+    "self_ref": "#/texts/48",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 474.9387778956849,
+          "r": 278.9419319160008,
+          "b": 460.38728835159714,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          32
+        ]
+      }
+    ],
+    "orig": "Maximum/minimum effective range:",
+    "text": "Maximum/minimum effective range:"
+  },
+  {
+    "self_ref": "#/texts/49",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 278.9488360131313,
+          "t": 474.9387778956849,
+          "r": 364.0128120209113,
+          "b": 460.38728835159714,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "18 miles/5 miles",
+    "text": "18 miles/5 miles"
+  },
+  {
+    "self_ref": "#/texts/50",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 83.06808460282966,
+          "t": 458.04865610343995,
+          "r": 288.58750525100004,
+          "b": 443.4971665593523,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          35
+        ]
+      }
+    ],
+    "orig": "Maximum/minimum effective altitude:",
+    "text": "Maximum/minimum effective altitude:"
+  },
+  {
+    "self_ref": "#/texts/51",
+    "parent": {
+      "$ref": "#/groups/1"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 288.591633911348,
+          "t": 458.04865610343995,
+          "r": 401.1891483665235,
+          "b": 443.4971665593523,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          22
+        ]
+      }
+    ],
+    "orig": "82,000 feet/1,500 feet",
+    "text": "82,000 feet/1,500 feet"
+  },
+  {
+    "self_ref": "#/texts/52",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 113.60022573065706,
+          "t": 398.25112299820387,
+          "r": 277.22764896318296,
+          "b": 384.60910155062146,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          31
+        ]
+      }
+    ],
+    "orig": "When was the S-75 Dvina missile",
+    "text": "When was the S-75 Dvina missile"
+  },
+  {
+    "self_ref": "#/texts/53",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 113.60022573065706,
+          "t": 387.20758182635143,
+          "r": 216.5591932064608,
+          "b": 373.565560378769,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          23
+        ]
+      }
+    ],
+    "orig": "first put into service?",
+    "text": "first put into service?"
+  },
+  {
+    "self_ref": "#/texts/54",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 262.0790127360407,
+          "t": 260.43422537417484,
+          "r": 285.09128580085536,
+          "b": 249.52060821610894,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          6
+        ]
+      }
+    ],
+    "orig": "Log in",
+    "text": "Log in"
+  },
+  {
+    "self_ref": "#/texts/55",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 147.38046931514685,
+          "t": 243.60906558882323,
+          "r": 154.7562555778064,
+          "b": 230.87651223774628,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          1
+        ]
+      }
+    ],
+    "orig": "™",
+    "text": "™"
+  },
+  {
+    "self_ref": "#/texts/56",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 125.29338380344211,
+          "t": 368.33613552786176,
+          "r": 144.61042361480617,
+          "b": 355.60358217678487,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          4
+        ]
+      }
+    ],
+    "orig": "1957",
+    "text": "1957"
+  },
+  {
+    "self_ref": "#/texts/57",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 125.29338380344211,
+          "t": 352.09560020455075,
+          "r": 145.00149489630354,
+          "b": 339.36304685347386,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          4
+        ]
+      }
+    ],
+    "orig": "1953",
+    "text": "1953"
+  },
+  {
+    "self_ref": "#/texts/58",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 125.29338380344211,
+          "t": 335.20550490830476,
+          "r": 145.3743768158708,
+          "b": 322.4729515572279,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          4
+        ]
+      }
+    ],
+    "orig": "1959",
+    "text": "1959"
+  },
+  {
+    "self_ref": "#/texts/59",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 125.29338380344211,
+          "t": 318.96501758499176,
+          "r": 145.35618745394066,
+          "b": 306.23246423391487,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          4
+        ]
+      }
+    ],
+    "orig": "1955",
+    "text": "1955"
+  },
+  {
+    "self_ref": "#/texts/60",
+    "parent": {
+      "$ref": "#/pictures/2"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 125.29338697144199,
+          "t": 260.43422537417484,
+          "r": 131.15558393859553,
+          "b": 249.52060821610894,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          2
+        ]
+      }
+    ],
+    "orig": "11",
+    "text": "11"
+  },
+  {
+    "self_ref": "#/texts/61",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 383.4767652298007,
+          "t": 405.23454449922815,
+          "r": 430.9639568644723,
+          "b": 396.1398635341732,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          13
+        ]
+      }
+    ],
+    "orig": "Advertisement",
+    "text": "Advertisement"
+  },
+  {
+    "self_ref": "#/texts/62",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 195.60214825471166,
+          "r": 570.866156217313,
+          "b": 47.87854457946219,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          892
+        ]
+      },
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 762.7204797607803,
+          "r": 551.8556056603451,
+          "b": 748.1689902166925,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          893,
+          992
+        ]
+      },
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 745.8303579685355,
+          "r": 108.23189115073592,
+          "b": 731.2788684244476,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          993,
+          1008
+        ]
+      }
+    ],
+    "orig": "Like many weapons used during the Vietnam War, the Soviet-made S-75 Dvina (NATO reporting name SA-2 Guideline) surface-to-air missile was a Cold War design adapted for nonnuclear warfare. Conceived in 1953 by the Almaz design bureau under Boris Bunkin, the missile was designed by rocket scientist Pyotr Grushin, tested in 1955 and put it into service in 1957. It drew first blood on Oct. 7, 1959, when five S-75 batteries of the People's Republic of China fired on a Martin RB-57D Canberra spy plane of the Republic of China Air Force, downing it and killing Taiwanese pilot Capt. Ying-Chin Wang. The S-75's subsequent victims included a Lockheed U-2C spy plane piloted by U.S. Air Force Capt. Francis Gary Powers (who ejected over Russia, was captured and later exchanged for a Soviet spy), on May 1, 1960, and a U-2F piloted by U.S. Air Force Maj. Rudolph Anderson (who died over Cuba when shrapnel from an S-75 punctured his pressure suit at 72,000 feet), on Oct. 27, 1962, amid the Cuban Missile Crisis.",
+    "text": "Like many weapons used during the Vietnam War, the Soviet-made S-75 Dvina (NATO reporting name SA-2 Guideline) surface-to-air missile was a Cold War design adapted for nonnuclear warfare. Conceived in 1953 by the Almaz design bureau under Boris Bunkin, the missile was designed by rocket scientist Pyotr Grushin, tested in 1955 and put it into service in 1957. It drew first blood on Oct. 7, 1959, when five S-75 batteries of the People's Republic of China fired on a Martin RB-57D Canberra spy plane of the Republic of China Air Force, downing it and killing Taiwanese pilot Capt. Ying-Chin Wang. The S-75's subsequent victims included a Lockheed U-2C spy plane piloted by U.S. Air Force Capt. Francis Gary Powers (who ejected over Russia, was captured and later exchanged for a Soviet spy), on May 1, 1960, and a U-2F piloted by U.S. Air Force Maj. Rudolph Anderson (who died over Cuba when shrapnel from an S-75 punctured his pressure suit at 72,000 feet), on Oct. 27, 1962, amid the Cuban Missile Crisis."
+  },
+  {
+    "self_ref": "#/texts/63",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 23.999999,
+          "t": 25.796686764789342,
+          "r": 173.28056377417616,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "https://www.historynet.com/s-75-dvina/",
+    "text": "https://www.historynet.com/s-75-dvina/"
+  },
+  {
+    "self_ref": "#/texts/64",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 2,
+        "bbox": {
+          "l": 575.8593510058594,
+          "t": 25.796686764789342,
+          "r": 587.9910879145704,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "2/6",
+    "text": "2/6"
+  },
+  {
+    "self_ref": "#/texts/65",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 23.999999,
+          "t": 777.2966554522894,
+          "r": 87.04556293705139,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "10/6/25, 8:33 PM",
+    "text": "10/6/25, 8:33 PM"
+  },
+  {
+    "self_ref": "#/texts/66",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 332.7421736357422,
+          "t": 777.2966554522894,
+          "r": 372.3054651781216,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "S-75 Dvina",
+    "text": "S-75 Dvina"
+  },
+  {
+    "self_ref": "#/texts/67",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 715.9478347976408,
+          "r": 559.2560780702823,
+          "b": 701.3963452535527,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          103
+        ]
+      }
+    ],
+    "orig": "In April 1965 the first S-75s deployed to North Vietnam, whose military used them to destroy a U.S. Air",
+    "text": "In April 1965 the first S-75s deployed to North Vietnam, whose military used them to destroy a U.S. Air"
+  },
+  {
+    "self_ref": "#/texts/68",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 699.057713005396,
+          "r": 544.8916978151051,
+          "b": 684.5062234613079,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          98
+        ]
+      }
+    ],
+    "orig": "Force McDonnell Douglas F-4C Phantom II on July 24. Pilot Maj. Richard P. Keirn bailed out but was",
+    "text": "Force McDonnell Douglas F-4C Phantom II on July 24. Pilot Maj. Richard P. Keirn bailed out but was"
+  },
+  {
+    "self_ref": "#/texts/69",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 682.1675912131509,
+          "r": 560.3786670228025,
+          "b": 667.616101669063,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          101
+        ]
+      }
+    ],
+    "orig": "captured, spending the next 2,760 days in captivity. From that point on the SA-2 was an integral part",
+    "text": "captured, spending the next 2,760 days in captivity. From that point on the SA-2 was an integral part"
+  },
+  {
+    "self_ref": "#/texts/70",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 665.9270894898386,
+          "r": 265.9287374981843,
+          "b": 651.3755999457505,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          43
+        ]
+      }
+    ],
+    "orig": "of North Vietnam's integrated air defenses.",
+    "text": "of North Vietnam's integrated air defenses."
+  },
+  {
+    "self_ref": "#/texts/71",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 604.9017802143198,
+          "r": 128.22068800419748,
+          "b": 585.6470413711604,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          14
+        ]
+      }
+    ],
+    "orig": "BY JON GUTTMAN",
+    "text": "BY JON GUTTMAN",
+    "hyperlink": "https://www.historynet.com/author/jon-guttman/"
+  },
+  {
+    "self_ref": "#/texts/72",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 573.6160776945308,
+          "r": 154.91632043691888,
+          "b": 560.8835243434537,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "MORE BY JON GUTTMAN",
+    "text": "MORE BY JON GUTTMAN",
+    "hyperlink": "https://www.historynet.com/author/jon-guttman/"
+  },
+  {
+    "self_ref": "#/texts/73",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 529.5458522181502,
+          "r": 105.7787662237579,
+          "b": 510.291113374991,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          11
+        ]
+      }
+    ],
+    "orig": "DIVE DEEPER",
+    "text": "DIVE DEEPER"
+  },
+  {
+    "self_ref": "#/texts/74",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 49.612651052806115,
+          "t": 496.96090956049625,
+          "r": 75.29595643120545,
+          "b": 484.2283562094192,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          4
+        ]
+      }
+    ],
+    "orig": "CUBA",
+    "text": "CUBA",
+    "hyperlink": "https://www.historynet.com/tag/cuba/"
+  },
+  {
+    "self_ref": "#/texts/75",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 96.74055699114328,
+          "t": 496.96090956049625,
+          "r": 129.0265819111905,
+          "b": 484.2283562094192,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          6
+        ]
+      }
+    ],
+    "orig": "RUSSIA",
+    "text": "RUSSIA",
+    "hyperlink": "https://www.historynet.com/tag/russia/"
+  },
+  {
+    "self_ref": "#/texts/76",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 150.4661667545761,
+          "t": 496.96090956049625,
+          "r": 190.91918179077115,
+          "b": 484.2283562094192,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "VIETNAM",
+    "text": "VIETNAM",
+    "hyperlink": "https://www.historynet.com/tag/vietnam/"
+  },
+  {
+    "self_ref": "#/texts/77",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 460.6861249113058,
+          "r": 159.32040618214933,
+          "b": 441.43138606814637,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          20
+        ]
+      }
+    ],
+    "orig": "CITATION INFORMATION",
+    "text": "CITATION INFORMATION"
+  },
+  {
+    "self_ref": "#/texts/78",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 47.338980811542385,
+          "t": 430.1150044673425,
+          "r": 69.1922333858651,
+          "b": 415.5635149232546,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "APA",
+    "text": "APA"
+  },
+  {
+    "self_ref": "#/texts/79",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 80.5609571492933,
+          "t": 430.1150044673425,
+          "r": 102.76759725949668,
+          "b": 415.5635149232546,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "MLA",
+    "text": "MLA"
+  },
+  {
+    "self_ref": "#/texts/80",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 114.13819446224169,
+          "t": 430.1150044673425,
+          "r": 159.30506313055125,
+          "b": 415.5635149232546,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      },
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 170.6754443346233,
+          "t": 430.1150044673425,
+          "r": 231.17856619706959,
+          "b": 415.5635149232546,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          8,
+          17
+        ]
+      }
+    ],
+    "orig": "Harvard Vancouver",
+    "text": "Harvard Vancouver"
+  },
+  {
+    "self_ref": "#/texts/81",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 51.88632129406985,
+          "t": 406.14402392373336,
+          "r": 206.3403322076665,
+          "b": 389.7735981866342,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          23
+        ]
+      }
+    ],
+    "orig": "Jon Guttman (9/26/2025)",
+    "text": "Jon Guttman (9/26/2025)"
+  },
+  {
+    "self_ref": "#/texts/82",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 151.62330250236212,
+          "t": 131.22481075150108,
+          "r": 188.2838455802783,
+          "b": 118.49225740042402,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "STORIES",
+    "text": "STORIES",
+    "hyperlink": "https://www.historynet.com/category/stories/"
+  },
+  {
+    "self_ref": "#/texts/83",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 108.99091427221765,
+          "r": 240.55556626246403,
+          "b": 91.66164931337426,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          37
+        ]
+      }
+    ],
+    "orig": "PORTFOLIO: IMAGES OF WAR AS LANDSCAPE",
+    "text": "PORTFOLIO: IMAGES OF WAR AS LANDSCAPE",
+    "hyperlink": "https://www.historynet.com/portfolio-images-war-landscape/"
+  },
+  {
+    "self_ref": "#/texts/84",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 86.53095000894518,
+          "r": 289.725002074634,
+          "b": 70.1605242718465,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          40
+        ]
+      }
+    ],
+    "orig": "Whether they produced battlefield images",
+    "text": "Whether they produced battlefield images"
+  },
+  {
+    "self_ref": "#/texts/85",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 67.69196800990312,
+          "r": 282.08938870216764,
+          "b": 51.32154227280398,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          41
+        ]
+      }
+    ],
+    "orig": "of the dead or daguerreotype portraits of",
+    "text": "of the dead or daguerreotype portraits of"
+  },
+  {
+    "self_ref": "#/texts/86",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 48.852986010860604,
+          "r": 165.33392818167826,
+          "b": 32.482560273761464,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          20
+        ]
+      }
+    ],
+    "orig": "common soldiers, […]",
+    "text": "common soldiers, […]"
+  },
+  {
+    "self_ref": "#/texts/87",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 265.93613400732727,
+          "t": 665.9270894898386,
+          "r": 282.73273207703215,
+          "b": 651.3755999457505,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          2
+        ]
+      }
+    ],
+    "orig": "MH",
+    "text": "MH"
+  },
+  {
+    "self_ref": "#/texts/88",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 242.5498115257574,
+          "t": 430.1150044673425,
+          "r": 289.2237931672578,
+          "b": 415.5635149232546,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "Chicago",
+    "text": "Chicago"
+  },
+  {
+    "self_ref": "#/texts/89",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 206.34364624444817,
+          "t": 406.14402392373336,
+          "r": 271.2987872382272,
+          "b": 389.7735981866342,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      },
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 300.5994581211225,
+          "t": 430.1150044673425,
+          "r": 321.0521360631794,
+          "b": 415.5635149232546,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          11,
+          15
+        ]
+      }
+    ],
+    "orig": "S-75 Dvina IEEE",
+    "text": "S-75 Dvina IEEE"
+  },
+  {
+    "self_ref": "#/texts/90",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 271.3056531376978,
+          "t": 406.14402392373336,
+          "r": 425.16337727032527,
+          "b": 389.7735981866342,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          27
+        ]
+      }
+    ],
+    "orig": ". HistoryNet Retrieved from",
+    "text": ". HistoryNet Retrieved from"
+  },
+  {
+    "self_ref": "#/texts/91",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 51.88632129406985,
+          "t": 389.9035222004211,
+          "r": 292.9960579787103,
+          "b": 373.53309646332195,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          39
+        ]
+      }
+    ],
+    "orig": "https://www.historynet.com/s-75-dvina/.",
+    "text": "https://www.historynet.com/s-75-dvina/.",
+    "hyperlink": "https://www.historynet.com/s-75-dvina/"
+  },
+  {
+    "self_ref": "#/texts/92",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 264.51509010653746,
+          "t": 323.4681769908325,
+          "r": 370.3145525155117,
+          "b": 300.3624903790412,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          15
+        ]
+      }
+    ],
+    "orig": "RELATED STORIES",
+    "text": "RELATED STORIES"
+  },
+  {
+    "self_ref": "#/texts/93",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 95.34889282463519,
+          "r": 339.7328552823962,
+          "b": 78.01962786579179,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          5
+        ]
+      }
+    ],
+    "orig": "PILOT",
+    "text": "PILOT",
+    "hyperlink": "https://www.historynet.com/jerrie-mock-record-breaking-american-female-pilot/"
+  },
+  {
+    "self_ref": "#/texts/94",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 424.13892141954415,
+          "t": 131.22481075150108,
+          "r": 460.79946449746024,
+          "b": 118.49225740042402,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "STORIES",
+    "text": "STORIES",
+    "hyperlink": "https://www.historynet.com/category/stories/"
+  },
+  {
+    "self_ref": "#/texts/95",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 108.99091427221765,
+          "r": 554.675179254386,
+          "b": 91.66164931337426,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          44
+        ]
+      }
+    ],
+    "orig": "JERRIE MOCK: RECORD-BREAKING AMERICAN FEMALE",
+    "text": "JERRIE MOCK: RECORD-BREAKING AMERICAN FEMALE",
+    "hyperlink": "https://www.historynet.com/jerrie-mock-record-breaking-american-female-pilot/"
+  },
+  {
+    "self_ref": "#/texts/96",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 72.23930849243061,
+          "r": 518.6605022209482,
+          "b": 55.86888275533147,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          33
+        ]
+      }
+    ],
+    "orig": "In 1964 an Ohio woman took up the",
+    "text": "In 1964 an Ohio woman took up the"
+  },
+  {
+    "self_ref": "#/texts/97",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 53.40032649338809,
+          "r": 559.5979906523035,
+          "b": 37.02990075628895,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          42
+        ]
+      },
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 556.5792730947014,
+          "r": 147.44349639691848,
+          "b": 539.250008135858,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          43,
+          63
+        ]
+      }
+    ],
+    "orig": "challenge that had led to Amelia Earhart's SERVICES 82 YEARS ON",
+    "text": "challenge that had led to Amelia Earhart's SERVICES 82 YEARS ON"
+  },
+  {
+    "self_ref": "#/texts/98",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 23.999999,
+          "t": 25.796686764789342,
+          "r": 173.28056377417616,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "https://www.historynet.com/s-75-dvina/",
+    "text": "https://www.historynet.com/s-75-dvina/"
+  },
+  {
+    "self_ref": "#/texts/99",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 3,
+        "bbox": {
+          "l": 575.8593510058594,
+          "t": 25.796686764789342,
+          "r": 587.9910879145704,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "3/6",
+    "text": "3/6"
+  },
+  {
+    "self_ref": "#/texts/100",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 23.999999,
+          "t": 777.2966554522894,
+          "r": 87.04556293705139,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "10/6/25, 8:33 PM",
+    "text": "10/6/25, 8:33 PM"
+  },
+  {
+    "self_ref": "#/texts/101",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 332.7421736357422,
+          "t": 777.2966554522894,
+          "r": 372.3054651781216,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "S-75 Dvina",
+    "text": "S-75 Dvina"
+  },
+  {
+    "self_ref": "#/texts/102",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 151.62330250236212,
+          "t": 593.1048110904999,
+          "r": 188.2838455802783,
+          "b": 580.3722577394233,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "STORIES",
+    "text": "STORIES",
+    "hyperlink": "https://www.historynet.com/category/stories/"
+  },
+  {
+    "self_ref": "#/texts/103",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 570.8709146112164,
+          "r": 293.32645753913573,
+          "b": 553.541649652373,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          49
+        ]
+      }
+    ],
+    "orig": "CELEBRATING THE LEGACY OF THE OFFICE OF STRATEGIC",
+    "text": "CELEBRATING THE LEGACY OF THE OFFICE OF STRATEGIC",
+    "hyperlink": "https://www.historynet.com/celebrating-the-legacy-of-the-office-of-strategic-services-82-years-on/"
+  },
+  {
+    "self_ref": "#/texts/104",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 534.1193088314294,
+          "r": 256.41138656216305,
+          "b": 517.7488830943303,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "From the OSS to the CIA, how Wild Bill",
+    "text": "From the OSS to the CIA, how Wild Bill"
+  },
+  {
+    "self_ref": "#/texts/105",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 515.2803268323869,
+          "r": 294.565943219466,
+          "b": 498.9099010952882,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          40
+        ]
+      }
+    ],
+    "orig": "Donovan shaped the American intelligence",
+    "text": "Donovan shaped the American intelligence"
+  },
+  {
+    "self_ref": "#/texts/106",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 496.44134483334483,
+          "r": 111.30016106943623,
+          "b": 480.0709190962457,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "community.",
+    "text": "community."
+  },
+  {
+    "self_ref": "#/texts/107",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 43.4412603979474,
+          "t": 424.590066386731,
+          "r": 170.13620523924757,
+          "b": 411.52661281304154,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "Recommended for you",
+    "text": "Recommended for you"
+  },
+  {
+    "self_ref": "#/texts/108",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 58.38252198339481,
+          "t": 168.77298206379373,
+          "r": 93.29308181608674,
+          "b": 159.67830109873876,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      }
+    ],
+    "orig": "Sponsored",
+    "text": "Sponsored",
+    "hyperlink": "https://trk.magnifiery.com/nqhesv17as/?src={{publisher_name}}&utm_medium={{section_name}}&utm_content=Neurologists%3A+%C2%BD+Cup+Each+Morning+Relieves+Neuropathy+Quickly%21&utm_term={{cpc}}&OutbrainClickId={{ob_click_id}}&xid=rlczo6tn&sub1=00c2332e57cb9b75ae6db51e3b92d0a924&sub2=001c1a8d6369ce016a0be22c7c7d63569c&sub3={{publisher_id}}&sub4={{section_id}}&sub5=Neurologists%3A+%C2%BD+Cup+Each+Morning+Relieves+Neuropathy+Quickly%21&sub6={{publisher_name}}&utm_campaign={replace}&utm_source=Outbrain&sub9={{section_name}}&ref_id={{ob_click_id}}&cost={{cpc}}&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/109",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 56.43366177659732,
+          "t": 151.50349233733505,
+          "r": 356.6139592047532,
+          "b": 135.53704908060354,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          41
+        ]
+      }
+    ],
+    "orig": "Neurologists: ½ Cup Each Morning Relieves",
+    "text": "Neurologists: ½ Cup Each Morning Relieves",
+    "hyperlink": "https://trk.magnifiery.com/nqhesv17as/?src={{publisher_name}}&utm_medium={{section_name}}&utm_content=Neurologists%3A+%C2%BD+Cup+Each+Morning+Relieves+Neuropathy+Quickly%21&utm_term={{cpc}}&OutbrainClickId={{ob_click_id}}&xid=rlczo6tn&sub1=00c2332e57cb9b75ae6db51e3b92d0a924&sub2=001c1a8d6369ce016a0be22c7c7d63569c&sub3={{publisher_id}}&sub4={{section_id}}&sub5=Neurologists%3A+%C2%BD+Cup+Each+Morning+Relieves+Neuropathy+Quickly%21&sub6={{publisher_name}}&utm_campaign={replace}&utm_source=Outbrain&sub9={{section_name}}&ref_id={{ob_click_id}}&cost={{cpc}}&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/110",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 56.43366177659732,
+          "t": 133.3141304072251,
+          "r": 196.20284467726768,
+          "b": 117.34768715049358,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "Neuropathy Quickly!",
+    "text": "Neuropathy Quickly!",
+    "hyperlink": "https://trk.magnifiery.com/nqhesv17as/?src={{publisher_name}}&utm_medium={{section_name}}&utm_content=Neurologists%3A+%C2%BD+Cup+Each+Morning+Relieves+Neuropathy+Quickly%21&utm_term={{cpc}}&OutbrainClickId={{ob_click_id}}&xid=rlczo6tn&sub1=00c2332e57cb9b75ae6db51e3b92d0a924&sub2=001c1a8d6369ce016a0be22c7c7d63569c&sub3={{publisher_id}}&sub4={{section_id}}&sub5=Neurologists%3A+%C2%BD+Cup+Each+Morning+Relieves+Neuropathy+Quickly%21&sub6={{publisher_name}}&utm_campaign={replace}&utm_source=Outbrain&sub9={{section_name}}&ref_id={{ob_click_id}}&cost={{cpc}}&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/111",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 56.43366177659732,
+          "t": 113.01857839688091,
+          "r": 160.92479572002586,
+          "b": 102.8581145062335,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          24
+        ]
+      },
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 762.785573095668,
+          "r": 406.3132667598059,
+          "b": 746.4151473585689,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          25,
+          39
+        ]
+      }
+    ],
+    "orig": "Health Guide | Sponsored disappearance.",
+    "text": "Health Guide | Sponsored disappearance."
+  },
+  {
+    "self_ref": "#/texts/112",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 425.55996532033396,
+          "t": 593.1048110904999,
+          "r": 459.3738921601319,
+          "b": 580.3722577394233,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          6
+        ]
+      }
+    ],
+    "orig": "REVIEW",
+    "text": "REVIEW",
+    "hyperlink": "https://www.historynet.com/category/reviews/"
+  },
+  {
+    "self_ref": "#/texts/113",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 570.8709146112164,
+          "r": 556.5226670939325,
+          "b": 553.541649652373,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          45
+        ]
+      }
+    ],
+    "orig": "SEMINOLES TAUGHT AMERICAN SOLDIERS A THING OR",
+    "text": "SEMINOLES TAUGHT AMERICAN SOLDIERS A THING OR",
+    "hyperlink": "https://www.historynet.com/seminole-warrior-vs-us-soldier-book-review-2/"
+  },
+  {
+    "self_ref": "#/texts/114",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 556.5792730947014,
+          "r": 466.56775134805685,
+          "b": 539.250008135858,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          27
+        ]
+      }
+    ],
+    "orig": "TWO ABOUT GUERRILLA WARFARE",
+    "text": "TWO ABOUT GUERRILLA WARFARE",
+    "hyperlink": "https://www.historynet.com/seminole-warrior-vs-us-soldier-book-review-2/"
+  },
+  {
+    "self_ref": "#/texts/115",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 534.1193088314294,
+          "r": 556.2186541912394,
+          "b": 517.7488830943303,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "During the 1835-42 Second Seminole War",
+    "text": "During the 1835-42 Second Seminole War"
+  },
+  {
+    "self_ref": "#/texts/116",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 515.2803268323869,
+          "r": 522.3437773980937,
+          "b": 498.9099010952882,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          34
+        ]
+      }
+    ],
+    "orig": "and as Army scouts out West, these",
+    "text": "and as Army scouts out West, these"
+  },
+  {
+    "self_ref": "#/texts/117",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 314.00801910833195,
+          "t": 496.44134483334483,
+          "r": 565.3275830783801,
+          "b": 480.0709190962457,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          42
+        ]
+      }
+    ],
+    "orig": "warriors from the South proved formidable.",
+    "text": "warriors from the South proved formidable."
+  },
+  {
+    "self_ref": "#/texts/118",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 425.54981825485726,
+          "t": 318.8352179872004,
+          "r": 460.46037808754915,
+          "b": 309.7405370221454,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      }
+    ],
+    "orig": "Sponsored",
+    "text": "Sponsored",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/69910337/196432687/94bc7154-a31d-11f0-9e86-dabae537ad02/V4SVHKNOOSYRDPGDTJIW7J77FUP3KKA6OANGYKKHIDXN7W25H4WRSEBYNMZ6UYBNVDXS2MXFQM55LC45HKCJCBLW4KSFKG6HBAC4ZQOF7GZBVNS3SY7M6QGN2UI6RX6UNUEXWRASFI5TKX7QMQZR3S3CUW4IPDM64K5GDVENW6R3QAKA473QJ7WWQDFUIJ522REQWLDXZI3HRS7IQP3RHY4ECGQF4W3P7FO2EBNJXTZDWJ2ENITQ4STKLVT24GFLKX6SH3RTJDPC7NQHD6QMJ4PHDL7MMOIEF3UPGQLFDU4ABMSIM3KMYMCAMO4LYMU2A2DFSIPKOI4T7MRCVEEIVHZPO6VSJIFTECQP42P7XHXERNO2QOVJCAXGQWY5HOVNOXLXYL3Q43FSJBQLQQ3HS6FNEWUXHC6XCNWRELXJG5PFCNEPPCQQ6IH34JPKD7UBPMZGCD3S2PCYIVJJHXGQG7MI7CVRAHCFK5CXZ4I6HSWW7YHTUNYWK42QJXFEPN5LHO5HOGYN76HLPSAC3YYRP6GXYUFPXW3KKX2VVFGN2HSDAAUUFRCESN23Z7BMYHJK7RWPYTUMIO57JNIIXZUEQL7VSLLCTQJQDJQYPSYYIGCBAYFOTTDR4QBRIO3D52HBQWQPGFFRUVCH4B62GV5NTV7XLLS45PMPVCQD2K6WG6ZV4OQBUIXBLT2Y2VCWJN5AMPE47DGMGPDTU447T5FGSVQARMC27Y7ZIVUXPEXE3UPSUSTOGLFD2CFDNXUX75OEHNEYC4CMSQIYGTTTEYE4Q7NMWBL53HDQ5MXSOY2DJO72XAA3K3LDRUIOHQGXTY7WWUKLYWPIM3HBITWPB2TFK2DGTL7OLM46ZTFMWJRNFAEXICPVYQ2CN3JCLPPTGLWXKLFMBLDBS45TCSIFK7XL2YJLN6QAS5XYWB4HIAQKMK2742SL7ML6BIUD456VA536FQEI7E6P7KWTP2ZIIJTTCWE4NLHGMI4TWWKUNMPTSSZHAMEAYI7IZ3PGBFEHQOATGFGLDHCBOPSNQVLG75YGK7R5BUTAM3SI4DK3CGHM36QO3ECFO7HNU7OU3OPTQV42K2ATDUAN43UNNZNBJXH3FJB4KU6NPX5BWBCE7ONESZOAHZFMOQFJXBZXGOJBUDEWFRYCRMUFM72AJD4TLQ6HU4TCM3BEQHAUU6BIFEAOO5K72H5Z6773I2Q2TKYHZO6HA3T5LQRKCUYM4QOUCPFDWEDQNW2KRS2BZZPMIUAS4MGGXHBNMU5BUXO2KOD2EI5YSIA63H7DDQ54NWXWWL2FOUP7M4O4QXO6JSN7NNFNNCCZX4TLPGQQRXQ7FK6K3N6YRGBNQXV2JRJSGHRQYHWZT2PQU7ESV5PANEAPGBAPBIBASD6Q2T6VRRQJU66AMUV3IJFIABSLBJ7MAYZ3UTZ2LZEC4ERPCCER4D2RBB3633OKC3R4OMUEVRHIPYBZHM7ZDGRFRD722LKB76HUVQ2YSTXILRJXFP2AAOUBON3ZWA3O35WCB3TLSIYAAQAM66TQCQ2MUCLK2AEWKYSDMZAJWHP3XDEXYINDTQ6OCLIJYGMPHQ47ETRASIGKENIK7I5VQDWJSA6B7KL4TBKKFM3JND6YNH26JHWMPFDZKFW2QIQBAP2GE5DJTYS4JO5YH6GP7B6CJ4KAMUR244QDBGKAZBBPIDEMFQ3YYJH32NDEFZKIO35GNIUBLZEE62VHTHENHKLKHKXRK5PSB2VQCJPRNPHZIZHE7OHRCDBO7TBOHPKHXPN2XCFLDN7CP2ELT6HKIBGGHAP6UBBFIIUGTRHHCS6RIWW5KQJ7KJR5TJR5Z4ZCPKZ6L3N7DLGNWDJZYYWOI4RQCBECDZGYHYH3XIZDHNONBPV66NXQ6FZBXOURQS5L2UJGMWSAQMZUYGNLL4LMMATBIRVZPYHLZYQVSJAZWJWICLLX4BI7EDNAUMZOJH2BFPCXSZRSTZTZNEKGW552H3B4ACWUE6SBOEWTQDCSHRAOK6W6NAEGOASGZSLAC3JV7IEOE2YQ6ERRSLOEU4PXSD4ZQ5TA7WRGOJUZAGCXLP7NY3V26WEJYMMKAMSPEEF7KERQ3SBFGM3PWR573JK32PSKKHW2FFYOZJCZBHWXQ57JFWLO2N42LBBHRSQ5NYGAGMDTW5EMQDP6DR5RLU6IMZ2WVVK57CY2PTMIX52WWM5WLRUY6JVYPEKNHJABCPCR7S34W6P2CATSODVMFW4IOQYOG3G763M4VHC2A6IXFQ46HSEQXK3RN7X7KKI/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/119",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 423.60095804805974,
+          "t": 305.12150997758863,
+          "r": 523.8448203733299,
+          "b": 292.78380382465957,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          18
+        ]
+      }
+    ],
+    "orig": "Pirates Approach a",
+    "text": "Pirates Approach a",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/69910337/196432687/94bc7154-a31d-11f0-9e86-dabae537ad02/V4SVHKNOOSYRDPGDTJIW7J77FUP3KKA6OANGYKKHIDXN7W25H4WRSEBYNMZ6UYBNVDXS2MXFQM55LC45HKCJCBLW4KSFKG6HBAC4ZQOF7GZBVNS3SY7M6QGN2UI6RX6UNUEXWRASFI5TKX7QMQZR3S3CUW4IPDM64K5GDVENW6R3QAKA473QJ7WWQDFUIJ522REQWLDXZI3HRS7IQP3RHY4ECGQF4W3P7FO2EBNJXTZDWJ2ENITQ4STKLVT24GFLKX6SH3RTJDPC7NQHD6QMJ4PHDL7MMOIEF3UPGQLFDU4ABMSIM3KMYMCAMO4LYMU2A2DFSIPKOI4T7MRCVEEIVHZPO6VSJIFTECQP42P7XHXERNO2QOVJCAXGQWY5HOVNOXLXYL3Q43FSJBQLQQ3HS6FNEWUXHC6XCNWRELXJG5PFCNEPPCQQ6IH34JPKD7UBPMZGCD3S2PCYIVJJHXGQG7MI7CVRAHCFK5CXZ4I6HSWW7YHTUNYWK42QJXFEPN5LHO5HOGYN76HLPSAC3YYRP6GXYUFPXW3KKX2VVFGN2HSDAAUUFRCESN23Z7BMYHJK7RWPYTUMIO57JNIIXZUEQL7VSLLCTQJQDJQYPSYYIGCBAYFOTTDR4QBRIO3D52HBQWQPGFFRUVCH4B62GV5NTV7XLLS45PMPVCQD2K6WG6ZV4OQBUIXBLT2Y2VCWJN5AMPE47DGMGPDTU447T5FGSVQARMC27Y7ZIVUXPEXE3UPSUSTOGLFD2CFDNXUX75OEHNEYC4CMSQIYGTTTEYE4Q7NMWBL53HDQ5MXSOY2DJO72XAA3K3LDRUIOHQGXTY7WWUKLYWPIM3HBITWPB2TFK2DGTL7OLM46ZTFMWJRNFAEXICPVYQ2CN3JCLPPTGLWXKLFMBLDBS45TCSIFK7XL2YJLN6QAS5XYWB4HIAQKMK2742SL7ML6BIUD456VA536FQEI7E6P7KWTP2ZIIJTTCWE4NLHGMI4TWWKUNMPTSSZHAMEAYI7IZ3PGBFEHQOATGFGLDHCBOPSNQVLG75YGK7R5BUTAM3SI4DK3CGHM36QO3ECFO7HNU7OU3OPTQV42K2ATDUAN43UNNZNBJXH3FJB4KU6NPX5BWBCE7ONESZOAHZFMOQFJXBZXGOJBUDEWFRYCRMUFM72AJD4TLQ6HU4TCM3BEQHAUU6BIFEAOO5K72H5Z6773I2Q2TKYHZO6HA3T5LQRKCUYM4QOUCPFDWEDQNW2KRS2BZZPMIUAS4MGGXHBNMU5BUXO2KOD2EI5YSIA63H7DDQ54NWXWWL2FOUP7M4O4QXO6JSN7NNFNNCCZX4TLPGQQRXQ7FK6K3N6YRGBNQXV2JRJSGHRQYHWZT2PQU7ESV5PANEAPGBAPBIBASD6Q2T6VRRQJU66AMUV3IJFIABSLBJ7MAYZ3UTZ2LZEC4ERPCCER4D2RBB3633OKC3R4OMUEVRHIPYBZHM7ZDGRFRD722LKB76HUVQ2YSTXILRJXFP2AAOUBON3ZWA3O35WCB3TLSIYAAQAM66TQCQ2MUCLK2AEWKYSDMZAJWHP3XDEXYINDTQ6OCLIJYGMPHQ47ETRASIGKENIK7I5VQDWJSA6B7KL4TBKKFM3JND6YNH26JHWMPFDZKFW2QIQBAP2GE5DJTYS4JO5YH6GP7B6CJ4KAMUR244QDBGKAZBBPIDEMFQ3YYJH32NDEFZKIO35GNIUBLZEE62VHTHENHKLKHKXRK5PSB2VQCJPRNPHZIZHE7OHRCDBO7TBOHPKHXPN2XCFLDN7CP2ELT6HKIBGGHAP6UBBFIIUGTRHHCS6RIWW5KQJ7KJR5TJR5Z4ZCPKZ6L3N7DLGNWDJZYYWOI4RQCBECDZGYHYH3XIZDHNONBPV66NXQ6FZBXOURQS5L2UJGMWSAQMZUYGNLL4LMMATBIRVZPYHLZYQVSJAZWJWICLLX4BI7EDNAUMZOJH2BFPCXSZRSTZTZNEKGW552H3B4ACWUE6SBOEWTQDCSHRAOK6W6NAEGOASGZSLAC3JV7IEOE2YQ6ERRSLOEU4PXSD4ZQ5TA7WRGOJUZAGCXLP7NY3V26WEJYMMKAMSPEEF7KERQ3SBFGM3PWR573JK32PSKKHW2FFYOZJCZBHWXQ57JFWLO2N42LBBHRSQ5NYGAGMDTW5EMQDP6DR5RLU6IMZ2WVVK57CY2PTMIX52WWM5WLRUY6JVYPEKNHJABCPCR7S34W6P2CATSODVMFW4IOQYOG3G763M4VHC2A6IXFQ46HSEQXK3RN7X7KKI/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/120",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 423.60095804805974,
+          "t": 290.8298684610736,
+          "r": 543.2734719739067,
+          "b": 278.49216230814454,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          21
+        ]
+      }
+    ],
+    "orig": "Cruise Ship - See How",
+    "text": "Cruise Ship - See How",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/69910337/196432687/94bc7154-a31d-11f0-9e86-dabae537ad02/V4SVHKNOOSYRDPGDTJIW7J77FUP3KKA6OANGYKKHIDXN7W25H4WRSEBYNMZ6UYBNVDXS2MXFQM55LC45HKCJCBLW4KSFKG6HBAC4ZQOF7GZBVNS3SY7M6QGN2UI6RX6UNUEXWRASFI5TKX7QMQZR3S3CUW4IPDM64K5GDVENW6R3QAKA473QJ7WWQDFUIJ522REQWLDXZI3HRS7IQP3RHY4ECGQF4W3P7FO2EBNJXTZDWJ2ENITQ4STKLVT24GFLKX6SH3RTJDPC7NQHD6QMJ4PHDL7MMOIEF3UPGQLFDU4ABMSIM3KMYMCAMO4LYMU2A2DFSIPKOI4T7MRCVEEIVHZPO6VSJIFTECQP42P7XHXERNO2QOVJCAXGQWY5HOVNOXLXYL3Q43FSJBQLQQ3HS6FNEWUXHC6XCNWRELXJG5PFCNEPPCQQ6IH34JPKD7UBPMZGCD3S2PCYIVJJHXGQG7MI7CVRAHCFK5CXZ4I6HSWW7YHTUNYWK42QJXFEPN5LHO5HOGYN76HLPSAC3YYRP6GXYUFPXW3KKX2VVFGN2HSDAAUUFRCESN23Z7BMYHJK7RWPYTUMIO57JNIIXZUEQL7VSLLCTQJQDJQYPSYYIGCBAYFOTTDR4QBRIO3D52HBQWQPGFFRUVCH4B62GV5NTV7XLLS45PMPVCQD2K6WG6ZV4OQBUIXBLT2Y2VCWJN5AMPE47DGMGPDTU447T5FGSVQARMC27Y7ZIVUXPEXE3UPSUSTOGLFD2CFDNXUX75OEHNEYC4CMSQIYGTTTEYE4Q7NMWBL53HDQ5MXSOY2DJO72XAA3K3LDRUIOHQGXTY7WWUKLYWPIM3HBITWPB2TFK2DGTL7OLM46ZTFMWJRNFAEXICPVYQ2CN3JCLPPTGLWXKLFMBLDBS45TCSIFK7XL2YJLN6QAS5XYWB4HIAQKMK2742SL7ML6BIUD456VA536FQEI7E6P7KWTP2ZIIJTTCWE4NLHGMI4TWWKUNMPTSSZHAMEAYI7IZ3PGBFEHQOATGFGLDHCBOPSNQVLG75YGK7R5BUTAM3SI4DK3CGHM36QO3ECFO7HNU7OU3OPTQV42K2ATDUAN43UNNZNBJXH3FJB4KU6NPX5BWBCE7ONESZOAHZFMOQFJXBZXGOJBUDEWFRYCRMUFM72AJD4TLQ6HU4TCM3BEQHAUU6BIFEAOO5K72H5Z6773I2Q2TKYHZO6HA3T5LQRKCUYM4QOUCPFDWEDQNW2KRS2BZZPMIUAS4MGGXHBNMU5BUXO2KOD2EI5YSIA63H7DDQ54NWXWWL2FOUP7M4O4QXO6JSN7NNFNNCCZX4TLPGQQRXQ7FK6K3N6YRGBNQXV2JRJSGHRQYHWZT2PQU7ESV5PANEAPGBAPBIBASD6Q2T6VRRQJU66AMUV3IJFIABSLBJ7MAYZ3UTZ2LZEC4ERPCCER4D2RBB3633OKC3R4OMUEVRHIPYBZHM7ZDGRFRD722LKB76HUVQ2YSTXILRJXFP2AAOUBON3ZWA3O35WCB3TLSIYAAQAM66TQCQ2MUCLK2AEWKYSDMZAJWHP3XDEXYINDTQ6OCLIJYGMPHQ47ETRASIGKENIK7I5VQDWJSA6B7KL4TBKKFM3JND6YNH26JHWMPFDZKFW2QIQBAP2GE5DJTYS4JO5YH6GP7B6CJ4KAMUR244QDBGKAZBBPIDEMFQ3YYJH32NDEFZKIO35GNIUBLZEE62VHTHENHKLKHKXRK5PSB2VQCJPRNPHZIZHE7OHRCDBO7TBOHPKHXPN2XCFLDN7CP2ELT6HKIBGGHAP6UBBFIIUGTRHHCS6RIWW5KQJ7KJR5TJR5Z4ZCPKZ6L3N7DLGNWDJZYYWOI4RQCBECDZGYHYH3XIZDHNONBPV66NXQ6FZBXOURQS5L2UJGMWSAQMZUYGNLL4LMMATBIRVZPYHLZYQVSJAZWJWICLLX4BI7EDNAUMZOJH2BFPCXSZRSTZTZNEKGW552H3B4ACWUE6SBOEWTQDCSHRAOK6W6NAEGOASGZSLAC3JV7IEOE2YQ6ERRSLOEU4PXSD4ZQ5TA7WRGOJUZAGCXLP7NY3V26WEJYMMKAMSPEEF7KERQ3SBFGM3PWR573JK32PSKKHW2FFYOZJCZBHWXQ57JFWLO2N42LBBHRSQ5NYGAGMDTW5EMQDP6DR5RLU6IMZ2WVVK57CY2PTMIX52WWM5WLRUY6JVYPEKNHJABCPCR7S34W6P2CATSODVMFW4IOQYOG3G763M4VHC2A6IXFQ46HSEQXK3RN7X7KKI/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/121",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 423.60095804805974,
+          "t": 277.18784701349114,
+          "r": 535.2848550884634,
+          "b": 264.8501408605621,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "the Genius Captain…",
+    "text": "the Genius Captain…",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/69910337/196432687/94bc7154-a31d-11f0-9e86-dabae537ad02/V4SVHKNOOSYRDPGDTJIW7J77FUP3KKA6OANGYKKHIDXN7W25H4WRSEBYNMZ6UYBNVDXS2MXFQM55LC45HKCJCBLW4KSFKG6HBAC4ZQOF7GZBVNS3SY7M6QGN2UI6RX6UNUEXWRASFI5TKX7QMQZR3S3CUW4IPDM64K5GDVENW6R3QAKA473QJ7WWQDFUIJ522REQWLDXZI3HRS7IQP3RHY4ECGQF4W3P7FO2EBNJXTZDWJ2ENITQ4STKLVT24GFLKX6SH3RTJDPC7NQHD6QMJ4PHDL7MMOIEF3UPGQLFDU4ABMSIM3KMYMCAMO4LYMU2A2DFSIPKOI4T7MRCVEEIVHZPO6VSJIFTECQP42P7XHXERNO2QOVJCAXGQWY5HOVNOXLXYL3Q43FSJBQLQQ3HS6FNEWUXHC6XCNWRELXJG5PFCNEPPCQQ6IH34JPKD7UBPMZGCD3S2PCYIVJJHXGQG7MI7CVRAHCFK5CXZ4I6HSWW7YHTUNYWK42QJXFEPN5LHO5HOGYN76HLPSAC3YYRP6GXYUFPXW3KKX2VVFGN2HSDAAUUFRCESN23Z7BMYHJK7RWPYTUMIO57JNIIXZUEQL7VSLLCTQJQDJQYPSYYIGCBAYFOTTDR4QBRIO3D52HBQWQPGFFRUVCH4B62GV5NTV7XLLS45PMPVCQD2K6WG6ZV4OQBUIXBLT2Y2VCWJN5AMPE47DGMGPDTU447T5FGSVQARMC27Y7ZIVUXPEXE3UPSUSTOGLFD2CFDNXUX75OEHNEYC4CMSQIYGTTTEYE4Q7NMWBL53HDQ5MXSOY2DJO72XAA3K3LDRUIOHQGXTY7WWUKLYWPIM3HBITWPB2TFK2DGTL7OLM46ZTFMWJRNFAEXICPVYQ2CN3JCLPPTGLWXKLFMBLDBS45TCSIFK7XL2YJLN6QAS5XYWB4HIAQKMK2742SL7ML6BIUD456VA536FQEI7E6P7KWTP2ZIIJTTCWE4NLHGMI4TWWKUNMPTSSZHAMEAYI7IZ3PGBFEHQOATGFGLDHCBOPSNQVLG75YGK7R5BUTAM3SI4DK3CGHM36QO3ECFO7HNU7OU3OPTQV42K2ATDUAN43UNNZNBJXH3FJB4KU6NPX5BWBCE7ONESZOAHZFMOQFJXBZXGOJBUDEWFRYCRMUFM72AJD4TLQ6HU4TCM3BEQHAUU6BIFEAOO5K72H5Z6773I2Q2TKYHZO6HA3T5LQRKCUYM4QOUCPFDWEDQNW2KRS2BZZPMIUAS4MGGXHBNMU5BUXO2KOD2EI5YSIA63H7DDQ54NWXWWL2FOUP7M4O4QXO6JSN7NNFNNCCZX4TLPGQQRXQ7FK6K3N6YRGBNQXV2JRJSGHRQYHWZT2PQU7ESV5PANEAPGBAPBIBASD6Q2T6VRRQJU66AMUV3IJFIABSLBJ7MAYZ3UTZ2LZEC4ERPCCER4D2RBB3633OKC3R4OMUEVRHIPYBZHM7ZDGRFRD722LKB76HUVQ2YSTXILRJXFP2AAOUBON3ZWA3O35WCB3TLSIYAAQAM66TQCQ2MUCLK2AEWKYSDMZAJWHP3XDEXYINDTQ6OCLIJYGMPHQ47ETRASIGKENIK7I5VQDWJSA6B7KL4TBKKFM3JND6YNH26JHWMPFDZKFW2QIQBAP2GE5DJTYS4JO5YH6GP7B6CJ4KAMUR244QDBGKAZBBPIDEMFQ3YYJH32NDEFZKIO35GNIUBLZEE62VHTHENHKLKHKXRK5PSB2VQCJPRNPHZIZHE7OHRCDBO7TBOHPKHXPN2XCFLDN7CP2ELT6HKIBGGHAP6UBBFIIUGTRHHCS6RIWW5KQJ7KJR5TJR5Z4ZCPKZ6L3N7DLGNWDJZYYWOI4RQCBECDZGYHYH3XIZDHNONBPV66NXQ6FZBXOURQS5L2UJGMWSAQMZUYGNLL4LMMATBIRVZPYHLZYQVSJAZWJWICLLX4BI7EDNAUMZOJH2BFPCXSZRSTZTZNEKGW552H3B4ACWUE6SBOEWTQDCSHRAOK6W6NAEGOASGZSLAC3JV7IEOE2YQ6ERRSLOEU4PXSD4ZQ5TA7WRGOJUZAGCXLP7NY3V26WEJYMMKAMSPEEF7KERQ3SBFGM3PWR573JK32PSKKHW2FFYOZJCZBHWXQ57JFWLO2N42LBBHRSQ5NYGAGMDTW5EMQDP6DR5RLU6IMZ2WVVK57CY2PTMIX52WWM5WLRUY6JVYPEKNHJABCPCR7S34W6P2CATSODVMFW4IOQYOG3G763M4VHC2A6IXFQ46HSEQXK3RN7X7KKI/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/122",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 423.60095804805974,
+          "t": 260.4823340445573,
+          "r": 539.7268888837316,
+          "b": 250.3218701539099,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          26
+        ]
+      }
+    ],
+    "orig": "Happy in Shape | Sponsored",
+    "text": "Happy in Shape | Sponsored",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/69910337/196432687/94bc7154-a31d-11f0-9e86-dabae537ad02/V4SVHKNOOSYRDPGDTJIW7J77FUP3KKA6OANGYKKHIDXN7W25H4WRSEBYNMZ6UYBNVDXS2MXFQM55LC45HKCJCBLW4KSFKG6HBAC4ZQOF7GZBVNS3SY7M6QGN2UI6RX6UNUEXWRASFI5TKX7QMQZR3S3CUW4IPDM64K5GDVENW6R3QAKA473QJ7WWQDFUIJ522REQWLDXZI3HRS7IQP3RHY4ECGQF4W3P7FO2EBNJXTZDWJ2ENITQ4STKLVT24GFLKX6SH3RTJDPC7NQHD6QMJ4PHDL7MMOIEF3UPGQLFDU4ABMSIM3KMYMCAMO4LYMU2A2DFSIPKOI4T7MRCVEEIVHZPO6VSJIFTECQP42P7XHXERNO2QOVJCAXGQWY5HOVNOXLXYL3Q43FSJBQLQQ3HS6FNEWUXHC6XCNWRELXJG5PFCNEPPCQQ6IH34JPKD7UBPMZGCD3S2PCYIVJJHXGQG7MI7CVRAHCFK5CXZ4I6HSWW7YHTUNYWK42QJXFEPN5LHO5HOGYN76HLPSAC3YYRP6GXYUFPXW3KKX2VVFGN2HSDAAUUFRCESN23Z7BMYHJK7RWPYTUMIO57JNIIXZUEQL7VSLLCTQJQDJQYPSYYIGCBAYFOTTDR4QBRIO3D52HBQWQPGFFRUVCH4B62GV5NTV7XLLS45PMPVCQD2K6WG6ZV4OQBUIXBLT2Y2VCWJN5AMPE47DGMGPDTU447T5FGSVQARMC27Y7ZIVUXPEXE3UPSUSTOGLFD2CFDNXUX75OEHNEYC4CMSQIYGTTTEYE4Q7NMWBL53HDQ5MXSOY2DJO72XAA3K3LDRUIOHQGXTY7WWUKLYWPIM3HBITWPB2TFK2DGTL7OLM46ZTFMWJRNFAEXICPVYQ2CN3JCLPPTGLWXKLFMBLDBS45TCSIFK7XL2YJLN6QAS5XYWB4HIAQKMK2742SL7ML6BIUD456VA536FQEI7E6P7KWTP2ZIIJTTCWE4NLHGMI4TWWKUNMPTSSZHAMEAYI7IZ3PGBFEHQOATGFGLDHCBOPSNQVLG75YGK7R5BUTAM3SI4DK3CGHM36QO3ECFO7HNU7OU3OPTQV42K2ATDUAN43UNNZNBJXH3FJB4KU6NPX5BWBCE7ONESZOAHZFMOQFJXBZXGOJBUDEWFRYCRMUFM72AJD4TLQ6HU4TCM3BEQHAUU6BIFEAOO5K72H5Z6773I2Q2TKYHZO6HA3T5LQRKCUYM4QOUCPFDWEDQNW2KRS2BZZPMIUAS4MGGXHBNMU5BUXO2KOD2EI5YSIA63H7DDQ54NWXWWL2FOUP7M4O4QXO6JSN7NNFNNCCZX4TLPGQQRXQ7FK6K3N6YRGBNQXV2JRJSGHRQYHWZT2PQU7ESV5PANEAPGBAPBIBASD6Q2T6VRRQJU66AMUV3IJFIABSLBJ7MAYZ3UTZ2LZEC4ERPCCER4D2RBB3633OKC3R4OMUEVRHIPYBZHM7ZDGRFRD722LKB76HUVQ2YSTXILRJXFP2AAOUBON3ZWA3O35WCB3TLSIYAAQAM66TQCQ2MUCLK2AEWKYSDMZAJWHP3XDEXYINDTQ6OCLIJYGMPHQ47ETRASIGKENIK7I5VQDWJSA6B7KL4TBKKFM3JND6YNH26JHWMPFDZKFW2QIQBAP2GE5DJTYS4JO5YH6GP7B6CJ4KAMUR244QDBGKAZBBPIDEMFQ3YYJH32NDEFZKIO35GNIUBLZEE62VHTHENHKLKHKXRK5PSB2VQCJPRNPHZIZHE7OHRCDBO7TBOHPKHXPN2XCFLDN7CP2ELT6HKIBGGHAP6UBBFIIUGTRHHCS6RIWW5KQJ7KJR5TJR5Z4ZCPKZ6L3N7DLGNWDJZYYWOI4RQCBECDZGYHYH3XIZDHNONBPV66NXQ6FZBXOURQS5L2UJGMWSAQMZUYGNLL4LMMATBIRVZPYHLZYQVSJAZWJWICLLX4BI7EDNAUMZOJH2BFPCXSZRSTZTZNEKGW552H3B4ACWUE6SBOEWTQDCSHRAOK6W6NAEGOASGZSLAC3JV7IEOE2YQ6ERRSLOEU4PXSD4ZQ5TA7WRGOJUZAGCXLP7NY3V26WEJYMMKAMSPEEF7KERQ3SBFGM3PWR573JK32PSKKHW2FFYOZJCZBHWXQ57JFWLO2N42LBBHRSQ5NYGAGMDTW5EMQDP6DR5RLU6IMZ2WVVK57CY2PTMIX52WWM5WLRUY6JVYPEKNHJABCPCR7S34W6P2CATSODVMFW4IOQYOG3G763M4VHC2A6IXFQ46HSEQXK3RN7X7KKI/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/123",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 425.54981825485726,
+          "t": 162.92640144340112,
+          "r": 460.46037808754915,
+          "b": 153.83172047834614,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      }
+    ],
+    "orig": "Sponsored",
+    "text": "Sponsored",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/70246571/198267254/94bc480f-a31d-11f0-9e84-9fdef461f3d8/NGBAJIXPWZL2JD7VI7RJBNDXYZ7CHE6KNI6U7M2WN5DX7EEDYB7YYBPEGOGVZF5CEFKFMJEBFAVSRW5UX2HQ23PY5QKVWVOEJOQ3NAP4SCG25FW3TOP6AY5PY5HXL3LNF2GWSHO7SSSYC44VWN5JH2BXI64RL54ONQZYIYGTV5YRGZWYWO6WKIKJDT5P776PARQTPHDIXHGKVL5XIHXQC6GCU6RI7LCBXQE5LYU2HUGUFABIUQPLKR2PXPAAQSL7B37V5Y2ODF3IU7WCFM7CAQ6PHVAEM2AYVWEXTNVLP4N6CGWBYNICDRLHAU5GCPYFIELRXIRFXO6TLLPR4EJ2FORTO3RILRFEYNJRGSZPVNZJL5GPBWGAI5DQCTP4HXBFFMIT4YZJXTFWHZNUP4RSQ2EBT4DYNEC5QGJZCQOELDKS5JWDUYRHT46ZJBL4AE3UFHZKQMYVAHL26PLQ7SV4ZTWZZ2PBYUBZ7QCJYZHFEKK2TGSEOUYTQR3TDBQ6AVOP76C27253YW24P26DBWGXVEYQ7BDZDTQP55SVR3BAB2VLYPE3PTA3UGUG2IBGFOAAQNXK7GPKHU7AIZJEWVAMTKSKBTNB5JQE7CMCN5NVAMTPTWVLHJD2UUMI64DLHHYTNN3XPJ6AXIOXFYINILSCWW67RDGH6HK6CMSDZG535ARZ5VS3XGL2NGFD7OG2QBHFC75II74XR56LXOJC6M4IDLIASNEXNUX4CR7CRHXKNKY4KRYVMKKEDHRU7RDT75SURAUR3XWUXAP5KVVIWAXETOWRM2TVCB3Q2KFZ5BINP23LOC3QQKBMBHSZVVRILQ33P7RJPAFC75FWXO6IMUBROVTNMMNZ4DTMHT4WQHIKQNMX6LY77ELHBCZL4LBPTH56XBSWG6MDUCVCUO4WX347K6RLOVN4AMW6I56P3J4KBNJE6JH2XBQVPXVDSH73GBJ3AU347FOO4LNPCST7AJEZVQ3AWIXIJRSUBLN66RTB4XTTW6XT3HQ6SJHGIMDAGJAFSNESISQZ2BQ425KXPG5MQFGPJKDTLVW2WJUAHZY7XP5WQQTHYC6LRRIWGW47YXTLPJGSKXUQCQMRPGZNE4S7BSMMV4GDJ657FRMT75TBZWGHJOC5HYOLBYQE6ODOIJEFZAX5HKPQSGKRPUJKK4UEMQPTMEN5ZSUEO5OQMJW3SES6SQDFGRLE6L4L7F6SCBW47LI3TESE3NZM4UUPYIM67FHXANS3LZTRWBGQ2TUXIITRHEVKUO3ZMHCW44U5GASKO2VVQ7YIF2FKDSLAZHEJAXHSS3GRCRFPUDB32IQ5FXCSAH6BSWVKEBIEGU5GXZ6FFRNISCNR3VRMGFQTNX5NZUIMUTBKG4JEZLC4G5KKXPM2KLRL37MPM65Q6KQI47N3V5ETH7LEU23XT3GZQTCWBM4L6FZCGBT2EBOQKRCUS433T6LDCJRJBXYHANG27MTBY42JX64VYWHXZQICCBNJ66FW4ZQ27SO3HBKKV3VI4NYNOALZ3URXRIDESH3E5MTFXHKFHMT427W3IFZLBIJKOKIU4COI5PSHMHCLZ7MVQYEMU4LW6ZFX7X7RFHJTXIXVQOSPFXKQZZQ5Y4YM2BB6ZCBNNYB35KHLSTVFT26IMZ7F7CEVJJWY3U4YAWJAHJKCH2ZULOEOIZP4MYS4UTG7ZFIOTEFNR7XCDSZRM2GXYJQJRAMVOEOFGOZOCV5HMALASIJ4PUH5F5U6YNUV4DVQG62FUCWOF5DQPGR6WEGVDV2SI37LBOZB7FRK6JUMNKFFT2WLOUS3DNVNQOB7RYHZQNPZ46W4DTFEWTDXV4WBASO5FYNFXUC34HMVBMWXWQQFDMNF2W6CHAJ4UWPFJVILLGQUXBQR6BCVU2JD2YPQQD2MJ5PZK4QUE54HRZGAOMSKIE37BO6M4PK7X55JAPIVOMDTTCRQ2F7QXH2WGMKNWRCREP2VIRY3SPG5P2UEJQWKJULCF5BU6WGNGZHRPTN6VHV6ZLXX7HCMRBH4VTACMXL73SXADJXCSDZGPTU4MHJLLSEYN52VJBNUN75KWWYBCZP7RR5VBUI2ZUBUHLI7XB3EYRQ4ODKSYCOH3CZRSRVN2PCVFBHNN7EHASA5I5UMMQTS6LUHUUXXV3UTP4I64MPR74TTSEF67G3J5T6I6X3F3KZOEA4OWVVWFO7TJFT5PHJOEDGTTMPYKHPSS7GTTSKKZBEQ7AKA/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/124",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 423.60095804805974,
+          "t": 149.21269343378935,
+          "r": 521.7795484970352,
+          "b": 136.87498728086075,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          18
+        ]
+      }
+    ],
+    "orig": "Results For Online",
+    "text": "Results For Online",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/70246571/198267254/94bc480f-a31d-11f0-9e84-9fdef461f3d8/NGBAJIXPWZL2JD7VI7RJBNDXYZ7CHE6KNI6U7M2WN5DX7EEDYB7YYBPEGOGVZF5CEFKFMJEBFAVSRW5UX2HQ23PY5QKVWVOEJOQ3NAP4SCG25FW3TOP6AY5PY5HXL3LNF2GWSHO7SSSYC44VWN5JH2BXI64RL54ONQZYIYGTV5YRGZWYWO6WKIKJDT5P776PARQTPHDIXHGKVL5XIHXQC6GCU6RI7LCBXQE5LYU2HUGUFABIUQPLKR2PXPAAQSL7B37V5Y2ODF3IU7WCFM7CAQ6PHVAEM2AYVWEXTNVLP4N6CGWBYNICDRLHAU5GCPYFIELRXIRFXO6TLLPR4EJ2FORTO3RILRFEYNJRGSZPVNZJL5GPBWGAI5DQCTP4HXBFFMIT4YZJXTFWHZNUP4RSQ2EBT4DYNEC5QGJZCQOELDKS5JWDUYRHT46ZJBL4AE3UFHZKQMYVAHL26PLQ7SV4ZTWZZ2PBYUBZ7QCJYZHFEKK2TGSEOUYTQR3TDBQ6AVOP76C27253YW24P26DBWGXVEYQ7BDZDTQP55SVR3BAB2VLYPE3PTA3UGUG2IBGFOAAQNXK7GPKHU7AIZJEWVAMTKSKBTNB5JQE7CMCN5NVAMTPTWVLHJD2UUMI64DLHHYTNN3XPJ6AXIOXFYINILSCWW67RDGH6HK6CMSDZG535ARZ5VS3XGL2NGFD7OG2QBHFC75II74XR56LXOJC6M4IDLIASNEXNUX4CR7CRHXKNKY4KRYVMKKEDHRU7RDT75SURAUR3XWUXAP5KVVIWAXETOWRM2TVCB3Q2KFZ5BINP23LOC3QQKBMBHSZVVRILQ33P7RJPAFC75FWXO6IMUBROVTNMMNZ4DTMHT4WQHIKQNMX6LY77ELHBCZL4LBPTH56XBSWG6MDUCVCUO4WX347K6RLOVN4AMW6I56P3J4KBNJE6JH2XBQVPXVDSH73GBJ3AU347FOO4LNPCST7AJEZVQ3AWIXIJRSUBLN66RTB4XTTW6XT3HQ6SJHGIMDAGJAFSNESISQZ2BQ425KXPG5MQFGPJKDTLVW2WJUAHZY7XP5WQQTHYC6LRRIWGW47YXTLPJGSKXUQCQMRPGZNE4S7BSMMV4GDJ657FRMT75TBZWGHJOC5HYOLBYQE6ODOIJEFZAX5HKPQSGKRPUJKK4UEMQPTMEN5ZSUEO5OQMJW3SES6SQDFGRLE6L4L7F6SCBW47LI3TESE3NZM4UUPYIM67FHXANS3LZTRWBGQ2TUXIITRHEVKUO3ZMHCW44U5GASKO2VVQ7YIF2FKDSLAZHEJAXHSS3GRCRFPUDB32IQ5FXCSAH6BSWVKEBIEGU5GXZ6FFRNISCNR3VRMGFQTNX5NZUIMUTBKG4JEZLC4G5KKXPM2KLRL37MPM65Q6KQI47N3V5ETH7LEU23XT3GZQTCWBM4L6FZCGBT2EBOQKRCUS433T6LDCJRJBXYHANG27MTBY42JX64VYWHXZQICCBNJ66FW4ZQ27SO3HBKKV3VI4NYNOALZ3URXRIDESH3E5MTFXHKFHMT427W3IFZLBIJKOKIU4COI5PSHMHCLZ7MVQYEMU4LW6ZFX7X7RFHJTXIXVQOSPFXKQZZQ5Y4YM2BB6ZCBNNYB35KHLSTVFT26IMZ7F7CEVJJWY3U4YAWJAHJKCH2ZULOEOIZP4MYS4UTG7ZFIOTEFNR7XCDSZRM2GXYJQJRAMVOEOFGOZOCV5HMALASIJ4PUH5F5U6YNUV4DVQG62FUCWOF5DQPGR6WEGVDV2SI37LBOZB7FRK6JUMNKFFT2WLOUS3DNVNQOB7RYHZQNPZ46W4DTFEWTDXV4WBASO5FYNFXUC34HMVBMWXWQQFDMNF2W6CHAJ4UWPFJVILLGQUXBQR6BCVU2JD2YPQQD2MJ5PZK4QUE54HRZGAOMSKIE37BO6M4PK7X55JAPIVOMDTTCRQ2F7QXH2WGMKNWRCREP2VIRY3SPG5P2UEJQWKJULCF5BU6WGNGZHRPTN6VHV6ZLXX7HCMRBH4VTACMXL73SXADJXCSDZGPTU4MHJLLSEYN52VJBNUN75KWWYBCZP7RR5VBUI2ZUBUHLI7XB3EYRQ4ODKSYCOH3CZRSRVN2PCVFBHNN7EHASA5I5UMMQTS6LUHUUXXV3UTP4I64MPR74TTSEF67G3J5T6I6X3F3KZOEA4OWVVWFO7TJFT5PHJOEDGTTMPYKHPSS7GTTSKKZBEQ7AKA/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/125",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 423.60095804805974,
+          "t": 135.5706719862069,
+          "r": 533.4432103475735,
+          "b": 123.23296583327829,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "Remote Receptionist",
+    "text": "Remote Receptionist",
+    "hyperlink": "https://r1.outbrain.com/rp3/b1_outbrainrtb/70246571/198267254/94bc480f-a31d-11f0-9e84-9fdef461f3d8/NGBAJIXPWZL2JD7VI7RJBNDXYZ7CHE6KNI6U7M2WN5DX7EEDYB7YYBPEGOGVZF5CEFKFMJEBFAVSRW5UX2HQ23PY5QKVWVOEJOQ3NAP4SCG25FW3TOP6AY5PY5HXL3LNF2GWSHO7SSSYC44VWN5JH2BXI64RL54ONQZYIYGTV5YRGZWYWO6WKIKJDT5P776PARQTPHDIXHGKVL5XIHXQC6GCU6RI7LCBXQE5LYU2HUGUFABIUQPLKR2PXPAAQSL7B37V5Y2ODF3IU7WCFM7CAQ6PHVAEM2AYVWEXTNVLP4N6CGWBYNICDRLHAU5GCPYFIELRXIRFXO6TLLPR4EJ2FORTO3RILRFEYNJRGSZPVNZJL5GPBWGAI5DQCTP4HXBFFMIT4YZJXTFWHZNUP4RSQ2EBT4DYNEC5QGJZCQOELDKS5JWDUYRHT46ZJBL4AE3UFHZKQMYVAHL26PLQ7SV4ZTWZZ2PBYUBZ7QCJYZHFEKK2TGSEOUYTQR3TDBQ6AVOP76C27253YW24P26DBWGXVEYQ7BDZDTQP55SVR3BAB2VLYPE3PTA3UGUG2IBGFOAAQNXK7GPKHU7AIZJEWVAMTKSKBTNB5JQE7CMCN5NVAMTPTWVLHJD2UUMI64DLHHYTNN3XPJ6AXIOXFYINILSCWW67RDGH6HK6CMSDZG535ARZ5VS3XGL2NGFD7OG2QBHFC75II74XR56LXOJC6M4IDLIASNEXNUX4CR7CRHXKNKY4KRYVMKKEDHRU7RDT75SURAUR3XWUXAP5KVVIWAXETOWRM2TVCB3Q2KFZ5BINP23LOC3QQKBMBHSZVVRILQ33P7RJPAFC75FWXO6IMUBROVTNMMNZ4DTMHT4WQHIKQNMX6LY77ELHBCZL4LBPTH56XBSWG6MDUCVCUO4WX347K6RLOVN4AMW6I56P3J4KBNJE6JH2XBQVPXVDSH73GBJ3AU347FOO4LNPCST7AJEZVQ3AWIXIJRSUBLN66RTB4XTTW6XT3HQ6SJHGIMDAGJAFSNESISQZ2BQ425KXPG5MQFGPJKDTLVW2WJUAHZY7XP5WQQTHYC6LRRIWGW47YXTLPJGSKXUQCQMRPGZNE4S7BSMMV4GDJ657FRMT75TBZWGHJOC5HYOLBYQE6ODOIJEFZAX5HKPQSGKRPUJKK4UEMQPTMEN5ZSUEO5OQMJW3SES6SQDFGRLE6L4L7F6SCBW47LI3TESE3NZM4UUPYIM67FHXANS3LZTRWBGQ2TUXIITRHEVKUO3ZMHCW44U5GASKO2VVQ7YIF2FKDSLAZHEJAXHSS3GRCRFPUDB32IQ5FXCSAH6BSWVKEBIEGU5GXZ6FFRNISCNR3VRMGFQTNX5NZUIMUTBKG4JEZLC4G5KKXPM2KLRL37MPM65Q6KQI47N3V5ETH7LEU23XT3GZQTCWBM4L6FZCGBT2EBOQKRCUS433T6LDCJRJBXYHANG27MTBY42JX64VYWHXZQICCBNJ66FW4ZQ27SO3HBKKV3VI4NYNOALZ3URXRIDESH3E5MTFXHKFHMT427W3IFZLBIJKOKIU4COI5PSHMHCLZ7MVQYEMU4LW6ZFX7X7RFHJTXIXVQOSPFXKQZZQ5Y4YM2BB6ZCBNNYB35KHLSTVFT26IMZ7F7CEVJJWY3U4YAWJAHJKCH2ZULOEOIZP4MYS4UTG7ZFIOTEFNR7XCDSZRM2GXYJQJRAMVOEOFGOZOCV5HMALASIJ4PUH5F5U6YNUV4DVQG62FUCWOF5DQPGR6WEGVDV2SI37LBOZB7FRK6JUMNKFFT2WLOUS3DNVNQOB7RYHZQNPZ46W4DTFEWTDXV4WBASO5FYNFXUC34HMVBMWXWQQFDMNF2W6CHAJ4UWPFJVILLGQUXBQR6BCVU2JD2YPQQD2MJ5PZK4QUE54HRZGAOMSKIE37BO6M4PK7X55JAPIVOMDTTCRQ2F7QXH2WGMKNWRCREP2VIRY3SPG5P2UEJQWKJULCF5BU6WGNGZHRPTN6VHV6ZLXX7HCMRBH4VTACMXL73SXADJXCSDZGPTU4MHJLLSEYN52VJBNUN75KWWYBCZP7RR5VBUI2ZUBUHLI7XB3EYRQ4ODKSYCOH3CZRSRVN2PCVFBHNN7EHASA5I5UMMQTS6LUHUUXXV3UTP4I64MPR74TTSEF67G3J5T6I6X3F3KZOEA4OWVVWFO7TJFT5PHJOEDGTTMPYKHPSS7GTTSKKZBEQ7AKA/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/126",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 423.60095804805974,
+          "t": 118.21553894834051,
+          "r": 541.2278664812043,
+          "b": 108.05507505769356,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          27
+        ]
+      },
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 56.43366177659732,
+          "t": 577.8387577083677,
+          "r": 182.38668252058542,
+          "b": 564.0495567139178,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          28,
+          50
+        ]
+      }
+    ],
+    "orig": "Dealfindpro.com | Sponsored Thanks to Twitter, the",
+    "text": "Dealfindpro.com | Sponsored Thanks to Twitter, the"
+  },
+  {
+    "self_ref": "#/texts/127",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 23.999999,
+          "t": 25.796686764789342,
+          "r": 173.28056377417616,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "https://www.historynet.com/s-75-dvina/",
+    "text": "https://www.historynet.com/s-75-dvina/"
+  },
+  {
+    "self_ref": "#/texts/128",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 4,
+        "bbox": {
+          "l": 575.8593510058594,
+          "t": 25.796686764789342,
+          "r": 587.9910879145704,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "4/6",
+    "text": "4/6"
+  },
+  {
+    "self_ref": "#/texts/129",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 23.999999,
+          "t": 777.2966554522894,
+          "r": 87.04556293705139,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "10/6/25, 8:33 PM",
+    "text": "10/6/25, 8:33 PM"
+  },
+  {
+    "self_ref": "#/texts/130",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 332.7421736357422,
+          "t": 777.2966554522894,
+          "r": 372.3054651781216,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "S-75 Dvina",
+    "text": "S-75 Dvina"
+  },
+  {
+    "self_ref": "#/texts/131",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 56.43366177659732,
+          "t": 562.247876053988,
+          "r": 210.43517032723747,
+          "b": 548.4586750595377,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          24
+        ]
+      }
+    ],
+    "orig": "'Naked Gunner' Continues",
+    "text": "'Naked Gunner' Continues",
+    "hyperlink": "https://www.historynet.com/thanks-to-twitter-the-naked-gunner-continues-to-be-remembered/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/132",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 56.43366177659732,
+          "t": 546.6569943996078,
+          "r": 183.77949591452065,
+          "b": 532.867793405158,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          17
+        ]
+      }
+    ],
+    "orig": "To Be Remembered…",
+    "text": "To Be Remembered…",
+    "hyperlink": "https://www.historynet.com/thanks-to-twitter-the-naked-gunner-continues-to-be-remembered/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/133",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 226.19765960119756,
+          "t": 577.8387577083677,
+          "r": 372.96104311834506,
+          "b": 564.0495567139178,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          23
+        ]
+      }
+    ],
+    "orig": "Airshow Crash Stuns the",
+    "text": "Airshow Crash Stuns the",
+    "hyperlink": "https://www.historynet.com/airshow-crash-stuns-the-aviation-world/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/134",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 226.19765960119756,
+          "t": 562.247876053988,
+          "r": 312.59712865878413,
+          "b": 548.4586750595377,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          14
+        ]
+      }
+    ],
+    "orig": "Aviation World",
+    "text": "Aviation World",
+    "hyperlink": "https://www.historynet.com/airshow-crash-stuns-the-aviation-world/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/135",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 226.19765960119756,
+          "t": 543.71657542713,
+          "r": 268.6469052955254,
+          "b": 533.5561115364826,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "HistoryNet",
+    "text": "HistoryNet",
+    "hyperlink": "https://www.historynet.com/airshow-crash-stuns-the-aviation-world/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/136",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 56.43366177659732,
+          "t": 528.7753138416824,
+          "r": 98.8829074709252,
+          "b": 518.6148499510355,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      },
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 499.88434943646826,
+          "r": 239.544366636764,
+          "b": 486.0951484420184,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          11,
+          27
+        ]
+      },
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 484.2934677820881,
+          "r": 294.4483680934179,
+          "b": 470.50426678763824,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          28,
+          49
+        ]
+      }
+    ],
+    "orig": "HistoryNet Kate Middleton's Emotional Announceme…",
+    "text": "HistoryNet Kate Middleton's Emotional Announceme…"
+  },
+  {
+    "self_ref": "#/texts/137",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 466.41178722416316,
+          "r": 224.70555999741975,
+          "b": 456.25132333351576,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "TipHero | Sponsored",
+    "text": "TipHero | Sponsored",
+    "hyperlink": "https://tiphero.com/kate-middleton-sad-news?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=001e42b68c08d3f7b9ddf4190d31ec7630&utm_adtitle=Kate+Middleton%27s+Emotional+Announcement+About+Prince+George&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/138",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 424.52842144029864,
+          "r": 286.49274121473013,
+          "b": 410.7392204458488,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          25
+        ]
+      }
+    ],
+    "orig": "Taylor Swift Gives Travis",
+    "text": "Taylor Swift Gives Travis",
+    "hyperlink": "https://tiphero.com/taylor-gives-travis-warning?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=000a5308919955aee4579d6a684bcf58a6&utm_adtitle=Taylor+Swift+Gives+Travis+Kelce+Firm+Warning+Ahead+Of+Super+Bowl%2C+Keeping+Chiefs+Star+In+Check&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/139",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 408.93753978591894,
+          "r": 269.08273121621903,
+          "b": 395.14833879146863,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "Kelce Firm Warning…",
+    "text": "Kelce Firm Warning…",
+    "hyperlink": "https://tiphero.com/taylor-gives-travis-warning?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=000a5308919955aee4579d6a684bcf58a6&utm_adtitle=Taylor+Swift+Gives+Travis+Kelce+Firm+Warning+Ahead+Of+Super+Bowl%2C+Keeping+Chiefs+Star+In+Check&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/140",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 390.406239159061,
+          "r": 224.70555999741975,
+          "b": 380.2457752684136,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "TipHero | Sponsored",
+    "text": "TipHero | Sponsored",
+    "hyperlink": "https://tiphero.com/taylor-gives-travis-warning?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=000a5308919955aee4579d6a684bcf58a6&utm_adtitle=Taylor+Swift+Gives+Travis+Kelce+Firm+Warning+Ahead+Of+Super+Bowl%2C+Keeping+Chiefs+Star+In+Check&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/141",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 349.17249344412903,
+          "r": 287.61974107452596,
+          "b": 335.3832924496792,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          22
+        ]
+      }
+    ],
+    "orig": "Barack Obama Admits to",
+    "text": "Barack Obama Admits to",
+    "hyperlink": "https://tiphero.com/barack-obama-admits-to-deep-deficit-in-marriage-with-michelle?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=008f6dd3b8dca3590dd49e556f72cc57d5&utm_adtitle=Barack+Obama+Admits+to+%E2%80%9CDeep+Deficit%E2%80%9D+in+Marriage+with+Michelle&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/142",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 333.58161178974933,
+          "r": 292.1848449176309,
+          "b": 319.7924107952995,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          25
+        ]
+      }
+    ],
+    "orig": "'Deep Deficit' in Marria…",
+    "text": "'Deep Deficit' in Marria…",
+    "hyperlink": "https://tiphero.com/barack-obama-admits-to-deep-deficit-in-marriage-with-michelle?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=008f6dd3b8dca3590dd49e556f72cc57d5&utm_adtitle=Barack+Obama+Admits+to+%E2%80%9CDeep+Deficit%E2%80%9D+in+Marriage+with+Michelle&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/143",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 141.29028328090462,
+          "t": 315.0503111628914,
+          "r": 224.70555999741975,
+          "b": 304.88984727224397,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "TipHero | Sponsored",
+    "text": "TipHero | Sponsored",
+    "hyperlink": "https://tiphero.com/barack-obama-admits-to-deep-deficit-in-marriage-with-michelle?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=008f6dd3b8dca3590dd49e556f72cc57d5&utm_adtitle=Barack+Obama+Admits+to+%E2%80%9CDeep+Deficit%E2%80%9D+in+Marriage+with+Michelle&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/144",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 58.38252198339481,
+          "t": 447.45988296383894,
+          "r": 93.29308181608674,
+          "b": 438.36520199878396,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      }
+    ],
+    "orig": "Sponsored",
+    "text": "Sponsored",
+    "hyperlink": "https://tiphero.com/kate-middleton-sad-news?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=001e42b68c08d3f7b9ddf4190d31ec7630&utm_adtitle=Kate+Middleton%27s+Emotional+Announcement+About+Prince+George&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/145",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 58.38252198339481,
+          "t": 372.1039549676693,
+          "r": 93.29308181608674,
+          "b": 363.00927400261435,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      }
+    ],
+    "orig": "Sponsored",
+    "text": "Sponsored",
+    "hyperlink": "https://tiphero.com/taylor-gives-travis-warning?utm_source={{publisher_id}}&utm_medium=obbow&utm_campaign=000a5308919955aee4579d6a684bcf58a6&utm_adtitle=Taylor+Swift+Gives+Travis+Kelce+Firm+Warning+Ahead+Of+Super+Bowl%2C+Keeping+Chiefs+Star+In+Check&obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/146",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 58.38252198339481,
+          "t": 296.0984069025676,
+          "r": 93.29308181608674,
+          "b": 287.0037259375126,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      },
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 313.0335890049332,
+          "t": 346.7687722793021,
+          "r": 347.94414883762516,
+          "b": 337.6740913142471,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          10,
+          19
+        ]
+      },
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 311.0847287981357,
+          "t": 332.93199172081677,
+          "r": 527.9874131555295,
+          "b": 319.1427907263669,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          20,
+          54
+        ]
+      },
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 311.0847287981357,
+          "t": 317.9907301353692,
+          "r": 458.06507560904345,
+          "b": 304.2015291409193,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          55,
+          79
+        ]
+      },
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 311.0847287981357,
+          "t": 299.4594295085117,
+          "r": 394.3223751050067,
+          "b": 289.29896561786427,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          80,
+          97
+        ]
+      }
+    ],
+    "orig": "Sponsored Sponsored Donald Trump's Golf Footage Sparks Curiosity About His Legs TMSPN | Sponsored",
+    "text": "Sponsored Sponsored Donald Trump's Golf Footage Sparks Curiosity About His Legs TMSPN | Sponsored"
+  },
+  {
+    "self_ref": "#/texts/147",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 51.46000812383291,
+          "t": 79.75803382625418,
+          "r": 426.48072342386547,
+          "b": 62.42876886741078,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          74
+        ]
+      }
+    ],
+    "orig": "'HISTORY IS A GUIDE TO NAVIGATION IN PERILOUS TIMES. HISTORY IS WHO WE ARE",
+    "text": "'HISTORY IS A GUIDE TO NAVIGATION IN PERILOUS TIMES. HISTORY IS WHO WE ARE"
+  },
+  {
+    "self_ref": "#/texts/148",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 156.56650846249565,
+          "t": 67.41525251653684,
+          "r": 321.3688886000828,
+          "b": 50.08598755769344,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          31
+        ]
+      }
+    ],
+    "orig": "AND WHY WE ARE THE WAY WE ARE.'",
+    "text": "AND WHY WE ARE THE WAY WE ARE.'"
+  },
+  {
+    "self_ref": "#/texts/149",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 41.49240019114992,
+          "t": 47.35888250831522,
+          "r": 175.64509165049864,
+          "b": 36.445265350248974,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          34
+        ]
+      }
+    ],
+    "orig": "David McCullough, author of '1776'",
+    "text": "David McCullough, author of '1776'"
+  },
+  {
+    "self_ref": "#/texts/150",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 395.9616509295971,
+          "t": 577.8387577083677,
+          "r": 550.9816798693798,
+          "b": 564.0495567139178,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          24
+        ]
+      }
+    ],
+    "orig": "The Confederacy Rejected",
+    "text": "The Confederacy Rejected",
+    "hyperlink": "https://www.historynet.com/herman-heath/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/151",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 395.9616509295971,
+          "t": 562.247876053988,
+          "r": 527.6702165058662,
+          "b": 548.4586750595377,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          18
+        ]
+      }
+    ],
+    "orig": "Him-So He Became a",
+    "text": "Him-So He Became a",
+    "hyperlink": "https://www.historynet.com/herman-heath/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/152",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 395.9616509295971,
+          "t": 546.6569943996078,
+          "r": 509.11385703820116,
+          "b": 532.867793405158,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          18
+        ]
+      }
+    ],
+    "orig": "Union Hero Instead",
+    "text": "Union Hero Instead",
+    "hyperlink": "https://www.historynet.com/herman-heath/?obOrigUrl=true"
+  },
+  {
+    "self_ref": "#/texts/153",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 395.9616509295971,
+          "t": 528.7753138416824,
+          "r": 438.41089662392505,
+          "b": 518.6148499510355,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      },
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 77.01849771089579,
+          "t": 764.6042919446886,
+          "r": 535.3981358360838,
+          "b": 751.8717385936125,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          11,
+          114
+        ]
+      }
+    ],
+    "orig": "HistoryNet HistoryNet.com is brought to you by HistoryNet LLC, the world's largest publisher of history magazines.",
+    "text": "HistoryNet HistoryNet.com is brought to you by HistoryNet LLC, the world's largest publisher of history magazines."
+  },
+  {
+    "self_ref": "#/texts/154",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 23.999999,
+          "t": 25.796686764789342,
+          "r": 173.28056377417616,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "https://www.historynet.com/s-75-dvina/",
+    "text": "https://www.historynet.com/s-75-dvina/"
+  },
+  {
+    "self_ref": "#/texts/155",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 5,
+        "bbox": {
+          "l": 575.8593510058594,
+          "t": 25.796686764789342,
+          "r": 587.9910879145704,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "5/6",
+    "text": "5/6"
+  },
+  {
+    "self_ref": "#/texts/156",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 23.999999,
+          "t": 777.2966554522894,
+          "r": 87.04556293705139,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "10/6/25, 8:33 PM",
+    "text": "10/6/25, 8:33 PM"
+  },
+  {
+    "self_ref": "#/texts/157",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_header",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 332.7421736357422,
+          "t": 777.2966554522894,
+          "r": 372.3054651781216,
+          "b": 766.4074661103057,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "S-75 Dvina",
+    "text": "S-75 Dvina"
+  },
+  {
+    "self_ref": "#/texts/158",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 280.05522344113234,
+          "t": 742.5172096009842,
+          "r": 332.3585188418064,
+          "b": 729.7846562499076,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          10
+        ]
+      }
+    ],
+    "orig": "magazines.",
+    "text": "magazines."
+  },
+  {
+    "self_ref": "#/texts/159",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 56.62651773456166,
+          "t": 753.5607507728364,
+          "r": 555.7860743960457,
+          "b": 740.8281974217598,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          113
+        ]
+      }
+    ],
+    "orig": "HistoryNet.com contains daily features, photo galleries and over 25,000 articles originally published in our nine",
+    "text": "HistoryNet.com contains daily features, photo galleries and over 25,000 articles originally published in our nine"
+  },
+  {
+    "self_ref": "#/texts/160",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 268.9203261989859,
+          "t": 711.1886321566458,
+          "r": 343.4871775225829,
+          "b": 693.8593671978019,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          13
+        ]
+      }
+    ],
+    "orig": "OUR MAGAZINES",
+    "text": "OUR MAGAZINES"
+  },
+  {
+    "self_ref": "#/texts/161",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 261.86586151102244,
+          "t": 681.517885128223,
+          "r": 350.5573517128254,
+          "b": 666.9663955841347,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "American History",
+    "text": "American History",
+    "hyperlink": "https://www.historynet.com/magazine/american-history/"
+  },
+  {
+    "self_ref": "#/texts/162",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 256.3339373634188,
+          "t": 664.6277633359778,
+          "r": 356.0845763789263,
+          "b": 650.0762737918899,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          19
+        ]
+      }
+    ],
+    "orig": "America's Civil War",
+    "text": "America's Civil War",
+    "hyperlink": "https://www.historynet.com/magazine/americas-civil-war-magazine/"
+  },
+  {
+    "self_ref": "#/texts/163",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 266.11883965171455,
+          "t": 647.7376415437329,
+          "r": 346.2976861232957,
+          "b": 633.1861519996446,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "Aviation History",
+    "text": "Aviation History",
+    "hyperlink": "https://www.historynet.com/magazine/aviation-history/"
+  },
+  {
+    "self_ref": "#/texts/164",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 266.768459720647,
+          "t": 631.4971398204207,
+          "r": 345.6480498788233,
+          "b": 616.9456502763323,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          15
+        ]
+      }
+    ],
+    "orig": "Civil War Times",
+    "text": "Civil War Times",
+    "hyperlink": "https://www.historynet.com/magazine/civil-war-times/"
+  },
+  {
+    "self_ref": "#/texts/165",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 268.5752155373655,
+          "t": 614.6070180281758,
+          "r": 343.8481200099412,
+          "b": 600.0555284840875,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          16
+        ]
+      }
+    ],
+    "orig": "Military History",
+    "text": "Military History",
+    "hyperlink": "https://www.historynet.com/magazine/military-history/"
+  },
+  {
+    "self_ref": "#/texts/166",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 243.0573272046109,
+          "t": 598.3665163048636,
+          "r": 369.3644818654579,
+          "b": 583.8150267607753,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          26
+        ]
+      }
+    ],
+    "orig": "Military History Quarterly",
+    "text": "Military History Quarterly",
+    "hyperlink": "https://www.historynet.com/magazine/military-history-quarterly/"
+  },
+  {
+    "self_ref": "#/texts/167",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 284.105195310283,
+          "t": 581.4763945126183,
+          "r": 328.300208579375,
+          "b": 566.92490496853,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "Vietnam",
+    "text": "Vietnam",
+    "hyperlink": "https://www.historynet.com/magazine/vietnam/"
+  },
+  {
+    "self_ref": "#/texts/168",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 280.775892457004,
+          "t": 564.5862727203735,
+          "r": 331.6334305905299,
+          "b": 550.0347831762851,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          9
+        ]
+      }
+    ],
+    "orig": "Wild West",
+    "text": "Wild West",
+    "hyperlink": "https://www.historynet.com/magazine/wild-west/"
+  },
+  {
+    "self_ref": "#/texts/169",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 275.22367417844686,
+          "t": 548.3457709970612,
+          "r": 337.19234664688366,
+          "b": 533.7942814529729,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          12
+        ]
+      }
+    ],
+    "orig": "World War II",
+    "text": "World War II",
+    "hyperlink": "https://www.historynet.com/magazine/world-war-ii/"
+  },
+  {
+    "self_ref": "#/texts/170",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 283.1612193957158,
+          "t": 513.704131201167,
+          "r": 329.2437235235413,
+          "b": 496.37486624232315,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          8
+        ]
+      }
+    ],
+    "orig": "ABOUT US",
+    "text": "ABOUT US"
+  },
+  {
+    "self_ref": "#/texts/171",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 243.5546958179877,
+          "t": 484.03338417274426,
+          "r": 368.86401261549213,
+          "b": 469.48189462865594,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          23
+        ]
+      }
+    ],
+    "orig": "What Is HistoryNet.com?",
+    "text": "What Is HistoryNet.com?",
+    "hyperlink": "https://www.historynet.com/about-historynet"
+  },
+  {
+    "self_ref": "#/texts/172",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 261.4496954062622,
+          "t": 467.143262380499,
+          "r": 350.97268240617694,
+          "b": 452.5917728364111,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          17
+        ]
+      }
+    ],
+    "orig": "Advertise With Us",
+    "text": "Advertise With Us",
+    "hyperlink": "https://www.historynet.com/advertise-with-historynet-and-world-history-group"
+  },
+  {
+    "self_ref": "#/texts/173",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 285.6480429739977,
+          "t": 450.25314058825415,
+          "r": 326.7664644314583,
+          "b": 435.7016510441658,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          7
+        ]
+      }
+    ],
+    "orig": "Careers",
+    "text": "Careers",
+    "hyperlink": "https://www.historynet.com/work-for-historynet"
+  },
+  {
+    "self_ref": "#/texts/174",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 267.84439295981645,
+          "t": 434.0126388649419,
+          "r": 344.5620455147634,
+          "b": 419.46114932085356,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          15
+        ]
+      }
+    ],
+    "orig": "Meet Our Staff!",
+    "text": "Meet Our Staff!",
+    "hyperlink": "https://www.historynet.com/meet-the-team/"
+  },
+  {
+    "self_ref": "#/texts/175",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 273.14285664704715,
+          "t": 399.3709990690477,
+          "r": 339.2789903608337,
+          "b": 382.0417341102043,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          12
+        ]
+      }
+    ],
+    "orig": "STAY CURIOUS",
+    "text": "STAY CURIOUS"
+  },
+  {
+    "self_ref": "#/texts/176",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 120.52274170221887,
+          "t": 372.2337703094613,
+          "r": 491.8934526366324,
+          "b": 359.5012169583847,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          83
+        ]
+      }
+    ],
+    "orig": "Subscribe to receive our weekly newsletter with top stories from master historians.",
+    "text": "Subscribe to receive our weekly newsletter with top stories from master historians."
+  },
+  {
+    "self_ref": "#/texts/177",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 273.4676666815134,
+          "t": 345.6643094901224,
+          "r": 338.6221022776079,
+          "b": 331.1128199460345,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          11
+        ]
+      }
+    ],
+    "orig": "SIGN ME UP!",
+    "text": "SIGN ME UP!",
+    "hyperlink": "https://www.historynet.com/newsletters"
+  },
+  {
+    "self_ref": "#/texts/178",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 265.1545631099932,
+          "t": 285.18468107250646,
+          "r": 347.27012260766486,
+          "b": 272.45212772142986,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          18
+        ]
+      }
+    ],
+    "orig": "© 2025 HistoryNet.",
+    "text": "© 2025 HistoryNet."
+  },
+  {
+    "self_ref": "#/texts/179",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "body",
+    "label": "text",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 230.39988942210465,
+          "t": 263.09759872880204,
+          "r": 291.8160642444448,
+          "b": 250.36504537772544,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          14
+        ]
+      },
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 307.4103152832363,
+          "t": 263.09759872880204,
+          "r": 382.01372715935076,
+          "b": 250.36504537772544,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          15,
+          31
+        ]
+      }
+    ],
+    "orig": "Privacy Policy Terms of Service",
+    "text": "Privacy Policy Terms of Service"
+  },
+  {
+    "self_ref": "#/texts/180",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 23.999999,
+          "t": 25.796686764789342,
+          "r": 173.28056377417616,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          38
+        ]
+      }
+    ],
+    "orig": "https://www.historynet.com/s-75-dvina/",
+    "text": "https://www.historynet.com/s-75-dvina/"
+  },
+  {
+    "self_ref": "#/texts/181",
+    "parent": {
+      "$ref": "#/body"
+    },
+    "children": [],
+    "content_layer": "furniture",
+    "label": "page_footer",
+    "prov": [
+      {
+        "page_no": 6,
+        "bbox": {
+          "l": 575.8593510058594,
+          "t": 25.796686764789342,
+          "r": 587.9910879145704,
+          "b": 14.907497422805704,
+          "coord_origin": "BOTTOMLEFT"
+        },
+        "charspan": [
+          0,
+          3
+        ]
+      }
+    ],
+    "orig": "6/6",
+    "text": "6/6"
+  }
+]

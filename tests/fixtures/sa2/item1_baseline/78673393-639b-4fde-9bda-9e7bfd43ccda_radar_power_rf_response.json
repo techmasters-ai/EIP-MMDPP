@@ -1,0 +1,2111 @@
+{
+  "bundle_key": "air_defense_v3",
+  "pass_name": "radar_power_rf",
+  "pass_output": {
+    "radar_systems": [
+      {
+        "system_name": "SNR-75",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL"
+      },
+      {
+        "system_name": "SNR-75 Fan Song",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL"
+      },
+      {
+        "system_name": "RSNA-75/SNR-75 Fan Song",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL"
+      },
+      {
+        "system_name": "RSNA/SNR-75M Fan Song E",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL"
+      },
+      {
+        "system_name": "P-18-2/P-18M Spoon Rest D/E",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "PRV-10 Konus",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "PRV-11 Vershina",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "Side Net",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "RD-75 Amazonka",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "Fan Song",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL",
+        "nomenclature": "SNR-75"
+      },
+      {
+        "system_name": "RSNA- 75",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "RSN-75",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "RSN- 75M",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "RSN- 75V1",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "RSN- 75V",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "RSNA- 75M",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "RSN- 75M4",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "Spoon Rest",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL",
+        "nomenclature": "P-18-2/P-18M"
+      },
+      {
+        "system_name": "Konus",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "Vershina",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "Parol 4",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "Parol 3",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "P-15/19 Flat Face",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "P-15M Squat Eye",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "5E93",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "5Ya61/62/63 Tsikloida",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "5L22",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "5L22A",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "5L62A",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "Fan Song E",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL"
+      },
+      {
+        "system_name": "P-12",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "SEARCH"
+      },
+      {
+        "system_name": "SNR-75M Fan Song E",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL"
+      },
+      {
+        "system_name": "P-18-2/P-18M",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null,
+        "emitter_function": "FIRE_CONTROL"
+      },
+      {
+        "system_name": "Fan Song A",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "SNR-75M3 PV",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "SNR-75M3",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "SNR-75M3 Fan Song",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      },
+      {
+        "system_name": "SA-75 Desna",
+        "erp_dbw": null,
+        "tx_peak_power_kw": null,
+        "nominal_rf_mhz": null
+      }
+    ]
+  },
+  "metadata": {
+    "node_count": 39,
+    "edge_count": 38,
+    "node_types": {
+      "RadarPowerRfPass": 1,
+      "RadarPowerRfRecord": 38
+    },
+    "edge_types": {
+      "CONTAINS": 38
+    },
+    "extraction_contract": "delta",
+    "gleaning_passes": 0,
+    "resolvers_applied": false,
+    "quality_gate_passed": true,
+    "validation_pass_applied": false,
+    "validation_pass_edges_added": 0,
+    "upstream_ref_count": 0,
+    "upstream_preamble_applied": false
+  },
+  "model": "gemma4:31b",
+  "provider": "ollama",
+  "provenance": [
+    {
+      "instance_id": "23ed6182-4d9a-4118-919e-7be0b7e0560c",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "8e49d94a-736c-4584-9ec7-e791b34d66fc",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75 Fan Song"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "fd6d21ad-8f65-4d54-a7a7-fb445f2cd223",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSNA-75/SNR-75 Fan Song"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "066511f8-67cc-42a9-962d-fe1392a310f3",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSNA/SNR-75M Fan Song E"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "79fa76c1-4ae4-4d87-bace-5004cdfa65cf",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "P-18-2/P-18M Spoon Rest D/E"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "e9a37195-b339-4d0f-88c4-e0fa241df222",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "PRV-10 Konus"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "bb8306d7-cfd9-4b25-85f5-90871c4a26a2",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "PRV-11 Vershina"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "47f89955-547e-4e9b-9775-b9ecf84577de",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Side Net"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "9acf883d-1271-4d84-9ac8-34c73aa0a862",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RD-75 Amazonka"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "0c38c080-95dd-464e-832f-a107b8f4646e",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Fan Song"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "88e8eaed-35f8-457f-95f3-c53fdab9e03b",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSNA- 75"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "e4e7888c-6cd9-484b-86e0-1610731cbc65",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN-75"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "5b3a371b-65b5-40cf-bc72-0afef77fb81a",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75M"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "4c1a7a41-b621-437d-8c3a-bf888e2b25c4",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75V1"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "708d5052-07e1-4692-a320-c0431c5d39ed",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75V"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "c31c8adc-78c8-4977-a5df-aea924c78c64",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSNA- 75M"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "b33ec1aa-555f-4a9b-aa06-209cd1e8b5b1",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75M4"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "24a9d2ee-c947-419b-8162-5e8391ddf736",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Spoon Rest"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "3b482be7-12df-47d8-a5d7-ee262263bc5b",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Konus"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "22f219b8-09ce-4aff-a4b3-d055d1503a7c",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Vershina"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "b3a61d90-67c4-4b1c-b3d7-830522b14421",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Parol 4"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "13698429-94d3-40f5-b388-e13a3b2b33cf",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Parol 3"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "f8842b1d-c303-474a-a71e-59d440385769",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "P-15/19 Flat Face"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "c586d8ac-8959-4dfa-bdeb-aafa0668d86c",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "P-15M Squat Eye"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "e3508eb6-523f-4c02-820c-2314bf619256",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5E93"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "3e33b1a4-f842-42d0-8740-6383068c847b",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5Ya61/62/63 Tsikloida"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "3650026e-7d3d-40fd-b8de-d1f1e28dd036",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5L22"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "69d4f17f-02d7-4878-b927-b22fb7e2b6b3",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5L22A"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "532cc8b6-c12c-4034-b64e-33bf77397566",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5L62A"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "b677f12e-f365-4d27-978d-8257a6251351",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Fan Song E"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "d897d01f-a96a-44eb-aaba-f340388f9c5e",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "P-12"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "d4dc5fea-517f-46bf-824b-ed7ac1aab4fb",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75M Fan Song E"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "0ae0341b-7cb3-4a01-9195-edc11c8d586e",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "P-18-2/P-18M"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "36f4fe7b-2016-4b4f-9e4a-7e94c3ced8a0",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Fan Song A"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "040ef753-cf05-4287-9ea0-dcd3eb40485b",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75M3 PV"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "7c9571d2-a39d-49d2-a74e-97cc00a4d609",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75M3"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "6b078aaa-9744-4642-ae88-458c991ed4d1",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75M3 Fan Song"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "c6fd19a9-5903-4edc-8a47-59bfe29fd9a4",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SA-75 Desna"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    }
+  ],
+  "field_provenance": [],
+  "relationship_provenance": [
+    {
+      "relationship_type": "ASSOCIATED_WITH",
+      "source_instance_id": "b5:n6",
+      "target_instance_id": "b4:n0",
+      "evidence_ids": [
+        "#/texts/232"
+      ],
+      "self_refs": [
+        "#/pictures/23",
+        "#/texts/232"
+      ],
+      "page_numbers": [
+        19
+      ],
+      "supporting_snippet": null
+    },
+    {
+      "relationship_type": "CUES",
+      "source_instance_id": "b26:n1",
+      "target_instance_id": "b7:n0",
+      "evidence_ids": [
+        "#/texts/140"
+      ],
+      "self_refs": [
+        "#/texts/140",
+        "#/pictures/6"
+      ],
+      "page_numbers": [
+        7,
+        8
+      ],
+      "supporting_snippet": null
+    },
+    {
+      "relationship_type": "ASSOCIATED_WITH",
+      "source_instance_id": "b26:n1",
+      "target_instance_id": "b7:n0",
+      "evidence_ids": [
+        "#/texts/145"
+      ],
+      "self_refs": [
+        "#/pictures/6",
+        "#/texts/145"
+      ],
+      "page_numbers": [
+        8
+      ],
+      "supporting_snippet": null
+    },
+    {
+      "relationship_type": "ASSOCIATED_WITH",
+      "source_instance_id": "b5:n6",
+      "target_instance_id": "b44:n0",
+      "evidence_ids": [
+        "#/texts/232"
+      ],
+      "self_refs": [
+        "#/pictures/23",
+        "#/texts/232"
+      ],
+      "page_numbers": [
+        19
+      ],
+      "supporting_snippet": null
+    }
+  ],
+  "diagnostics": {
+    "contract": "delta",
+    "context": "DoclingDocument",
+    "chunk_count": 57,
+    "batch_count": 54,
+    "parallel_workers": 2,
+    "llm_batch_token_size": 512,
+    "batch_timings": [
+      {
+        "batch_index": 0,
+        "elapsed_seconds": 31.24938678741455
+      },
+      {
+        "batch_index": 1,
+        "elapsed_seconds": 63.038071393966675
+      },
+      {
+        "batch_index": 2,
+        "elapsed_seconds": 18.8667733669281
+      },
+      {
+        "batch_index": 3,
+        "elapsed_seconds": 27.198636293411255
+      },
+      {
+        "batch_index": 4,
+        "elapsed_seconds": 69.60661506652832
+      },
+      {
+        "batch_index": 5,
+        "elapsed_seconds": 42.936964988708496
+      },
+      {
+        "batch_index": 6,
+        "elapsed_seconds": 40.62711191177368
+      },
+      {
+        "batch_index": 7,
+        "elapsed_seconds": 14.291768550872803
+      },
+      {
+        "batch_index": 8,
+        "elapsed_seconds": 14.275296688079834
+      },
+      {
+        "batch_index": 9,
+        "elapsed_seconds": 27.832252025604248
+      },
+      {
+        "batch_index": 10,
+        "elapsed_seconds": 14.414485692977905
+      },
+      {
+        "batch_index": 11,
+        "elapsed_seconds": 11.358425378799438
+      },
+      {
+        "batch_index": 12,
+        "elapsed_seconds": 9.597261667251587
+      },
+      {
+        "batch_index": 13,
+        "elapsed_seconds": 67.31013512611389
+      },
+      {
+        "batch_index": 14,
+        "elapsed_seconds": 15.968211889266968
+      },
+      {
+        "batch_index": 15,
+        "elapsed_seconds": 75.99742150306702
+      },
+      {
+        "batch_index": 16,
+        "elapsed_seconds": 15.820574045181274
+      },
+      {
+        "batch_index": 17,
+        "elapsed_seconds": 17.409910202026367
+      },
+      {
+        "batch_index": 18,
+        "elapsed_seconds": 10.453741312026978
+      },
+      {
+        "batch_index": 19,
+        "elapsed_seconds": 14.205434322357178
+      },
+      {
+        "batch_index": 20,
+        "elapsed_seconds": 7.996467351913452
+      },
+      {
+        "batch_index": 21,
+        "elapsed_seconds": 16.07999873161316
+      },
+      {
+        "batch_index": 22,
+        "elapsed_seconds": 102.08135390281677
+      },
+      {
+        "batch_index": 23,
+        "elapsed_seconds": 97.58231091499329
+      },
+      {
+        "batch_index": 24,
+        "elapsed_seconds": 40.711257457733154
+      },
+      {
+        "batch_index": 25,
+        "elapsed_seconds": 84.13352537155151
+      },
+      {
+        "batch_index": 26,
+        "elapsed_seconds": 41.269662857055664
+      },
+      {
+        "batch_index": 27,
+        "elapsed_seconds": 41.30173444747925
+      },
+      {
+        "batch_index": 28,
+        "elapsed_seconds": 41.87641978263855
+      },
+      {
+        "batch_index": 29,
+        "elapsed_seconds": 16.338690996170044
+      },
+      {
+        "batch_index": 30,
+        "elapsed_seconds": 35.8600013256073
+      },
+      {
+        "batch_index": 31,
+        "elapsed_seconds": 8.532493352890015
+      },
+      {
+        "batch_index": 32,
+        "elapsed_seconds": 11.946658849716187
+      },
+      {
+        "batch_index": 33,
+        "elapsed_seconds": 14.468990087509155
+      },
+      {
+        "batch_index": 34,
+        "elapsed_seconds": 21.103354692459106
+      },
+      {
+        "batch_index": 35,
+        "elapsed_seconds": 23.56022572517395
+      },
+      {
+        "batch_index": 36,
+        "elapsed_seconds": 31.24475646018982
+      },
+      {
+        "batch_index": 37,
+        "elapsed_seconds": 36.49992394447327
+      },
+      {
+        "batch_index": 38,
+        "elapsed_seconds": 23.373362064361572
+      },
+      {
+        "batch_index": 39,
+        "elapsed_seconds": 33.390352725982666
+      },
+      {
+        "batch_index": 40,
+        "elapsed_seconds": 66.8780837059021
+      },
+      {
+        "batch_index": 41,
+        "elapsed_seconds": 48.31144976615906
+      },
+      {
+        "batch_index": 42,
+        "elapsed_seconds": 82.6257734298706
+      },
+      {
+        "batch_index": 43,
+        "elapsed_seconds": 16.006181955337524
+      },
+      {
+        "batch_index": 44,
+        "elapsed_seconds": 33.59126114845276
+      },
+      {
+        "batch_index": 45,
+        "elapsed_seconds": 13.041144847869873
+      },
+      {
+        "batch_index": 46,
+        "elapsed_seconds": 10.648401737213135
+      },
+      {
+        "batch_index": 47,
+        "elapsed_seconds": 9.107493162155151
+      },
+      {
+        "batch_index": 48,
+        "elapsed_seconds": 27.428105115890503
+      },
+      {
+        "batch_index": 49,
+        "elapsed_seconds": 11.757179260253906
+      },
+      {
+        "batch_index": 50,
+        "elapsed_seconds": 34.85341930389404
+      },
+      {
+        "batch_index": 51,
+        "elapsed_seconds": 70.36366748809814
+      },
+      {
+        "batch_index": 52,
+        "elapsed_seconds": 18.13347363471985
+      },
+      {
+        "batch_index": 53,
+        "elapsed_seconds": 7.98926854133606
+      }
+    ],
+    "batch_errors": {},
+    "path_counts": {
+      "": 1,
+      "radar_systems[]": 38
+    },
+    "normalizer_stats": {
+      "unknown_path_dropped": 0,
+      "path_alias_repaired": 0,
+      "id_key_mismatch": 0,
+      "id_missing_required": 0,
+      "id_backfilled_from_properties": 0,
+      "node_id_inferred": 0,
+      "parent_id_inferred": 0,
+      "nested_property_dropped": 0,
+      "parent_ref_repaired": 58,
+      "parent_ref_missing": 58,
+      "unknown_path_salvaged": 0,
+      "salvaged_properties": 0,
+      "property_field_repaired": 0,
+      "unknown_path_examples": [],
+      "id_missing_required_by_path": {}
+    },
+    "dedup_policy": {
+      "": {
+        "node_type": "RadarPowerRfPass",
+        "identity_fields": [],
+        "fallback_text_fields": [],
+        "allowed_match_fields": [],
+        "is_entity": true
+      },
+      "radar_systems[]": {
+        "node_type": "RadarPowerRfRecord",
+        "identity_fields": [
+          "system_name"
+        ],
+        "fallback_text_fields": [
+          "system_name"
+        ],
+        "allowed_match_fields": [
+          "system_name"
+        ],
+        "is_entity": true
+      }
+    },
+    "merge_stats": {
+      "descriptor_length_mismatch": 0,
+      "non_dict_filled_objects": 0,
+      "missing_parent_descriptor": 0,
+      "parent_lookup_miss": 0,
+      "attached_list_items": 0,
+      "attached_scalar_items": 0,
+      "orphan_attached": 0,
+      "orphan_dropped": 0,
+      "parent_lookup_repaired_local_id": 0,
+      "parent_lookup_repaired_single_candidate": 0,
+      "parent_lookup_repaired_positional": 0,
+      "parent_lookup_repaired_canonical_id": 0,
+      "parent_lookup_repaired_best_effort": 0,
+      "attached_node_count": 40,
+      "parent_lookup_miss_examples": [],
+      "missing_parent_examples": []
+    },
+    "merge_core_stats": {
+      "node_inputs": 39,
+      "node_dedup_merges": 0,
+      "property_updates": 0,
+      "property_conflicts": 0,
+      "relationship_inputs": 4,
+      "relationship_dedup_replaced": 0,
+      "relationship_self_skipped": 0,
+      "relationship_keywords_capped": 0
+    },
+    "identity_filter": {
+      "identity_filter_dropped": 0,
+      "identity_filter_dropped_by_path": {}
+    },
+    "resolver": {
+      "enabled": true,
+      "mode": "semantic",
+      "merged_count": 0,
+      "merge_tiers": {
+        "resolver_fuzzy": 0,
+        "resolver_semantic": 0,
+        "resolver_identity": 0
+      },
+      "actions": [],
+      "skipped_reasons": []
+    },
+    "quality_gate": {
+      "ok": true,
+      "reasons": []
+    },
+    "diagnostics": {
+      "top_missing_id_paths": [],
+      "unknown_path_examples": [],
+      "parent_lookup_miss_examples": [],
+      "property_sparsity": {
+        "total_non_empty_properties": 2,
+        "root_non_empty_fields": 2,
+        "non_empty_properties_by_path": {
+          "": 2
+        }
+      },
+      "orphan_count": 0,
+      "orphan_ratio": 0.0,
+      "orphans_by_parent_path": {},
+      "duplicate_canonical_identity_by_path": {},
+      "batch_split_retries": 0,
+      "split_batch_sizes": [],
+      "split_failures": 0
+    },
+    "quality_thresholds": {
+      "delta_quality_require_root": true,
+      "delta_quality_min_instances": 1,
+      "delta_quality_max_parent_lookup_miss": 4,
+      "delta_quality_adaptive_parent_lookup": true,
+      "delta_quality_require_relationships": false,
+      "delta_quality_require_structural_attachments": false,
+      "delta_quality_min_non_empty_properties": -1,
+      "delta_quality_min_root_non_empty_fields": -1,
+      "delta_quality_min_non_empty_by_path": {},
+      "delta_quality_max_orphan_ratio": -1.0,
+      "delta_quality_max_canonical_duplicates": -1
+    },
+    "library_log": "[LlmBackend] Initialized with:\n  • Client: OllamaChatClient\n  • Model: gemma4:31b\n[DocumentChunker] Initialized with:\n  • Tokenizer: sentence-transformers/all-MiniLM-L6-v2\n  • Chunk Max Tokens: 512\n  • Merge Peers: True\n[DocumentProcessor] Initialized with Classic OCR pipeline (English, French)\n[ExtractorFactory] Created ManyToOneStrategy\n[Extraction] PATCH GATE: contract='delta' has_chunk_batches=True has_chunker=True => can_chunk_batch=True\n[Extraction] Using CHUNKED-BATCHES path (matches documented delta flow).\n[DocumentProcessor] Extracted 57 chunks with metadata\n[DeltaExtraction] Running delta extraction (57 chunks)...\n[DeltaExtraction] Calling LLM (batch mode)...\n[LlmBackend] Successfully extracted data from DoclingDocument\n[GraphConverter] Pre-registering models for deterministic node IDs...\n[GraphConverter] Running automatic graph cleanup...\n[GraphCleaner] Starting cleanup: 39 nodes, 38 edges\n[GraphCleaner] Cleanup complete:\n  • Removed 0 phantom nodes\n  • Merged 0 duplicate nodes\n  • Removed 0 self-edges\n  • Removed 0 orphaned edges\n  • Removed 0 duplicate edges\n  • Capped keywords on 0 edges\n  • Result: 39 nodes (-0), 38 edges (-0)\n[GraphConverter] Graph structure validated successfully\n[GraphConverter] Final graph: 39 nodes, 38 edges\n  Registry: 39 entities across 2 classes\n[LlmBackend] Cleaned up resources\n[DocumentProcessor] Cleaned up resources\n",
+    "input_sanitize": {
+      "texts_in": 308,
+      "texts_dropped": 65
+    },
+    "service_identity_gate": {
+      "dropped_entities_by_field": {},
+      "dropped_entity_examples": {},
+      "evidence_text_nonempty": true
+    },
+    "service_pre_filter_counts": {
+      "node_count": 39,
+      "edge_count": 38,
+      "node_types": {
+        "RadarPowerRfPass": 1,
+        "RadarPowerRfRecord": 38
+      },
+      "edge_types": {
+        "CONTAINS": 38
+      },
+      "path_counts": {
+        "": 1,
+        "radar_systems[]": 38
+      }
+    },
+    "service_pre_filter_identity_examples": {
+      "radar_systems": [
+        {
+          "system_name": "SNR-75"
+        },
+        {
+          "system_name": "SNR-75 Fan Song"
+        },
+        {
+          "system_name": "RSNA-75/SNR-75 Fan Song"
+        },
+        {
+          "system_name": "RSNA/SNR-75M Fan Song E"
+        },
+        {
+          "system_name": "P-18-2/P-18M Spoon Rest D/E"
+        },
+        {
+          "system_name": "PRV-10 Konus"
+        },
+        {
+          "system_name": "PRV-11 Vershina"
+        },
+        {
+          "system_name": "Side Net"
+        },
+        {
+          "system_name": "RD-75 Amazonka"
+        },
+        {
+          "system_name": "Fan Song"
+        },
+        {
+          "system_name": "RSNA- 75"
+        },
+        {
+          "system_name": "RSN-75"
+        },
+        {
+          "system_name": "RSN- 75M"
+        },
+        {
+          "system_name": "RSN- 75V1"
+        },
+        {
+          "system_name": "RSN- 75V"
+        },
+        {
+          "system_name": "RSNA- 75M"
+        },
+        {
+          "system_name": "RSN- 75M4"
+        },
+        {
+          "system_name": "Spoon Rest"
+        },
+        {
+          "system_name": "Konus"
+        },
+        {
+          "system_name": "Vershina"
+        },
+        {
+          "system_name": "Parol 4"
+        },
+        {
+          "system_name": "Parol 3"
+        },
+        {
+          "system_name": "P-15/19 Flat Face"
+        },
+        {
+          "system_name": "P-15M Squat Eye"
+        },
+        {
+          "system_name": "5E93"
+        },
+        {
+          "system_name": "5Ya61/62/63 Tsikloida"
+        },
+        {
+          "system_name": "5L22"
+        },
+        {
+          "system_name": "5L22A"
+        },
+        {
+          "system_name": "5L62A"
+        },
+        {
+          "system_name": "Fan Song E"
+        }
+      ]
+    },
+    "service_postprocess": {
+      "emitter_function_overrides": {
+        "SNR-75": "FIRE_CONTROL",
+        "SNR-75 Fan Song": "FIRE_CONTROL",
+        "RSNA-75/SNR-75 Fan Song": "FIRE_CONTROL",
+        "RSNA/SNR-75M Fan Song E": "FIRE_CONTROL",
+        "P-18-2/P-18M Spoon Rest D/E": "SEARCH",
+        "PRV-10 Konus": "SEARCH",
+        "PRV-11 Vershina": "SEARCH",
+        "Side Net": "SEARCH",
+        "RD-75 Amazonka": "SEARCH",
+        "Fan Song": "FIRE_CONTROL",
+        "Spoon Rest": "FIRE_CONTROL",
+        "Konus": "SEARCH",
+        "Vershina": "SEARCH",
+        "Parol 4": "SEARCH",
+        "Parol 3": "SEARCH",
+        "P-15/19 Flat Face": "SEARCH",
+        "P-15M Squat Eye": "SEARCH",
+        "Fan Song E": "FIRE_CONTROL",
+        "P-12": "SEARCH",
+        "SNR-75M Fan Song E": "FIRE_CONTROL",
+        "P-18-2/P-18M": "FIRE_CONTROL"
+      }
+    },
+    "service_post_filter_counts": {
+      "node_count": 39,
+      "edge_count": 38,
+      "node_types": {
+        "RadarPowerRfPass": 1,
+        "RadarPowerRfRecord": 38
+      },
+      "edge_types": {
+        "CONTAINS": 38
+      },
+      "path_counts": {
+        "": 1,
+        "radar_systems[]": 38
+      }
+    },
+    "service_post_filter_identity_examples": {
+      "radar_systems": [
+        {
+          "system_name": "SNR-75"
+        },
+        {
+          "system_name": "SNR-75 Fan Song"
+        },
+        {
+          "system_name": "RSNA-75/SNR-75 Fan Song"
+        },
+        {
+          "system_name": "RSNA/SNR-75M Fan Song E"
+        },
+        {
+          "system_name": "P-18-2/P-18M Spoon Rest D/E"
+        },
+        {
+          "system_name": "PRV-10 Konus"
+        },
+        {
+          "system_name": "PRV-11 Vershina"
+        },
+        {
+          "system_name": "Side Net"
+        },
+        {
+          "system_name": "RD-75 Amazonka"
+        },
+        {
+          "system_name": "Fan Song"
+        },
+        {
+          "system_name": "RSNA- 75"
+        },
+        {
+          "system_name": "RSN-75"
+        },
+        {
+          "system_name": "RSN- 75M"
+        },
+        {
+          "system_name": "RSN- 75V1"
+        },
+        {
+          "system_name": "RSN- 75V"
+        },
+        {
+          "system_name": "RSNA- 75M"
+        },
+        {
+          "system_name": "RSN- 75M4"
+        },
+        {
+          "system_name": "Spoon Rest"
+        },
+        {
+          "system_name": "Konus"
+        },
+        {
+          "system_name": "Vershina"
+        },
+        {
+          "system_name": "Parol 4"
+        },
+        {
+          "system_name": "Parol 3"
+        },
+        {
+          "system_name": "P-15/19 Flat Face"
+        },
+        {
+          "system_name": "P-15M Squat Eye"
+        },
+        {
+          "system_name": "5E93"
+        },
+        {
+          "system_name": "5Ya61/62/63 Tsikloida"
+        },
+        {
+          "system_name": "5L22"
+        },
+        {
+          "system_name": "5L22A"
+        },
+        {
+          "system_name": "5L62A"
+        },
+        {
+          "system_name": "Fan Song E"
+        }
+      ]
+    },
+    "service_table_overlay": {
+      "kill_switch_active_parser": false,
+      "tables_processed": 1,
+      "tables_skipped_unqualified": 0,
+      "tables_skipped_multi": 0,
+      "tables_skipped_other": 1,
+      "columns_skipped_no_canonical": 0,
+      "columns_with_canonical_via_fallback": 0,
+      "values_skipped_unparseable": 0,
+      "facts_skipped_construct_fail": 0,
+      "alias_map_size": 34,
+      "facts_count": 53,
+      "cross_entity_hints_count": 10
+    },
+    "raw_path_counts": {
+      "radar_systems[]": 38,
+      "": 1
+    }
+  },
+  "table_overlay": {
+    "alias_map_by_entity_type": {
+      "MISSILE_SYSTEM": {
+        "SA-75": "1D",
+        "SA-2A": "1D",
+        "1D": "1D",
+        "S-75": "15D",
+        "SA-2C": "20DP",
+        "13D": "13D",
+        "S-75M": "15D",
+        "SA-2D": "5Ya23",
+        "13DM": "13DM",
+        "S-75M1": "13DAM",
+        "13DA": "13DA",
+        "13DAM": "13DAM",
+        "S-75V": "20DP",
+        "20D": "20D",
+        "20DP": "20DP",
+        "S-75M2": "20DSU",
+        "20DSU": "20DSU",
+        "S-75M4": "5Ya23",
+        "5Ya23": "5Ya23",
+        "SA-2E": "15D",
+        "15D": "15D"
+      },
+      "RADAR_SYSTEM": {
+        "RSNA- 75": "Fan Song",
+        "RSNA-75": "Fan Song",
+        "RSN-75": "Fan Song",
+        "RSN- 75M": "Fan Song",
+        "RSN-75M": "Fan Song",
+        "RSN- 75V1": "Fan Song",
+        "RSN-75V1": "Fan Song",
+        "RSN- 75V": "Fan Song",
+        "RSN-75V": "Fan Song",
+        "RSNA- 75M": "Fan Song",
+        "RSNA-75M": "Fan Song",
+        "RSN- 75M4": "Fan Song",
+        "RSN-75M4": "Fan Song"
+      }
+    },
+    "facts": [
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 29.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "29000"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 34.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "34000"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 34.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "34000"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 45.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "45000"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 56.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "56000"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 76.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "76000"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 6.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "6000"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 6.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "6000"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.726,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10726"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.798,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10798"
+      },
+      {
+        "canonical_entity": "15D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 11.200000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "11200"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2163.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2163"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2283.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2283"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2283.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2283"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2289.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2289"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2289.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2289"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2391.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2391"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2391.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2391"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2397.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2397"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2406.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2406"
+      },
+      {
+        "canonical_entity": "15D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2450.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2450"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1135.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1135"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1007.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1007"
+      }
+    ],
+    "cross_entity_hints": [
+      {
+        "source_canonical": "1D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSNA- 75",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN-75",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DM",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DA",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V1",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DAM",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V1",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20DP",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20DSU",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSNA- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "5Ya23",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M4",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "15D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      }
+    ]
+  }
+}

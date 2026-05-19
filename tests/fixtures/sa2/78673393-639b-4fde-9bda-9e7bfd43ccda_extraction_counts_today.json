@@ -3,12 +3,18 @@
     "runs": [
       {
         "pass_name": "radar_identity",
-        "entity_count": 13,
-        "avg_fill_num": 2.77,
+        "entity_count": 29,
+        "avg_fill_num": 1.86,
         "schema_size": 11,
+        "fields_filled_total": 54,
+        "fields_total": 319,
         "json_fail": false,
         "relationships": 0,
-        "elapsed_s": 1483.4
+        "field_provenance_count": 78,
+        "relationship_provenance_count": 3,
+        "node_count": 31,
+        "edge_count": 30,
+        "elapsed_s": 4939.3
       }
     ]
   },
@@ -16,12 +22,18 @@
     "runs": [
       {
         "pass_name": "radar_power_rf",
-        "entity_count": 32,
-        "avg_fill_num": 1.72,
+        "entity_count": 37,
+        "avg_fill_num": 1.57,
         "schema_size": 5,
+        "fields_filled_total": 58,
+        "fields_total": 169,
         "json_fail": false,
         "relationships": 0,
-        "elapsed_s": 1492.5
+        "field_provenance_count": 0,
+        "relationship_provenance_count": 4,
+        "node_count": 38,
+        "edge_count": 37,
+        "elapsed_s": 1896.6
       }
     ]
   },
@@ -29,12 +41,18 @@
     "runs": [
       {
         "pass_name": "missile_identity",
-        "entity_count": 27,
-        "avg_fill_num": 1.67,
+        "entity_count": 42,
+        "avg_fill_num": 2.43,
         "schema_size": 10,
+        "fields_filled_total": 102,
+        "fields_total": 420,
         "json_fail": false,
         "relationships": 0,
-        "elapsed_s": 1797.5
+        "field_provenance_count": 1357,
+        "relationship_provenance_count": 2,
+        "node_count": 43,
+        "edge_count": 42,
+        "elapsed_s": 7442.7
       }
     ]
   },
@@ -42,12 +60,18 @@
     "runs": [
       {
         "pass_name": "missile_kinematics",
-        "entity_count": 28,
-        "avg_fill_num": 2.07,
+        "entity_count": 38,
+        "avg_fill_num": 2.03,
         "schema_size": 6,
+        "fields_filled_total": 77,
+        "fields_total": 228,
         "json_fail": false,
         "relationships": 0,
-        "elapsed_s": 1875.2
+        "field_provenance_count": 1557,
+        "relationship_provenance_count": 2,
+        "node_count": 39,
+        "edge_count": 38,
+        "elapsed_s": 4360.9
       }
     ]
   },
@@ -55,12 +79,18 @@
     "runs": [
       {
         "pass_name": "system_links",
-        "entity_count": 0,
-        "avg_fill_num": 0.0,
-        "schema_size": 0,
+        "entity_count": 28,
+        "avg_fill_num": 3.0,
+        "schema_size": 3,
+        "fields_filled_total": 84,
+        "fields_total": 84,
         "json_fail": false,
-        "relationships": 31,
-        "elapsed_s": 1534.9
+        "relationships": 28,
+        "field_provenance_count": 0,
+        "relationship_provenance_count": 0,
+        "node_count": 1,
+        "edge_count": 28,
+        "elapsed_s": 758.8
       }
     ]
   }

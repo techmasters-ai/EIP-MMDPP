@@ -34,7 +34,7 @@
   "provider": "ollama",
   "provenance": [
     {
-      "instance_id": "7c2765f3-09d1-474b-b939-9457a16e71bf",
+      "instance_id": "df75eb33-8e4c-41ab-90eb-d3a6b92486fd",
       "ontology_name": "RADAR_SYSTEM",
       "identity_values": {
         "system_name": "RSNA-75M"
@@ -59,27 +59,27 @@
     "batch_timings": [
       {
         "batch_index": 0,
-        "elapsed_seconds": 17.963336944580078
+        "elapsed_seconds": 20.573492288589478
       },
       {
         "batch_index": 1,
-        "elapsed_seconds": 25.18695592880249
+        "elapsed_seconds": 12.87678575515747
       },
       {
         "batch_index": 2,
-        "elapsed_seconds": 31.848304271697998
+        "elapsed_seconds": 37.17169713973999
       },
       {
         "batch_index": 3,
-        "elapsed_seconds": 31.018918991088867
+        "elapsed_seconds": 34.8082058429718
       },
       {
         "batch_index": 4,
-        "elapsed_seconds": 24.953797340393066
+        "elapsed_seconds": 28.275766372680664
       },
       {
         "batch_index": 5,
-        "elapsed_seconds": 9.903132915496826
+        "elapsed_seconds": 11.588135242462158
       }
     ],
     "batch_errors": {},

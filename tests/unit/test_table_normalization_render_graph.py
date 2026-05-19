@@ -65,6 +65,45 @@ def test_chunk_format_contains_entity_block():
             assert "TABLE:" in c.text
 
 
+def test_emit_unit_hint_false_suppresses_units_preamble():
+    """When `emit_unit_hint=False`, the UNITS: preamble must be absent from
+    every column/section chunk. Identity/raw-only passes set this False so
+    their synth context isn't biased toward numeric extraction.
+    """
+    nt = normalize_tables(_doc(SA2_FIXTURE))[0]
+    chunks = render_for_graph(
+        nt,
+        token_limit_whole=100,
+        token_limit_column=1200,
+        emit_unit_hint=False,
+    )
+    for c in chunks:
+        if c.chunk_kind in (ChunkKind.TABLE_ENTITY_COLUMN, ChunkKind.TABLE_ENTITY_SECTION):
+            assert "UNITS:" not in c.text, (
+                f"emit_unit_hint=False but chunk text contains UNITS: preamble:\n{c.text[:200]}"
+            )
+
+
+def test_emit_unit_hint_true_includes_units_preamble():
+    """Default and explicit True both emit the UNITS: preamble (current
+    behavior for synth-eligible numeric/spec passes)."""
+    nt = normalize_tables(_doc(SA2_FIXTURE))[0]
+    chunks = render_for_graph(
+        nt,
+        token_limit_whole=100,
+        token_limit_column=1200,
+        emit_unit_hint=True,
+    )
+    column_chunks = [
+        c for c in chunks
+        if c.chunk_kind in (ChunkKind.TABLE_ENTITY_COLUMN, ChunkKind.TABLE_ENTITY_SECTION)
+    ]
+    assert column_chunks, "expected at least one column/section chunk"
+    assert any("UNITS:" in c.text for c in column_chunks), (
+        "emit_unit_hint=True should produce at least one chunk with UNITS: preamble"
+    )
+
+
 def test_sa2_graph_chunks_match_snapshot():
     expected = json.loads(Path("tests/fixtures/sa2_graph_chunks_expected.json").read_text())
     nt = normalize_tables(_doc(SA2_FIXTURE))[0]

@@ -533,6 +533,65 @@ def _recover_explicit_radars(
     return recovered_rows, recovered_names
 
 
+# Identity fields that carry a "canonical display name" for an entity. These
+# are subject to Item 5 conservative OCR cleanup post-extraction. Generic —
+# applies to any pass that has these fields on its row schema; field set is
+# the union of identity-style fields across radar and missile schemas.
+_CANONICAL_DISPLAY_NAME_FIELDS: tuple[str, ...] = ("system_name", "nomenclature", "name")
+
+
+def _canonicalize_display_name(value: Any) -> Any:
+    """Conservative OCR-artifact cleanup for entity display names.
+
+    Generic — no domain-specific or equipment-specific rules. Per Item 5:
+      * collapse hyphen-space: `RSN- 75M` → `RSN-75M`
+      * collapse slash spacing: `RSNA-75 / SNR-75` → `RSNA-75/SNR-75`
+      * normalize repeated whitespace and trim
+
+    Does NOT do semantic equivalence: `Fan Song` stays `Fan Song`,
+    `S-75` stays distinct from `SA-75`, no synonym expansion.
+
+    Non-string inputs pass through unchanged (defensive — callers iterate
+    over arbitrary field values).
+    """
+    if not isinstance(value, str):
+        return value
+    if not value:
+        return value
+    import re as _re
+    # 1. hyphen-space: any `-` followed by whitespace → `-` only
+    s = _re.sub(r"-\s+", "-", value)
+    # 2. slash spacing: whitespace on either side of `/` → `/` only
+    s = _re.sub(r"\s*/\s*", "/", s)
+    # 3. collapse repeated whitespace and trim
+    s = " ".join(s.split())
+    return s
+
+
+def _apply_display_name_canonicalization(
+    item: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Apply `_canonicalize_display_name` to identity-style fields of `item`,
+    mutating in place. Returns a list of diagnostic dicts describing each
+    rewrite (one per field that actually changed). Generic — operates only
+    on the structural _CANONICAL_DISPLAY_NAME_FIELDS list, no domain logic.
+    """
+    rewrites: list[dict[str, str]] = []
+    for field in _CANONICAL_DISPLAY_NAME_FIELDS:
+        original = item.get(field)
+        if not isinstance(original, str) or not original:
+            continue
+        canonical = _canonicalize_display_name(original)
+        if canonical != original:
+            item[field] = canonical
+            rewrites.append({
+                "field": field,
+                "original": original,
+                "canonical": canonical,
+            })
+    return rewrites
+
+
 def _postprocess_air_defense_radars(
     pass_output: dict[str, Any],
     evidence_text: str,
@@ -548,6 +607,7 @@ def _postprocess_air_defense_radars(
         "emitter_function_overrides": {},
         "recalled_radars": recovered_names,
         "unsupported_properties_cleared": {},
+        "display_name_canonicalized": [],
     }
     cleaned_rows: list[Any] = []
 
@@ -580,6 +640,13 @@ def _postprocess_air_defense_radars(
         cleared_fields = _clear_unsupported_radar_properties(item, evidence_text)
         if cleared_fields:
             stats["unsupported_properties_cleared"][str(system_name or "")] = sorted(set(cleared_fields))
+        # Item 5: canonicalize identity-style display names AFTER all
+        # evidence-text quoting checks. Running before would have the
+        # `_clear_unsupported_*` step null out values that match raw
+        # evidence but not the canonicalized form.
+        stats["display_name_canonicalized"].extend(
+            _apply_display_name_canonicalization(item)
+        )
         cleaned_rows.append(item)
 
     updated["radar_systems"] = cleaned_rows
@@ -591,6 +658,8 @@ def _postprocess_air_defense_radars(
         stats.pop("recalled_radars")
     if not stats["unsupported_properties_cleared"]:
         stats.pop("unsupported_properties_cleared")
+    if not stats["display_name_canonicalized"]:
+        stats.pop("display_name_canonicalized")
     return updated, stats
 
 
@@ -966,6 +1035,7 @@ def _postprocess_air_defense_missiles(
         "status_cleared": [],
         "range_overrides": {},
         "unsupported_properties_cleared": {},
+        "display_name_canonicalized": [],
     }
     cleaned_rows: list[Any] = []
 
@@ -996,6 +1066,11 @@ def _postprocess_air_defense_missiles(
                 if original_item.get(field_name) != corrected_value:
                     stats["range_overrides"][field_name] = corrected_value
                 item[field_name] = corrected_value
+        # Item 5: canonicalize identity-style display names AFTER all
+        # evidence-text quoting checks (same ordering rationale as radar).
+        stats["display_name_canonicalized"].extend(
+            _apply_display_name_canonicalization(item)
+        )
         cleaned_rows.append(item)
 
     updated["missile_systems"] = cleaned_rows
@@ -1005,6 +1080,8 @@ def _postprocess_air_defense_missiles(
         stats.pop("range_overrides")
     if not stats["unsupported_properties_cleared"]:
         stats.pop("unsupported_properties_cleared")
+    if not stats["display_name_canonicalized"]:
+        stats.pop("display_name_canonicalized")
     return updated, stats
 
 
@@ -1145,6 +1222,331 @@ def _resolve_ref(
     return type_map.get(normalize_evidence_text(canonical))
 
 
+# Item 3 (role-aware CUES validation). Generic role categories — no
+# equipment-specific names. Constants drive the helper below.
+#
+# Cueing semantics: source detects/tracks ahead; target engages on the
+# track handoff. Source-side roles are surveillance / acquisition / early-
+# warning class radars. Target-side role is the engagement radar.
+#
+# We intentionally exclude MULTI_FUNCTION and TRACKING from both sets
+# because they can play either role depending on context; treating them
+# as ambiguous and leaving the LLM output unchanged is safer.
+_CUES_SOURCE_ROLES: frozenset[str] = frozenset({
+    "SEARCH", "HEIGHT_FINDER",
+})
+_CUES_TARGET_ROLES: frozenset[str] = frozenset({
+    "FIRE_CONTROL",
+})
+
+
+def _build_role_map_by_ref(upstream_entities: list[Any] | None) -> dict[str, str]:
+    """Return ``{ref_id → emitter_function}`` for RADAR_SYSTEM upstream entities
+    that carry a role on ``properties.emitter_function``. Missiles and
+    role-less entities are omitted. Generic — keys are ref_ids only.
+    """
+    role_map: dict[str, str] = {}
+    if not upstream_entities:
+        return role_map
+    for ent in upstream_entities:
+        entity_type = getattr(ent, "entity_type", None) or (
+            ent.get("entity_type") if isinstance(ent, dict) else None
+        )
+        if entity_type != "RADAR_SYSTEM":
+            continue
+        ref_id = getattr(ent, "ref_id", None) or (
+            ent.get("ref_id") if isinstance(ent, dict) else None
+        )
+        if not isinstance(ref_id, str) or not ref_id:
+            continue
+        props = getattr(ent, "properties", None) or (
+            ent.get("properties") if isinstance(ent, dict) else None
+        )
+        if not isinstance(props, dict):
+            continue
+        role = props.get("emitter_function")
+        if isinstance(role, str) and role:
+            role_map[ref_id] = role
+    return role_map
+
+
+def _retype_radar_radar_to_cues(
+    rels: list[dict[str, Any]],
+    role_map: dict[str, str],
+) -> dict[str, list[dict[str, Any]]]:
+    """In-place: retype/flip RADAR_SYSTEM → RADAR_SYSTEM edges to CUES when
+    source/target roles support the cueing direction. Never creates new
+    edges. Returns diagnostics: ``{retyped, flipped, skipped}`` lists.
+
+    Rule (generic, no equipment names):
+      * source role ∈ _CUES_SOURCE_ROLES AND target role ∈ _CUES_TARGET_ROLES
+        → set rel_type = CUES (same direction).
+      * source role ∈ _CUES_TARGET_ROLES AND target role ∈ _CUES_SOURCE_ROLES
+        → FLIP direction and set rel_type = CUES.
+      * Else (missing role, ambiguous role pair, or matching roles on
+        both sides) → leave unchanged and emit diagnostic.
+
+    Edges already typed CUES that satisfy the same-direction rule are
+    considered correct and not counted as "retyped".
+
+    Cross-type edges (RADAR↔MISSILE) are out-of-scope and not touched.
+    """
+    diag: dict[str, list[dict[str, Any]]] = {
+        "retyped": [], "flipped": [], "skipped": [],
+    }
+    for rel in rels:
+        f = rel.get("from_ref_id") or ""
+        t = rel.get("to_ref_id") or ""
+        if not (f.startswith("RADAR_SYSTEM:") and t.startswith("RADAR_SYSTEM:")):
+            continue
+        f_role = role_map.get(f)
+        t_role = role_map.get(t)
+        if not f_role or not t_role:
+            diag["skipped"].append({
+                "from_ref_id": f, "to_ref_id": t,
+                "rel_type": rel.get("rel_type"),
+                "reason": "missing_role",
+                "from_role": f_role, "to_role": t_role,
+            })
+            continue
+        # Same-direction match: source is source-side AND target is target-side
+        if f_role in _CUES_SOURCE_ROLES and t_role in _CUES_TARGET_ROLES:
+            if rel.get("rel_type") != "CUES":
+                rel["rel_type"] = "CUES"
+                diag["retyped"].append({
+                    "from_ref_id": f, "to_ref_id": t,
+                    "from_role": f_role, "to_role": t_role,
+                    "reason": (
+                        "height_finder_to_fire_control"
+                        if f_role == "HEIGHT_FINDER"
+                        else "search_to_fire_control"
+                    ),
+                })
+            continue
+        # Reversed-direction match: should flip + CUES
+        if f_role in _CUES_TARGET_ROLES and t_role in _CUES_SOURCE_ROLES:
+            rel["from_ref_id"], rel["to_ref_id"] = t, f
+            rel["rel_type"] = "CUES"
+            diag["flipped"].append({
+                "original_from_ref_id": f, "original_to_ref_id": t,
+                "new_from_ref_id": t, "new_to_ref_id": f,
+                "from_role": f_role, "to_role": t_role,
+                "reason": "flipped_fire_control_to_source",
+            })
+            continue
+        # Ambiguous or unsupported role combination
+        diag["skipped"].append({
+            "from_ref_id": f, "to_ref_id": t,
+            "rel_type": rel.get("rel_type"),
+            "reason": "roles_ambiguous_or_unsupported",
+            "from_role": f_role, "to_role": t_role,
+        })
+    return diag
+
+
+# Item 4 (VARIANT_OF emitter) — parent-name eligibility constants.
+# Generic guardrails against false parentage from raw substring matching.
+#
+# SCOPE NOTE: these rules are tuned for designation-style entity families
+# (e.g. military systems, model numbers, product SKUs) where canonical
+# names mix letters and digits ("S-75", "F-16C", "RX-7"). Pure-letters
+# family names ("Dvina", "Apache") are intentionally rejected as parent
+# candidates here because they collide too easily with prose tokens
+# inside aliases. If a future ontology needs all-letter family names as
+# parents, this gate needs ontology-specific tuning rather than the
+# generic letter+digit rule.
+#
+# Within scope: missile/radar SAM-family designations.
+# Out of scope (intentional): consumer-product families with all-letter
+# names; people; place names.
+_VARIANT_OF_MIN_PARENT_NAME_LEN = 3
+
+
+def _parent_name_is_eligible(parent_sysname: str) -> bool:
+    """Generic guardrails for designation-style parent names. See module-
+    level SCOPE NOTE above: rejects all-letter or all-digit candidates
+    and anything shorter than ``_VARIANT_OF_MIN_PARENT_NAME_LEN``."""
+    if len(parent_sysname) < _VARIANT_OF_MIN_PARENT_NAME_LEN:
+        return False
+    has_letter = any(c.isalpha() for c in parent_sysname)
+    has_digit = any(c.isdigit() for c in parent_sysname)
+    return has_letter and has_digit
+
+
+def _find_parent_in_alias(alias: str, parent_sysname: str) -> str | None:
+    """Boundary-aware match: parent_sysname appears in alias only when
+    preceded/followed by a non-alphanumeric character (or string edge).
+
+    Returns a match-kind string: 'exact' if alias equals parent
+    (whitespace-normalized), 'boundary' for a properly-bounded substring,
+    or None if no valid match.
+
+    Generic — no equipment-specific logic. Rejects S-75 inside S-750,
+    SA-2 inside SA-20, etc.
+    """
+    if not alias or not parent_sysname:
+        return None
+    a_norm = " ".join(alias.strip().split())
+    p_norm = " ".join(parent_sysname.strip().split())
+    if not a_norm or not p_norm:
+        return None
+    if a_norm.upper() == p_norm.upper():
+        return "exact"
+    # Substring match with alphanumeric boundary on both sides
+    a_upper = a_norm.upper()
+    p_upper = p_norm.upper()
+    start = 0
+    while True:
+        idx = a_upper.find(p_upper, start)
+        if idx < 0:
+            return None
+        end = idx + len(p_upper)
+        # Character before: must be non-alnum (or string start)
+        before_ok = (idx == 0) or (not a_upper[idx - 1].isalnum())
+        # Character after: must be non-alnum (or string end)
+        after_ok = (end == len(a_upper)) or (not a_upper[end].isalnum())
+        if before_ok and after_ok:
+            return "boundary"
+        start = idx + 1  # try next occurrence
+
+
+def _emit_variant_of_relationships(
+    out: list[dict[str, Any]],
+    upstream_entities: list[Any] | None,
+    seen_pairs: set[tuple[str, str]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Item 4: deterministically emit VARIANT_OF edges from missile-variant
+    entities to their parent SAM family entities.
+
+    Generic — operates purely on structural evidence:
+      * Source: any MISSILE_SYSTEM entity whose alias/identity field
+        contains another MISSILE_SYSTEM entity's ``system_name`` as a
+        case-insensitive **boundary-aware** match.
+      * Target: that other MISSILE_SYSTEM entity (the parent family).
+      * Parent eligibility: ``_parent_name_is_eligible`` requires ≥3
+        chars AND mix of letters+digits — rejects too-generic names.
+      * Boundary rule: ``_find_parent_in_alias`` rejects substring
+        matches where the parent name abuts an alphanumeric character
+        (e.g. S-75 inside S-750, SA-2 inside SA-20).
+      * If multiple parents match the same alias, prefer **exact alias =
+        parent** matches over **boundary substring** matches; tie-break
+        by longest system_name.
+      * Never creates new entities. Never creates cross-type edges.
+      * Skips self-loops. Dedupes against ``seen_pairs``.
+
+    Returns diagnostics: ``{emitted, skipped}`` lists.
+
+    The function mutates ``out`` and ``seen_pairs``. Caller runs this
+    AFTER LLM-emitted rels + hint promotion so the dedup check is final.
+    """
+    diag: dict[str, list[dict[str, Any]]] = {"emitted": [], "skipped": []}
+    if not upstream_entities:
+        return diag
+
+    # Collect MISSILE_SYSTEM entries + their aliases. Aliases carry the
+    # candidate parent surface forms (nomenclature, name, dieqp).
+    missile_systems: list[tuple[str, str]] = []
+    missile_aliases: dict[str, list[str]] = {}
+    for ent in upstream_entities:
+        entity_type = getattr(ent, "entity_type", None) or (
+            ent.get("entity_type") if isinstance(ent, dict) else None
+        )
+        if entity_type != "MISSILE_SYSTEM":
+            continue
+        ref_id = getattr(ent, "ref_id", None) or (
+            ent.get("ref_id") if isinstance(ent, dict) else None
+        )
+        ident = getattr(ent, "identity_values", None) or (
+            ent.get("identity_values") if isinstance(ent, dict) else None
+        )
+        sysname = (ident or {}).get("system_name") if isinstance(ident, dict) else None
+        aliases = getattr(ent, "aliases", None) or (
+            ent.get("aliases") if isinstance(ent, dict) else None
+        )
+        if not isinstance(ref_id, str) or not isinstance(sysname, str):
+            continue
+        missile_systems.append((ref_id, sysname))
+        if isinstance(aliases, list):
+            missile_aliases[ref_id] = [a for a in aliases if isinstance(a, str) and a]
+
+    if len(missile_systems) < 2:
+        return diag
+
+    # Eligible parent candidates only. Sort by length descending so that
+    # within the same match_kind, the longer (more specific) parent wins.
+    eligible_parents = [
+        (ref, sysname) for ref, sysname in missile_systems
+        if _parent_name_is_eligible(sysname)
+    ]
+    eligible_parents.sort(key=lambda pair: len(pair[1]), reverse=True)
+
+    for child_ref, child_sysname in missile_systems:
+        aliases = missile_aliases.get(child_ref, [])
+        if not aliases:
+            continue
+        # For each alias, find best match across all eligible parents.
+        # Prefer 'exact' over 'boundary'; tie-break by parent length.
+        best: tuple[str, str, str, str] | None = None  # (kind, parent_ref, parent_sysname, alias)
+        for alias in aliases:
+            for parent_ref, parent_sysname in eligible_parents:
+                if parent_ref == child_ref:
+                    continue  # no self-loop
+                kind = _find_parent_in_alias(alias, parent_sysname)
+                if kind is None:
+                    continue
+                # Score: exact (2) beats boundary (1); within same kind,
+                # longer parent_sysname wins (eligible_parents is sorted
+                # longest-first, so the first hit at each kind is best).
+                kind_score = 2 if kind == "exact" else 1
+                if best is None:
+                    best = (kind, parent_ref, parent_sysname, alias)
+                    if kind == "exact":
+                        break  # can't do better than exact
+                else:
+                    best_kind_score = 2 if best[0] == "exact" else 1
+                    if kind_score > best_kind_score:
+                        best = (kind, parent_ref, parent_sysname, alias)
+                        if kind == "exact":
+                            break
+                    elif (kind_score == best_kind_score
+                          and len(parent_sysname) > len(best[2])):
+                        best = (kind, parent_ref, parent_sysname, alias)
+            if best is not None and best[0] == "exact":
+                break
+        if best is None:
+            continue
+        kind, parent_ref, parent_sysname, matched_alias = best
+        pair = (child_ref, parent_ref)
+        if pair in seen_pairs:
+            diag["skipped"].append({
+                "child_ref_id": child_ref,
+                "parent_ref_id": parent_ref,
+                "matched_alias": matched_alias,
+                "reason": "duplicate_of_existing_edge",
+            })
+            continue
+        edge = {
+            "rel_type": "VARIANT_OF",
+            "from_ref_id": child_ref,
+            "to_ref_id": parent_ref,
+            "confidence": 1.0,
+        }
+        out.append(edge)
+        seen_pairs.add(pair)
+        diag["emitted"].append({
+            "child_ref_id": child_ref,
+            "parent_ref_id": parent_ref,
+            "matched_alias": matched_alias,
+            "matched_parent_system_name": parent_sysname,
+            "match_kind": kind,  # 'exact' or 'boundary'
+            "reason": (
+                "alias_equals_parent_system_name" if kind == "exact"
+                else "alias_contains_parent_system_name_at_boundary"
+            ),
+        })
+    return diag
+
+
 def _postprocess_air_defense_system_links(
     pass_output: dict[str, Any],
     evidence_text: str,
@@ -1198,6 +1600,24 @@ def _postprocess_air_defense_system_links(
             continue
         seen_pairs.add((f, t))
         out.append(rel)
+
+    # Item 3 (role-aware CUES validation): retype/flip RADAR_SYSTEM →
+    # RADAR_SYSTEM LLM-emitted edges to CUES when source/target roles
+    # support the cueing direction. Runs BEFORE hint promotion so the
+    # deterministic promoted edges keep their canonical ASSOCIATED_WITH
+    # type. Generic — operates only on entity_type + role string.
+    role_map = _build_role_map_by_ref(upstream_entities)
+    role_aware_diag = _retype_radar_radar_to_cues(out, role_map)
+    # Update seen_pairs to reflect any flipped directions so the hint
+    # promotion below doesn't add a duplicate.
+    if role_aware_diag.get("flipped"):
+        seen_pairs.clear()
+        for rel in out:
+            f = rel.get("from_ref_id"); t = rel.get("to_ref_id")
+            if isinstance(f, str) and isinstance(t, str):
+                seen_pairs.add((f, t))
+    if any(role_aware_diag.get(k) for k in ("retyped", "flipped", "skipped")):
+        stats["role_aware_cues"] = role_aware_diag
 
     # v8a: promote cross_entity_hints to ASSOCIATED_WITH edges.
     # 2026-05-16: use _resolve_ref so unmatched hints fall back to the
@@ -1274,6 +1694,15 @@ def _postprocess_air_defense_system_links(
             "count": unresolved_count,
             "samples": unresolved_samples,
         }
+
+    # Item 4: deterministic VARIANT_OF emitter — runs AFTER hint promotion
+    # so the dedup-vs-seen_pairs check covers all prior edges (LLM-emitted
+    # + role-retyped + hint-promoted). Only emits MISSILE_SYSTEM →
+    # MISSILE_SYSTEM family/variant edges based on alias-substring evidence.
+    # Generic — no equipment names anywhere.
+    variant_of_diag = _emit_variant_of_relationships(out, upstream_entities, seen_pairs)
+    if variant_of_diag.get("emitted") or variant_of_diag.get("skipped"):
+        stats["variant_of_emitter"] = variant_of_diag
 
     # Legacy evidence-text fallback: only fires when nothing else produced
     # edges (preserves the prior behavior for docs without table hints).

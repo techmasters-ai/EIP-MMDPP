@@ -58,6 +58,15 @@ class EntityRef(BaseModel):
             "these to resolve chunk-cell names back to upstream ref_ids."
         ),
     )
+    properties: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional non-identity metadata used by postprocess. Generic — "
+            "any key/value pair an upstream pass exposes for downstream "
+            "structural use. Item 3 reads ``emitter_function`` here on "
+            "RADAR_SYSTEM refs to validate CUES relationship direction."
+        ),
+    )
 
 
 class ExtractPassRequest(BaseModel):

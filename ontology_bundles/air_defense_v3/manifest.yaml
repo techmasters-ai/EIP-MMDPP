@@ -134,7 +134,7 @@ passes:
     template_class: SystemLinksPass
     primary_entity_types: []
     bridge_entity_types: []
-    extracted_relationship_types: [ASSOCIATED_WITH, CUES]
+    extracted_relationship_types: [ASSOCIATED_WITH, CUES, VARIANT_OF]
     depends_on:
       - radar_identity
       - radar_power_rf

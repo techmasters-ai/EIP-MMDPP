@@ -44,7 +44,7 @@
   "provider": "ollama",
   "provenance": [
     {
-      "instance_id": "10142e32-743c-454a-8990-c3b70296b055",
+      "instance_id": "4d4b77bd-bc09-428b-b8d6-590d228dcb87",
       "ontology_name": "MISSILE_SYSTEM",
       "identity_values": {
         "system_name": "S-75 Dvina"
@@ -57,7 +57,7 @@
       "evidence_text": null
     },
     {
-      "instance_id": "a91fae50-e971-4052-bd04-f34220a60c2e",
+      "instance_id": "832eb42e-6b8c-4076-8f3d-2197eb45a090",
       "ontology_name": "MISSILE_SYSTEM",
       "identity_values": {
         "system_name": "S-75"
@@ -82,27 +82,27 @@
     "batch_timings": [
       {
         "batch_index": 0,
-        "elapsed_seconds": 121.00250506401062
+        "elapsed_seconds": 61.985416889190674
       },
       {
         "batch_index": 1,
-        "elapsed_seconds": 43.83686137199402
+        "elapsed_seconds": 34.180779218673706
       },
       {
         "batch_index": 2,
-        "elapsed_seconds": 72.2860631942749
+        "elapsed_seconds": 58.17308235168457
       },
       {
         "batch_index": 3,
-        "elapsed_seconds": 135.8143584728241
+        "elapsed_seconds": 219.9628541469574
       },
       {
         "batch_index": 4,
-        "elapsed_seconds": 96.60026383399963
+        "elapsed_seconds": 96.8303530216217
       },
       {
         "batch_index": 5,
-        "elapsed_seconds": 13.143937587738037
+        "elapsed_seconds": 10.211434602737427
       }
     ],
     "batch_errors": {},
@@ -119,8 +119,8 @@
       "node_id_inferred": 0,
       "parent_id_inferred": 0,
       "nested_property_dropped": 0,
-      "parent_ref_repaired": 5,
-      "parent_ref_missing": 5,
+      "parent_ref_repaired": 4,
+      "parent_ref_missing": 4,
       "unknown_path_salvaged": 0,
       "salvaged_properties": 0,
       "property_field_repaired": 0,
@@ -168,9 +168,9 @@
       "missing_parent_examples": []
     },
     "merge_core_stats": {
-      "node_inputs": 3,
+      "node_inputs": 4,
       "node_dedup_merges": 1,
-      "property_updates": 4,
+      "property_updates": 0,
       "property_conflicts": 0,
       "relationship_inputs": 0,
       "relationship_dedup_replaced": 0,

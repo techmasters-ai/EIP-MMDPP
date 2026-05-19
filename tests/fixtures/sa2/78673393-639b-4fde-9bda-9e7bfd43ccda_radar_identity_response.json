@@ -1,0 +1,3114 @@
+{
+  "bundle_key": "air_defense_v3",
+  "pass_name": "radar_identity",
+  "pass_output": {
+    "radar_systems": [
+      {
+        "system_name": "SNR-75",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "FIRE_CONTROL",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Fan Song",
+        "nomenclature": "SNR-75",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "FIRE_CONTROL",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": "CIRCULAR"
+      },
+      {
+        "system_name": "Fan Song E",
+        "nomenclature": "RSNA/SNR-75M",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "FIRE_CONTROL",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Spoon Rest",
+        "nomenclature": "P-18-2/P-18M",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "FIRE_CONTROL",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Side Net",
+        "nomenclature": "PRV-10 Konus/PRV-11 Vershina",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Amazonka",
+        "nomenclature": "RD-75",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Fan Song A",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "RSNA-75",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "FIRE_CONTROL",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "RSN-75",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "RSN-75M",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "RSN-75V1",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "RSN-75V",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "RSNA-75M",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "RSN-75M4",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Parol",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "P-12",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Flat Face",
+        "nomenclature": "P-15/19",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Squat Eye",
+        "nomenclature": "P-15M",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Tsikloida",
+        "nomenclature": "5Ya61/62/63",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "5E93",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "5L22",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "5L22A",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "5L62A",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "SNR-75M3",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "SNR-75M",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "FIRE_CONTROL",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Konus",
+        "nomenclature": "PRV-10",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "Vershina",
+        "nomenclature": "PRV-11",
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": "SEARCH",
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "SNR-75M3 PV",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      },
+      {
+        "system_name": "SA-75 Desna",
+        "nomenclature": null,
+        "elnot": null,
+        "dieqp": null,
+        "emitter_function": null,
+        "system_status": null,
+        "asrd": null,
+        "responsible_agency": null,
+        "review_cycle": null,
+        "next_review_date": null,
+        "scan_type": null
+      }
+    ]
+  },
+  "metadata": {
+    "node_count": 31,
+    "edge_count": 30,
+    "node_types": {
+      "RadarIdentityPass": 1,
+      "RadarIdentityRecord": 30
+    },
+    "edge_types": {
+      "CONTAINS": 30
+    },
+    "extraction_contract": "delta",
+    "gleaning_passes": 0,
+    "resolvers_applied": false,
+    "quality_gate_passed": true,
+    "validation_pass_applied": false,
+    "validation_pass_edges_added": 0,
+    "upstream_ref_count": 0,
+    "upstream_preamble_applied": false
+  },
+  "model": "gemma4:31b",
+  "provider": "ollama",
+  "provenance": [
+    {
+      "instance_id": "6e6028c2-fa62-42af-937d-ce4473d454da",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Fan Song"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "bb535abf-f953-442e-9382-8899a41bf4fb",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Fan Song E"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "7f15eeb5-6986-4e8f-981d-bfb89e4d97c0",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Spoon Rest"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "babf1d8d-585a-4169-bacc-6eed35769be1",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Side Net"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "8bfdcc34-d6be-42d9-8711-465a5bd36821",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Amazonka"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "1e8932c6-3327-4827-80aa-a19b9c1c1313",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Fan Song A"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "bea737f2-24b4-4cc7-bca6-e0465a95c7c2",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSNA- 75"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "2f914257-0356-4060-bfa5-8d8ee0f29ae6",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN-75"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "ac5c0657-d986-4e90-acbc-edc52de39e2e",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75M"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "e5ecf0f8-6c11-44bb-ba75-1c9e53a6a27c",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75V1"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "eea5df88-d7e9-4866-a565-6b2d678214d8",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75V"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "17a559e7-02bc-4392-a3fe-12687478bb3e",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSNA- 75M"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "feec1273-655b-4fc0-921c-198fff9059d5",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSN- 75M4"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "cd72d58f-f893-41f9-ada0-6570755cb726",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Parol"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "2b44e98b-8180-4463-bb43-eb51ef1e7c8c",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "P-12"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "d94aaebb-41f5-49c7-84c0-56a3e7dc24be",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Flat Face"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "2e0c00b0-3186-4fb8-9e2a-9998ffe3df99",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Squat Eye"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "5e3fb519-6730-4343-af1b-c0c82eba5a52",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Tsikloida"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "ec0d66b1-f5f4-4549-93ff-2c7f17c91e4b",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5E93"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "0eed3a65-7e44-4354-88a4-e6f9f8c235df",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5L22"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "c979a369-2dbf-492d-87c7-eb94d5078cca",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5L22A"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "dc3f7be6-f5dd-4b2e-aaec-639d94f7fab4",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "5L62A"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "d01eb721-0911-4e54-b0c0-0af45356cdd9",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75M3"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "fea8e075-90b5-4484-81ee-76e6f63cfcf3",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75M"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "c1c8af97-88b7-4c33-b5d0-a98976397730",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Konus"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "dddb7743-3e40-40f5-a40f-d641ba8dd2f1",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "Vershina"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "da390fa7-359e-413d-8b19-e159f2926338",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "RSNA-75"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "bebc3189-21ba-476a-85af-4753b2cea3b2",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SNR-75M3 PV"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    },
+    {
+      "instance_id": "ef2a4e70-f27d-4c16-b72f-642c37788e21",
+      "ontology_name": "RADAR_SYSTEM",
+      "identity_values": {
+        "system_name": "SA-75 Desna"
+      },
+      "element_uid": "",
+      "page": null,
+      "chunk_index": null,
+      "evidence_ids": [],
+      "page_numbers": [],
+      "evidence_text": null
+    }
+  ],
+  "field_provenance": [
+    {
+      "instance_id": "6e6028c2-fa62-42af-937d-ce4473d454da",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "6e6028c2-fa62-42af-937d-ce4473d454da",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "6e6028c2-fa62-42af-937d-ce4473d454da",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "RSNA-75/SNR-75 Fan Song Engagement Radar",
+      "element_uid": "#/texts/34",
+      "evidence_id": "#/texts/34",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "Almaz RSNA/SNR-75M Fan Song E Engagement Radar",
+      "element_uid": "#/texts/43",
+      "evidence_id": "#/texts/43",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "lifies as semi-mobile, requiring several hours to set up or redeploy a battery. Typical battery composition is a single SNR-75 Fan Song series engagement radar, six SM-90 single rail launchers, and multiple PR-11AM transporter/transloader t",
+      "element_uid": "#/texts/51",
+      "evidence_id": "#/texts/51",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "The PLA reverse engineered the Soviet V-75/S-75 Dvina / SA-2 Guideline SAM system during the 1960s, including the SNR-75 Fan Song radar, the SM-90 launcher and the PR-11AM transporter/transloader. Since then the PLA developed a significantl",
+      "element_uid": "#/texts/57",
+      "evidence_id": "#/texts/57",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "The  SNR-75  family  of  radars  employ,  by  modern  standards,  a  complex  antenna  arrangement  which  is employed to effect range and angle tracking of the intended target, and of the transponder beacon in the tail of the missile round",
+      "element_uid": "#/texts/61",
+      "evidence_id": "#/texts/61",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "Almaz RSNA/SNR-75M Fan Song E Engagement Radar",
+      "element_uid": "#/texts/203",
+      "evidence_id": "#/texts/203",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "SNR-75M3 PV van with antenna head elevated at ~15° and rotated on the base turntable (Image © Miroslav Gyűrösi).",
+      "element_uid": "#/texts/208",
+      "evidence_id": "#/texts/208",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "SNR-75M3 UV and AV vans - these contain the operator stations and system electronics respectively  (Image © Miroslav Gyűrösi).",
+      "element_uid": "#/texts/214",
+      "evidence_id": "#/texts/214",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "nomenclature",
+      "value": "SNR-75",
+      "supporting_snippet": "n in late model S-75 / SA-2 Guideline missile batteries. It was slaved in azimuth and elevation to the boresight of the SNR-75M3 Fan Song and was employed to perform precision rangefinding when the rangefinding channel in the Fan Song was d",
+      "element_uid": "#/texts/232",
+      "evidence_id": "#/texts/232",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "scan_type",
+      "value": "CIRCULAR",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "scan_type",
+      "value": "CIRCULAR",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "755f837b-8a3d-4187-9ec4-463577b7ae39",
+      "field_name": "scan_type",
+      "value": "CIRCULAR",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "bb535abf-f953-442e-9382-8899a41bf4fb",
+      "field_name": "nomenclature",
+      "value": "RSNA/SNR-75M",
+      "supporting_snippet": "Almaz RSNA/SNR-75M Fan Song E Engagement Radar",
+      "element_uid": "#/texts/43",
+      "evidence_id": "#/texts/43",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "bb535abf-f953-442e-9382-8899a41bf4fb",
+      "field_name": "nomenclature",
+      "value": "RSNA/SNR-75M",
+      "supporting_snippet": "Almaz RSNA/SNR-75M Fan Song E Engagement Radar",
+      "element_uid": "#/texts/203",
+      "evidence_id": "#/texts/203",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "bb535abf-f953-442e-9382-8899a41bf4fb",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "bb535abf-f953-442e-9382-8899a41bf4fb",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "bb535abf-f953-442e-9382-8899a41bf4fb",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "7f15eeb5-6986-4e8f-981d-bfb89e4d97c0",
+      "field_name": "nomenclature",
+      "value": "P-18-2/P-18M",
+      "supporting_snippet": "NITEL P-18-2/P-18M  Spoon Rest D/E  Acquisition Radar",
+      "element_uid": "#/texts/44",
+      "evidence_id": "#/texts/44",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "7f15eeb5-6986-4e8f-981d-bfb89e4d97c0",
+      "field_name": "nomenclature",
+      "value": "P-18-2/P-18M",
+      "supporting_snippet": "NITEL P-18-2/P-18M  Spoon Rest D/E  Acquisition Radar",
+      "element_uid": "#/texts/219",
+      "evidence_id": "#/texts/219",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "7f15eeb5-6986-4e8f-981d-bfb89e4d97c0",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "7f15eeb5-6986-4e8f-981d-bfb89e4d97c0",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "7f15eeb5-6986-4e8f-981d-bfb89e4d97c0",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "babf1d8d-585a-4169-bacc-6eed35769be1",
+      "field_name": "nomenclature",
+      "value": "PRV-10 Konus/PRV-11 Vershina",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "babf1d8d-585a-4169-bacc-6eed35769be1",
+      "field_name": "nomenclature",
+      "value": "PRV-10 Konus/PRV-11 Vershina",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "babf1d8d-585a-4169-bacc-6eed35769be1",
+      "field_name": "nomenclature",
+      "value": "PRV-10 Konus/PRV-11 Vershina",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "babf1d8d-585a-4169-bacc-6eed35769be1",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "babf1d8d-585a-4169-bacc-6eed35769be1",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "babf1d8d-585a-4169-bacc-6eed35769be1",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "8bfdcc34-d6be-42d9-8711-465a5bd36821",
+      "field_name": "nomenclature",
+      "value": "RD-75",
+      "supporting_snippet": "RD-75 Amazonka Rangefinding Radar",
+      "element_uid": "#/texts/46",
+      "evidence_id": "#/texts/46",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "8bfdcc34-d6be-42d9-8711-465a5bd36821",
+      "field_name": "nomenclature",
+      "value": "RD-75",
+      "supporting_snippet": "RD-75 Amazonka Rangefinding Radar",
+      "element_uid": "#/texts/227",
+      "evidence_id": "#/texts/227",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "8bfdcc34-d6be-42d9-8711-465a5bd36821",
+      "field_name": "nomenclature",
+      "value": "RD-75",
+      "supporting_snippet": "The RD-75 Amazonka was a rangefinding radar incorporated often in late model S-75 / SA-2 Guideline missile batteries. It was slaved in azimuth and elevation to the boresight of the SNR-75M3 Fan Song and was employed to perform precision ran",
+      "element_uid": "#/texts/232",
+      "evidence_id": "#/texts/232",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "8bfdcc34-d6be-42d9-8711-465a5bd36821",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "8bfdcc34-d6be-42d9-8711-465a5bd36821",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "8bfdcc34-d6be-42d9-8711-465a5bd36821",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "da390fa7-359e-413d-8b19-e159f2926338",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "da390fa7-359e-413d-8b19-e159f2926338",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "da390fa7-359e-413d-8b19-e159f2926338",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "cd72d58f-f893-41f9-ada0-6570755cb726",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "cd72d58f-f893-41f9-ada0-6570755cb726",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "cd72d58f-f893-41f9-ada0-6570755cb726",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2b44e98b-8180-4463-bb43-eb51ef1e7c8c",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2b44e98b-8180-4463-bb43-eb51ef1e7c8c",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2b44e98b-8180-4463-bb43-eb51ef1e7c8c",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "d94aaebb-41f5-49c7-84c0-56a3e7dc24be",
+      "field_name": "nomenclature",
+      "value": "P-15/19",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "d94aaebb-41f5-49c7-84c0-56a3e7dc24be",
+      "field_name": "nomenclature",
+      "value": "P-15/19",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "d94aaebb-41f5-49c7-84c0-56a3e7dc24be",
+      "field_name": "nomenclature",
+      "value": "P-15/19",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "d94aaebb-41f5-49c7-84c0-56a3e7dc24be",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "d94aaebb-41f5-49c7-84c0-56a3e7dc24be",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "d94aaebb-41f5-49c7-84c0-56a3e7dc24be",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2e0c00b0-3186-4fb8-9e2a-9998ffe3df99",
+      "field_name": "nomenclature",
+      "value": "P-15M",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2e0c00b0-3186-4fb8-9e2a-9998ffe3df99",
+      "field_name": "nomenclature",
+      "value": "P-15M",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2e0c00b0-3186-4fb8-9e2a-9998ffe3df99",
+      "field_name": "nomenclature",
+      "value": "P-15M",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2e0c00b0-3186-4fb8-9e2a-9998ffe3df99",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2e0c00b0-3186-4fb8-9e2a-9998ffe3df99",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "2e0c00b0-3186-4fb8-9e2a-9998ffe3df99",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "5e3fb519-6730-4343-af1b-c0c82eba5a52",
+      "field_name": "nomenclature",
+      "value": "5Ya61/62/63",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "5e3fb519-6730-4343-af1b-c0c82eba5a52",
+      "field_name": "nomenclature",
+      "value": "5Ya61/62/63",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "5e3fb519-6730-4343-af1b-c0c82eba5a52",
+      "field_name": "nomenclature",
+      "value": "5Ya61/62/63",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "fea8e075-90b5-4484-81ee-76e6f63cfcf3",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "fea8e075-90b5-4484-81ee-76e6f63cfcf3",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "fea8e075-90b5-4484-81ee-76e6f63cfcf3",
+      "field_name": "emitter_function",
+      "value": "FIRE_CONTROL",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "c1c8af97-88b7-4c33-b5d0-a98976397730",
+      "field_name": "nomenclature",
+      "value": "PRV-10",
+      "supporting_snippet": "PRV-10 Konus  / PRV-11 Vershina / Side Net Heightfinding Radars",
+      "element_uid": "#/texts/45",
+      "evidence_id": "#/texts/45",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "c1c8af97-88b7-4c33-b5d0-a98976397730",
+      "field_name": "nomenclature",
+      "value": "PRV-10",
+      "supporting_snippet": "PRV-10 Konus  / PRV-11 Vershina / Side Net Heightfinding Radars",
+      "element_uid": "#/texts/221",
+      "evidence_id": "#/texts/221",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "c1c8af97-88b7-4c33-b5d0-a98976397730",
+      "field_name": "nomenclature",
+      "value": "PRV-10",
+      "supporting_snippet": "Early model PRV-10 heightfinder (Vestnik PVO image).",
+      "element_uid": "#/texts/226",
+      "evidence_id": "#/texts/226",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "c1c8af97-88b7-4c33-b5d0-a98976397730",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "c1c8af97-88b7-4c33-b5d0-a98976397730",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "c1c8af97-88b7-4c33-b5d0-a98976397730",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "dddb7743-3e40-40f5-a40f-d641ba8dd2f1",
+      "field_name": "nomenclature",
+      "value": "PRV-11",
+      "supporting_snippet": "PRV-10 Konus  / PRV-11 Vershina / Side Net Heightfinding Radars",
+      "element_uid": "#/texts/45",
+      "evidence_id": "#/texts/45",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "dddb7743-3e40-40f5-a40f-d641ba8dd2f1",
+      "field_name": "nomenclature",
+      "value": "PRV-11",
+      "supporting_snippet": "PRV-10 Konus  / PRV-11 Vershina / Side Net Heightfinding Radars",
+      "element_uid": "#/texts/221",
+      "evidence_id": "#/texts/221",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "dddb7743-3e40-40f5-a40f-d641ba8dd2f1",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "10/6/25, 8:36 PM",
+      "element_uid": "#/texts/0",
+      "evidence_id": "#/texts/0",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "dddb7743-3e40-40f5-a40f-d641ba8dd2f1",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / SA-2 Guideline / Зенитный Ракетный Комплекс С-75 Двина/Десна/…",
+      "element_uid": "#/texts/1",
+      "evidence_id": "#/texts/1",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    },
+    {
+      "instance_id": "dddb7743-3e40-40f5-a40f-d641ba8dd2f1",
+      "field_name": "emitter_function",
+      "value": "SEARCH",
+      "supporting_snippet": "Last Updated: Mon Jan 27 11:18:09 UTC 2014",
+      "element_uid": "#/texts/12",
+      "evidence_id": "#/texts/12",
+      "page": null,
+      "document_id": null,
+      "chunk_index": null,
+      "cell_refs": []
+    }
+  ],
+  "relationship_provenance": [
+    {
+      "relationship_type": "ASSOCIATED_WITH",
+      "source_instance_id": "b5:n4",
+      "target_instance_id": "b4:n1",
+      "evidence_ids": [
+        "#/texts/232"
+      ],
+      "self_refs": [
+        "#/pictures/23",
+        "#/texts/232"
+      ],
+      "page_numbers": [
+        19
+      ],
+      "supporting_snippet": null
+    },
+    {
+      "relationship_type": "CUES",
+      "source_instance_id": "b24:n2",
+      "target_instance_id": "b4:n1",
+      "evidence_ids": [
+        "#/texts/145"
+      ],
+      "self_refs": [
+        "#/pictures/6",
+        "#/texts/145"
+      ],
+      "page_numbers": [
+        8
+      ],
+      "supporting_snippet": null
+    },
+    {
+      "relationship_type": "ASSOCIATED_WITH",
+      "source_instance_id": "b5:n4",
+      "target_instance_id": "b39:n2",
+      "evidence_ids": [
+        "#/texts/232"
+      ],
+      "self_refs": [
+        "#/pictures/23",
+        "#/texts/232"
+      ],
+      "page_numbers": [
+        19
+      ],
+      "supporting_snippet": null
+    }
+  ],
+  "diagnostics": {
+    "contract": "delta",
+    "context": "DoclingDocument",
+    "chunk_count": 61,
+    "batch_count": 59,
+    "parallel_workers": 2,
+    "llm_batch_token_size": 512,
+    "batch_timings": [
+      {
+        "batch_index": 0,
+        "elapsed_seconds": 91.10285139083862
+      },
+      {
+        "batch_index": 1,
+        "elapsed_seconds": 40.41118001937866
+      },
+      {
+        "batch_index": 2,
+        "elapsed_seconds": 55.07250356674194
+      },
+      {
+        "batch_index": 3,
+        "elapsed_seconds": 33.11424994468689
+      },
+      {
+        "batch_index": 4,
+        "elapsed_seconds": 189.9403109550476
+      },
+      {
+        "batch_index": 5,
+        "elapsed_seconds": 117.14543437957764
+      },
+      {
+        "batch_index": 6,
+        "elapsed_seconds": 138.46842432022095
+      },
+      {
+        "batch_index": 7,
+        "elapsed_seconds": 38.07470417022705
+      },
+      {
+        "batch_index": 8,
+        "elapsed_seconds": 34.79394173622131
+      },
+      {
+        "batch_index": 9,
+        "elapsed_seconds": 68.78292989730835
+      },
+      {
+        "batch_index": 10,
+        "elapsed_seconds": 23.307265281677246
+      },
+      {
+        "batch_index": 11,
+        "elapsed_seconds": 29.783876419067383
+      },
+      {
+        "batch_index": 12,
+        "elapsed_seconds": 59.709508180618286
+      },
+      {
+        "batch_index": 13,
+        "elapsed_seconds": 103.26721596717834
+      },
+      {
+        "batch_index": 14,
+        "elapsed_seconds": 27.62752914428711
+      },
+      {
+        "batch_index": 15,
+        "elapsed_seconds": 286.9671847820282
+      },
+      {
+        "batch_index": 16,
+        "elapsed_seconds": 19.315900087356567
+      },
+      {
+        "batch_index": 17,
+        "elapsed_seconds": 27.248141288757324
+      },
+      {
+        "batch_index": 18,
+        "elapsed_seconds": 15.83077096939087
+      },
+      {
+        "batch_index": 19,
+        "elapsed_seconds": 14.158923864364624
+      },
+      {
+        "batch_index": 20,
+        "elapsed_seconds": 19.401086568832397
+      },
+      {
+        "batch_index": 21,
+        "elapsed_seconds": 16.64800786972046
+      },
+      {
+        "batch_index": 22,
+        "elapsed_seconds": 182.33666706085205
+      },
+      {
+        "batch_index": 23,
+        "elapsed_seconds": 244.37121176719666
+      },
+      {
+        "batch_index": 24,
+        "elapsed_seconds": 79.67483425140381
+      },
+      {
+        "batch_index": 25,
+        "elapsed_seconds": 58.96496534347534
+      },
+      {
+        "batch_index": 26,
+        "elapsed_seconds": 107.41259264945984
+      },
+      {
+        "batch_index": 27,
+        "elapsed_seconds": 115.13707900047302
+      },
+      {
+        "batch_index": 28,
+        "elapsed_seconds": 144.55145287513733
+      },
+      {
+        "batch_index": 29,
+        "elapsed_seconds": 28.23669195175171
+      },
+      {
+        "batch_index": 30,
+        "elapsed_seconds": 106.35530471801758
+      },
+      {
+        "batch_index": 31,
+        "elapsed_seconds": 20.701059818267822
+      },
+      {
+        "batch_index": 32,
+        "elapsed_seconds": 17.93462038040161
+      },
+      {
+        "batch_index": 33,
+        "elapsed_seconds": 20.62879776954651
+      },
+      {
+        "batch_index": 34,
+        "elapsed_seconds": 18.59740948677063
+      },
+      {
+        "batch_index": 35,
+        "elapsed_seconds": 84.08273983001709
+      },
+      {
+        "batch_index": 36,
+        "elapsed_seconds": 84.52002954483032
+      },
+      {
+        "batch_index": 37,
+        "elapsed_seconds": 104.8269624710083
+      },
+      {
+        "batch_index": 38,
+        "elapsed_seconds": 88.54277634620667
+      },
+      {
+        "batch_index": 39,
+        "elapsed_seconds": 142.4611313343048
+      },
+      {
+        "batch_index": 40,
+        "elapsed_seconds": 153.50372004508972
+      },
+      {
+        "batch_index": 41,
+        "elapsed_seconds": 169.48024606704712
+      },
+      {
+        "batch_index": 42,
+        "elapsed_seconds": 181.49042892456055
+      },
+      {
+        "batch_index": 43,
+        "elapsed_seconds": 39.16047167778015
+      },
+      {
+        "batch_index": 44,
+        "elapsed_seconds": 65.18994784355164
+      },
+      {
+        "batch_index": 45,
+        "elapsed_seconds": 21.81599712371826
+      },
+      {
+        "batch_index": 46,
+        "elapsed_seconds": 31.64029049873352
+      },
+      {
+        "batch_index": 47,
+        "elapsed_seconds": 21.141819715499878
+      },
+      {
+        "batch_index": 48,
+        "elapsed_seconds": 30.04557967185974
+      },
+      {
+        "batch_index": 49,
+        "elapsed_seconds": 23.045124530792236
+      },
+      {
+        "batch_index": 50,
+        "elapsed_seconds": 31.5967915058136
+      },
+      {
+        "batch_index": 51,
+        "elapsed_seconds": 33.96541404724121
+      },
+      {
+        "batch_index": 52,
+        "elapsed_seconds": 24.302767515182495
+      },
+      {
+        "batch_index": 53,
+        "elapsed_seconds": 24.8430757522583
+      },
+      {
+        "batch_index": 54,
+        "elapsed_seconds": 30.059094190597534
+      },
+      {
+        "batch_index": 55,
+        "elapsed_seconds": 318.8454177379608
+      },
+      {
+        "batch_index": 56,
+        "elapsed_seconds": 91.21340036392212
+      },
+      {
+        "batch_index": 57,
+        "elapsed_seconds": 123.51406049728394
+      },
+      {
+        "batch_index": 58,
+        "elapsed_seconds": 166.1692578792572
+      }
+    ],
+    "batch_errors": {},
+    "path_counts": {
+      "": 1,
+      "radar_systems[]": 30
+    },
+    "normalizer_stats": {
+      "unknown_path_dropped": 0,
+      "path_alias_repaired": 1,
+      "id_key_mismatch": 0,
+      "id_missing_required": 0,
+      "id_backfilled_from_properties": 0,
+      "node_id_inferred": 0,
+      "parent_id_inferred": 0,
+      "nested_property_dropped": 0,
+      "parent_ref_repaired": 47,
+      "parent_ref_missing": 47,
+      "unknown_path_salvaged": 0,
+      "salvaged_properties": 0,
+      "property_field_repaired": 0,
+      "unknown_path_examples": [],
+      "id_missing_required_by_path": {}
+    },
+    "dedup_policy": {
+      "": {
+        "node_type": "RadarIdentityPass",
+        "identity_fields": [],
+        "fallback_text_fields": [],
+        "allowed_match_fields": [],
+        "is_entity": true
+      },
+      "radar_systems[]": {
+        "node_type": "RadarIdentityRecord",
+        "identity_fields": [
+          "system_name"
+        ],
+        "fallback_text_fields": [
+          "system_name"
+        ],
+        "allowed_match_fields": [
+          "system_name"
+        ],
+        "is_entity": true
+      }
+    },
+    "merge_stats": {
+      "descriptor_length_mismatch": 0,
+      "non_dict_filled_objects": 0,
+      "missing_parent_descriptor": 0,
+      "parent_lookup_miss": 0,
+      "attached_list_items": 0,
+      "attached_scalar_items": 0,
+      "orphan_attached": 0,
+      "orphan_dropped": 0,
+      "parent_lookup_repaired_local_id": 0,
+      "parent_lookup_repaired_single_candidate": 0,
+      "parent_lookup_repaired_positional": 0,
+      "parent_lookup_repaired_canonical_id": 0,
+      "parent_lookup_repaired_best_effort": 0,
+      "attached_node_count": 35,
+      "parent_lookup_miss_examples": [],
+      "missing_parent_examples": []
+    },
+    "merge_core_stats": {
+      "node_inputs": 78,
+      "node_dedup_merges": 35,
+      "property_updates": 0,
+      "property_conflicts": 7,
+      "relationship_inputs": 3,
+      "relationship_dedup_replaced": 0,
+      "relationship_self_skipped": 0,
+      "relationship_keywords_capped": 0
+    },
+    "identity_filter": {
+      "identity_filter_dropped": 0,
+      "identity_filter_dropped_by_path": {}
+    },
+    "resolver": {
+      "enabled": true,
+      "mode": "semantic",
+      "merged_count": 0,
+      "merge_tiers": {
+        "resolver_fuzzy": 0,
+        "resolver_semantic": 0,
+        "resolver_identity": 0
+      },
+      "actions": [],
+      "skipped_reasons": []
+    },
+    "quality_gate": {
+      "ok": true,
+      "reasons": []
+    },
+    "diagnostics": {
+      "top_missing_id_paths": [],
+      "unknown_path_examples": [],
+      "parent_lookup_miss_examples": [],
+      "property_sparsity": {
+        "total_non_empty_properties": 24,
+        "root_non_empty_fields": 0,
+        "non_empty_properties_by_path": {
+          "radar_systems[]": 24
+        }
+      },
+      "orphan_count": 0,
+      "orphan_ratio": 0.0,
+      "orphans_by_parent_path": {},
+      "duplicate_canonical_identity_by_path": {},
+      "batch_split_retries": 0,
+      "split_batch_sizes": [],
+      "split_failures": 0
+    },
+    "quality_thresholds": {
+      "delta_quality_require_root": true,
+      "delta_quality_min_instances": 1,
+      "delta_quality_max_parent_lookup_miss": 4,
+      "delta_quality_adaptive_parent_lookup": true,
+      "delta_quality_require_relationships": false,
+      "delta_quality_require_structural_attachments": false,
+      "delta_quality_min_non_empty_properties": -1,
+      "delta_quality_min_root_non_empty_fields": -1,
+      "delta_quality_min_non_empty_by_path": {},
+      "delta_quality_max_orphan_ratio": -1.0,
+      "delta_quality_max_canonical_duplicates": -1
+    },
+    "library_log": "[LlmBackend] Initialized with:\n  • Client: OllamaChatClient\n  • Model: gemma4:31b\n[DocumentChunker] Initialized with:\n  • Tokenizer: sentence-transformers/all-MiniLM-L6-v2\n  • Chunk Max Tokens: 512\n  • Merge Peers: True\n[DocumentProcessor] Initialized with Classic OCR pipeline (English, French)\n[ExtractorFactory] Created ManyToOneStrategy\n[Extraction] PATCH GATE: contract='delta' has_chunk_batches=True has_chunker=True => can_chunk_batch=True\n[Extraction] Using CHUNKED-BATCHES path (matches documented delta flow).\n[DocumentProcessor] Extracted 61 chunks with metadata\n[DeltaExtraction] Running delta extraction (61 chunks)...\n[DeltaExtraction] Calling LLM (batch mode)...\nTRUNCATION_DIAG: outcome=recovered_content prompt_chars=34602 first_len=0 retry_len=827 saved=trunc_1779137926843_recovered_content.json\n[LlmBackend] Successfully extracted data from DoclingDocument\n[GraphConverter] Pre-registering models for deterministic node IDs...\n[GraphConverter] Running automatic graph cleanup...\n[GraphCleaner] Starting cleanup: 29 nodes, 28 edges\n[GraphCleaner] Cleanup complete:\n  • Removed 0 phantom nodes\n  • Merged 0 duplicate nodes\n  • Removed 0 self-edges\n  • Removed 0 orphaned edges\n  • Removed 0 duplicate edges\n  • Capped keywords on 0 edges\n  • Result: 29 nodes (-0), 28 edges (-0)\n[GraphConverter] Graph structure validated successfully\n[GraphConverter] Final graph: 29 nodes, 28 edges\n  Registry: 29 entities across 2 classes\n[LlmBackend] Cleaned up resources\n[DocumentProcessor] Cleaned up resources\n",
+    "input_sanitize": {
+      "texts_in": 308,
+      "texts_dropped": 65
+    },
+    "service_identity_gate": {
+      "dropped_entities_by_field": {
+        "radar_systems": 3
+      },
+      "dropped_entity_examples": {
+        "radar_systems": [
+          "RSN-75M",
+          "RSNA-75M",
+          "RSN-75M4"
+        ]
+      },
+      "evidence_text_nonempty": true
+    },
+    "service_pre_filter_counts": {
+      "node_count": 34,
+      "edge_count": 33,
+      "node_types": {
+        "RadarIdentityPass": 1,
+        "RadarIdentityRecord": 33
+      },
+      "edge_types": {
+        "CONTAINS": 33
+      },
+      "path_counts": {
+        "": 1,
+        "radar_systems[]": 33
+      }
+    },
+    "service_pre_filter_identity_examples": {
+      "radar_systems": [
+        {
+          "system_name": "SNR-75"
+        },
+        {
+          "system_name": "Fan Song"
+        },
+        {
+          "system_name": "Fan Song E"
+        },
+        {
+          "system_name": "Spoon Rest"
+        },
+        {
+          "system_name": "Side Net"
+        },
+        {
+          "system_name": "Amazonka"
+        },
+        {
+          "system_name": "Fan Song A"
+        },
+        {
+          "system_name": "RSNA- 75"
+        },
+        {
+          "system_name": "RSN-75"
+        },
+        {
+          "system_name": "RSN- 75M"
+        },
+        {
+          "system_name": "RSN- 75V1"
+        },
+        {
+          "system_name": "RSN- 75V"
+        },
+        {
+          "system_name": "RSNA- 75M"
+        },
+        {
+          "system_name": "RSN- 75M4"
+        },
+        {
+          "system_name": "Parol"
+        },
+        {
+          "system_name": "P-12"
+        },
+        {
+          "system_name": "Flat Face"
+        },
+        {
+          "system_name": "Squat Eye"
+        },
+        {
+          "system_name": "Tsikloida"
+        },
+        {
+          "system_name": "5E93"
+        },
+        {
+          "system_name": "5L22"
+        },
+        {
+          "system_name": "5L22A"
+        },
+        {
+          "system_name": "5L62A"
+        },
+        {
+          "system_name": "SNR-75M3"
+        },
+        {
+          "system_name": "SNR-75M"
+        },
+        {
+          "system_name": "Konus"
+        },
+        {
+          "system_name": "Vershina"
+        },
+        {
+          "system_name": "RSNA-75"
+        },
+        {
+          "system_name": "RSN-75M"
+        },
+        {
+          "system_name": "RSNA-75M"
+        }
+      ]
+    },
+    "service_postprocess": {
+      "status_cleared": [
+        "SNR-75",
+        "Fan Song"
+      ],
+      "emitter_function_overrides": {
+        "Spoon Rest": "FIRE_CONTROL",
+        "Side Net": "SEARCH",
+        "Amazonka": "SEARCH",
+        "Parol": "SEARCH",
+        "SNR-75M": "FIRE_CONTROL",
+        "Konus": "SEARCH",
+        "Vershina": "SEARCH",
+        "RSNA-75": "FIRE_CONTROL"
+      },
+      "unsupported_properties_cleared": {
+        "Parol": [
+          "nomenclature"
+        ]
+      },
+      "display_name_canonicalized": [
+        {
+          "field": "nomenclature",
+          "original": "PRV-10 Konus / PRV-11 Vershina",
+          "canonical": "PRV-10 Konus/PRV-11 Vershina"
+        },
+        {
+          "field": "system_name",
+          "original": "RSNA- 75",
+          "canonical": "RSNA-75"
+        },
+        {
+          "field": "system_name",
+          "original": "RSN- 75M",
+          "canonical": "RSN-75M"
+        },
+        {
+          "field": "system_name",
+          "original": "RSN- 75V1",
+          "canonical": "RSN-75V1"
+        },
+        {
+          "field": "system_name",
+          "original": "RSN- 75V",
+          "canonical": "RSN-75V"
+        },
+        {
+          "field": "system_name",
+          "original": "RSNA- 75M",
+          "canonical": "RSNA-75M"
+        },
+        {
+          "field": "system_name",
+          "original": "RSN- 75M4",
+          "canonical": "RSN-75M4"
+        }
+      ]
+    },
+    "service_post_filter_counts": {
+      "node_count": 31,
+      "edge_count": 30,
+      "node_types": {
+        "RadarIdentityPass": 1,
+        "RadarIdentityRecord": 30
+      },
+      "edge_types": {
+        "CONTAINS": 30
+      },
+      "path_counts": {
+        "": 1,
+        "radar_systems[]": 30
+      }
+    },
+    "service_post_filter_identity_examples": {
+      "radar_systems": [
+        {
+          "system_name": "SNR-75"
+        },
+        {
+          "system_name": "Fan Song"
+        },
+        {
+          "system_name": "Fan Song E"
+        },
+        {
+          "system_name": "Spoon Rest"
+        },
+        {
+          "system_name": "Side Net"
+        },
+        {
+          "system_name": "Amazonka"
+        },
+        {
+          "system_name": "Fan Song A"
+        },
+        {
+          "system_name": "RSNA-75"
+        },
+        {
+          "system_name": "RSN-75"
+        },
+        {
+          "system_name": "RSN-75M"
+        },
+        {
+          "system_name": "RSN-75V1"
+        },
+        {
+          "system_name": "RSN-75V"
+        },
+        {
+          "system_name": "RSNA-75M"
+        },
+        {
+          "system_name": "RSN-75M4"
+        },
+        {
+          "system_name": "Parol"
+        },
+        {
+          "system_name": "P-12"
+        },
+        {
+          "system_name": "Flat Face"
+        },
+        {
+          "system_name": "Squat Eye"
+        },
+        {
+          "system_name": "Tsikloida"
+        },
+        {
+          "system_name": "5E93"
+        },
+        {
+          "system_name": "5L22"
+        },
+        {
+          "system_name": "5L22A"
+        },
+        {
+          "system_name": "5L62A"
+        },
+        {
+          "system_name": "SNR-75M3"
+        },
+        {
+          "system_name": "SNR-75M"
+        },
+        {
+          "system_name": "Konus"
+        },
+        {
+          "system_name": "Vershina"
+        },
+        {
+          "system_name": "RSNA-75"
+        },
+        {
+          "system_name": "SNR-75M3 PV"
+        },
+        {
+          "system_name": "SA-75 Desna"
+        }
+      ]
+    },
+    "service_table_overlay": {
+      "kill_switch_active_parser": false,
+      "tables_processed": 1,
+      "tables_skipped_unqualified": 0,
+      "tables_skipped_multi": 0,
+      "tables_skipped_other": 1,
+      "columns_skipped_no_canonical": 0,
+      "columns_with_canonical_via_fallback": 0,
+      "values_skipped_unparseable": 0,
+      "facts_skipped_construct_fail": 0,
+      "alias_map_size": 34,
+      "facts_count": 53,
+      "cross_entity_hints_count": 10
+    },
+    "raw_path_counts": {
+      "": 10,
+      "radar_systems[]": 33
+    }
+  },
+  "table_overlay": {
+    "alias_map_by_entity_type": {
+      "MISSILE_SYSTEM": {
+        "SA-75": "1D",
+        "SA-2A": "1D",
+        "1D": "1D",
+        "S-75": "15D",
+        "SA-2C": "20DP",
+        "13D": "13D",
+        "S-75M": "15D",
+        "SA-2D": "5Ya23",
+        "13DM": "13DM",
+        "S-75M1": "13DAM",
+        "13DA": "13DA",
+        "13DAM": "13DAM",
+        "S-75V": "20DP",
+        "20D": "20D",
+        "20DP": "20DP",
+        "S-75M2": "20DSU",
+        "20DSU": "20DSU",
+        "S-75M4": "5Ya23",
+        "5Ya23": "5Ya23",
+        "SA-2E": "15D",
+        "15D": "15D"
+      },
+      "RADAR_SYSTEM": {
+        "RSNA- 75": "Fan Song",
+        "RSNA-75": "Fan Song",
+        "RSN-75": "Fan Song",
+        "RSN- 75M": "Fan Song",
+        "RSN-75M": "Fan Song",
+        "RSN- 75V1": "Fan Song",
+        "RSN-75V1": "Fan Song",
+        "RSN- 75V": "Fan Song",
+        "RSN-75V": "Fan Song",
+        "RSNA- 75M": "Fan Song",
+        "RSNA-75M": "Fan Song",
+        "RSN- 75M4": "Fan Song",
+        "RSN-75M4": "Fan Song"
+      }
+    },
+    "facts": [
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 29.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "29000"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 34.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "34000"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 34.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "34000"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 43.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "43000"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 45.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "45000"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 56.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "56000"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_intercept_km",
+        "value": 76.0,
+        "source_label": "Max Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "76000"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 8.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "8000"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 7.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "7000"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 6.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "6000"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "min_intercept_km",
+        "value": 6.0,
+        "source_label": "Min Range",
+        "section_ctx": null,
+        "pass_name": "missile_kinematics",
+        "raw_text": "6000"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.726,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10726"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.841000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10841"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.778,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10778"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 10.798,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "10798"
+      },
+      {
+        "canonical_entity": "15D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "body_length_m",
+        "value": 11.200000000000001,
+        "source_label": "Length",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "11200"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 650.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "650"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "max_speed_mps",
+        "value": 885.0,
+        "source_label": "Max speed",
+        "section_ctx": null,
+        "pass_name": "missile_speed_timing",
+        "raw_text": "885"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2163.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2163"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2283.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2283"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2283.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2283"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2289.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2289"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2289.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2289"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2391.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2391"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2391.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2391"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2397.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2397"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2406.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2406"
+      },
+      {
+        "canonical_entity": "15D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "total_mass_kg",
+        "value": 2450.0,
+        "source_label": "Weight",
+        "section_ctx": null,
+        "pass_name": "missile_airframe",
+        "raw_text": "2450"
+      },
+      {
+        "canonical_entity": "1D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1135.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1135"
+      },
+      {
+        "canonical_entity": "13D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DA",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "13DAM",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1032.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1032"
+      },
+      {
+        "canonical_entity": "20D",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "20DP",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "20DSU",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1011.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1011"
+      },
+      {
+        "canonical_entity": "5Ya23",
+        "entity_type": "MISSILE_SYSTEM",
+        "schema_field": "booster_mass_kg",
+        "value": 1007.0,
+        "source_label": "Weight",
+        "section_ctx": "1st Stage",
+        "pass_name": "missile_propulsion",
+        "raw_text": "1007"
+      }
+    ],
+    "cross_entity_hints": [
+      {
+        "source_canonical": "1D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSNA- 75",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN-75",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DM",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DA",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V1",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "13DAM",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V1",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20DP",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75V",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "20DSU",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSNA- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "5Ya23",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M4",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      },
+      {
+        "source_canonical": "15D",
+        "source_entity_type": "MISSILE_SYSTEM",
+        "target_alias": "RSN- 75M",
+        "target_entity_type": "RADAR_SYSTEM",
+        "relationship_kind": "associated_with"
+      }
+    ]
+  }
+}

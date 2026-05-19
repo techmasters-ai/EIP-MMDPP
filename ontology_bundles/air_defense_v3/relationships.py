@@ -57,6 +57,7 @@ class RelationshipType(str, Enum):
     SUPERSEDES = "SUPERSEDES"
     SUPPORTS_ENGAGEMENT_OF = "SUPPORTS_ENGAGEMENT_OF"
     TRACKS = "TRACKS"
+    VARIANT_OF = "VARIANT_OF"
 
 
 class RelationshipMetadata(BaseModel):
@@ -140,6 +141,7 @@ _STATIC_RELATIONSHIP_METADATA: list[dict] = [
     {"name": "CHILD_OF",    "label": "Child Of",    "description": "Hierarchical containment (e.g. sub-section within parent section)", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
     {"name": "HAS_IMAGE",   "label": "Has Image",   "description": "Document or section contains an uncaptioned image or embedded picture", "source_type": None, "target_type": "IMAGE", "cardinality": "one_to_many"},
     {"name": "NEAR_TEXT",   "label": "Near Text",   "description": "Figure or image appears near a text block in reading order", "source_type": None, "target_type": "TEXT_BLOCK", "cardinality": "one_to_many"},
+    {"name": "VARIANT_OF",  "label": "Variant Of",  "description": "Variant, model, designation, or configuration belongs to a parent system family. Generic — applies across any product-family taxonomy where a child designation rolls up to a parent family entity of the same type.", "source_type": None, "target_type": None, "cardinality": "many_to_one"},
 ]
 
 

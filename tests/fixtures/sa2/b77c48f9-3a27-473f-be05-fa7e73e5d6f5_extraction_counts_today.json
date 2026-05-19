@@ -14,7 +14,7 @@
         "relationship_provenance_count": 0,
         "node_count": 2,
         "edge_count": 1,
-        "elapsed_s": 246.3
+        "elapsed_s": 198.9
       }
     ]
   },
@@ -33,7 +33,7 @@
         "relationship_provenance_count": 0,
         "node_count": 2,
         "edge_count": 1,
-        "elapsed_s": 151.5
+        "elapsed_s": 152.3
       }
     ]
   },
@@ -48,11 +48,11 @@
         "fields_total": 10,
         "json_fail": false,
         "relationships": 0,
-        "field_provenance_count": 15,
+        "field_provenance_count": 16,
         "relationship_provenance_count": 0,
         "node_count": 2,
         "edge_count": 1,
-        "elapsed_s": 1143.9
+        "elapsed_s": 485.9
       }
     ]
   },
@@ -71,7 +71,7 @@
         "relationship_provenance_count": 0,
         "node_count": 3,
         "edge_count": 2,
-        "elapsed_s": 426.0
+        "elapsed_s": 468.7
       }
     ]
   },
@@ -90,7 +90,7 @@
         "relationship_provenance_count": 0,
         "node_count": 1,
         "edge_count": 1,
-        "elapsed_s": 117.2
+        "elapsed_s": 70.5
       }
     ]
   }
