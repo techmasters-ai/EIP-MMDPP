@@ -275,6 +275,17 @@ def main() -> int:
                         }
                         if aliases:
                             entry["aliases"] = aliases
+                        # Item 3 wire contract: forward non-identity
+                        # properties (emitter_function etc.) so the
+                        # relationship-pass postprocess can do role-aware
+                        # CUES validation. Mirrors _collect_upstream_properties
+                        # in app/workers/pipeline.py.
+                        properties: dict = {}
+                        ef = ent.get("emitter_function")
+                        if isinstance(ef, str) and ef.strip():
+                            properties["emitter_function"] = ef
+                        if properties:
+                            entry["properties"] = properties
                         upstream_entities.append(entry)
             except Exception as exc:
                 print(f"[error] {pass_name} run {r_idx + 1} failed: {exc}", flush=True)

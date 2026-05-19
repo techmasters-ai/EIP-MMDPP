@@ -3365,6 +3365,13 @@ def _build_extract_pass_request(
             aliases = getattr(ref, "aliases", None)
             if aliases:
                 entry["aliases"] = list(aliases)
+            # Item 3 wire contract: serialize non-identity properties
+            # (emitter_function etc.) so the relationship pass postprocess
+            # can do role-aware retype. Omit when empty to keep payload
+            # backward-compatible.
+            properties = getattr(ref, "properties", None)
+            if properties:
+                entry["properties"] = dict(properties)
             entities.append(entry)
         body["upstream_entities"] = entities
     return body
@@ -3896,12 +3903,19 @@ def _extend_upstream_refs(
         aliases = _collect_upstream_aliases(
             identity_values, scratch, display_label,
         )
+        # Item 3 wire contract: harvest non-identity properties (e.g.
+        # `emitter_function` for RADAR_SYSTEM) into a ``properties`` dict
+        # on the upstream ref. The downstream relationship pass uses
+        # these for role-aware postprocess (CUES retype) and any future
+        # postprocess that needs structured metadata beyond identity.
+        properties = _collect_upstream_properties(scratch)
         ref = SimpleNamespace(
             pass_origin=pass_def.name,
             entity_type=entity_type,
             identity_values=identity_values,
             display_label=display_label,
             aliases=aliases,
+            properties=properties,
         )
         if not _is_valid_upstream_ref(ref, ontology):
             continue  # Drop refs with missing/empty identity.
@@ -3916,6 +3930,31 @@ def _extend_upstream_refs(
 # "RSNA-75" back to ref_ids whose primary identity is a different token
 # (e.g., system_name="1D").
 _UPSTREAM_ALIAS_FIELDS: tuple[str, ...] = ("nomenclature", "name", "dieqp")
+
+
+# Non-identity, non-alias property fields that downstream postprocess
+# consumes for typed-relationship validation. Generic — any future
+# pass-specific role/metadata field added to this tuple will flow to
+# the relationship pass's `EntityRef.properties` dict.
+_UPSTREAM_PROPERTY_FIELDS: tuple[str, ...] = ("emitter_function",)
+
+
+def _collect_upstream_properties(scratch: dict) -> dict | None:
+    """Harvest `_UPSTREAM_PROPERTY_FIELDS` from the entity's merged scratch.
+
+    Returns a dict with the non-null property keys, or None if none of the
+    properties are present. Keeping None when empty preserves backward-
+    compatibility with consumers that haven't adopted the field.
+    """
+    props: dict = {}
+    for field in _UPSTREAM_PROPERTY_FIELDS:
+        v = scratch.get(field)
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        props[field] = v
+    return props or None
 
 
 def _collect_upstream_aliases(

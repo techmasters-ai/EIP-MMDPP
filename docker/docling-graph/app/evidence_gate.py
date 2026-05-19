@@ -410,29 +410,135 @@ def _entity_in_context(identity: str, evidence_text: str, markers: tuple[str, ..
     return False
 
 
+# DIRECT-CONCAT markers — `"{entity_name} {marker}"` appears verbatim in
+# evidence. These are unambiguous because the role label is grammatically
+# attached to the entity name (no cross-entity ambiguity). Format:
+# (role_enum, (marker_text, ...)).
+_DIRECT_CONCAT_RADAR_ROLE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("HEIGHT_FINDER", (
+        "HEIGHTFINDING RADAR", "HEIGHTFINDING RADARS",
+        "HEIGHT-FINDING RADAR", "HEIGHT FINDER", "HEIGHTFINDER",
+    )),
+    ("SEARCH", (
+        "ACQUISITION RADAR", "SEARCH RADAR",
+        "EARLY WARNING RADAR", "SURVEILLANCE RADAR",
+    )),
+    ("FIRE_CONTROL", (
+        "GUIDANCE RADAR", "ENGAGEMENT RADAR",
+        "FIRE CONTROL RADAR", "FIRE-CONTROL RADAR",
+        "TRACKING RADAR", "ILLUMINATOR",
+    )),
+)
+
+# WINDOW markers — for use when the entity name and role label are NOT
+# directly adjacent but the role label still binds to this entity (e.g.
+# "P-18-2/P-18M Spoon Rest D/E Acquisition Radar" — there's a D/E qualifier
+# between the name and the role). EXCLUDES markers that frequently appear
+# in cross-entity references (GUIDANCE RADAR is excluded — radars often
+# describe other radars' guidance roles, which would mis-bind).
+_WINDOW_RADAR_ROLE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("HEIGHT_FINDER", (
+        "HEIGHTFINDING RADAR", "HEIGHTFINDING RADARS",
+        "HEIGHT-FINDING RADAR", "HEIGHT-FINDING",
+        "HEIGHT FINDER", "HEIGHTFINDER",
+    )),
+    ("SEARCH", (
+        "ACQUISITION RADAR", "SEARCH RADAR",
+    )),
+    ("FIRE_CONTROL", (
+        "ENGAGEMENT RADAR",
+    )),
+)
+
+# FALLBACK markers — only consulted when NO direct-concat or explicit
+# window marker fires. The prior code unconditionally fired these,
+# causing acquisition radars adjacent to "MISSILE GUIDANCE" prose to be
+# wrongly force-labeled FIRE_CONTROL (Spoon Rest bug). Now strictly fallback.
+_FALLBACK_RADAR_ROLE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("FIRE_CONTROL", ("MISSILE GUIDANCE", "GUIDED UP TO", "GUIDED AGAINST")),
+    ("SEARCH", ("DETECTED INCOMING AIRCRAFT",)),
+)
+
+_RADAR_ROLE_WINDOW_CHARS = 80
+
+
 def _infer_radar_emitter_function(system_name: Any, evidence_text: str) -> str | None:
-    if not isinstance(system_name, str):
+    """Infer `emitter_function` from prose context.
+
+    Three phases with strict precedence:
+      1. **Direct-concat:** `"{entity_name} {marker}"` substring match.
+         Unambiguous: the role label is grammatically attached to this
+         entity. Includes broadly-applicable markers like GUIDANCE RADAR
+         that would over-trigger in window mode.
+      2. **Nearest-window:** for entities where qualifiers sit between
+         name and role label ("Spoon Rest D/E Acquisition Radar"), use
+         the NEAREST marker by char-distance within ±80 chars. Window
+         markers exclude promiscuous phrases (GUIDANCE RADAR) to avoid
+         cross-entity bleed.
+      3. **Fallback markers:** only when phases 1+2 produce nothing.
+         Catches contextual hints like "DETECTED INCOMING AIRCRAFT" or
+         "MISSILE GUIDANCE" prose without an explicit role label.
+
+    Returning None lets the LLM-emitted value stand.
+
+    Generic — no equipment names anywhere. Production evidence_text is
+    uppercased via `normalize_evidence_text`; entity name is similarly
+    normalized.
+    """
+    if not isinstance(system_name, str) or not system_name:
         return None
     normalized_name = normalize_evidence_text(system_name)
-    if f"{normalized_name} GUIDANCE RADAR" in evidence_text:
-        return "FIRE_CONTROL"
-    if f"{normalized_name} ENGAGEMENT RADAR" in evidence_text:
-        return "FIRE_CONTROL"
-    if f"{normalized_name} ACQUISITION RADAR" in evidence_text:
-        return "SEARCH"
-    if _entity_in_context(system_name, evidence_text, ("ENGAGEMENT RADAR",), window=80):
-        return "FIRE_CONTROL"
-    if _entity_in_context(system_name, evidence_text, ("ACQUISITION RADAR", "SEARCH RADAR"), window=80):
-        return "SEARCH"
-    if _entity_in_context(
-        system_name,
-        evidence_text,
-        ("MISSILE GUIDANCE", "GUIDED UP TO", "GUIDED AGAINST ONE TARGET"),
-        window=80,
-    ):
-        return "FIRE_CONTROL"
-    if _entity_in_context(system_name, evidence_text, ("DETECTED INCOMING AIRCRAFT",), window=80):
-        return "SEARCH"
+    if not normalized_name or not evidence_text:
+        return None
+
+    # Phase 1: direct-concat.
+    for role, markers in _DIRECT_CONCAT_RADAR_ROLE_MARKERS:
+        for marker in markers:
+            if f"{normalized_name} {marker}" in evidence_text:
+                return role
+
+    # Phase 2: nearest window marker across all entity occurrences.
+    best_distance: int | None = None
+    best_role: str | None = None
+    name_pattern = re.compile(re.escape(normalized_name))
+    for entity_match in name_pattern.finditer(evidence_text):
+        e_start = entity_match.start()
+        e_end = entity_match.end()
+        win_start = max(0, e_start - _RADAR_ROLE_WINDOW_CHARS)
+        win_end = min(len(evidence_text), e_end + _RADAR_ROLE_WINDOW_CHARS)
+        context = evidence_text[win_start:win_end]
+        for role, markers in _WINDOW_RADAR_ROLE_MARKERS:
+            for marker in markers:
+                idx = 0
+                while True:
+                    m_pos = context.find(marker, idx)
+                    if m_pos < 0:
+                        break
+                    abs_pos = win_start + m_pos
+                    abs_end = abs_pos + len(marker)
+                    if abs_end <= e_start:
+                        distance = e_start - abs_end
+                    elif abs_pos >= e_end:
+                        distance = abs_pos - e_end
+                    else:
+                        distance = 0
+                    if best_distance is None or distance < best_distance:
+                        best_distance = distance
+                        best_role = role
+                    idx = m_pos + 1
+    if best_role is not None:
+        return best_role
+
+    # Phase 3: fallback markers — only when no explicit role label found.
+    for entity_match in name_pattern.finditer(evidence_text):
+        e_start = entity_match.start()
+        e_end = entity_match.end()
+        win_start = max(0, e_start - _RADAR_ROLE_WINDOW_CHARS)
+        win_end = min(len(evidence_text), e_end + _RADAR_ROLE_WINDOW_CHARS)
+        context = evidence_text[win_start:win_end]
+        for role, markers in _FALLBACK_RADAR_ROLE_MARKERS:
+            if any(m in context for m in markers):
+                return role
     return None
 
 
