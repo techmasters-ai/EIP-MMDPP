@@ -30,6 +30,7 @@ Task graph (manifest-first, parallel derivations, idempotent):
 import hashlib
 import json
 import logging
+import time
 import uuid
 from typing import Any, Literal, Optional
 
@@ -161,6 +162,11 @@ class PassAttemptOutcome:
     raw_response_payload: dict | None  # literal /extract-pass JSON; set when HTTP call succeeded
     counts: dict | None            # _count_pass_output result; set iff COMPLETE
     error: Exception | None        # PassRetryable/PassTransportError/PassTerminal; set iff FAILED
+    # C0 wall-time telemetry (Phase 0 of walltime-reduction plan): 5 worker-side
+    # metrics — doc_json_load_ms (caller-supplied), request_bytes, response_bytes,
+    # service_queue_wait_ms, pass_wall_ms. None on SKIPPED outcomes (no work
+    # performed); always populated on COMPLETE/FAILED.
+    worker_diagnostics: dict | None = None
 
 
 @_dataclass
@@ -604,6 +610,7 @@ def _execute_pass_attempt(
     doc_json: dict,
     upstream_refs: dict,
     document_id: str,
+    caller_worker_diag: dict | None = None,
 ) -> "PassAttemptOutcome":
     """One attempt at one pass.  Does NOT retry — the caller decides retry.
     Does NOT write StageRun or pipeline_pass_outputs — the caller persists.
@@ -617,6 +624,12 @@ def _execute_pass_attempt(
     helper. It's reserved for Task 5's Celery task, which will use it to
     correlate StageRun and pipeline_pass_outputs writes after the helper
     returns.
+
+    C0 telemetry: ``caller_worker_diag`` carries metrics owned by the outer
+    caller (e.g. ``doc_json_load_ms`` from ``derive_ontology_graph_pass``).
+    The helper captures its own 4 metrics (request_bytes, response_bytes,
+    service_queue_wait_ms, pass_wall_ms) and merges them with the caller's
+    onto ``outcome.worker_diagnostics``.
     """
     # 1. Skip check
     if _should_skip(pass_def, upstream_refs, ontology):
@@ -628,6 +641,7 @@ def _execute_pass_attempt(
             raw_response_payload=None,
             counts=None,
             error=None,
+            worker_diagnostics=None,
         )
 
     # 2. Compute selected_refs ONCE — reused for both the request body and the
@@ -646,12 +660,26 @@ def _execute_pass_attempt(
         upstream_refs=selected_refs,
         document_id=document_id,
     )
+    # C0 telemetry: measure request size + HTTP wall + pass wall. perf_counter
+    # is the wall-clock workhorse (monotonic, ns resolution); negligible cost
+    # vs. an LLM call. request_bytes uses default=str for non-JSON-native
+    # types (UUID, datetime) — same convention _call_extract_pass uses.
+    _pass_t0 = time.perf_counter()
+    _request_bytes = len(json.dumps(request_body, default=str).encode("utf-8"))
+    _http_t0 = time.perf_counter()
     try:
         raw_payload = _call_extract_pass(request_body, timeout=settings.docling_graph_timeout)
     except (PassRetryable, PassTransportError, PassTerminal) as exc:
         # PassTransportError is a subclass of PassRetryable, so the tuple catches all
         # three; the caller (_run_single_pass) uses order-dependent isinstance checks
         # to distinguish them.
+        _failed_worker_diag = {
+            **(caller_worker_diag or {}),
+            "request_bytes": _request_bytes,
+            "response_bytes": 0,
+            "service_queue_wait_ms": 0.0,
+            "pass_wall_ms": (time.perf_counter() - _pass_t0) * 1000.0,
+        }
         return PassAttemptOutcome(
             execution_status="FAILED",
             skip_reason=None,
@@ -660,7 +688,27 @@ def _execute_pass_attempt(
             raw_response_payload=None,
             counts=None,
             error=exc,
+            worker_diagnostics=_failed_worker_diag,
         )
+
+    _http_rtt_ms = (time.perf_counter() - _http_t0) * 1000.0
+    _response_bytes = len(json.dumps(raw_payload, default=str).encode("utf-8"))
+    # service_queue_wait_ms = HTTP RTT minus sum of server-reported phase timings.
+    # Service reports its own per-phase ms in raw_payload['diagnostics']. The
+    # delta absorbs network + queue + asyncio scheduling. Clamp to 0 because
+    # the mocked-call case in tests has near-zero RTT but non-zero service
+    # timings — negative wait time is nonsensical.
+    _service_diag = (raw_payload or {}).get("diagnostics") or {}
+    if not isinstance(_service_diag, dict):
+        _service_diag = {}
+    _server_processing_ms = sum(
+        float(_service_diag.get(_k, 0.0) or 0.0)
+        for _k in (
+            "sanitize_ms", "table_overlay_ms", "table_normalization_ms",
+            "run_pipeline_ms", "postprocess_ms", "field_provenance_ms",
+        )
+    )
+    _service_queue_wait_ms = max(0.0, _http_rtt_ms - _server_processing_ms)
 
     # 4. Parse response
     try:
@@ -674,6 +722,13 @@ def _execute_pass_attempt(
             raw_response_payload=raw_payload,  # captured — useful forensic data
             counts=None,
             error=exc,
+            worker_diagnostics={
+                **(caller_worker_diag or {}),
+                "request_bytes": _request_bytes,
+                "response_bytes": _response_bytes,
+                "service_queue_wait_ms": _service_queue_wait_ms,
+                "pass_wall_ms": (time.perf_counter() - _pass_t0) * 1000.0,
+            },
         )
 
     # 5. Attach upstream refs as LogicalIdentity objects so merge_and_resolve
@@ -724,7 +779,41 @@ def _execute_pass_attempt(
         raw_response_payload=raw_payload,
         counts=counts,
         error=None,
+        worker_diagnostics={
+            **(caller_worker_diag or {}),
+            "request_bytes": _request_bytes,
+            "response_bytes": _response_bytes,
+            "service_queue_wait_ms": _service_queue_wait_ms,
+            "pass_wall_ms": (time.perf_counter() - _pass_t0) * 1000.0,
+        },
     )
+
+
+def _build_pass_diagnostics_dict(
+    outcome: "PassAttemptOutcome",
+    override_extra: dict | None = None,
+) -> dict:
+    """Merge service-side diagnostics (from raw_response_payload['diagnostics']),
+    worker-side diagnostics (outcome.worker_diagnostics), and any override
+    extras into the single diagnostics dict written to
+    ``pipeline_pass_outputs.diagnostics``.
+
+    Precedence (low → high): service, worker, override. This means an override
+    key always wins, and a worker-captured metric wins over a same-named
+    service one if they ever collide (current 13-metric set has no overlap).
+
+    Handles None / non-dict inputs gracefully — a FAILED transport outcome
+    has raw_response_payload=None and worker_diagnostics with the partial
+    metrics it could capture; this helper still returns a usable dict.
+    """
+    service_diag = (outcome.raw_response_payload or {}).get("diagnostics") or {}
+    if not isinstance(service_diag, dict):
+        service_diag = {}
+    worker_diag = outcome.worker_diagnostics or {}
+    merged = {**service_diag, **worker_diag}
+    if override_extra:
+        merged = {**merged, **override_extra}
+    return merged
 
 
 def _run_single_pass(
@@ -6646,9 +6735,9 @@ def _save_terminal_pass_output(
       ``relationships_extracted``, ``relationships_rejected``
     NOT the shorter forms ``primary_entities`` / ``bridge_entities``.
     """
-    diagnostics = (outcome.raw_response_payload or {}).get("diagnostics", {}) or {}
-    if override_diagnostics_extra:
-        diagnostics = {**diagnostics, **override_diagnostics_extra}
+    diagnostics = _build_pass_diagnostics_dict(
+        outcome, override_extra=override_diagnostics_extra,
+    )
     save_pass_output(
         db,
         pipeline_run_id=run_id,
@@ -6996,7 +7085,12 @@ def derive_ontology_graph_pass(
         manifest = load_bundle_manifest(bundle_key)
         ontology = load_ontology(bundle_key=bundle_key)
         pass_def = next(p for p in manifest.passes if p.name == pass_name)
+        # C0 telemetry: measure docling_document.json MinIO load time. Owned by
+        # the caller (this scope) because _execute_pass_attempt receives the
+        # pre-loaded doc_json and can't see the load itself.
+        _doc_load_t0 = time.perf_counter()
         doc_json = _build_docling_document_json(document_id)
+        _doc_json_load_ms = (time.perf_counter() - _doc_load_t0) * 1000.0
         upstream_refs = _rehydrate_upstream_refs_from_persisted_passes(
             db, run_id, pass_def, manifest, ontology, document_id,
         )
@@ -7011,6 +7105,7 @@ def derive_ontology_graph_pass(
             doc_json=doc_json,
             upstream_refs=upstream_refs,
             document_id=document_id,
+            caller_worker_diag={"doc_json_load_ms": _doc_json_load_ms},
         )
 
         # 5. ALWAYS write StageRun (per-attempt audit; matches existing shape).

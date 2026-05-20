@@ -541,10 +541,22 @@ def run_extraction_pass(
     upstream_entities is non-empty, the preamble is appended to the document's
     texts array and prepended to body.children so that export_to_markdown()
     includes it at the top of the document body for all three extraction contracts.
+
+    C0 telemetry (walltime-reduction Phase 0): three per-phase milliseconds —
+    ``sanitize_ms``, ``table_normalization_ms``, ``run_pipeline_ms`` — are
+    captured into the returned ``context._delta_trace`` so the worker can
+    persist them in pipeline_pass_outputs.diagnostics.
     """
     import shutil
     import tempfile
+    import time
     from docling_graph import run_pipeline
+    from app._telemetry import PhaseTimer
+
+    # C0 phase-timing sink. Merged into context._delta_trace after run_pipeline
+    # returns (or stub-context is built). Keys: sanitize_ms,
+    # table_normalization_ms, run_pipeline_ms.
+    _phase_timings: dict = {}
 
     # --- Empty-source short-circuit --------------------------------------
     # If the DoclingDocument has no body content AND no registered items
@@ -572,16 +584,17 @@ def run_extraction_pass(
     # tracker's `sanit` column).
     sanitize_stats: dict[str, int] = {"texts_in": 0, "texts_dropped": 0}
     _settings_for_sanitize = DoclingGraphSettings()
-    if getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
-        docling_document_json = _sanitize_docling_document(
-            docling_document_json, sanitize_stats
-        )
-        if sanitize_stats["texts_dropped"] > 0:
-            logger.info(
-                "GRAPH_EXTRACTION_SANITIZED pass=%s texts_in=%d texts_dropped=%d "
-                "(filtered web-cruft texts before chunking; image captions preserved)",
-                pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
+    with PhaseTimer(_phase_timings, "sanitize_ms"):
+        if getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
+            docling_document_json = _sanitize_docling_document(
+                docling_document_json, sanitize_stats
             )
+            if sanitize_stats["texts_dropped"] > 0:
+                logger.info(
+                    "GRAPH_EXTRACTION_SANITIZED pass=%s texts_in=%d texts_dropped=%d "
+                    "(filtered web-cruft texts before chunking; image captions preserved)",
+                    pass_name, sanitize_stats["texts_in"], sanitize_stats["texts_dropped"],
+                )
 
     # Section-aware table-fact synthesis (table_facts.py + alias_map.py) was
     # built and validated in the 2026-05-06 plan, then reverted here after
@@ -615,6 +628,10 @@ def run_extraction_pass(
     # 26 relationships vs v6/v7/v8a-prime (norm ON for system_links) yielding 8-17.
     # cross_entity_hints promotion + alias plumbing run independently and add edges
     # on TOP of the LLM's emissions regardless of this gate.
+    # C0 telemetry: time the full table-normalization block (all 4 branches:
+    # both-flags / norm-only-and-not-skipped / experimental / both-off). Long
+    # block — inline perf_counter avoids re-indenting 140+ lines.
+    _norm_t0 = time.perf_counter()
     _norm_skipped_for_pass = pass_name == "system_links"
     if _norm_on and _norm_skipped_for_pass:
         logger.info(
@@ -762,6 +779,7 @@ def run_extraction_pass(
                 "with today's raw-blob behavior.", _exc,
             )
     # else: both flags off — today's production behavior, nothing inserted.
+    _phase_timings["table_normalization_ms"] = (time.perf_counter() - _norm_t0) * 1000.0
 
     if _is_empty(docling_document_json):
         logger.warning(
@@ -886,6 +904,9 @@ def run_extraction_pass(
         sys.stdout = _Tee(original_stdout, library_log_buf)
         sys.stderr = _Tee(original_stderr, library_log_buf)
         pipeline_error: Exception | None = None
+        # C0 telemetry: capture LLM-side run_pipeline wall regardless of which
+        # branch (success / library-raised-stub) the try/except resolves to.
+        _pipeline_t0 = time.perf_counter()
         try:
             context = run_pipeline(config)
         except Exception as exc:
@@ -923,6 +944,7 @@ def run_extraction_pass(
 
             context = _PipelineFailureContext()
         finally:
+            _phase_timings["run_pipeline_ms"] = (time.perf_counter() - _pipeline_t0) * 1000.0
             sys.stdout = original_stdout
             sys.stderr = original_stderr
 
@@ -1115,6 +1137,11 @@ def run_extraction_pass(
                     getattr(context, "_document_id_for_logging", "?"),
                 )
 
+        # C0 telemetry: merge sanitize_ms / table_normalization_ms /
+        # run_pipeline_ms into the trace so they ride back to the worker via
+        # response.diagnostics. trace["chunk_count"] / trace["batch_count"]
+        # are already written by the docling-graph library's delta_trace.json.
+        trace.update(_phase_timings)
         try:
             context._delta_trace = trace
         except AttributeError:
@@ -1234,6 +1261,15 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     if semaphore is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
+    # C0 telemetry (walltime-reduction Phase 0): per-phase wall captured into
+    # this sink and merged into response.diagnostics. The 3 keys recorded
+    # here — table_overlay_ms, postprocess_ms, field_provenance_ms — live in
+    # the endpoint scope; the 3 inside-run_extraction_pass keys arrive via
+    # context._delta_trace.
+    import time
+    from app._telemetry import PhaseTimer
+    _endpoint_timings: dict = {}
+
     # 1. Resolve bundle + pass
     try:
         manifest = load_bundle_manifest(body.bundle_key)
@@ -1344,6 +1380,10 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     # post-sanitize doc seen by the LLM. Catch-and-continue: a parser
     # failure leaves table_overlay_obj=None and records repr(exc) into
     # diagnostics — the LLM extraction still runs.
+    # C0 telemetry: time the full table-overlay parse including disabled
+    # short-circuit (so the metric is meaningful regardless of kill-switch
+    # state).
+    _overlay_t0 = time.perf_counter()
     table_overlay_obj = None
     overlay_stats: dict[str, Any] = {
         "kill_switch_active_parser": not _table_overlay_enabled_parser(),
@@ -1416,6 +1456,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             )
             table_overlay_obj = None
             overlay_stats["extract_failure"] = repr(exc)
+    _endpoint_timings["table_overlay_ms"] = (time.perf_counter() - _overlay_t0) * 1000.0
 
     try:
         async with semaphore:
@@ -1539,16 +1580,17 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             _normalized_tables_for_postprocess = list(_nt(body.docling_document_json))
         except Exception:
             _normalized_tables_for_postprocess = None
-        pass_output, postprocess_stats = _apply_bundle_postprocessing(
-            body.bundle_key,
-            body.pass_name,
-            pass_output,
-            evidence_text,
-            body.upstream_entities,
-            _ceh,
-            alias_map_by_entity_type=_alias_map_by_entity_type,
-            normalized_tables=_normalized_tables_for_postprocess,
-        )
+        with PhaseTimer(_endpoint_timings, "postprocess_ms"):
+            pass_output, postprocess_stats = _apply_bundle_postprocessing(
+                body.bundle_key,
+                body.pass_name,
+                pass_output,
+                evidence_text,
+                body.upstream_entities,
+                _ceh,
+                alias_map_by_entity_type=_alias_map_by_entity_type,
+                normalized_tables=_normalized_tables_for_postprocess,
+            )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
         filtered_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)
         dropped_by_field = (service_filter_stats or {}).get("dropped_entities_by_field", {})
@@ -1608,6 +1650,9 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         # involvement — robust against extraction salvage / model
         # compliance issues. Falls back to batch-level attribution
         # when no chunk literally contains the value's string form.
+        # C0 telemetry: time the full field-provenance block including
+        # auto-evidence build + channel-A cell_refs enrichment.
+        _fp_t0 = time.perf_counter()
         field_provenance_rows: list[ExtractionFieldProvenance] = []
         primary_types = pass_def.get("primary_entity_types", []) or []
         primary_type = primary_types[0] if primary_types else None
@@ -1746,6 +1791,8 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     "continuing with un-enriched rows.", _exc,
                 )
 
+        _endpoint_timings["field_provenance_ms"] = (time.perf_counter() - _fp_t0) * 1000.0
+
         relationship_provenance_rows = build_relationship_provenance_from_delta_trace(
             context, ExtractionRelationshipProvenance,
         )
@@ -1755,6 +1802,20 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 "verify delta_merged_graph.json shape against "
                 "build_relationship_provenance_from_delta_trace."
             )
+
+        # C0 telemetry: merge endpoint-side timings (table_overlay_ms,
+        # postprocess_ms, field_provenance_ms) into the diagnostics dict so
+        # they ride back to the worker alongside the run_extraction_pass
+        # timings already on context._delta_trace.
+        _final_diag = getattr(context, "_delta_trace", None)
+        if isinstance(_final_diag, dict):
+            _final_diag.update(_endpoint_timings)
+        else:
+            try:
+                context._delta_trace = dict(_endpoint_timings)
+                _final_diag = context._delta_trace
+            except AttributeError:
+                _final_diag = dict(_endpoint_timings)
 
         return ExtractPassResponse(
             bundle_key=body.bundle_key,
@@ -1766,7 +1827,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             provenance=provenance_rows,
             field_provenance=field_provenance_rows,
             relationship_provenance=relationship_provenance_rows,
-            diagnostics=getattr(context, "_delta_trace", None),
+            diagnostics=_final_diag,
             table_overlay=table_overlay_obj,
         )
     finally:
