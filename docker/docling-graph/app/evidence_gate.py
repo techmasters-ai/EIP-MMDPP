@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 
 from app._numeric_evidence import value_is_supported_by_text
+
+
+# 2026-05-20: legacy SA-2-specific fallbacks (radar recall by name,
+# nomenclature fills by name, system_links Spoon-Rest→Fan-Song→SA-2
+# edges) are quarantined behind this env flag. They predate the
+# generic structural rules (Step 3 role inference, Step 7 precision
+# filter, Step 6 designation alias expansion, hint promotion,
+# VARIANT_OF emitter). Default OFF so the pipeline behaves
+# document-generically; opt-in with =true / =1 / =yes to restore the
+# SA-2 corpus-specific compatibility path.
+_LEGACY_SA2_FALLBACKS_ENABLED: bool = os.environ.get(
+    "DOCLING_GRAPH_LEGACY_SA2_FALLBACKS", "false",
+).strip().lower() in ("true", "1", "yes")
 
 _EVIDENCE_WS_RE = re.compile(r"\s+")
 _EVIDENCE_BOUNDARY_CLASS = r"A-Z0-9"
@@ -357,6 +371,7 @@ def apply_bundle_postprocessing(
     upstream_entities: list[Any] | None = None,
     cross_entity_hints: list[Any] | None = None,
     alias_map_by_entity_type: dict[str, dict[str, str]] | None = None,
+    normalized_tables: list[Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if bundle_key != "air_defense_v3" or not isinstance(pass_output, dict):
         return pass_output, {}
@@ -364,7 +379,18 @@ def apply_bundle_postprocessing(
     if pass_name in RADAR_PASS_NAMES:
         return _postprocess_air_defense_radars(pass_output, evidence_text)
     if pass_name in MISSILE_PASS_NAMES:
-        return _postprocess_air_defense_missiles(pass_output, evidence_text)
+        # Step 6: designation alias expansion and the predecessor-
+        # slash-artifact filter apply ONLY to the identity pass.
+        # Numeric passes (missile_kinematics, missile_propulsion, etc.)
+        # must not have their merge identity altered by alias
+        # enrichment or have partial rows dropped — both would change
+        # which round entity their numeric values merge onto.
+        is_identity_pass = pass_name == "missile_identity"
+        return _postprocess_air_defense_missiles(
+            pass_output, evidence_text,
+            normalized_tables=normalized_tables if is_identity_pass else None,
+            is_identity_pass=is_identity_pass,
+        )
     if pass_name == "system_links":
         return _postprocess_air_defense_system_links(
             pass_output, evidence_text, upstream_entities, cross_entity_hints,
@@ -506,13 +532,22 @@ def _is_non_radar_context(system_name: str, evidence_text: str) -> bool:
     """True when the entity's emitted name appears in evidence_text in a
     context labeled as auxiliary (non-radar) equipment.
 
-    Algorithm:
-      1. Find the entity name occurrence(s) in evidence_text.
-      2. For each occurrence, examine the ~120-char window after the name.
-      3. If any radar-context whitelist phrase is in the window → False
-         (this is a radar, not auxiliary).
-      4. Else if any non-radar marker is in the window → True (drop it).
-      5. Else → False (no evidence either way; let LLM emission stand).
+    Algorithm — per occurrence, the EARLIEST marker in the post-name
+    window decides. A serialized table row places the entity's own role
+    label first; any whitelist or non-radar phrase that appears later
+    in the window belongs to a different row. Without this proximity
+    rule, an auxiliary-equipment row that happens to be followed by a
+    real radar row (e.g. 5L62A Oxidiser Tank → RD-75 Amazonka
+    Rangefinding Radar in the SA-2 battery-components table) wrongly
+    short-circuits to "radar" because the whitelist phrase exists
+    *somewhere* in the window.
+
+    Aggregation across multiple occurrences:
+      * If any occurrence's earliest marker is a radar-context phrase
+        → return False (preserve as radar).
+      * Else if any occurrence's earliest marker is a non-radar phrase
+        → return True (drop as auxiliary).
+      * Else return False (no decision; let LLM emission stand).
 
     Generic — no equipment names anywhere. Operates on context labels.
     """
@@ -521,21 +556,29 @@ def _is_non_radar_context(system_name: str, evidence_text: str) -> bool:
     normalized_name = normalize_evidence_text(system_name)
     if not normalized_name or not evidence_text:
         return False
-    found_match = False
+    saw_non_radar = False
     for m in re.finditer(re.escape(normalized_name), evidence_text):
-        found_match = True
         end = m.end()
         window = evidence_text[end:end + _NON_RADAR_CONTEXT_WINDOW_CHARS]
-        # Whitelist first — if there's any genuine radar-context phrase
-        # in the window, this is a radar.
-        if any(w in window for w in _RADAR_CONTEXT_WHITELIST):
+        # Earliest marker in this window wins: scan whitelist + non-radar
+        # together and pick whichever appears first by character index.
+        earliest_pos = len(window) + 1
+        earliest_is_radar: bool | None = None
+        for phrase in _RADAR_CONTEXT_WHITELIST:
+            pos = window.find(phrase)
+            if 0 <= pos < earliest_pos:
+                earliest_pos = pos
+                earliest_is_radar = True
+        for phrase in _NON_RADAR_CONTEXT_MARKERS:
+            pos = window.find(phrase)
+            if 0 <= pos < earliest_pos:
+                earliest_pos = pos
+                earliest_is_radar = False
+        if earliest_is_radar is True:
             return False
-        # Otherwise, look for non-radar markers.
-        if any(marker in window for marker in _NON_RADAR_CONTEXT_MARKERS):
-            return True
-    if not found_match:
-        return False
-    return False
+        if earliest_is_radar is False:
+            saw_non_radar = True
+    return saw_non_radar
 
 
 # Step 4: spec fact overlay bridge — applies parsed prose spec facts to
@@ -636,9 +679,26 @@ def _infer_radar_emitter_function(system_name: Any, evidence_text: str) -> str |
             if f"{normalized_name} {marker}" in evidence_text:
                 return role
 
-    # Phase 2: nearest window marker across all entity occurrences.
-    best_distance: int | None = None
-    best_role: str | None = None
+    # Phase 2: nearest-window with post-beats-pre precedence.
+    #
+    # A role marker that appears AFTER the entity (post marker) is taken
+    # as binding to this entity (or its slash-group). A role marker that
+    # appears BEFORE the entity (pre marker) is generally bound to the
+    # entity that immediately preceded it — so it's only a weak fallback
+    # signal for the current entity. Within each class (post / pre), the
+    # nearest marker wins. Post is checked first; pre is consulted only
+    # when no post marker is in the window.
+    #
+    # This is what allows a slash-group like
+    # `... ACQUISITION RADAR PRV-10 KONUS / PRV-11 VERSHINA / SIDE NET
+    # HEIGHTFINDING RADARS ...` to bind every entity in the group to
+    # `HEIGHTFINDING RADARS` rather than wrongly inheriting the
+    # `ACQUISITION RADAR` label that belongs to whichever entity
+    # preceded the group (Spoon Rest, in the SA-2 case).
+    best_post_distance: int | None = None
+    best_post_role: str | None = None
+    best_pre_distance: int | None = None
+    best_pre_role: str | None = None
     name_pattern = re.compile(re.escape(normalized_name))
     for entity_match in name_pattern.finditer(evidence_text):
         e_start = entity_match.start()
@@ -655,18 +715,22 @@ def _infer_radar_emitter_function(system_name: Any, evidence_text: str) -> str |
                         break
                     abs_pos = win_start + m_pos
                     abs_end = abs_pos + len(marker)
-                    if abs_end <= e_start:
-                        distance = e_start - abs_end
-                    elif abs_pos >= e_end:
+                    if abs_pos >= e_end:
                         distance = abs_pos - e_end
-                    else:
-                        distance = 0
-                    if best_distance is None or distance < best_distance:
-                        best_distance = distance
-                        best_role = role
+                        if best_post_distance is None or distance < best_post_distance:
+                            best_post_distance = distance
+                            best_post_role = role
+                    elif abs_end <= e_start:
+                        distance = e_start - abs_end
+                        if best_pre_distance is None or distance < best_pre_distance:
+                            best_pre_distance = distance
+                            best_pre_role = role
+                    # else: marker overlaps the name itself — ignore.
                     idx = m_pos + 1
-    if best_role is not None:
-        return best_role
+    if best_post_role is not None:
+        return best_post_role
+    if best_pre_role is not None:
+        return best_pre_role
 
     # Phase 3: fallback markers — only when no explicit role label found.
     for entity_match in name_pattern.finditer(evidence_text):
@@ -682,6 +746,11 @@ def _infer_radar_emitter_function(system_name: Any, evidence_text: str) -> str |
 
 
 def _find_explicit_radar_nomenclature(system_name: Any, evidence_text: str) -> str | None:
+    # Legacy SA-2 nomenclature backfill is quarantined behind the same
+    # env flag as the recall patterns. Generic nomenclature comes via
+    # the LLM (and via Step 6 designation alias expansion for missiles).
+    if not _LEGACY_SA2_FALLBACKS_ENABLED:
+        return None
     if not isinstance(system_name, str):
         return None
     for pattern, value in _RADAR_NOMENCLATURE_PATTERNS.get(system_name, ()):
@@ -755,6 +824,12 @@ def _recover_explicit_radars(
 ) -> tuple[list[Any], list[str]]:
     recovered_rows = list(radar_rows)
     recovered_names: list[str] = []
+    # Legacy SA-2 name-recall is quarantined: only fires when the env
+    # flag explicitly opts in (`DOCLING_GRAPH_LEGACY_SA2_FALLBACKS`).
+    # Generic radar recovery now comes from Step 3 role inference + Step
+    # 7 precision filter on the LLM's emissions.
+    if not _LEGACY_SA2_FALLBACKS_ENABLED:
+        return recovered_rows, recovered_names
     existing = {
         normalize_evidence_text(row.get("system_name"))
         for row in radar_rows
@@ -1300,9 +1375,131 @@ def _clear_unsupported_missile_properties(item: dict[str, Any], evidence_text: s
     return cleared
 
 
+# Step 6 follow-up: predecessor-context slash-group artifact filter.
+#
+# When the LLM extracts every named missile mention, malformed slash-
+# group tokens in predecessor-context prose can be promoted to
+# standalone `system_name` rows. Generic detection by context language
+# and slash adjacency — no equipment names anywhere.
+_PREDECESSOR_CONTEXT_MARKERS: tuple[str, ...] = (
+    "EARLIER",
+    "EVOLVED FROM",
+    "PREDECESSOR",
+    "PREDECESSORS",
+    "PRECURSOR",
+    "PRECURSORS",
+    "ANCESTOR",
+    "ANCESTORS",
+    "SUPERSEDED",
+)
+_PREDECESSOR_CONTEXT_WINDOW_BEFORE_CHARS = 30
+
+
+def _is_predecessor_slash_artifact(system_name: Any, evidence_text: str) -> bool:
+    """True when `system_name` appears in `evidence_text` ONLY as a
+    malformed slash-group token preceded by explicit predecessor-context
+    language.
+
+    Specifically, ALL of the following must hold:
+      * At least one occurrence of the normalized name exists in
+        `evidence_text`.
+      * EVERY occurrence is immediately followed by `/`.
+      * EVERY occurrence has one of `_PREDECESSOR_CONTEXT_MARKERS`
+        within `_PREDECESSOR_CONTEXT_WINDOW_BEFORE_CHARS` chars before
+        it.
+
+    A real source-supported entity that has at least one legitimate
+    (non-predecessor, non-slash-suffix) mention is NOT flagged. The
+    "every occurrence" rule lets the docling document store the same
+    token in both `text` and `orig` fields (which yields duplicate
+    occurrences) without losing the artifact signal.
+
+    Callers should additionally require the entity to have no extracted
+    attributes before dropping it — this predicate alone is the shape
+    test, not the should-drop decision.
+    """
+    if not isinstance(system_name, str) or not system_name.strip():
+        return False
+    if not isinstance(evidence_text, str) or not evidence_text:
+        return False
+    normalized_name = normalize_evidence_text(system_name)
+    if not normalized_name:
+        return False
+    occurrences = list(re.finditer(re.escape(normalized_name), evidence_text))
+    if not occurrences:
+        return False
+    for m in occurrences:
+        end = m.end()
+        if end >= len(evidence_text) or evidence_text[end] != "/":
+            return False
+        win_start = max(0, m.start() - _PREDECESSOR_CONTEXT_WINDOW_BEFORE_CHARS)
+        pre_window = evidence_text[win_start:m.start()]
+        if not any(marker in pre_window for marker in _PREDECESSOR_CONTEXT_MARKERS):
+            return False
+    return True
+
+
+def _apply_designation_alias_overlay_to_missile_systems(
+    missile_rows: list[dict[str, Any]],
+    normalized_tables: list[Any] | None,
+) -> dict[str, dict[str, list[str]]]:
+    """Step 6 bridge: project per-column designation aliases onto each
+    missile_systems row whose system_name matches the column's canonical
+    entity. Returns a diagnostic mapping
+    `{system_name: {nomenclature: [aliases], name: [aliases]}}`.
+
+    No-op when normalized_tables is empty or the overlay module isn't
+    available (older container image)."""
+    if not normalized_tables:
+        return {}
+    try:
+        from app.services.designation_alias_overlay import (
+            expand_designation_aliases,
+            merge_alias_bags_by_canonical,
+        )
+    except Exception:
+        return {}
+    bags = expand_designation_aliases(normalized_tables)
+    if not bags:
+        return {}
+    by_entity = merge_alias_bags_by_canonical(bags)
+    diagnostics: dict[str, dict[str, list[str]]] = {}
+    for row in missile_rows:
+        if not isinstance(row, dict):
+            continue
+        sysname = row.get("system_name")
+        if not isinstance(sysname, str):
+            continue
+        bag = by_entity.get(sysname)
+        if bag is None:
+            continue
+        added: dict[str, list[str]] = {"nomenclature": [], "name": []}
+        for value in bag.nomenclature_aliases:
+            current = row.get("nomenclature")
+            if current is None:
+                row["nomenclature"] = value
+                added["nomenclature"].append(value)
+            elif value != current and value not in current.split(" / "):
+                row["nomenclature"] = f"{current} / {value}"
+                added["nomenclature"].append(value)
+        for value in bag.name_aliases:
+            current = row.get("name")
+            if current is None:
+                row["name"] = value
+                added["name"].append(value)
+            elif value != current and value not in current.split(" / "):
+                row["name"] = f"{current} / {value}"
+                added["name"].append(value)
+        if added["nomenclature"] or added["name"]:
+            diagnostics[sysname] = {k: v for k, v in added.items() if v}
+    return diagnostics
+
+
 def _postprocess_air_defense_missiles(
     pass_output: dict[str, Any],
     evidence_text: str,
+    normalized_tables: list[Any] | None = None,
+    is_identity_pass: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     updated = dict(pass_output)
     missile_rows = updated.get("missile_systems")
@@ -1328,6 +1525,28 @@ def _postprocess_air_defense_missiles(
         original_item = dict(item)
         system_name = item.get("system_name")
 
+        # Step 6 follow-up: drop predecessor-context slash-group artifacts
+        # (e.g. SA-25 from "the earlier SA-25/S-25 / SA-1 Guild"). Only
+        # applied on missile_identity and only when the row has no
+        # extracted attributes beyond system_name — partial-attribute
+        # rows are kept so we don't lose real partial extractions.
+        if is_identity_pass and isinstance(system_name, str):
+            has_any_attr = any(
+                item.get(f) not in (None, "")
+                for f in (
+                    "nomenclature", "dieqp", "name", "emitter_function",
+                    "system_status", "asrd", "responsible_agency",
+                    "review_cycle", "next_review_date",
+                )
+            )
+            if not has_any_attr and _is_predecessor_slash_artifact(
+                system_name, evidence_text,
+            ):
+                stats.setdefault("predecessor_artifacts_dropped", []).append(
+                    str(system_name)
+                )
+                continue
+
         if item.get("system_status") and not _status_is_explicit_for_entity(
             item.get("system_status"),
             system_name,
@@ -1351,6 +1570,17 @@ def _postprocess_air_defense_missiles(
             _apply_display_name_canonicalization(item)
         )
         cleaned_rows.append(item)
+
+    # Step 6: deterministic designation alias expansion. Attach Industry/
+    # Military designations as `nomenclature` aliases and NATO
+    # designations as `name` aliases onto the canonical missile round
+    # entities (1D, 13D, 20D, 5Ya23, etc.) defined by the Missile Type
+    # row of designation tables. No new entities are created.
+    designation_expansion = _apply_designation_alias_overlay_to_missile_systems(
+        cleaned_rows, normalized_tables,
+    )
+    if designation_expansion:
+        stats["designation_alias_expansion"] = designation_expansion
 
     updated["missile_systems"] = cleaned_rows
     if not stats["status_cleared"]:
@@ -1983,10 +2213,14 @@ def _postprocess_air_defense_system_links(
     if variant_of_diag.get("emitted") or variant_of_diag.get("skipped"):
         stats["variant_of_emitter"] = variant_of_diag
 
-    # Legacy evidence-text fallback: only fires when nothing else produced
-    # edges (preserves the prior behavior for docs without table hints).
+    # Legacy SA-2 evidence-text fallback (Spoon-Rest→Fan-Song CUES,
+    # Fan-Song→SA-2 ASSOCIATED_WITH). Quarantined behind the env flag.
+    # The generic VARIANT_OF emitter + hint promotion + role-aware
+    # CUES retype now cover the relationship semantics for any corpus
+    # whose tables expose them. Default OFF so non-SA-2 docs aren't
+    # polluted by SA-2-specific edge synthesis.
     derived: list[dict[str, Any]] = []
-    if not out:
+    if not out and _LEGACY_SA2_FALLBACKS_ENABLED:
         spoon_rest_ref = name_to_ref.get("SPOON REST")
         fan_song_ref = name_to_ref.get("FAN SONG")
         sa2_ref = name_to_ref.get("SA-2")

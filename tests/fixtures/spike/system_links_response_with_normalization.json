@@ -5,190 +5,69 @@
     "relationships": [
       {
         "rel_type": "CUES",
-        "from_ref_id": "RADAR_SYSTEM:Spoon Rest",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
+        "from_ref_id": "RADAR_SYSTEM:P-12",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
         "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "RADAR_SYSTEM:Fan Song E",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 0.9
-      },
-      {
-        "rel_type": "CUES",
-        "from_ref_id": "RADAR_SYSTEM:Side Net",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 0.9
-      },
-      {
-        "rel_type": "CUES",
-        "from_ref_id": "RADAR_SYSTEM:Amazonka",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
+        "from_ref_id": "RADAR_SYSTEM:P-12",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
         "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:1D",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
+        "from_ref_id": "RADAR_SYSTEM:Parol",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
+        "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:13D",
-        "to_ref_id": "RADAR_SYSTEM:RSN-75",
-        "confidence": 1.0
+        "from_ref_id": "RADAR_SYSTEM:Konus",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
+        "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:13DM",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
+        "from_ref_id": "RADAR_SYSTEM:RD-75",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
+        "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:13DA",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
+        "from_ref_id": "RADAR_SYSTEM:Flat Face",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
+        "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:13DAM",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
+        "from_ref_id": "RADAR_SYSTEM:Squat Eye",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
+        "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:20D",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
+        "from_ref_id": "RADAR_SYSTEM:RD-75",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
+        "confidence": 0.9
       },
       {
         "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:20DP",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:20DSU",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:5Ya23",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "ASSOCIATED_WITH",
-        "from_ref_id": "MISSILE_SYSTEM:15D",
-        "to_ref_id": "RADAR_SYSTEM:Fan Song",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:1D",
-        "to_ref_id": "MISSILE_SYSTEM:V-750",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:13D",
-        "to_ref_id": "MISSILE_SYSTEM:S-75",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:20D",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:5Ya23",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M4",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:15D",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:SA-2",
-        "to_ref_id": "MISSILE_SYSTEM:S-75",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:13DM",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:13DA",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M1",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:13DAM",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M1",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:20DP",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:20DSU",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M2",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:SA-2A",
-        "to_ref_id": "MISSILE_SYSTEM:SA-75",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:SA-2C",
-        "to_ref_id": "MISSILE_SYSTEM:S-75",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:SA-2D",
-        "to_ref_id": "MISSILE_SYSTEM:S-75M",
-        "confidence": 1.0
-      },
-      {
-        "rel_type": "VARIANT_OF",
-        "from_ref_id": "MISSILE_SYSTEM:SA-2E",
-        "to_ref_id": "MISSILE_SYSTEM:S-75",
+        "from_ref_id": "RADAR_SYSTEM:RD-75",
+        "to_ref_id": "RADAR_SYSTEM:SNR-75",
         "confidence": 1.0
       }
     ]
   },
   "metadata": {
     "node_count": 1,
-    "edge_count": 29,
+    "edge_count": 9,
     "node_types": {
       "SystemLinksPass": 1
     },
     "edge_types": {
-      "CUES": 3,
-      "ASSOCIATED_WITH": 11,
-      "VARIANT_OF": 15
+      "CUES": 1,
+      "ASSOCIATED_WITH": 8
     },
     "extraction_contract": "delta",
     "gleaning_passes": 0,
@@ -196,7 +75,7 @@
     "quality_gate_passed": true,
     "validation_pass_applied": false,
     "validation_pass_edges_added": 0,
-    "upstream_ref_count": 67,
+    "upstream_ref_count": 31,
     "upstream_preamble_applied": true
   },
   "model": "gemma4:31b",
@@ -207,52 +86,132 @@
   "diagnostics": {
     "contract": "delta",
     "context": "DoclingDocument",
-    "chunk_count": 19,
-    "batch_count": 9,
+    "chunk_count": 34,
+    "batch_count": 29,
     "parallel_workers": 2,
-    "llm_batch_token_size": 4096,
+    "llm_batch_token_size": 1024,
     "batch_timings": [
       {
         "batch_index": 0,
-        "elapsed_seconds": 132.79400300979614
+        "elapsed_seconds": 47.51927137374878
       },
       {
         "batch_index": 1,
-        "elapsed_seconds": 75.0081377029419
+        "elapsed_seconds": 105.62150812149048
       },
       {
         "batch_index": 2,
-        "elapsed_seconds": 77.81843662261963
+        "elapsed_seconds": 231.86590957641602
       },
       {
         "batch_index": 3,
-        "elapsed_seconds": 89.03254175186157
+        "elapsed_seconds": 96.63060355186462
       },
       {
         "batch_index": 4,
-        "elapsed_seconds": 110.30870079994202
+        "elapsed_seconds": 58.0921356678009
       },
       {
         "batch_index": 5,
-        "elapsed_seconds": 90.33898758888245
+        "elapsed_seconds": 81.47714948654175
       },
       {
         "batch_index": 6,
-        "elapsed_seconds": 68.50034093856812
+        "elapsed_seconds": 171.1551468372345
       },
       {
         "batch_index": 7,
-        "elapsed_seconds": 66.01638197898865
+        "elapsed_seconds": 135.06594514846802
       },
       {
         "batch_index": 8,
-        "elapsed_seconds": 19.81710696220398
+        "elapsed_seconds": 51.65834641456604
+      },
+      {
+        "batch_index": 9,
+        "elapsed_seconds": 48.58835434913635
+      },
+      {
+        "batch_index": 10,
+        "elapsed_seconds": 190.8436040878296
+      },
+      {
+        "batch_index": 11,
+        "elapsed_seconds": 109.58251523971558
+      },
+      {
+        "batch_index": 12,
+        "elapsed_seconds": 137.03035235404968
+      },
+      {
+        "batch_index": 13,
+        "elapsed_seconds": 80.40050387382507
+      },
+      {
+        "batch_index": 14,
+        "elapsed_seconds": 57.0084285736084
+      },
+      {
+        "batch_index": 15,
+        "elapsed_seconds": 60.71822929382324
+      },
+      {
+        "batch_index": 16,
+        "elapsed_seconds": 59.29601812362671
+      },
+      {
+        "batch_index": 17,
+        "elapsed_seconds": 98.12902164459229
+      },
+      {
+        "batch_index": 18,
+        "elapsed_seconds": 108.46917629241943
+      },
+      {
+        "batch_index": 19,
+        "elapsed_seconds": 98.36685132980347
+      },
+      {
+        "batch_index": 20,
+        "elapsed_seconds": 107.12857294082642
+      },
+      {
+        "batch_index": 21,
+        "elapsed_seconds": 63.66798782348633
+      },
+      {
+        "batch_index": 22,
+        "elapsed_seconds": 104.47870254516602
+      },
+      {
+        "batch_index": 23,
+        "elapsed_seconds": 91.20114254951477
+      },
+      {
+        "batch_index": 24,
+        "elapsed_seconds": 82.21116924285889
+      },
+      {
+        "batch_index": 25,
+        "elapsed_seconds": 113.54873752593994
+      },
+      {
+        "batch_index": 26,
+        "elapsed_seconds": 59.626954317092896
+      },
+      {
+        "batch_index": 27,
+        "elapsed_seconds": 90.62850427627563
+      },
+      {
+        "batch_index": 28,
+        "elapsed_seconds": 121.42997908592224
       }
     ],
     "batch_errors": {},
     "path_counts": {
       "": 1,
-      "relationships[]": 29
+      "relationships[]": 9
     },
     "normalizer_stats": {
       "unknown_path_dropped": 0,
@@ -301,15 +260,15 @@
       "parent_lookup_repaired_positional": 0,
       "parent_lookup_repaired_canonical_id": 0,
       "parent_lookup_repaired_best_effort": 0,
-      "attached_node_count": 14,
+      "attached_node_count": 11,
       "parent_lookup_miss_examples": [],
       "missing_parent_examples": []
     },
     "merge_core_stats": {
-      "node_inputs": 34,
-      "node_dedup_merges": 13,
-      "property_updates": 9,
-      "property_conflicts": 15,
+      "node_inputs": 67,
+      "node_dedup_merges": 30,
+      "property_updates": 14,
+      "property_conflicts": 12,
       "relationship_inputs": 0,
       "relationship_dedup_replaced": 0,
       "relationship_self_skipped": 0,
@@ -322,19 +281,40 @@
     "resolver": {
       "enabled": true,
       "mode": "semantic",
-      "merged_count": 1,
+      "merged_count": 4,
       "merge_tiers": {
         "resolver_fuzzy": 0,
-        "resolver_semantic": 1,
+        "resolver_semantic": 4,
         "resolver_identity": 0
       },
       "actions": [
         {
           "type": "semantic_merge",
           "path": "",
+          "score": 1.0,
+          "left_text": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / HQ-2A/B / CSA-1 / SA-2 Guideline Зенитный Ракетный Комплекс С-75 Двина/Десна/ Волхов",
+          "right_text": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / HQ-2A/B / CSA-1 / SA-2 Guideline Зенитный Ракетный Комплекс С-75 Двина/Десна/ Волхов"
+        },
+        {
+          "type": "semantic_merge",
+          "path": "",
+          "score": 1.0,
+          "left_text": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / HQ-2A/B / CSA-1 / SA-2 Guideline Зенитный Ракетный Комплекс С-75 Двина/Десна/ Волхов",
+          "right_text": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / HQ-2A/B / CSA-1 / SA-2 Guideline Зенитный Ракетный Комплекс С-75 Двина/Десна/ Волхов"
+        },
+        {
+          "type": "semantic_merge",
+          "path": "",
           "score": 0.8954,
           "left_text": "Almaz S-75 Dvina/Desna/Volkhov Air Defence System / HQ-2A/B / CSA-1 / SA-2 Guideline Зенитный Ракетный Комплекс С-75 Двина/Десна/ Волхов",
           "right_text": "1D/13D/DM/DA/DAM/20D/DP/DSU/5Ya23/15D Surface to Air Missiles"
+        },
+        {
+          "type": "semantic_merge",
+          "path": "",
+          "score": 1.0,
+          "left_text": "S-75 / SA-2 Guideline Combat Imagery",
+          "right_text": "S-75 / SA-2 Guideline Combat Imagery"
         }
       ],
       "skipped_reasons": []
@@ -348,11 +328,11 @@
       "unknown_path_examples": [],
       "parent_lookup_miss_examples": [],
       "property_sparsity": {
-        "total_non_empty_properties": 50,
+        "total_non_empty_properties": 45,
         "root_non_empty_fields": 0,
         "non_empty_properties_by_path": {
-          "": 2,
-          "relationships[]": 48
+          "": 9,
+          "relationships[]": 36
         }
       },
       "orphan_count": 0,
@@ -376,7 +356,7 @@
       "delta_quality_max_orphan_ratio": -1.0,
       "delta_quality_max_canonical_duplicates": -1
     },
-    "library_log": "[LlmBackend] Initialized with:\n  • Client: OllamaChatClient\n  • Model: gemma4:31b\n[DocumentChunker] Initialized with:\n  • Tokenizer: sentence-transformers/all-MiniLM-L6-v2\n  • Chunk Max Tokens: 4096\n  • Merge Peers: True\n[DocumentProcessor] Initialized with Classic OCR pipeline (English, French)\n[ExtractorFactory] Created ManyToOneStrategy\n[Extraction] PATCH GATE: contract='delta' has_chunk_batches=True has_chunker=True => can_chunk_batch=True\n[Extraction] Using CHUNKED-BATCHES path (matches documented delta flow).\n[DocumentProcessor] Extracted 19 chunks with metadata\n[DeltaExtraction] Running delta extraction (19 chunks)...\n[DeltaExtraction] Calling LLM (batch mode)...\n[LlmBackend] Successfully extracted data from DoclingDocument\n[GraphConverter] Pre-registering models for deterministic node IDs...\n[GraphConverter] Running automatic graph cleanup...\n[GraphCleaner] Starting cleanup: 1 nodes, 0 edges\n[GraphCleaner] Cleanup complete:\n  • Removed 0 phantom nodes\n  • Merged 0 duplicate nodes\n  • Removed 0 self-edges\n  • Removed 0 orphaned edges\n  • Removed 0 duplicate edges\n  • Capped keywords on 0 edges\n  • Result: 1 nodes (-0), 0 edges (-0)\nGraph has no edges (1 node(s) only). This can happen when extraction was salvaged and list entities were dropped.\n[GraphConverter] Graph structure validated successfully\n[GraphConverter] Final graph: 1 nodes, 0 edges\n  Registry: 1 entities across 1 classes\n[LlmBackend] Cleaned up resources\n[DocumentProcessor] Cleaned up resources\n",
+    "library_log": "[LlmBackend] Initialized with:\n  • Client: OllamaChatClient\n  • Model: gemma4:31b\n[DocumentChunker] Initialized with:\n  • Tokenizer: sentence-transformers/all-MiniLM-L6-v2\n  • Chunk Max Tokens: 1024\n  • Merge Peers: True\n[DocumentProcessor] Initialized with Classic OCR pipeline (English, French)\n[ExtractorFactory] Created ManyToOneStrategy\n[Extraction] PATCH GATE: contract='delta' has_chunk_batches=True has_chunker=True => can_chunk_batch=True\n[Extraction] Using CHUNKED-BATCHES path (matches documented delta flow).\n[DocumentProcessor] Extracted 34 chunks with metadata\n[DeltaExtraction] Running delta extraction (34 chunks)...\n[DeltaExtraction] Calling LLM (batch mode)...\n[LlmBackend] Successfully extracted data from DoclingDocument\n[GraphConverter] Pre-registering models for deterministic node IDs...\n[GraphConverter] Running automatic graph cleanup...\n[GraphCleaner] Starting cleanup: 1 nodes, 0 edges\n[GraphCleaner] Cleanup complete:\n  • Removed 0 phantom nodes\n  • Merged 0 duplicate nodes\n  • Removed 0 self-edges\n  • Removed 0 orphaned edges\n  • Removed 0 duplicate edges\n  • Capped keywords on 0 edges\n  • Result: 1 nodes (-0), 0 edges (-0)\nGraph has no edges (1 node(s) only). This can happen when extraction was salvaged and list entities were dropped.\n[GraphConverter] Graph structure validated successfully\n[GraphConverter] Final graph: 1 nodes, 0 edges\n  Registry: 1 entities across 1 classes\n[LlmBackend] Cleaned up resources\n[DocumentProcessor] Cleaned up resources\n",
     "input_sanitize": {
       "texts_in": 308,
       "texts_dropped": 65
@@ -388,249 +368,34 @@
     },
     "service_pre_filter_counts": {
       "node_count": 1,
-      "edge_count": 4,
+      "edge_count": 9,
       "node_types": {
         "SystemLinksPass": 1
       },
       "edge_types": {
-        "ASSOCIATED_WITH": 2,
-        "CUES": 2
+        "CUES": 1,
+        "ASSOCIATED_WITH": 8
       },
       "path_counts": {
         "": 1,
-        "relationships[]": 4
+        "relationships[]": 9
       }
     },
     "service_pre_filter_identity_examples": {},
-    "service_postprocess": {
-      "role_aware_cues": {
-        "retyped": [
-          {
-            "from_ref_id": "RADAR_SYSTEM:Spoon Rest",
-            "to_ref_id": "RADAR_SYSTEM:Fan Song",
-            "from_role": "SEARCH",
-            "to_role": "FIRE_CONTROL",
-            "reason": "search_to_fire_control"
-          }
-        ],
-        "flipped": [],
-        "skipped": [
-          {
-            "from_ref_id": "RADAR_SYSTEM:Fan Song E",
-            "to_ref_id": "RADAR_SYSTEM:Fan Song",
-            "rel_type": "ASSOCIATED_WITH",
-            "reason": "roles_ambiguous_or_unsupported",
-            "from_role": "FIRE_CONTROL",
-            "to_role": "FIRE_CONTROL"
-          }
-        ]
-      },
-      "promoted_from_cross_entity_hints": [
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:1D",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:13D",
-          "to_ref_id": "RADAR_SYSTEM:RSN-75",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:13DM",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:13DA",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:13DAM",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:20D",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:20DP",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:20DSU",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:5Ya23",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        },
-        {
-          "rel_type": "ASSOCIATED_WITH",
-          "from_ref_id": "MISSILE_SYSTEM:15D",
-          "to_ref_id": "RADAR_SYSTEM:Fan Song",
-          "confidence": 1.0
-        }
-      ],
-      "unresolved_cross_entity_hints": {
-        "count": 0,
-        "samples": []
-      },
-      "variant_of_emitter": {
-        "emitted": [
-          {
-            "child_ref_id": "MISSILE_SYSTEM:1D",
-            "parent_ref_id": "MISSILE_SYSTEM:V-750",
-            "matched_alias": "V-750 / SA-75",
-            "matched_parent_system_name": "V-750",
-            "match_kind": "boundary",
-            "reason": "alias_contains_parent_system_name_at_boundary"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:13D",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75",
-            "matched_alias": "S-75",
-            "matched_parent_system_name": "S-75",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:20D",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M",
-            "matched_alias": "S-75M / S-75V",
-            "matched_parent_system_name": "S-75M",
-            "match_kind": "boundary",
-            "reason": "alias_contains_parent_system_name_at_boundary"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:5Ya23",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M4",
-            "matched_alias": "S-75M4 / S-75M",
-            "matched_parent_system_name": "S-75M4",
-            "match_kind": "boundary",
-            "reason": "alias_contains_parent_system_name_at_boundary"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:15D",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M",
-            "matched_alias": "S-75 / S-75M",
-            "matched_parent_system_name": "S-75M",
-            "match_kind": "boundary",
-            "reason": "alias_contains_parent_system_name_at_boundary"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:SA-2",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75",
-            "matched_alias": "S-75",
-            "matched_parent_system_name": "S-75",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:13DM",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M",
-            "matched_alias": "S-75M / S-75",
-            "matched_parent_system_name": "S-75M",
-            "match_kind": "boundary",
-            "reason": "alias_contains_parent_system_name_at_boundary"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:13DA",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M1",
-            "matched_alias": "S-75M1",
-            "matched_parent_system_name": "S-75M1",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:13DAM",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M1",
-            "matched_alias": "S-75M1 / S-75V",
-            "matched_parent_system_name": "S-75M1",
-            "match_kind": "boundary",
-            "reason": "alias_contains_parent_system_name_at_boundary"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:20DP",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M",
-            "matched_alias": "S-75M / S-75V",
-            "matched_parent_system_name": "S-75M",
-            "match_kind": "boundary",
-            "reason": "alias_contains_parent_system_name_at_boundary"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:20DSU",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M2",
-            "matched_alias": "S-75M2",
-            "matched_parent_system_name": "S-75M2",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:SA-2A",
-            "parent_ref_id": "MISSILE_SYSTEM:SA-75",
-            "matched_alias": "SA-75",
-            "matched_parent_system_name": "SA-75",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:SA-2C",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75",
-            "matched_alias": "S-75",
-            "matched_parent_system_name": "S-75",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:SA-2D",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75M",
-            "matched_alias": "S-75M",
-            "matched_parent_system_name": "S-75M",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          },
-          {
-            "child_ref_id": "MISSILE_SYSTEM:SA-2E",
-            "parent_ref_id": "MISSILE_SYSTEM:S-75",
-            "matched_alias": "S-75",
-            "matched_parent_system_name": "S-75",
-            "match_kind": "exact",
-            "reason": "alias_equals_parent_system_name"
-          }
-        ],
-        "skipped": []
-      }
-    },
+    "service_postprocess": {},
     "service_post_filter_counts": {
       "node_count": 1,
-      "edge_count": 29,
+      "edge_count": 9,
       "node_types": {
         "SystemLinksPass": 1
       },
       "edge_types": {
-        "CUES": 3,
-        "ASSOCIATED_WITH": 11,
-        "VARIANT_OF": 15
+        "CUES": 1,
+        "ASSOCIATED_WITH": 8
       },
       "path_counts": {
         "": 1,
-        "relationships[]": 29
+        "relationships[]": 9
       }
     },
     "service_post_filter_identity_examples": {},
@@ -644,13 +409,13 @@
       "columns_with_canonical_via_fallback": 0,
       "values_skipped_unparseable": 0,
       "facts_skipped_construct_fail": 0,
-      "alias_map_size": 34,
-      "facts_count": 72,
+      "alias_map_size": 21,
+      "facts_count": 53,
       "cross_entity_hints_count": 10
     },
     "raw_path_counts": {
-      "": 8,
-      "relationships[]": 12
+      "": 24,
+      "relationships[]": 9
     }
   },
   "table_overlay": {
@@ -677,21 +442,6 @@
         "5Ya23": "5Ya23",
         "SA-2E": "15D",
         "15D": "15D"
-      },
-      "RADAR_SYSTEM": {
-        "RSNA- 75": "Fan Song",
-        "RSNA-75": "Fan Song",
-        "RSN-75": "Fan Song",
-        "RSN- 75M": "Fan Song",
-        "RSN-75M": "Fan Song",
-        "RSN- 75V1": "Fan Song",
-        "RSN-75V1": "Fan Song",
-        "RSN- 75V": "Fan Song",
-        "RSN-75V": "Fan Song",
-        "RSNA- 75M": "Fan Song",
-        "RSNA-75M": "Fan Song",
-        "RSN- 75M4": "Fan Song",
-        "RSN-75M4": "Fan Song"
       }
     },
     "facts": [
@@ -864,196 +614,6 @@
         "section_ctx": null,
         "pass_name": "missile_kinematics",
         "raw_text": "6000"
-      },
-      {
-        "canonical_entity": "1D",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 22.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "22000"
-      },
-      {
-        "canonical_entity": "13D",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 27.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "27000"
-      },
-      {
-        "canonical_entity": "13DM",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 30.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "30000"
-      },
-      {
-        "canonical_entity": "13DA",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 27.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "27000"
-      },
-      {
-        "canonical_entity": "13DAM",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 30.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "30000"
-      },
-      {
-        "canonical_entity": "20D",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 30.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "30000"
-      },
-      {
-        "canonical_entity": "20DP",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 30.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "30000"
-      },
-      {
-        "canonical_entity": "20DSU",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 30.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "30000"
-      },
-      {
-        "canonical_entity": "5Ya23",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "max_altitude_km",
-        "value": 30.0,
-        "source_label": "Max Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "30000"
-      },
-      {
-        "canonical_entity": "1D",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 3.0,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "3000"
-      },
-      {
-        "canonical_entity": "13D",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 3.0,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "3000"
-      },
-      {
-        "canonical_entity": "13DM",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 1.0,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "1000"
-      },
-      {
-        "canonical_entity": "13DA",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 0.5,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "500"
-      },
-      {
-        "canonical_entity": "13DAM",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 0.3,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "300"
-      },
-      {
-        "canonical_entity": "20D",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 1.0,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "1000"
-      },
-      {
-        "canonical_entity": "20DP",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 1.0,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "1000"
-      },
-      {
-        "canonical_entity": "20DSU",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 0.1,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "100"
-      },
-      {
-        "canonical_entity": "5Ya23",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 0.05,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "50"
-      },
-      {
-        "canonical_entity": "15D",
-        "entity_type": "MISSILE_SYSTEM",
-        "schema_field": "min_altitude_km",
-        "value": 5.0,
-        "source_label": "Min Alt",
-        "section_ctx": null,
-        "pass_name": "missile_kinematics",
-        "raw_text": "5000"
       },
       {
         "canonical_entity": "1D",

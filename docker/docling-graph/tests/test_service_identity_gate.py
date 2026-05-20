@@ -241,7 +241,13 @@ def test_apply_bundle_postprocessing_rewrites_air_defense_fields_from_evidence()
     assert missile_stats["status_cleared"] == ["SA-2"]
 
 
-def test_radar_postprocess_clears_unsupported_specs_and_recovers_spoon_rest():
+def test_radar_postprocess_clears_unsupported_specs_and_recovers_spoon_rest(monkeypatch):
+    """Documents the QUARANTINED SA-2 radar-name recall behavior
+    (`_RADAR_RECALL_PATTERNS` / `_RADAR_NOMENCLATURE_PATTERNS`). Only
+    fires when the `DOCLING_GRAPH_LEGACY_SA2_FALLBACKS` env flag is on.
+    The default (flag off) is covered by the unsupported-spec clearing
+    assertions below — Spoon Rest recovery is the legacy-only part."""
+    monkeypatch.setattr(_EVIDENCE_GATE, "_LEGACY_SA2_FALLBACKS_ENABLED", True)
     evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
         """
         RSNA-75/SNR-75 Fan Song Engagement Radar
@@ -404,7 +410,12 @@ def test_missile_postprocess_clears_recurring_sa2_hallucinated_properties():
     }
 
 
-def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence():
+def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence(monkeypatch):
+    """Documents the QUARANTINED SA-2 legacy fallback behavior. Only
+    fires when the `DOCLING_GRAPH_LEGACY_SA2_FALLBACKS` env flag is on.
+    The default (flag off) is exercised by
+    `test_legacy_sa2_fallback_off_by_default` below."""
+    monkeypatch.setattr(_EVIDENCE_GATE, "_LEGACY_SA2_FALLBACKS_ENABLED", True)
     evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
         """
         A typical SA-2 site in North Vietnam had six missiles on launchers,
@@ -432,6 +443,31 @@ def test_apply_bundle_postprocessing_derives_sa2_system_links_from_evidence():
         {"rel_type": "ASSOCIATED_WITH", "from_ref_id": "E001", "to_ref_id": "E003", "confidence": 0.95},
     ]
     assert stats["derived_relationships"] == pass_output["relationships"]
+
+
+def test_legacy_sa2_fallback_off_by_default(monkeypatch):
+    """The default (flag off) must NOT synthesize legacy SA-2 edges.
+    With zero LLM-emitted edges and no hints/upstream resolution, the
+    output stays empty — non-SA-2 docs aren't polluted by SA-2-specific
+    relationship synthesis."""
+    monkeypatch.setattr(_EVIDENCE_GATE, "_LEGACY_SA2_FALLBACKS_ENABLED", False)
+    evidence_text = _EVIDENCE_GATE.normalize_evidence_text(
+        "A Spoon Rest acquisition radar and a Fan Song guidance radar."
+    )
+    upstream_entities = [
+        SimpleNamespace(ref_id="E001", identity_values={"system_name": "Fan Song"}, display_label=None),
+        SimpleNamespace(ref_id="E002", identity_values={"system_name": "Spoon Rest"}, display_label=None),
+        SimpleNamespace(ref_id="E003", identity_values={"system_name": "SA-2"}, display_label=None),
+    ]
+    pass_output, stats = _EVIDENCE_GATE.apply_bundle_postprocessing(
+        "air_defense_v3",
+        "system_links",
+        {"relationships": []},
+        evidence_text,
+        upstream_entities,
+    )
+    assert pass_output["relationships"] == []
+    assert "derived_relationships" not in stats
 
 
 # --- v8a cross_entity_hints promotion tests ---------------------------------

@@ -99,6 +99,81 @@ class TestRadarContext:
         assert _EVIDENCE_GATE._is_non_radar_context("SNR-75", ev) is False
 
 
+# ===== Production-shaped serialized table (multi-row interleaving) =====
+#
+# When the SA-2 'S-75M Battery Components' table is serialized into a flat
+# evidence_text, auxiliary rows (5L22A, 5L62A) are immediately followed by
+# the RD-75 Amazonka row whose role label "RANGEFINDING RADAR" falls inside
+# the 120-char window after the auxiliary entity name. The whitelist check
+# must NOT short-circuit to "radar" when a closer non-radar marker is also
+# in the window — the role label binds to the entity it's PROXIMAL to.
+
+
+_SA2_TABLE_SERIALIZED = normalize(
+    "5L22 1 Chemical decontamination van SP "
+    "5L22A 1-2 Fuel Tank (TG-02) Towed "
+    "5L62A 1-2 Oxidiser Tank (AK-27P) Towed "
+    "S-75 Optional Battery Components "
+    "RD-75 Amazonka 1 Rangefinding radar Towed "
+    "P-15/19 Flat Face 1 UHF-Band Acquisition Radar Ural-375 "
+    "P-15M Squat Eye 1 UHF-Band Acquisition Radar Towed"
+)
+
+
+class TestSerializedTableRowProximity:
+    """In serialized tables, the role label nearest to the entity wins.
+    Distant whitelist phrases that actually belong to a later row must
+    not veto a closer non-radar marker."""
+
+    def test_5l62a_oxidiser_tank_drops_despite_distant_rangefinding_radar(self):
+        """The exact production case that leaked. OXIDISER TANK is 5
+        chars after 5L62A; RANGEFINDING RADAR is ~84 chars later and
+        belongs to RD-75 Amazonka in the next row."""
+        assert _EVIDENCE_GATE._is_non_radar_context("5L62A", _SA2_TABLE_SERIALIZED) is True
+
+    def test_5l22a_fuel_tank_still_drops(self):
+        """Regression guard for the row before 5L62A."""
+        assert _EVIDENCE_GATE._is_non_radar_context("5L22A", _SA2_TABLE_SERIALIZED) is True
+
+    def test_5l22_decontamination_still_drops(self):
+        """First row in the auxiliary block."""
+        assert _EVIDENCE_GATE._is_non_radar_context("5L22", _SA2_TABLE_SERIALIZED) is True
+
+    def test_rd75_amazonka_kept_as_radar(self):
+        """Despite OXIDISER TANK appearing 37 chars before RD-75 Amazonka
+        in this serialization, the entity's OWN immediate post role
+        label is RANGEFINDING RADAR (whitelist). Earliest-marker-wins
+        keeps it labeled as a radar."""
+        assert _EVIDENCE_GATE._is_non_radar_context("RD-75 Amazonka", _SA2_TABLE_SERIALIZED) is False
+
+    def test_flat_face_kept_as_radar(self):
+        assert _EVIDENCE_GATE._is_non_radar_context("P-15/19 Flat Face", _SA2_TABLE_SERIALIZED) is False
+
+    def test_squat_eye_kept_as_radar(self):
+        assert _EVIDENCE_GATE._is_non_radar_context("P-15M Squat Eye", _SA2_TABLE_SERIALIZED) is False
+
+
+class TestRadarOnPlatformMarker:
+    """Real radars frequently carry vehicle/platform markers (Towed, SP,
+    cabin descriptions). Those must not cause them to be dropped when
+    their immediate post role label is a radar role."""
+
+    def test_radar_head_van_kept(self):
+        ev = normalize("SNR-75 PV Cabin 1 Radar head van Towed")
+        assert _EVIDENCE_GATE._is_non_radar_context("SNR-75 PV Cabin", ev) is False
+
+    def test_acquisition_radar_with_sp_label_kept(self):
+        ev = normalize("P-12M/P-18 Spoon Rest 1 Acquisition Radar SP")
+        assert _EVIDENCE_GATE._is_non_radar_context("Spoon Rest", ev) is False
+
+    def test_heightfinding_radar_with_towed_label_kept(self):
+        ev = normalize(
+            "PRV-10 Konus / PRV-11 Vershina / Side Net 1 Heightfinding Radars Towed"
+        )
+        assert _EVIDENCE_GATE._is_non_radar_context("Konus", ev) is False
+        assert _EVIDENCE_GATE._is_non_radar_context("Side Net", ev) is False
+
+
 class TestNotInEvidenceReturnsFalse:
     """If the entity name doesn't appear in evidence_text at all, return
     False (let the LLM emission stand — no information to act on)."""

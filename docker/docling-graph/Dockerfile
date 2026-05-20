@@ -105,6 +105,11 @@ COPY app/services/table_normalization /app/app/services/table_normalization
 # into structured facts that evidence_gate consumes for mechanical
 # numeric population. Generic — no equipment names.
 COPY app/services/spec_overlay.py /app/app/services/spec_overlay.py
+# Step 6 (2026-05-19): designation_alias_overlay attaches Industry /
+# Military / NATO designations from normalized tables onto canonical
+# missile round entities. Operates on the existing NormalizedTable
+# `columns[i].identity` already produced by table_normalization.
+COPY app/services/designation_alias_overlay.py /app/app/services/designation_alias_overlay.py
 
 # Apply local patches to the vendored docling-graph library, then install
 # the patched source as an editable package so Python imports from /app/repo

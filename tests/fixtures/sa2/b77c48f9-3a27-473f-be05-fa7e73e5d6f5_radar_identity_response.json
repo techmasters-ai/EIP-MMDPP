@@ -41,7 +41,7 @@
   "provider": "ollama",
   "provenance": [
     {
-      "instance_id": "0d67d831-1262-4179-acfe-6a7544c2d68c",
+      "instance_id": "3dab5915-21aa-44cf-99bf-31bc6fd03946",
       "ontology_name": "RADAR_SYSTEM",
       "identity_values": {
         "system_name": "RSNA-75M"
@@ -66,27 +66,27 @@
     "batch_timings": [
       {
         "batch_index": 0,
-        "elapsed_seconds": 29.179520845413208
+        "elapsed_seconds": 18.893314838409424
       },
       {
         "batch_index": 1,
-        "elapsed_seconds": 16.978222131729126
+        "elapsed_seconds": 19.739492654800415
       },
       {
         "batch_index": 2,
-        "elapsed_seconds": 50.51887106895447
+        "elapsed_seconds": 33.32426834106445
       },
       {
         "batch_index": 3,
-        "elapsed_seconds": 40.329668283462524
+        "elapsed_seconds": 41.308173179626465
       },
       {
         "batch_index": 4,
-        "elapsed_seconds": 18.599791765213013
+        "elapsed_seconds": 16.447052478790283
       },
       {
         "batch_index": 5,
-        "elapsed_seconds": 17.388163566589355
+        "elapsed_seconds": 13.19992995262146
       }
     ],
     "batch_errors": {},
@@ -152,8 +152,8 @@
       "missing_parent_examples": []
     },
     "merge_core_stats": {
-      "node_inputs": 2,
-      "node_dedup_merges": 1,
+      "node_inputs": 1,
+      "node_dedup_merges": 0,
       "property_updates": 0,
       "property_conflicts": 0,
       "relationship_inputs": 0,

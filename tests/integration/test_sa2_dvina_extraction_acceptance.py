@@ -59,6 +59,23 @@ def _find_entity(entities: list[dict[str, Any]], system_name: str) -> dict[str, 
     return None
 
 
+def _all_aliases(e: dict[str, Any]) -> set[str]:
+    """Return the set of all aliases attached to an entity across the
+    nomenclature / name / dieqp fields, splitting any " / "-joined values
+    so multi-value designation expansions are visible to membership
+    tests."""
+    out: set[str] = set()
+    for field in ("nomenclature", "name", "dieqp"):
+        v = e.get(field)
+        if not isinstance(v, str):
+            continue
+        for part in v.split(" / "):
+            p = part.strip()
+            if p:
+                out.add(p)
+    return out
+
+
 # ============================================================================
 # SA-2 radar_identity
 # ============================================================================
@@ -77,12 +94,6 @@ class TestSA2RadarIdentity:
         d = _load_pass(SA2_DOC_ID, "radar_identity")
         return _entities(d.get("pass_output", {}))
 
-    @pytest.mark.xfail(
-        reason="Step 3: deterministic radar role inference must be tightened. "
-               "Currently Spoon Rest is FIRE_CONTROL because the 'MISSILE GUIDANCE' "
-               "context override at evidence_gate.py:427 fires when guidance "
-               "language is within 80 chars of the entity name."
-    )
     def test_spoon_rest_is_search(self, entities):
         e = _find_entity(entities, "Spoon Rest")
         assert e is not None, "Spoon Rest must be extracted"
@@ -91,7 +102,6 @@ class TestSA2RadarIdentity:
             f"got {e.get('emitter_function')!r}"
         )
 
-    @pytest.mark.xfail(reason="Step 3: HEIGHT_FINDER inference not implemented yet")
     def test_side_net_is_height_finder(self, entities):
         e = _find_entity(entities, "Side Net")
         assert e is not None, "Side Net must be extracted"
@@ -100,19 +110,16 @@ class TestSA2RadarIdentity:
             f"got {e.get('emitter_function')!r}"
         )
 
-    @pytest.mark.xfail(reason="Step 3: HEIGHT_FINDER inference not implemented yet")
     def test_konus_is_height_finder(self, entities):
         e = _find_entity(entities, "Konus")
         assert e is not None, "Konus (PRV-10) must be extracted"
         assert e.get("emitter_function") == "HEIGHT_FINDER"
 
-    @pytest.mark.xfail(reason="Step 3: HEIGHT_FINDER inference not implemented yet")
     def test_vershina_is_height_finder(self, entities):
         e = _find_entity(entities, "Vershina")
         assert e is not None, "Vershina (PRV-11) must be extracted"
         assert e.get("emitter_function") == "HEIGHT_FINDER"
 
-    @pytest.mark.xfail(reason="Step 7: precision filter for non-radar entities not in place")
     def test_no_power_generator_classified_as_radar(self, entities):
         for blacklisted in ("5E93", "ESP-90"):
             assert _find_entity(entities, blacklisted) is None, (
@@ -120,7 +127,6 @@ class TestSA2RadarIdentity:
                 f"must NOT be classified as a radar"
             )
 
-    @pytest.mark.xfail(reason="Step 7: precision filter not in place")
     def test_no_decon_van_classified_as_radar(self, entities):
         for blacklisted in ("5L22", "5L22A"):
             assert _find_entity(entities, blacklisted) is None, (
@@ -128,13 +134,11 @@ class TestSA2RadarIdentity:
                 f"must NOT be classified as a radar"
             )
 
-    @pytest.mark.xfail(reason="Step 7: precision filter not in place")
     def test_no_training_emulator_classified_as_radar(self, entities):
         assert _find_entity(entities, "AKKORD") is None, (
             "AKKORD is a Training Emulator — must NOT be classified as a radar"
         )
 
-    @pytest.mark.xfail(reason="Step 7: precision filter not in place")
     def test_no_radio_relay_classified_as_radar(self, entities):
         assert _find_entity(entities, "Tsikloida") is None, (
             "Tsikloida is a Radio Relay van — must NOT be classified as a radar"
@@ -203,36 +207,96 @@ class TestSA2MissileIdentity:
         missing = [name for name in canonical if _find_entity(entities, name) is None]
         assert not missing, f"Canonical SA-2 missile variants missing: {missing}"
 
-    @pytest.mark.xfail(
-        reason="Step 6: Industry/Military/NATO triplet deterministic alias "
-               "expansion not implemented yet."
-    )
     def test_13d_has_military_and_nato_aliases(self, entities):
+        """13D — Table 0 column 3: Industry=S-75, Military=S-75, NATO=SA-2C."""
         e = _find_entity(entities, "13D")
         assert e is not None
-        # 13D Industry = 13D, Military = S-75, NATO = SA-2C
-        aliases = {
-            e.get("nomenclature"),
-            e.get("name"),
-            e.get("dieqp"),
-        }
-        assert "S-75" in aliases, f"13D missing Military alias 'S-75' in {aliases}"
-        assert "SA-2C" in aliases, f"13D missing NATO alias 'SA-2C' in {aliases}"
+        aliases = _all_aliases(e)
+        assert "S-75" in aliases, f"13D missing Military 'S-75' in {aliases}"
+        assert "SA-2C" in aliases, f"13D missing NATO 'SA-2C' in {aliases}"
 
-    @pytest.mark.xfail(
-        reason="Step 6: Industry/Military/NATO triplet not yet expanded for 20D"
-    )
     def test_20d_has_military_and_nato_aliases(self, entities):
+        """20D — Table 0 column 7: Industry=S-75V, Military=S-75M, NATO=SA-2C.
+        (The previous test docstring claimed NATO=SA-2D but the source
+        table column for 20D actually shows SA-2C.)"""
         e = _find_entity(entities, "20D")
         assert e is not None
-        # 20D Industry = 20D, Military = S-75M, NATO = SA-2D
-        aliases = {
-            e.get("nomenclature"),
-            e.get("name"),
-            e.get("dieqp"),
-        }
+        aliases = _all_aliases(e)
         assert "S-75M" in aliases, f"20D missing Military 'S-75M' in {aliases}"
-        assert "SA-2D" in aliases, f"20D missing NATO 'SA-2D' in {aliases}"
+        assert "SA-2C" in aliases, f"20D missing NATO 'SA-2C' in {aliases}"
+
+    # ===== "Lost variant" diagnosis (#5 in next-steps roadmap) =====
+    #
+    # The earlier integrated run showed SA-25, SA-2C, SA-2E in v9 but
+    # absent today. Source-corpus diagnosis:
+    #   * SA-25 — appears only in prose text 91, in the phrase "the
+    #     earlier SA-25/S-25 / SA-1 Guild" (predecessor reference, NOT an
+    #     SA-2 family variant). v9's emission was LLM noise; today's
+    #     absence is the correct behavior.
+    #   * SA-2C / SA-2E — appear ONLY in Table 0 row 2 (NATO Designation
+    #     row), as aliases of specific missile rounds (SA-2C → 13D /
+    #     13DM / 20D / 20DP ; SA-2E → 15D). They are NATO aliases of
+    #     existing round entities, not independent missiles. v9 emitted
+    #     them as separate top-level entities (duplication); the proper
+    #     representation is as aliases on the round entities, which
+    #     Step 6 (deterministic designation alias expansion) will do.
+
+    def test_sa25_is_not_a_separate_missile_entity(self, entities):
+        """SA-25 (the predecessor / SA-1 Guild family) appears only in a
+        predecessor-context prose mention and must NOT be emitted as a
+        separate SA-2 missile_identity entity."""
+        e = _find_entity(entities, "SA-25")
+        assert e is None, (
+            "SA-25 is a predecessor system reference (SA-1 Guild / S-25), "
+            "not an SA-2 variant. Should not be a separate missile entity."
+        )
+
+    def test_15d_has_sa2e_nato_alias(self, entities):
+        """SA-2E appears once in Table 0 row 2, column 11 — mapped to
+        round 15D. Step 6 alias expansion attaches SA-2E to 15D."""
+        e = _find_entity(entities, "15D")
+        assert e is not None
+        aliases = _all_aliases(e)
+        assert "SA-2E" in aliases, f"15D missing NATO 'SA-2E' in {aliases}"
+
+    def test_sa2c_aliases_attached_to_each_round(self, entities):
+        """SA-2C appears in Table 0 NATO row in 3 columns: 13D (col 3),
+        20D (col 7), 20DP (col 8). Step 6 attaches SA-2C to ALL of these
+        round entities. (13DM is column 4 → NATO=SA-2D, not SA-2C.)"""
+        rounds_with_sa2c = ("13D", "20D", "20DP")
+        missing = []
+        for r in rounds_with_sa2c:
+            e = _find_entity(entities, r)
+            if e is None:
+                missing.append(f"{r}: entity absent")
+                continue
+            aliases = _all_aliases(e)
+            if "SA-2C" not in aliases:
+                missing.append(f"{r}: missing NATO 'SA-2C' (saw {aliases})")
+        assert not missing, f"SA-2C alias expansion incomplete: {missing}"
+
+    def test_sa2d_aliases_attached_to_correct_rounds(self, entities):
+        """SA-2D appears in 5 NATO-row columns: 13DM, 13DA, 13DAM, 20DSU,
+        5Ya23. Step 6 must attach SA-2D to all of them."""
+        rounds_with_sa2d = ("13DM", "13DA", "13DAM", "20DSU", "5Ya23")
+        missing = []
+        for r in rounds_with_sa2d:
+            e = _find_entity(entities, r)
+            if e is None:
+                missing.append(f"{r}: entity absent")
+                continue
+            aliases = _all_aliases(e)
+            if "SA-2D" not in aliases:
+                missing.append(f"{r}: missing NATO 'SA-2D' (saw {aliases})")
+        assert not missing, f"SA-2D alias expansion incomplete: {missing}"
+
+    def test_5ya23_has_no_separate_sa2_emission(self, entities):
+        """5Ya23 has NATO designation SA-2D (Table 0 row 2 col 10),
+        which today's run captures as a separate SA-2D entity. Document
+        that the alias relationship exists — the round entity itself
+        must be present even if the alias isn't yet on it."""
+        e = _find_entity(entities, "5Ya23")
+        assert e is not None, "5Ya23 round entity must be present"
 
 
 # ============================================================================
@@ -316,11 +380,6 @@ class TestSA2SystemLinks:
         count = unresolved.get("count") if isinstance(unresolved, dict) else None
         assert count == 0, f"Expected unresolved=0, got {count}"
 
-    @pytest.mark.xfail(
-        reason="Step 2+3: role_aware_cues skipped events should be 0 after "
-               "properties propagation lands. Currently 3 skipped events because "
-               "emitter_function isn't reaching system_links postprocess."
-    )
     def test_role_aware_cues_has_no_missing_role(self, doc):
         sp = (doc.get("diagnostics") or {}).get("service_postprocess") or {}
         ra = sp.get("role_aware_cues") or {}
@@ -344,10 +403,6 @@ class TestDvinaMissileIdentity:
         e = _find_entity(entities, "S-75")
         assert e is not None, "S-75 (primary subject of Dvina doc) must be extracted"
 
-    @pytest.mark.xfail(
-        reason="Step 6: deterministic alias expansion needed — Dvina prose "
-               "explicitly says 'NATO reporting name SA-2 Guideline'"
-    )
     def test_s75_has_sa2_guideline_alias(self, entities):
         e = _find_entity(entities, "S-75")
         assert e is not None
@@ -363,10 +418,6 @@ class TestDvinaMissileKinematics:
         d = _load_pass(DVINA_DOC_ID, "missile_kinematics")
         return _entities(d.get("pass_output", {}))
 
-    @pytest.mark.xfail(
-        reason="Step 4+5: spec fact overlay + imperial unit support not in place. "
-               "Dvina explicitly states 'Max/min effective range: 18 miles/5 miles'."
-    )
     def test_max_intercept_km_populated(self, entities):
         e = _find_entity(entities, "S-75")
         assert e is not None
@@ -376,9 +427,6 @@ class TestDvinaMissileKinematics:
             f"max_intercept_km should be ~29 km (from '18 miles'), got {v}"
         )
 
-    @pytest.mark.xfail(
-        reason="Step 4+5: spec overlay needed for 'Max/min effective range: 18 miles/5 miles'"
-    )
     def test_min_intercept_km_populated(self, entities):
         e = _find_entity(entities, "S-75")
         assert e is not None
@@ -388,10 +436,6 @@ class TestDvinaMissileKinematics:
             f"min_intercept_km should be ~8 km (from '5 miles'), got {v}"
         )
 
-    @pytest.mark.xfail(
-        reason="Step 4+5: 'Max/min effective altitude: 82,000 feet/1,500 feet' "
-               "imperial values"
-    )
     def test_max_altitude_km_populated(self, entities):
         e = _find_entity(entities, "S-75")
         assert e is not None
@@ -401,7 +445,6 @@ class TestDvinaMissileKinematics:
             f"max_altitude_km should be ~25 km (from '82,000 feet'), got {v}"
         )
 
-    @pytest.mark.xfail(reason="Step 4+5: min altitude '1,500 feet' imperial")
     def test_min_altitude_km_populated(self, entities):
         e = _find_entity(entities, "S-75")
         assert e is not None
@@ -411,10 +454,6 @@ class TestDvinaMissileKinematics:
             f"min_altitude_km should be ~0.46 km (from '1,500 feet'), got {v}"
         )
 
-    @pytest.mark.xfail(
-        reason="Step 5: max_launch_angle_deg hard-clear at evidence_gate.py:1014 "
-               "still active. Source: 'launched the missile at 60 degrees'."
-    )
     def test_max_launch_angle_deg_populated(self, entities):
         e = _find_entity(entities, "S-75")
         assert e is not None

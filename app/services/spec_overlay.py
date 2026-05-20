@@ -72,7 +72,16 @@ _KG_PER_LB = 0.453592
 # "range" prefix matching.
 # ---------------------------------------------------------------------------
 _LABEL_CANONICALS: tuple[tuple[str, str], ...] = (
-    # paired/extreme labels (parsed via paired-syntax handler)
+    # paired/extreme labels (parsed via paired-syntax handler).
+    # Longest/most-specific forms come first so the second-pass
+    # `endswith(prefix)` fallback in _canonicalize_label cannot match
+    # the trailing "<x> effective range" half of a long paired phrase
+    # like "Maximum/minimum effective range" and return a single-side
+    # canonical (which would emit one fact instead of a max/min pair).
+    ("maximum/minimum effective range", "_paired_range"),
+    ("maximum/minimum effective altitude", "_paired_altitude"),
+    ("maximum/minimum range", "_paired_range"),
+    ("maximum/minimum altitude", "_paired_altitude"),
     ("max/min effective range", "_paired_range"),
     ("max/min effective altitude", "_paired_altitude"),
     ("max/min range", "_paired_range"),

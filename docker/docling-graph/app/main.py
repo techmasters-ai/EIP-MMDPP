@@ -1530,6 +1530,15 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             dict(table_overlay_obj.alias_map_by_entity_type)
             if table_overlay_obj is not None else None
         )
+        # Step 6: thread normalized tables into the missile postprocess
+        # so the designation-alias overlay can attach Industry/Military/
+        # NATO designations onto the canonical round entities.
+        _normalized_tables_for_postprocess: list[Any] | None = None
+        try:
+            from app.services.table_normalization.normalize import normalize_tables as _nt
+            _normalized_tables_for_postprocess = list(_nt(body.docling_document_json))
+        except Exception:
+            _normalized_tables_for_postprocess = None
         pass_output, postprocess_stats = _apply_bundle_postprocessing(
             body.bundle_key,
             body.pass_name,
@@ -1538,6 +1547,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
             body.upstream_entities,
             _ceh,
             alias_map_by_entity_type=_alias_map_by_entity_type,
+            normalized_tables=_normalized_tables_for_postprocess,
         )
         filtered_counts = _summarize_pass_output(pass_output, template_cls)
         filtered_identity_examples = _collect_entity_identity_examples(pass_output, template_cls)

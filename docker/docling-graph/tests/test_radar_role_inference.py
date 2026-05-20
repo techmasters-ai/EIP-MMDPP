@@ -150,3 +150,72 @@ def test_non_string_input_returns_none():
     """Defensive: non-string system_name returns None."""
     assert _infer(None, "some evidence") is None
     assert _infer(42, "some evidence") is None
+
+
+# ===== Post-entity marker beats pre-entity marker =====
+#
+# Generic principle: a role label that appears AFTER an entity binds
+# to that entity (or its slash-group), while a role label that appears
+# BEFORE it belongs to whichever entity preceded the marker. Nearest-
+# absolute-distance can wrongly bind a preceding marker to the next
+# entity (the Konus production case below). Post markers must win over
+# pre markers in the same window.
+
+
+def test_konus_in_full_radar_paragraph_inherits_from_slash_group():
+    """Production SA-2 case: the chunk text concatenates multiple radar
+    entries with their role labels. ACQUISITION RADAR appears BEFORE
+    Konus (binding to Spoon Rest), and HEIGHTFINDING RADARS appears
+    AFTER Konus (binding to the Konus/Vershina/Side Net slash-group).
+    Konus must take the post marker, not the pre one."""
+    evidence = (
+        "P-18-2/P-18M SPOON REST D/E ACQUISITION RADAR PRV-10 KONUS / "
+        "PRV-11 VERSHINA / SIDE NET HEIGHTFINDING RADARS RD-75 AMAZONKA"
+    )
+    assert _infer("Spoon Rest", evidence) == "SEARCH"
+    assert _infer("Konus", evidence) == "HEIGHT_FINDER"
+    assert _infer("PRV-10 Konus", evidence) == "HEIGHT_FINDER"
+    assert _infer("Vershina", evidence) == "HEIGHT_FINDER"
+    assert _infer("Side Net", evidence) == "HEIGHT_FINDER"
+
+
+def test_post_marker_beats_closer_pre_marker():
+    """Generic: even when the pre-entity marker is closer in absolute
+    distance, the post marker wins because pre markers belong to the
+    prior entity in the sequence."""
+    # ACQUISITION RADAR is 5 chars before Konus; HEIGHTFINDING is 30+
+    # chars after. Pre is closer, but post must win.
+    evidence = "ALPHA ACQUISITION RADAR KONUS / BRAVO / CHARLIE HEIGHTFINDING RADARS"
+    assert _infer("Konus", evidence) == "HEIGHT_FINDER"
+
+
+def test_pre_marker_used_as_fallback_when_no_post_marker():
+    """When NO marker appears after the entity but a pre marker is in
+    the window, the pre marker is used as a fallback (some doc layouts
+    do put the role label first)."""
+    evidence = "SEARCH RADAR: P-15 FLAT FACE"
+    assert _infer("P-15 Flat Face", evidence) == "SEARCH"
+
+
+def test_spoon_rest_not_misled_by_distant_heightfinder_in_window():
+    """Regression guard for the production paragraph: SPOON REST has
+    ACQUISITION RADAR as the IMMEDIATELY following post marker, and
+    HEIGHTFINDING RADARS appears further along (still within 80-char
+    window). The closer post marker must win → SEARCH."""
+    evidence = (
+        "P-18-2/P-18M SPOON REST D/E ACQUISITION RADAR PRV-10 KONUS / "
+        "PRV-11 VERSHINA / SIDE NET HEIGHTFINDING RADARS"
+    )
+    assert _infer("Spoon Rest", evidence) == "SEARCH"
+    assert _infer("Spoon Rest D/E", evidence) == "SEARCH"
+
+
+def test_fan_song_still_fire_control_with_other_radars_listed_after():
+    """Regression guard: Fan Song's role label is ENGAGEMENT RADAR (Phase
+    1 direct-concat). Listing other radars with their role labels after
+    Fan Song must not affect Fan Song's role."""
+    evidence = (
+        "FAN SONG ENGAGEMENT RADAR P-18-2/P-18M SPOON REST D/E "
+        "ACQUISITION RADAR PRV-10 KONUS / SIDE NET HEIGHTFINDING RADARS"
+    )
+    assert _infer("Fan Song", evidence) == "FIRE_CONTROL"

@@ -3,18 +3,18 @@
     "runs": [
       {
         "pass_name": "radar_identity",
-        "entity_count": 29,
-        "avg_fill_num": 1.86,
+        "entity_count": 23,
+        "avg_fill_num": 2.09,
         "schema_size": 11,
-        "fields_filled_total": 54,
-        "fields_total": 319,
+        "fields_filled_total": 48,
+        "fields_total": 253,
         "json_fail": false,
         "relationships": 0,
-        "field_provenance_count": 78,
+        "field_provenance_count": 70,
         "relationship_provenance_count": 3,
-        "node_count": 31,
-        "edge_count": 30,
-        "elapsed_s": 4939.3
+        "node_count": 24,
+        "edge_count": 23,
+        "elapsed_s": 3283.3
       }
     ]
   },
@@ -22,18 +22,18 @@
     "runs": [
       {
         "pass_name": "radar_power_rf",
-        "entity_count": 37,
-        "avg_fill_num": 1.57,
+        "entity_count": 34,
+        "avg_fill_num": 1.62,
         "schema_size": 5,
-        "fields_filled_total": 58,
-        "fields_total": 169,
+        "fields_filled_total": 55,
+        "fields_total": 157,
         "json_fail": false,
         "relationships": 0,
         "field_provenance_count": 0,
-        "relationship_provenance_count": 4,
-        "node_count": 38,
-        "edge_count": 37,
-        "elapsed_s": 1896.6
+        "relationship_provenance_count": 3,
+        "node_count": 35,
+        "edge_count": 34,
+        "elapsed_s": 1632.2
       }
     ]
   },
@@ -41,18 +41,18 @@
     "runs": [
       {
         "pass_name": "missile_identity",
-        "entity_count": 42,
-        "avg_fill_num": 2.43,
+        "entity_count": 44,
+        "avg_fill_num": 2.48,
         "schema_size": 10,
-        "fields_filled_total": 102,
-        "fields_total": 420,
+        "fields_filled_total": 109,
+        "fields_total": 440,
         "json_fail": false,
         "relationships": 0,
-        "field_provenance_count": 1357,
-        "relationship_provenance_count": 2,
-        "node_count": 43,
-        "edge_count": 42,
-        "elapsed_s": 7442.7
+        "field_provenance_count": 960,
+        "relationship_provenance_count": 1,
+        "node_count": 45,
+        "edge_count": 44,
+        "elapsed_s": 6989.9
       }
     ]
   },
@@ -60,18 +60,18 @@
     "runs": [
       {
         "pass_name": "missile_kinematics",
-        "entity_count": 38,
-        "avg_fill_num": 2.03,
+        "entity_count": 44,
+        "avg_fill_num": 1.98,
         "schema_size": 6,
-        "fields_filled_total": 77,
-        "fields_total": 228,
+        "fields_filled_total": 87,
+        "fields_total": 264,
         "json_fail": false,
         "relationships": 0,
-        "field_provenance_count": 1557,
-        "relationship_provenance_count": 2,
-        "node_count": 39,
-        "edge_count": 38,
-        "elapsed_s": 4360.9
+        "field_provenance_count": 1730,
+        "relationship_provenance_count": 6,
+        "node_count": 45,
+        "edge_count": 44,
+        "elapsed_s": 4327.3
       }
     ]
   },
@@ -79,18 +79,18 @@
     "runs": [
       {
         "pass_name": "system_links",
-        "entity_count": 28,
+        "entity_count": 29,
         "avg_fill_num": 3.0,
         "schema_size": 3,
-        "fields_filled_total": 84,
-        "fields_total": 84,
+        "fields_filled_total": 87,
+        "fields_total": 87,
         "json_fail": false,
-        "relationships": 28,
+        "relationships": 29,
         "field_provenance_count": 0,
         "relationship_provenance_count": 0,
         "node_count": 1,
-        "edge_count": 28,
-        "elapsed_s": 758.8
+        "edge_count": 29,
+        "elapsed_s": 787.8
       }
     ]
   }

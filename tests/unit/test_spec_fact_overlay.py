@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.services.spec_overlay import (
+    parse_spec_facts_from_evidence_text,
     parse_spec_facts_from_texts,
     SpecFact,
 )
@@ -176,3 +177,86 @@ class TestSpecFactIntegrity:
         for f in facts:
             if f.label_canonical in ("max_range", "min_range"):
                 assert "miles" in f.raw_phrase
+
+
+# ===== Long-form "Maximum/minimum" label (Dvina) =====
+#
+# The Dvina source uses the spelled-out form `Maximum/minimum effective
+# range:` / `Maximum/minimum effective altitude:` rather than the
+# abbreviated `Max/min ...`. Both must canonicalize to the same paired
+# emitters, with the FIRST value attached to the max field and the
+# SECOND to the min field.
+
+class TestLongFormPairedLabel:
+    def test_long_form_range_bullet_pair(self):
+        facts = parse_spec_facts_from_texts(_texts(
+            "Maximum/minimum effective range:",
+            "18 miles/5 miles",
+        ))
+        max_f = next((x for x in facts if x.label_canonical == "max_range"), None)
+        min_f = next((x for x in facts if x.label_canonical == "min_range"), None)
+        assert max_f is not None
+        assert min_f is not None
+        assert abs(max_f.value_metric_km - 28.97) < 0.5
+        assert abs(min_f.value_metric_km - 8.05) < 0.5
+
+    def test_long_form_altitude_bullet_pair(self):
+        facts = parse_spec_facts_from_texts(_texts(
+            "Maximum/minimum effective altitude:",
+            "82,000 feet/1,500 feet",
+        ))
+        max_f = next((x for x in facts if x.label_canonical == "max_altitude"), None)
+        min_f = next((x for x in facts if x.label_canonical == "min_altitude"), None)
+        assert max_f is not None
+        assert min_f is not None
+        assert abs(max_f.value_metric_km - 24.99) < 0.1
+        assert abs(min_f.value_metric_km - 0.4572) < 0.05
+
+    def test_long_form_range_single_line(self):
+        facts = parse_spec_facts_from_texts(_texts(
+            "Maximum/minimum effective range: 18 miles/5 miles",
+        ))
+        labels = {f.label_canonical for f in facts}
+        assert "max_range" in labels
+        assert "min_range" in labels
+
+
+# ===== Production inline-evidence path =====
+#
+# In production, `normalize_evidence_text` joins multiple chunks into one
+# uppercased blob. The inline scanner must still recognize both short and
+# long label forms and route values to the correct max/min fields.
+
+class TestInlineEvidencePairedLabels:
+    def test_inline_max_min_long_form_range(self):
+        ev = (
+            "MAXIMUM/MINIMUM EFFECTIVE RANGE: 18 MILES/5 MILES "
+            "MAXIMUM/MINIMUM EFFECTIVE ALTITUDE: 82,000 FEET/1,500 FEET"
+        )
+        facts = parse_spec_facts_from_evidence_text(ev)
+        labels = [(f.label_canonical, f.value_metric_km) for f in facts]
+        max_r = next((km for lbl, km in labels if lbl == "max_range"), None)
+        min_r = next((km for lbl, km in labels if lbl == "min_range"), None)
+        max_a = next((km for lbl, km in labels if lbl == "max_altitude"), None)
+        min_a = next((km for lbl, km in labels if lbl == "min_altitude"), None)
+        assert max_r is not None and abs(max_r - 28.97) < 0.5
+        assert min_r is not None and abs(min_r - 8.05) < 0.5
+        assert max_a is not None and abs(max_a - 24.99) < 0.1
+        assert min_a is not None and abs(min_a - 0.4572) < 0.05
+
+    def test_inline_short_form_range_still_works(self):
+        """Regression guard — the existing abbreviated form must keep working."""
+        ev = "MAX/MIN EFFECTIVE RANGE: 18 MILES/5 MILES"
+        facts = parse_spec_facts_from_evidence_text(ev)
+        labels = {f.label_canonical for f in facts}
+        assert "max_range" in labels
+        assert "min_range" in labels
+
+    def test_inline_first_value_is_max(self):
+        """The first value in the pair MUST become max_*, the second min_*."""
+        ev = "MAXIMUM/MINIMUM EFFECTIVE RANGE: 18 MILES/5 MILES"
+        facts = parse_spec_facts_from_evidence_text(ev)
+        max_f = next((f for f in facts if f.label_canonical == "max_range"), None)
+        min_f = next((f for f in facts if f.label_canonical == "min_range"), None)
+        assert max_f is not None and max_f.value_raw == "18"
+        assert min_f is not None and min_f.value_raw == "5"
