@@ -217,6 +217,26 @@ async def lifespan(app: FastAPI):
     validate_token_invariants()
 
     app.state.extraction_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+    # C1 (walltime-reduction Phase 1): emit a startup line summarizing the
+    # effective LLM in-flight budget so an operator can see at a glance
+    # whether the three concurrency knobs agree with the Ollama slot count.
+    # Warn-only — enforcement lives in ollama_clients.py via BoundedSemaphore.
+    try:
+        from app._concurrency_budget import emit_concurrency_budget_warning
+        _dg_settings_for_budget = DoclingGraphSettings()
+        emit_concurrency_budget_warning(
+            max_concurrent_extractions=MAX_CONCURRENT,
+            parallel_workers=_dg_settings_for_budget.docling_graph_parallel_workers,
+            llm_max_in_flight=_dg_settings_for_budget.docling_graph_llm_max_in_flight,
+        )
+    except Exception as _budget_exc:
+        # Defensive: a startup observation must never block the service.
+        logger.warning(
+            "concurrency-budget warning emit failed: %s (continuing).",
+            _budget_exc,
+        )
+
     yield
     logger.info("Shutting down")
 
