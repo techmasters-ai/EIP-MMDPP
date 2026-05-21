@@ -7057,7 +7057,13 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
                 db.commit()
 
 
-def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) -> bool:
+def _claim_and_dispatch_pass(
+    db,
+    document_id: str,
+    run_id: str,
+    pass_name: str,
+    queued_counter: dict[str, int] | None = None,
+) -> bool:
     """Claim a phase slot and dispatch the corresponding Celery task.
 
     Used by both the initial dispatcher (Task 8) and the follow-up dispatch in
@@ -7065,9 +7071,14 @@ def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) 
     If the claim fails (another worker won), returns without dispatching.
 
     Returns True when dispatched, False when the claim race was lost to another
-    worker.  The dispatcher (derive_ontology_graph) uses this return value for
-    accurate queued-count tracking.  The advance-phase caller does not — a race
-    loss there is not a problem since the winning worker will dispatch.
+    worker.  The dispatcher (derive_ontology_graph) passes a mutable
+    ``queued_counter`` dict; the counter is incremented immediately after
+    ``.delay()`` returns and BEFORE the bookkeeping writes.  This ensures that
+    if bookkeeping raises the caller's except handler still sees the correct
+    queued count and does NOT terminalize the pipeline_run (Fix 1, C1.5 review).
+    The advance-phase callers (``_try_advance_phase``) pass no counter
+    (default None) — a race loss there is not a problem since the winning worker
+    will dispatch.
 
     A crash between claim and mark_phase_dispatched leaves the phase in
     'claimed' state — the reconciler (Task 9) will reclaim it after the
@@ -7077,6 +7088,10 @@ def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) 
     if not claim_phase(db, run_id, phase_key):
         return False  # another worker won the claim
     async_result = derive_ontology_graph_pass.delay(document_id, run_id, pass_name)
+    # Increment the counter BEFORE bookkeeping so a bookkeeping failure does not
+    # leave the caller thinking zero passes were queued (Fix 1).
+    if queued_counter is not None:
+        queued_counter["n"] = int(queued_counter.get("n", 0)) + 1
     mark_phase_dispatched(db, run_id, phase_key, async_result.id)
     db.commit()
     return True
@@ -8025,17 +8040,41 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             markdown_chars = _get_markdown_chars(db, run_id, document_id)
         else:
             markdown_chars = -1  # not consulted
-        if (
+        _is_empty_anchor_skip = (
             anchors_metrics
             and text_blocks == 0 and tables == 0 and figures == 0
             and markdown_chars < 5000
-        ):
+        )
+        if _is_empty_anchor_skip:
             logger.warning(
                 "derive_ontology_graph: skipping extraction dispatch for %s "
                 "(text_blocks=0, tables=0, figures=0, markdown=%d chars) — "
                 "synthesizing required pass StageRuns and dispatching merge",
                 document_id, markdown_chars,
             )
+
+        db.commit()
+    finally:
+        db.close()
+
+    # C1.5: track how many per-pass tasks are queued before any exception so the
+    # except handler can decide whether to terminalize the pipeline_run.
+    # Pre-Only semantic: terminalize pipeline_run=FAILED only when _passes_queued==0
+    # (no partial work to preserve).  If ≥1 passes were already queued, leave
+    # pipeline_run in PROCESSING so queued passes can complete; the reconciler
+    # will terminalize based on their outcomes.
+    # Background: is_run_cancelled() (run_phase_dispatch.py:438) treats
+    # status='FAILED' as cancelled — unilaterally setting pipeline_run=FAILED
+    # after any pass has been queued would cause those pass tasks to bail at their
+    # next cancel-check, discarding partial work.
+    #
+    # Fix 2 (C1.5 review): the empty-anchor skip path is now INSIDE this
+    # try/except so that any failure in load_bundle_manifest, _write_stage_run,
+    # or the COMPLETE UPDATE properly marks the dispatcher stage_run FAILED and
+    # terminalizes the pipeline_run (pre-queue semantic: _passes_queued==0).
+    queued_counter: dict[str, int] = {"n": 0}
+    try:
+        if _is_empty_anchor_skip:
             # Required passes per the manifest gate. Each needs ONE StageRun
             # row whose execution_status='SKIPPED' and skip_reason is
             # authorized so the gate accepts it.
@@ -8060,25 +8099,29 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                     counts={"metrics": skip_metrics},
                     error=None,
                 )
-            db.execute(
-                sa.text(
-                    "UPDATE ingest.stage_runs "
-                    "SET status = 'COMPLETE', execution_status = 'COMPLETE', "
-                    "    finished_at = NOW(), "
-                    "    metrics = COALESCE(metrics, '{}'::jsonb) || CAST(:metrics AS jsonb) "
-                    "WHERE pipeline_run_id = :run_id "
-                    "  AND stage_name = 'derive_ontology_graph' "
-                    "  AND pass_name IS NULL"
-                ),
-                {
-                    "run_id": str(run_id),
-                    "metrics": json.dumps({
-                        "skipped": True,
-                        "reason": "empty_anchor_set",
-                    }),
-                },
-            )
-            db.commit()
+            db3 = _get_db()
+            try:
+                db3.execute(
+                    sa.text(
+                        "UPDATE ingest.stage_runs "
+                        "SET status = 'COMPLETE', execution_status = 'COMPLETE', "
+                        "    finished_at = NOW(), "
+                        "    metrics = COALESCE(metrics, '{}'::jsonb) || CAST(:metrics AS jsonb) "
+                        "WHERE pipeline_run_id = :run_id "
+                        "  AND stage_name = 'derive_ontology_graph' "
+                        "  AND pass_name IS NULL"
+                    ),
+                    {
+                        "run_id": str(run_id),
+                        "metrics": json.dumps({
+                            "skipped": True,
+                            "reason": "empty_anchor_set",
+                        }),
+                    },
+                )
+                db3.commit()
+            finally:
+                db3.close()
             derive_ontology_graph_merge.si(document_id, str(run_id)).apply_async()
             return {
                 "stage": "derive_ontology_graph",
@@ -8087,39 +8130,33 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                 "required_passes_synthesized": len(required_passes),
             }
 
-        db.commit()
-    finally:
-        db.close()
-
-    # C1.5: track how many per-pass tasks are queued before any exception so the
-    # except handler can decide whether to terminalize the pipeline_run.
-    # Pre-Only semantic: terminalize pipeline_run=FAILED only when _passes_queued==0
-    # (no partial work to preserve).  If ≥1 passes were already queued, leave
-    # pipeline_run in PROCESSING so queued passes can complete; the reconciler
-    # will terminalize based on their outcomes.
-    # Background: is_run_cancelled() (run_phase_dispatch.py:438) treats
-    # status='FAILED' as cancelled — unilaterally setting pipeline_run=FAILED
-    # after any pass has been queued would cause those pass tasks to bail at their
-    # next cancel-check, discarding partial work.
-    _passes_queued = 0
-    try:
         manifest = load_bundle_manifest(bundle_key)
         entity_passes = [p.name for p in manifest.passes if not p.depends_on]
 
         # Second session: _claim_and_dispatch_pass commits phase records
         # independently. Using a single session would interleave the RUNNING
         # StageRun commit with phase claim commits and risk dirty reads.
+        # Fix 1 (C1.5 review): queued_counter["n"] is incremented by
+        # _claim_and_dispatch_pass immediately after .delay() returns and
+        # BEFORE the bookkeeping writes.  Reading from the counter (not from a
+        # return-value-driven local) ensures that a bookkeeping failure still
+        # reports the correct queued count in the except handler below.
         db2 = _get_db()
         try:
             for pass_name in entity_passes[: settings.pass_concurrency_per_document]:
-                if _claim_and_dispatch_pass(db2, document_id, str(run_id), pass_name):
-                    _passes_queued += 1
+                _claim_and_dispatch_pass(
+                    db2, document_id, str(run_id), pass_name,
+                    queued_counter=queued_counter,
+                )
         finally:
             db2.close()
 
     except Exception as exc:
         # Mark the dispatcher summary stage_run FAILED so the reconciler and
         # status API see a terminal row instead of a forever-RUNNING ghost.
+        # Fix 1: read _passes_queued from queued_counter["n"], NOT from the
+        # (now-removed) return-value-driven local counter.
+        _passes_queued = queued_counter["n"]
         err_msg = (
             f"dispatcher failed after queuing {_passes_queued} pass(es): {exc!r}"
         )
@@ -8165,7 +8202,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     return {
         "stage": "derive_ontology_graph",
         "status": "dispatched",
-        "entity_passes_dispatched": _passes_queued,
+        "entity_passes_dispatched": queued_counter["n"],
     }
 
 

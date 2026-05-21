@@ -212,7 +212,13 @@ class TestPostQueueFailure:
         """Execute the task body where the first n_success calls to
         _claim_and_dispatch_pass succeed (return True) and the (n_success+1)-th
         raises RuntimeError.  Returns (db_fail, delay_mock, terminalize_mock).
+
+        Fix 3: pass_concurrency_per_document is explicitly patched to 4 so the
+        loop attempts 3 passes (n_success=2 + one failing), making this test
+        ENV-INDEPENDENT (code default is 2, some envs resolve to 8).
         """
+        from app.workers import pipeline as _pipeline_mod
+
         run = _fake_run()
         db1 = _make_db_session(run)
         db2 = MagicMock()   # session for dispatch loop
@@ -227,13 +233,14 @@ class TestPostQueueFailure:
 
         dispatch_call_count = [0]
 
-        def fake_claim_and_dispatch(db, doc_id, run_id, pass_name):
+        def fake_claim_and_dispatch(db, doc_id, run_id, pass_name, queued_counter=None):
             dispatch_call_count[0] += 1
             if dispatch_call_count[0] > n_success:
                 raise RuntimeError(f"Simulated dispatch failure on pass {pass_name}")
             # Simulate a real dispatch by calling .delay() so we can count it
-            from app.workers import pipeline as _p
-            _p.derive_ontology_graph_pass.delay(doc_id, run_id, pass_name)
+            _pipeline_mod.derive_ontology_graph_pass.delay(doc_id, run_id, pass_name)
+            if queued_counter is not None:
+                queued_counter["n"] = int(queued_counter.get("n", 0)) + 1
             return True  # dispatched
 
         with patch("app.workers.pipeline._get_db", side_effect=lambda: next(db_iter)), \
@@ -241,7 +248,8 @@ class TestPostQueueFailure:
              patch("app.workers.pipeline._claim_and_dispatch_pass",
                    side_effect=fake_claim_and_dispatch), \
              patch("app.workers.pipeline._terminalize_doc_and_run") as mock_term, \
-             patch("app.workers.pipeline.derive_ontology_graph_pass.delay") as mock_delay:
+             patch("app.workers.pipeline.derive_ontology_graph_pass.delay") as mock_delay, \
+             patch.object(_pipeline_mod.settings, "pass_concurrency_per_document", 4):
             with pytest.raises(RuntimeError):
                 _invoke_raw(_make_task_self(), _DOC_ID, _RUN_ID)
 
@@ -297,4 +305,223 @@ class TestPostQueueFailure:
         assert found, (
             "error_message in the FAILED stage_run update should mention the "
             "queued count (e.g. '2 pass(es)'). Check db_fail.execute call_args_list."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 3 — Fix 1 regression: .delay() succeeds, mark_phase_dispatched raises
+#           queued_counter must be incremented BEFORE bookkeeping so that
+#           _passes_queued == 1 in the except handler (not 0).
+# ---------------------------------------------------------------------------
+
+class TestDelayBeforeBookkeepingFailure:
+    """.delay() published the task to Celery, then mark_phase_dispatched raised.
+
+    Before Fix 1 the outer loop only incremented _passes_queued AFTER
+    _claim_and_dispatch_pass returned True.  A raise inside
+    _claim_and_dispatch_pass left _passes_queued at 0 → Pre-Only gate
+    fired → pipeline_run=FAILED → queued task bailed.
+
+    After Fix 1 _passes_queued must equal queued_counter["n"]==1,
+    so _terminalize_doc_and_run is NOT called.
+    """
+
+    def _run_with_bookkeeping_failure(self):
+        """Execute the full task body where claim_phase succeeds, .delay()
+        succeeds, then mark_phase_dispatched raises on the FIRST pass.
+
+        Returns (db_fail, delay_mock, terminalize_mock).
+        """
+        from app.workers import pipeline as _pipeline_mod
+        from app.services.run_phase_dispatch import mark_phase_dispatched
+
+        run = _fake_run()
+        db1 = _make_db_session(run)
+        db2 = MagicMock()
+        db_fail = MagicMock()
+
+        db_sessions = [db1, db2, db_fail]
+        db_iter = iter(db_sessions)
+
+        manifest = _fake_manifest(
+            pass_names=("radar_identity", "missile_identity", "radar_power_rf")
+        )
+
+        # claim_phase always returns True (we win the claim).
+        # mark_phase_dispatched raises on first call.
+        bookkeeping_call_count = [0]
+
+        def fake_mark_phase_dispatched(db, run_id, phase_key, task_id):
+            bookkeeping_call_count[0] += 1
+            raise RuntimeError("Simulated mark_phase_dispatched failure")
+
+        with patch("app.workers.pipeline._get_db", side_effect=lambda: next(db_iter)), \
+             patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline.claim_phase", return_value=True), \
+             patch("app.workers.pipeline.mark_phase_dispatched",
+                   side_effect=fake_mark_phase_dispatched), \
+             patch("app.workers.pipeline._terminalize_doc_and_run") as mock_term, \
+             patch("app.workers.pipeline.derive_ontology_graph_pass.delay") as mock_delay, \
+             patch.object(_pipeline_mod.settings, "pass_concurrency_per_document", 4):
+            with pytest.raises(RuntimeError):
+                _invoke_raw(_make_task_self(), _DOC_ID, _RUN_ID)
+
+        return db_fail, mock_delay, mock_term
+
+    def test_pipeline_run_stays_processing_when_bookkeeping_fails(self):
+        """_terminalize_doc_and_run must NOT be called — 1 pass was already queued."""
+        _, _, mock_term = self._run_with_bookkeeping_failure()
+        assert mock_term.call_count == 0, (
+            f"_terminalize_doc_and_run was called {mock_term.call_count} time(s) "
+            "but should NOT be called: .delay() already published 1 task"
+        )
+
+    def test_delay_was_called_before_bookkeeping_failure(self):
+        """.delay() must have fired (task published to broker) before the raise."""
+        _, mock_delay, _ = self._run_with_bookkeeping_failure()
+        assert mock_delay.call_count >= 1, (
+            f"Expected at least 1 .delay() call before bookkeeping failure, "
+            f"got {mock_delay.call_count}"
+        )
+
+    def test_stage_run_written_failed_on_bookkeeping_failure(self):
+        """The except-handler DB session must write a FAILED stage_run row."""
+        db_fail, _, _ = self._run_with_bookkeeping_failure()
+        assert db_fail.execute.called, "No execute() called on the failure DB session"
+        all_sql = [
+            str(c.args[0]) for c in db_fail.execute.call_args_list if c.args
+        ]
+        assert any("FAILED" in sql for sql in all_sql), (
+            f"No SQL containing 'FAILED' found.\nCaptured: {all_sql}"
+        )
+
+    def test_error_message_names_1_queued_pass(self):
+        """The FAILED stage_run error_message must reference '1 pass' (not '0 pass')."""
+        db_fail, _, _ = self._run_with_bookkeeping_failure()
+        found = False
+        for c in db_fail.execute.call_args_list:
+            if len(c.args) >= 2:
+                params = c.args[1]
+                if isinstance(params, dict):
+                    err_msg = params.get("error_message", "")
+                    if "1 pass" in str(err_msg):
+                        found = True
+        assert found, (
+            "error_message should mention '1 pass' (the task was queued before "
+            "bookkeeping failed). Check db_fail.execute call_args_list."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — Fix 2 regression: empty-anchor skip path load_bundle_manifest raises
+#           dispatcher stage_run must be FAILED + pipeline_run FAILED + no merge
+# ---------------------------------------------------------------------------
+
+class TestEmptyAnchorSkipPathFailure:
+    """When the empty-anchor skip branch fails (load_bundle_manifest raises inside
+    the skip path), the dispatcher must:
+    (a) write the dispatcher summary stage_run as FAILED,
+    (b) terminalize the pipeline_run (call _terminalize_doc_and_run with FAILED),
+    (c) NOT dispatch derive_ontology_graph_merge.
+
+    Before Fix 2 the empty-anchor path ran OUTSIDE the C1.5 try/except, so
+    any failure there left the dispatcher stage_run stuck RUNNING.
+    """
+
+    def _run_with_empty_anchor_skip_failure(self, *, fail_on: str = "load_bundle_manifest"):
+        """Execute the task body with zero anchors so it hits the skip path,
+        then fail inside the skip path.
+
+        ``fail_on`` controls which call raises:
+          'load_bundle_manifest' — raises on the manifest load inside the skip block.
+          '_write_stage_run'     — raises during the per-pass SKIPPED row synthesis.
+
+        Returns (db_fail, merge_mock, terminalize_mock).
+        """
+        from app.workers import pipeline as _pipeline_mod
+        from app.services.ontology_templates import UnknownBundleError
+
+        run = _fake_run()
+        # Zero anchors → hits the skip branch.
+        db1 = _make_db_session(run, anchors_text_block_count=0)
+        db_fail = MagicMock()
+
+        db_sessions = [db1, db_fail]
+        db_iter = iter(db_sessions)
+
+        # First load_bundle_manifest call (inside the skip branch) should raise.
+        # If fail_on == '_write_stage_run' the manifest loads fine but
+        # _write_stage_run raises.
+        manifest = _fake_manifest(pass_names=("radar_identity",))
+
+        if fail_on == "load_bundle_manifest":
+            lbm_side_effect = UnknownBundleError("bundle not found in skip path")
+        else:
+            lbm_side_effect = manifest  # success; failure injected elsewhere
+
+        def fake_write_stage_run(**kwargs):
+            if fail_on == "_write_stage_run":
+                raise RuntimeError("Simulated _write_stage_run failure in skip path")
+
+        # _get_markdown_chars: return tiny value so the skip condition is met.
+        with patch("app.workers.pipeline._get_db", side_effect=lambda: next(db_iter)), \
+             patch("app.workers.pipeline._get_markdown_chars", return_value=100), \
+             patch("app.workers.pipeline.load_bundle_manifest",
+                   side_effect=[lbm_side_effect] if fail_on == "load_bundle_manifest"
+                   else [manifest, manifest]), \
+             patch("app.workers.pipeline._write_stage_run",
+                   side_effect=fake_write_stage_run if fail_on == "_write_stage_run"
+                   else MagicMock()), \
+             patch("app.workers.pipeline._terminalize_doc_and_run") as mock_term, \
+             patch("app.workers.pipeline.derive_ontology_graph_merge") as mock_merge, \
+             patch.object(_pipeline_mod.settings, "pass_concurrency_per_document", 4):
+            # The skip path raises; C1.5 handler should catch it.
+            with pytest.raises((UnknownBundleError, RuntimeError)):
+                _invoke_raw(_make_task_self(), _DOC_ID, _RUN_ID)
+
+        return db_fail, mock_merge, mock_term
+
+    def test_dispatcher_stage_run_failed_on_skip_path_bundle_error(self):
+        """(a) Dispatcher summary stage_run must be written as FAILED."""
+        db_fail, _, _ = self._run_with_empty_anchor_skip_failure(
+            fail_on="load_bundle_manifest"
+        )
+        assert db_fail.execute.called, "No execute() on the failure DB session"
+        all_sql = [
+            str(c.args[0]) for c in db_fail.execute.call_args_list if c.args
+        ]
+        assert any("FAILED" in sql for sql in all_sql), (
+            f"No SQL containing 'FAILED' found.\nCaptured: {all_sql}"
+        )
+
+    def test_pipeline_run_terminalized_on_skip_path_bundle_error(self):
+        """(b) _terminalize_doc_and_run must be called with FAILED (pre-queue → 0 queued)."""
+        _, _, mock_term = self._run_with_empty_anchor_skip_failure(
+            fail_on="load_bundle_manifest"
+        )
+        mock_term.assert_called_once()
+        args = mock_term.call_args[0]
+        assert args[2] == "FAILED", f"Expected 'FAILED', got {args[2]!r}"
+
+    def test_no_merge_dispatch_on_skip_path_bundle_error(self):
+        """(c) derive_ontology_graph_merge must NOT be dispatched."""
+        _, mock_merge, _ = self._run_with_empty_anchor_skip_failure(
+            fail_on="load_bundle_manifest"
+        )
+        # Neither .si().apply_async() nor .delay() nor .apply_async() should fire.
+        assert mock_merge.si.call_count == 0 and mock_merge.delay.call_count == 0, (
+            "derive_ontology_graph_merge was dispatched but should not be on skip-path failure"
+        )
+
+    def test_dispatcher_stage_run_failed_on_skip_path_write_error(self):
+        """(a) Dispatcher stage_run FAILED even when _write_stage_run raises."""
+        db_fail, _, _ = self._run_with_empty_anchor_skip_failure(
+            fail_on="_write_stage_run"
+        )
+        assert db_fail.execute.called, "No execute() on the failure DB session"
+        all_sql = [
+            str(c.args[0]) for c in db_fail.execute.call_args_list if c.args
+        ]
+        assert any("FAILED" in sql for sql in all_sql), (
+            f"No SQL containing 'FAILED' found.\nCaptured: {all_sql}"
         )
