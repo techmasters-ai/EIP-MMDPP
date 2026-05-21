@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
     from app.models.ingest import DocumentGraphExtraction
@@ -48,12 +48,20 @@ class ExecutionProfile(BaseModel):
     C2 Iter 1: only ``llm_batch_token_size`` is annotated (identity passes get
     2048).  The other three fields (chunk_max_tokens, temperature, max_tokens)
     are available for future iterations.
+
+    Validation constraints:
+    - Token sizes must be positive (> 0); zero or negative breaks chunking/LLM.
+    - Temperature in [0.0, 2.0] matches Ollama/OpenAI semantics.
+    - ``extra="forbid"`` turns misspelled keys (e.g. ``llm_batch_size_token``)
+      into ValidationError instead of silently ignoring them.
     """
 
-    chunk_max_tokens: int | None = None
-    llm_batch_token_size: int | None = None
-    temperature: float | None = None
-    max_tokens: int | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_max_tokens: int | None = Field(default=None, gt=0)
+    llm_batch_token_size: int | None = Field(default=None, gt=0)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, gt=0)
 
 
 def _infer_pass_phase(name: str, input_mode: str) -> PassPhase:

@@ -344,7 +344,11 @@ def build_pipeline_config(
                     if temperature_override is not None
                     else settings.docling_graph_llm_temperature
                 ),
-                "max_tokens": settings.docling_graph_llm_max_tokens,
+                "max_tokens": (
+                    max_tokens_override
+                    if max_tokens_override is not None
+                    else settings.docling_graph_llm_max_tokens
+                ),
             },
             "reliability": {
                 "timeout_s": settings.docling_graph_llm_timeout,

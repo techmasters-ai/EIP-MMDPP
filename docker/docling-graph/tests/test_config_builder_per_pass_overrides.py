@@ -208,3 +208,50 @@ class TestBuildPipelineConfigTemperatureExistingPath:
 
         assert captured_runtime_defaults.get("temperature") == 0.3
         assert captured_runtime_defaults.get("max_tokens") == 8192
+
+
+class TestMaxTokensOverrideLlmOverridesFallback:
+    """Fix 1: max_tokens_override must also land in llm_overrides["generation"]
+    for the non-injected-client path (no OllamaChatClient available).
+
+    Without the fix, llm_overrides["generation"]["max_tokens"] is hardcoded
+    to settings.docling_graph_llm_max_tokens (env default 4096) regardless
+    of max_tokens_override.
+    """
+
+    def test_max_tokens_override_reaches_llm_overrides_without_injected_client(self):
+        """When no llm_client is injected, max_tokens_override must appear in
+        llm_overrides["generation"]["max_tokens"] (not silently ignored)."""
+        cb = _load_config_builder()
+        captured: dict = {}
+
+        # mock_client=None → ImportError path → llm_client stays None
+        with _fake_pipeline_env(captured, mock_client=None):
+            cb.build_pipeline_config(
+                source="/fake/source.json",
+                template_class=None,
+                max_tokens_override=8192,
+            )
+
+        gen = captured.get("llm_overrides", {}).get("generation", {})
+        assert gen.get("max_tokens") == 8192, (
+            f"expected llm_overrides.generation.max_tokens=8192, got {gen!r}"
+        )
+
+    def test_max_tokens_override_none_uses_env_default_in_llm_overrides(self):
+        """When max_tokens_override is None, llm_overrides uses env default (4096)."""
+        cb = _load_config_builder()
+        captured: dict = {}
+
+        with _fake_pipeline_env(captured, mock_client=None):
+            cb.build_pipeline_config(
+                source="/fake/source.json",
+                template_class=None,
+                max_tokens_override=None,
+            )
+
+        gen = captured.get("llm_overrides", {}).get("generation", {})
+        # Default from DoclingGraphSettings.docling_graph_llm_max_tokens = 4096
+        assert gen.get("max_tokens") == 4096, (
+            f"expected llm_overrides.generation.max_tokens=4096 (env default), got {gen!r}"
+        )

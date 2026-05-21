@@ -199,3 +199,65 @@ class TestRealManifestsWithExecutionAnnotations:
                     f"Non-identity pass {p.name!r} (phase={p.phase!r}) should not have "
                     f"execution block in Iter 1; got: {p.execution!r}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# 7. Fix 2 — Range validation on ExecutionProfile fields
+# ---------------------------------------------------------------------------
+
+class TestExecutionProfileRangeValidation:
+    """ExecutionProfile must reject out-of-range values and misspelled keys."""
+
+    def test_llm_batch_token_size_zero_raises(self):
+        """llm_batch_token_size: 0 → ValidationError (must be > 0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(llm_batch_token_size=0)
+
+    def test_llm_batch_token_size_negative_raises(self):
+        """llm_batch_token_size: -100 → ValidationError."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(llm_batch_token_size=-100)
+
+    def test_chunk_max_tokens_zero_raises(self):
+        """chunk_max_tokens: 0 → ValidationError (must be > 0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(chunk_max_tokens=0)
+
+    def test_temperature_negative_raises(self):
+        """temperature: -0.1 → ValidationError (must be >= 0.0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(temperature=-0.1)
+
+    def test_temperature_above_two_raises(self):
+        """temperature: 2.1 → ValidationError (must be <= 2.0)."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(temperature=2.1)
+
+    def test_temperature_zero_is_valid(self):
+        """temperature: 0.0 is valid (deterministic)."""
+        from app.services.ontology_bundles import ExecutionProfile
+        ep = ExecutionProfile(temperature=0.0)
+        assert ep.temperature == pytest.approx(0.0)
+
+    def test_temperature_two_is_valid(self):
+        """temperature: 2.0 is valid (high-creativity ceiling)."""
+        from app.services.ontology_bundles import ExecutionProfile
+        ep = ExecutionProfile(temperature=2.0)
+        assert ep.temperature == pytest.approx(2.0)
+
+    def test_misspelled_key_raises_with_extra_forbid(self):
+        """llm_batch_size_token (missing second 'token') → ValidationError due to extra='forbid'."""
+        from pydantic import ValidationError
+        from app.services.ontology_bundles import ExecutionProfile
+        with pytest.raises(ValidationError):
+            ExecutionProfile(**{"llm_batch_size_token": 2048})

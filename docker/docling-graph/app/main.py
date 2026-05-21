@@ -1355,7 +1355,8 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
         _dg_settings = DoclingGraphSettings()
         logger.info(
             "extract-pass: CONFIG pass=%s model=%s force_json_mode=%s "
-            "temperature=%s max_tokens=%s truncation_retry_max_tokens=%s "
+            "temperature=%s max_tokens=%s chunk_max_tokens=%s "
+            "truncation_retry_max_tokens=%s "
             "max_output_tokens=%s context_limit=%s batch_token_size=%s "
             "parallel_workers=%s gleaning_enabled=%s "
             "gleaning_max_passes=%s sanitize_input=%s "
@@ -1368,7 +1369,16 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                 if body.temperature is not None
                 else _dg_settings.docling_graph_llm_temperature
             ),
-            _dg_settings.docling_graph_llm_max_tokens,
+            (
+                body.max_tokens
+                if body.max_tokens is not None
+                else _dg_settings.docling_graph_llm_max_tokens
+            ),
+            (
+                body.chunk_max_tokens
+                if body.chunk_max_tokens is not None
+                else _dg_settings.docling_graph_chunk_max_tokens
+            ),
             _dg_settings.docling_graph_llm_truncation_retry_max_tokens,
             _dg_settings.docling_graph_llm_max_output_tokens,
             _dg_settings.docling_graph_llm_context_limit,

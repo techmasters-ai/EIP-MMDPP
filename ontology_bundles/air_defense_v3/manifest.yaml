@@ -16,10 +16,9 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    # C2 Iter 1: identity passes use a smaller batch (2048 tokens) because
-    # they only need to resolve system_name + nomenclature — fitting more
-    # identity chunks per call is counterproductive and was the primary
-    # source of recall regression when batch sizes were raised in prior runs.
+    # C2 Iter 1: larger batch size (2048 vs default 1024) → fewer LLM calls per
+    # pass. Identity passes only resolve system_name + nomenclature so the
+    # broader context window is well-tolerated and reduces total call count.
     execution:
       llm_batch_token_size: 2048
 

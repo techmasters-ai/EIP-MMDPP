@@ -86,6 +86,8 @@ class ExtractPassRequest(BaseModel):
     )
     temperature: Optional[float] = Field(
         default=None,
+        ge=0.0,
+        le=2.0,
         description=(
             "Per-request temperature override for the extraction LLM call. "
             "When None (default), uses the service-wide DOCLING_GRAPH_LLM_TEMPERATURE "
@@ -108,6 +110,7 @@ class ExtractPassRequest(BaseModel):
     )
     llm_batch_token_size: Optional[int] = Field(
         default=None,
+        gt=0,
         description=(
             "Per-request override for chunk_batches_by_token_limit's max_batch_tokens. "
             "When None (default), uses the service-wide DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE "
@@ -134,6 +137,7 @@ class ExtractPassRequest(BaseModel):
     # C2: per-pass execution profile knobs (new in C2 Iter 1).
     chunk_max_tokens: Optional[int] = Field(
         default=None,
+        gt=0,
         description=(
             "Per-request override for HybridChunker's max_tokens per chunk. "
             "When None (default), uses the service-wide "
@@ -144,6 +148,7 @@ class ExtractPassRequest(BaseModel):
     )
     max_tokens: Optional[int] = Field(
         default=None,
+        gt=0,
         description=(
             "Per-request override for the LLM's max_tokens generation cap. "
             "When None (default), uses the service-wide "
