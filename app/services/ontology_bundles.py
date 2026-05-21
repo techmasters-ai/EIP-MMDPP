@@ -37,6 +37,25 @@ logger = logging.getLogger(__name__)
 PassPhase = Literal["identity", "field_group", "relationship"]
 
 
+class ExecutionProfile(BaseModel):
+    """Optional per-pass execution knobs declared in manifest.yaml.
+
+    All four fields are optional — omitting a field means "use the service's
+    env-var default for that knob."  Injected via
+    ``_build_extract_pass_request`` onto the /extract-pass HTTP body so the
+    docling-graph service can apply them per call.
+
+    C2 Iter 1: only ``llm_batch_token_size`` is annotated (identity passes get
+    2048).  The other three fields (chunk_max_tokens, temperature, max_tokens)
+    are available for future iterations.
+    """
+
+    chunk_max_tokens: int | None = None
+    llm_batch_token_size: int | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+
 def _infer_pass_phase(name: str, input_mode: str) -> PassPhase:
     """Infer the phase for a pass that doesn't declare one explicitly.
 
@@ -74,6 +93,11 @@ class PassManifest(BaseModel):
     # C1.6: explicit phase — required in new bundles; inferred + INFO-logged when absent
     # for back-compat with existing bundles that pre-date this field.
     phase: PassPhase = Field(default="field_group")  # default overridden by validator below
+    # C2: optional per-pass execution knobs. When present, these values are
+    # threaded onto the /extract-pass request body by _build_extract_pass_request
+    # and applied by the docling-graph service for that pass only. Omitting the
+    # block (or setting it to null) means "use service env-var defaults."
+    execution: ExecutionProfile | None = None
 
     @model_validator(mode="before")
     @classmethod

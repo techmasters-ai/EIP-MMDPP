@@ -131,6 +131,29 @@ class ExtractPassRequest(BaseModel):
             "omit this field and inherit the service default."
         ),
     )
+    # C2: per-pass execution profile knobs (new in C2 Iter 1).
+    chunk_max_tokens: Optional[int] = Field(
+        default=None,
+        description=(
+            "Per-request override for HybridChunker's max_tokens per chunk. "
+            "When None (default), uses the service-wide "
+            "DOCLING_GRAPH_CHUNK_MAX_TOKENS (currently 512). Sourced from "
+            "pass_def.execution.chunk_max_tokens when the manifest declares "
+            "an execution block; otherwise omitted."
+        ),
+    )
+    max_tokens: Optional[int] = Field(
+        default=None,
+        description=(
+            "Per-request override for the LLM's max_tokens generation cap. "
+            "When None (default), uses the service-wide "
+            "DOCLING_GRAPH_LLM_MAX_TOKENS (currently 4096). Applied via "
+            "OllamaChatClient.with_runtime_defaults(max_tokens=...) so it "
+            "reaches the actual outbound HTTP call, not just PipelineConfig. "
+            "Sourced from pass_def.execution.max_tokens when the manifest "
+            "declares an execution block; otherwise omitted."
+        ),
+    )
 
 
 class ExtractionProvenance(BaseModel):

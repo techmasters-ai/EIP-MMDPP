@@ -214,6 +214,8 @@ def build_pipeline_config(
     llm_batch_token_size_override: int | None = None,
     model_override: str | None = None,
     think_override: bool | str | None = None,
+    chunk_max_tokens_override: int | None = None,
+    max_tokens_override: int | None = None,
 ) -> Any:
     """Build a PipelineConfig from environment variables.
 
@@ -266,12 +268,18 @@ def build_pipeline_config(
             temperature_override is not None
             or model_override is not None
             or think_override is not None
+            or max_tokens_override is not None
         )
         if needs_override and hasattr(llm_client, "with_runtime_defaults"):
+            # C2: max_tokens_override is threaded here so it reaches the
+            # outbound Ollama HTTP body. docling-graph ignores llm_overrides
+            # when llm_client is injected, so max_tokens MUST go through
+            # with_runtime_defaults — not through config_kwargs["llm_overrides"].
             llm_client = llm_client.with_runtime_defaults(
                 temperature=temperature_override,
                 model=model_override,
                 think=think_override,
+                max_tokens=max_tokens_override,
             )
     except ImportError:
         llm_client = None
@@ -280,7 +288,8 @@ def build_pipeline_config(
     # inference benefits from larger chunks/batches (more entities visible
     # per LLM call) — env vars DOCLING_GRAPH_SYSTEM_LINKS_{CHUNK_MAX_TOKENS,
     # LLM_BATCH_TOKEN_SIZE} when set replace the global values. The explicit
-    # request-body override (llm_batch_token_size_override) always wins.
+    # request-body override (llm_batch_token_size_override /
+    # chunk_max_tokens_override) always wins.
     _pass_chunk_max = settings.docling_graph_chunk_max_tokens
     _pass_batch = settings.docling_graph_llm_batch_token_size
     if pass_name == "system_links":
@@ -296,7 +305,13 @@ def build_pipeline_config(
         "extraction_contract": settings.docling_graph_extraction_contract,
         "processing_mode": settings.docling_graph_processing_mode,
         "use_chunking": settings.docling_graph_use_chunking,
-        "chunk_max_tokens": _pass_chunk_max,
+        # C2: chunk_max_tokens_override wins over system_links env var, which wins
+        # over the global env default.
+        "chunk_max_tokens": (
+            chunk_max_tokens_override
+            if chunk_max_tokens_override is not None
+            else _pass_chunk_max
+        ),
         "llm_batch_token_size": (
             llm_batch_token_size_override
             if llm_batch_token_size_override is not None

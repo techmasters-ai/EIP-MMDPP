@@ -546,6 +546,8 @@ def run_extraction_pass(
     llm_batch_token_size: int | None = None,
     model: str | None = None,
     think: bool | str | None = None,
+    chunk_max_tokens: int | None = None,
+    max_tokens: int | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -893,6 +895,8 @@ def run_extraction_pass(
             llm_batch_token_size_override=llm_batch_token_size,
             model_override=model,
             think_override=think,
+            chunk_max_tokens_override=chunk_max_tokens,
+            max_tokens_override=max_tokens,
         )
 
         # Capture the library's print() + logging output to stdout/stderr during
@@ -1491,6 +1495,8 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.llm_batch_token_size,
                     body.model,
                     body.think,
+                    body.chunk_max_tokens,
+                    body.max_tokens,
                 )
             except Exception as exc:
                 logger.exception(

@@ -3460,6 +3460,12 @@ def _build_extract_pass_request(
     document_id is always included so the service can log and attribute
     extraction runs to a specific document (useful when correlating
     salvage warnings and timeout retries across the batch).
+
+    C2: if pass_def.execution is present, its non-None fields are threaded
+    onto the body so the docling-graph service applies them for this pass.
+    Fields that are None in the execution block are omitted, leaving the
+    service to fall back to its env-var defaults (spec Q3: no top-level
+    default in the manifest).
     """
     body: dict = {
         "bundle_key": bundle_key,
@@ -3467,6 +3473,19 @@ def _build_extract_pass_request(
         "document_id": document_id,
         "docling_document_json": doc_json,
     }
+
+    # C2: plumb per-pass execution profile onto the request body.
+    execution = getattr(pass_def, "execution", None)
+    if execution is not None:
+        if getattr(execution, "llm_batch_token_size", None) is not None:
+            body["llm_batch_token_size"] = execution.llm_batch_token_size
+        if getattr(execution, "temperature", None) is not None:
+            body["temperature"] = execution.temperature
+        if getattr(execution, "max_tokens", None) is not None:
+            body["max_tokens"] = execution.max_tokens
+        if getattr(execution, "chunk_max_tokens", None) is not None:
+            body["chunk_max_tokens"] = execution.chunk_max_tokens
+
     if upstream_refs:
         entities: list[dict] = []
         for ref_id, ref in upstream_refs.items():

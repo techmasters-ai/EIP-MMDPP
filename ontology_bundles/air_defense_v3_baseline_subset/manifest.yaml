@@ -22,6 +22,12 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    # C2 Iter 1: identity passes use a smaller batch (2048 tokens) because
+    # they only need to resolve system_name + nomenclature — fitting more
+    # identity chunks per call is counterproductive and was the primary
+    # source of recall regression when batch sizes were raised in prior runs.
+    execution:
+      llm_batch_token_size: 2048
 
   - name: radar_power_rf
     phase: field_group
@@ -46,6 +52,9 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    # C2 Iter 1: identity pass — see radar_identity comment above.
+    execution:
+      llm_batch_token_size: 2048
 
   - name: missile_kinematics
     phase: field_group
