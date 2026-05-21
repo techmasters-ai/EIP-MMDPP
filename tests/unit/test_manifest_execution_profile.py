@@ -175,30 +175,23 @@ class TestRealManifestsWithExecutionAnnotations:
                 from app.services.ontology_bundles import ExecutionProfile
                 assert isinstance(p.execution, ExecutionProfile)
 
-    def test_identity_passes_have_llm_batch_token_size_2048(self):
-        """Iter 1: identity passes carry llm_batch_token_size=2048."""
+    def test_no_pass_has_execution_overrides(self):
+        """Regression guard: C2 was retired after user's prior experiments
+        confirmed env defaults (DOCLING_GRAPH_CHUNK_MAX_TOKENS=512,
+        DOCLING_GRAPH_LLM_BATCH_TOKEN_SIZE=512, system_links-specific 4096
+        overrides via dedicated env vars) yield optimal extraction quality.
+        The ExecutionProfile infrastructure remains available for future
+        per-pass knob experiments targeting areas prior experiments did NOT
+        cover (e.g. per-pass temperature, max_tokens, or a non-batch-size
+        knob), but no current annotations exist on either bundle."""
         from app.services.ontology_bundles import load_bundle_manifest
-        m = load_bundle_manifest("air_defense_v3_baseline_subset")
-        identity_passes = [p for p in m.passes if p.phase == "identity"]
-        assert identity_passes, "Expected at least one identity pass"
-        for p in identity_passes:
-            assert p.execution is not None, (
-                f"Identity pass {p.name!r} should have execution block after Iter 1"
+        for bundle_key in ("air_defense_v3", "air_defense_v3_baseline_subset"):
+            m = load_bundle_manifest(bundle_key)
+            with_overrides = [p.name for p in m.passes if p.execution is not None]
+            assert with_overrides == [], (
+                f"Bundle {bundle_key!r}: unexpected execution overrides on passes "
+                f"{with_overrides}. C2 was retired; env defaults should be in effect."
             )
-            assert p.execution.llm_batch_token_size == 2048, (
-                f"Identity pass {p.name!r} should have llm_batch_token_size=2048"
-            )
-
-    def test_non_identity_passes_have_no_execution_block(self):
-        """Iter 1: only identity passes are annotated; other passes have no block."""
-        from app.services.ontology_bundles import load_bundle_manifest
-        m = load_bundle_manifest("air_defense_v3_baseline_subset")
-        for p in m.passes:
-            if p.phase != "identity":
-                assert p.execution is None, (
-                    f"Non-identity pass {p.name!r} (phase={p.phase!r}) should not have "
-                    f"execution block in Iter 1; got: {p.execution!r}"
-                )
 
 
 # ---------------------------------------------------------------------------

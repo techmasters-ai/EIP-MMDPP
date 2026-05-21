@@ -16,11 +16,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    # C2 Iter 1: larger batch size (2048 vs default 1024) → fewer LLM calls per
-    # pass. Identity passes only resolve system_name + nomenclature so the
-    # broader context window is well-tolerated and reduces total call count.
-    execution:
-      llm_batch_token_size: 2048
 
   - name: radar_power_rf
     phase: field_group
@@ -81,9 +76,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    # C2 Iter 1: identity pass — see radar_identity comment above.
-    execution:
-      llm_batch_token_size: 2048
 
   - name: missile_kinematics
     phase: field_group
