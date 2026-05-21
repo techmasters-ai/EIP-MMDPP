@@ -7057,12 +7057,16 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
                 db.commit()
 
 
-def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) -> None:
+def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) -> bool:
     """Claim a phase slot and dispatch the corresponding Celery task.
 
     Used by both the initial dispatcher (Task 8) and the follow-up dispatch in
     ``_try_advance_phase``.  Pattern: claim_phase → .delay() → mark_phase_dispatched.
     If the claim fails (another worker won), returns without dispatching.
+
+    Returns True when the task was actually dispatched (claim won + .delay() called),
+    False when another worker won the claim and no dispatch was made.  The caller
+    can use this to count the number of tasks actually queued.
 
     A crash between claim and mark_phase_dispatched leaves the phase in
     'claimed' state — the reconciler (Task 9) will reclaim it after the
@@ -7070,10 +7074,11 @@ def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) 
     """
     phase_key = _phase_key(pass_name)
     if not claim_phase(db, run_id, phase_key):
-        return  # another worker won the claim
+        return False  # another worker won the claim
     async_result = derive_ontology_graph_pass.delay(document_id, run_id, pass_name)
     mark_phase_dispatched(db, run_id, phase_key, async_result.id)
     db.commit()
+    return True
 
 
 @celery_app.task(
@@ -8085,25 +8090,82 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     finally:
         db.close()
 
-    manifest = load_bundle_manifest(bundle_key)
-    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
-
-    # Second session: _claim_and_dispatch_pass commits phase records
-    # independently. Using a single session would interleave the RUNNING
-    # StageRun commit with phase claim commits and risk dirty reads.
-    db2 = _get_db()
+    # C1.5: track how many per-pass tasks are queued before any exception so the
+    # except handler can decide whether to terminalize the pipeline_run.
+    # Pre-Only semantic: terminalize pipeline_run=FAILED only when _passes_queued==0
+    # (no partial work to preserve).  If ≥1 passes were already queued, leave
+    # pipeline_run in PROCESSING so queued passes can complete; the reconciler
+    # will terminalize based on their outcomes.
+    # Background: is_run_cancelled() (run_phase_dispatch.py:438) treats
+    # status='FAILED' as cancelled — unilaterally setting pipeline_run=FAILED
+    # after any pass has been queued would cause those pass tasks to bail at their
+    # next cancel-check, discarding partial work.
+    _passes_queued = 0
     try:
-        for pass_name in entity_passes[: settings.pass_concurrency_per_document]:
-            _claim_and_dispatch_pass(db2, document_id, str(run_id), pass_name)
-    finally:
-        db2.close()
+        manifest = load_bundle_manifest(bundle_key)
+        entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+
+        # Second session: _claim_and_dispatch_pass commits phase records
+        # independently. Using a single session would interleave the RUNNING
+        # StageRun commit with phase claim commits and risk dirty reads.
+        db2 = _get_db()
+        try:
+            for pass_name in entity_passes[: settings.pass_concurrency_per_document]:
+                if _claim_and_dispatch_pass(db2, document_id, str(run_id), pass_name):
+                    _passes_queued += 1
+        finally:
+            db2.close()
+
+    except Exception as exc:
+        # Mark the dispatcher summary stage_run FAILED so the reconciler and
+        # status API see a terminal row instead of a forever-RUNNING ghost.
+        err_msg = (
+            f"dispatcher failed after queuing {_passes_queued} pass(es): {exc!r}"
+        )
+        logger.exception(
+            "derive_ontology_graph: dispatch-time exception for run_id=%s "
+            "(passes_queued=%d); marking stage_run FAILED",
+            run_id, _passes_queued,
+        )
+        from datetime import datetime, timezone
+        db_fail = _get_db()
+        try:
+            db_fail.execute(
+                sa.text(
+                    "UPDATE ingest.stage_runs "
+                    "SET status = 'FAILED', "
+                    "    execution_status = 'FAILED', "
+                    "    error_message = :error_message, "
+                    "    finished_at = :finished_at "
+                    "WHERE pipeline_run_id = :run_id "
+                    "  AND stage_name = 'derive_ontology_graph' "
+                    "  AND pass_name IS NULL"
+                ),
+                {
+                    "error_message": err_msg,
+                    "finished_at": datetime.now(timezone.utc),
+                    "run_id": str(run_id),
+                },
+            )
+            db_fail.commit()
+        except Exception:
+            logger.exception(
+                "derive_ontology_graph: stage_run FAILED update itself failed "
+                "for run_id=%s", run_id,
+            )
+        finally:
+            db_fail.close()
+
+        if _passes_queued == 0:
+            # Pre-queue failure: no work was started, safe to terminalize the run.
+            _terminalize_doc_and_run(document_id, run_id, "FAILED")
+
+        raise  # re-raise so Celery sees the failure for retry-counting
 
     return {
         "stage": "derive_ontology_graph",
         "status": "dispatched",
-        "entity_passes_dispatched": min(
-            len(entity_passes), settings.pass_concurrency_per_document
-        ),
+        "entity_passes_dispatched": _passes_queued,
     }
 
 
