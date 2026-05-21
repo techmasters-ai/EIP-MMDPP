@@ -179,3 +179,70 @@ class TestBothTemperatureAndMaxTokensReachLLMCall:
         )
         assert body["temperature"] == 0.3
         assert body.get("max_tokens") == 8192
+
+
+class TestExtractPassRequestRejectsUnknownKeys:
+    """C2 review fix: ExtractPassRequest must reject unknown keys so direct API
+    callers can't silently typo an override field name and run with env defaults
+    thinking they overrode it. Worker-produced requests are already protected
+    by the manifest-side ExecutionProfile validator; this closes the gap at the
+    HTTP boundary for non-worker callers."""
+
+    def _minimal_body(self, **overrides) -> dict:
+        base = {
+            "bundle_key": "air_defense_v3",
+            "pass_name": "radar_identity",
+            "docling_document_json": {},
+        }
+        base.update(overrides)
+        return base
+
+    def _load_request_cls(self):
+        """Load docker/docling-graph/app/schemas.py by file path.
+        The repo-root app.schemas/ is a different package; this test needs the
+        docling-graph service's single-file schemas module."""
+        key = "_dg_schemas_module"
+        if key in sys.modules:
+            return sys.modules[key].ExtractPassRequest
+        path = Path(__file__).resolve().parent.parent / "app" / "schemas.py"
+        spec = importlib.util.spec_from_file_location(key, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module
+        spec.loader.exec_module(module)
+        return module.ExtractPassRequest
+
+    def test_typo_in_llm_batch_token_size_raises(self):
+        ExtractPassRequest = self._load_request_cls()
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            ExtractPassRequest(**self._minimal_body(llm_batch_size_token=2048))
+        # Pydantic v2 reports extra_forbidden for unknown fields
+        msg = str(exc_info.value)
+        assert "extra_forbidden" in msg or "llm_batch_size_token" in msg
+
+    def test_typo_in_max_tokens_raises(self):
+        ExtractPassRequest = self._load_request_cls()
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ExtractPassRequest(**self._minimal_body(maxtokens=8192))  # missing underscore
+
+    def test_known_keys_accepted(self):
+        """The fix must not break legitimate overrides."""
+        ExtractPassRequest = self._load_request_cls()
+
+        body = self._minimal_body(
+            temperature=0.3,
+            max_tokens=8192,
+            llm_batch_token_size=2048,
+            chunk_max_tokens=512,
+        )
+        req = ExtractPassRequest(**body)
+        assert req.temperature == 0.3
+        assert req.max_tokens == 8192
+        assert req.llm_batch_token_size == 2048
+        assert req.chunk_max_tokens == 512
