@@ -107,6 +107,42 @@ class BundleManifest(BaseModel):
     extraction_profile_version: str
     passes: list[PassManifest]
 
+    @model_validator(mode="after")
+    def _validate_phase_constraints(self) -> "BundleManifest":
+        """Enforce two structural invariants on the pass list.
+
+        Fix 2: phase=relationship is currently only supported for name='system_links'.
+        The worker dispatches it by that literal name; a future checkpoint will
+        generalise this.
+
+        Fix 3: if any pass has phase=field_group, at least one pass must have
+        phase=identity.  The initial dispatcher queues only identity passes; without
+        one, no task is ever queued and the run wedges in PROCESSING forever.
+        """
+        from pydantic import ValidationError as _ValidationError  # noqa: PLC0415 (avoid circular at module top)
+
+        # Fix 2: relationship pass must be named 'system_links'.
+        for p in self.passes:
+            if p.phase == "relationship" and p.name != "system_links":
+                raise ValueError(
+                    f"phase='relationship' is currently only supported for name='system_links'. "
+                    f"Pass '{p.name}' declared phase=relationship which is not yet supported. "
+                    "Either rename to 'system_links' or wait for a future checkpoint that "
+                    "generalizes relationship-phase dispatch."
+                )
+
+        # Fix 3: field_group passes require at least one identity pass.
+        has_field_group = any(p.phase == "field_group" for p in self.passes)
+        has_identity = any(p.phase == "identity" for p in self.passes)
+        if has_field_group and not has_identity:
+            raise ValueError(
+                "Bundle has phase=field_group passes but no phase=identity pass. "
+                "The initial dispatcher only queues identity passes; without one, "
+                "the run will never start. Add at least one identity pass."
+            )
+
+        return self
+
     def find_pass(self, pass_name: str) -> PassManifest:
         """Return the pass with the given name, or raise KeyError."""
         for p in self.passes:

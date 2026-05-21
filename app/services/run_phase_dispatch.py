@@ -57,8 +57,6 @@ from typing import Literal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.workers.celery_app import celery_app
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -399,9 +397,12 @@ def reclaim_stale_phase(
         # operators should expect occasional "revoking already-completed task"
         # warnings in worker logs.
         # Best-effort revoke — must not block reclaim on failure
+        # Lazy import to avoid circular dependency: run_phase_dispatch ←
+        # celery_app ← pipeline ← run_phase_dispatch (partial init).
         task_id = entry.get("task_id")
         if task_id:
             try:
+                from app.workers.celery_app import celery_app  # noqa: PLC0415
                 celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
             except Exception:
                 logger.warning(

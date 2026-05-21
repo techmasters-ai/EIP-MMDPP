@@ -237,3 +237,96 @@ class TestBundlePhaseDistribution:
                 assert p.phase is not None, (
                     f"Pass {p.name!r} in {bundle_key!r} has phase=None"
                 )
+
+
+# ---------------------------------------------------------------------------
+# 5. Fix 2: relationship phase restricted to name='system_links' (manifest validator)
+# ---------------------------------------------------------------------------
+
+class TestRelationshipPhaseNameValidation:
+    """BundleManifest validator: phase=relationship must have name='system_links'."""
+
+    def test_system_links_relationship_loads_ok(self):
+        """name=system_links + phase=relationship → valid, loads cleanly."""
+        from app.services.ontology_bundles import BundleManifest
+        raw = _raw_manifest([
+            _raw_pass("system_links", "document_plus_entity_refs", phase="relationship"),
+        ])
+        m = BundleManifest.model_validate(raw)
+        assert m.passes[0].phase == "relationship"
+        assert m.passes[0].name == "system_links"
+
+    def test_non_system_links_relationship_raises(self):
+        """name=other_links + phase=relationship → ValidationError naming the offending pass."""
+        from app.services.ontology_bundles import BundleManifest
+        raw = _raw_manifest([
+            _raw_pass("other_links", "document_plus_entity_refs", phase="relationship"),
+        ])
+        with pytest.raises(ValidationError) as exc_info:
+            BundleManifest.model_validate(raw)
+        assert "other_links" in str(exc_info.value), (
+            f"ValidationError message should name the offending pass; got: {exc_info.value}"
+        )
+
+    def test_system_links_field_group_loads_ok(self):
+        """name=system_links + phase=field_group → valid (no relationship pass, Fix 2 not triggered).
+
+        Fix 3 requires an identity pass whenever field_group is present, so we include one.
+        The point of this test is only that Fix 2 doesn't fire for a non-relationship pass.
+        """
+        from app.services.ontology_bundles import BundleManifest
+        raw = _raw_manifest([
+            _raw_pass("radar_identity", phase="identity"),
+            _raw_pass("system_links", "document_only", phase="field_group"),
+        ])
+        m = BundleManifest.model_validate(raw)
+        assert m.passes[1].phase == "field_group"
+
+
+# ---------------------------------------------------------------------------
+# 6. Fix 3: field_group passes require at least one identity pass (manifest validator)
+# ---------------------------------------------------------------------------
+
+class TestFieldGroupRequiresIdentityPass:
+    """BundleManifest validator: field_group passes require an identity pass."""
+
+    def test_identity_and_field_group_loads_ok(self):
+        """Bundle with identity + field_group → valid."""
+        from app.services.ontology_bundles import BundleManifest
+        raw = _raw_manifest([
+            _raw_pass("radar_identity", phase="identity"),
+            _raw_pass("radar_power_rf", phase="field_group"),
+        ])
+        m = BundleManifest.model_validate(raw)
+        assert len(m.passes) == 2
+
+    def test_field_group_only_raises(self):
+        """Bundle with field_group but no identity pass → ValidationError."""
+        from app.services.ontology_bundles import BundleManifest
+        raw = _raw_manifest([
+            _raw_pass("radar_power_rf", phase="field_group"),
+        ])
+        with pytest.raises(ValidationError) as exc_info:
+            BundleManifest.model_validate(raw)
+        assert "field_group" in str(exc_info.value).lower() or "identity" in str(exc_info.value).lower(), (
+            f"ValidationError should mention field_group/identity; got: {exc_info.value}"
+        )
+
+    def test_identity_and_relationship_no_field_group_loads_ok(self):
+        """Bundle with identity + relationship (no field_group) → valid."""
+        from app.services.ontology_bundles import BundleManifest
+        raw = _raw_manifest([
+            _raw_pass("radar_identity", phase="identity"),
+            _raw_pass("system_links", "document_plus_entity_refs", phase="relationship"),
+        ])
+        m = BundleManifest.model_validate(raw)
+        assert len(m.passes) == 2
+
+    def test_relationship_only_loads_ok(self):
+        """Bundle with only a relationship pass (no field_group) → valid."""
+        from app.services.ontology_bundles import BundleManifest
+        raw = _raw_manifest([
+            _raw_pass("system_links", "document_plus_entity_refs", phase="relationship"),
+        ])
+        m = BundleManifest.model_validate(raw)
+        assert m.passes[0].phase == "relationship"

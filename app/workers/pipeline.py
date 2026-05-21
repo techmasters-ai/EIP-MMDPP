@@ -7769,43 +7769,19 @@ def reconcile_ontology_graph_runs(self) -> dict:
             dispatched_phases = run.dispatched_phases or {}
 
             # ----------------------------------------------------------------
-            # Branch 4: stuck-without-advance check (fast path)
-            # All entity passes have terminal pass-output rows but no system_links
-            # or merge phase has been started yet (finisher crashed between
-            # saving the pass-output and calling _try_advance_phase).
-            # ----------------------------------------------------------------
-            n_terminal = count_terminal_passes(db, run_id, entity_passes)
-            if n_terminal >= len(entity_passes) and entity_passes:
-                # Check if merge or system_links has not been started / is still running.
-                merge_absent = "merge" not in dispatched_phases
-                sl_entry = dispatched_phases.get("system_links")
-                # sl_blocking is True only when system_links is in-progress (claimed
-                # or dispatched). A completed system_links is NOT blocking — it means
-                # we should proceed to dispatch merge.  An absent system_links is also
-                # not blocking — _try_advance_phase will dispatch it first.
-                sl_blocking = sl_entry is not None and sl_entry.get("state") != "completed"
-                # Only advance if no follow-up is already in progress.
-                # _try_advance_phase has its own idempotency via claim_phase.
-                if merge_absent and not sl_blocking:
-                    logger.info(
-                        "reconcile_ontology_graph_runs: stuck-without-advance "
-                        "run_id=%s — all %d entity passes terminal, no follow-up; advancing",
-                        run_id, len(entity_passes),
-                    )
-                    try:
-                        _try_advance_phase(db, document_id, run_id)
-                        db.commit()
-                        summary["stuck_advances"].append(run_id)
-                    except Exception:
-                        logger.warning(
-                            "reconcile_ontology_graph_runs: _try_advance_phase failed for "
-                            "run_id=%s", run_id, exc_info=True,
-                        )
-                        db.rollback()
-                    continue
-
-            # ----------------------------------------------------------------
             # Per-phase inspection: iterate every entry in dispatched_phases.
+            # MUST run BEFORE the Branch 4 stuck-without-advance fast path so
+            # that dispatched_phases entries with terminal pass_output rows are
+            # promoted to 'completed' before _try_advance_phase reads them.
+            #
+            # Fix 1 (C1.6 review): previously Branch 4 ran first, called
+            # _try_advance_phase, then `continue`d — skipping this loop.
+            # _try_advance_phase's identity-terminal gate reads dispatched_phases
+            # (not pipeline_pass_outputs), so if a task wrote its pass_output row
+            # but crashed before mark_phase_terminal, identity_all_terminal was
+            # False, _try_advance_phase returned without advancing, and the
+            # reconciler looped forever.  Reordering so this promotion loop runs
+            # first ensures dispatched_phases is consistent before Branch 4 fires.
             # ----------------------------------------------------------------
             for phase_key, phase_entry in dispatched_phases.items():
                 state = (phase_entry or {}).get("state")
@@ -7954,6 +7930,53 @@ def reconcile_ontology_graph_runs(self) -> dict:
                         logger.warning(
                             "reconcile_ontology_graph_runs: reclaim (dispatched) failed for "
                             "run_id=%s phase=%s", run_id, phase_key, exc_info=True,
+                        )
+                        db.rollback()
+
+            # ----------------------------------------------------------------
+            # Branch 4: stuck-without-advance check (fast path)
+            # Runs AFTER the per-phase promotion loop above so that any
+            # dispatched_phases entries that needed promotion are already
+            # 'completed' before _try_advance_phase reads them.
+            #
+            # All entity passes have terminal pass-output rows but no system_links
+            # or merge phase has been started yet (finisher crashed between
+            # saving the pass-output and calling _try_advance_phase).
+            # ----------------------------------------------------------------
+            # Re-read dispatched_phases from the run object in case the
+            # per-phase loop committed promotions that changed the DB state.
+            # The DB session's identity-map cache may be stale after the
+            # jsonb_set UPDATEs above; expire + refresh to get current state.
+            db.expire(run, ["dispatched_phases"])
+            db.refresh(run, ["dispatched_phases"])
+            dispatched_phases = run.dispatched_phases or {}
+
+            n_terminal = count_terminal_passes(db, run_id, entity_passes)
+            if n_terminal >= len(entity_passes) and entity_passes:
+                # Check if merge or system_links has not been started / is still running.
+                merge_absent = "merge" not in dispatched_phases
+                sl_entry = dispatched_phases.get("system_links")
+                # sl_blocking is True only when system_links is in-progress (claimed
+                # or dispatched). A completed system_links is NOT blocking — it means
+                # we should proceed to dispatch merge.  An absent system_links is also
+                # not blocking — _try_advance_phase will dispatch it first.
+                sl_blocking = sl_entry is not None and sl_entry.get("state") != "completed"
+                # Only advance if no follow-up is already in progress.
+                # _try_advance_phase has its own idempotency via claim_phase.
+                if merge_absent and not sl_blocking:
+                    logger.info(
+                        "reconcile_ontology_graph_runs: stuck-without-advance "
+                        "run_id=%s — all %d entity passes terminal, no follow-up; advancing",
+                        run_id, len(entity_passes),
+                    )
+                    try:
+                        _try_advance_phase(db, document_id, run_id)
+                        db.commit()
+                        summary["stuck_advances"].append(run_id)
+                    except Exception:
+                        logger.warning(
+                            "reconcile_ontology_graph_runs: _try_advance_phase failed for "
+                            "run_id=%s", run_id, exc_info=True,
                         )
                         db.rollback()
 
