@@ -789,6 +789,34 @@ def _execute_pass_attempt(
     )
 
 
+def _trim_response_for_persistence(outcome: "PassAttemptOutcome") -> dict | None:
+    """P6 — return a non-mutating copy of ``outcome.raw_response_payload``
+    with ``diagnostics.library_log`` stripped on COMPLETE outcomes.
+
+    ``library_log`` is the captured stdout/stderr of run_pipeline; on a
+    successful pass it bloats pipeline_pass_outputs.extract_pass_response_json
+    and inflates system_links rehydration cost (every upstream pass row is
+    re-parsed). On FAILED / SKIPPED outcomes it's forensic gold and is
+    preserved verbatim.
+
+    The original ``outcome.raw_response_payload`` is NOT mutated — main.py's
+    log emitters in the ``finally`` block read it after this returns, and
+    re-running with a stripped log would lose data.
+    """
+    payload = outcome.raw_response_payload
+    if not payload:
+        return payload  # None or empty dict — nothing to trim
+    if outcome.execution_status != "COMPLETE":
+        return payload  # forensic gold; keep verbatim
+    service_diag = payload.get("diagnostics")
+    if not isinstance(service_diag, dict) or "library_log" not in service_diag:
+        return payload  # nothing to strip
+    # Shallow copy at both levels — caller's dict identity preserved.
+    trimmed_diag = {k: v for k, v in service_diag.items() if k != "library_log"}
+    trimmed_payload = {**payload, "diagnostics": trimmed_diag}
+    return trimmed_payload
+
+
 def _build_pass_diagnostics_dict(
     outcome: "PassAttemptOutcome",
     override_extra: dict | None = None,
@@ -6735,8 +6763,32 @@ def _save_terminal_pass_output(
       ``relationships_extracted``, ``relationships_rejected``
     NOT the shorter forms ``primary_entities`` / ``bridge_entities``.
     """
+    # P6 success-path payload trim: drop library_log from the persisted
+    # response on COMPLETE outcomes. Saves disk + makes system_links's
+    # _rehydrate_upstream_refs_from_persisted_passes faster. Forensic data
+    # (library_log) is preserved on FAILED / SKIPPED rows. Trimming yields
+    # a shallow-copied payload — outcome.raw_response_payload itself is
+    # untouched, so the post-save logging in main.py still sees the full log.
+    trimmed_payload = _trim_response_for_persistence(outcome)
+    # _build_pass_diagnostics_dict reads from outcome.raw_response_payload —
+    # construct a stand-in outcome view so the diagnostics column also lands
+    # without library_log on COMPLETE. (FAILED/SKIPPED still carry it.)
+    _diag_source_outcome = outcome
+    if trimmed_payload is not outcome.raw_response_payload:
+        # We trimmed; build a minimal proxy carrying only the fields the
+        # helper reads.
+        _diag_source_outcome = type(outcome)(
+            execution_status=outcome.execution_status,
+            skip_reason=outcome.skip_reason,
+            yield_status=outcome.yield_status,
+            pass_result=None,  # not read by _build_pass_diagnostics_dict
+            raw_response_payload=trimmed_payload,
+            counts=None,
+            error=outcome.error,
+            worker_diagnostics=outcome.worker_diagnostics,
+        )
     diagnostics = _build_pass_diagnostics_dict(
-        outcome, override_extra=override_diagnostics_extra,
+        _diag_source_outcome, override_extra=override_diagnostics_extra,
     )
     save_pass_output(
         db,
@@ -6747,7 +6799,7 @@ def _save_terminal_pass_output(
         execution_status=override_status or outcome.execution_status,
         skip_reason=outcome.skip_reason,
         yield_status=outcome.yield_status,
-        extract_pass_response=outcome.raw_response_payload or {},
+        extract_pass_response=trimmed_payload or {},
         primary_entities_extracted=(outcome.counts or {}).get("primary_entities_extracted", 0),
         bridge_entities_extracted=(outcome.counts or {}).get("bridge_entities_extracted", 0),
         relationships_extracted=(outcome.counts or {}).get("relationships_extracted", 0),
