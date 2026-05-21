@@ -7064,9 +7064,10 @@ def _claim_and_dispatch_pass(db, document_id: str, run_id: str, pass_name: str) 
     ``_try_advance_phase``.  Pattern: claim_phase → .delay() → mark_phase_dispatched.
     If the claim fails (another worker won), returns without dispatching.
 
-    Returns True when the task was actually dispatched (claim won + .delay() called),
-    False when another worker won the claim and no dispatch was made.  The caller
-    can use this to count the number of tasks actually queued.
+    Returns True when dispatched, False when the claim race was lost to another
+    worker.  The dispatcher (derive_ontology_graph) uses this return value for
+    accurate queued-count tracking.  The advance-phase caller does not — a race
+    loss there is not a problem since the winning worker will dispatch.
 
     A crash between claim and mark_phase_dispatched leaves the phase in
     'claimed' state — the reconciler (Task 9) will reclaim it after the
@@ -8127,7 +8128,6 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             "(passes_queued=%d); marking stage_run FAILED",
             run_id, _passes_queued,
         )
-        from datetime import datetime, timezone
         db_fail = _get_db()
         try:
             db_fail.execute(

@@ -33,6 +33,10 @@ Five assertions (matching Task 1.7 spec):
       system_links.
   (e) After all passes + merge complete, the run's final summary StageRun row
       is COMPLETE (not FAILED) and the PipelineRun terminates COMPLETE.
+      Assertion (e) partial coverage: the test verifies the downstream merge
+      chain was dispatched via celery_chain.apply_async(). ``finalize_document``
+      (mocked) is what would terminalize PipelineRun=COMPLETE in production;
+      that final terminalization is out of scope for this integration test.
 
 Infrastructure
 --------------
@@ -750,6 +754,8 @@ class TestPostQueueLedgerRecovery:
             "(including finalize_document which will COMPLETE the run)"
         )
         mock_chain_instance = mock_chain_fn.return_value
+        # Partial coverage: verifies dispatch only; finalize_document (mocked) would
+        # terminalize PipelineRun=COMPLETE in production — out of scope here.
         mock_chain_instance.apply_async.assert_called_once()
 
 
