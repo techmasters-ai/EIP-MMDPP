@@ -106,6 +106,13 @@ class PassManifest(BaseModel):
     # and applied by the docling-graph service for that pass only. Omitting the
     # block (or setting it to null) means "use service env-var defaults."
     execution: ExecutionProfile | None = None
+    # C3: optional per-pass cue strings for the pre-pass skip router.
+    # The router performs case-insensitive substring matching against document
+    # text chunks, table captions, and picture captions.  A pass with no cue
+    # hits returns SKIP_NO_EVIDENCE (optional passes only).  Empty list = no
+    # cues configured = router always returns RUN_FULL for this pass.
+    # Identity passes and required passes are NEVER skipped regardless of cues.
+    cues: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod

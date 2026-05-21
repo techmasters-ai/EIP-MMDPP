@@ -22,6 +22,7 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    cues: []  # identity passes are never skipped — no cues needed
 
   - name: radar_power_rf
     phase: field_group
@@ -34,6 +35,20 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    cues:
+      - RF
+      - power
+      - frequency
+      - band
+      - kHz
+      - MHz
+      - GHz
+      - kW
+      - MW
+      - dBW
+      - ERP
+      - peak
+      - nominal
 
   - name: missile_identity
     phase: identity
@@ -46,6 +61,7 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    cues: []  # identity passes are never skipped — no cues needed
 
   - name: missile_kinematics
     phase: field_group
@@ -58,6 +74,20 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
+    cues:
+      - range
+      - speed
+      - altitude
+      - intercept
+      - mach
+      - booster
+      - launch angle
+      - envelope
+      - km
+      - feet
+      - m/s
+      - ceiling
+      - floor
 
   - name: system_links
     phase: relationship
@@ -74,6 +104,7 @@ passes:
       - radar_power_rf
       - missile_identity
       - missile_kinematics
+    cues: []  # required relationship pass — never skipped
     skip_if_no_upstream_endpoints: true
     skip_justification: >
       When none of the upstream domain passes produce any linkable system
