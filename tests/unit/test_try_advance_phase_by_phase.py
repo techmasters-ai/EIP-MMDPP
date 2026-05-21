@@ -256,6 +256,47 @@ class TestBranch1ToBranch2Transition:
         # At cap=2 with 2 field_group in-flight: no dispatch expected.
         assert len(dispatched_calls) == 0
 
+    def test_branch2_fires_after_failed_optional_identity_pass(self):
+        """Regression: a FAILED-optional identity pass still counts as terminal
+        in the dispatched_phases JSONB (mark_phase_terminal writes
+        state='completed' regardless of `result`). Branch 2 must fire when all
+        identity passes are terminal — including any that failed-optional —
+        because the identity guard reads `state == "completed"`, not `result`.
+        (Required identity-pass failures raise IngestFailed before
+        _try_advance_phase is called, so the FAILED-required path is not
+        exercised here.)
+        """
+        manifest = _make_manifest(_FULL_PASSES)
+        # radar_identity FAILED (optional) — mark_phase_terminal still wrote
+        # state="completed" with result="failed". missile_identity succeeded.
+        dispatched_phases = {
+            "entity_pass_radar_identity": {"state": "completed", "result": "failed"},
+            "entity_pass_missile_identity": {"state": "completed", "result": "succeeded"},
+        }
+        run = _make_run(dispatched_phases)
+        db = _make_db(run)
+
+        dispatched_calls = []
+
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+            dispatched_calls.append(pass_name)
+            return True
+
+        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline._claim_and_dispatch_pass",
+                   side_effect=fake_claim_and_dispatch), \
+             patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
+             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
+            _invoke_advance(db, _DOC_ID, _RUN_ID)
+
+        # Branch 2 fired — a field_group pass was dispatched even though
+        # one identity pass failed-optional.
+        assert len(dispatched_calls) == 1
+        assert dispatched_calls[0] in ("radar_power_rf", "missile_kinematics"), (
+            f"Expected a field_group pass from Branch 2 after FAILED-optional "
+            f"identity, got {dispatched_calls!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # (c) Branch 2 ordering guard — identity still in-flight → no field_group dispatch

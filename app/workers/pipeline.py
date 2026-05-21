@@ -7018,9 +7018,12 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     )
 
     # Shared helper: names of all entity passes (identity + field_group) that are
-    # completed or in-flight, derived from dispatched_phases.
+    # TERMINAL or in-flight, derived from dispatched_phases. "terminal" here means
+    # mark_phase_terminal was called — covers SUCCEEDED + FAILED + SKIPPED, because
+    # mark_phase_terminal always writes state='completed' regardless of `result`.
+    # See run_phase_dispatch.py:mark_phase_terminal.
     dp = run.dispatched_phases or {}
-    completed_entity_names = {
+    terminal_entity_names = {
         k.removeprefix("entity_pass_") for k, v in dp.items()
         if k.startswith("entity_pass_") and v.get("state") == "completed"
     }
@@ -7036,18 +7039,20 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     if in_flight < settings.pass_concurrency_per_document:
         next_identity = next(
             (p for p in identity_passes
-             if p not in completed_entity_names and p not in in_flight_entity_names),
+             if p not in terminal_entity_names and p not in in_flight_entity_names),
             None,
         )
         if next_identity is not None:
             _claim_and_dispatch_pass(db, document_id, run_id, next_identity)
             return  # one dispatch per finisher
 
-    # Guard: all identity passes must be terminal before proceeding.
-    # Use dispatched_phases ("completed" state) as the fast check — this is
-    # the same source used by Branch 1's completed_or_terminal set and is
-    # cheaper than a DB query for the common case.
-    identity_all_terminal = all(p in completed_entity_names for p in identity_passes)
+    # Guard: all identity passes must be terminal (any of SUCCEEDED/FAILED/
+    # SKIPPED) before proceeding. terminal_entity_names captures all three —
+    # mark_phase_terminal writes state='completed' for each. So a FAILED-optional
+    # identity pass DOES unblock Branch 2, which is the intended behavior.
+    # (Required identity pass failure raises IngestFailed before _try_advance_phase
+    # is called, so this guard is never reached in that case.)
+    identity_all_terminal = all(p in terminal_entity_names for p in identity_passes)
     if not identity_all_terminal:
         return  # identity still in-flight or undispatched; hold branches 2/3/4
 
@@ -7059,7 +7064,7 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
         if in_flight < settings.pass_concurrency_per_document:
             next_fg = next(
                 (p for p in field_group_passes
-                 if p not in completed_entity_names and p not in in_flight_entity_names),
+                 if p not in terminal_entity_names and p not in in_flight_entity_names),
                 None,
             )
             if next_fg is not None:
