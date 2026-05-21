@@ -6,6 +6,7 @@ extraction_profile_version: "1.0.0"
 
 passes:
   - name: radar_identity
+    phase: identity
     required: false
     kind: entities
     input_mode: document_only
@@ -17,6 +18,7 @@ passes:
     depends_on: []
 
   - name: radar_power_rf
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -28,6 +30,7 @@ passes:
     depends_on: []
 
   - name: radar_antenna
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -39,6 +42,7 @@ passes:
     depends_on: []
 
   - name: radar_timing
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -50,6 +54,7 @@ passes:
     depends_on: []
 
   - name: radar_modulation
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -61,6 +66,7 @@ passes:
     depends_on: []
 
   - name: missile_identity
+    phase: identity
     required: false
     kind: entities
     input_mode: document_only
@@ -72,6 +78,7 @@ passes:
     depends_on: []
 
   - name: missile_kinematics
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -83,6 +90,7 @@ passes:
     depends_on: []
 
   - name: missile_guidance
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -94,6 +102,7 @@ passes:
     depends_on: []
 
   - name: missile_airframe
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -105,6 +114,7 @@ passes:
     depends_on: []
 
   - name: missile_speed_timing
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -116,6 +126,7 @@ passes:
     depends_on: []
 
   - name: missile_propulsion
+    phase: field_group
     required: false
     kind: entities
     input_mode: document_only
@@ -127,6 +138,7 @@ passes:
     depends_on: []
 
   - name: system_links
+    phase: relationship
     required: true
     kind: relationships_only
     input_mode: document_plus_entity_refs

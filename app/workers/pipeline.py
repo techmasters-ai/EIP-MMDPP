@@ -6950,21 +6950,37 @@ def _update_summary_stage_run(
 
 
 def _try_advance_phase(db, document_id: str, run_id: str) -> None:
-    """Decide whether to dispatch the next entity pass, system_links, or merge.
+    """Dispatch the next pass based on explicit phase ordering (C1.6).
 
     Called by each finishing pass (COMPLETE / SKIPPED / FAILED-optional) so
     the fan-in automatically advances to the next stage without a separate
     coordinator task.
 
-    Three mutually exclusive branches (return after the first successful
+    Phases are declared on each ``PassManifest`` (``phase: identity |
+    field_group | relationship``).  Branches execute in strict phase order —
+    later phases are not eligible until ALL earlier-phase passes have
+    terminalized.
+
+    Four mutually exclusive branches (return after the first successful
     dispatch so we do exactly one dispatch per finisher):
 
-    1. If in-flight entity passes < concurrency cap → dispatch the next
-       not-yet-dispatched entity pass.
-    2. If all entity passes resolved AND the bundle defines system_links AND
-       system_links not yet dispatched → dispatch system_links.
-    3. If system_links resolved (or bundle has no system_links and all entity
-       passes are terminal) AND merge not yet dispatched → dispatch merge.
+    1. **Identity** — while in-flight entity passes < cap AND any identity
+       pass not yet dispatched/terminal: dispatch the next identity pass.
+    2. **Field-group** — ONLY after ALL identity passes terminalize.  While
+       in-flight entity passes < cap AND any field_group pass not yet
+       dispatched/terminal: dispatch the next field_group pass.
+       If no field_group passes exist in the bundle, this branch is skipped
+       (back-compat: identity-only + relationship bundles work as before).
+    3. **Relationship / system_links** — ONLY after ALL field_group passes
+       terminalize (or after identity if no field_group passes exist).
+       Dispatch system_links if present and not yet dispatched.
+    4. **Merge** — ONLY after system_links terminalizes (or after field_group /
+       identity if no system_links pass exists).  Dispatch merge via
+       ``celery_app.send_task`` (forward-reference safe).
+
+    Prerequisite for C3 (router hook) and C4 (identity-first chunk narrowing).
+    ``_claim_and_dispatch_pass`` remains the single dispatch chokepoint for
+    all per-pass Celery dispatches.
 
     Forward reference: ``derive_ontology_graph_merge`` is defined later in
     this module (Task 6).  We use ``celery_app.send_task(...)`` with the
@@ -6992,57 +7008,99 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     db.refresh(run, ["dispatched_phases"])
 
     manifest = load_bundle_manifest(run.ontology_bundle_key)
-    entity_passes = [p.name for p in manifest.passes if not p.depends_on]
 
-    # Branch 1: dispatch next entity pass if cap allows.
-    in_flight = sum(
-        1 for k, v in (run.dispatched_phases or {}).items()
-        if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+    # Partition passes by explicit phase field (C1.6).
+    identity_passes = [p.name for p in manifest.passes if p.phase == "identity"]
+    field_group_passes = [p.name for p in manifest.passes if p.phase == "field_group"]
+    has_system_links = any(
+        p.name == "system_links" and p.phase == "relationship"
+        for p in manifest.passes
     )
+
+    # Shared helper: names of all entity passes (identity + field_group) that are
+    # completed or in-flight, derived from dispatched_phases.
+    dp = run.dispatched_phases or {}
+    completed_entity_names = {
+        k.removeprefix("entity_pass_") for k, v in dp.items()
+        if k.startswith("entity_pass_") and v.get("state") == "completed"
+    }
+    in_flight_entity_names = {
+        k.removeprefix("entity_pass_") for k, v in dp.items()
+        if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
+    }
+    in_flight = len(in_flight_entity_names)
+
+    # ------------------------------------------------------------------
+    # Branch 1 — Identity: dispatch next un-started identity pass.
+    # ------------------------------------------------------------------
     if in_flight < settings.pass_concurrency_per_document:
-        completed_or_terminal = {
-            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
-            if k.startswith("entity_pass_") and v.get("state") == "completed"
-        }
-        in_flight_names = {
-            k.removeprefix("entity_pass_") for k, v in (run.dispatched_phases or {}).items()
-            if k.startswith("entity_pass_") and v.get("state") in ("claimed", "dispatched")
-        }
-        next_pass = next(
-            (p for p in entity_passes
-             if p not in completed_or_terminal and p not in in_flight_names),
+        next_identity = next(
+            (p for p in identity_passes
+             if p not in completed_entity_names and p not in in_flight_entity_names),
             None,
         )
-        if next_pass is not None:
-            _claim_and_dispatch_pass(db, document_id, run_id, next_pass)
+        if next_identity is not None:
+            _claim_and_dispatch_pass(db, document_id, run_id, next_identity)
             return  # one dispatch per finisher
 
-    # Branch 2: dispatch system_links if all entity passes resolved AND
-    # the bundle defines a system_links pass (not all bundles do — guard
-    # against StopIteration in the per-pass task body).
-    n_resolved = count_terminal_passes(db, run_id, entity_passes)
-    has_system_links = any(p.name == "system_links" for p in manifest.passes)
-    if n_resolved >= len(entity_passes) and has_system_links:
+    # Guard: all identity passes must be terminal before proceeding.
+    # Use dispatched_phases ("completed" state) as the fast check — this is
+    # the same source used by Branch 1's completed_or_terminal set and is
+    # cheaper than a DB query for the common case.
+    identity_all_terminal = all(p in completed_entity_names for p in identity_passes)
+    if not identity_all_terminal:
+        return  # identity still in-flight or undispatched; hold branches 2/3/4
+
+    # ------------------------------------------------------------------
+    # Branch 2 — Field-group: dispatch next un-started field_group pass
+    # (only after ALL identity passes have terminated).
+    # ------------------------------------------------------------------
+    if field_group_passes:
+        if in_flight < settings.pass_concurrency_per_document:
+            next_fg = next(
+                (p for p in field_group_passes
+                 if p not in completed_entity_names and p not in in_flight_entity_names),
+                None,
+            )
+            if next_fg is not None:
+                _claim_and_dispatch_pass(db, document_id, run_id, next_fg)
+                return  # one dispatch per finisher
+
+        # Guard: all field_group passes must be terminal before proceeding.
+        n_fg_terminal = count_terminal_passes(db, run_id, field_group_passes)
+        if n_fg_terminal < len(field_group_passes):
+            return  # field_group still running; hold branches 3/4
+
+    # ------------------------------------------------------------------
+    # Branch 3 — Relationship / system_links (only after all field_group
+    # passes terminalize, or after identity if no field_group passes exist).
+    # dispatch system_links if present and not yet dispatched.
+    # ------------------------------------------------------------------
+    if has_system_links:
         sl_state = read_phase_state(db, run_id, "system_links")
         if sl_state is None:
             _claim_and_dispatch_pass(db, document_id, run_id, "system_links")
             return
 
-    # Branch 3: dispatch merge if (a) system_links is resolved, OR
-    # (b) the bundle has no system_links and all entity passes are terminal.
+    # ------------------------------------------------------------------
+    # Branch 4 — Merge: dispatch after system_links terminalizes.
     # send_task is used (not .delay) because derive_ontology_graph_merge is
     # defined later in this same file (forward reference). queue="graph" is
     # MANDATORY: without it the message routes to the default "celery" queue
     # where any subscribed worker may grab it. Stale celery processes (e.g.
     # workers started before per-pass-fanin commits) ack-drop with KeyError
     # on the unregistered task name, silently losing the merge dispatch.
+    # ------------------------------------------------------------------
     if has_system_links:
         sl_pass = load_pass_output(db, run_id, "system_links")
         sl_resolved = sl_pass is not None and sl_pass.execution_status in (
             "COMPLETE", "SKIPPED", "FAILED"
         )
     else:
-        sl_resolved = (n_resolved >= len(entity_passes))
+        # No system_links in bundle: resolved when all entity passes terminal.
+        all_entity_passes = identity_passes + field_group_passes
+        n_all_terminal = count_terminal_passes(db, run_id, all_entity_passes)
+        sl_resolved = (n_all_terminal >= len(all_entity_passes))
 
     if sl_resolved:
         merge_state = read_phase_state(db, run_id, "merge")
@@ -7696,7 +7754,12 @@ def reconcile_ontology_graph_runs(self) -> dict:
                 )
                 continue
 
-            entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+            # C1.6: use explicit phase to partition passes (replaces old
+            # ``not p.depends_on`` heuristic — identity + field_group are
+            # the entity passes; relationship passes are system_links).
+            entity_passes = [
+                p.name for p in manifest.passes if p.phase in ("identity", "field_group")
+            ]
 
             dispatched_phases = run.dispatched_phases or {}
 
@@ -7947,7 +8010,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
     1. Resolve run_id + PipelineRun (orphaned-run safety net).
     2. Create the derive_ontology_graph summary StageRun with status=RUNNING
        so finalize_document's REQUIRED_STAGES gate sees this stage as in-flight.
-    3. Load the manifest; identify entity passes (p.depends_on empty).
+    3. Load the manifest; identify identity passes (p.phase == "identity").
     4. Dispatch the first pass_concurrency_per_document entity passes via
        claim_phase → .delay → mark_phase_dispatched (same flow used by
        _try_advance_phase follow-ups in derive_ontology_graph_pass).
@@ -8131,7 +8194,12 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             }
 
         manifest = load_bundle_manifest(bundle_key)
-        entity_passes = [p.name for p in manifest.passes if not p.depends_on]
+        # C1.6: initial wave dispatches ONLY identity passes.  Field-group
+        # passes are deferred to _try_advance_phase (Branch 2) which fires
+        # after all identity passes terminalize.  This is the prerequisite
+        # for C4b (identity-first chunk narrowing): if field-group passes
+        # were queued here they would race ahead of the identity results.
+        entity_passes = [p.name for p in manifest.passes if p.phase == "identity"]
 
         # Second session: _claim_and_dispatch_pass commits phase records
         # independently. Using a single session would interleave the RUNNING

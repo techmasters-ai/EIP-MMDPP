@@ -45,12 +45,13 @@ def _fake_run(run_id: str = _RUN_ID, bundle_key: str = _BUNDLE_KEY):
     return run
 
 
-def _fake_pass_def(name: str, *, depends_on=None):
+def _fake_pass_def(name: str, *, depends_on=None, phase: str = "identity"):
     return SimpleNamespace(
         name=name,
         required=True,
         depends_on=list(depends_on or []),
         input_mode="document_only",
+        phase=phase,
     )
 
 

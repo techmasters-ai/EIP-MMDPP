@@ -58,7 +58,7 @@ _PHASE_B = f"entity_pass_{_PASS_B}"
 # ---------------------------------------------------------------------------
 
 
-def _fake_pass_def(name: str, *, required: bool = True):
+def _fake_pass_def(name: str, *, required: bool = True, phase: str = "identity"):
     return SimpleNamespace(
         name=name,
         kind="entities_and_relationships",
@@ -71,6 +71,8 @@ def _fake_pass_def(name: str, *, required: bool = True):
         skip_if_no_upstream_endpoints=False,
         module=f"extraction_schemas.{name}",
         template_class=name.title().replace("_", "") + "Pass",
+        # C1.6: explicit phase field required by _try_advance_phase.
+        phase=phase,
     )
 
 
@@ -617,20 +619,22 @@ class TestStuckWithoutAdvance:
         run_id = pipeline_run_factory(status="PROCESSING")
         _set_run_mode(db_session, run_id)
 
-        # Use a manifest that includes system_links (depends_on=[_PASS_A] marks it as
+        # Use a manifest that includes system_links (phase="relationship" marks it as
         # a non-entity pass so entity_passes contains only _PASS_A and _PASS_B).
         sl_pass_def = SimpleNamespace(
             name="system_links",
             kind="relationships_only",
-            input_mode="document_only",
+            input_mode="document_plus_entity_refs",
             required=True,
-            depends_on=[_PASS_A],  # non-empty → not an entity pass
+            depends_on=[_PASS_A],
             primary_entity_types=[],
             bridge_entity_types=[],
             extracted_relationship_types=["ASSOCIATED_WITH"],
             skip_if_no_upstream_endpoints=True,
             module="extraction_schemas.system_links",
             template_class="SystemLinksPass",
+            # C1.6: explicit phase field required by reconciler entity_passes filter.
+            phase="relationship",
         )
         manifest_with_sl = SimpleNamespace(
             bundle_key=_BUNDLE_KEY,

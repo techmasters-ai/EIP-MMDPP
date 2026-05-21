@@ -9,12 +9,13 @@ Spec §2 Bundle loader API.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from app.models.ingest import DocumentGraphExtraction
@@ -29,6 +30,26 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _BUNDLE_ROOT = _REPO_ROOT / "ontology_bundles"
 
 LEGACY_BUNDLE_LABEL = "legacy/unknown"
+
+logger = logging.getLogger(__name__)
+
+# Valid phase values for pass definitions.
+PassPhase = Literal["identity", "field_group", "relationship"]
+
+
+def _infer_pass_phase(name: str, input_mode: str) -> PassPhase:
+    """Infer the phase for a pass that doesn't declare one explicitly.
+
+    Rules (in priority order):
+    1. Name ends with ``_identity``  → ``identity``
+    2. ``input_mode == "document_plus_entity_refs"`` → ``relationship``
+    3. Otherwise → ``field_group``
+    """
+    if name.endswith("_identity"):
+        return "identity"
+    if input_mode == "document_plus_entity_refs":
+        return "relationship"
+    return "field_group"
 
 
 class BundleResolutionError(ValueError):
@@ -50,6 +71,30 @@ class PassManifest(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     skip_if_no_upstream_endpoints: bool = False
     skip_justification: str | None = None
+    # C1.6: explicit phase — required in new bundles; inferred + INFO-logged when absent
+    # for back-compat with existing bundles that pre-date this field.
+    phase: PassPhase = Field(default="field_group")  # default overridden by validator below
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_phase_when_missing(cls, data: Any) -> Any:
+        """Infer ``phase`` when the manifest doesn't declare it.
+
+        If ``phase`` is present, use it directly (pydantic validates the Literal).
+        If absent, derive it from ``name`` + ``input_mode`` and log INFO.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "phase" not in data:
+            name = data.get("name", "")
+            input_mode = data.get("input_mode", "document_only")
+            inferred = _infer_pass_phase(name, input_mode)
+            logger.info(
+                "BundleManifest: inferred phase=%s for pass %s (manifest didn't declare it).",
+                inferred, name,
+            )
+            data = {**data, "phase": inferred}
+        return data
 
 
 class BundleManifest(BaseModel):
