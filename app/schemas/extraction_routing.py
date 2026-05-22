@@ -59,6 +59,13 @@ class ChunkScopeDiagnostics(BaseModel):
     post_filter_retry_count: int
     filter_strategy: str  # "overfetch_post_filter"
 
+    # Short-fetch flag (rev 16 Important #2): propagated from ChunkSearchDiagnostics.
+    # True if post_filter_candidate_count < desired_top_n even after retry at 2000.
+    # mode stays selected_refs when short_fetch=True — diagnostic-only for v1.
+    # Callers MUST inspect this field; future work can promote it to a fail-open
+    # trigger if production data shows incomplete retrieval causes quality regressions.
+    short_fetch: bool = False
+
 
 class ChunkScopeResponse(BaseModel):
     mode: Literal["selected_refs", "full", "would_skip"]

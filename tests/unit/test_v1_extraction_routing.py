@@ -602,7 +602,15 @@ class TestNarrowingIneffectiveWarning:
 class TestAsyncEmbedViaExecutor:
     @pytest.mark.asyncio
     async def test_async_embed_via_run_in_executor(self, client):
-        """Verify embed_texts is invoked through loop.run_in_executor."""
+        """Verify the endpoint succeeds when embed_texts is called (sync function wired
+        through loop.run_in_executor in the implementation).
+
+        Minor #7 (rev 16): Patching asyncio.AbstractEventLoop.run_in_executor to assert
+        wrapping is not feasible without significant asyncio internals coupling. This
+        test asserts the functional outcome: the endpoint returns 200 with valid
+        selected_refs data, which proves embed_texts ran successfully from within the
+        async endpoint (i.e., the executor path did not crash).
+        """
         results = [_make_result("#/texts/0", "chunk text", 0.78)]
         pass_def = _make_pass_def()
         manifest = _make_manifest(passes=[pass_def])
@@ -644,15 +652,8 @@ class TestAsyncEmbedViaExecutor:
             resp = await client.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
 
         assert resp.status_code == 200, resp.text
-        # Verify embed_texts was called exactly once
-        # (The tracking above isn't perfect for run_in_executor internals
-        # but we can at least verify the endpoint returns 200 and the
-        # embed_texts mock was invoked — the sync function IS called from
-        # within run_in_executor by the endpoint impl.)
-        # A deeper assertion: the endpoint code path under test uses
-        # `await loop.run_in_executor(None, _embed)` where _embed() calls embed_texts.
-        # We verified this by reading the source. The functional test is that
-        # the response is 200 and contains valid data (proving embed ran).
+        # Functional assertion: 200 + valid data proves embed_texts ran
+        # within the executor path without crashing.
         data = resp.json()
         assert data["mode"] == "selected_refs"
         assert data["self_refs"] == ["#/texts/0"]
@@ -703,3 +704,137 @@ class TestEmptyRetrievalDiagnostics:
         assert diag["full_doc_token_estimate"] == 3000
         assert diag["vector_threshold"] == 0.55
         assert diag["would_skip_if_fallback_disabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# 13. Important #1 — template resolution failure → structured mode=full (rev 16)
+# ---------------------------------------------------------------------------
+
+class TestTemplateResolutionError:
+    @pytest.mark.asyncio
+    async def test_template_resolution_error_returns_mode_full(self, client):
+        """_resolve_template_class raises → structured ChunkScopeResponse mode=full,
+        fallback_reason='template_resolution_error' (NOT a bare 500).
+
+        This test is RED until Important #1 fix is applied.
+        """
+        pass_def = _make_pass_def()
+        manifest = _make_manifest(passes=[pass_def])
+
+        with (
+            _patch_manifest(manifest),
+            _patch_embed(),
+            _patch_full_doc_estimate(0),
+            _patch_graph_store()[0],
+            patch(
+                "app.api.v1.extraction_routing._resolve_template_class",
+                side_effect=ImportError("no module named 'ontology_bundles.bad_module'"),
+            ),
+        ):
+            resp = await client.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, (
+            f"Expected 200 structured response on template resolution error, "
+            f"got {resp.status_code}: {resp.text}"
+        )
+        data = resp.json()
+        assert data["mode"] == "full", (
+            f"Expected mode=full on template resolution error, got mode={data['mode']!r}"
+        )
+        assert data["diagnostics"]["fallback_reason"] == "template_resolution_error", (
+            f"Expected fallback_reason='template_resolution_error', "
+            f"got {data['diagnostics']['fallback_reason']!r}"
+        )
+        assert data["self_refs"] == []
+
+
+# ---------------------------------------------------------------------------
+# 14. Important #2 — short_fetch propagates from search_diag to response (rev 16)
+# ---------------------------------------------------------------------------
+
+class TestShortFetchPropagation:
+    @pytest.mark.asyncio
+    async def test_short_fetch_true_propagates_to_response_diagnostics(self, client, caplog):
+        """When search_diag.short_fetch=True, response.diagnostics.short_fetch must be True
+        and a WARNING must be logged.
+
+        This test is RED until Important #2 fix is applied.
+        """
+        results = [_make_result(f"#/texts/{i}", f"chunk text {i}", score=0.70) for i in range(3)]
+        pass_def = _make_pass_def()
+        manifest = _make_manifest(passes=[pass_def])
+
+        # short_fetch=True simulates: post-filter survivors < desired_top_n after retry
+        short_fetch_diag = _FakeSearchDiag(
+            ann_top_k_requested=2000,
+            post_filter_candidate_count=3,
+            post_filter_retry_count=1,
+            short_fetch=True,
+        )
+
+        reranked_output = [
+            {
+                "content_text": f"chunk text {i}",
+                "self_ref": f"#/texts/{i}",
+                "vector_score": 0.70,
+                "reranker_score": 0.80 - i * 0.01,
+            }
+            for i in range(3)
+        ]
+
+        with (
+            _patch_manifest(manifest),
+            _patch_embed(),
+            _patch_search(results=results, diag=short_fetch_diag),
+            _patch_full_doc_estimate(5000),
+            _patch_template_class(),
+            _patch_build_query(),
+            _patch_graph_store()[0],
+            patch("app.api.v1.extraction_routing.rrk.rerank", return_value=reranked_output),
+            caplog.at_level(logging.WARNING, logger="app.api.v1.extraction_routing"),
+        ):
+            resp = await client.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["mode"] == "selected_refs", (
+            f"short_fetch=True should NOT change mode; expected selected_refs, got {data['mode']!r}"
+        )
+        assert data["diagnostics"]["short_fetch"] is True, (
+            "diagnostics.short_fetch must be True when search_diag.short_fetch=True"
+        )
+        # Check WARNING was logged
+        warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("short-fetch" in m.lower() or "short_fetch" in m.lower() for m in warning_msgs), (
+            f"Expected short-fetch WARNING in logs; got: {warning_msgs}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_short_fetch_false_default_in_response(self, client):
+        """When search_diag.short_fetch=False (default), response.diagnostics.short_fetch=False."""
+        results = [_make_result("#/texts/0", "chunk text", 0.78)]
+        pass_def = _make_pass_def()
+        manifest = _make_manifest(passes=[pass_def])
+        reranked_output = [
+            {
+                "content_text": "chunk text",
+                "self_ref": "#/texts/0",
+                "vector_score": 0.78,
+                "reranker_score": 0.90,
+            }
+        ]
+
+        with (
+            _patch_manifest(manifest),
+            _patch_embed(),
+            _patch_search(results=results, diag=_FakeSearchDiag(short_fetch=False)),
+            _patch_full_doc_estimate(1000),
+            _patch_template_class(),
+            _patch_build_query(),
+            _patch_graph_store()[0],
+            patch("app.api.v1.extraction_routing.rrk.rerank", return_value=reranked_output),
+        ):
+            resp = await client.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["diagnostics"]["short_fetch"] is False
