@@ -1,6 +1,9 @@
-"""C1.6 — _try_advance_phase phase-gated branching tests.
+"""C1.6r — _try_advance_phase concurrent entity dispatch tests.
 
-Task 1.6.5: integration test covering all four Branches + transitions.
+C1.6r removes the strict identity-first serialization gate.  Identity and
+field_group passes share the per-document concurrency budget.  Relationship
+passes are still gated on ALL entity passes (identity ∪ field_group) being
+terminal.  Merge is still gated on relationship terminal.
 
 Tests are fully hermetic: no real DB, no real Celery.  All I/O is mocked
 at the ``app.workers.pipeline`` module level.
@@ -15,14 +18,19 @@ Each test builds:
     ``load_pass_output``, ``_claim_and_dispatch_pass``, ``claim_phase``,
     ``mark_phase_dispatched``, and ``celery_app.send_task``.
 
-We test six scenarios:
-  (a) Branch 1 only — identity in-flight < cap → dispatches next identity.
-  (b) Branch 1 → Branch 2 transition — all identity terminal, Branch 2 fires.
-  (c) Branch 2 ordering guard — identity in-flight → Branch 2 does NOT fire.
-  (d) Branch 2 → Branch 3 transition — all field_group terminal → Branch 3.
-  (e) Branch 3 → Branch 4 transition — system_links terminal → Branch 4 (merge).
-  (f) Back-compat: identity + relationship only (no field_group) → Branch 2
-      skipped; identity-terminal triggers Branch 3 directly.
+Invariants tested (C1.6r):
+  (a) Branch 1 (entity): identity and field_group share the cap; identity-
+      first ordering is scheduling preference only, NOT a hard gate.
+  (b) Concurrent entity dispatch: field_group passes are eligible while
+      identity passes are still in-flight (no serialization gate).
+  (c) All-entity-terminal gate: system_links is NOT dispatched until ALL
+      entity passes (identity ∪ field_group) are terminal.
+  (d) Relationship-terminal-before-merge: merge is NOT dispatched until
+      system_links is terminal.
+  (e) Back-compat: identity + relationship only (no field_group) → Branch 2
+      (system_links) fires directly after identity terminates.
+  (f) FAILED-optional entity pass counts as terminal (any phase).
+  (g) One dispatch per finisher.
 
 Run standalone (no DB required):
     python3 -m pytest tests/unit/test_try_advance_phase_by_phase.py -v
@@ -110,10 +118,10 @@ _NO_FG_PASSES = [
 
 
 # ---------------------------------------------------------------------------
-# (a) Branch 1 — identity in-flight < cap → dispatch next identity
+# (a) Branch 1 — entity (identity + field_group) dispatch
 # ---------------------------------------------------------------------------
 
-class TestBranch1DispatchesNextIdentity:
+class TestBranch1EntityDispatch:
 
     def _run(self, dispatched_phases: dict, concurrency_cap: int = 4):
         manifest = _make_manifest(_FULL_PASSES)
@@ -141,11 +149,11 @@ class TestBranch1DispatchesNextIdentity:
         calls = self._run({})
         assert len(calls) == 1
         assert calls[0] in ("radar_identity", "missile_identity"), (
-            f"Expected an identity pass, got {calls[0]!r}"
+            f"Expected an identity pass (first in list), got {calls[0]!r}"
         )
 
     def test_dispatches_second_identity_when_first_in_flight(self):
-        """One identity in-flight, cap=4 → second identity dispatched."""
+        """One identity in-flight, cap=4 → second identity dispatched (identity first in list)."""
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "dispatched"},
         }
@@ -153,7 +161,7 @@ class TestBranch1DispatchesNextIdentity:
         assert len(calls) == 1
         assert calls[0] == "missile_identity"
 
-    def test_no_dispatch_when_both_identity_in_flight(self):
+    def test_no_dispatch_when_at_cap(self):
         """Both identity passes in-flight at cap=2 → no dispatch (cap reached)."""
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "dispatched"},
@@ -162,80 +170,42 @@ class TestBranch1DispatchesNextIdentity:
         calls = self._run(dispatched_phases, concurrency_cap=2)
         assert len(calls) == 0
 
-    def test_branch1_dispatches_only_identity_not_field_group(self):
-        """With identity still pending, Branch 1 dispatches identity only.
+    def test_field_group_dispatched_when_identity_in_flight_and_cap_allows(self):
+        """C1.6r: field_group passes are eligible while identity is in-flight.
 
-        With radar_identity still in-flight and missile_identity not yet
-        dispatched, Branch 1 dispatches missile_identity (the next identity
-        pass) rather than any field_group pass.  field_group passes are NOT
-        dispatched until all identity passes terminate (Branch 2).
+        With radar_identity in-flight, missile_identity terminal, and cap=4,
+        Branch 1 dispatches the next un-started entity pass from the ordered
+        list (identity first, then field_group).  missile_identity is
+        terminal, so the next eligible pass is radar_power_rf (field_group).
+        This confirms the strict serialization gate is removed.
         """
-        # One identity in-flight, one identity still un-dispatched.
         dispatched_phases = {
-            "entity_pass_radar_identity": {"state": "dispatched"},
+            "entity_pass_radar_identity": {"state": "dispatched"},   # in-flight
+            "entity_pass_missile_identity": {"state": "completed"},   # terminal
         }
         calls = self._run(dispatched_phases, concurrency_cap=4)
-        # Branch 1 must dispatch missile_identity (identity), not field_group.
-        assert calls == ["missile_identity"], (
-            f"Branch 1 should dispatch missile_identity; got {calls}"
+        # Branch 1 should dispatch the next un-started entity: radar_power_rf
+        # (first field_group pass, since missile_identity is already terminal and
+        # radar_identity is in-flight).
+        assert len(calls) == 1
+        assert calls[0] in ("radar_power_rf", "missile_kinematics"), (
+            f"Expected a field_group pass (identity in-flight but cap allows); got {calls}"
         )
-        assert not any(
-            n in ("radar_power_rf", "missile_kinematics") for n in calls
-        ), f"Branch 1 dispatched a field_group pass: {calls}"
 
 
 # ---------------------------------------------------------------------------
-# (b) Branch 1 → Branch 2 transition
+# (b) Concurrent entity dispatch confirmed (field_group while identity runs)
 # ---------------------------------------------------------------------------
 
-class TestBranch1ToBranch2Transition:
-    """When all identity passes are terminal, Branch 1 must not dispatch;
-    Branch 2 fires and dispatches a field_group pass."""
+class TestConcurrentEntityDispatch:
+    """C1.6r: field_group passes are eligible alongside identity — no serialization gate."""
 
-    def test_branch2_fires_when_all_identity_terminal(self):
-        """Both identity passes completed → Branch 2 dispatches a field_group pass."""
-        manifest = _make_manifest(_FULL_PASSES)
-        # All identity passes completed; no field_group passes yet.
-        dispatched_phases = {
-            "entity_pass_radar_identity": {"state": "completed"},
-            "entity_pass_missile_identity": {"state": "completed"},
-        }
-        run = _make_run(dispatched_phases)
-        db = _make_db(run)
-
-        dispatched_calls = []
-
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
-            dispatched_calls.append(pass_name)
-            return True
-
-        # count_terminal_passes: only count field_group passes (0 so far)
-        def fake_count_terminal(db_, run_id, names):
-            return 0  # no field_group passes completed yet
-
-        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
-             patch("app.workers.pipeline._claim_and_dispatch_pass",
-                   side_effect=fake_claim_and_dispatch), \
-             patch("app.workers.pipeline.count_terminal_passes",
-                   side_effect=fake_count_terminal), \
-             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
-            _invoke_advance(db, _DOC_ID, _RUN_ID)
-
-        assert len(dispatched_calls) == 1
-        assert dispatched_calls[0] in ("radar_power_rf", "missile_kinematics"), (
-            f"Expected a field_group pass from Branch 2, got {dispatched_calls!r}"
-        )
-
-    def test_branch1_returns_without_dispatch_when_all_identity_complete(self):
-        """With all identity completed AND one field_group in-flight at cap,
-        Branch 1 should not try to dispatch anything (all identity done,
-        cap consumed by in-flight field_group)."""
+    def test_field_group_eligible_while_identity_in_flight(self):
+        """Both identity passes in-flight, cap=4 → field_group dispatched next."""
         manifest = _make_manifest(_FULL_PASSES)
         dispatched_phases = {
-            "entity_pass_radar_identity": {"state": "completed"},
-            "entity_pass_missile_identity": {"state": "completed"},
-            "entity_pass_radar_power_rf": {"state": "dispatched"},
-            "entity_pass_missile_kinematics": {"state": "dispatched"},
+            "entity_pass_radar_identity": {"state": "dispatched"},
+            "entity_pass_missile_identity": {"state": "dispatched"},
         }
         run = _make_run(dispatched_phases)
         db = _make_db(run)
@@ -250,25 +220,29 @@ class TestBranch1ToBranch2Transition:
              patch("app.workers.pipeline._claim_and_dispatch_pass",
                    side_effect=fake_claim_and_dispatch), \
              patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
-             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 2):
+             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
-        # At cap=2 with 2 field_group in-flight: no dispatch expected.
-        assert len(dispatched_calls) == 0
+        # identity passes in-flight, cap=4 → field_group is next in list
+        assert len(dispatched_calls) == 1
+        assert dispatched_calls[0] in ("radar_power_rf", "missile_kinematics"), (
+            f"Expected field_group dispatch while identity in-flight; got {dispatched_calls}"
+        )
 
-    def test_branch2_fires_after_failed_optional_identity_pass(self):
-        """Regression: a FAILED-optional identity pass still counts as terminal
-        in the dispatched_phases JSONB (mark_phase_terminal writes
-        state='completed' regardless of `result`). Branch 2 must fire when all
-        identity passes are terminal — including any that failed-optional —
-        because the identity guard reads `state == "completed"`, not `result`.
+    def test_failed_optional_entity_pass_counts_as_terminal(self):
+        """Regression: FAILED-optional entity pass (any phase) counts as terminal.
+
+        mark_phase_terminal writes state='completed' regardless of `result`.
+        Branch 1 must treat a FAILED-optional entity pass as terminal and
+        continue dispatching remaining passes — whether the failed pass was
+        an identity or field_group pass.
         (Required identity-pass failures raise IngestFailed before
         _try_advance_phase is called, so the FAILED-required path is not
         exercised here.)
         """
         manifest = _make_manifest(_FULL_PASSES)
-        # radar_identity FAILED (optional) — mark_phase_terminal still wrote
-        # state="completed" with result="failed". missile_identity succeeded.
+        # radar_identity FAILED (optional) — still terminal; missile_identity succeeded.
+        # No field_group dispatched yet.
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "completed", "result": "failed"},
             "entity_pass_missile_identity": {"state": "completed", "result": "succeeded"},
@@ -289,27 +263,20 @@ class TestBranch1ToBranch2Transition:
              patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
-        # Branch 2 fired — a field_group pass was dispatched even though
-        # one identity pass failed-optional.
+        # FAILED-optional identity counts as terminal; next entity pass dispatched.
         assert len(dispatched_calls) == 1
         assert dispatched_calls[0] in ("radar_power_rf", "missile_kinematics"), (
-            f"Expected a field_group pass from Branch 2 after FAILED-optional "
-            f"identity, got {dispatched_calls!r}"
+            f"Expected a field_group pass after FAILED-optional identity; got {dispatched_calls!r}"
         )
 
-
-# ---------------------------------------------------------------------------
-# (c) Branch 2 ordering guard — identity still in-flight → no field_group dispatch
-# ---------------------------------------------------------------------------
-
-class TestBranch2OrderingGuard:
-    """Field_group passes must NOT be dispatched while any identity pass is in-flight."""
-
-    def test_no_field_group_while_identity_in_flight(self):
-        """One identity in-flight → Branch 2 does NOT fire (identity not all terminal)."""
+    def test_no_dispatch_when_all_entity_in_flight_at_cap(self):
+        """All 4 entity passes in-flight at cap=4 → no dispatch."""
         manifest = _make_manifest(_FULL_PASSES)
         dispatched_phases = {
-            "entity_pass_radar_identity": {"state": "dispatched"},  # in-flight
+            "entity_pass_radar_identity":     {"state": "dispatched"},
+            "entity_pass_missile_identity":   {"state": "dispatched"},
+            "entity_pass_radar_power_rf":     {"state": "dispatched"},
+            "entity_pass_missile_kinematics": {"state": "dispatched"},
         }
         run = _make_run(dispatched_phases)
         db = _make_db(run)
@@ -327,49 +294,20 @@ class TestBranch2OrderingGuard:
              patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
-        # Branch 1 should dispatch missile_identity (next undispatched identity).
-        # radar_power_rf / missile_kinematics should NOT be dispatched.
-        assert not any(
-            n in ("radar_power_rf", "missile_kinematics") for n in dispatched_calls
-        ), f"Branch 2 fired while identity was still in-flight: {dispatched_calls}"
-
-    def test_no_field_group_when_one_identity_not_yet_dispatched(self):
-        """Even with cap space, field_group must wait until identity finishes."""
-        manifest = _make_manifest(_FULL_PASSES)
-        # missile_identity not yet dispatched at all.
-        dispatched_phases = {
-            "entity_pass_radar_identity": {"state": "completed"},
-        }
-        run = _make_run(dispatched_phases)
-        db = _make_db(run)
-
-        dispatched_calls = []
-
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
-            dispatched_calls.append(pass_name)
-            return True
-
-        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
-             patch("app.workers.pipeline._claim_and_dispatch_pass",
-                   side_effect=fake_claim_and_dispatch), \
-             patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
-             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
-            _invoke_advance(db, _DOC_ID, _RUN_ID)
-
-        # Branch 1 should dispatch missile_identity (still un-dispatched identity).
-        assert dispatched_calls == ["missile_identity"], (
-            f"Expected only missile_identity; got {dispatched_calls}"
+        assert len(dispatched_calls) == 0, (
+            f"Expected no dispatch at cap with all entity in-flight; got {dispatched_calls}"
         )
 
 
 # ---------------------------------------------------------------------------
-# (d) Branch 2 → Branch 3 transition
+# (c) All-entity-terminal gate — system_links gated on identity ∪ field_group
 # ---------------------------------------------------------------------------
 
-class TestBranch2ToBranch3Transition:
-    """When all field_group passes terminalize, Branch 3 dispatches system_links."""
+class TestAllEntityTerminalBeforeRelationship:
+    """system_links must NOT be dispatched until ALL entity passes
+    (identity ∪ field_group) are terminal."""
 
-    def test_system_links_dispatched_after_all_field_group_terminal(self):
+    def test_system_links_dispatched_after_all_entity_terminal(self):
         manifest = _make_manifest(_FULL_PASSES)
         # All identity + all field_group completed.
         dispatched_phases = {
@@ -387,9 +325,9 @@ class TestBranch2ToBranch3Transition:
             dispatched_calls.append(pass_name)
             return True
 
-        # All 4 non-relationship passes are terminal.
+        # All 4 entity passes are terminal.
         def fake_count_terminal(db_, run_id, names):
-            return len(names)  # all terminal
+            return len(names)
 
         with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
              patch("app.workers.pipeline._claim_and_dispatch_pass",
@@ -401,11 +339,11 @@ class TestBranch2ToBranch3Transition:
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
         assert dispatched_calls == ["system_links"], (
-            f"Expected system_links dispatch from Branch 3; got {dispatched_calls!r}"
+            f"Expected system_links dispatch from Branch 2; got {dispatched_calls!r}"
         )
 
     def test_system_links_not_dispatched_when_field_group_still_in_flight(self):
-        """Branch 3 must not fire while field_group passes are still running."""
+        """Branch 2 must not fire while any field_group pass is still running."""
         manifest = _make_manifest(_FULL_PASSES)
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "completed"},
@@ -436,17 +374,49 @@ class TestBranch2ToBranch3Transition:
             _invoke_advance(db, _DOC_ID, _RUN_ID)
 
         assert "system_links" not in dispatched_calls, (
-            f"system_links should NOT be dispatched while field_group still running; "
+            f"system_links should NOT be dispatched while entity passes still running; "
+            f"got {dispatched_calls!r}"
+        )
+
+    def test_system_links_not_dispatched_when_identity_still_in_flight(self):
+        """Branch 2 must not fire while any identity pass is still running."""
+        manifest = _make_manifest(_FULL_PASSES)
+        # identity still running; field_group completed
+        dispatched_phases = {
+            "entity_pass_radar_identity": {"state": "dispatched"},  # still running
+            "entity_pass_missile_identity": {"state": "completed"},
+            "entity_pass_radar_power_rf": {"state": "completed"},
+            "entity_pass_missile_kinematics": {"state": "completed"},
+        }
+        run = _make_run(dispatched_phases)
+        db = _make_db(run)
+
+        dispatched_calls = []
+
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+            dispatched_calls.append(pass_name)
+            return True
+
+        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline._claim_and_dispatch_pass",
+                   side_effect=fake_claim_and_dispatch), \
+             patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
+             patch("app.workers.pipeline.read_phase_state", return_value=None), \
+             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
+            _invoke_advance(db, _DOC_ID, _RUN_ID)
+
+        assert "system_links" not in dispatched_calls, (
+            f"system_links should NOT be dispatched while identity still in-flight; "
             f"got {dispatched_calls!r}"
         )
 
 
 # ---------------------------------------------------------------------------
-# (e) Branch 3 → Branch 4 transition (merge)
+# (d) Relationship-terminal-before-merge (Branch 2 → Branch 3 transition)
 # ---------------------------------------------------------------------------
 
-class TestBranch3ToBranch4Transition:
-    """When system_links terminalizes, Branch 4 dispatches merge."""
+class TestRelationshipTerminalBeforeMerge:
+    """When system_links terminalizes, Branch 3 dispatches merge."""
 
     def test_merge_dispatched_after_system_links_terminal(self):
         manifest = _make_manifest(_FULL_PASSES)
@@ -498,7 +468,7 @@ class TestBranch3ToBranch4Transition:
         )
 
     def test_merge_not_dispatched_if_system_links_not_yet_terminal(self):
-        """Branch 4 must not fire if system_links is still in-flight."""
+        """Branch 3 must not fire if system_links is still in-flight."""
         manifest = _make_manifest(_FULL_PASSES)
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "completed"},
@@ -542,12 +512,13 @@ class TestBranch3ToBranch4Transition:
 
 
 # ---------------------------------------------------------------------------
-# (f) Back-compat: identity + relationship only (no field_group passes)
+# (e) Back-compat: identity + relationship only (no field_group passes)
 # ---------------------------------------------------------------------------
 
 class TestBackCompatNoFieldGroupPasses:
-    """When a bundle has no field_group passes, Branch 2 is skipped and
-    identity-terminal directly triggers Branch 3 (system_links dispatch)."""
+    """When a bundle has no field_group passes, Branch 1 dispatches identity
+    passes; Branch 2 (system_links) fires directly after all identity terminal.
+    """
 
     def test_system_links_dispatched_directly_after_identity_terminal(self):
         manifest = _make_manifest(_NO_FG_PASSES)
@@ -582,10 +553,10 @@ class TestBackCompatNoFieldGroupPasses:
             f"Expected system_links dispatch; got {dispatched_calls!r}"
         )
 
-    def test_no_field_group_dispatch_in_no_fg_bundle(self):
-        """In a no-field_group bundle, no field_group passes should ever be dispatched."""
+    def test_identity_dispatched_in_no_fg_bundle(self):
+        """In a no-field_group bundle, identity passes are dispatched normally."""
         manifest = _make_manifest(_NO_FG_PASSES)
-        # identity still in flight.
+        # radar_identity still in flight.
         dispatched_phases = {
             "entity_pass_radar_identity": {"state": "dispatched"},
         }
@@ -607,11 +578,7 @@ class TestBackCompatNoFieldGroupPasses:
 
         # Should dispatch missile_identity (identity, not yet dispatched).
         assert dispatched_calls == ["missile_identity"], (
-            f"Expected missile_identity; got {dispatched_calls!r}"
-        )
-        # Definitely no field_group dispatches.
-        assert not any(
-            n in ("radar_power_rf", "missile_kinematics") for n in dispatched_calls
+            f"Expected missile_identity; got {dispatched_calls}"
         )
 
     def test_merge_fires_after_system_links_in_no_fg_bundle(self):

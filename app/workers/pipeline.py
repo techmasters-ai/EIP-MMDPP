@@ -6969,35 +6969,41 @@ def _update_summary_stage_run(
 
 
 def _try_advance_phase(db, document_id: str, run_id: str) -> None:
-    """Dispatch the next pass based on explicit phase ordering (C1.6).
+    """Dispatch the next pass based on phase ordering (C1.6r — concurrent entity dispatch).
 
     Called by each finishing pass (COMPLETE / SKIPPED / FAILED-optional) so
     the fan-in automatically advances to the next stage without a separate
     coordinator task.
 
     Phases are declared on each ``PassManifest`` (``phase: identity |
-    field_group | relationship``).  Branches execute in strict phase order —
-    later phases are not eligible until ALL earlier-phase passes have
-    terminalized.
+    field_group | relationship``).  C1.6r removes the strict identity-first
+    serialization that was the C4a roster-dependency requirement.  C4a is
+    deferred indefinitely (rev 5 Q4); VR uses schema-derived queries that do
+    not require identity-pass output as an input.  Removing the hard gate
+    lets identity and field_group passes share the per-document concurrency
+    budget without serialization overhead.
 
-    Four mutually exclusive branches (return after the first successful
+    Three mutually exclusive branches (return after the first successful
     dispatch so we do exactly one dispatch per finisher):
 
-    1. **Identity** — while in-flight entity passes < cap AND any identity
-       pass not yet dispatched/terminal: dispatch the next identity pass.
-    2. **Field-group** — ONLY after ALL identity passes terminalize.  While
-       in-flight entity passes < cap AND any field_group pass not yet
-       dispatched/terminal: dispatch the next field_group pass.
-       If no field_group passes exist in the bundle, this branch is skipped
-       (back-compat: identity-only + relationship bundles work as before).
-    3. **Relationship / system_links** — ONLY after ALL field_group passes
-       terminalize (or after identity if no field_group passes exist).
-       Dispatch system_links if present and not yet dispatched.
-    4. **Merge** — ONLY after system_links terminalizes (or after field_group /
-       identity if no system_links pass exists).  Dispatch merge via
+    1. **Entity (identity + field_group)** — while in-flight entity passes <
+       cap AND any identity or field_group pass not yet dispatched/terminal:
+       dispatch the next un-started entity pass.  Identity passes appear
+       before field_group in ``all_entity_passes`` (manifest order is
+       preserved), so identity slots are filled first when cap space is
+       available, but identity completion is NOT a hard gate on field_group
+       dispatch.
+       If no field_group passes exist in the bundle, identity-only bundles
+       work unchanged (back-compat).
+    2. **Relationship / system_links** — ONLY after ALL entity passes
+       (identity ∪ field_group) terminalize.  Dispatch system_links if
+       present and not yet dispatched.  system_links is never narrowed by the
+       vector router regardless of VECTOR_ROUTER_MODE (explicit short-circuit
+       in _claim_and_dispatch_pass, preserved from rev 9 H1).
+    3. **Merge** — ONLY after system_links terminalizes (or after all entity
+       passes if no system_links exists).  Dispatch merge via
        ``celery_app.send_task`` (forward-reference safe).
 
-    Prerequisite for C3 (router hook) and C4 (identity-first chunk narrowing).
     ``_claim_and_dispatch_pass`` remains the single dispatch chokepoint for
     all per-pass Celery dispatches.
 
@@ -7036,6 +7042,13 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
         for p in manifest.passes
     )
 
+    # Combined entity passes: identity first (manifest order), then field_group.
+    # Identity entries appear before field_group in the list so when in_flight <
+    # cap, identity slots are filled preferentially — but this is scheduling
+    # preference, NOT a hard gate.  field_group passes become eligible
+    # immediately alongside identity passes.
+    all_entity_passes = identity_passes + field_group_passes
+
     # Shared helper: names of all entity passes (identity + field_group) that are
     # TERMINAL or in-flight, derived from dispatched_phases. "terminal" here means
     # mark_phase_terminal was called — covers SUCCEEDED + FAILED + SKIPPED, because
@@ -7053,52 +7066,39 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     in_flight = len(in_flight_entity_names)
 
     # ------------------------------------------------------------------
-    # Branch 1 — Identity: dispatch next un-started identity pass.
+    # Branch 1 — Entity (identity + field_group): dispatch next un-started
+    # entity pass within the per-document concurrency budget.
+    # Identity passes are listed first so they get priority when cap space
+    # opens up, but field_group passes are NOT blocked on identity completion.
     # ------------------------------------------------------------------
     if in_flight < settings.pass_concurrency_per_document:
-        next_identity = next(
-            (p for p in identity_passes
+        next_entity = next(
+            (p for p in all_entity_passes
              if p not in terminal_entity_names and p not in in_flight_entity_names),
             None,
         )
-        if next_identity is not None:
-            _claim_and_dispatch_pass(db, document_id, run_id, next_identity)
+        if next_entity is not None:
+            _claim_and_dispatch_pass(db, document_id, run_id, next_entity)
             return  # one dispatch per finisher
 
-    # Guard: all identity passes must be terminal (any of SUCCEEDED/FAILED/
-    # SKIPPED) before proceeding. terminal_entity_names captures all three —
-    # mark_phase_terminal writes state='completed' for each. So a FAILED-optional
-    # identity pass DOES unblock Branch 2, which is the intended behavior.
-    # (Required identity pass failure raises IngestFailed before _try_advance_phase
-    # is called, so this guard is never reached in that case.)
-    identity_all_terminal = all(p in terminal_entity_names for p in identity_passes)
-    if not identity_all_terminal:
-        return  # identity still in-flight or undispatched; hold branches 2/3/4
+    # Guard: ALL entity passes (identity ∪ field_group) must be terminal
+    # (any of SUCCEEDED/FAILED/SKIPPED) before relationship dispatch.
+    # terminal_entity_names captures all three — mark_phase_terminal writes
+    # state='completed' for each.  A FAILED-optional entity pass (any phase)
+    # counts as terminal and does NOT block Branch 2.
+    # (Required identity-pass failures raise IngestFailed before
+    # _try_advance_phase is called, so the FAILED-required path is not
+    # exercised here.)
+    entity_all_terminal = all(p in terminal_entity_names for p in all_entity_passes)
+    if not entity_all_terminal:
+        return  # entity passes still in-flight or undispatched; hold branches 2/3
 
     # ------------------------------------------------------------------
-    # Branch 2 — Field-group: dispatch next un-started field_group pass
-    # (only after ALL identity passes have terminated).
-    # ------------------------------------------------------------------
-    if field_group_passes:
-        if in_flight < settings.pass_concurrency_per_document:
-            next_fg = next(
-                (p for p in field_group_passes
-                 if p not in terminal_entity_names and p not in in_flight_entity_names),
-                None,
-            )
-            if next_fg is not None:
-                _claim_and_dispatch_pass(db, document_id, run_id, next_fg)
-                return  # one dispatch per finisher
-
-        # Guard: all field_group passes must be terminal before proceeding.
-        n_fg_terminal = count_terminal_passes(db, run_id, field_group_passes)
-        if n_fg_terminal < len(field_group_passes):
-            return  # field_group still running; hold branches 3/4
-
-    # ------------------------------------------------------------------
-    # Branch 3 — Relationship / system_links (only after all field_group
-    # passes terminalize, or after identity if no field_group passes exist).
-    # dispatch system_links if present and not yet dispatched.
+    # Branch 2 — Relationship / system_links (only after ALL entity passes —
+    # identity ∪ field_group — terminalize).
+    # system_links is never narrowed by the vector router regardless of
+    # VECTOR_ROUTER_MODE (see rev 9 H1 architecture; short-circuit preserved
+    # in _claim_and_dispatch_pass).
     # ------------------------------------------------------------------
     if has_system_links:
         sl_state = read_phase_state(db, run_id, "system_links")
@@ -7107,7 +7107,7 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
             return
 
     # ------------------------------------------------------------------
-    # Branch 4 — Merge: dispatch after system_links terminalizes.
+    # Branch 3 — Merge: dispatch after system_links terminalizes.
     # send_task is used (not .delay) because derive_ontology_graph_merge is
     # defined later in this same file (forward reference). queue="graph" is
     # MANDATORY: without it the message routes to the default "celery" queue
@@ -7122,7 +7122,6 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
         )
     else:
         # No system_links in bundle: resolved when all entity passes terminal.
-        all_entity_passes = identity_passes + field_group_passes
         n_all_terminal = count_terminal_passes(db, run_id, all_entity_passes)
         sl_resolved = (n_all_terminal >= len(all_entity_passes))
 
@@ -8241,12 +8240,18 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
             }
 
         manifest = load_bundle_manifest(bundle_key)
-        # C1.6: initial wave dispatches ONLY identity passes.  Field-group
-        # passes are deferred to _try_advance_phase (Branch 2) which fires
-        # after all identity passes terminalize.  This is the prerequisite
-        # for C4b (identity-first chunk narrowing): if field-group passes
-        # were queued here they would race ahead of the identity results.
-        entity_passes = [p.name for p in manifest.passes if p.phase == "identity"]
+        # C1.6r: initial wave queues identity AND field_group passes up to the
+        # per-document concurrency cap.  Identity entries appear before
+        # field_group in the manifest, so identity slots fill first when cap
+        # space is limited — but identity completion is no longer a hard gate
+        # on field_group dispatch.  The strict identity-first serialization
+        # introduced in C1.6 was a C4a roster-dependency requirement; C4a is
+        # deferred indefinitely (rev 5 Q4), and VR uses schema-derived queries
+        # that do not require identity-pass output as an input.
+        entity_passes = [
+            p.name for p in manifest.passes
+            if p.phase in ("identity", "field_group")
+        ]
 
         # Second session: _claim_and_dispatch_pass commits phase records
         # independently. Using a single session would interleave the RUNNING
