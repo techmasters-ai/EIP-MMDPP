@@ -64,6 +64,53 @@ class ExecutionProfile(BaseModel):
     max_tokens: int | None = Field(default=None, gt=0)
 
 
+class RetrievalProfile(BaseModel):
+    """Per-pass vector-router retrieval config. Optional; ONLY present on
+    field_group passes (identity/required/relationship passes are bypassed
+    by the router short-circuit per VR section).
+
+    Default values are CONSERVATIVE (rev 12 H1):
+      - fallback_to_full=true means empty match → mode=full (worker dispatches
+        RUN_FULL), not mode=would_skip. Operators may flip to false ONLY after
+        C.6 shadow data shows the pass reliably routes would_skip on off-topic
+        chunks without false positives.
+
+    See plan revision history for rev 8 / rev 9 / rev 10 / rev 12 / rev 13
+    decisions on each field.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_similarity: float = Field(
+        default=0.45,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine similarity threshold below which chunks are dropped "
+            "before rerank."
+        ),
+    )
+    top_n_candidates: int = Field(
+        default=50,
+        gt=0,
+        le=500,
+        description="Number of candidates retrieved pre-rerank.",
+    )
+    top_k: int = Field(
+        default=20,
+        gt=0,
+        le=200,
+        description="Final ChunkScope size post-rerank.",
+    )
+    fallback_to_full: bool = Field(
+        default=True,
+        description=(
+            "If true, empty retrieval → mode=full. If false, empty → "
+            "mode=would_skip."
+        ),
+    )
+
+
 def _infer_pass_phase(name: str, input_mode: str) -> PassPhase:
     """Infer the phase for a pass that doesn't declare one explicitly.
 
@@ -106,6 +153,10 @@ class PassManifest(BaseModel):
     # and applied by the docling-graph service for that pass only. Omitting the
     # block (or setting it to null) means "use service env-var defaults."
     execution: ExecutionProfile | None = None
+    # C.2b: optional per-pass vector-router retrieval config. Only present on
+    # field_group passes; identity/required/relationship passes are bypassed by
+    # the C.4 router short-circuit and must NOT have a retrieval block.
+    retrieval: RetrievalProfile | None = None
 
     @model_validator(mode="before")
     @classmethod
