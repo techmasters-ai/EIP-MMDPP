@@ -13,18 +13,37 @@ where critical evidence is:
     (a) ALL Dvina baseline evidence refs across all 5 passes
         (100% recall required — manageable cardinality).
     (b) ONLY SA-2 evidence refs for entities counted by:
-        - gate #5: emitter_function on radar_identity (3 unique evidence IDs
-          in bdde417 baseline — see CONCERN note below)
-        - gate #6: min_altitude_km on missile_kinematics (179 unique IDs)
+        - gate #5: emitter_function on radar_power_rf (rev 15 Option B —
+          identity-names anchor; see critical_evidence_refs_via_identity_names)
+        - gate #6: min_altitude_km on missile_kinematics (rev 15 Option B —
+          identity-names anchor)
 
-CONCERN — Gate #5 provenance location:
-    The plan references gate #5 as "emitter_function 21/34" on radar_power_rf.
-    However, the bdde417 baseline fixtures show radar_power_rf.field_provenance
-    is EMPTY (0 entries). The emitter_function evidence IS present in
-    radar_identity.field_provenance (3 unique evidence IDs: #/texts/0,
-    #/texts/1, #/texts/12). This test maps gate #5 to radar_identity evidence
-    per the actual fixture shape. The discrepancy should be reviewed when
-    field_provenance is added to radar_power_rf in future pipeline runs.
+Gate #5/#6 evidence anchoring (rev 15 Option B):
+    emitter_function is a PROPAGATED field (Step 2 propagation copies from
+    radar_identity onto radar_power_rf entities via system_name match).
+    The bdde417 baseline records no field_provenance for radar_power_rf
+    because the field isn't directly extracted there — it's propagated.
+
+    The semantically correct VR recall gate must verify that radar_power_rf's
+    narrowed input still contains chunks mentioning the radar system_names
+    that radar_identity extracted. Without those chunks, radar_power_rf
+    produces no entity to propagate onto.
+
+    critical_evidence_refs_via_identity_names() implements this:
+      - loads the upstream identity pass's baseline entities
+      - extracts system_names + nomenclature strings
+      - searches the doc's text fixtures for case-insensitive matches
+      - returns the set of self_refs containing any identity name
+
+    This test catches "field_group narrowing loses identity-name chunks" —
+    exactly the failure mode that breaks gate #5 / #6 silently.
+
+    Mapping (rev 15):
+      - radar_power_rf   ← radar_identity   (entity system_names)
+      - missile_kinematics ← missile_identity (entity system_names)
+    Same logic for Dvina: both field_group passes use identity-name anchors.
+    Identity passes themselves (radar_identity, missile_identity) keep their
+    field_provenance-based recall — they extract their own fields directly.
 
 Evidence ref normalization (rev 9 H2):
     - #/tables/N/cells/K → #/tables/N (cell → parent table)
@@ -64,6 +83,9 @@ SA2_DOC_ID = "78673393-639b-4fde-9bda-9e7bfd43ccda"
 DVINA_DOC_ID = "b77c48f9-3a27-473f-be05-fa7e73e5d6f5"
 
 FIXTURE_DIR_SA2 = Path(__file__).resolve().parents[1] / "fixtures" / "sa2"
+# FIXTURE_ROOT is an alias for FIXTURE_DIR_SA2; both SA-2 and Dvina fixtures
+# reside here.  Used by critical_evidence_refs_via_identity_names().
+FIXTURE_ROOT = FIXTURE_DIR_SA2
 RECALL_FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "recall_baseline"
 
 # Conservative defaults from RetrievalProfile (rev 12 H1).
@@ -179,12 +201,170 @@ def _expand_group(doc_json: dict, group_idx: int) -> set[str]:
 # Critical evidence extraction
 # ---------------------------------------------------------------------------
 
-def _load_pass_response(doc_id: str, pass_name: str) -> dict[str, Any]:
+def _load_pass_response(doc_id: str, pass_name: str, fixture_dir: Path | None = None) -> dict[str, Any]:
     """Load a baseline pass response fixture."""
-    p = FIXTURE_DIR_SA2 / f"{doc_id}_{pass_name}_response.json"
+    d = fixture_dir if fixture_dir is not None else FIXTURE_DIR_SA2
+    p = d / f"{doc_id}_{pass_name}_response.json"
     if not p.exists():
         pytest.skip(f"Baseline fixture not found: {p}")
     return json.loads(p.read_text())
+
+
+def _load_texts_list(doc_id: str, fixture_dir: Path | None = None) -> list[dict] | None:
+    """Load the flat texts list fixture for a document.
+
+    Returns None if the fixture is absent (caller should handle gracefully).
+    The texts_today.json files are a flat list of text element dicts, each
+    with at minimum 'self_ref' and 'text' keys.
+    """
+    d = fixture_dir if fixture_dir is not None else FIXTURE_DIR_SA2
+    p = d / f"{doc_id}_texts_today.json"
+    if not p.exists():
+        return None
+    return json.loads(p.read_text())
+
+
+# ---------------------------------------------------------------------------
+# Identity-names based critical evidence helper (rev 15 Option B)
+# ---------------------------------------------------------------------------
+
+# Maps each field_group pass to its upstream identity pass.  Only text-type
+# identity passes are relevant for system_name extraction.  The mapping is
+# driven by entity type (radar vs missile), not by literal pass names.
+_FIELD_GROUP_TO_IDENTITY_PASS: dict[str, str] = {
+    "radar_power_rf": "radar_identity",
+    "radar_antenna": "radar_identity",
+    "radar_timing": "radar_identity",
+    "radar_modulation": "radar_identity",
+    "missile_kinematics": "missile_identity",
+    "missile_guidance": "missile_identity",
+    "missile_airframe": "missile_identity",
+    "missile_speed_timing": "missile_identity",
+    "missile_propulsion": "missile_identity",
+}
+
+# Maps each identity pass name to the key inside pass_output that holds the
+# list of entity dicts.
+_IDENTITY_PASS_ENTITY_KEY: dict[str, str] = {
+    "radar_identity": "radar_systems",
+    "missile_identity": "missile_systems",
+}
+
+
+def _extract_system_names_from_identity_response(response: dict[str, Any]) -> set[str]:
+    """Extract all system_names and nomenclature strings from an identity pass response.
+
+    Fixture shape (bdde417 baseline): entities are flat dicts inside
+    pass_output["radar_systems"] or pass_output["missile_systems"].
+    The relevant string fields are:
+      - system_name  (str | None)
+      - nomenclature (str | None)  — may contain slash-separated alternatives
+        like "S-75 Dvina/Desna/Volkhov"; we include the whole string as well
+        as each slash-split token so substring matches work on partial names.
+
+    Returns a set of non-empty stripped strings.
+    """
+    pass_name = response.get("pass_name", "")
+    entity_list_key = _IDENTITY_PASS_ENTITY_KEY.get(pass_name)
+    if entity_list_key is None:
+        # Attempt generic lookup by inspecting pass_output keys
+        pass_output = response.get("pass_output") or {}
+        for candidate_key in ("radar_systems", "missile_systems"):
+            if candidate_key in pass_output:
+                entity_list_key = candidate_key
+                break
+
+    if entity_list_key is None:
+        return set()
+
+    entities = (response.get("pass_output") or {}).get(entity_list_key) or []
+    names: set[str] = set()
+
+    for entity in entities:
+        for field in ("system_name", "nomenclature"):
+            val = entity.get(field)
+            if not val or not isinstance(val, str):
+                continue
+            val = val.strip()
+            if not val:
+                continue
+            names.add(val)
+            # Also add slash-split tokens (e.g. "S-75 Dvina/Desna/Volkhov"
+            # → "S-75 Dvina", "Desna", "Volkhov").
+            for token in val.split("/"):
+                token = token.strip()
+                if token:
+                    names.add(token)
+
+    return names
+
+
+def critical_evidence_refs_via_identity_names(
+    *,
+    field_group_pass: str,
+    doc_id: str,
+    fixture_dir: Path | None = None,
+) -> set[str]:
+    """Return self_refs whose text contains any identity-pass system_name.
+
+    Rev 15 Option B decision: for field_group passes whose key metric is a
+    PROPAGATED field (e.g. radar_power_rf.emitter_function is propagated from
+    radar_identity via Step 2 entity-name match), the semantically correct VR
+    recall gate must verify that the field_group pass's narrowed input still
+    includes chunks mentioning the radar/missile system_names that the upstream
+    identity pass extracted.  If those chunks are lost by the vector-router's
+    narrowing step, no radar_power_rf entity is created and Step 2 propagation
+    has nothing to write emitter_function onto.
+
+    Algorithm:
+      1. Determine the upstream identity pass for this field_group_pass using
+         _FIELD_GROUP_TO_IDENTITY_PASS.
+      2. Load the identity pass's baseline response fixture.
+      3. Extract all entity system_names + nomenclature strings.
+      4. Load the doc's text fixture (flat list of text element dicts).
+      5. For each text element, check whether any identity name appears
+         (case-insensitive substring) in the element's text.
+      6. Return the set of matching self_refs.
+
+    Returns an empty set if:
+      - field_group_pass is not in _FIELD_GROUP_TO_IDENTITY_PASS.
+      - The identity pass response fixture is absent (caller pytest.skip).
+      - The identity pass yielded no system_names (caller pytest.skip).
+      - The texts fixture is absent (returns empty set; best-effort).
+
+    Fixture location: {fixture_dir}/{doc_id}_{pass_name}_response.json and
+    {fixture_dir}/{doc_id}_texts_today.json.
+    """
+    identity_pass = _FIELD_GROUP_TO_IDENTITY_PASS.get(field_group_pass)
+    if identity_pass is None:
+        return set()
+
+    # Load identity pass response; pytest.skip if absent.
+    identity_response = _load_pass_response(doc_id, identity_pass, fixture_dir)
+    system_names = _extract_system_names_from_identity_response(identity_response)
+
+    if not system_names:
+        return set()
+
+    # Load text elements list for this doc.
+    texts_list = _load_texts_list(doc_id, fixture_dir)
+    if not texts_list:
+        return set()
+
+    names_lower = [n.lower() for n in system_names]
+    matching_refs: set[str] = set()
+
+    for elem in texts_list:
+        self_ref = elem.get("self_ref")
+        if not self_ref:
+            continue
+        text = (elem.get("text") or "").lower()
+        if not text:
+            continue
+        if any(name in text for name in names_lower):
+            matching_refs.add(self_ref)
+
+    return matching_refs
 
 
 def extract_evidence_refs_from_response(
@@ -212,43 +392,77 @@ def extract_evidence_refs_from_response(
 def compute_critical_evidence_refs_dvina() -> dict[tuple[str, str], set[str]]:
     """Compute ALL evidence refs for Dvina across all 5 baseline passes.
 
-    Returns dict keyed by (doc_id, pass_name) → set of normalized evidence refs.
+    Returns dict keyed by (doc_id, pass_name) → set of critical evidence refs.
     Dvina uses 100% recall requirement — all evidence refs must be in scope.
+
+    Per rev 15 Option B:
+      - radar_identity, missile_identity, system_links: use field_provenance
+        (these passes extract their own fields directly).
+      - radar_power_rf, missile_kinematics: use identity-names anchor (these
+        passes' key metrics are propagated; field_provenance is empty in
+        bdde417 baseline).  The critical evidence is self_refs of text chunks
+        containing any upstream identity system_name.
     """
-    passes = ["radar_identity", "radar_power_rf", "missile_identity", "missile_kinematics", "system_links"]
     result: dict[tuple[str, str], set[str]] = {}
-    for pass_name in passes:
+
+    # Identity passes and system_links: field_provenance-based recall.
+    for pass_name in ("radar_identity", "missile_identity", "system_links"):
         resp = _load_pass_response(DVINA_DOC_ID, pass_name)
         raw_refs = extract_evidence_refs_from_response(resp)
         normalized = normalize_evidence_refs(raw_refs)
         if normalized:
             result[(DVINA_DOC_ID, pass_name)] = normalized
+
+    # Field-group passes: identity-names-based recall (rev 15 Option B).
+    for pass_name in ("radar_power_rf", "missile_kinematics"):
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass=pass_name,
+            doc_id=DVINA_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        if refs:
+            result[(DVINA_DOC_ID, pass_name)] = refs
+
     return result
 
 
 def compute_critical_evidence_refs_sa2() -> dict[tuple[str, str], set[str]]:
-    """Compute ONLY the critical evidence refs for SA-2.
+    """Compute ONLY the critical evidence refs for SA-2 gates #5 and #6.
 
-    Per rev 9 H2: only evidence refs for entities counted by gates #5 and #6.
-      - Gate #5: emitter_function — evidence from radar_identity.field_provenance
-        (bdde417 shape: 3 unique IDs in radar_identity; radar_power_rf has none).
-      - Gate #6: min_altitude_km — evidence from missile_kinematics.field_provenance.
+    Per rev 15 Option B: both gates now use identity-names anchoring.
+
+    Gate #5 (radar_power_rf.emitter_function ≥ 21/34):
+      emitter_function is propagated from radar_identity onto radar_power_rf
+      entities via Step 2 system_name match.  The bdde417 baseline records
+      no field_provenance for radar_power_rf.  Critical evidence = self_refs
+      of text chunks containing any radar_identity system_name.
+      Keyed as (SA2_DOC_ID, "radar_power_rf") in the result.
+
+    Gate #6 (missile_kinematics.min_altitude_km ≥ 9/44):
+      min_altitude_km is extracted per-variant, so the variant names from
+      missile_identity are the critical anchors.  Critical evidence = self_refs
+      of text chunks containing any missile_identity system_name.
+      Keyed as (SA2_DOC_ID, "missile_kinematics") in the result.
     """
     result: dict[tuple[str, str], set[str]] = {}
 
-    # Gate #5: emitter_function on radar_identity (see CONCERN in module docstring)
-    ri_resp = _load_pass_response(SA2_DOC_ID, "radar_identity")
-    gate5_refs = extract_evidence_refs_from_response(ri_resp, field_filter="emitter_function")
-    gate5_norm = normalize_evidence_refs(gate5_refs)
-    if gate5_norm:
-        result[(SA2_DOC_ID, "radar_identity")] = gate5_norm
+    # Gate #5: radar_power_rf — identity-names anchor (rev 15 Option B).
+    gate5_refs = critical_evidence_refs_via_identity_names(
+        field_group_pass="radar_power_rf",
+        doc_id=SA2_DOC_ID,
+        fixture_dir=FIXTURE_ROOT,
+    )
+    if gate5_refs:
+        result[(SA2_DOC_ID, "radar_power_rf")] = gate5_refs
 
-    # Gate #6: min_altitude_km on missile_kinematics
-    mk_resp = _load_pass_response(SA2_DOC_ID, "missile_kinematics")
-    gate6_refs = extract_evidence_refs_from_response(mk_resp, field_filter="min_altitude_km")
-    gate6_norm = normalize_evidence_refs(gate6_refs)
-    if gate6_norm:
-        result[(SA2_DOC_ID, "missile_kinematics")] = gate6_norm
+    # Gate #6: missile_kinematics — identity-names anchor (rev 15 Option B).
+    gate6_refs = critical_evidence_refs_via_identity_names(
+        field_group_pass="missile_kinematics",
+        doc_id=SA2_DOC_ID,
+        fixture_dir=FIXTURE_ROOT,
+    )
+    if gate6_refs:
+        result[(SA2_DOC_ID, "missile_kinematics")] = gate6_refs
 
     return result
 
@@ -353,6 +567,10 @@ def _assert_pre_rerank_recall(
 class TestDvinaOfflineRecall:
     """100% Dvina baseline evidence recall (all 5 passes).
 
+    Identity passes (radar_identity, missile_identity, system_links) use
+    field_provenance-based recall.  Field-group passes (radar_power_rf,
+    missile_kinematics) use identity-names anchoring per rev 15 Option B.
+
     LOAD-BEARING — must pass before C.6 dispatch.
     """
 
@@ -361,35 +579,48 @@ class TestDvinaOfflineRecall:
         return compute_critical_evidence_refs_dvina()
 
     def test_dvina_radar_identity_recall(self, dvina_critical):
-        """Pre-rerank top-50 must cover all Dvina radar_identity evidence refs."""
+        """Pre-rerank top-50 must cover all Dvina radar_identity field_provenance refs."""
         refs = dvina_critical.get((DVINA_DOC_ID, "radar_identity"), set())
         if not refs:
             pytest.skip("No radar_identity evidence refs in Dvina baseline fixture")
         _assert_pre_rerank_recall(DVINA_DOC_ID, "radar_identity", refs)
 
     def test_dvina_radar_power_rf_recall(self, dvina_critical):
-        """Pre-rerank top-50 must cover all Dvina radar_power_rf evidence refs."""
+        """Pre-rerank top-50 for radar_power_rf must cover chunks containing
+        radar_identity system_names (rev 15 Option B — identity-names anchor).
+
+        Dvina radar_power_rf.field_provenance is empty in bdde417 baseline;
+        identity-names anchor provides the meaningful gate.
+        """
         refs = dvina_critical.get((DVINA_DOC_ID, "radar_power_rf"), set())
         if not refs:
-            pytest.skip("No radar_power_rf evidence refs in Dvina baseline fixture")
+            pytest.skip(
+                "No identity-name text chunks found for Dvina radar_power_rf.\n"
+                "Check that Dvina radar_identity fixture + texts_today.json exist."
+            )
         _assert_pre_rerank_recall(DVINA_DOC_ID, "radar_power_rf", refs)
 
     def test_dvina_missile_identity_recall(self, dvina_critical):
-        """Pre-rerank top-50 must cover all Dvina missile_identity evidence refs."""
+        """Pre-rerank top-50 must cover all Dvina missile_identity field_provenance refs."""
         refs = dvina_critical.get((DVINA_DOC_ID, "missile_identity"), set())
         if not refs:
             pytest.skip("No missile_identity evidence refs in Dvina baseline fixture")
         _assert_pre_rerank_recall(DVINA_DOC_ID, "missile_identity", refs)
 
     def test_dvina_missile_kinematics_recall(self, dvina_critical):
-        """Pre-rerank top-50 must cover all Dvina missile_kinematics evidence refs."""
+        """Pre-rerank top-50 for missile_kinematics must cover chunks containing
+        missile_identity system_names (rev 15 Option B — identity-names anchor).
+        """
         refs = dvina_critical.get((DVINA_DOC_ID, "missile_kinematics"), set())
         if not refs:
-            pytest.skip("No missile_kinematics evidence refs in Dvina baseline fixture")
+            pytest.skip(
+                "No identity-name text chunks found for Dvina missile_kinematics.\n"
+                "Check that Dvina missile_identity fixture + texts_today.json exist."
+            )
         _assert_pre_rerank_recall(DVINA_DOC_ID, "missile_kinematics", refs)
 
     def test_dvina_system_links_recall(self, dvina_critical):
-        """Pre-rerank top-50 must cover all Dvina system_links evidence refs."""
+        """Pre-rerank top-50 must cover all Dvina system_links field_provenance refs."""
         refs = dvina_critical.get((DVINA_DOC_ID, "system_links"), set())
         if not refs:
             pytest.skip("No system_links evidence refs in Dvina baseline fixture")
@@ -399,33 +630,52 @@ class TestDvinaOfflineRecall:
 class TestSA2CriticalOfflineRecall:
     """SA-2 critical evidence recall (gates #5 and #6 only).
 
-    Gate #5: emitter_function evidence from radar_identity.
-    Gate #6: min_altitude_km evidence from missile_kinematics.
+    Gate #5: radar_power_rf.emitter_function — identity-names anchor.
+      VR must preserve chunks containing radar_identity system_names in the
+      radar_power_rf narrowed input; without them, no radar_power_rf entity
+      is created, and emitter_function propagation (Step 2) cannot run.
 
+    Gate #6: missile_kinematics.min_altitude_km — identity-names anchor.
+      VR must preserve chunks containing missile_identity system_names (variant
+      names like "1D", "13D", "5Ya23", "SA-2", "V-750") in the
+      missile_kinematics narrowed input.
+
+    Per rev 15 Option B: both gates use critical_evidence_refs_via_identity_names().
     LOAD-BEARING — must pass before C.6 dispatch.
-    See CONCERN in module docstring re: gate #5 fixture shape.
     """
 
     @pytest.fixture(scope="class")
     def sa2_critical(self) -> dict[tuple[str, str], set[str]]:
         return compute_critical_evidence_refs_sa2()
 
-    def test_sa2_gate5_emitter_function_recall(self, sa2_critical):
-        """Gate #5: pre-rerank top-50 must cover emitter_function evidence refs.
+    def test_radar_power_rf_emitter_function_recall(self, sa2_critical):
+        """Gate #5: pre-rerank top-50 for radar_power_rf must cover chunks
+        containing radar_identity system_names (rev 15 Option B).
 
-        Evidence lives in radar_identity fixture (not radar_power_rf) per bdde417
-        fixture shape — see module CONCERN.
+        This is a HARD gate — xfail removed per rev 15 decision.
         """
-        refs = sa2_critical.get((SA2_DOC_ID, "radar_identity"), set())
+        refs = sa2_critical.get((SA2_DOC_ID, "radar_power_rf"), set())
         if not refs:
-            pytest.skip("No emitter_function evidence refs in SA-2 radar_identity baseline fixture")
-        _assert_pre_rerank_recall(SA2_DOC_ID, "radar_identity", refs)
+            pytest.skip(
+                "No identity-name text chunks found for SA-2 radar_power_rf.\n"
+                "Check that tests/fixtures/sa2/{SA2_DOC_ID}_radar_identity_response.json\n"
+                "and tests/fixtures/sa2/{SA2_DOC_ID}_texts_today.json both exist."
+            )
+        _assert_pre_rerank_recall(SA2_DOC_ID, "radar_power_rf", refs)
 
-    def test_sa2_gate6_min_altitude_km_recall(self, sa2_critical):
-        """Gate #6: pre-rerank top-50 must cover min_altitude_km evidence refs."""
+    def test_missile_kinematics_min_altitude_recall(self, sa2_critical):
+        """Gate #6: pre-rerank top-50 for missile_kinematics must cover chunks
+        containing missile_identity system_names (rev 15 Option B).
+
+        This is a HARD gate.
+        """
         refs = sa2_critical.get((SA2_DOC_ID, "missile_kinematics"), set())
         if not refs:
-            pytest.skip("No min_altitude_km evidence refs in SA-2 missile_kinematics baseline fixture")
+            pytest.skip(
+                "No identity-name text chunks found for SA-2 missile_kinematics.\n"
+                "Check that tests/fixtures/sa2/{SA2_DOC_ID}_missile_identity_response.json\n"
+                "and tests/fixtures/sa2/{SA2_DOC_ID}_texts_today.json both exist."
+            )
         _assert_pre_rerank_recall(SA2_DOC_ID, "missile_kinematics", refs)
 
 
@@ -545,32 +795,208 @@ class TestCriticalEvidenceExtraction:
         )
 
     def test_sa2_radar_identity_emitter_function_has_evidence_refs(self):
-        """SA-2 radar_identity must have emitter_function evidence refs (gate #5)."""
+        """SA-2 radar_identity must have emitter_function evidence refs."""
         resp = _load_pass_response(SA2_DOC_ID, "radar_identity")
         refs = extract_evidence_refs_from_response(resp, field_filter="emitter_function")
         assert len(refs) > 0, (
-            "SA-2 radar_identity has no emitter_function evidence refs. "
-            "Gate #5 cannot be tested."
+            "SA-2 radar_identity has no emitter_function evidence refs in field_provenance."
         )
-        # Exactly 3 in bdde417 baseline: #/texts/0, #/texts/1, #/texts/12
-        assert len(refs) >= 1, f"Expected ≥1 emitter_function evidence refs, got {len(refs)}"
 
     def test_sa2_radar_power_rf_no_field_provenance(self):
         """SA-2 radar_power_rf baseline has no field_provenance in bdde417 fixture.
 
-        This is a known shape: radar_power_rf did not record field_provenance
-        in this baseline. The test documents this intentionally so future
-        additions of field_provenance to radar_power_rf are visible.
+        This is the known shape that motivated rev 15 Option B: emitter_function
+        on radar_power_rf is a PROPAGATED field (Step 2), not directly extracted,
+        so field_provenance is empty.  Gate #5 uses identity-names anchoring
+        instead.  This test documents the known fixture shape so that future
+        additions of field_provenance to radar_power_rf are visible as a change.
         """
         resp = _load_pass_response(SA2_DOC_ID, "radar_power_rf")
         refs = extract_evidence_refs_from_response(resp)
-        # Currently zero — document this known fixture shape.
-        # If this assertion ever fails with len(refs) > 0, it means
-        # radar_power_rf NOW has field_provenance and gate #5 should be
-        # mapped to radar_power_rf (where the emitter_function 21/34 entities live).
-        if len(refs) > 0:
-            pytest.xfail(
-                f"SA-2 radar_power_rf now has {len(refs)} field_provenance evidence refs. "
-                "Update gate #5 mapping from radar_identity → radar_power_rf "
-                "and regenerate recall fixtures."
-            )
+        # Expected: zero in bdde417 baseline.
+        # NOTE: if this ever fails (refs > 0), it means radar_power_rf now
+        # has field_provenance.  That is a welcome change — update this comment
+        # and consider whether identity-names anchoring should be supplemented
+        # with field_provenance refs for gate #5.
+        assert len(refs) == 0, (
+            f"SA-2 radar_power_rf now has {len(refs)} field_provenance evidence refs "
+            "(expected 0 in bdde417 baseline).  Review gate #5 anchoring strategy."
+        )
+
+
+class TestIdentityNamesHelper:
+    """Snapshot tests for critical_evidence_refs_via_identity_names().
+
+    These tests verify that the helper returns a non-empty set for the two
+    gate-relevant passes (radar_power_rf and missile_kinematics) given the
+    SA-2 and Dvina baseline fixtures.  They also snapshot a few specific
+    self_refs known to contain identity system_names in the bdde417 baseline.
+
+    These tests require the fixture files to exist (skip if absent).
+    """
+
+    # ---------------------------------------------------------------------------
+    # SA-2 snapshot tests
+    # ---------------------------------------------------------------------------
+
+    def test_sa2_radar_power_rf_identity_names_nonempty(self):
+        """Helper returns non-empty set for SA-2 radar_power_rf."""
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass="radar_power_rf",
+            doc_id=SA2_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        assert len(refs) > 0, (
+            "critical_evidence_refs_via_identity_names returned empty set for "
+            "SA-2 radar_power_rf.  Verify that the radar_identity fixture and "
+            "texts_today.json both exist and contain matching text."
+        )
+
+    def test_sa2_radar_power_rf_contains_fan_song_ref(self):
+        """SA-2 radar_power_rf refs must contain a chunk with 'Fan Song'.
+
+        In bdde417 baseline, 'Fan Song' appears in several text elements
+        (e.g. #/texts/34, #/texts/58, #/texts/59).  At least one must appear
+        in the returned set.
+        """
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass="radar_power_rf",
+            doc_id=SA2_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        # 'Fan Song' is a system_name from SA-2 radar_identity baseline.
+        # Verify the helper found chunks containing it.
+        known_fan_song_refs = {"#/texts/34", "#/texts/58", "#/texts/59"}
+        assert refs & known_fan_song_refs, (
+            f"Expected at least one of {known_fan_song_refs} in helper output "
+            f"(Fan Song text chunks), but got none.  refs={sorted(refs)[:10]}"
+        )
+
+    def test_sa2_missile_kinematics_identity_names_nonempty(self):
+        """Helper returns non-empty set for SA-2 missile_kinematics."""
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass="missile_kinematics",
+            doc_id=SA2_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        assert len(refs) > 0, (
+            "critical_evidence_refs_via_identity_names returned empty set for "
+            "SA-2 missile_kinematics.  Verify that the missile_identity fixture "
+            "and texts_today.json both exist and contain matching text."
+        )
+
+    def test_sa2_missile_kinematics_returns_only_text_self_refs(self):
+        """All returned self_refs must be #/texts/N (texts_today fixture only)."""
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass="missile_kinematics",
+            doc_id=SA2_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        bad = {r for r in refs if not r.startswith("#/texts/")}
+        assert not bad, (
+            f"Non-text self_refs in helper output (unexpected): {bad}"
+        )
+
+    # ---------------------------------------------------------------------------
+    # Dvina snapshot tests
+    # ---------------------------------------------------------------------------
+
+    def test_dvina_radar_power_rf_identity_names_nonempty(self):
+        """Helper returns non-empty set for Dvina radar_power_rf."""
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass="radar_power_rf",
+            doc_id=DVINA_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        assert len(refs) > 0, (
+            "critical_evidence_refs_via_identity_names returned empty set for "
+            "Dvina radar_power_rf.  Dvina has 1 radar entity (RSNA-75M); verify "
+            "Dvina radar_identity fixture and texts_today.json exist."
+        )
+
+    def test_dvina_missile_kinematics_identity_names_nonempty(self):
+        """Helper returns non-empty set for Dvina missile_kinematics."""
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass="missile_kinematics",
+            doc_id=DVINA_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        assert len(refs) > 0, (
+            "critical_evidence_refs_via_identity_names returned empty set for "
+            "Dvina missile_kinematics.  Dvina has 1 missile entity (S-75 Dvina); "
+            "verify Dvina missile_identity fixture and texts_today.json exist."
+        )
+
+    # ---------------------------------------------------------------------------
+    # Unit tests — helper logic without fixture I/O
+    # ---------------------------------------------------------------------------
+
+    def test_extract_system_names_flat_shape(self):
+        """_extract_system_names_from_identity_response handles flat entity dicts."""
+        response = {
+            "pass_name": "radar_identity",
+            "pass_output": {
+                "radar_systems": [
+                    {"system_name": "Fan Song", "nomenclature": "RSNA-75/SNR-75"},
+                    {"system_name": "Spoon Rest", "nomenclature": None},
+                ]
+            },
+        }
+        names = _extract_system_names_from_identity_response(response)
+        assert "Fan Song" in names
+        assert "Spoon Rest" in names
+        assert "RSNA-75/SNR-75" in names
+        # Slash split
+        assert "RSNA-75" in names
+        assert "SNR-75" in names
+
+    def test_extract_system_names_slash_split_nomenclature(self):
+        """Slash-split nomenclature tokens are added individually."""
+        response = {
+            "pass_name": "missile_identity",
+            "pass_output": {
+                "missile_systems": [
+                    {"system_name": "S-75", "nomenclature": "S-75 Dvina/Desna/Volkhov"},
+                ]
+            },
+        }
+        names = _extract_system_names_from_identity_response(response)
+        assert "S-75 Dvina/Desna/Volkhov" in names
+        assert "S-75 Dvina" in names
+        assert "Desna" in names
+        assert "Volkhov" in names
+
+    def test_extract_system_names_skips_none_values(self):
+        """None system_name and nomenclature are skipped gracefully."""
+        response = {
+            "pass_name": "radar_identity",
+            "pass_output": {
+                "radar_systems": [
+                    {"system_name": None, "nomenclature": None},
+                    {"system_name": "Side Net", "nomenclature": None},
+                ]
+            },
+        }
+        names = _extract_system_names_from_identity_response(response)
+        assert "Side Net" in names
+        # None values must not appear
+        assert None not in names
+
+    def test_extract_system_names_unknown_pass_empty(self):
+        """Unknown pass_name with no matching entity key returns empty set."""
+        response = {
+            "pass_name": "system_links",
+            "pass_output": {},
+        }
+        names = _extract_system_names_from_identity_response(response)
+        assert names == set()
+
+    def test_helper_returns_empty_for_unmapped_pass(self):
+        """critical_evidence_refs_via_identity_names returns empty set for
+        passes not in _FIELD_GROUP_TO_IDENTITY_PASS (e.g. 'system_links')."""
+        refs = critical_evidence_refs_via_identity_names(
+            field_group_pass="system_links",
+            doc_id=SA2_DOC_ID,
+            fixture_dir=FIXTURE_ROOT,
+        )
+        assert refs == set()
