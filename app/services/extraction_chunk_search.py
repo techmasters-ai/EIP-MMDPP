@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.services.arcadedb_graph import ArcadeDBGraphStore
