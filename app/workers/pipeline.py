@@ -1530,6 +1530,10 @@ def _terminalize_doc_and_run(document_id: str, run_id: str | None, doc_status: s
     All failure paths are swallowed — the caller is usually the guard handling
     an already-failing task; we don't want the terminalization itself to mask
     the original exception.
+
+    VR C.4 (Q5c): also calls cleanup_extraction_index to delete ExtractionChunk
+    rows for this run (best-effort; the hourly janitor provides defense-in-depth
+    per rev 9 H3).
     """
     from datetime import datetime as dt
     from app.models.ingest import Document, PipelineRun
@@ -1571,6 +1575,26 @@ def _terminalize_doc_and_run(document_id: str, run_id: str | None, doc_status: s
             db.close()
         except Exception:
             pass
+
+    # VR C.4: best-effort cleanup of ExtractionChunk rows for this run.
+    # cleanup_extraction_index already swallows exceptions (returns 0 on failure).
+    # The janitor provides defense-in-depth for runs where this fails.
+    if run_id:
+        try:
+            from app.services.extraction_chunk_index import cleanup_extraction_index
+            store = get_graph_store()
+            deleted = cleanup_extraction_index(run_id, store=store)
+            logger.info(
+                "VR: terminal cleanup deleted %d ExtractionChunk rows for run=%s",
+                deleted, run_id,
+            )
+        except Exception:
+            logger.warning(
+                "VR: terminal cleanup ExtractionChunk failed for run=%s "
+                "(janitor will retry)",
+                run_id,
+                exc_info=True,
+            )
 
 
 def check_required_pass_gate(pipeline_run_id) -> GateResult:
@@ -6765,6 +6789,8 @@ def _save_terminal_pass_output(
     outcome: "PassAttemptOutcome",
     override_status: str | None = None,
     override_diagnostics_extra: dict | None = None,
+    router_diagnostics: dict | None = None,  # VR C.4: rev 8 M7 — merged under diagnostics_json.router
+    chunk_scope: dict | None = None,         # VR C.4: for chunk_scope_applied flag
 ) -> None:
     """Write the single terminal ``pipeline_pass_outputs`` row for this pass.
 
@@ -6776,6 +6802,8 @@ def _save_terminal_pass_output(
     ``outcome.execution_status`` says otherwise (used for retry-exhaustion).
     ``override_diagnostics_extra`` is merged into the diagnostics dict pulled
     from ``raw_response_payload``; used to add ``{"retry_exhausted": True}``.
+    ``router_diagnostics`` is the VR router's raw decision dict; merged into
+    ``diagnostics_json["router"]`` for operator visibility (rev 8 M7 / C4).
 
     IMPORTANT: counts keys from ``_count_pass_output`` are:
       ``primary_entities_extracted``, ``bridge_entities_extracted``,
@@ -6809,6 +6837,18 @@ def _save_terminal_pass_output(
     diagnostics = _build_pass_diagnostics_dict(
         _diag_source_outcome, override_extra=override_diagnostics_extra,
     )
+    # VR C.4 (rev 8 M7): merge router_diagnostics into diagnostics_json.router.
+    # Persists the raw router decision (mode, scores, refs, fallback_reason, …)
+    # for operator visibility.  Backward-compat: when router_diagnostics is None
+    # (identity/required/relationship passes, disabled mode), the "router" key is
+    # omitted entirely so existing callers see no change.
+    if router_diagnostics is not None:
+        router_block = dict(router_diagnostics)
+        router_block["chunk_scope_applied"] = bool(
+            chunk_scope is not None and chunk_scope.get("mode") == "selected_refs"
+        )
+        diagnostics["router"] = router_block
+
     save_pass_output(
         db,
         pipeline_run_id=run_id,
@@ -7042,6 +7082,9 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
         for p in manifest.passes
     )
 
+    # Build a pass_name → PassManifest lookup for VR wiring in _claim_and_dispatch_pass.
+    _pass_def_by_name = {p.name: p for p in manifest.passes}
+
     # Combined entity passes: identity first (manifest order), then field_group.
     # Identity entries appear before field_group in the list so when in_flight <
     # cap, identity slots are filled preferentially — but this is scheduling
@@ -7078,7 +7121,16 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
             None,
         )
         if next_entity is not None:
-            _claim_and_dispatch_pass(db, document_id, run_id, next_entity)
+            _claim_and_dispatch_pass(
+                db, document_id, run_id, next_entity,
+                pass_def=_pass_def_by_name.get(next_entity),
+                bundle_key=run.ontology_bundle_key,
+                # NOTE: _try_advance_phase cannot determine build_index_failed from
+                # this context (the index was built by the initial dispatcher).
+                # Default False: if the endpoint is unavailable, the HTTP call will
+                # fail-open gracefully via _call_chunk_scope_endpoint's try/except.
+                build_index_failed=False,
+            )
             return  # one dispatch per finisher
 
     # Guard: ALL entity passes (identity ∪ field_group) must be terminal
@@ -7098,7 +7150,7 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
     # identity ∪ field_group — terminalize).
     # system_links is never narrowed by the vector router regardless of
     # VECTOR_ROUTER_MODE (see rev 9 H1 architecture; short-circuit preserved
-    # in _claim_and_dispatch_pass).
+    # in _claim_and_dispatch_pass via phase != "field_group" short-circuit).
     # ------------------------------------------------------------------
     if has_system_links:
         sl_state = read_phase_state(db, run_id, "system_links")
@@ -7138,12 +7190,98 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
                 db.commit()
 
 
+def _call_chunk_scope_endpoint(
+    pipeline_run_id: str,
+    bundle_key: str,
+    pass_name: str,
+    internal_api_base_url: str,
+) -> dict | None:
+    """HTTP POST /v1/extraction/chunk-scope — sync call from worker via httpx.
+
+    Returns the parsed JSON response dict on success, or None on any error
+    (timeout, connection refused, HTTP 4xx/5xx).  Errors are logged at WARNING.
+    The caller applies fail-open semantics on None.
+
+    Timeout: 10s — the endpoint must embed a query and run rerank; 10s is
+    generous for a single pass but not so long it stalls the dispatch loop.
+    """
+    url = f"{internal_api_base_url.rstrip('/')}/v1/extraction/chunk-scope"
+    request_body = {
+        "pipeline_run_id": pipeline_run_id,
+        "bundle_key": bundle_key,
+        "pass_name": pass_name,
+    }
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(url, json=request_body)
+            response.raise_for_status()
+            return response.json()
+    except Exception as exc:
+        logger.warning(
+            "VR: chunk-scope endpoint failed for run=%s pass=%s: %r "
+            "— falling back to RUN_FULL",
+            pipeline_run_id, pass_name, exc,
+        )
+        return None
+
+
+def _compute_effective_chunk_scope(
+    router_response: dict | None,
+    mode: str,
+) -> tuple[dict | None, dict]:
+    """Compute (effective_chunk_scope, router_diagnostics) per rev 10 H2.
+
+    ``router_response`` is the parsed /v1/extraction/chunk-scope JSON, or None
+    when the endpoint call failed (HTTP error, timeout, etc.).
+
+    Returns:
+      effective_chunk_scope: dict passed to the per-pass Celery task, or None
+        (worker applies full doc when None).
+      router_diagnostics: dict merged into pipeline_pass_outputs.diagnostics_json
+        for operator visibility.
+    """
+    if router_response is None:
+        # HTTP error / timeout path
+        return None, {"http_error": "endpoint_unavailable", "fallback_reason": "endpoint_unavailable"}
+
+    # Flatten diagnostics from the response envelope
+    diag = dict(router_response.get("diagnostics") or {})
+    resp_mode = router_response.get("mode", "full")
+    self_refs = router_response.get("self_refs") or []
+
+    if mode == "disabled":
+        effective_chunk_scope = None
+    elif mode == "shadow":
+        # NEVER narrow in shadow — always full-doc dispatch
+        effective_chunk_scope = None
+        diag["shadow_skipped_narrowing"] = (resp_mode == "selected_refs")
+    elif mode == "narrow_only":
+        if resp_mode == "selected_refs" and self_refs:
+            effective_chunk_scope = {
+                "mode": "selected_refs",
+                "self_refs": self_refs,
+            }
+        else:
+            effective_chunk_scope = None
+            if resp_mode == "would_skip":
+                diag["fail_open_reason"] = "would_skip_in_narrow_only_mode"
+    else:
+        # Unknown mode (should not happen — config validation guards this)
+        effective_chunk_scope = None
+
+    return effective_chunk_scope, diag
+
+
 def _claim_and_dispatch_pass(
     db,
     document_id: str,
     run_id: str,
     pass_name: str,
     queued_counter: dict[str, int] | None = None,
+    # VR C.4: per-pass vector-router state passed from the dispatcher
+    pass_def=None,             # PassManifest entry — needed for phase check
+    bundle_key: str | None = None,  # needed for endpoint call
+    build_index_failed: bool = False,  # when True, skip router for this run
 ) -> bool:
     """Claim a phase slot and dispatch the corresponding Celery task.
 
@@ -7161,14 +7299,72 @@ def _claim_and_dispatch_pass(
     (default None) — a race loss there is not a problem since the winning worker
     will dispatch.
 
+    VR C.4 (rev 10 H2): when pass_def is provided and the index was built
+    successfully, calls the /v1/extraction/chunk-scope endpoint for field_group
+    passes and computes effective_chunk_scope per VECTOR_ROUTER_MODE.
+    Identity, required, and relationship passes are short-circuited (no HTTP
+    call; effective_chunk_scope=None always).
+
     A crash between claim and mark_phase_dispatched leaves the phase in
     'claimed' state — the reconciler (Task 9) will reclaim it after the
     stale-claim threshold (``phase_claim_stale_seconds``).
     """
+    # --- VR C.4: compute effective_chunk_scope for this pass ---
+    effective_chunk_scope: dict | None = None
+    router_diagnostics: dict | None = None
+
+    if pass_def is not None and bundle_key:
+        _vr_mode = settings.vector_router_mode
+        _is_routable = (
+            not build_index_failed
+            and _vr_mode != "disabled"
+            and getattr(pass_def, "phase", None) == "field_group"
+            and not getattr(pass_def, "required", False)
+        )
+
+        if _is_routable:
+            router_response = _call_chunk_scope_endpoint(
+                pipeline_run_id=run_id,
+                bundle_key=bundle_key,
+                pass_name=pass_name,
+                internal_api_base_url=settings.internal_api_base_url,
+            )
+            effective_chunk_scope, router_diagnostics = _compute_effective_chunk_scope(
+                router_response, _vr_mode
+            )
+            # Rev 10 M8: log WARNING when narrowing ratio > 80%
+            if (
+                effective_chunk_scope is not None
+                and router_diagnostics is not None
+            ):
+                selected_tok = (router_diagnostics.get("selected_token_estimate") or 0)
+                full_tok = (router_diagnostics.get("full_doc_token_estimate") or 0)
+                if full_tok > 0 and selected_tok / full_tok > 0.80:
+                    logger.warning(
+                        "VR: narrowing INEFFECTIVE for run=%s pass=%s "
+                        "(selected_tokens=%d / full_doc_tokens=%d = %.0f%%); "
+                        "threshold may be too generous",
+                        run_id, pass_name, selected_tok, full_tok,
+                        100.0 * selected_tok / full_tok,
+                    )
+        else:
+            # Short-circuit: identity / relationship / disabled / build_failed
+            effective_chunk_scope = None
+            if build_index_failed and _vr_mode != "disabled":
+                router_diagnostics = {
+                    "fallback_reason": "index_build_failed",
+                    "skipped": True,
+                }
+    # --- end VR C.4 ---
+
     phase_key = _phase_key(pass_name)
     if not claim_phase(db, run_id, phase_key):
         return False  # another worker won the claim
-    async_result = derive_ontology_graph_pass.delay(document_id, run_id, pass_name)
+    async_result = derive_ontology_graph_pass.delay(
+        document_id, run_id, pass_name,
+        chunk_scope=effective_chunk_scope,
+        router_diagnostics=router_diagnostics,
+    )
     # Increment the counter BEFORE bookkeeping so a bookkeeping failure does not
     # leave the caller thinking zero passes were queued (Fix 1).
     if queued_counter is not None:
@@ -7188,7 +7384,12 @@ def _claim_and_dispatch_pass(
 )
 @guard_stage_run("derive_ontology_graph_pass")
 def derive_ontology_graph_pass(
-    self, document_id: str, run_id: str, pass_name: str,
+    self,
+    document_id: str,
+    run_id: str,
+    pass_name: str,
+    chunk_scope: dict | None = None,       # VR C.4 rev 10 M7: backward-compat default=None
+    router_diagnostics: dict | None = None, # VR C.4 rev 8 M7: backward-compat default=None
 ) -> dict:
     """One Celery task per pass attempt. Celery is the retry boundary.
 
@@ -7245,6 +7446,34 @@ def derive_ontology_graph_pass(
         _doc_load_t0 = time.perf_counter()
         doc_json = _build_docling_document_json(document_id)
         _doc_json_load_ms = (time.perf_counter() - _doc_load_t0) * 1000.0
+
+        # VR C.4 rev 9 H1 + rev 10 H2: apply chunk scope INSIDE the per-pass
+        # task body, AFTER loading the full doc from MinIO.  The scoped doc is
+        # built worker-side; only the small chunk_scope dict (kilobytes) crosses
+        # the Celery broker.  Old tasks queued before this commit arrive with
+        # chunk_scope=None → full-doc path (backward-compat, rev 10 M7).
+        if chunk_scope is not None and chunk_scope.get("mode") == "selected_refs":
+            try:
+                from app.services.scoped_docling_document import apply_chunk_scope
+                doc_json = apply_chunk_scope(doc_json, chunk_scope)
+                logger.info(
+                    "VR: applied chunk_scope for run=%s pass=%s — %d selected refs",
+                    run_id, pass_name, len(chunk_scope.get("self_refs") or []),
+                )
+            except Exception as exc:
+                # apply_chunk_scope failure is non-retryable at this layer —
+                # fall back to full doc and log WARNING so the operator sees it.
+                logger.warning(
+                    "VR: apply_chunk_scope FAILED for run=%s pass=%s: %r "
+                    "— proceeding with full doc",
+                    run_id, pass_name, exc,
+                )
+                if router_diagnostics is not None:
+                    router_diagnostics = dict(router_diagnostics)
+                    router_diagnostics["apply_chunk_scope_error"] = str(exc)
+                else:
+                    router_diagnostics = {"apply_chunk_scope_error": str(exc)}
+
         upstream_refs = _rehydrate_upstream_refs_from_persisted_passes(
             db, run_id, pass_def, manifest, ontology, document_id,
         )
@@ -7293,6 +7522,8 @@ def derive_ontology_graph_pass(
                 pass_name=pass_name,
                 attempt=attempt_n,
                 outcome=outcome,
+                router_diagnostics=router_diagnostics,  # VR C.4
+                chunk_scope=chunk_scope,                 # VR C.4
             )
             db.commit()
             mark_phase_terminal(
@@ -7337,6 +7568,8 @@ def derive_ontology_graph_pass(
             outcome=outcome,
             override_status="FAILED",
             override_diagnostics_extra={"retry_exhausted": is_retryable},
+            router_diagnostics=router_diagnostics,  # VR C.4
+            chunk_scope=chunk_scope,                 # VR C.4
         )
         db.commit()
         mark_phase_terminal(db, run_id, _phase_key(pass_name), result="failed")
@@ -8249,9 +8482,45 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # deferred indefinitely (rev 5 Q4), and VR uses schema-derived queries
         # that do not require identity-pass output as an input.
         entity_passes = [
-            p.name for p in manifest.passes
+            p for p in manifest.passes
             if p.phase in ("identity", "field_group")
         ]
+
+        # VR C.4 (rev 14 caller contract + rev 6 M5): load doc_json and build
+        # the ExtractionChunk index BEFORE dispatching any field_group passes.
+        # Wrapped in its OWN try/except (NOT the outer C1.5 handler) — failure
+        # disables VR for this run but does NOT terminalize the pipeline_run.
+        # field_group passes still run with full-doc semantics (fail-open).
+        _build_index_failed: bool = False
+        if settings.vector_router_mode != "disabled":
+            try:
+                from app.services.extraction_chunk_index import build_extraction_index
+                doc_json_for_index = _build_docling_document_json(document_id)
+                store_for_index = get_graph_store()
+                build_diag = build_extraction_index(
+                    doc_json=doc_json_for_index,
+                    pipeline_run_id=str(run_id),
+                    document_id=document_id,
+                    store=store_for_index,
+                )
+                logger.info(
+                    "VR: built ExtractionChunk index for run=%s "
+                    "— inserted=%d skipped=%d embed_ms=%d insert_ms=%d",
+                    run_id,
+                    build_diag.chunks_inserted,
+                    build_diag.chunks_skipped,
+                    build_diag.embed_ms,
+                    build_diag.insert_ms,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "VR: build_extraction_index FAILED for run=%s: %r "
+                    "— falling back to RUN_FULL for all passes",
+                    run_id, exc,
+                )
+                _build_index_failed = True
+        # If mode is "disabled", skip the index build entirely;
+        # _build_index_failed stays False but the router won't be called anyway.
 
         # Second session: _claim_and_dispatch_pass commits phase records
         # independently. Using a single session would interleave the RUNNING
@@ -8261,12 +8530,17 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # BEFORE the bookkeeping writes.  Reading from the counter (not from a
         # return-value-driven local) ensures that a bookkeeping failure still
         # reports the correct queued count in the except handler below.
+        # Build a name→PassManifest lookup for O(1) access in the dispatch loop.
+        _pass_def_by_name = {p.name: p for p in manifest.passes}
         db2 = _get_db()
         try:
-            for pass_name in entity_passes[: settings.pass_concurrency_per_document]:
+            for pass_def in entity_passes[: settings.pass_concurrency_per_document]:
                 _claim_and_dispatch_pass(
-                    db2, document_id, str(run_id), pass_name,
+                    db2, document_id, str(run_id), pass_def.name,
                     queued_counter=queued_counter,
+                    pass_def=pass_def,
+                    bundle_key=bundle_key,
+                    build_index_failed=_build_index_failed,
                 )
         finally:
             db2.close()
@@ -9116,3 +9390,188 @@ def _maybe_trigger_post_ingest_community_detection(document_id: str) -> None:
             "post-ingest community detection trigger failed for %s: %s",
             document_id, exc,
         )
+
+
+# ---------------------------------------------------------------------------
+# VR C.4 — Hourly janitor task (rev 9 H3 + rev 10 H3)
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="vr.purge_terminated_extraction_chunks", queue="graph")
+def purge_terminated_extraction_chunks() -> dict:
+    """Cross-store janitor — defense-in-depth for runs where
+    _terminalize_doc_and_run cleanup failed or for orphan ExtractionChunk rows.
+
+    Algorithm (rev 9 H3 + rev 10 H3):
+      1. ArcadeDB: SELECT DISTINCT pipeline_run_id WHERE created_at < NOW - 24h
+      2. Postgres: batched SELECT pipeline_runs.status WHERE id IN (...)
+      3. Compute purge_set = terminal IDs (COMPLETE/FAILED/PARTIAL_COMPLETE)
+                            ∪ orphan IDs (no Postgres row)
+      4. ArcadeDB: DELETE FROM ExtractionChunk WHERE pipeline_run_id IN purge_set
+
+    NEVER expressed as a single cross-DB SQL — ArcadeDB cannot read Postgres
+    state; Postgres cannot issue ArcadeDB DELETE commands.
+
+    Terminal statuses for Postgres lookup:
+      COMPLETE, FAILED, PARTIAL_COMPLETE  (matches _terminalize_doc_and_run contract)
+
+    Orphan rows: any run_id that appears in ArcadeDB ExtractionChunk but has NO
+    matching row in Postgres pipeline_runs. These arise when:
+      - A pipeline_run was hard-deleted (e.g. via the /cancel endpoint).
+      - A run was created but the Postgres row was never persisted (race/crash).
+
+    Returns a summary dict:  {
+        "old_run_ids_found": N,
+        "postgres_statuses_found": M,
+        "purge_set_size": K,
+        "purged_chunks": P,
+        "error": None | "...",
+    }
+    """
+    _TERMINAL_RUN_STATUSES = frozenset({"COMPLETE", "FAILED", "PARTIAL_COMPLETE"})
+    # Batch size for Postgres status lookups — prevents enormous IN(...) clauses.
+    _PG_BATCH_SIZE = 200
+
+    result: dict = {
+        "old_run_ids_found": 0,
+        "postgres_statuses_found": 0,
+        "purge_set_size": 0,
+        "purged_chunks": 0,
+        "error": None,
+    }
+
+    try:
+        store = get_graph_store()
+
+        # ------------------------------------------------------------------
+        # Step 1: ArcadeDB — find distinct pipeline_run_ids with old chunks.
+        # ------------------------------------------------------------------
+        # NOTE: ArcadeDB's sysdate() returns the current timestamp; we compare
+        # created_at against (current time - 24 hours).  ArcadeDB SQL datetime
+        # arithmetic: sysdate() - duration('PT24H').
+        try:
+            rows = store._client.query_sync(
+                store._database,
+                "sql",
+                "SELECT DISTINCT pipeline_run_id FROM ExtractionChunk "
+                "WHERE created_at < sysdate() - duration('PT24H')",
+                {},
+            )
+        except Exception as exc:
+            logger.warning(
+                "janitor: ArcadeDB query for old ExtractionChunk run_ids failed: %r",
+                exc,
+            )
+            result["error"] = f"arcadedb_query: {exc!r}"
+            return result
+
+        old_run_ids: list[str] = []
+        for row in (rows or []):
+            rid = row.get("pipeline_run_id")
+            if rid and isinstance(rid, str):
+                old_run_ids.append(rid)
+
+        result["old_run_ids_found"] = len(old_run_ids)
+
+        if not old_run_ids:
+            logger.info("janitor: no ExtractionChunk rows older than 24h found")
+            return result
+
+        # ------------------------------------------------------------------
+        # Step 2: Postgres — batched status lookup for all old run_ids.
+        # ------------------------------------------------------------------
+        import sqlalchemy as _sa
+        db = _get_db()
+        try:
+            pg_statuses: dict[str, str] = {}  # run_id → status
+            try:
+                for batch_start in range(0, len(old_run_ids), _PG_BATCH_SIZE):
+                    batch = old_run_ids[batch_start: batch_start + _PG_BATCH_SIZE]
+                    batch_uuids = []
+                    for r in batch:
+                        try:
+                            batch_uuids.append(uuid.UUID(str(r)))
+                        except ValueError:
+                            # Non-UUID pipeline_run_id — treat as orphan
+                            pg_statuses[r] = "__invalid_uuid__"
+
+                    if not batch_uuids:
+                        continue
+
+                    rows_pg = db.execute(
+                        _sa.text(
+                            "SELECT id::text, status FROM ingest.pipeline_runs "
+                            "WHERE id = ANY(:ids)"
+                        ),
+                        {"ids": batch_uuids},
+                    ).fetchall()
+
+                    for row_pg in rows_pg:
+                        pg_statuses[str(row_pg[0])] = row_pg[1]
+
+                result["postgres_statuses_found"] = len(pg_statuses)
+
+            except Exception as exc:
+                logger.warning(
+                    "janitor: Postgres status lookup failed: %r — skipping purge",
+                    exc,
+                )
+                result["error"] = f"postgres_query: {exc!r}"
+                return result
+
+            # ------------------------------------------------------------------
+            # Step 3: Compute purge set = terminal ∪ orphan.
+            # ------------------------------------------------------------------
+            to_purge: list[str] = []
+            for rid in old_run_ids:
+                status = pg_statuses.get(rid)
+                if status is None:
+                    # Orphan: no Postgres row for this run_id
+                    to_purge.append(rid)
+                elif status in _TERMINAL_RUN_STATUSES or status == "__invalid_uuid__":
+                    to_purge.append(rid)
+                # else: status is PROCESSING or other active status → skip
+
+            result["purge_set_size"] = len(to_purge)
+
+            if not to_purge:
+                logger.info(
+                    "janitor: 0 runs in purge set "
+                    "(all %d old runs are still PROCESSING)",
+                    len(old_run_ids),
+                )
+                return result
+
+        finally:
+            db.close()
+
+        # ------------------------------------------------------------------
+        # Step 4: ArcadeDB — bulk DELETE.
+        # ------------------------------------------------------------------
+        total_deleted = 0
+        for rid in to_purge:
+            try:
+                from app.services.extraction_chunk_index import cleanup_extraction_index
+                deleted = cleanup_extraction_index(rid, store=store)
+                total_deleted += deleted
+            except Exception as exc:
+                logger.warning(
+                    "janitor: cleanup_extraction_index failed for run_id=%r: %r",
+                    rid, exc,
+                )
+
+        result["purged_chunks"] = total_deleted
+        logger.info(
+            "janitor: purged %d ExtractionChunk chunks across %d runs "
+            "(old_run_ids=%d, orphans+terminal=%d)",
+            total_deleted, len(to_purge),
+            len(old_run_ids), len(to_purge),
+        )
+        return result
+
+    except Exception as exc:
+        logger.exception(
+            "janitor: purge_terminated_extraction_chunks failed: %r", exc
+        )
+        result["error"] = f"unexpected: {exc!r}"
+        return result

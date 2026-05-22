@@ -104,6 +104,14 @@ celery_app.conf.update(
             "schedule": 5.0,
             "options": {"queue": "celery"},
         },
+        # VR C.4 (rev 9 H3 + rev 10 H3): hourly cross-store janitor that purges
+        # terminated + orphaned ExtractionChunk rows.  Defense-in-depth for runs
+        # where _terminalize_doc_and_run's inline cleanup failed.
+        "vr-purge-terminated-extraction-chunks": {
+            "task": "vr.purge_terminated_extraction_chunks",
+            "schedule": timedelta(hours=1),
+            "options": {"queue": "graph"},
+        },
     },
 )
 

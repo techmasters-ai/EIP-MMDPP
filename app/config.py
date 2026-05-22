@@ -555,6 +555,20 @@ class Settings(BaseSettings):
     retrieval_diversity_oversample_factor: int = 8
     retrieval_diversity_max_candidates: int = 800
 
+    # VR (Vector Router) mode — controls per-pass chunk-scope narrowing.
+    # disabled:     router never invoked; legacy full-doc dispatch.
+    # shadow:       router invoked + diagnostics persisted; worker ALWAYS
+    #               dispatches RUN_FULL (no narrowing). Safe rollout default.
+    # narrow_only:  worker narrows on mode=selected_refs; fails open to
+    #               RUN_FULL on mode=would_skip (fail_open_reason captured).
+    # (skip_enforce is DEFERRED — not exposed here)
+    vector_router_mode: Literal["disabled", "shadow", "narrow_only"] = "shadow"
+
+    # Internal API base URL used by worker to call the /v1/extraction/chunk-scope
+    # endpoint.  In docker-compose the API container is "api"; tests can override
+    # this to "http://localhost:8000" or a mock URL.
+    internal_api_base_url: str = "http://api:8000"
+
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)
 
