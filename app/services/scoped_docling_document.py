@@ -276,15 +276,31 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
     def _resolve_cref_from_dict(d: dict) -> str:
         return d.get("cref") or d.get("$ref") or d.get("$cref", "")
 
+    def _group_idx_from_ref(group_ref: str) -> int | None:
+        """Parse '#/groups/N' → int N. Returns None on parse error OR negative N.
+        Rev 20 review Minor #2: explicitly reject negative indices to prevent
+        Python negative-list-indexing from silently resolving '#/groups/-1'
+        to the last group (false-positive reachability on corrupted input).
+        """
+        try:
+            idx = int(group_ref.rsplit("/", 1)[-1])
+        except (ValueError, TypeError):
+            return None
+        if idx < 0:
+            return None
+        return idx
+
     def _has_selected_descendant(group_ref: str, visited: set[str], depth: int = 0) -> bool:
         """Return True iff the group contains a selected ref among its descendants."""
         if depth > 10 or group_ref in visited:
             return False
         visited.add(group_ref)
+        idx = _group_idx_from_ref(group_ref)
+        if idx is None:
+            return False
         try:
-            idx = int(group_ref.rsplit("/", 1)[-1])
             grp = _groups_array[idx]
-        except (ValueError, IndexError, TypeError):
+        except IndexError:
             return False
         if not isinstance(grp, dict):
             return False
@@ -307,10 +323,12 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
             return
         visited.add(group_ref)
         _reachable_refs.add(group_ref)
+        idx = _group_idx_from_ref(group_ref)
+        if idx is None:
+            return
         try:
-            idx = int(group_ref.rsplit("/", 1)[-1])
             grp = _groups_array[idx]
-        except (ValueError, IndexError, TypeError):
+        except IndexError:
             return
         if not isinstance(grp, dict):
             return
@@ -326,22 +344,22 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
                     _mark_group_and_nested_reachable(child_ref, visited, depth + 1)
 
     # Walk the ORIGINAL body.children to find reachable groups.
+    # (Direct non-group children of body don't need explicit handling here —
+    # rev 20 review Minor #1: the final `_reachable_refs.update(_selected_set_for_reach)`
+    # below covers them unconditionally; an extra branch in the loop would be
+    # redundant code that misleads readers about coverage.)
     original_body_children = (doc_json.get("body") or {}).get("children") or []
     for child_dict in original_body_children:
         if not isinstance(child_dict, dict):
             continue
         cref = _resolve_cref_from_dict(child_dict)
-        if not cref:
+        if not cref or not cref.startswith("#/groups/"):
             continue
-        if cref.startswith("#/groups/"):
-            if _has_selected_descendant(cref, set()):
-                _mark_group_and_nested_reachable(cref, set())
-        else:
-            # Direct (non-group) children of body are reachable if they're selected.
-            if cref in _selected_set_for_reach:
-                _reachable_refs.add(cref)
+        if _has_selected_descendant(cref, set()):
+            _mark_group_and_nested_reachable(cref, set())
 
-    # Also add the selected refs themselves (they're reachable by definition).
+    # Selected refs are reachable by definition; this also covers direct
+    # (non-group) children of body that are in scope.
     _reachable_refs.update(_selected_set_for_reach)
 
     # Check each retained element's parent ref against the reachable set.

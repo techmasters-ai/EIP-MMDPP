@@ -576,3 +576,89 @@ def test_apply_chunk_scope_warns_for_truly_dangling_group_parent(caplog):
     assert any("#/groups/3" in m or "unreachable" in m.lower() for m in warn_msgs), (
         f"Expected warning about truly-dangling '#/groups/3'; got: {warn_msgs}"
     )
+
+
+def test_apply_chunk_scope_warns_for_orphan_group_present_in_groups_but_absent_from_body(caplog):
+    """Rev 20 review Suggestion #2: a group exists in groups[] (so it's a valid
+    docling object) BUT is never referenced from body.children. Selected element's
+    parent points at this orphan group.
+
+    Expected: the orphan group is unreachable from body (the walker only descends
+    into groups it finds in body.children), so the warning fires. This is a real
+    coverage gap that the rev-19 walker rewrite handles correctly but had no
+    explicit test.
+    """
+    import logging
+
+    doc = _make_doc(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "text": "Para A",
+                "label": "paragraph",
+                "parent": {"cref": "#/groups/5"},  # orphan group: exists but not in body
+            },
+        ],
+        groups=[
+            {"self_ref": "#/groups/0", "children": []},
+            {"self_ref": "#/groups/1", "children": []},
+            {"self_ref": "#/groups/2", "children": []},
+            {"self_ref": "#/groups/3", "children": []},
+            {"self_ref": "#/groups/4", "children": []},
+            {"self_ref": "#/groups/5", "children": [{"$ref": "#/texts/0"}]},  # exists but...
+        ],
+        body_children=[{"$ref": "#/texts/0"}],  # ...body points at texts[0] directly, not via #/groups/5
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/0"]}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scoped_docling_document"):
+        result = apply_chunk_scope(doc, chunk_scope)
+
+    # Scoping still proceeds.
+    child_refs = [c.get("$ref") or c.get("cref") or c.get("$cref") for c in result["body"]["children"]]
+    assert "#/texts/0" in child_refs
+
+    # The orphan group's parent ref is unreachable because the walker never
+    # descends into it (it isn't in body.children). Warning must fire.
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("#/groups/5" in m or "unreachable" in m.lower() for m in warn_msgs), (
+        f"Expected warning about orphan group '#/groups/5' (in groups[] but not in body); "
+        f"got: {warn_msgs}"
+    )
+
+
+def test_apply_chunk_scope_negative_group_index_in_parent_does_not_silently_resolve(caplog):
+    """Rev 20 review Minor #2: a malformed parent ref '#/groups/-1' must NOT
+    silently resolve to the last group via Python's negative-indexing.
+    The walker rejects negative indices in _group_idx_from_ref, so the group
+    is treated as unresolvable → warning fires."""
+    import logging
+
+    doc = _make_doc(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "text": "Para A",
+                "label": "paragraph",
+                "parent": {"cref": "#/groups/-1"},  # malformed: negative index
+            },
+        ],
+        groups=[
+            {"self_ref": "#/groups/0", "children": [{"$ref": "#/texts/0"}]},
+        ],
+        body_children=[{"$ref": "#/texts/0"}],
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/0"]}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scoped_docling_document"):
+        result = apply_chunk_scope(doc, chunk_scope)
+
+    # Scoping still proceeds.
+    child_refs = [c.get("$ref") or c.get("cref") or c.get("$cref") for c in result["body"]["children"]]
+    assert "#/texts/0" in child_refs
+
+    # Negative index must NOT silently resolve to groups[-1]; warning fires.
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("#/groups/-1" in m or "unreachable" in m.lower() for m in warn_msgs), (
+        f"Expected warning about malformed negative-index group ref; got: {warn_msgs}"
+    )
