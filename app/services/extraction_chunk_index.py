@@ -47,12 +47,12 @@ except Exception:  # pragma: no cover
 # to adjacent text elements via include_parent_section_heading expansion.
 _HEADING_LABELS = frozenset({"section_header", "section-header", "title"})
 
-# Labels whose text we index as chunks (everything except structural headings).
-_TEXT_CHUNK_LABELS = frozenset({
-    "text", "paragraph", "list_item", "list-item", "footnote",
-    "formula", "reference", "caption", "page_header", "page_footer",
-    # Fallback: None or unknown label → still index if non-empty
-})
+# NOTE: walker policy (rev 14 code-quality review Important #1):
+#   _walk_docling_elements indexes EVERY texts[]/tables[]/pictures[] element
+#   EXCEPT those whose label is in _HEADING_LABELS. There is no positive
+#   allowlist — a future docling version that introduces a new label will be
+#   indexed by default. If we ever need explicit allowlisting, reintroduce a
+#   _TEXT_CHUNK_LABELS frozenset HERE and wire it into the walk filter.
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,10 @@ def _resolve_caption_ref(ref_item: dict, doc_json: dict) -> str:
 
     Returns empty string on any resolution failure.
     """
-    cref = ref_item.get("$ref") or ref_item.get("cref", "")
+    # Standard docling JSON uses "$ref"; fallbacks ("cref"/"$cref") only catch
+    # non-standard test fixtures. Both names are tried for parity with
+    # _resolve_parent_section_heading (rev 14 review Minor #3).
+    cref = ref_item.get("$ref") or ref_item.get("$cref") or ref_item.get("cref", "")
     if not cref or not cref.startswith("#/texts/"):
         return ""
 
@@ -371,6 +374,28 @@ def build_extraction_index(
     # ------------------------------------------------------------------
     # Step 1: Idempotent delete — clear any existing chunks for this run.
     # ------------------------------------------------------------------
+    # NOTE (rev 14 code-quality review Important #2 + #3): failure modes
+    # of this DELETE and the subsequent batch INSERT loop are documented
+    # here as the caller contract for VR Phase C.4:
+    #
+    #   1. _delete_by_run_id silently returns 0 on failure (shared with
+    #      cleanup_extraction_index, which deliberately swallows exceptions).
+    #      If the DELETE fails (network blip, ArcadeDB restart), the
+    #      subsequent INSERT loop may collide with existing rows on the
+    #      UNIQUE vertex_id index.
+    #   2. The INSERT loop below is NOT transaction-wrapped — each vertex
+    #      is its own auto-committed `command_sync` call. A failure at
+    #      vertex N leaves N-1 chunks in the database.
+    #
+    # Both failure modes are RECOVERABLE BY RETRY: the next call to
+    # build_extraction_index begins with a fresh DELETE, which idempotently
+    # clears whatever state was left behind.
+    #
+    # CALLER CONTRACT (C.4 dispatcher wiring): wrap build_extraction_index()
+    # in try/except inside derive_ontology_graph. On ANY exception, log
+    # WARNING and fall back to RUN_FULL for all field-group passes — do
+    # NOT call the /v1/extraction/chunk-scope endpoint against a partial
+    # index. This satisfies the rev 12 H2 + rev 13 fail-open requirement.
     _delete_by_run_id(store, pipeline_run_id)
 
     # ------------------------------------------------------------------
@@ -430,6 +455,11 @@ def build_extraction_index(
     embed_t0 = time.monotonic()
     embeddings = _embed(rendered_texts, query=False)
     embed_ms = int((time.monotonic() - embed_t0) * 1000)
+    # embed_calls counts INVOCATIONS of embed_texts() from this builder,
+    # NOT the number of Ollama HTTP requests. embed_texts() internally
+    # chunks the input list into sub-batches (default batch_size=64), so a
+    # single embed_calls=1 here may translate to multiple Ollama calls.
+    # (rev 14 code-quality review Minor #6.)
     embed_calls = 1
 
     # ------------------------------------------------------------------
@@ -450,6 +480,10 @@ def build_extraction_index(
 
     insert_t0 = time.monotonic()
     for (self_ref, modality, page_no, rendered), embedding in zip(pending, embeddings):
+        # vertex_id assumes pipeline_run_id contains no ":" — production
+        # run_ids are UUIDs (e.g. 550e8400-e29b-41d4-a716-446655440000) which
+        # never contain ":". self_ref contains "/" and "#" but no ":". So the
+        # composite key is unambiguous. (rev 14 code-quality review Minor #5.)
         vertex_id = f"{pipeline_run_id}:{self_ref}"
         params: dict = {
             "vertex_id": vertex_id,

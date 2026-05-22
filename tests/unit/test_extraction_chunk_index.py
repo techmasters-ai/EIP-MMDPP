@@ -866,3 +866,28 @@ class TestWalkDoclingElements:
         doc_json = _make_doc_json([], [], [])
         results = list(_walk_docling_elements(doc_json))
         assert results == []
+
+    def test_heading_only_doc_excludes_headings_from_walk(self):
+        """Rev 14 code-quality review Minor #4: explicit walker-level test
+        for the heading exclusion contract. Elements labeled section_header,
+        section-header, or title are NEVER yielded as indexable chunks even
+        if they have non-empty text. They serve only as parent-context
+        providers for adjacent text elements (see _resolve_parent_section_heading).
+        """
+        from app.services.extraction_chunk_index import _walk_docling_elements
+
+        # Doc with ONLY heading-labeled text elements + no tables + no pictures.
+        texts = [
+            {"label": "section_header", "text": "Radar Specifications",
+             "self_ref": "#/texts/0"},
+            {"label": "section-header", "text": "Hyphenated heading",
+             "self_ref": "#/texts/1"},
+            {"label": "title", "text": "Document Title",
+             "self_ref": "#/texts/2"},
+        ]
+        doc_json = _make_doc_json(texts, [], [])
+        results = list(_walk_docling_elements(doc_json))
+        assert results == [], (
+            f"Heading-only doc should yield zero indexable elements; "
+            f"got {[r[0] for r in results]}"
+        )
