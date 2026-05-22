@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     agent,
     community,
+    extraction_routing,
     governance,
     graph_store,
     health,
@@ -25,3 +26,4 @@ api_router.include_router(retrieval.router)
 api_router.include_router(governance.router)
 api_router.include_router(agent.router)
 api_router.include_router(community.router)
+api_router.include_router(extraction_routing.router)
