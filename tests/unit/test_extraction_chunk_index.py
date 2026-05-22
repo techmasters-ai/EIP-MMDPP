@@ -7,8 +7,10 @@ TDD discipline: all tests were written BEFORE the implementation module.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
@@ -42,6 +44,10 @@ def _make_table_elem(idx: int, caption_text: str | None, cells: list[list[str]],
     ``cells`` is a 2D list of strings — rows × cols.
     The function stores caption as a ref to a synthetic text element
     at '#/texts/900{idx}'.
+
+    NOTE: Uses real docling EXCLUSIVE end-index convention (Python slice):
+      end_row_offset_idx = row_idx + 1  (i.e. range(start, end) = [start])
+    Includes num_rows / num_cols as authoritative grid size (real docling shape).
     """
     table: dict[str, Any] = {
         "self_ref": f"#/tables/{idx}",
@@ -51,18 +57,24 @@ def _make_table_elem(idx: int, caption_text: str | None, cells: list[list[str]],
     if caption_text is not None:
         # Caption stored as $ref to a texts element (standard docling shape)
         table["captions"] = [{"$ref": f"#/texts/900{idx}"}]
-    # Encode cells as flat table_cells list with start_row/col offsets
+    # Encode cells as flat table_cells list with start_row/col offsets.
+    # Use EXCLUSIVE end indices (Python-slice convention, as in real docling):
+    #   end_row_offset_idx = row_idx + 1  (occupies ONLY row_idx)
+    num_rows = len(cells)
+    num_cols = max((len(r) for r in cells), default=0)
     flat_cells: list[dict] = []
     for row_idx, row in enumerate(cells):
         for col_idx, text in enumerate(row):
             flat_cells.append({
                 "text": text,
                 "start_row_offset_idx": row_idx,
-                "end_row_offset_idx": row_idx,
+                "end_row_offset_idx": row_idx + 1,   # EXCLUSIVE
                 "start_col_offset_idx": col_idx,
-                "end_col_offset_idx": col_idx,
+                "end_col_offset_idx": col_idx + 1,   # EXCLUSIVE
             })
     table["data"]["table_cells"] = flat_cells
+    table["data"]["num_rows"] = num_rows
+    table["data"]["num_cols"] = num_cols
     return table
 
 
@@ -125,10 +137,20 @@ def _make_doc_json(
                 "label": "title",
                 "prov": [],
             })
+    # Build body.children from texts in order — mirrors real docling structure
+    # where all texts parent to {cref: "#/body"} and body.children lists them
+    # in document order. This is required for _resolve_parent_section_heading
+    # which now uses body.children traversal (body.cref key, not parent.$ref).
+    body_children = [
+        {"cref": t["self_ref"]}
+        for t in all_texts
+        if isinstance(t, dict) and t.get("self_ref")
+    ]
     return {
         "texts": all_texts,
         "tables": tables,
         "pictures": pictures,
+        "body": {"children": body_children},
     }
 
 
@@ -891,3 +913,424 @@ class TestWalkDoclingElements:
             f"Heading-only doc should yield zero indexable elements; "
             f"got {[r[0] for r in results]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Fixture path helper
+# ---------------------------------------------------------------------------
+
+_FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "docling_anchors"
+
+
+# ---------------------------------------------------------------------------
+# HIGH fix: fixture-backed heading-context tests (body.children traversal)
+# ---------------------------------------------------------------------------
+
+
+class TestRealDoclingFixtureHeadingContext:
+    """Fixture-backed tests for _resolve_parent_section_heading.
+
+    Real docling JSON has texts parenting to {cref: '#/body'} — not to
+    #/texts/N.  Heading resolution MUST use body.children traversal.
+    Uses tests/fixtures/docling_anchors/interleaved_pictures.json which
+    has section_header at texts[0] followed by non-heading texts at
+    texts[1,3,4,6].
+    """
+
+    @pytest.fixture(scope="class")
+    def interleaved_doc(self):
+        path = _FIXTURE_DIR / "interleaved_pictures.json"
+        with open(path) as f:
+            return json.load(f)
+
+    def test_real_docling_fixture_resolves_heading_context(self, interleaved_doc):
+        """Non-heading texts after a section_header in body.children must
+        resolve to that heading via body.children traversal.
+        Uses interleaved_pictures.json: texts[0]='Chapter 1' (section_header),
+        texts[1]='Opening paragraph...' (text label).
+        """
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+
+        doc = interleaved_doc
+        # Find the first non-heading text
+        non_heading = None
+        for t in doc["texts"]:
+            if t.get("label") not in ("title", "section_header", "section-header"):
+                non_heading = t
+                break
+        assert non_heading is not None, (
+            "Fixture has no non-heading texts; cannot test heading resolution"
+        )
+
+        heading = _resolve_parent_section_heading(non_heading, doc)
+        assert heading, (
+            f"Expected a heading for {non_heading['self_ref']!r}; got empty string. "
+            f"Real docling uses cref='#/body' — body.children traversal required."
+        )
+
+        # The resolved heading must be an actual heading text in the fixture
+        heading_texts = {
+            t["text"]
+            for t in doc["texts"]
+            if t.get("label") in ("title", "section_header", "section-header")
+        }
+        assert heading in heading_texts, (
+            f"Resolved heading {heading!r} not in fixture headings {heading_texts!r}"
+        )
+
+    def test_heading_is_most_recent_before_target(self, interleaved_doc):
+        """The resolved heading is the NEAREST preceding heading in body order.
+        texts[0] = 'Chapter 1' (section_header)
+        texts[1] = non-heading → should resolve to 'Chapter 1'
+        """
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+
+        doc = interleaved_doc
+        # texts[1] is "Opening paragraph before any picture." (label=text)
+        target = doc["texts"][1]
+        assert target.get("label") not in ("title", "section_header", "section-header"), (
+            f"Fixture changed: texts[1] is now a heading ({target.get('label')!r})"
+        )
+        heading = _resolve_parent_section_heading(target, doc)
+        assert heading == "Chapter 1", (
+            f"Expected 'Chapter 1' (texts[0]); got {heading!r}"
+        )
+
+    def test_element_before_any_heading_returns_empty(self, interleaved_doc):
+        """If the target self_ref appears BEFORE any heading in body.children,
+        return ''. This fixture's texts[0] IS a heading, so use a synthetic
+        element injected before the first body child."""
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+
+        # Inject a synthetic non-heading element at the front of body.children
+        # without modifying the shared fixture
+        doc_copy = dict(interleaved_doc)
+        doc_copy = {k: v for k, v in interleaved_doc.items()}
+        # Deep-copy just what we need to mutate
+        import copy
+        doc_copy = copy.deepcopy(interleaved_doc)
+        doc_copy["texts"].insert(0, {
+            "self_ref": "#/texts/99",
+            "label": "text",
+            "text": "Before any heading",
+            "parent": {"cref": "#/body"},
+        })
+        doc_copy["body"]["children"].insert(0, {"cref": "#/texts/99"})
+
+        heading = _resolve_parent_section_heading("#/texts/99", doc_copy)
+        assert heading == "", (
+            f"Element before any heading should return ''; got {heading!r}"
+        )
+
+    def test_build_prepends_heading_to_text_chunks_real_fixture(self, interleaved_doc):
+        """build_extraction_index on interleaved_pictures.json with
+        include_parent_section_heading=True: the chunk for texts[1]
+        ('Opening paragraph...') must be prefixed with 'Chapter 1'.
+        """
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        store = _make_mock_store()
+        captured: dict[str, str] = {}  # self_ref → chunk_text
+
+        def capture_cmd(db, lang, sql, params=None):
+            if params and "chunk_text" in params:
+                captured[params.get("self_ref", "")] = params["chunk_text"]
+            return [{"count": 0}]
+
+        store._client.command_sync.side_effect = capture_cmd
+
+        # Count non-heading texts to know how many embeddings to produce
+        non_heading_count = sum(
+            1 for t in interleaved_doc["texts"]
+            if t.get("label") not in ("title", "section_header", "section-header")
+        )
+        # Add picture captions and table cells if any
+        pic_count = sum(
+            1 for p in interleaved_doc.get("pictures", [])
+            if any(True for _ in (p.get("captions") or []))
+        )
+        tbl_count = len(interleaved_doc.get("tables", []))
+        total = non_heading_count + pic_count + tbl_count
+
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 128] * total,
+        ):
+            diag = build_extraction_index(
+                interleaved_doc,
+                "run-heading-fixture",
+                "doc-heading-fixture",
+                store=store,
+                include_parent_section_heading=True,
+            )
+
+        # texts[1] is the first non-heading text; its chunk must have heading
+        chunk = captured.get("#/texts/1", "")
+        assert "Chapter 1" in chunk, (
+            f"Expected 'Chapter 1' prefix in chunk for #/texts/1; got: {chunk!r}. "
+            f"All captured chunks: {captured!r}"
+        )
+        assert "Opening paragraph" in chunk, (
+            f"Expected body text in chunk for #/texts/1; got: {chunk!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# MED fix: fixture-backed table shape test (exclusive end indices)
+# ---------------------------------------------------------------------------
+
+
+class TestRealDoclingTableShape:
+    """Fixture-backed tests for _render_table_chunk.
+    Uses tests/fixtures/docling_anchors/with_figures_tables.json which has a
+    1×1 table where end_row_offset_idx=1 / end_col_offset_idx=1 (exclusive).
+    """
+
+    @pytest.fixture(scope="class")
+    def figures_tables_doc(self):
+        path = _FIXTURE_DIR / "with_figures_tables.json"
+        with open(path) as f:
+            return json.load(f)
+
+    def test_real_docling_table_renders_1x1_not_2x2(self, figures_tables_doc):
+        """The 1×1 table with end indices=1 (exclusive) must produce a
+        1-row markdown table, NOT a 2×2 table with a blank row/column."""
+        from app.services.extraction_chunk_index import _render_table_chunk
+
+        doc = figures_tables_doc
+        tbl = doc["tables"][0]
+
+        # Confirm fixture shape: num_rows=1, num_cols=1, end_*=1 (exclusive)
+        assert tbl["data"]["num_rows"] == 1
+        assert tbl["data"]["num_cols"] == 1
+        cell = tbl["data"]["table_cells"][0]
+        assert cell["end_row_offset_idx"] == 1
+        assert cell["end_col_offset_idx"] == 1
+        assert cell["text"] == "a"
+
+        rendered = _render_table_chunk(tbl, doc, include_caption=False)
+
+        assert "a" in rendered, f"Cell text 'a' missing from rendering: {rendered!r}"
+
+        lines = [ln for ln in rendered.splitlines() if ln.strip()]
+        # A 1×1 table is ONLY a header row (+ optional separator) = 1 or 2 lines.
+        # 3 lines would mean a spurious extra data row was emitted.
+        # The old buggy code produced 3 lines (header + sep + blank data row).
+        assert len(lines) <= 2, (
+            f"1×1 table should be ≤2 lines (header row + separator); "
+            f"got {len(lines)} lines: {lines!r}\n"
+            f"Bug: end_*=1 is EXCLUSIVE; old code treated it as inclusive + added blank row."
+        )
+
+        # Header line must have exactly 1 pipe-delimited column (not 2)
+        header_line = lines[0]
+        cols_in_header = [c.strip() for c in header_line.strip("|").split("|")]
+        assert len(cols_in_header) == 1, (
+            f"1×1 table header must have 1 column; got {cols_in_header!r}\n"
+            f"Bug: end_col=1 is EXCLUSIVE; old code added spurious blank column."
+        )
+        assert cols_in_header[0] == "a", (
+            f"Header cell must be 'a'; got {cols_in_header[0]!r}"
+        )
+
+    def test_1x1_table_no_extra_columns(self, figures_tables_doc):
+        """A 1×1 table must produce a markdown table with exactly 1 column.
+        The old code produced 2 columns because end_col=1 was treated inclusive.
+        Verifies by counting pipe separators in the header line.
+        """
+        from app.services.extraction_chunk_index import _render_table_chunk
+
+        doc = figures_tables_doc
+        tbl = doc["tables"][0]
+        rendered = _render_table_chunk(tbl, doc, include_caption=False)
+
+        lines = [ln for ln in rendered.splitlines() if ln.strip()]
+        assert lines, "Rendered table must not be empty"
+
+        # Count total lines — must be ≤ 2 (header + separator only for 1 row)
+        assert len(lines) <= 2, (
+            f"1×1 fixture table should have ≤2 lines; got {lines!r}"
+        )
+
+        # The header line must contain exactly 1 pipe-delimited cell (value "a")
+        header = lines[0]
+        # Remove leading/trailing pipes and split; filter empty strings from split
+        parts = [p.strip() for p in header.strip("|").split("|")]
+        assert len(parts) == 1, (
+            f"Header must have 1 column; got {parts!r} in {header!r}\n"
+            f"Bug: end_col=1 is EXCLUSIVE; old code treated inclusive => 2 columns."
+        )
+        assert parts[0] == "a", f"Header cell must be 'a'; got {parts[0]!r}"
+
+    def test_table_uses_num_rows_num_cols_as_grid_size(self):
+        """Grid is sized from data.num_rows/num_cols, NOT from max(end_*)+1.
+        Synthetic test: 1×1 table with end_*=1 (exclusive) must yield 1×1 grid
+        with exactly 1 row and 1 column — NOT the 2×2 the old code produced.
+        """
+        from app.services.extraction_chunk_index import _render_table_chunk
+
+        tbl = {
+            "self_ref": "#/tables/0",
+            "prov": [],
+            "data": {
+                "num_rows": 1,
+                "num_cols": 1,
+                "table_cells": [
+                    {
+                        "text": "hello",
+                        "start_row_offset_idx": 0,
+                        "end_row_offset_idx": 1,    # exclusive — occupies ONLY row 0
+                        "start_col_offset_idx": 0,
+                        "end_col_offset_idx": 1,    # exclusive — occupies ONLY col 0
+                    }
+                ],
+            },
+        }
+        doc = {"texts": [], "tables": [tbl], "pictures": []}
+        rendered = _render_table_chunk(tbl, doc, include_caption=False)
+
+        lines = [ln for ln in rendered.splitlines() if ln.strip()]
+        # 1×1 table = 1 header row + 1 separator = 2 lines max.
+        # 3 lines means old inclusive bug added a blank extra row.
+        assert len(lines) <= 2, (
+            f"1×1 synthetic table: expected ≤2 lines (header + sep); got {lines!r}\n"
+            f"Bug: end_*=1 is EXCLUSIVE; old code treated it inclusive => blank extra row."
+        )
+        assert "hello" in rendered, f"Cell text missing: {rendered!r}"
+
+        # Exactly 1 pipe-delimited non-empty column in the header
+        header = lines[0]
+        header_cells = [c.strip() for c in header.strip("|").split("|") if c.strip()]
+        assert len(header_cells) == 1, (
+            f"Expected 1 column; got {header_cells!r} in {header!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# MED fix: embed length mismatch raises RuntimeError
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedLengthMismatch:
+    """embed_texts returning fewer vectors than pending must raise, not truncate."""
+
+    def test_build_raises_on_embedding_count_mismatch(self):
+        """If embed_texts returns fewer vectors than pending, build must raise
+        RuntimeError (not silently truncate via zip). C.4 catches + falls back."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [
+            _make_text_elem(0, "Alpha content."),
+            _make_text_elem(1, "Beta content."),
+            _make_text_elem(2, "Gamma content."),
+        ]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+
+        # Return only 2 embeddings for 3 pending elements
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 128, [0.2] * 128],  # short by 1
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                build_extraction_index(doc_json, "run-mismatch", "doc-mm", store=store)
+
+        msg = str(exc_info.value)
+        assert "2" in msg and "3" in msg, (
+            f"Error message must cite both counts; got: {msg!r}"
+        )
+        assert "embed_texts" in msg.lower() or "embedding" in msg.lower(), (
+            f"Error message must mention embeddings; got: {msg!r}"
+        )
+
+    def test_build_raises_on_extra_embeddings(self):
+        """embed_texts returning MORE vectors than pending also raises."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [_make_text_elem(0, "One item.")]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+
+        # Return 3 embeddings for 1 pending element
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 128, [0.2] * 128, [0.3] * 128],
+        ):
+            with pytest.raises(RuntimeError):
+                build_extraction_index(doc_json, "run-extra", "doc-extra", store=store)
+
+    def test_matching_length_does_not_raise(self):
+        """Correct 1:1 count between pending and embeddings must NOT raise."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [_make_text_elem(0, "Exactly one.")]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+
+        # Return exactly 1 embedding for 1 pending element
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 128],
+        ):
+            diag = build_extraction_index(doc_json, "run-ok", "doc-ok", store=store)
+
+        assert diag.chunks_inserted == 1
+
+
+# ---------------------------------------------------------------------------
+# MED/LOW fix: strict=True delete propagates failures from build
+# ---------------------------------------------------------------------------
+
+
+class TestStrictDeleteBehavior:
+    """_delete_by_run_id strict=True (used by build) propagates failures.
+    strict=False (used by cleanup) keeps best-effort swallowing behavior.
+    """
+
+    def test_build_propagates_delete_failure(self):
+        """When DELETE raises and strict=True (build path), the exception
+        propagates out of build_extraction_index. C.4 catches and falls back."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [_make_text_elem(0, "Some content.")]
+        doc_json = _make_doc_json(texts, [], [])
+
+        store = MagicMock()
+        store._database = "test_db"
+        store._client.command_sync.side_effect = RuntimeError("ArcadeDB offline")
+
+        with pytest.raises(RuntimeError, match="ArcadeDB offline"):
+            build_extraction_index(doc_json, "run-del-fail", "doc-df", store=store)
+
+    def test_cleanup_swallows_delete_failure_unchanged(self):
+        """cleanup_extraction_index must keep best-effort (strict=False)
+        semantics after the strict refactor — no behavior change."""
+        from app.services.extraction_chunk_index import cleanup_extraction_index
+
+        store = MagicMock()
+        store._database = "test_db"
+        store._client.command_sync.side_effect = RuntimeError("ArcadeDB offline")
+
+        # Must NOT raise
+        result = cleanup_extraction_index("run-cleanup-fail", store=store)
+        assert result == 0, f"Expected 0 on failure; got {result!r}"
+
+    def test_build_delete_strict_raises_before_embed_called(self):
+        """When strict DELETE fails, embed_texts should NOT be called
+        (build must abort before embedding on DELETE failure)."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [_make_text_elem(0, "Content.")]
+        doc_json = _make_doc_json(texts, [], [])
+
+        store = MagicMock()
+        store._database = "test_db"
+        store._client.command_sync.side_effect = RuntimeError("DB down")
+
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+        ) as mock_embed:
+            with pytest.raises(RuntimeError):
+                build_extraction_index(doc_json, "run-abort", "doc-abort", store=store)
+
+        mock_embed.assert_not_called()

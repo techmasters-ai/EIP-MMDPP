@@ -157,29 +157,93 @@ def _resolve_first_caption(elem: dict, doc_json: dict) -> str:
     return ""
 
 
-def _resolve_parent_section_heading(elem: dict, doc_json: dict) -> str:
-    """Return the section heading text of this element's parent, if any.
+def _resolve_parent_section_heading(self_ref_or_elem, doc_json: dict) -> str:
+    """Find the most recent section_header/title BEFORE this element in
+    body.children walk order. Returns its text, or empty string if no heading
+    precedes it (e.g. the element is the first in body, or body is empty).
 
-    The parent ref is a dict ``{"$ref": "#/texts/N"}``. We look up that
-    text element and return its text only if its label is a heading label.
-    Returns empty string when parent is absent, unresolvable, or non-heading.
+    Algorithm:
+      1. Walk doc_json["body"]["children"] in document order.
+      2. Each child has a cref (key "cref" or "$ref") pointing at "#/texts/N".
+      3. Resolve each cref to the corresponding texts[N] element.
+      4. If the resolved element's label is in _HEADING_LABELS, update
+         ``current_heading`` to that element's text.
+      5. When we reach the target self_ref, return ``current_heading``.
+      6. If the target self_ref is not found in body.children, return "".
+
+    The self_ref_or_elem argument may be either:
+      - A string self_ref (e.g. ``"#/texts/3"``), OR
+      - A dict element with a ``"self_ref"`` key.
+
+    This handles the real docling serialisation where texts parent to
+    ``{cref: "#/body"}`` (NOT directly to a heading element) and headings
+    appear as siblings at the body level interleaved with body text.
+
+    NOTE: Non-``#/texts/N`` crefs (e.g. ``#/groups/N``) are skipped in this
+    implementation. Groups are not walked recursively — a group-contained
+    element will return an empty heading unless the group is preceded by a
+    top-level heading in body.children.
+
+    Supports both "cref" and "$ref" as the ref key for robustness across
+    docling serialisation variants.
     """
-    parent = elem.get("parent")
-    if not isinstance(parent, dict):
+    # Accept either a self_ref string or a dict element
+    if isinstance(self_ref_or_elem, dict):
+        target_self_ref = self_ref_or_elem.get("self_ref", "")
+    else:
+        target_self_ref = str(self_ref_or_elem)
+
+    if not target_self_ref:
         return ""
-    ref = parent.get("$ref") or parent.get("$cref", "")
-    if not ref or not ref.startswith("#/texts/"):
+
+    body = doc_json.get("body")
+    if not isinstance(body, dict):
         return ""
-    try:
-        idx = int(ref.split("/")[-1])
-        texts = doc_json.get("texts") or []
-        if 0 <= idx < len(texts):
-            parent_elem = texts[idx]
-            label = (parent_elem.get("label") or "").lower().replace(" ", "_")
+
+    children = body.get("children") or []
+    texts = doc_json.get("texts") or []
+
+    # Build a fast lookup: self_ref → texts element (O(n) once)
+    texts_by_ref: dict[str, dict] = {}
+    for idx, t in enumerate(texts):
+        if not isinstance(t, dict):
+            continue
+        ref = t.get("self_ref") or f"#/texts/{idx}"
+        texts_by_ref[ref] = t
+
+    current_heading = ""
+    for child in children:
+        if not isinstance(child, dict):
+            continue
+        # Support both "cref" (real docling) and "$ref" (synthetic / older)
+        cref = child.get("cref") or child.get("$ref") or ""
+        if not cref:
+            continue
+        if not cref.startswith("#/texts/"):
+            # Skip non-text crefs (groups, tables, pictures at body level)
+            continue
+
+        # Check if this is the target
+        if cref == target_self_ref:
+            return current_heading
+
+        # Resolve to the actual texts element
+        elem = texts_by_ref.get(cref)
+        if elem is None:
+            # Fall back to index-based lookup
+            try:
+                idx = int(cref.split("/")[-1])
+                if 0 <= idx < len(texts):
+                    elem = texts[idx]
+            except (ValueError, IndexError, TypeError):
+                pass
+
+        if elem is not None and isinstance(elem, dict):
+            label = (elem.get("label") or "").lower().replace(" ", "_")
             if label in _HEADING_LABELS:
-                return (parent_elem.get("text") or "").strip()
-    except (ValueError, IndexError, TypeError):
-        pass
+                current_heading = (elem.get("text") or "").strip()
+
+    # target_self_ref not found in body.children — return empty
     return ""
 
 
@@ -233,21 +297,36 @@ def _render_table_chunk(
             parts.append(caption)
 
     # --- Cells → markdown table ---
-    cells = (elem.get("data") or {}).get("table_cells") or elem.get("table_cells") or []
+    data = elem.get("data") or {}
+    cells = data.get("table_cells") or elem.get("table_cells") or []
     if cells:
-        # Determine grid dimensions
-        max_row = max((c.get("end_row_offset_idx", 0) for c in cells), default=0)
-        max_col = max((c.get("end_col_offset_idx", 0) for c in cells), default=0)
-        n_rows = max_row + 1
-        n_cols = max_col + 1
+        # Use data.num_rows / data.num_cols as the authoritative grid size.
+        # These are set by docling and reflect the true table dimensions.
+        # Do NOT derive n_rows/n_cols from max(end_*_offset_idx) — docling uses
+        # EXCLUSIVE (Python-slice) end indices, so end=1 means occupies only
+        # index 0, and max(end)+1 would produce an off-by-one over-sized grid.
+        n_rows = int(data.get("num_rows") or 0)
+        n_cols = int(data.get("num_cols") or 0)
 
-        # Build 2-D grid (last writer wins for spans)
+        # Fallback: if num_rows/num_cols absent, derive from start indices only
+        # (still correct because start is always inclusive).
+        if n_rows == 0 or n_cols == 0:
+            n_rows = max((c.get("start_row_offset_idx", 0) + 1 for c in cells), default=0)
+            n_cols = max((c.get("start_col_offset_idx", 0) + 1 for c in cells), default=0)
+
+        # Build 2-D grid (last writer wins for spans).
+        # Cell placement uses range(start, end) — Python EXCLUSIVE slice semantics.
+        # A cell with start_row=0, end_row=1 occupies ONLY row 0.
         grid: list[list[str]] = [[""] * n_cols for _ in range(n_rows)]
         for cell in cells:
-            r = cell.get("start_row_offset_idx", 0)
-            c = cell.get("start_col_offset_idx", 0)
-            if 0 <= r < n_rows and 0 <= c < n_cols:
-                grid[r][c] = (cell.get("text") or "").strip()
+            r_start = cell.get("start_row_offset_idx", 0)
+            r_end = cell.get("end_row_offset_idx", r_start + 1)
+            c_start = cell.get("start_col_offset_idx", 0)
+            c_end = cell.get("end_col_offset_idx", c_start + 1)
+            cell_text = (cell.get("text") or "").strip()
+            for r in range(r_start, min(r_end, n_rows)):
+                for c in range(c_start, min(c_end, n_cols)):
+                    grid[r][c] = cell_text
 
         if n_rows > 0 and n_cols > 0:
             # Header row
@@ -396,7 +475,12 @@ def build_extraction_index(
     # WARNING and fall back to RUN_FULL for all field-group passes — do
     # NOT call the /v1/extraction/chunk-scope endpoint against a partial
     # index. This satisfies the rev 12 H2 + rev 13 fail-open requirement.
-    _delete_by_run_id(store, pipeline_run_id)
+    #
+    # strict=True: DELETE failures propagate to caller (C.4 try/except).
+    # If DELETE fails and we proceed to INSERT, we risk UNIQUE constraint
+    # violations on vertex_id that produce noisy partial-insert errors and
+    # break the idempotency contract. Raising here lets C.4 fall back cleanly.
+    _delete_by_run_id(store, pipeline_run_id, strict=True)
 
     # ------------------------------------------------------------------
     # Step 2: Walk elements and render chunk text.
@@ -461,6 +545,21 @@ def build_extraction_index(
     # single embed_calls=1 here may translate to multiple Ollama calls.
     # (rev 14 code-quality review Minor #6.)
     embed_calls = 1
+
+    # Explicit length guard: zip() silently truncates on a short response.
+    # If embed_texts returns fewer (or more) vectors than pending elements,
+    # the index would be partial — diagnostics.chunks_inserted would report
+    # len(pending) but only the truncated count would actually be inserted,
+    # breaking C.4's failure detection. Raise here so C.4's try/except can
+    # catch and fall back to RUN_FULL.
+    if len(embeddings) != len(pending):
+        raise RuntimeError(
+            f"build_extraction_index: embed_texts returned {len(embeddings)} "
+            f"vectors but expected {len(pending)} "
+            f"(pipeline_run_id={pipeline_run_id!r}). "
+            f"This indicates a partial embedding response; C.4 must catch this "
+            f"exception and fall back to RUN_FULL."
+        )
 
     # ------------------------------------------------------------------
     # Step 4: Bulk INSERT ExtractionChunk vertices.
@@ -532,11 +631,29 @@ _DELETE_SQL = (
 )
 
 
-def _delete_by_run_id(store: "ArcadeDBGraphStore", pipeline_run_id: str) -> int:
+def _delete_by_run_id(
+    store: "ArcadeDBGraphStore",
+    pipeline_run_id: str,
+    *,
+    strict: bool = False,
+) -> int:
     """Delete all ExtractionChunk rows for a given pipeline_run_id.
 
-    Returns the count of deleted rows, or 0 on error (callers treat this as
-    best-effort).
+    Parameters
+    ----------
+    strict:
+        When False (default, used by ``cleanup_extraction_index``):
+            Swallows exceptions, logs WARNING, returns 0. Best-effort cleanup.
+        When True (used by ``build_extraction_index``):
+            Lets exceptions propagate. A failed DELETE means the subsequent
+            INSERT loop could collide with existing rows, violating the
+            idempotency contract. The C.4 dispatcher try/except catches the
+            propagated exception and falls back to RUN_FULL.
+
+    Returns
+    -------
+    int
+        Count of deleted rows, or 0 on error in non-strict mode.
     """
     try:
         result = store._client.command_sync(
@@ -548,7 +665,16 @@ def _delete_by_run_id(store: "ArcadeDBGraphStore", pipeline_run_id: str) -> int:
         if result and isinstance(result, list) and isinstance(result[0], dict):
             return int(result[0].get("count", 0))
         return 0
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise
+        logger.warning(
+            "_delete_by_run_id: failed to delete ExtractionChunk rows "
+            "for pipeline_run_id=%r — %s: %s.",
+            pipeline_run_id,
+            type(exc).__name__,
+            exc,
+        )
         return 0
 
 
