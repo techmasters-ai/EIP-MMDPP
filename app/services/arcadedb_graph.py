@@ -104,6 +104,7 @@ def _to_entity(row: dict[str, Any]) -> GraphEntityResult:
         "@rid", "name", "entity_type", "canonical_name", "extraction_confidence",
         "@type", "@cat", "@class", "$distance", "distance", "$score",
         "text_embedding", "image_embedding", "report_embedding",
+        "embedding",  # VR C.1: ExtractionChunk.embedding (1024-d float array) — strip from properties dict per the existing pattern; avoid 4KB-per-result bandwidth on chunk-scope retrievals.
     )}
     return GraphEntityResult(
         node_id=str(row.get("@rid", row.get("node_id", ""))),

@@ -381,7 +381,9 @@ async def sync_schema_from_ontology(
     # enables fast filtering by chunk_kind in retrieval queries.
     # VR C.1: ExtractionChunk.pipeline_run_id — vector_search filter dimension.
     # VR C.1: ExtractionChunk.created_at — janitor age-sweep (rev 8 M5).
-    # VR C.1: ExtractionChunk.vertex_id — UNIQUE identity (synthetic PK).
+    # (vertex_id UNIQUE index handled separately in Phase 7 above — do NOT add
+    # it here; adding it to secondary_indexes would create a NOTUNIQUE shadow
+    # index on a column that already has a UNIQUE index.)
     secondary_indexes = [
         ("TextChunk", "chunk_kind"),
         ("ExtractionChunk", "pipeline_run_id"),
@@ -397,7 +399,10 @@ async def sync_schema_from_ontology(
     # --- Phase 8: BucketSelectionStrategy 'thread' for write-heavy types ---
     # Eliminates contention and ConcurrentModificationException on parallel
     # pipeline ingestion (ArcadeDB Manual §5.5.24).
-    write_heavy_types = ["TextChunk", "ImageChunk", "TrustedTextChunk"]
+    # VR C.1: ExtractionChunk is bulk-written by build_extraction_index (C.2)
+    # at every pipeline_run start — hundreds of vertices per run, potentially
+    # concurrent across runs. Apply the thread bucket strategy before C.2 lands.
+    write_heavy_types = ["TextChunk", "ImageChunk", "TrustedTextChunk", "ExtractionChunk"]
     for e in ontology.get("entity_types", []):
         write_heavy_types.append(_safe_type_name(e["name"]))
     bucket_ddl = [
