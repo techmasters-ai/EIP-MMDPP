@@ -1334,3 +1334,81 @@ class TestStrictDeleteBehavior:
                 build_extraction_index(doc_json, "run-abort", "doc-abort", store=store)
 
         mock_embed.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# HIGH fix: recursive group traversal in _resolve_parent_section_heading
+# Rev 15 review finding: SA-2 has 40/308 texts inside #/groups/N refs.
+# ---------------------------------------------------------------------------
+
+
+class TestRealDoclingGroupParentedTexts:
+    """Rev 15 review HIGH finding: SA-2 has 40 of 308 texts inside groups.
+    _resolve_parent_section_heading must recursively walk #/groups/N
+    children to find heading context for these texts.
+    """
+
+    @pytest.fixture
+    def fixture_doc(self):
+        path = _FIXTURE_DIR / "with_groups.json"
+        with open(path) as f:
+            return json.load(f)
+
+    def test_group_parented_text_resolves_to_preceding_section_header(self, fixture_doc):
+        """Bullets under 'Equipment Specifications' (inside #/groups/1) must
+        resolve to that heading, NOT empty string."""
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+
+        # texts[4] = "RSNA-75 Fan Song radar" is inside groups/1, which is
+        # preceded by texts[3] = "Equipment Specifications" (section_header).
+        heading = _resolve_parent_section_heading("#/texts/4", fixture_doc)
+        assert heading == "Equipment Specifications", (
+            f"Expected 'Equipment Specifications'; got {heading!r}. The "
+            f"group-traversal fix is incomplete."
+        )
+
+    def test_first_group_text_resolves_to_section_header_before_group(self, fixture_doc):
+        """texts[1] is inside groups[0] which is preceded by texts[0] (Introduction).
+        Heading should be 'Introduction'."""
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+
+        heading = _resolve_parent_section_heading("#/texts/1", fixture_doc)
+        assert heading == "Introduction"
+
+    def test_section_header_state_persists_across_groups(self, fixture_doc):
+        """After walking through groups[0], the section_header 'Introduction'
+        is the running heading until the next section_header is encountered
+        (texts[3] 'Equipment Specifications'). This is implicit: texts[1] and
+        texts[2] (both in groups[0]) both resolve to 'Introduction'."""
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+
+        assert _resolve_parent_section_heading("#/texts/2", fixture_doc) == "Introduction"
+        assert _resolve_parent_section_heading("#/texts/5", fixture_doc) == "Equipment Specifications"
+
+    def test_unknown_self_ref_returns_empty(self, fixture_doc):
+        """Self_ref that doesn't exist in the doc returns empty string (no exception)."""
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+
+        heading = _resolve_parent_section_heading("#/texts/99999", fixture_doc)
+        assert heading == ""
+
+    def test_recursion_depth_guard_handles_deep_nesting(self, fixture_doc):
+        """Pathological case: group nested inside group inside group. The walker
+        must not stack-overflow. Add max_depth guard."""
+        # Build a synthetic doc with nested groups; verify no exception.
+        nested_doc = {
+            "body": {"children": [{"$ref": "#/groups/0"}]},
+            "texts": [
+                {"self_ref": "#/texts/0", "label": "section_header", "text": "Outer Heading"},
+                {"self_ref": "#/texts/1", "label": "list_item", "text": "Deeply nested item"},
+            ],
+            "groups": [
+                {"self_ref": "#/groups/0", "children": [{"$ref": "#/texts/0"}, {"$ref": "#/groups/1"}]},
+                {"self_ref": "#/groups/1", "children": [{"$ref": "#/groups/2"}]},
+                {"self_ref": "#/groups/2", "children": [{"$ref": "#/texts/1"}]},
+            ],
+        }
+        from app.services.extraction_chunk_index import _resolve_parent_section_heading
+        # Should resolve to 'Outer Heading' (set in groups[0] before nested groups).
+        heading = _resolve_parent_section_heading("#/texts/1", nested_doc)
+        assert heading == "Outer Heading"

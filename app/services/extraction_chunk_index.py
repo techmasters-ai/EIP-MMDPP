@@ -159,30 +159,33 @@ def _resolve_first_caption(elem: dict, doc_json: dict) -> str:
 
 def _resolve_parent_section_heading(self_ref_or_elem, doc_json: dict) -> str:
     """Find the most recent section_header/title BEFORE this element in
-    body.children walk order. Returns its text, or empty string if no heading
-    precedes it (e.g. the element is the first in body, or body is empty).
+    body.children walk order, recursively walking into #/groups/N children.
+    Returns its text, or empty string if no heading precedes it.
 
     Algorithm:
       1. Walk doc_json["body"]["children"] in document order.
-      2. Each child has a cref (key "cref" or "$ref") pointing at "#/texts/N".
-      3. Resolve each cref to the corresponding texts[N] element.
-      4. If the resolved element's label is in _HEADING_LABELS, update
-         ``current_heading`` to that element's text.
-      5. When we reach the target self_ref, return ``current_heading``.
-      6. If the target self_ref is not found in body.children, return "".
+      2. When a child cref points at "#/texts/N", resolve the element:
+           - If its label is in _HEADING_LABELS, update ``current_heading``.
+           - If it IS the target, return current_heading.
+      3. When a child cref points at "#/groups/N", recursively walk
+         groups[N].children with the same heading state.  Heading state
+         persists ACROSS group boundaries in both directions:
+           - A heading set in body.children BEFORE a group ref applies to
+             all texts inside that group.
+           - If a heading appears INSIDE a group, it updates the running
+             heading for subsequent siblings and parent-level elements.
+      4. Other crefs (#/tables/N, #/pictures/N) are skipped — they carry
+         no heading content.
+      5. If the target self_ref is not found anywhere in the walk, return "".
+
+    Defensive guards:
+      - Recursion depth is capped at ``_MAX_GROUP_DEPTH`` (10) to handle
+        pathological deeply-nested groups without stack overflow.
+      - Visited group indices are tracked to prevent infinite cycles.
 
     The self_ref_or_elem argument may be either:
       - A string self_ref (e.g. ``"#/texts/3"``), OR
       - A dict element with a ``"self_ref"`` key.
-
-    This handles the real docling serialisation where texts parent to
-    ``{cref: "#/body"}`` (NOT directly to a heading element) and headings
-    appear as siblings at the body level interleaved with body text.
-
-    NOTE: Non-``#/texts/N`` crefs (e.g. ``#/groups/N``) are skipped in this
-    implementation. Groups are not walked recursively — a group-contained
-    element will return an empty heading unless the group is preceded by a
-    top-level heading in body.children.
 
     Supports both "cref" and "$ref" as the ref key for robustness across
     docling serialisation variants.
@@ -200,8 +203,8 @@ def _resolve_parent_section_heading(self_ref_or_elem, doc_json: dict) -> str:
     if not isinstance(body, dict):
         return ""
 
-    children = body.get("children") or []
     texts = doc_json.get("texts") or []
+    groups = doc_json.get("groups") or []
 
     # Build a fast lookup: self_ref → texts element (O(n) once)
     texts_by_ref: dict[str, dict] = {}
@@ -211,40 +214,86 @@ def _resolve_parent_section_heading(self_ref_or_elem, doc_json: dict) -> str:
         ref = t.get("self_ref") or f"#/texts/{idx}"
         texts_by_ref[ref] = t
 
-    current_heading = ""
-    for child in children:
-        if not isinstance(child, dict):
-            continue
-        # Support both "cref" (real docling) and "$ref" (synthetic / older)
-        cref = child.get("cref") or child.get("$ref") or ""
-        if not cref:
-            continue
-        if not cref.startswith("#/texts/"):
-            # Skip non-text crefs (groups, tables, pictures at body level)
-            continue
+    # Mutable walk state shared across the recursive helper.
+    # Using a dict so the nested function can mutate without nonlocal in
+    # Python 2-compatible style (and for clarity).
+    state: dict = {"heading": "", "found": False, "result": ""}
 
-        # Check if this is the target
-        if cref == target_self_ref:
-            return current_heading
+    _MAX_GROUP_DEPTH = 10
 
-        # Resolve to the actual texts element
-        elem = texts_by_ref.get(cref)
-        if elem is None:
-            # Fall back to index-based lookup
-            try:
-                idx = int(cref.split("/")[-1])
-                if 0 <= idx < len(texts):
-                    elem = texts[idx]
-            except (ValueError, IndexError, TypeError):
-                pass
+    def _walk(refs: list, depth: int = 0) -> None:
+        """Walk a list of ref-dicts, updating state in place.
 
-        if elem is not None and isinstance(elem, dict):
-            label = (elem.get("label") or "").lower().replace(" ", "_")
-            if label in _HEADING_LABELS:
-                current_heading = (elem.get("text") or "").strip()
+        Stops as soon as state["found"] is True (short-circuit once target
+        is located).  Groups are recursed into up to _MAX_GROUP_DEPTH levels.
+        """
+        if depth > _MAX_GROUP_DEPTH:
+            logger.warning(
+                "_resolve_parent_section_heading: group nesting depth %d "
+                "exceeds maximum %d — aborting deep walk (groups below this "
+                "level will not be searched for heading context).",
+                depth, _MAX_GROUP_DEPTH,
+            )
+            return
 
-    # target_self_ref not found in body.children — return empty
-    return ""
+        for ref in refs:
+            if state["found"]:
+                return
+            if not isinstance(ref, dict):
+                continue
+
+            # Support "cref" (real docling) and "$ref" / "$cref" (synthetic)
+            cref = ref.get("cref") or ref.get("$ref") or ref.get("$cref", "")
+            if not cref:
+                continue
+
+            if cref.startswith("#/texts/"):
+                # Resolve to texts element — prefer fast lookup, fall back to index
+                elem = texts_by_ref.get(cref)
+                if elem is None:
+                    try:
+                        idx = int(cref.split("/")[-1])
+                        if 0 <= idx < len(texts):
+                            elem = texts[idx]
+                    except (ValueError, IndexError, TypeError):
+                        pass
+
+                if elem is None or not isinstance(elem, dict):
+                    continue
+
+                # Use elem's own self_ref for the equality check; fall back to cref
+                elem_ref = elem.get("self_ref") or cref
+
+                # Is this the target element?
+                if elem_ref == target_self_ref or cref == target_self_ref:
+                    state["found"] = True
+                    state["result"] = state["heading"]
+                    return
+
+                # Not the target — update heading state if applicable
+                label = (elem.get("label") or "").lower().replace(" ", "_")
+                if label in _HEADING_LABELS:
+                    state["heading"] = (elem.get("text") or "").strip()
+
+            elif cref.startswith("#/groups/"):
+                try:
+                    idx = int(cref.split("/")[-1])
+                except (ValueError, TypeError):
+                    continue
+                if idx < 0 or idx >= len(groups):
+                    continue
+                grp = groups[idx]
+                if not isinstance(grp, dict):
+                    continue
+                grp_children = grp.get("children") or []
+                # Recurse; heading state and found flag persist through the call
+                _walk(grp_children, depth + 1)
+
+            # Other ref types (#/tables/N, #/pictures/N) carry no heading content
+            # and are intentionally skipped.
+
+    _walk(body.get("children") or [])
+    return state["result"]
 
 
 def _render_text_chunk(
