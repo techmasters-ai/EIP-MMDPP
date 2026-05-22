@@ -9539,7 +9539,16 @@ def purge_terminated_extraction_chunks() -> dict:
                     ).fetchall()
 
                     for row_pg in rows_pg:
-                        pg_statuses[str(row_pg[0])] = row_pg[1]
+                        # LOW #6 (rev 19): normalize Postgres-returned ID to
+                        # lowercase canonical form, symmetric with ArcadeDB-side
+                        # normalization.  Postgres uuid::text is always lowercase
+                        # today, but explicit normalization defends against future
+                        # driver or schema changes.
+                        try:
+                            pg_id_normalized = str(uuid.UUID(str(row_pg[0]))).lower()
+                        except (ValueError, TypeError):
+                            pg_id_normalized = str(row_pg[0])
+                        pg_statuses[pg_id_normalized] = row_pg[1]
 
                 result["postgres_statuses_found"] = len(pg_statuses)
 
@@ -9567,14 +9576,14 @@ def purge_terminated_extraction_chunks() -> dict:
                 # Normalize to lowercase canonical form for Postgres key lookup.
                 try:
                     rid_normalized = str(uuid.UUID(rid)).lower()
-                except (ValueError, AttributeError):
+                except (ValueError, AttributeError, TypeError):
                     rid_normalized = (rid or "").lower()
                 status = pg_statuses.get(rid_normalized)
                 if status is None:
                     # Orphan: no Postgres row for this run_id
-                    to_purge.append(rid)
+                    to_purge.append(rid_normalized)
                 elif status in _TERMINAL_RUN_STATUSES or status == "__invalid_uuid__":
-                    to_purge.append(rid)
+                    to_purge.append(rid_normalized)
                 # else: status is PROCESSING or other active status → skip
 
             result["purge_set_size"] = len(to_purge)

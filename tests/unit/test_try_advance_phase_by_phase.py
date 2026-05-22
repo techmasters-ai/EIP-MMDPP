@@ -74,6 +74,12 @@ def _make_run(dispatched_phases: dict | None = None) -> MagicMock:
     run = MagicMock()
     run.ontology_bundle_key = _BUNDLE_KEY
     run.dispatched_phases = dispatched_phases or {}
+    # IMPORTANT #2 (rev 19): explicitly set metrics=None so production code's
+    # (run.metrics or {}).get("vr_index_built", True) evaluates to True (default:
+    # index assumed built).  Without this, MagicMock auto-creates a child mock
+    # for .metrics whose .get(...) returns another truthy MagicMock — tests would
+    # pass for the wrong reason.
+    run.metrics = None
     return run
 
 

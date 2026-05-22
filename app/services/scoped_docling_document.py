@@ -251,41 +251,98 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
     original_body = doc_json.get("body") or {}
     ref_key = _detect_ref_key(original_body)
 
-    # --- Post-scope parent reachability pass (rev 7 H1 + M7) ---
+    # --- Post-scope parent reachability pass (rev 7 H1 + M7, fix rev 19) ---
     # Validate that retained elements' parent chains resolve through the
-    # rewritten body.children.  Emit WARNING (not ValueError) — narrowing
+    # ORIGINAL document body topology.  Emit WARNING (not ValueError) — narrowing
     # still proceeds.  A future hardening pass can promote to ValueError if
     # production data shows actual mis-navigation.
     #
-    # Build reachable_refs: every ref reachable from the new body.children
-    # (including descending into #/groups/N and their children).
-    # #/body is always reachable as the implicit document root.
+    # Build reachable_refs by walking the ORIGINAL body.children (not the
+    # rewritten unique_scoped_crefs).  A group is "reachable" iff at least one
+    # of its (possibly nested) descendant refs is in unique_scoped_crefs.
+    # This matches docling's parent-chain semantics: a text with parent
+    # #/groups/3 has a semantically valid parent IF #/groups/3 is structurally
+    # on the path from #/body to one of the selected refs in the original topology.
+    #
+    # Rev 19 fix for C.6 BLOCKER: the old code seeded _collect_reachable with
+    # unique_scoped_crefs (which never contains #/groups/N refs), so groups were
+    # never marked reachable.  SA-2 has ~40/308 group-parented texts — the old
+    # code would emit hundreds of spurious WARNINGs per document in C.6.
     _reachable_refs: set[str] = {"#/body"}
+
+    _selected_set_for_reach: set[str] = set(unique_scoped_crefs)
+    _groups_array = doc_json.get("groups") or []
 
     def _resolve_cref_from_dict(d: dict) -> str:
         return d.get("cref") or d.get("$ref") or d.get("$cref", "")
 
-    def _collect_reachable(refs: list, depth: int = 0) -> None:
-        if depth > 10:
-            return
-        for ref_dict in refs:
-            if not isinstance(ref_dict, dict):
+    def _has_selected_descendant(group_ref: str, visited: set[str], depth: int = 0) -> bool:
+        """Return True iff the group contains a selected ref among its descendants."""
+        if depth > 10 or group_ref in visited:
+            return False
+        visited.add(group_ref)
+        try:
+            idx = int(group_ref.rsplit("/", 1)[-1])
+            grp = _groups_array[idx]
+        except (ValueError, IndexError, TypeError):
+            return False
+        if not isinstance(grp, dict):
+            return False
+        for child in (grp.get("children") or []):
+            if not isinstance(child, dict):
                 continue
-            cref = _resolve_cref_from_dict(ref_dict)
-            if not cref:
+            child_ref = _resolve_cref_from_dict(child)
+            if not child_ref:
                 continue
-            _reachable_refs.add(cref)
-            if cref.startswith("#/groups/"):
-                try:
-                    idx = int(cref.split("/")[-1])
-                except (ValueError, TypeError):
-                    continue
-                grp_arr = doc_json.get("groups") or []
-                if 0 <= idx < len(grp_arr) and isinstance(grp_arr[idx], dict):
-                    _collect_reachable(grp_arr[idx].get("children") or [], depth + 1)
+            if child_ref in _selected_set_for_reach:
+                return True
+            if child_ref.startswith("#/groups/"):
+                if _has_selected_descendant(child_ref, visited, depth + 1):
+                    return True
+        return False
 
-    # Walk the rewritten children (unique_scoped_crefs converted to ref-dicts)
-    _collect_reachable([{ref_key: c} for c in unique_scoped_crefs])
+    def _mark_group_and_nested_reachable(group_ref: str, visited: set[str], depth: int = 0) -> None:
+        """Mark group_ref and all nested sub-groups reachable (they're on the path to selected refs)."""
+        if depth > 10 or group_ref in visited:
+            return
+        visited.add(group_ref)
+        _reachable_refs.add(group_ref)
+        try:
+            idx = int(group_ref.rsplit("/", 1)[-1])
+            grp = _groups_array[idx]
+        except (ValueError, IndexError, TypeError):
+            return
+        if not isinstance(grp, dict):
+            return
+        for child in (grp.get("children") or []):
+            if not isinstance(child, dict):
+                continue
+            child_ref = _resolve_cref_from_dict(child)
+            if not child_ref:
+                continue
+            if child_ref.startswith("#/groups/"):
+                # Only recurse into sub-groups that also have selected descendants
+                if _has_selected_descendant(child_ref, set(), depth + 1):
+                    _mark_group_and_nested_reachable(child_ref, visited, depth + 1)
+
+    # Walk the ORIGINAL body.children to find reachable groups.
+    original_body_children = (doc_json.get("body") or {}).get("children") or []
+    for child_dict in original_body_children:
+        if not isinstance(child_dict, dict):
+            continue
+        cref = _resolve_cref_from_dict(child_dict)
+        if not cref:
+            continue
+        if cref.startswith("#/groups/"):
+            if _has_selected_descendant(cref, set()):
+                _mark_group_and_nested_reachable(cref, set())
+        else:
+            # Direct (non-group) children of body are reachable if they're selected.
+            if cref in _selected_set_for_reach:
+                _reachable_refs.add(cref)
+
+    # Also add the selected refs themselves (they're reachable by definition).
+    _reachable_refs.update(_selected_set_for_reach)
 
     # Check each retained element's parent ref against the reachable set.
     for cref in unique_scoped_crefs:

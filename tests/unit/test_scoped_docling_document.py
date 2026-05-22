@@ -427,3 +427,152 @@ def test_empty_self_refs_preserves_arrays():
     assert result["texts"] == original_texts, (
         "texts[] must equal the original in the early-return (empty self_refs) path"
     )
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT #1 (C.6 BLOCKER) — Reachability walker false-positives on
+# group-parented elements (rev 19 round-2 review fix)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_chunk_scope_no_warn_for_group_parented_element_in_scope(caplog):
+    """Group-parented element IS in scope — NO spurious warning must be emitted.
+
+    SA-2 has 40/308 texts with parent=#/groups/0 or #/groups/1.  Before the
+    fix, _collect_reachable was seeded with unique_scoped_crefs (never
+    contains #/groups/N), so groups were never marked reachable.  Every
+    group-parented element triggered a spurious WARNING.
+
+    After the fix, the walker traverses the ORIGINAL body.children and marks
+    groups reachable iff any (transitively) nested descendant is in scope.
+    This topology:
+      body.children → #/groups/0
+      groups[0].children → #/texts/0, #/texts/1
+      texts[0].parent = #/groups/0  (selected)
+      texts[1].parent = #/groups/0  (not selected)
+    → #/groups/0 IS reachable because texts[0] is in scope.
+    → ZERO warnings must be emitted.
+    """
+    import logging
+
+    doc = _make_doc(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "text": "X",
+                "label": "list_item",
+                "parent": {"cref": "#/groups/0"},
+            },
+            {
+                "self_ref": "#/texts/1",
+                "text": "Y",
+                "label": "list_item",
+                "parent": {"cref": "#/groups/0"},
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "children": [{"$ref": "#/texts/0"}, {"$ref": "#/texts/1"}],
+            }
+        ],
+        body_children=[{"$ref": "#/groups/0"}],
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/0"]}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scoped_docling_document"):
+        result = apply_chunk_scope(doc, chunk_scope)
+
+    # Scoping must still include the selected ref.
+    child_refs = [c.get("$ref") or c.get("cref") or c.get("$cref") for c in result["body"]["children"]]
+    assert "#/texts/0" in child_refs, "Selected ref must be in scoped body.children"
+
+    # ZERO spurious warnings — group IS reachable via its selected descendant.
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    reachability_warns = [m for m in warn_msgs if "unreachable" in m.lower() or "mis-navigate" in m.lower()]
+    assert reachability_warns == [], (
+        f"Expected ZERO reachability warnings for group-parented element whose group "
+        f"contains a selected descendant; got: {reachability_warns}"
+    )
+
+
+def test_apply_chunk_scope_no_warn_for_nested_group_parented_element_in_scope(caplog):
+    """Nested groups (body→group0→group1→text) — no warning when text is in scope.
+
+    Verifies that the ancestor-marking logic handles multi-level group nesting.
+    """
+    import logging
+
+    doc = _make_doc(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "text": "Z",
+                "label": "paragraph",
+                "parent": {"cref": "#/groups/1"},
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "children": [{"$ref": "#/groups/1"}],
+            },
+            {
+                "self_ref": "#/groups/1",
+                "children": [{"$ref": "#/texts/0"}],
+            },
+        ],
+        body_children=[{"$ref": "#/groups/0"}],
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/0"]}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scoped_docling_document"):
+        apply_chunk_scope(doc, chunk_scope)
+
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    reachability_warns = [m for m in warn_msgs if "unreachable" in m.lower() or "mis-navigate" in m.lower()]
+    assert reachability_warns == [], (
+        f"Expected ZERO reachability warnings for nested-group-parented element in scope; "
+        f"got: {reachability_warns}"
+    )
+
+
+def test_apply_chunk_scope_warns_for_truly_dangling_group_parent(caplog):
+    """TRULY dangling group parent (group not in body topology at all) still warns.
+
+    This confirms the fix didn't accidentally suppress legitimate warnings.
+    The group #/groups/3 is NOT referenced anywhere in body.children and
+    does NOT appear in groups[], so it is truly dangling.
+    """
+    import logging
+
+    # Re-use the existing dangling-parent fixture but with a group that is
+    # genuinely absent from the original body topology.
+    doc = _make_doc(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "text": "Para A",
+                "label": "paragraph",
+                "parent": {"cref": "#/groups/3"},  # #/groups/3 not in body or groups[]
+            },
+        ],
+        groups=[
+            {"self_ref": "#/groups/0", "children": []},  # groups[0] exists but not #/groups/3
+        ],
+        body_children=[{"$ref": "#/texts/0"}],  # body points directly at the text, not via group
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/0"]}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scoped_docling_document"):
+        result = apply_chunk_scope(doc, chunk_scope)
+
+    # Scoping still proceeds.
+    child_refs = [c.get("$ref") or c.get("cref") or c.get("$cref") for c in result["body"]["children"]]
+    assert "#/texts/0" in child_refs, "Scoping must proceed despite dangling parent"
+
+    # Must still warn about truly-dangling parent.
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("#/groups/3" in m or "unreachable" in m.lower() for m in warn_msgs), (
+        f"Expected warning about truly-dangling '#/groups/3'; got: {warn_msgs}"
+    )
