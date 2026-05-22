@@ -174,6 +174,72 @@ class TestVectorSearchFilters:
                 )
             )
 
+    def test_vector_search_filters_multi_key_AND(self):
+        """Multiple filter keys must all combine via AND in the WHERE clause.
+
+        Code path exists in arcadedb_graph.py:vector_search around lines 1633-1637
+        (the loop: `for k, v in filters.items(): where_parts.append(...)`).
+        This test was added in C.1 review nit #10 to cover the multi-key loop that
+        had no dedicated test.
+
+        Verifies:
+          - Both filter keys appear in the emitted SQL.
+          - Both bind parameters appear in the params dict (via parameterized form).
+          - The AND keyword joins the clauses.
+        """
+        client = _make_client()
+        store = _graph(client)
+
+        _run(
+            store.vector_search(
+                vertex_type="ExtractionChunk",
+                embedding_property="embedding",
+                query_vector=[0.0] * 1024,
+                top_k=10,
+                score_threshold=None,
+                filters={
+                    "pipeline_run_id": "run-A",
+                    "document_id": "doc-X",
+                },
+            )
+        )
+
+        sql = _captured_sql(client)
+
+        # Both filter columns must appear in the SQL.
+        assert "pipeline_run_id" in sql, (
+            f"Expected 'pipeline_run_id' in SQL for multi-key filter, got:\n{sql}"
+        )
+        assert "document_id" in sql, (
+            f"Expected 'document_id' in SQL for multi-key filter, got:\n{sql}"
+        )
+
+        # The two conditions must be joined by AND.
+        assert "AND" in sql, (
+            f"Expected AND keyword to join multi-key filter conditions, got:\n{sql}"
+        )
+
+        # Both parameterized bind keys must appear (parameterized form prevents
+        # SQL injection — see arcadedb_graph.py comment at the filter loop).
+        assert ":filter_pipeline_run_id" in sql, (
+            f"Expected parameterized ':filter_pipeline_run_id' in SQL, got:\n{sql}"
+        )
+        assert ":filter_document_id" in sql, (
+            f"Expected parameterized ':filter_document_id' in SQL, got:\n{sql}"
+        )
+
+        # Confirm the actual bind params dict was populated with both values.
+        assert client.query.await_count >= 1, "client.query was never called"
+        call_args = client.query.call_args
+        # Signature: (database, "sql", sql_string, params_dict)
+        params = call_args.args[3] if len(call_args.args) >= 4 else {}
+        assert params.get("filter_pipeline_run_id") == "run-A", (
+            f"Expected filter_pipeline_run_id='run-A' in params, got: {params}"
+        )
+        assert params.get("filter_document_id") == "doc-X", (
+            f"Expected filter_document_id='doc-X' in params, got: {params}"
+        )
+
 
 class TestProtocolStubIncludesFilters:
     """Verify the Protocol stub in graph_store.py declares the filters parameter."""

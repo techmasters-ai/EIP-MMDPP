@@ -26,6 +26,30 @@ unfiltered and post-filters in Python.
 ``vector_search(filters=...)`` remains valid for non-vector metadata queries
 (e.g., looking up vertices by non-vector properties).
 """
+# ============================================================================
+# CAPACITY ASSUMPTIONS (rev 13 — VR C.1 review nit #1)
+# ============================================================================
+# The over-fetch + post-filter strategy is calibrated for the EXPECTED production
+# workload of <= ~10 concurrent pipeline_runs with ~300 chunks per run (3,000
+# total ExtractionChunk rows worst-case under the 24h janitor TTL).
+#
+# At this scale:
+#   - initial_top_k = max(desired_top_n * 10, 500), with desired_top_n typically 50
+#     → 500 rows fetched; expected right-run survivors ≈ 500 × (300/3000) = 50.
+#   - Retry at _RETRY_TOP_K = 2000 covers the entire current chunk pool.
+#
+# DEGRADATION POINTS:
+#   - At 100 concurrent runs (30K total chunks), 500-top_k yields ~5 right-run
+#     survivors; 2000-top_k retry yields ~20 — borderline for desired_top_n=50.
+#   - At 200 concurrent runs (60K total), 500 yields ~2.5; 2000 yields ~10.
+#     short_fetch=True will fire; callers MUST inspect diagnostics and decide.
+#
+# If production concurrency grows past ~50 simultaneous runs, revisit:
+#   - Increase _RETRY_TOP_K to 5000+
+#   - Switch ExtractionChunk to a per-run vertex type (was rev-8 option (c),
+#     rejected; reconsider if concurrency growth materializes)
+#   - Push ArcadeDB to ship filtered HNSW upstream (P1 gap; may not happen)
+# ============================================================================
 from __future__ import annotations
 
 import logging

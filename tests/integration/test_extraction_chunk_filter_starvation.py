@@ -444,3 +444,136 @@ class TestOverFetchPostFilterStrategy:
                 _delete_chunks_by_run_id(arcadedb_store, right_run_id)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Rev 14 — C.1 review nit #9: retry-branch + short_fetch=True coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestOverFetchRetryAndShortFetch:
+    """C.1 review nit #9: cover the retry branch where initial top_k undershoots
+    and the retry-at-2000 also fails to recover desired_top_n survivors. The
+    code path is structurally simple but was untested at integration level.
+
+    Strategy:
+      - Insert only 3 right-run chunks; nothing else in the DB for this run.
+      - Request desired_top_n=10. This forces the initial top_k of
+        max(10*10, 500)=500 to return only 3 right-run chunks → survivor count
+        (3) < desired_top_n (10) → triggers retry branch.
+      - The retry at top_k=2000 still finds only 3 chunks (that's all that
+        exist). retry_count=1, short_fetch=True, candidate_count=3.
+
+    NOTE: This test inserts no wrong-run chunks, so there is no adversarial
+    interference. The short-fetch fires purely because there are fewer total
+    right-run chunks than desired_top_n — the simplest possible trigger.
+    """
+
+    def test_retry_branch_with_short_fetch_after_retry(
+        self, arcadedb_store: "ArcadeDBGraphStore"
+    ):
+        """search_extraction_chunks() fires retry and sets short_fetch=True when
+        only 3 right-run chunks exist but desired_top_n=10 is requested."""
+        import asyncio
+
+        from app.services.extraction_chunk_search import search_extraction_chunks
+
+        rng = random.Random(77)  # deterministic seed, distinct from sibling tests
+        run_suffix = uuid.uuid4().hex[:8]
+        right_run_id = f"retry-shortfetch-{run_suffix}"
+        doc_id = f"test-doc-retry-{run_suffix}"
+
+        query_vector = _random_unit(_EMBEDDING_DIM, rng)
+
+        try:
+            # Ensure schema has ExtractionChunk (idempotent)
+            try:
+                asyncio.get_event_loop().run_until_complete(
+                    arcadedb_store._client.command(
+                        arcadedb_store._database, "sql",
+                        "CREATE VERTEX TYPE ExtractionChunk IF NOT EXISTS"
+                    )
+                )
+            except Exception:
+                pass  # type already exists — fine
+
+            # Insert only 3 right-run chunks. No wrong-run chunks.
+            # Embeddings can be random — no adversarial geometry needed here;
+            # short-fetch fires because there are simply too few chunks total.
+            right_self_refs = [f"#/texts/{400 + j}" for j in range(3)]
+            for j, self_ref in enumerate(right_self_refs):
+                emb = _random_unit(_EMBEDDING_DIM, rng)
+                _insert_extraction_chunk(
+                    arcadedb_store,
+                    vertex_id=f"{right_run_id}:{self_ref}",
+                    pipeline_run_id=right_run_id,
+                    document_id=doc_id,
+                    self_ref=self_ref,
+                    chunk_text=f"retry chunk {j}",
+                    embedding=emb,
+                    page_number=1,
+                    modality="text",
+                )
+
+            # Call with desired_top_n=10 but only 3 chunks exist for this run.
+            # Initial top_k = max(10*10, 500) = 500 → 3 survivors < 10 → retry.
+            # Retry at top_k=2000 → still only 3 survivors → short_fetch=True.
+            results, diag = asyncio.get_event_loop().run_until_complete(
+                search_extraction_chunks(
+                    store=arcadedb_store,
+                    query_vector=query_vector,
+                    pipeline_run_id=right_run_id,
+                    desired_top_n=10,
+                    score_threshold=None,
+                )
+            )
+
+            # All 3 chunks that exist must be returned (short-fetch, not zero).
+            assert len(results) == 3, (
+                f"Expected 3 right-run chunks (all that exist), got {len(results)}.\n"
+                f"Diagnostics: {diag}"
+            )
+
+            returned_self_refs = {r.properties.get("self_ref") for r in results}
+            assert returned_self_refs == set(right_self_refs), (
+                f"Not all inserted self_refs returned.\n"
+                f"Expected: {set(right_self_refs)}\nGot: {returned_self_refs}"
+            )
+
+            # Retry branch must have fired.
+            assert diag.post_filter_retry_count == 1, (
+                f"Expected retry_count=1 (retry branch fired), got {diag.post_filter_retry_count}.\n"
+                f"Diagnostics: {diag}"
+            )
+
+            # short_fetch must be True — 3 survivors < desired_top_n=10.
+            assert diag.short_fetch is True, (
+                f"Expected short_fetch=True (3 < 10), got {diag.short_fetch}.\n"
+                f"Diagnostics: {diag}"
+            )
+
+            # candidate_count reflects how many survived the post-filter.
+            assert diag.post_filter_candidate_count == 3, (
+                f"Expected post_filter_candidate_count=3, got {diag.post_filter_candidate_count}.\n"
+                f"Diagnostics: {diag}"
+            )
+
+            # ann_top_k_requested must reflect the retry cap (2000), not the
+            # initial top_k (500), because the retry branch fired.
+            assert diag.ann_top_k_requested == 2000, (
+                f"Expected ann_top_k_requested=2000 (retry value), "
+                f"got {diag.ann_top_k_requested}.\nDiagnostics: {diag}"
+            )
+
+            # filter_strategy must always be the canonical label.
+            assert diag.filter_strategy == "overfetch_post_filter", (
+                f"Unexpected filter_strategy: {diag.filter_strategy}"
+            )
+
+        finally:
+            # Best-effort cleanup
+            try:
+                _delete_chunks_by_run_id(arcadedb_store, right_run_id)
+            except Exception:
+                pass
