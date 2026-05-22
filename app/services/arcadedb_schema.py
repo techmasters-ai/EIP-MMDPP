@@ -28,6 +28,24 @@ _YAML_TO_ARCADE: dict[str, str] = {
 
 # Structural vertex types (not from ontology)
 _STRUCTURAL_VERTEX_TYPES = {
+    # VR Phase C.1 (rev 10): ephemeral per-pipeline-run chunk index used by the
+    # Vector Router to narrow extraction scope.  Indexed on pipeline_run_id
+    # (filter dimension) and created_at (janitor age-sweep — rev 8 M5).
+    # HNSW LSM_VECTOR index on `embedding` (dim=1024, cosine) matches bge-m3
+    # output and the existing TextChunk.text_embedding dim.
+    # NOTE: `chunk_text` is the stored field name; callers remap to
+    # "content_text" at the reranker call site ONLY — not here.
+    "ExtractionChunk": [
+        ("vertex_id", "STRING"),         # synthetic PK: f"{pipeline_run_id}:{self_ref}"
+        ("pipeline_run_id", "STRING"),   # filter dimension (B-tree indexed)
+        ("document_id", "STRING"),
+        ("self_ref", "STRING"),          # e.g. "#/texts/12"
+        ("chunk_text", "STRING"),
+        ("embedding", "ARRAY_OF_FLOATS"),  # dim=1024, cosine HNSW
+        ("page_number", "INTEGER"),
+        ("modality", "STRING"),          # text | table | picture_caption
+        ("created_at", "TIMESTAMP"),     # DEFAULT NOW(); janitor sweep key (rev 8 M5)
+    ],
     "TextChunk": [
         ("chunk_id", "STRING"),
         ("document_id", "STRING"),
@@ -285,6 +303,8 @@ async def sync_schema_from_ontology(
         ("ImageChunk", "image_embedding", _image_dim, "COSINE", "INT8", False),
         ("CommunityReport", "report_embedding", 1024, "COSINE", "INT8", True),
         ("TrustedTextChunk", "text_embedding", 1024, "COSINE", "INT8", True),
+        # VR C.1: ExtractionChunk HNSW index — dim=1024 matches bge-m3 + TextChunk
+        ("ExtractionChunk", "embedding", 1024, "COSINE", "INT8", True),
     ]
     vector_ddl: list[str] = []
     for vtype, vprop, dims, sim, quant, hier in vector_indexes:
@@ -346,6 +366,8 @@ async def sync_schema_from_ontology(
         ("Alias", "alias_name"),
         ("TrustedTextChunk", "chunk_id"),
         ("CommunityReport", "community_id"),
+        # VR C.1: ExtractionChunk synthetic PK — unique per pipeline_run_id:self_ref pair
+        ("ExtractionChunk", "vertex_id"),
     ]
     unique_ddl = [
         f"CREATE INDEX IF NOT EXISTS ON {utype} ({uprop}) UNIQUE"
@@ -357,8 +379,13 @@ async def sync_schema_from_ontology(
     # --- Phase 7b: non-unique secondary indexes for filtering ---
     # Spec 2026-05-11-table-aware-chunking §11.4 — TextChunk.chunk_kind
     # enables fast filtering by chunk_kind in retrieval queries.
+    # VR C.1: ExtractionChunk.pipeline_run_id — vector_search filter dimension.
+    # VR C.1: ExtractionChunk.created_at — janitor age-sweep (rev 8 M5).
+    # VR C.1: ExtractionChunk.vertex_id — UNIQUE identity (synthetic PK).
     secondary_indexes = [
         ("TextChunk", "chunk_kind"),
+        ("ExtractionChunk", "pipeline_run_id"),
+        ("ExtractionChunk", "created_at"),
     ]
     secondary_ddl = [
         f"CREATE INDEX IF NOT EXISTS ON {stype} ({sprop}) NOTUNIQUE"

@@ -341,8 +341,22 @@ class GraphStore(Protocol):
         query_vector: list[float],
         top_k: int = 10,
         score_threshold: float | None = None,
+        document_ids: list[str] | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[GraphEntityResult]:
-        """ANN search over node embeddings for a given vertex type and property."""
+        """ANN search over node embeddings for a given vertex type and property.
+
+        Parameters
+        ----------
+        document_ids:
+            Optional list of document UUIDs to restrict results to (existing param).
+        filters:
+            Optional dict of additional vertex property filters. Each key must be
+            a known property of the target vertex type; unknown keys raise ValueError
+            to catch typos. Compiled to a parameterized WHERE clause and ANDed with
+            the document_ids clause when both are provided.
+            ``None`` or ``{}`` → unfiltered (no extra WHERE clause).
+        """
         ...
 
     async def set_vertex_embedding(

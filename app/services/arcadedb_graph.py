@@ -1562,6 +1562,7 @@ class ArcadeDBGraphStore:
         top_k: int = 10,
         score_threshold: float | None = None,
         document_ids: list[str] | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[GraphEntityResult]:
         """ANN search over node embeddings via vectorNeighbors.
 
@@ -1581,17 +1582,62 @@ class ArcadeDBGraphStore:
             Optional list of document UUIDs to restrict results to. Pushed into
             the ArcadeDB WHERE clause so the vector index budget isn't wasted on
             documents that will be filtered out.
+        filters:
+            Optional dict of additional vertex property filters (VR C.1). Each
+            key must be a property declared in the schema for this vertex type;
+            unknown keys raise ValueError to catch typos early. Compiled to
+            parameterized WHERE clauses (``{k} = :{k}`` pattern) and ANDed with
+            the document_ids clause when both are provided.
+            ``None`` or ``{}`` → unfiltered (no extra WHERE clause emitted).
         """
+        # --- Validate filters keys against the declared schema -----------------
+        # Import lazily to avoid circular dependency at module load time.
+        from app.services.arcadedb_schema import _STRUCTURAL_VERTEX_TYPES
+        if filters:
+            declared_props: set[str] = set()
+            if vertex_type in _STRUCTURAL_VERTEX_TYPES:
+                declared_props = {name for name, _ in _STRUCTURAL_VERTEX_TYPES[vertex_type]}
+            # For ontology entity types (not in _STRUCTURAL_VERTEX_TYPES), we
+            # skip validation because their property set is dynamic. Unknown
+            # structural-type keys are caught; dynamic types pass through.
+            if declared_props:
+                unknown = set(filters.keys()) - declared_props
+                if unknown:
+                    raise ValueError(
+                        f"vector_search filters contains unknown properties for vertex type "
+                        f"{vertex_type!r}: {sorted(unknown)}. "
+                        f"Known properties: {sorted(declared_props)}"
+                    )
+
+        # --- Build WHERE clause -------------------------------------------------
         index_name = f"{vertex_type}[{embedding_property}]"
         from app.config import get_settings as _gs
         ef = _gs().arcadedb_vector_ef_search
         ef_arg = f", {ef}" if ef > 0 else ""
 
-        # Push document_ids filter into the outer WHERE clause (native filtering)
-        where_clause = ""
+        params: dict[str, Any] = {
+            "query_vector": query_vector,
+            "top_k": top_k,
+        }
+
+        where_parts: list[str] = []
+
+        # Existing document_ids clause (string-interpolated, preserving the
+        # existing pattern — values are UUIDs, safe against SQL injection).
         if document_ids:
             doc_list = ", ".join(f"'{d}'" for d in document_ids)
-            where_clause = f" WHERE document_id IN [{doc_list}]"
+            where_parts.append(f"document_id IN [{doc_list}]")
+
+        # New filters clause — parameterized to avoid SQL injection.
+        if filters:
+            for k, v in filters.items():
+                param_key = f"filter_{k}"
+                where_parts.append(f"{k} = :{param_key}")
+                params[param_key] = v
+
+        where_clause = ""
+        if where_parts:
+            where_clause = " WHERE " + " AND ".join(where_parts)
 
         # ArcadeDB quirk: when vectorNeighbors is expanded inside a subquery,
         # `$distance` is NOT projected in the outer SELECT (only available while
@@ -1607,10 +1653,6 @@ class ArcadeDBGraphStore:
             f"{where_clause} "
             f"ORDER BY $distance ASC"
         )
-        params: dict[str, Any] = {
-            "query_vector": query_vector,
-            "top_k": top_k,
-        }
         rows = await self._client.query(self._database, "sql", sql, params)
         results = [_to_entity(r) for r in rows]
 

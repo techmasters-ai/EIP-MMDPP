@@ -1,0 +1,13 @@
+{
+  "planPath": "docs/superpowers/plans/2026-05-21-walltime-c2-c6.md",
+  "tasks": [
+    {"id": 33, "subject": "C1.5 — Dispatcher robustness fix", "status": "completed"},
+    {"id": 39, "subject": "C1.6 — First-class pass phase model", "status": "completed", "blockedBy": [33]},
+    {"id": 34, "subject": "C2 — Per-pass batch profiles (RETIRED — env defaults optimal)", "status": "completed", "blockedBy": [33, 39]},
+    {"id": 35, "subject": "C3 — Pre-pass skip router", "status": "pending", "blockedBy": [34]},
+    {"id": 36, "subject": "C4 — Identity-first chunk narrowing", "status": "pending", "blockedBy": [35]},
+    {"id": 37, "subject": "C5 — Cache prepared inputs", "status": "pending", "blockedBy": [36]},
+    {"id": 38, "subject": "C6 — Merge/import cleanup", "status": "pending", "blockedBy": [37]}
+  ],
+  "lastUpdated": "2026-05-21T20:50:00Z"
+}
