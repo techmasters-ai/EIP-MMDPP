@@ -41,7 +41,11 @@ def _make_db_rows(statuses: dict[str, str]):
 
 
 def test_janitor_purges_terminal_runs():
-    """3 old run IDs in ArcadeDB; 2 are COMPLETE in Postgres → those 2 are purged."""
+    """3 old run IDs in ArcadeDB; 2 are COMPLETE in Postgres → those 2 are purged.
+
+    IMPORTANT #3: also asserts cleanup_extraction_index was called with the CORRECT
+    run_ids, not just the right total count.
+    """
     old_ids = [
         "aaaaaaaa-0000-0000-0000-000000000001",
         "aaaaaaaa-0000-0000-0000-000000000002",
@@ -76,19 +80,35 @@ def test_janitor_purges_terminal_runs():
     )
     assert result["purged_chunks"] == 10, "5 chunks per call × 2 calls = 10"
 
+    # IMPORTANT #3: verify the CORRECT run_ids were passed (not just the right count)
+    called_ids = [c.args[0] for c in mock_cleanup.call_args_list]
+    assert "aaaaaaaa-0000-0000-0000-000000000001" in called_ids, (
+        "COMPLETE run must be in cleanup_extraction_index call args"
+    )
+    assert "aaaaaaaa-0000-0000-0000-000000000003" in called_ids, (
+        "FAILED run must be in cleanup_extraction_index call args"
+    )
+    assert "aaaaaaaa-0000-0000-0000-000000000002" not in called_ids, (
+        "PROCESSING run must NOT be in cleanup_extraction_index call args"
+    )
+
 
 def test_janitor_purges_partial_complete_runs():
-    """PARTIAL_COMPLETE is terminal — must be purged."""
-    old_ids = ["aaaaaaaa-0000-0000-0000-000000000001"]
-    pg_statuses = {"aaaaaaaa-0000-0000-0000-000000000001": "PARTIAL_COMPLETE"}
+    """PARTIAL_COMPLETE is terminal — must be purged.
+
+    IMPORTANT #3: also asserts the correct run_id was passed to cleanup.
+    """
+    expected_id = "aaaaaaaa-0000-0000-0000-000000000001"
+    old_ids = [expected_id]
+    pg_statuses = {expected_id: "PARTIAL_COMPLETE"}
 
     store = _make_store(old_ids)
 
     with patch("app.workers.pipeline.get_graph_store", return_value=store), \
          patch("app.workers.pipeline._get_db") as mock_get_db, \
-         patch("app.services.extraction_chunk_index.cleanup_extraction_index",
-               return_value=3):
+         patch("app.services.extraction_chunk_index.cleanup_extraction_index") as mock_cleanup:
 
+        mock_cleanup.return_value = 3
         mock_db = MagicMock()
         mock_get_db.return_value = mock_db
         mock_db.execute.return_value.fetchall.return_value = _make_db_rows(pg_statuses)
@@ -97,6 +117,8 @@ def test_janitor_purges_partial_complete_runs():
         result = purge_terminated_extraction_chunks()
 
     assert result["purge_set_size"] == 1
+    # IMPORTANT #3: assert the correct run_id was passed
+    mock_cleanup.assert_any_call(expected_id, store=store)
 
 
 # ---------------------------------------------------------------------------
@@ -232,3 +254,53 @@ def test_janitor_beat_schedule_uses_graph_queue():
             assert opts.get("queue") == "graph", "Janitor must run on graph queue"
             return
     pytest.fail("Janitor beat entry not found")
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT #4: UUID case normalization
+# ---------------------------------------------------------------------------
+
+
+def test_janitor_uppercase_uuid_from_arcadedb_is_normalized():
+    """ArcadeDB may return uppercase UUIDs in theory.
+
+    IMPORTANT #4: The janitor must normalize ArcadeDB-returned and Postgres-returned
+    run_ids before the lookup so the status lookup doesn't fail silently.
+
+    Without normalization: uppercase ArcadeDB ID fails dict lookup against lowercase
+    Postgres key → treated as 'orphan' and purged (happens to be correct but
+    for the wrong reason — a PROCESSING run with uppercase ID would also be purged).
+
+    With normalization: both sides normalized before comparison — PROCESSING run
+    is correctly preserved even if ArcadeDB returned uppercase.
+
+    This test verifies the PROCESSING case is preserved with uppercase ArcadeDB IDs:
+    without normalization, a PROCESSING run with an uppercase ArcadeDB ID would
+    be incorrectly classified as orphan and purged.
+    """
+    uppercase_id = "AAAAAAAA-0000-0000-0000-000000000001"
+    lowercase_id = "aaaaaaaa-0000-0000-0000-000000000001"
+
+    # ArcadeDB returns uppercase; Postgres returns lowercase with PROCESSING status
+    store = _make_store([uppercase_id])
+    pg_statuses = {lowercase_id: "PROCESSING"}
+
+    with patch("app.workers.pipeline.get_graph_store", return_value=store), \
+         patch("app.workers.pipeline._get_db") as mock_get_db, \
+         patch("app.services.extraction_chunk_index.cleanup_extraction_index") as mock_cleanup:
+
+        mock_db = MagicMock()
+        mock_get_db.return_value = mock_db
+        mock_db.execute.return_value.fetchall.return_value = _make_db_rows(pg_statuses)
+
+        from app.workers.pipeline import purge_terminated_extraction_chunks
+        result = purge_terminated_extraction_chunks()
+
+    # With normalization: PROCESSING run is preserved (purge_set_size=0)
+    # Without normalization: uppercase ID doesn't match Postgres lowercase key →
+    # treated as orphan → incorrectly purged (purge_set_size=1).
+    assert result["purge_set_size"] == 0, (
+        "Uppercase UUID from ArcadeDB must normalize to lowercase for Postgres lookup. "
+        "PROCESSING run must be preserved (purge_set_size=0), not misidentified as orphan."
+    )
+    mock_cleanup.assert_not_called()

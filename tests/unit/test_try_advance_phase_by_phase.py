@@ -130,7 +130,7 @@ class TestBranch1EntityDispatch:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -212,7 +212,7 @@ class TestConcurrentEntityDispatch:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -252,7 +252,7 @@ class TestConcurrentEntityDispatch:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -283,7 +283,7 @@ class TestConcurrentEntityDispatch:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -321,7 +321,7 @@ class TestAllEntityTerminalBeforeRelationship:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -356,7 +356,7 @@ class TestAllEntityTerminalBeforeRelationship:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -393,7 +393,7 @@ class TestAllEntityTerminalBeforeRelationship:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -532,7 +532,7 @@ class TestBackCompatNoFieldGroupPasses:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -565,7 +565,7 @@ class TestBackCompatNoFieldGroupPasses:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -638,7 +638,7 @@ class TestOneDispatchPerFinisher:
 
         dispatched_calls = []
 
-        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None):
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name, queued_counter=None, **kwargs):
             dispatched_calls.append(pass_name)
             return True
 
@@ -651,4 +651,126 @@ class TestOneDispatchPerFinisher:
 
         assert len(dispatched_calls) == 1, (
             f"Expected exactly 1 dispatch but got {len(dispatched_calls)}: {dispatched_calls}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT #1 — build_index_failed propagated through _try_advance_phase
+# ---------------------------------------------------------------------------
+
+
+class TestTryAdvancePhaseVRIndexFailed:
+    """_try_advance_phase must read vr_index_built from PipelineRun.metrics
+    and pass the correct build_index_failed value to _claim_and_dispatch_pass.
+
+    Without the fix, _try_advance_phase hardcodes build_index_failed=False.
+    With the fix, it reads run.metrics.get("vr_index_built") and passes
+    build_index_failed=not vr_index_built.
+    """
+
+    def _make_run_with_metrics(self, metrics: dict | None, dispatched_phases: dict | None = None):
+        run = MagicMock()
+        run.ontology_bundle_key = _BUNDLE_KEY
+        run.dispatched_phases = dispatched_phases or {}
+        run.metrics = metrics
+        return run
+
+    def test_try_advance_phase_passes_build_index_failed_true_when_vr_index_not_built(self):
+        """When run.metrics['vr_index_built'] is False, _try_advance_phase must pass
+        build_index_failed=True to _claim_and_dispatch_pass.
+        """
+        # One identity in-flight; field_group pass is next
+        dispatched_phases = {
+            "entity_pass_radar_identity": {"state": "completed"},
+            "entity_pass_missile_identity": {"state": "completed"},
+        }
+        run = self._make_run_with_metrics(
+            {"vr_index_built": False},
+            dispatched_phases=dispatched_phases,
+        )
+        db = _make_db(run)
+        manifest = _make_manifest(_FULL_PASSES)
+
+        captured_kwargs = {}
+
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name,
+                                    queued_counter=None, **kwargs):
+            captured_kwargs.update(kwargs)
+            return True
+
+        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline._claim_and_dispatch_pass",
+                   side_effect=fake_claim_and_dispatch), \
+             patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
+             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
+            _invoke_advance(db, _DOC_ID, _RUN_ID)
+
+        assert captured_kwargs.get("build_index_failed") is True, (
+            "When vr_index_built=False, build_index_failed must be True in dispatch call; "
+            f"got captured_kwargs={captured_kwargs!r}"
+        )
+
+    def test_try_advance_phase_passes_build_index_failed_false_when_vr_index_built(self):
+        """When run.metrics['vr_index_built'] is True, _try_advance_phase must pass
+        build_index_failed=False to _claim_and_dispatch_pass.
+        """
+        dispatched_phases = {
+            "entity_pass_radar_identity": {"state": "completed"},
+            "entity_pass_missile_identity": {"state": "completed"},
+        }
+        run = self._make_run_with_metrics(
+            {"vr_index_built": True},
+            dispatched_phases=dispatched_phases,
+        )
+        db = _make_db(run)
+        manifest = _make_manifest(_FULL_PASSES)
+
+        captured_kwargs = {}
+
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name,
+                                    queued_counter=None, **kwargs):
+            captured_kwargs.update(kwargs)
+            return True
+
+        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline._claim_and_dispatch_pass",
+                   side_effect=fake_claim_and_dispatch), \
+             patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
+             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
+            _invoke_advance(db, _DOC_ID, _RUN_ID)
+
+        assert captured_kwargs.get("build_index_failed") is False, (
+            "When vr_index_built=True, build_index_failed must be False in dispatch call; "
+            f"got captured_kwargs={captured_kwargs!r}"
+        )
+
+    def test_try_advance_phase_defaults_to_false_when_no_metrics(self):
+        """When run.metrics is None/empty (old runs before this fix), default to
+        build_index_failed=False (safe: endpoint will fail-open if unavailable).
+        """
+        dispatched_phases = {
+            "entity_pass_radar_identity": {"state": "completed"},
+            "entity_pass_missile_identity": {"state": "completed"},
+        }
+        run = self._make_run_with_metrics(None, dispatched_phases=dispatched_phases)
+        db = _make_db(run)
+        manifest = _make_manifest(_FULL_PASSES)
+
+        captured_kwargs = {}
+
+        def fake_claim_and_dispatch(db_, doc_id, run_id, pass_name,
+                                    queued_counter=None, **kwargs):
+            captured_kwargs.update(kwargs)
+            return True
+
+        with patch("app.workers.pipeline.load_bundle_manifest", return_value=manifest), \
+             patch("app.workers.pipeline._claim_and_dispatch_pass",
+                   side_effect=fake_claim_and_dispatch), \
+             patch("app.workers.pipeline.count_terminal_passes", return_value=0), \
+             patch("app.workers.pipeline.settings.pass_concurrency_per_document", 4):
+            _invoke_advance(db, _DOC_ID, _RUN_ID)
+
+        assert captured_kwargs.get("build_index_failed") is False, (
+            "When run.metrics is None, build_index_failed must default to False; "
+            f"got captured_kwargs={captured_kwargs!r}"
         )

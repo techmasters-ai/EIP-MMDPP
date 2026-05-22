@@ -569,6 +569,11 @@ class Settings(BaseSettings):
     # this to "http://localhost:8000" or a mock URL.
     internal_api_base_url: str = "http://api:8000"
 
+    # Timeout in seconds for the /v1/extraction/chunk-scope HTTP call.
+    # The endpoint embeds a query and runs rerank; 10s is generous for a
+    # single pass. Operators in high-latency environments can tune upward.
+    vector_router_chunk_scope_timeout_s: float = 10.0
+
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)
 

@@ -335,3 +335,95 @@ def test_heading_not_included_when_only_follows_selected():
     assert "#/texts/1" not in child_refs, (
         "A heading that follows (but doesn't precede) a selected ref must not be included"
     )
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #1: Parent reachability validation (rev 7 H1 + M7)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_chunk_scope_warns_on_dangling_parent(caplog):
+    """When a retained element's parent is unreachable from rewritten body.children,
+    apply_chunk_scope must emit a logger.warning (NOT raise — narrowing still proceeds).
+    """
+    import logging
+
+    # #/texts/1 has parent "#/groups/3" which won't be reachable because:
+    # - body.children only references #/texts/0 directly (no #/groups/3)
+    # - groups[3] is not defined
+    doc = _make_doc(
+        texts=[
+            {"self_ref": "#/texts/0", "text": "Section", "label": "section_header"},
+            {
+                "self_ref": "#/texts/1",
+                "text": "Para A",
+                "label": "paragraph",
+                "parent": {"cref": "#/groups/3"},
+            },
+        ],
+        body_children=[_ref("#/texts/0"), _ref("#/texts/1")],
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/1"]}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scoped_docling_document"):
+        result = apply_chunk_scope(doc, chunk_scope)
+
+    # Must NOT raise — narrowing still proceeds.
+    child_refs = [c.get("$ref") or c.get("cref") or c.get("$cref") for c in result["body"]["children"]]
+    assert "#/texts/1" in child_refs, "Scoping must still proceed despite dangling parent"
+
+    # Must emit a warning about the unreachable parent.
+    warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("#/groups/3" in m or "dangling parent" in m.lower() or "unreachable" in m.lower()
+               for m in warning_msgs), (
+        f"Expected warning about unreachable parent '#/groups/3'; got: {warning_msgs}"
+    )
+
+
+def test_apply_chunk_scope_no_warn_when_parent_reachable(caplog):
+    """When a retained element's parent IS reachable, no warning is emitted."""
+    import logging
+
+    # #/texts/1 has parent "#/body" — always reachable.
+    doc = _make_doc(
+        texts=[
+            {"self_ref": "#/texts/0", "text": "Section", "label": "section_header"},
+            {
+                "self_ref": "#/texts/1",
+                "text": "Para A",
+                "label": "paragraph",
+                "parent": {"cref": "#/body"},
+            },
+        ],
+        body_children=[_ref("#/texts/0"), _ref("#/texts/1")],
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/1"]}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scoped_docling_document"):
+        result = apply_chunk_scope(doc, chunk_scope)
+
+    parent_warn_msgs = [
+        r.message for r in caplog.records
+        if r.levelno == logging.WARNING and "unreachable" in r.message.lower()
+    ]
+    assert parent_warn_msgs == [], (
+        f"No reachability warning expected for #/body parent; got: {parent_warn_msgs}"
+    )
+
+
+def test_empty_self_refs_preserves_arrays():
+    """test_empty_self_refs array preservation — no accidental mutation in early-return path."""
+    doc = _make_doc(
+        texts=[{"self_ref": "#/texts/0", "text": "Hello", "label": "paragraph"}],
+        body_children=[_ref("#/texts/0")],
+    )
+    original_texts = list(doc["texts"])  # copy
+    chunk_scope = {"mode": "selected_refs", "self_refs": []}
+    result = apply_chunk_scope(doc, chunk_scope)
+
+    assert result["body"]["children"] == [], "Empty self_refs must produce body.children=[]"
+    assert len(result["texts"]) == 1
+    # MINOR #3: lock in the no-mutation invariant on the early-return path.
+    assert result["texts"] == original_texts, (
+        "texts[] must equal the original in the early-return (empty self_refs) path"
+    )

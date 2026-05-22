@@ -43,9 +43,8 @@ def test_derive_ontology_graph_pass_has_backward_compat_defaults():
     cs_default = params["chunk_scope"].default
     rd_default = params["router_diagnostics"].default
 
-    assert cs_default is None or cs_default == inspect.Parameter.empty or cs_default is None, (
-        "chunk_scope default must be None (backward-compat)"
-    )
+    # MINOR #4 fix: clean assertion — default must be exactly None.
+    assert cs_default is None, f"chunk_scope default must be None for backward-compat; got {cs_default!r}"
 
 
 def test_chunk_scope_none_does_not_call_apply_chunk_scope():

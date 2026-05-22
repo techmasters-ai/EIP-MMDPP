@@ -233,6 +233,7 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
     # Detect the ref-dict format used in the original body.children.
     # Real docling uses "cref"; synthetic test fixtures use "$ref" or "$cref".
     # Infer from the first child entry to preserve round-trip fidelity.
+    # NOTE: moved before the reachability pass so ref_key is available.
     def _detect_ref_key(body: dict) -> str:
         """Return the ref key used in the original children list."""
         children = body.get("children") or []
@@ -249,6 +250,62 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
 
     original_body = doc_json.get("body") or {}
     ref_key = _detect_ref_key(original_body)
+
+    # --- Post-scope parent reachability pass (rev 7 H1 + M7) ---
+    # Validate that retained elements' parent chains resolve through the
+    # rewritten body.children.  Emit WARNING (not ValueError) — narrowing
+    # still proceeds.  A future hardening pass can promote to ValueError if
+    # production data shows actual mis-navigation.
+    #
+    # Build reachable_refs: every ref reachable from the new body.children
+    # (including descending into #/groups/N and their children).
+    # #/body is always reachable as the implicit document root.
+    _reachable_refs: set[str] = {"#/body"}
+
+    def _resolve_cref_from_dict(d: dict) -> str:
+        return d.get("cref") or d.get("$ref") or d.get("$cref", "")
+
+    def _collect_reachable(refs: list, depth: int = 0) -> None:
+        if depth > 10:
+            return
+        for ref_dict in refs:
+            if not isinstance(ref_dict, dict):
+                continue
+            cref = _resolve_cref_from_dict(ref_dict)
+            if not cref:
+                continue
+            _reachable_refs.add(cref)
+            if cref.startswith("#/groups/"):
+                try:
+                    idx = int(cref.split("/")[-1])
+                except (ValueError, TypeError):
+                    continue
+                grp_arr = doc_json.get("groups") or []
+                if 0 <= idx < len(grp_arr) and isinstance(grp_arr[idx], dict):
+                    _collect_reachable(grp_arr[idx].get("children") or [], depth + 1)
+
+    # Walk the rewritten children (unique_scoped_crefs converted to ref-dicts)
+    _collect_reachable([{ref_key: c} for c in unique_scoped_crefs])
+
+    # Check each retained element's parent ref against the reachable set.
+    for cref in unique_scoped_crefs:
+        elem = _resolve_element(doc_json, cref)
+        if elem is None or not isinstance(elem, dict):
+            continue
+        parent = elem.get("parent")
+        if parent is None or not isinstance(parent, dict):
+            continue
+        parent_ref = parent.get("cref") or parent.get("$ref") or parent.get("$cref")
+        if parent_ref and parent_ref not in _reachable_refs:
+            logger.warning(
+                "apply_chunk_scope: retained element %r has unreachable parent %r "
+                "(parent not in rewritten body.children). Docling ref-resolution may "
+                "mis-navigate. Narrowing proceeds; promote to ValueError in a "
+                "future hardening pass if production data shows mis-navigation.",
+                cref, parent_ref,
+            )
+    # --- end post-scope reachability pass ---
+
     new_children = [{ref_key: cref} for cref in unique_scoped_crefs]
 
     new_body = dict(original_body)

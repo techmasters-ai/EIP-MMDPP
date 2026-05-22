@@ -7121,15 +7121,20 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
             None,
         )
         if next_entity is not None:
+            # IMPORTANT #1 (rev 18): read vr_index_built from PipelineRun.metrics
+            # to propagate the build result to _claim_and_dispatch_pass.  Refresh
+            # metrics from DB (may have been written by the initial dispatcher on a
+            # different session).  Default True (build succeeded) when the flag is
+            # absent — safe fail-open: if the endpoint is unavailable the HTTP call
+            # will fail-open via _call_chunk_scope_endpoint's try/except.
+            db.expire(run, ["metrics"])
+            db.refresh(run, ["metrics"])
+            _vr_index_built = (run.metrics or {}).get("vr_index_built", True)
             _claim_and_dispatch_pass(
                 db, document_id, run_id, next_entity,
                 pass_def=_pass_def_by_name.get(next_entity),
                 bundle_key=run.ontology_bundle_key,
-                # NOTE: _try_advance_phase cannot determine build_index_failed from
-                # this context (the index was built by the initial dispatcher).
-                # Default False: if the endpoint is unavailable, the HTTP call will
-                # fail-open gracefully via _call_chunk_scope_endpoint's try/except.
-                build_index_failed=False,
+                build_index_failed=not _vr_index_built,
             )
             return  # one dispatch per finisher
 
@@ -7202,8 +7207,9 @@ def _call_chunk_scope_endpoint(
     (timeout, connection refused, HTTP 4xx/5xx).  Errors are logged at WARNING.
     The caller applies fail-open semantics on None.
 
-    Timeout: 10s — the endpoint must embed a query and run rerank; 10s is
-    generous for a single pass but not so long it stalls the dispatch loop.
+    Timeout: configurable via VECTOR_ROUTER_CHUNK_SCOPE_TIMEOUT_S (default 10s).
+    The endpoint embeds a query and runs rerank; 10s is generous for a single
+    pass but not so long it stalls the dispatch loop.
     """
     url = f"{internal_api_base_url.rstrip('/')}/v1/extraction/chunk-scope"
     request_body = {
@@ -7212,7 +7218,7 @@ def _call_chunk_scope_endpoint(
         "pass_name": pass_name,
     }
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=settings.vector_router_chunk_scope_timeout_s) as client:
             response = client.post(url, json=request_body)
             response.raise_for_status()
             return response.json()
@@ -7332,7 +7338,11 @@ def _claim_and_dispatch_pass(
             effective_chunk_scope, router_diagnostics = _compute_effective_chunk_scope(
                 router_response, _vr_mode
             )
-            # Rev 10 M8: log WARNING when narrowing ratio > 80%
+            # Rev 10 M8 / MINOR #2: log WARNING when narrowing ratio > 80%.
+            # Warns when narrowing yields >80% of full-doc tokens — indicates the
+            # threshold is too generous OR the document is dominated by relevant
+            # content (normal for dense spec docs). Pass still dispatched with the
+            # narrowed scope regardless; this is diagnostic only.
             if (
                 effective_chunk_scope is not None
                 and router_diagnostics is not None
@@ -8522,6 +8532,30 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # If mode is "disabled", skip the index build entirely;
         # _build_index_failed stays False but the router won't be called anyway.
 
+        # IMPORTANT #1 (rev 18): persist vr_index_built on PipelineRun.metrics so
+        # _try_advance_phase (called by per-pass finishers) can read the build result
+        # and forward the correct build_index_failed value to _claim_and_dispatch_pass.
+        # Uses PipelineRun.metrics (the available JSONB column on PipelineRun) rather
+        # than a non-existent diagnostics_json column.
+        from app.models.ingest import PipelineRun as _PipelineRun
+        from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+        _db_vr = _get_db()
+        try:
+            _pr = _db_vr.get(_PipelineRun, uuid.UUID(str(run_id)))
+            if _pr is not None:
+                _pr.metrics = dict(_pr.metrics or {})
+                _pr.metrics["vr_index_built"] = not _build_index_failed
+                _flag_modified(_pr, "metrics")
+                _db_vr.commit()
+        except Exception as _vr_persist_exc:
+            logger.warning(
+                "VR: failed to persist vr_index_built for run=%s: %r — "
+                "_try_advance_phase will default to build_index_failed=False",
+                run_id, _vr_persist_exc,
+            )
+        finally:
+            _db_vr.close()
+
         # Second session: _claim_and_dispatch_pass commits phase records
         # independently. Using a single session would interleave the RUNNING
         # StageRun commit with phase claim commits and risk dirty reads.
@@ -8530,8 +8564,6 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         # BEFORE the bookkeeping writes.  Reading from the counter (not from a
         # return-value-driven local) ensures that a bookkeeping failure still
         # reports the correct queued count in the except handler below.
-        # Build a name→PassManifest lookup for O(1) access in the dispatch loop.
-        _pass_def_by_name = {p.name: p for p in manifest.passes}
         db2 = _get_db()
         try:
             for pass_def in entity_passes[: settings.pass_concurrency_per_document]:
@@ -9521,10 +9553,23 @@ def purge_terminated_extraction_chunks() -> dict:
 
             # ------------------------------------------------------------------
             # Step 3: Compute purge set = terminal ∪ orphan.
+            # IMPORTANT #4 (rev 18): normalize ArcadeDB-returned run_ids to
+            # lowercase before Postgres lookup. Postgres uuid::text is always
+            # lowercase; ArcadeDB stores whatever was inserted but an upstream
+            # code path could return non-canonical casing in future.
+            # Explicit normalization defends against the silent orphan-misclassification:
+            # without it, an uppercase ArcadeDB ID would fail the pg_statuses lookup
+            # (returning None) and be misidentified as an orphan — incorrectly purging
+            # PROCESSING runs.
             # ------------------------------------------------------------------
             to_purge: list[str] = []
             for rid in old_run_ids:
-                status = pg_statuses.get(rid)
+                # Normalize to lowercase canonical form for Postgres key lookup.
+                try:
+                    rid_normalized = str(uuid.UUID(rid)).lower()
+                except (ValueError, AttributeError):
+                    rid_normalized = (rid or "").lower()
+                status = pg_statuses.get(rid_normalized)
                 if status is None:
                     # Orphan: no Postgres row for this run_id
                     to_purge.append(rid)

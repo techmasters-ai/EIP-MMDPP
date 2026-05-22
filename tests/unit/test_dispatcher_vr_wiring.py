@@ -232,19 +232,153 @@ class TestPassPhaseShortCircuit:
 class TestBuildFailureDisablesVR:
     """When build_extraction_index failed, all passes must dispatch full doc.
 
-    The dispatcher sets build_index_failed=True; _claim_and_dispatch_pass
-    then skips the HTTP call and returns effective_chunk_scope=None.
+    IMPORTANT #2 fix: Tests call _claim_and_dispatch_pass with build_index_failed=True,
+    exercising the actual short-circuit branch, not just _compute_effective_chunk_scope.
     """
 
-    def test_build_failure_means_no_narrowing(self):
-        """Simulate the build_index_failed flag: no router call → full doc."""
-        # With build_index_failed=True, the dispatcher skips calling the endpoint.
-        # Since there's no router_response, _compute_effective_chunk_scope
-        # receives None → effective_chunk_scope=None.
-        eff, diag = _compute_effective_chunk_scope(None, "narrow_only")
-        assert eff is None
+    def _make_pass_def(self, phase="field_group", required=False):
+        """Build a minimal mock pass_def."""
+        pd = MagicMock()
+        pd.phase = phase
+        pd.required = required
+        pd.name = "radar_power_rf"
+        return pd
 
-    def test_build_failure_diagnostics_captured(self):
-        """Build failure diagnostics (fallback_reason) must be in the result."""
-        eff, diag = _compute_effective_chunk_scope(None, "narrow_only")
-        assert "fallback_reason" in diag or "http_error" in diag
+    def test_build_failure_makes_no_http_call(self):
+        """With build_index_failed=True, _claim_and_dispatch_pass must NOT call the endpoint."""
+        from app.workers.pipeline import _claim_and_dispatch_pass
+
+        mock_db = MagicMock()
+        # Simulate claim_phase succeeding
+        with patch("app.workers.pipeline.claim_phase", return_value=True), \
+             patch("app.workers.pipeline.mark_phase_dispatched"), \
+             patch("app.workers.pipeline.derive_ontology_graph_pass") as mock_task, \
+             patch("app.workers.pipeline._call_chunk_scope_endpoint") as mock_http, \
+             patch("app.workers.pipeline.settings") as mock_settings:
+
+            mock_settings.vector_router_mode = "narrow_only"
+            mock_settings.internal_api_base_url = "http://api:8000"
+            mock_settings.pass_concurrency_per_document = 4
+            mock_task.delay.return_value = MagicMock(id="task-abc")
+
+            _claim_and_dispatch_pass(
+                mock_db,
+                document_id="doc-1",
+                run_id="run-1",
+                pass_name="radar_power_rf",
+                pass_def=self._make_pass_def(),
+                bundle_key="air_defense_v3",
+                build_index_failed=True,
+            )
+
+        # Must not call the HTTP endpoint
+        mock_http.assert_not_called()
+
+    def test_build_failure_router_diagnostics_has_fallback_reason(self):
+        """With build_index_failed=True, the Celery task is dispatched with
+        router_diagnostics containing fallback_reason='index_build_failed'.
+        """
+        from app.workers.pipeline import _claim_and_dispatch_pass
+
+        mock_db = MagicMock()
+        dispatched_kwargs = {}
+
+        def capture_delay(document_id, run_id, pass_name, **kwargs):
+            dispatched_kwargs.update(kwargs)
+            result = MagicMock()
+            result.id = "task-abc"
+            return result
+
+        with patch("app.workers.pipeline.claim_phase", return_value=True), \
+             patch("app.workers.pipeline.mark_phase_dispatched"), \
+             patch("app.workers.pipeline._call_chunk_scope_endpoint"), \
+             patch("app.workers.pipeline.derive_ontology_graph_pass") as mock_task, \
+             patch("app.workers.pipeline.settings") as mock_settings:
+
+            mock_settings.vector_router_mode = "narrow_only"
+            mock_settings.internal_api_base_url = "http://api:8000"
+            mock_settings.pass_concurrency_per_document = 4
+            mock_task.delay.side_effect = capture_delay
+
+            _claim_and_dispatch_pass(
+                mock_db,
+                document_id="doc-1",
+                run_id="run-1",
+                pass_name="radar_power_rf",
+                pass_def=self._make_pass_def(),
+                bundle_key="air_defense_v3",
+                build_index_failed=True,
+            )
+
+        diag = dispatched_kwargs.get("router_diagnostics") or {}
+        assert diag.get("fallback_reason") == "index_build_failed", (
+            f"Expected fallback_reason='index_build_failed'; got router_diagnostics={diag!r}"
+        )
+
+    def test_build_failure_effective_chunk_scope_is_none(self):
+        """With build_index_failed=True, effective_chunk_scope kwarg on the task is None."""
+        from app.workers.pipeline import _claim_and_dispatch_pass
+
+        mock_db = MagicMock()
+        dispatched_kwargs = {}
+
+        def capture_delay(document_id, run_id, pass_name, **kwargs):
+            dispatched_kwargs.update(kwargs)
+            result = MagicMock()
+            result.id = "task-abc"
+            return result
+
+        with patch("app.workers.pipeline.claim_phase", return_value=True), \
+             patch("app.workers.pipeline.mark_phase_dispatched"), \
+             patch("app.workers.pipeline._call_chunk_scope_endpoint"), \
+             patch("app.workers.pipeline.derive_ontology_graph_pass") as mock_task, \
+             patch("app.workers.pipeline.settings") as mock_settings:
+
+            mock_settings.vector_router_mode = "narrow_only"
+            mock_settings.internal_api_base_url = "http://api:8000"
+            mock_settings.pass_concurrency_per_document = 4
+            mock_task.delay.side_effect = capture_delay
+
+            _claim_and_dispatch_pass(
+                mock_db,
+                document_id="doc-1",
+                run_id="run-1",
+                pass_name="radar_power_rf",
+                pass_def=self._make_pass_def(),
+                bundle_key="air_defense_v3",
+                build_index_failed=True,
+            )
+
+        assert dispatched_kwargs.get("chunk_scope") is None, (
+            f"chunk_scope must be None when build_index_failed=True; "
+            f"got {dispatched_kwargs.get('chunk_scope')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# MINOR #5 — shadow + would_skip branch
+# ---------------------------------------------------------------------------
+
+
+class TestShadowModeWouldSkip:
+    """Shadow mode with router returning would_skip."""
+
+    def test_shadow_mode_with_would_skip_returns_none_chunk_scope(self):
+        """shadow + would_skip → effective_chunk_scope=None.
+
+        would_skip is NOT a 'skipped narrowing' event in shadow's sense:
+        shadow_skipped_narrowing should be False (shadow skips narrowing only
+        when router returned selected_refs).
+        """
+        router_response = {
+            "mode": "would_skip",
+            "self_refs": [],
+            "diagnostics": {},
+        }
+        eff, diag = _compute_effective_chunk_scope(router_response, "shadow")
+
+        assert eff is None, "shadow must never narrow regardless of router mode"
+        assert diag.get("shadow_skipped_narrowing") is False, (
+            "shadow_skipped_narrowing must be False for would_skip "
+            "(only True when router returned selected_refs)"
+        )
