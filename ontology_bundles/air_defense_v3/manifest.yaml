@@ -16,7 +16,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues: []  # identity passes are never skipped — no cues needed
 
   - name: radar_power_rf
     phase: field_group
@@ -29,20 +28,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - RF
-      - power
-      - frequency
-      - band
-      - kHz
-      - MHz
-      - GHz
-      - kW
-      - MW
-      - dBW
-      - ERP
-      - peak
-      - nominal
 
   - name: radar_antenna
     phase: field_group
@@ -55,19 +40,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - antenna
-      - array
-      - dish
-      - beam
-      - gain
-      - aperture
-      - lobe
-      - boresight
-      - elevation
-      - azimuth
-      - dB
-      - degrees
 
   - name: radar_timing
     phase: field_group
@@ -80,19 +52,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - PRF
-      - PRT
-      - pulse
-      - repetition
-      - scan
-      - dwell
-      - rate
-      - Hz
-      - microsec
-      - "µs"
-      - ms
-      - width
 
   - name: radar_modulation
     phase: field_group
@@ -105,17 +64,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - modulation
-      - waveform
-      - FM
-      - CW
-      - chirp
-      - pulse compression
-      - frequency-agile
-      - coded
-      - linear
-      - coherent
 
   - name: missile_identity
     phase: identity
@@ -128,7 +76,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues: []  # identity passes are never skipped — no cues needed
 
   - name: missile_kinematics
     phase: field_group
@@ -141,20 +88,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - range
-      - speed
-      - altitude
-      - intercept
-      - mach
-      - booster
-      - launch angle
-      - envelope
-      - km
-      - feet
-      - m/s
-      - ceiling
-      - floor
 
   - name: missile_guidance
     phase: field_group
@@ -167,19 +100,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - guidance
-      - command
-      - radar
-      - radio
-      - inertial
-      - homing
-      - steering
-      - seeker
-      - terminal
-      - mid-course
-      - SARH
-      - ARH
 
   - name: missile_airframe
     phase: field_group
@@ -192,19 +112,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - length
-      - diameter
-      - span
-      - fin
-      - body
-      - fuselage
-      - wing
-      - mass
-      - kg
-      - lbs
-      - meter
-      - cm
 
   - name: missile_speed_timing
     phase: field_group
@@ -217,18 +124,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - time
-      - duration
-      - burn
-      - mach
-      - speed
-      - interval
-      - sec
-      - min
-      - boost
-      - sustain
-      - coast
 
   - name: missile_propulsion
     phase: field_group
@@ -241,19 +136,6 @@ passes:
     bridge_entity_types: []
     extracted_relationship_types: []
     depends_on: []
-    cues:
-      - engine
-      - propellant
-      - burn
-      - thrust
-      - stage
-      - solid
-      - liquid
-      - motor
-      - rocket
-      - kN
-      - lbf
-      - ISP
 
   - name: system_links
     phase: relationship
@@ -277,7 +159,6 @@ passes:
       - missile_airframe
       - missile_speed_timing
       - missile_propulsion
-    cues: []  # required relationship pass — never skipped
     skip_if_no_upstream_endpoints: true
     skip_justification: >
       When none of the upstream domain passes produce any linkable system

@@ -6729,7 +6729,6 @@ from app.services.run_phase_dispatch import (  # noqa: E402
     read_phase_state,
     is_run_cancelled,
 )
-from app.services.extraction_routing import route_pass  # noqa: E402  (C3)
 
 
 def _phase_key(pass_name: str) -> str:
@@ -7140,62 +7139,6 @@ def _try_advance_phase(db, document_id: str, run_id: str) -> None:
                 db.commit()
 
 
-def _write_terminal_skip_row(
-    db,
-    run_id: str,
-    pass_name: str,
-    skip_reason: str,
-    router_diagnostics: dict,
-) -> None:
-    """Write a terminal SKIPPED pipeline_pass_outputs row for a router-skipped pass.
-
-    Mirrors the SKIPPED path in ``_execute_pass_attempt`` / ``_save_terminal_pass_output``
-    so that ``count_terminal_passes`` (the fan-in gate) sees this pass as resolved.
-
-    Called by ``_claim_and_dispatch_pass`` when the router returns
-    ``SKIP_NO_EVIDENCE`` in enforce mode.  Also marks the phase terminal and
-    calls ``_try_advance_phase`` so the next eligible pass dispatches.
-
-    C3: the router_diagnostics dict is stored under the ``"skip_router"`` key
-    in ``diagnostics`` so operators can inspect why the pass was skipped.
-    """
-    diagnostics = {"skip_router": router_diagnostics}
-    # _write_stage_run requires a pass_def to get pass_def.name.
-    # Build a minimal stand-in rather than loading the full manifest again.
-    import types as _types
-    _minimal_pass_def = _types.SimpleNamespace(name=pass_name)
-    stage_run_id = _write_stage_run(
-        pipeline_run_id=run_id,
-        pass_def=_minimal_pass_def,
-        attempt=1,
-        execution_status="SKIPPED",
-        yield_status=None,
-        skip_reason=skip_reason,
-        counts=None,
-        error=None,
-    )
-    save_pass_output(
-        db,
-        pipeline_run_id=run_id,
-        stage_run_id=stage_run_id,
-        pass_name=pass_name,
-        attempt=1,
-        execution_status="SKIPPED",
-        skip_reason=skip_reason,
-        yield_status=None,
-        extract_pass_response={},
-        primary_entities_extracted=0,
-        bridge_entities_extracted=0,
-        relationships_extracted=0,
-        relationships_rejected=0,
-        diagnostics=diagnostics,
-        field_provenance=[],
-    )
-    db.commit()
-    mark_phase_terminal(db, run_id, _phase_key(pass_name), result="skipped")
-    db.commit()
-
-
 def _claim_and_dispatch_pass(
     db,
     document_id: str,
@@ -7222,105 +7165,10 @@ def _claim_and_dispatch_pass(
     A crash between claim and mark_phase_dispatched leaves the phase in
     'claimed' state — the reconciler (Task 9) will reclaim it after the
     stale-claim threshold (``phase_claim_stale_seconds``).
-
-    C3: router check.  INSIDE this function — BEFORE ``.delay()`` — so both
-    the initial dispatch wave (derive_ontology_graph) AND subsequent dispatches
-    via _try_advance_phase go through the router.  The three modes are:
-      - ``disabled``: skip router entirely; always dispatch.
-      - ``shadow``:   run router + log decision but always dispatch (safe deploy).
-      - ``enforce``:  run router + on SKIP_NO_EVIDENCE write terminal SKIPPED row
-                      + mark_phase_terminal + _try_advance_phase; no .delay().
-    Default is ``shadow`` so the first deploy logs decisions without acting.
     """
-    import os as _os
     phase_key = _phase_key(pass_name)
     if not claim_phase(db, run_id, phase_key):
         return False  # another worker won the claim
-
-    # C3 — router check (disabled / shadow / enforce).
-    _router_mode = _os.environ.get("DOCLING_GRAPH_SKIP_ROUTER_MODE", "shadow")
-    if _router_mode in ("shadow", "enforce"):
-        try:
-            # Load pass_def from manifest to access cues + phase + required.
-            # load_bundle_manifest is cheap (YAML parse; no DB round-trip).
-            # We look up the run's bundle_key via a fresh DB read to keep this
-            # call self-contained without threading extra args from callers.
-            from app.models.ingest import PipelineRun as _PipelineRun
-            _run = db.get(_PipelineRun, uuid.UUID(str(run_id)))
-            _bundle_key = _run.ontology_bundle_key if _run else None
-            if _bundle_key:
-                _manifest = load_bundle_manifest(_bundle_key)
-                try:
-                    _pass_def = _manifest.find_pass(pass_name)
-                except KeyError:
-                    _pass_def = None
-            else:
-                _pass_def = None
-
-            if _pass_def is not None:
-                # Build doc_metadata from the docling document JSON.
-                # _build_docling_document_json loads from MinIO (cheap: already
-                # cached in the OS page cache for most calls after the first pass).
-                try:
-                    _doc_json = _build_docling_document_json(document_id)
-                except Exception:
-                    _doc_json = {}
-
-                # Extract text bodies, table captions, picture captions.
-                _text_chunks = [
-                    t.get("text") or t.get("orig") or ""
-                    for t in (_doc_json.get("texts") or [])
-                    if (t.get("text") or t.get("orig") or "").strip()
-                ]
-                _table_captions = [
-                    t.get("caption_text") or t.get("text") or ""
-                    for t in (_doc_json.get("tables") or [])
-                    if (t.get("caption_text") or t.get("text") or "").strip()
-                ]
-                _picture_captions = [
-                    p.get("text") or p.get("orig") or ""
-                    for p in (_doc_json.get("pictures") or [])
-                    if (p.get("text") or p.get("orig") or "").strip()
-                ]
-                _doc_metadata = {
-                    "text_chunks": _text_chunks,
-                    "table_captions": _table_captions,
-                    "picture_captions": _picture_captions,
-                }
-
-                _decision = route_pass(_pass_def, _doc_metadata)
-                logger.info(
-                    "skip_router: pass=%s mode=%s decision=%s reason=%s "
-                    "matched_cues=%s chunks_with_hits=%d",
-                    pass_name, _router_mode, _decision.mode, _decision.reason,
-                    _decision.matched_cues, _decision.chunks_with_hits,
-                )
-
-                if _decision.mode == "SKIP_NO_EVIDENCE" and _router_mode == "enforce":
-                    # Write terminal SKIPPED row + mark + advance.
-                    # Do NOT increment queued_counter (nothing was queued).
-                    _router_diag = {
-                        "router_mode": _router_mode,
-                        "mode": _decision.mode,
-                        "reason": _decision.reason,
-                        "matched_cues": _decision.matched_cues,
-                        "chunks_with_hits": _decision.chunks_with_hits,
-                    }
-                    _write_terminal_skip_row(
-                        db, run_id, pass_name,
-                        skip_reason="NO_RELEVANT_EVIDENCE",
-                        router_diagnostics=_router_diag,
-                    )
-                    _try_advance_phase(db, document_id, run_id)
-                    return False  # did not dispatch
-
-        except Exception:
-            # Router errors are non-fatal: fall through to normal dispatch.
-            logger.exception(
-                "skip_router: unexpected error for pass=%s — falling through to dispatch",
-                pass_name,
-            )
-
     async_result = derive_ontology_graph_pass.delay(document_id, run_id, pass_name)
     # Increment the counter BEFORE bookkeeping so a bookkeeping failure does not
     # leave the caller thinking zero passes were queued (Fix 1).
