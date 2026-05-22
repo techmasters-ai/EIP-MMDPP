@@ -838,3 +838,179 @@ class TestShortFetchPropagation:
 
         assert resp.status_code == 200, resp.text
         assert resp.json()["diagnostics"]["short_fetch"] is False
+
+
+# ---------------------------------------------------------------------------
+# 15. HIGH (rev 17) — _resolve_template_class is bundle-aware (unpatched test)
+# ---------------------------------------------------------------------------
+
+class TestResolveBundleAware:
+    def test_resolve_template_class_uses_real_manifest(self):
+        """Resolver must work against a real manifest pass — not patched.
+
+        Regression guard for the rev 16 bug where _resolve_template_class imported
+        pass_def.module literally without the 'ontology_bundles.{bundle_key}.' prefix.
+        The manifest stores RELATIVE module paths (e.g. 'extraction_schemas.radar_power_rf');
+        the worker (pipeline.py:_parse_pass_response ~line 3603) prefixes them with
+        'ontology_bundles.{bundle_key}.' before importing.  The endpoint must do the same.
+        """
+        from app.services.ontology_bundles import load_bundle_manifest
+        from app.api.v1.extraction_routing import _resolve_template_class
+
+        bundle_key = "air_defense_v3_baseline_subset"
+        manifest = load_bundle_manifest(bundle_key)
+        pass_def = next(p for p in manifest.passes if p.name == "radar_power_rf")
+
+        # Confirm the manifest stores a RELATIVE path (no bundle prefix)
+        assert not pass_def.module.startswith("ontology_bundles."), (
+            f"Manifest module path should be relative, got: {pass_def.module!r}"
+        )
+
+        template_cls = _resolve_template_class(bundle_key, pass_def)
+
+        # Must resolve to the real pydantic class — not a mock or fallback
+        assert template_cls.__name__ == "RadarPowerRfPass", (
+            f"Expected class name 'RadarPowerRfPass', got {template_cls.__name__!r}"
+        )
+        assert template_cls.__module__.startswith("ontology_bundles.air_defense_v3"), (
+            f"Expected module starting with 'ontology_bundles.air_defense_v3', "
+            f"got {template_cls.__module__!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 16. MED (rev 17) — empty selected_refs after rerank → mode=full
+# ---------------------------------------------------------------------------
+
+class TestEmptySelectedRefsAfterRerank:
+    @pytest.mark.asyncio
+    async def test_empty_selected_refs_after_rerank_returns_mode_full(self, client):
+        """When rerank returns candidates that all lack self_ref keys, endpoint must
+        return mode=full + fallback_reason='no_selected_refs_after_rerank' instead of
+        the contract-invalid mode=selected_refs with self_refs=[].
+
+        Rev 17 MED guard.
+        """
+        # Candidates have content_text but NO self_ref key
+        results = [_make_result("#/texts/0", "radar ERP 45 dBW", 0.81)]
+        pass_def = _make_pass_def()
+        manifest = _make_manifest(passes=[pass_def])
+
+        reranked_no_self_ref = [
+            {
+                "content_text": "radar ERP 45 dBW",
+                # deliberately omit self_ref to trigger the guard
+                "vector_score": 0.81,
+                "reranker_score": 0.88,
+            }
+        ]
+
+        with (
+            _patch_manifest(manifest),
+            _patch_embed(),
+            _patch_search(results=results, diag=_FakeSearchDiag(post_filter_candidate_count=1)),
+            _patch_full_doc_estimate(2000),
+            _patch_template_class(),
+            _patch_build_query(),
+            _patch_graph_store()[0],
+            patch("app.api.v1.extraction_routing.rrk.rerank", return_value=reranked_no_self_ref),
+        ):
+            resp = await client.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["mode"] == "full", (
+            f"Expected mode=full when no valid self_refs after rerank, got {data['mode']!r}"
+        )
+        assert data["diagnostics"]["fallback_reason"] == "no_selected_refs_after_rerank", (
+            f"Expected fallback_reason='no_selected_refs_after_rerank', "
+            f"got {data['diagnostics']['fallback_reason']!r}"
+        )
+        assert data["self_refs"] == []
+
+
+# ---------------------------------------------------------------------------
+# 17. LOW (rev 17) — _async_full_doc_token_estimate uses non-vector SQL
+# ---------------------------------------------------------------------------
+
+class TestNonVectorTokenEstimate:
+    @pytest.mark.asyncio
+    async def test_full_doc_token_estimate_uses_sql_not_hnsw(self):
+        """_async_full_doc_token_estimate must use direct SQL (not HNSW vector_search).
+
+        Rev 17 LOW: switched from zero-vector probe (filter-starvation risk, same
+        shape as C.1 bug) to SELECT SUM(LENGTH(chunk_text)) by pipeline_run_id.
+
+        This test mocks store._client.query and asserts it's called with an SQL
+        SELECT statement — NOT a vector_search call.  Also asserts the token
+        estimate is computed from the SQL result.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        from app.api.v1.extraction_routing import _async_full_doc_token_estimate
+
+        pipeline_run_id = "test-run-123"
+
+        # Simulate ArcadeDB returning total_chars = 4000 (→ ~1000 tokens via //4)
+        mock_client = MagicMock()
+        mock_client.query = AsyncMock(return_value=[{"total_chars": 4000}])
+
+        mock_store = MagicMock()
+        mock_store._client = mock_client
+        mock_store._database = "testdb"
+        # vector_search should NOT be called; attach an AsyncMock so a call would be detectable
+        mock_store.vector_search = AsyncMock(side_effect=AssertionError(
+            "vector_search called — full_doc_token_estimate must use SQL, not HNSW"
+        ))
+
+        result = await _async_full_doc_token_estimate(pipeline_run_id, mock_store)
+
+        # Verify SQL query was used
+        mock_client.query.assert_called_once()
+        call_args = mock_client.query.call_args
+        sql_cmd = call_args.args[2] if len(call_args.args) >= 3 else call_args.kwargs.get("command", "")
+        assert "SUM" in sql_cmd.upper() or "sum" in sql_cmd, (
+            f"Expected SUM aggregate in SQL; got: {sql_cmd!r}"
+        )
+        assert "ExtractionChunk" in sql_cmd, (
+            f"Expected ExtractionChunk in SQL; got: {sql_cmd!r}"
+        )
+        assert pipeline_run_id in str(call_args) or "run_id" in str(call_args), (
+            f"Expected run_id parameter in SQL call; call_args={call_args}"
+        )
+
+        # Token estimate: 4000 chars // 4 = 1000 tokens
+        assert result == 1000, f"Expected token estimate 1000 (4000 chars // 4), got {result}"
+
+    @pytest.mark.asyncio
+    async def test_full_doc_token_estimate_returns_zero_on_empty_result(self):
+        """When SQL returns no rows (empty run), estimator returns 0."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.api.v1.extraction_routing import _async_full_doc_token_estimate
+
+        mock_client = MagicMock()
+        mock_client.query = AsyncMock(return_value=[])
+
+        mock_store = MagicMock()
+        mock_store._client = mock_client
+        mock_store._database = "testdb"
+        mock_store.vector_search = AsyncMock(side_effect=AssertionError("HNSW called"))
+
+        result = await _async_full_doc_token_estimate("some-run", mock_store)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_full_doc_token_estimate_returns_zero_on_sql_error(self):
+        """When SQL query raises, estimator returns 0 (fail-safe, not fail-hard)."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.api.v1.extraction_routing import _async_full_doc_token_estimate
+
+        mock_client = MagicMock()
+        mock_client.query = AsyncMock(side_effect=ConnectionError("ArcadeDB unreachable"))
+
+        mock_store = MagicMock()
+        mock_store._client = mock_client
+        mock_store._database = "testdb"
+        mock_store.vector_search = AsyncMock(side_effect=AssertionError("HNSW called"))
+
+        result = await _async_full_doc_token_estimate("some-run", mock_store)
+        assert result == 0

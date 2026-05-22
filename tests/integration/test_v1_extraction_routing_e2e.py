@@ -118,6 +118,39 @@ def _reranker_available() -> bool:
 # End-to-end tests
 # ---------------------------------------------------------------------------
 
+def test_resolve_template_class_uses_real_manifest():
+    """Resolver must work against a real manifest pass — unpatched.
+
+    Regression guard for the rev 16 bug where _resolve_template_class imported
+    pass_def.module literally (without 'ontology_bundles.{bundle_key}.' prefix).
+    The E2E tests above patch _resolve_template_class; this test does NOT patch
+    it, exercising the real import path.
+
+    Catches future regressions of the same shape.
+    """
+    from app.services.ontology_bundles import load_bundle_manifest
+    from app.api.v1.extraction_routing import _resolve_template_class
+
+    bundle_key = "air_defense_v3_baseline_subset"
+    manifest = load_bundle_manifest(bundle_key)
+    pass_def = next(p for p in manifest.passes if p.name == "radar_power_rf")
+
+    # Manifest stores RELATIVE module path — no bundle prefix
+    assert not pass_def.module.startswith("ontology_bundles."), (
+        f"Manifest module should be relative; got: {pass_def.module!r}"
+    )
+
+    template_cls = _resolve_template_class(bundle_key, pass_def)
+
+    assert template_cls.__name__ == "RadarPowerRfPass", (
+        f"Expected 'RadarPowerRfPass', got {template_cls.__name__!r}"
+    )
+    assert template_cls.__module__.startswith("ontology_bundles.air_defense_v3"), (
+        f"Expected module rooted at 'ontology_bundles.air_defense_v3'; "
+        f"got {template_cls.__module__!r}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_chunk_scope_e2e_returns_valid_response(arcadedb_store):
     """Insert chunks, POST to endpoint, assert response shape + self_refs subset."""

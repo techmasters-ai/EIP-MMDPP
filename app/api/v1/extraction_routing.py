@@ -51,15 +51,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_template_class(pass_def):
+def _resolve_template_class(bundle_key: str, pass_def) -> type:
     """Import and return the pydantic Pass class for the given pass manifest entry.
 
-    Imports pass_def.module and retrieves pass_def.template_class from it.
+    Manifest module paths are RELATIVE (e.g. 'extraction_schemas.radar_power_rf').
+    The worker (pipeline.py:_parse_pass_response, line ~3603) prefixes these with
+    'ontology_bundles.{bundle_key}.' before importing. This endpoint must do the same
+    — otherwise template resolution fails in production and silently returns mode=full
+    via the template_resolution_error fallback (VR never narrows).
+
     Raises ImportError / AttributeError if the class cannot be found.
     """
     import importlib
 
-    mod = importlib.import_module(pass_def.module)
+    full_module = f"ontology_bundles.{bundle_key}.{pass_def.module}"
+    mod = importlib.import_module(full_module)
     return getattr(mod, pass_def.template_class)
 
 
@@ -115,63 +121,42 @@ def _estimate_tokens_from_chars(total_chars: int) -> int:
 async def _async_full_doc_token_estimate(
     pipeline_run_id: str,
     store,
-    loop: asyncio.AbstractEventLoop,
 ) -> int:
-    """Async version: over-fetch all ExtractionChunks for the run, sum chunk_text.
+    """Estimate total token count for a pipeline_run's ExtractionChunk rows.
 
-    Uses the same over-fetch + post-filter strategy as search_extraction_chunks
-    but with a zero-length (dummy) query vector to enumerate all chunks rather
-    than doing similarity search.
+    Rev 17 LOW: switched from zero-vector HNSW probe (which had the same
+    filter-starvation shape as the C.1 bug — see bac8bd8 + extraction_routing
+    docstring) to a direct non-vector SQL query.  Queries ExtractionChunk by
+    pipeline_run_id on the b-tree index (created in C.1 schema migration);
+    no HNSW, no top_k cap, no starvation risk.
 
-    Returns estimated token count, or 0 on error.
-
-    Rev 16 Minor #9: probe dimension read from settings.text_embedding_dim
-    (default 1024 = bge-m3 baseline) to avoid hardcoded constant.
-    Rev 16 Minor #8: logs DEBUG when probe returns 0 chunks (cap exhaustion signal).
-    Rev 16 Minor #5: no longer allocates " " * total_chars string.
+    Returns estimated token count, or 0 on error (disables the 80%
+    narrowing-ineffective warning for that call).
     """
     try:
-        # Build a zero-vector probe of the correct dimensionality.
-        # We only need to enumerate vertices; similarity doesn't matter.
-        # Reads from settings to match the live embedding model's dimension.
-        _PROBE_TOP_K = 2000
-        _probe_dim = get_settings().text_embedding_dim  # Minor #9: no hardcoded 1024
-        probe = [0.0] * _probe_dim
-
-        raw = await store.vector_search(
-            vertex_type="ExtractionChunk",
-            embedding_property="embedding",
-            query_vector=probe,
-            top_k=_PROBE_TOP_K,
-            score_threshold=None,
-            filters=None,
+        # Direct SELECT SUM(LENGTH(chunk_text)) by the indexed pipeline_run_id
+        # property — no vector search involved.  ArcadeDB returns all matching
+        # ExtractionChunk vertices for this run without a top_k cap.
+        rows = await store._client.query(
+            store._database,
+            "sql",
+            "SELECT SUM(LENGTH(chunk_text)) AS total_chars "
+            "FROM ExtractionChunk WHERE pipeline_run_id = :run_id",
+            {"run_id": pipeline_run_id},
         )
-        # Post-filter to this run only (same reason as search_extraction_chunks)
-        run_chunks = [
-            r for r in raw
-            if r.properties.get("pipeline_run_id") == pipeline_run_id
-        ]
-
-        if not run_chunks:
-            # Minor #8: debug log when probe returns 0 chunks — may signal
-            # that >_PROBE_TOP_K chunks exist across runs, starving this run.
+        if not rows:
             logger.debug(
-                "chunk-scope: zero-vector probe found 0 chunks for run=%s "
-                "(pool may exceed top_k=%d cap); "
-                "full_doc_token_estimate=0 disables the narrowing-ineffective warning",
-                pipeline_run_id, _PROBE_TOP_K,
+                "chunk-scope: full_doc_token_estimate SQL returned no rows for run=%s; "
+                "returning 0 (disables narrowing-ineffective warning)",
+                pipeline_run_id,
             )
             return 0
-
-        # Minor #5: avoid " " * total_chars allocation; compute from char count directly
-        total_chars = sum(
-            len(r.properties.get("chunk_text", "") or "")
-            for r in run_chunks
-        )
-        return _estimate_tokens_from_chars(total_chars)
+        total_chars = rows[0].get("total_chars") or 0
+        return _estimate_tokens_from_chars(int(total_chars))
     except Exception as exc:
         logger.debug(
-            "chunk-scope: full_doc_token_estimate failed for run=%s: %r",
+            "chunk-scope: full_doc_token_estimate query failed for run=%s: %r; "
+            "returning 0 (disables narrowing-ineffective warning)",
             pipeline_run_id, exc,
         )
         return 0
@@ -242,7 +227,7 @@ async def chunk_scope(
     # the manifest (ImportError / AttributeError) or a build_retrieval_query
     # failure must return a structured response, not a bare 500.
     try:
-        template_cls = _resolve_template_class(pass_def)
+        template_cls = _resolve_template_class(body.bundle_key, pass_def)
         query_text = build_retrieval_query(pass_def, template_cls)
     except Exception as exc:
         logger.warning(
@@ -298,7 +283,7 @@ async def chunk_scope(
 
     # Pre-compute full-doc token estimate (needed by several return paths)
     full_doc_token_estimate = await _async_full_doc_token_estimate(
-        body.pipeline_run_id, store, loop
+        body.pipeline_run_id, store
     )
 
     # 5. Empty retrieval handling
@@ -402,6 +387,42 @@ async def chunk_scope(
     # profile.top_k changed between the rerank call and here.
     top_k_results = reranked[: profile.top_k]
     selected_refs = [c["self_ref"] for c in top_k_results if c.get("self_ref")]
+
+    # Rev 17 MED: guard against contract-invalid mode=selected_refs with empty
+    # self_refs list.  This can occur when rerank returns candidates that all
+    # lack a self_ref key, or when top_k slicing yields zero items.  C.4 would
+    # attempt to narrow to an empty scoped doc, which is incorrect.  Fail open
+    # to mode=full instead so the pass runs against the full document.
+    if not selected_refs:
+        logger.warning(
+            "chunk-scope: rerank produced top_k_results=%d but 0 valid self_refs for "
+            "pass=%s run=%s — failing open to mode=full",
+            len(top_k_results), body.pass_name, body.pipeline_run_id,
+        )
+        return ChunkScopeResponse(
+            mode="full",
+            self_refs=[],
+            diagnostics=ChunkScopeDiagnostics(
+                mode="full",
+                fallback_reason="no_selected_refs_after_rerank",
+                query_text=query_text,
+                vector_threshold=profile.min_similarity,
+                vector_score_range=_score_range(results),
+                candidate_count=len(results),
+                rerank_score_range=_rerank_score_range(reranked),
+                selected_ref_count=0,
+                selected_token_estimate=0,
+                full_doc_token_estimate=full_doc_token_estimate,
+                would_skip_if_fallback_disabled=False,
+                vector_search_ms=vector_search_ms,
+                rerank_ms=rerank_ms,
+                ann_top_k_requested=search_diag.ann_top_k_requested,
+                post_filter_candidate_count=search_diag.post_filter_candidate_count,
+                post_filter_retry_count=search_diag.post_filter_retry_count,
+                filter_strategy=search_diag.filter_strategy,
+                short_fetch=search_diag.short_fetch,
+            ),
+        )
 
     # Minor #3 (rev 16): use bge-m3 tokenizer instead of len/4 heuristic.
     # Technical text (frequencies, units, abbreviations) has ~2-3 chars/token
