@@ -363,6 +363,19 @@ def summarize_pass_output(
     }
 
 
+# Bundle keys eligible for the air-defense-specific post-processing
+# below. The subset bundle is a test-only sibling of air_defense_v3 with
+# identical Pydantic extraction schemas and the same RADAR_/MISSILE_*
+# pass names — see ontology_bundles/air_defense_v3_baseline_subset/
+# manifest.yaml. A genuinely new ontology (naval, ground systems, …)
+# would not belong here because the markers, enum values, list keys,
+# and entity types throughout this module are air-defense-specific.
+_AIR_DEFENSE_BUNDLE_KEYS: frozenset[str] = frozenset({
+    "air_defense_v3",
+    "air_defense_v3_baseline_subset",
+})
+
+
 def apply_bundle_postprocessing(
     bundle_key: str,
     pass_name: str,
@@ -373,7 +386,7 @@ def apply_bundle_postprocessing(
     alias_map_by_entity_type: dict[str, dict[str, str]] | None = None,
     normalized_tables: list[Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if bundle_key != "air_defense_v3" or not isinstance(pass_output, dict):
+    if bundle_key not in _AIR_DEFENSE_BUNDLE_KEYS or not isinstance(pass_output, dict):
         return pass_output, {}
 
     if pass_name in RADAR_PASS_NAMES:
