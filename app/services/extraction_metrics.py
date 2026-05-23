@@ -26,6 +26,15 @@ from typing import Any, Iterable
 # the relevant token here.
 IDENTITY_FIELDS: frozenset[str] = frozenset({"system_name"})
 
+# Bundle keys that share air_defense_v3's Pydantic extraction schemas
+# and therefore expose the same RADAR_/MISSILE_FIELD_GROUPS. The subset
+# bundle is a test-only sibling — see ontology_bundles/
+# air_defense_v3_baseline_subset/manifest.yaml.
+AIR_DEFENSE_BUNDLE_KEYS: frozenset[str] = frozenset({
+    "air_defense_v3",
+    "air_defense_v3_baseline_subset",
+})
+
 
 def _load_field_groups(bundle_key: str) -> dict[str, list[str]]:
     """Return the merged radar+missile field-groups dict for `bundle_key`.
@@ -34,7 +43,7 @@ def _load_field_groups(bundle_key: str) -> dict[str, list[str]]:
     disjoint pass names. We merge them at the call site so callers don't
     need to know which group a pass belongs to.
     """
-    if bundle_key != "air_defense_v3":
+    if bundle_key not in AIR_DEFENSE_BUNDLE_KEYS:
         return {}
     # Lazy import — keeps app/services free of ontology_bundles import at module load.
     from ontology_bundles.air_defense_v3.extraction_schemas._field_groups import (  # noqa: PLC0415
