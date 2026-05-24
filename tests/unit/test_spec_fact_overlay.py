@@ -260,3 +260,50 @@ class TestInlineEvidencePairedLabels:
         min_f = next((f for f in facts if f.label_canonical == "min_range"), None)
         assert max_f is not None and max_f.value_raw == "18"
         assert min_f is not None and min_f.value_raw == "5"
+
+
+# ===== Empty / comma-only value captures (regression: SA-2 missile passes) =====
+
+class TestEmptyOrCommaOnlyValues:
+    """Pre-fix: the value regex `[\\d,]+(?:\\.\\d+)?` accepted comma-only
+    matches like `","` or `",,,"`. After `replace(",", "")` the string was
+    empty, so `float("")` raised ValueError and the docling-graph
+    /extract-pass call returned HTTP 500. SA-2 missile passes hit this on
+    a table row whose numeric cell was empty but whose unit suffix
+    survived. These cases must now return no facts and never raise."""
+
+    def test_single_comma_before_unit_does_not_crash(self):
+        ev = "LENGTH: , miles"
+        facts = parse_spec_facts_from_evidence_text(ev)
+        assert all(f.label_canonical != "length" for f in facts)
+
+    def test_multiple_commas_before_unit_does_not_crash(self):
+        ev = "WEIGHT: ,,, pounds"
+        facts = parse_spec_facts_from_evidence_text(ev)
+        assert all(f.label_canonical != "weight" for f in facts)
+
+    def test_paired_comma_only_values_does_not_crash(self):
+        """Paired form with empty numbers on both sides — must not crash
+        even though both n1 and n2 captures would be comma-only."""
+        ev = "MAX/MIN EFFECTIVE RANGE: , miles/, miles"
+        facts = parse_spec_facts_from_evidence_text(ev)
+        assert all(
+            f.label_canonical not in {"max_range", "min_range"}
+            for f in facts
+        )
+
+    def test_comma_only_in_block_form_does_not_crash(self):
+        """Block-form (label and value in separate text items)."""
+        facts = parse_spec_facts_from_texts(_texts("Length:", ", feet"))
+        assert all(f.label_canonical != "length" for f in facts)
+
+    def test_real_values_still_extract_alongside_empty(self):
+        """A real value adjacent to a comma-only one must still be picked
+        up — the guard rejects only the empty capture, not the regex
+        scan."""
+        ev = "LENGTH: 35 feet WEIGHT: , pounds DIAMETER: 26 inches"
+        facts = parse_spec_facts_from_evidence_text(ev)
+        labels = {f.label_canonical for f in facts}
+        assert "length" in labels
+        assert "diameter" in labels
+        assert "weight" not in labels

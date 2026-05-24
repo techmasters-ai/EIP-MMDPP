@@ -152,16 +152,19 @@ _LABEL_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Paired value with units like "18 miles/5 miles" or "82,000 feet/1,500 feet"
+# Paired value with units like "18 miles/5 miles" or "82,000 feet/1,500 feet".
+# Number portion requires a leading digit (`\d[\d,]*`) so comma-only captures
+# like "," or ",,," — which `replace(",", "")` would empty out — cannot reach
+# float().
 _PAIRED_NUM_UNIT_RE = re.compile(
-    r"(?P<n1>[\d,]+(?:\.\d+)?)\s*(?P<u1>miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in)\s*/\s*"
-    r"(?P<n2>[\d,]+(?:\.\d+)?)\s*(?P<u2>miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in)",
+    r"(?P<n1>\d[\d,]*(?:\.\d+)?)\s*(?P<u1>miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in)\s*/\s*"
+    r"(?P<n2>\d[\d,]*(?:\.\d+)?)\s*(?P<u2>miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in)",
     re.IGNORECASE,
 )
 
-# Single number + unit
+# Single number + unit. Leading-digit anchor as above.
 _NUM_UNIT_RE = re.compile(
-    r"(?P<n>[\d,]+(?:\.\d+)?)\s*(?P<u>miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in|degrees?|°)",
+    r"(?P<n>\d[\d,]*(?:\.\d+)?)\s*(?P<u>miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in|degrees?|°)",
     re.IGNORECASE,
 )
 
@@ -312,10 +315,14 @@ def parse_spec_facts_from_evidence_text(evidence_text: str) -> list[SpecFact]:
     for phrase, canonical in sorted_canonicals:
         # Pattern: phrase + (optional colon) + value(+unit) + optional paired
         # Value portion: paired form OR single num+unit OR Mach form
+        # Number portion uses `\d[\d,]*` (leading-digit anchor) to mirror
+        # _NUM_UNIT_RE / _PAIRED_NUM_UNIT_RE so comma-only fragments such
+        # as ", miles" cannot reach float() inside _parse_single_value /
+        # _parse_paired_value.
         value_pattern = (
             r"(?:"
-            r"(?P<paired>[\d,]+(?:\.\d+)?\s*(?:miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in)\s*/\s*[\d,]+(?:\.\d+)?\s*(?:miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in))"
-            r"|(?P<single>[\d,]+(?:\.\d+)?\s*(?:miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in|degrees?|°))"
+            r"(?P<paired>\d[\d,]*(?:\.\d+)?\s*(?:miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in)\s*/\s*\d[\d,]*(?:\.\d+)?\s*(?:miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in))"
+            r"|(?P<single>\d[\d,]*(?:\.\d+)?\s*(?:miles?|feet|foot|ft|kilometers?|km|meters?|m|pounds?|lbs?|kilograms?|kg|inches|in|degrees?|°))"
             r"|(?P<mach>Mach\s*\d+(?:\.\d+)?)"
             r")"
         )
