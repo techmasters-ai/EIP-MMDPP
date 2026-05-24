@@ -117,6 +117,45 @@ _install_prompt_rules()
 _install_resolver_patch()
 _install_gleaning_patch()
 
+# DeltaOrchestrator DOCUMENT-CONTEXT cap, per-pass override.
+#
+# The library reproduces a "DOCUMENT CONTEXT" section in every batch's prompt
+# for cross-batch identity stability, computed as
+# ``first_chunk[:_GLOBAL_CONTEXT_MAX_CHARS]`` with the default cap of 600.
+# For document_plus_entity_refs passes we inject an upstream-entities
+# catalog as the first body text item; the chunker puts it at the start of
+# chunk 0. With 600 chars only ~5 catalog entries survive truncation, so
+# batches 1+ saw a tiny fragment of the catalog and the LLM (correctly)
+# refused to emit relationships referencing REFs it couldn't see, producing
+# 0 relationships → empty_output quality-gate failure → 4 retries → terminal
+# fail. See SA-2 run 369198ed-9562-4c3d-bb76-741b60c6bfe4.
+#
+# This patch reads a per-thread override (set by ``run_extraction_pass``
+# below for passes that inject a preamble) and applies it as an instance
+# attribute on the orchestrator. threading.local is safe because
+# /extract-pass wraps run_extraction_pass in asyncio.to_thread — the
+# orchestrator is constructed on the same worker thread as the override
+# setter, and the value is read inside the orchestrator instance method
+# regardless of which batch worker thread reads it.
+import threading as _threading_for_dg_orch_patch
+import docling_graph.core.extractors.contracts.delta.orchestrator as _dg_delta_orchestrator
+
+_pass_orchestrator_overrides = _threading_for_dg_orch_patch.local()
+
+_orig_dg_delta_orchestrator_init = _dg_delta_orchestrator.DeltaOrchestrator.__init__
+
+
+def _patched_dg_delta_orchestrator_init(self, *args, **kwargs):
+    _orig_dg_delta_orchestrator_init(self, *args, **kwargs)
+    cap = getattr(_pass_orchestrator_overrides, "global_context_max_chars", None)
+    if cap is not None:
+        # Library reads via getattr(self, "_GLOBAL_CONTEXT_MAX_CHARS", 600),
+        # so an instance attribute wins over the class default of 600.
+        self._GLOBAL_CONTEXT_MAX_CHARS = cap
+
+
+_dg_delta_orchestrator.DeltaOrchestrator.__init__ = _patched_dg_delta_orchestrator_init
+
 from app.bundles import load_bundle_manifest, load_pass_template, preload_all_templates
 from app._field_provenance_helpers import _primary_list_field_name
 from app.config_builder import build_pipeline_config, DoclingGraphSettings
@@ -886,6 +925,19 @@ def run_extraction_pass(
         sys.stdout = _Tee(original_stdout, library_log_buf)
         sys.stderr = _Tee(original_stderr, library_log_buf)
         pipeline_error: Exception | None = None
+        # Per-pass override for the library's DOCUMENT-CONTEXT char cap.
+        # When a preamble was injected (document_plus_entity_refs passes),
+        # tell the DeltaOrchestrator (patched at module import) to size its
+        # global_context cap to fit the whole catalog. Otherwise the
+        # library's 600-char default truncates 98 REF lines to ~5, so
+        # batches 1+ cannot resolve from_ref_id/to_ref_id and the LLM
+        # correctly emits zero relationships → empty_output → terminal
+        # failure. Headroom of +1024 covers the ellipsis + closing
+        # instruction line the renderer appends to the preamble.
+        if preamble:
+            _pass_orchestrator_overrides.global_context_max_chars = (
+                len(preamble) + 1024
+            )
         try:
             context = run_pipeline(config)
         except Exception as exc:
@@ -925,6 +977,9 @@ def run_extraction_pass(
         finally:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
+            # Reset the per-pass orchestrator override so the next call
+            # on this worker thread doesn't inherit our cap.
+            _pass_orchestrator_overrides.global_context_max_chars = None
 
         # docling-graph's stages don't set ``context.template_instance``
         # — they populate ``extracted_models``. Promote the single
