@@ -1,24 +1,46 @@
-"""Scoped DoclingDocument builder (VR Phase C.4, rev 10 M7).
+"""Scoped DoclingDocument builder (VR Phase C.4, rev 10 M7; C.7r list_item fix).
 
 apply_chunk_scope(doc_json, chunk_scope) builds a scoped DoclingDocument JSON
 from a full doc_json and a chunk_scope dict produced by the /v1/extraction/chunk-scope
 endpoint.
 
-Design rules (per rev 7 H1 + rev 10 M7 + C4d constraint from rev 3):
+Design rules (per rev 7 H1 + rev 10 M7 + C4d constraint from rev 3 + C.7r):
   * Preserve top-level arrays (texts[], tables[], pictures[], groups[]) in their
     ORIGINAL positions — never reindex.  Docling refs are index-based
     (#/texts/N, #/tables/N) — removing elements would invalidate every
     cross-reference in the document.
-  * Rewrite body.children to ONLY include refs from chunk_scope.self_refs
-    PLUS the section_header/title headings that provide context for selected
-    content (nearest heading that PRECEDES one of the selected refs in
-    document order).
+  * Rewrite body.children to include refs from chunk_scope.self_refs PLUS the
+    section_header/title headings that provide context for selected content
+    (nearest heading that PRECEDES one of the selected refs in document order).
+    For retained list_items whose original parent is a ListGroup, body.children
+    references the GROUP instead of the list_item (see C.7r below).
   * Validate every self_ref in chunk_scope against the actual arrays in doc_json.
     An unknown self_ref raises ValueError so the worker can detect its own bugs.
   * mode != "selected_refs" is not this function's responsibility — the caller
     (derive_ontology_graph_pass) gates on chunk_scope.get("mode") == "selected_refs"
     before calling. Called with any other mode, we raise ValueError rather than
     silently returning unchanged (undefined contract → loud error).
+
+C.7r list_item fix
+------------------
+docling-core's DoclingDocument has a ``validate_misplaced_list_items`` model
+validator that fires on construction. It finds any ListItem whose parent isn't
+a ListGroup and "rescues" it: creates a new ListGroup, DELETES the misplaced
+list_items from texts[], then re-adds new list_items at the end of texts[].
+
+The delete-then-readd cycle re-indexes via a breadth-first walk of body.children.
+Items unreachable from body.children (e.g. texts that are children of pictures
+when the picture isn't in body.children) DON'T get their self_ref updated. The
+result: texts at shifted positions keep their old self_refs, while the new
+list_items reuse those self_refs. ``ChunkingDocSerializer(doc=dl_doc)`` then
+re-runs ``_validate_unique_refs`` (via Pydantic model-validator-on-instance-pass)
+and raises ``Duplicate ref: #/texts/N``.
+
+Fix: for retained list_items whose immediate parent is a ListGroup
+(group.label ∈ {"list", "ordered_list"}), KEEP the group parent and reference
+the GROUP from body.children. The group's children list keeps the retained
+list_items. Non-list_item retained refs in the same group still reparent to
+#/body (current behavior; they don't trigger the rescue logic).
 """
 from __future__ import annotations
 
@@ -30,9 +52,17 @@ logger = logging.getLogger(__name__)
 # content are included in body.children to maintain structural context.
 _HEADING_LABELS = frozenset({"section_header", "section-header", "title"})
 
+# Group labels that docling treats as ListGroups (subject to the
+# ``validate_misplaced_list_items`` rescue validator).
+_LIST_GROUP_LABELS = frozenset({"list", "ordered_list"})
+
 
 def _is_heading_label(label: str) -> bool:
     return label.lower().replace(" ", "_") in _HEADING_LABELS
+
+
+def _is_list_group_label(label: str) -> bool:
+    return label.lower().replace(" ", "_") in _LIST_GROUP_LABELS
 
 
 def _ref_to_array_key_and_index(self_ref: str) -> tuple[str, int] | None:
@@ -381,22 +411,73 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
             )
     # --- end post-scope reachability pass ---
 
-    # --- Hierarchy mutation pass (C.7 fix for DoclingDocument validation) ---
+    # --- Hierarchy mutation pass (C.7 + C.7r fix for DoclingDocument validation) ---
     # The reachability walker above is diagnostic-only: it tells us when a
     # retained element's parent was orphaned by the flatten. DoclingDocument's
-    # Pydantic validator REJECTS such docs:
+    # Pydantic validator REJECTS docs whose tree topology is inconsistent:
     #   Value error, Document hierarchy is inconsistent.
     #   #/body has child #/texts/N with parent #/groups/M
     #
-    # The scoped body.children is FLAT (selected refs + heading-context refs
-    # only — never groups). So every ref we place in body.children must have
-    # its `parent` rewritten to {"cref": "#/body"}, and any group that
-    # originally claimed it must drop it from its children list.
+    # The scoped body.children is FLAT for everything EXCEPT retained list_items
+    # whose immediate parent is a ListGroup. For those, we KEEP the original
+    # ListGroup parent and reference the GROUP from body.children (see C.7r in
+    # the module docstring for the duplicate-ref bug this prevents).
     #
     # No-mutation invariant: top-level arrays are shallow-copied, and any
     # element dict we modify is itself shallow-copied. The input doc_json is
     # never touched.
-    direct_body_children_set: set[str] = set(unique_scoped_crefs)
+
+    # --- C.7r: identify retained list_items that must keep ListGroup parent ---
+    # group_ref -> group.label cache (lowercase, underscored).
+    group_label_cache: dict[str, str] = {}
+    for grp in (doc_json.get("groups") or []):
+        if isinstance(grp, dict):
+            gr = grp.get("self_ref")
+            if gr:
+                group_label_cache[gr] = (grp.get("label") or "").lower().replace(" ", "_")
+
+    # list_item_in_list_group: set of crefs (in unique_scoped_crefs) that are
+    # list_items whose immediate parent is a ListGroup. Their original parent
+    # must be preserved; body.children references the group, not them.
+    list_item_in_list_group: set[str] = set()
+    # parent_group_for_list_item: cref -> group_ref (the ListGroup parent).
+    parent_group_for_list_item: dict[str, str] = {}
+    for cref in unique_scoped_crefs:
+        elem = _resolve_element(doc_json, cref)
+        if elem is None or not isinstance(elem, dict):
+            continue
+        label = (elem.get("label") or "").lower().replace(" ", "_")
+        if label != "list_item":
+            continue
+        parent = elem.get("parent")
+        if not isinstance(parent, dict):
+            continue
+        pref = parent.get("cref") or parent.get("$ref") or parent.get("$cref")
+        if not pref or not pref.startswith("#/groups/"):
+            continue
+        if _is_list_group_label(group_label_cache.get(pref, "")):
+            list_item_in_list_group.add(cref)
+            parent_group_for_list_item[cref] = pref
+
+    # retained_list_groups: groups that own ≥1 retained list_item; they go
+    # into body.children in place of those list_items.
+    retained_list_groups: set[str] = set(parent_group_for_list_item.values())
+
+    # reparent_to_body_set: refs whose `parent` field should be rewritten to
+    # {"cref": "#/body"} — everything in scope EXCEPT list_items kept inside
+    # a ListGroup.
+    reparent_to_body_set: set[str] = set(unique_scoped_crefs) - list_item_in_list_group
+
+    # body.children build order: walk unique_scoped_crefs (already in document
+    # order), substituting list_item refs with their group ref, deduplicating.
+    body_child_crefs: list[str] = []
+    body_child_seen: set[str] = set()
+    for cref in unique_scoped_crefs:
+        out_cref = parent_group_for_list_item.get(cref, cref)
+        if out_cref not in body_child_seen:
+            body_child_seen.add(out_cref)
+            body_child_crefs.append(out_cref)
+
     doc_overlay: dict = {}
 
     def _rewrite_parent_to_body(elem: dict) -> dict:
@@ -424,7 +505,7 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
         for i, elem in enumerate(new_arr):
             if not isinstance(elem, dict):
                 continue
-            if elem.get("self_ref") in direct_body_children_set:
+            if elem.get("self_ref") in reparent_to_body_set:
                 new_arr[i] = _rewrite_parent_to_body(elem)
                 mutated = True
         if mutated:
@@ -440,12 +521,14 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
             children = grp.get("children") or []
             if not children:
                 continue
+            # Strip children whose parent was rewritten to #/body. Retained
+            # list_items kept in this group (parent unchanged) STAY in children.
             filtered = [
                 c for c in children
                 if not (
                     isinstance(c, dict)
                     and (c.get("cref") or c.get("$ref") or c.get("$cref"))
-                    in direct_body_children_set
+                    in reparent_to_body_set
                 )
             ]
             if len(filtered) != len(children):
@@ -457,7 +540,7 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
             doc_overlay["groups"] = new_groups
     # --- end hierarchy mutation pass ---
 
-    new_children = [{ref_key: cref} for cref in unique_scoped_crefs]
+    new_children = [{ref_key: cref} for cref in body_child_crefs]
 
     new_body = dict(original_body)
     new_body["children"] = new_children
