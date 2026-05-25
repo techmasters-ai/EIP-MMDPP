@@ -31,7 +31,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: radar_antenna
@@ -48,7 +48,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: radar_timing
@@ -65,7 +65,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: radar_modulation
@@ -82,7 +82,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: missile_identity
@@ -111,7 +111,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: missile_guidance
@@ -128,7 +128,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: missile_airframe
@@ -145,7 +145,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: missile_speed_timing
@@ -162,7 +162,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: missile_propulsion
@@ -179,7 +179,7 @@ passes:
     retrieval:
       min_similarity: 0.35
       top_n_candidates: 50
-      top_k: 20
+      top_k: 30
       fallback_to_full: true
 
   - name: system_links
