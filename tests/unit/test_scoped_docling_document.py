@@ -56,7 +56,12 @@ def _ref(self_ref: str) -> dict:
 
 
 def test_preserve_array_positions_texts():
-    """texts[] is NOT modified — no elements removed or reindexed."""
+    """texts[] is not removed or reindexed; retained elements may have parent rewritten.
+
+    Note: C.7 fix — retained elements get parent rewritten to #/body for
+    DoclingDocument hierarchy consistency. Length, positions, and content of
+    the array entries themselves are preserved.
+    """
     doc = _make_doc(
         texts=[
             {"self_ref": "#/texts/0", "text": "Heading", "label": "section_header"},
@@ -68,11 +73,19 @@ def test_preserve_array_positions_texts():
     chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/1"]}
     result = apply_chunk_scope(doc, chunk_scope)
 
-    # texts[] in the original doc must be unmodified
-    assert result["texts"] is doc["texts"] or result["texts"] == doc["texts"]
+    # No-removal / no-reindex invariant: every position retained, with the same
+    # self_ref and content as the input doc.
     assert len(result["texts"]) == 3, "texts[] must retain all 3 entries"
-    assert result["texts"][2]["text"] == "Content B", (
-        "texts[2] must remain unchanged even though it's not in scope"
+    for i in range(3):
+        assert result["texts"][i]["self_ref"] == doc["texts"][i]["self_ref"]
+        assert result["texts"][i]["text"] == doc["texts"][i]["text"]
+    # Unselected elements pass through unchanged (no parent injection on #/texts/2).
+    assert "parent" not in result["texts"][2], (
+        "Unselected element must not have a parent rewritten onto it"
+    )
+    # And the input doc itself must not be mutated.
+    assert "parent" not in doc["texts"][1], (
+        "Input doc_json must not be mutated by apply_chunk_scope"
     )
 
 
@@ -662,3 +675,211 @@ def test_apply_chunk_scope_negative_group_index_in_parent_does_not_silently_reso
     assert any("#/groups/-1" in m or "unreachable" in m.lower() for m in warn_msgs), (
         f"Expected warning about malformed negative-index group ref; got: {warn_msgs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C.7 BLOCKER — Scoped doc must validate as a DoclingDocument
+#
+# `apply_chunk_scope` flattens body.children to a list of (selected + heading)
+# refs. Pre-fix, retained text/table/picture elements kept their original
+# `parent` (e.g. {"cref": "#/groups/N"}). DoclingDocument's Pydantic model
+# rejected the result with:
+#   Value error, Document hierarchy is inconsistent.
+#   #/body has child #/texts/N with parent #/groups/M
+#
+# Fix: rewrite retained elements' `parent` to {"cref": "#/body"} and drop them
+# from any group's `children` list so no orphan group double-claims them.
+# ---------------------------------------------------------------------------
+
+
+def _docling_doc_envelope(**parts):
+    """Minimal DoclingDocument-shaped envelope filled in with the provided parts."""
+    return {
+        "schema_name": "DoclingDocument",
+        "version": "1.0.0",
+        "name": "scoped-test",
+        "body": parts.get(
+            "body",
+            {
+                "self_ref": "#/body",
+                "parent": None,
+                "children": [],
+                "content_layer": "body",
+                "name": "_root_",
+                "label": "unspecified",
+            },
+        ),
+        "furniture": {
+            "self_ref": "#/furniture",
+            "parent": None,
+            "children": [],
+            "content_layer": "furniture",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+        "texts": parts.get("texts", []),
+        "tables": parts.get("tables", []),
+        "pictures": parts.get("pictures", []),
+        "groups": parts.get("groups", []),
+        "key_value_items": [],
+        "form_items": [],
+        "pages": {},
+    }
+
+
+def test_scoped_doc_with_group_parented_text_validates_as_docling_document():
+    """A scoped doc with a group-parented selected ref must pass DoclingDocument validation.
+
+    This is the C.7 production blocker reproduction: a list-item text whose
+    original parent is #/groups/0 is selected. After apply_chunk_scope, the
+    returned doc must be loadable by docling-core's DoclingDocument without
+    a "Document hierarchy is inconsistent" error.
+    """
+    from docling_core.types.doc import DoclingDocument
+
+    doc = _docling_doc_envelope(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "list_item",
+                "prov": [],
+                "orig": "Item A",
+                "text": "Item A",
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/texts/0"}],
+                "content_layer": "body",
+                "name": "list-0",
+                "label": "list",
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+    )
+    chunk_scope = {"mode": "selected_refs", "self_refs": ["#/texts/0"]}
+
+    result = apply_chunk_scope(doc, chunk_scope)
+
+    # Must validate — raises pydantic.ValidationError on failure.
+    DoclingDocument(**result)
+
+
+def test_scoped_doc_rewrites_retained_element_parent_to_body():
+    """Retained text/table/picture elements must have parent rewritten to #/body."""
+    doc = _docling_doc_envelope(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "list_item",
+                "prov": [],
+                "orig": "X",
+                "text": "X",
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/texts/0"}],
+                "content_layer": "body",
+                "name": "list-0",
+                "label": "list",
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+    )
+
+    result = apply_chunk_scope(doc, {"mode": "selected_refs", "self_refs": ["#/texts/0"]})
+
+    parent = result["texts"][0].get("parent")
+    assert isinstance(parent, dict)
+    parent_ref = parent.get("cref") or parent.get("$ref") or parent.get("$cref")
+    assert parent_ref == "#/body", (
+        f"Retained element's parent must be rewritten to #/body; got {parent_ref!r}"
+    )
+    # And the original doc must not be mutated.
+    original_parent_ref = doc["texts"][0]["parent"].get("cref")
+    assert original_parent_ref == "#/groups/0", (
+        "Input doc_json must not be mutated by apply_chunk_scope"
+    )
+
+
+def test_scoped_doc_clears_reparented_refs_from_group_children():
+    """Groups must not claim a text whose parent was rewritten to #/body."""
+    doc = _docling_doc_envelope(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "list_item",
+                "prov": [],
+                "orig": "X",
+                "text": "X",
+            },
+            {
+                "self_ref": "#/texts/1",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "list_item",
+                "prov": [],
+                "orig": "Y",
+                "text": "Y",
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/texts/0"}, {"cref": "#/texts/1"}],
+                "content_layer": "body",
+                "name": "list-0",
+                "label": "list",
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+    )
+
+    result = apply_chunk_scope(doc, {"mode": "selected_refs", "self_refs": ["#/texts/0"]})
+
+    grp_children = result["groups"][0].get("children") or []
+    crefs = [c.get("cref") or c.get("$ref") or c.get("$cref") for c in grp_children]
+    assert "#/texts/0" not in crefs, (
+        "Reparented text must be removed from its former group's children"
+    )
+    # Unselected sibling stays in the group's children list (group still owns it).
+    assert "#/texts/1" in crefs, "Unselected sibling must remain in group.children"
+    # Original input untouched.
+    assert {c.get("cref") for c in doc["groups"][0]["children"]} == {"#/texts/0", "#/texts/1"}

@@ -381,6 +381,82 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
             )
     # --- end post-scope reachability pass ---
 
+    # --- Hierarchy mutation pass (C.7 fix for DoclingDocument validation) ---
+    # The reachability walker above is diagnostic-only: it tells us when a
+    # retained element's parent was orphaned by the flatten. DoclingDocument's
+    # Pydantic validator REJECTS such docs:
+    #   Value error, Document hierarchy is inconsistent.
+    #   #/body has child #/texts/N with parent #/groups/M
+    #
+    # The scoped body.children is FLAT (selected refs + heading-context refs
+    # only — never groups). So every ref we place in body.children must have
+    # its `parent` rewritten to {"cref": "#/body"}, and any group that
+    # originally claimed it must drop it from its children list.
+    #
+    # No-mutation invariant: top-level arrays are shallow-copied, and any
+    # element dict we modify is itself shallow-copied. The input doc_json is
+    # never touched.
+    direct_body_children_set: set[str] = set(unique_scoped_crefs)
+    doc_overlay: dict = {}
+
+    def _rewrite_parent_to_body(elem: dict) -> dict:
+        # Preserve the parent dict's existing key style when present so that
+        # synthetic test fixtures using "$ref"/"$cref" round-trip; default to
+        # "cref" (the docling-core canonical key) otherwise.
+        existing_parent = elem.get("parent")
+        if isinstance(existing_parent, dict):
+            parent_key = next(
+                (k for k in ("cref", "$ref", "$cref") if k in existing_parent),
+                "cref",
+            )
+        else:
+            parent_key = "cref"
+        new_elem = dict(elem)
+        new_elem["parent"] = {parent_key: "#/body"}
+        return new_elem
+
+    for array_key in ("texts", "tables", "pictures"):
+        arr = doc_json.get(array_key)
+        if not arr:
+            continue
+        new_arr = list(arr)
+        mutated = False
+        for i, elem in enumerate(new_arr):
+            if not isinstance(elem, dict):
+                continue
+            if elem.get("self_ref") in direct_body_children_set:
+                new_arr[i] = _rewrite_parent_to_body(elem)
+                mutated = True
+        if mutated:
+            doc_overlay[array_key] = new_arr
+
+    groups_arr = doc_json.get("groups")
+    if groups_arr:
+        new_groups = list(groups_arr)
+        mutated_any = False
+        for i, grp in enumerate(new_groups):
+            if not isinstance(grp, dict):
+                continue
+            children = grp.get("children") or []
+            if not children:
+                continue
+            filtered = [
+                c for c in children
+                if not (
+                    isinstance(c, dict)
+                    and (c.get("cref") or c.get("$ref") or c.get("$cref"))
+                    in direct_body_children_set
+                )
+            ]
+            if len(filtered) != len(children):
+                new_grp = dict(grp)
+                new_grp["children"] = filtered
+                new_groups[i] = new_grp
+                mutated_any = True
+        if mutated_any:
+            doc_overlay["groups"] = new_groups
+    # --- end hierarchy mutation pass ---
+
     new_children = [{ref_key: cref} for cref in unique_scoped_crefs]
 
     new_body = dict(original_body)
@@ -394,4 +470,4 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
         sum(1 for c in unique_scoped_crefs if c not in selected_set),
     )
 
-    return {**doc_json, "body": new_body}
+    return {**doc_json, **doc_overlay, "body": new_body}
