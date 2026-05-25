@@ -88,29 +88,30 @@ class SystemLinkRelationship(BaseModel):
     from_ref_id: Optional[str] = Field(
         default=None,
         description=(
-            "Upstream ref id of the edge source — a typed token like "
-            "'RADAR_SYSTEM:Fan Song' or 'MISSILE_SYSTEM:1D' that refers "
-            "to an entity previously emitted by an earlier pass "
-            "(radar_identity, missile_identity). The catalog of available "
-            "ref ids is provided in the prompt's 'Upstream entities:' "
-            "preamble (look for 'REF=<ref_id>' anchors). Emit only ref ids "
-            "that appear in that list — the merge layer rejects unknown "
-            "ids. Do NOT wrap the ref_id in square brackets."
+            "Upstream ref id of the edge source. PREFERRED format: the "
+            "exact 'REF=<id>' token from the prompt's 'Upstream entities:' "
+            "preamble (e.g. 'E001', 'E002') — these are the canonical "
+            "ref_ids the merge layer expects. Also ACCEPTED: a typed "
+            "token like 'RADAR_SYSTEM:Fan Song' or 'MISSILE_SYSTEM:1D' "
+            "matching one of the upstream entity's display labels — the "
+            "merge layer resolves these via alias lookup. Either format "
+            "must reference an entity that appears in the preamble — "
+            "unknown ids reject. Do NOT wrap the ref_id in square brackets."
         ),
-        examples=["RADAR_SYSTEM:Fan Song", "MISSILE_SYSTEM:1D"],
+        examples=["E001", "RADAR_SYSTEM:Fan Song"],
     )
     to_ref_id: Optional[str] = Field(
         default=None,
         description=(
-            "Upstream ref id of the edge target — same format as "
-            "from_ref_id. The merge layer resolves (from_ref_id, "
-            "to_ref_id) pairs against PassResult.upstream_refs to build "
-            "MergedEdgeRecord with real LogicalIdentity endpoints. "
-            "from_ref_id and to_ref_id must be different refs — "
-            "self-loops are rejected. Do NOT wrap the ref_id in square "
-            "brackets."
+            "Upstream ref id of the edge target — same format rules as "
+            "from_ref_id. PREFERRED 'E###' from the preamble, also "
+            "ACCEPTED '<TYPE>:<display_label>'. The merge layer resolves "
+            "(from_ref_id, to_ref_id) pairs against PassResult.upstream_refs "
+            "to build MergedEdgeRecord with real LogicalIdentity endpoints. "
+            "from_ref_id and to_ref_id must be different refs — self-loops "
+            "are rejected. Do NOT wrap the ref_id in square brackets."
         ),
-        examples=["MISSILE_SYSTEM:1D", "RADAR_SYSTEM:Spoon Rest"],
+        examples=["E002", "RADAR_SYSTEM:Spoon Rest"],
     )
     confidence: Optional[float] = Field(
         default=None,

@@ -735,23 +735,12 @@ def _execute_pass_attempt(
     #    can resolve from_ref_id / to_ref_id (extraction_merge.py:384).
     #    Only document_plus_entity_refs passes use this — document_only passes
     #    do not consume upstream refs.
+    #    Reuses the same selection that built the request body above (selected_refs)
+    #    so the merge side sees exactly the refs the LLM was told about.
     if pass_def.input_mode == "document_plus_entity_refs":
-        from app.services.extraction_merge import logical_identity_from_dict
-        # Reuse the same selection that built the request body above —
-        # ensures the merge side sees exactly the refs the LLM was
-        # told about, and removes a drift surface where future edits
-        # could cause the two sites to disagree.
-        selected = selected_refs or {}
-        pass_result.upstream_refs = {}
-        for ref_id, ref in selected.items():
-            identity = logical_identity_from_dict(
-                ref.entity_type,
-                ref.identity_values or {},
-                ontology,
-                document_id,
-            )
-            if identity is not None:
-                pass_result.upstream_refs[ref_id] = identity
+        pass_result.upstream_refs = _build_upstream_refs_for_pass_result(
+            pass_def, selected_refs or {}, ontology, document_id,
+        )
 
     # 6. Compute pre_merge_walk + yield_status + counts
     # Plan Task 34b: build the single shared pre-merge carrier and
@@ -4169,6 +4158,57 @@ def _endpoint_types_for_rel_types(
             if tgt:
                 endpoint_types.add(tgt)
     return endpoint_types
+
+
+def _build_upstream_refs_for_pass_result(
+    pass_def,
+    selected_refs: dict,
+    ontology: dict,
+    document_id: str,
+) -> dict:
+    """Build the LogicalIdentity dict for ``PassResult.upstream_refs``.
+
+    Output keys cover BOTH formats so the merge resolver
+    (``extraction_merge._resolve_relationship``) succeeds regardless of
+    which the LLM emitted:
+    - The original ``ref_id`` (e.g. ``E001``) — matches what the prompt's
+      ``REF=E001`` anchors told the LLM.
+    - A ``"<entity_type>:<display_label>"`` alias (e.g.
+      ``"RADAR_SYSTEM:Fan Song"``) — matches the schema's example format.
+      Set via ``setdefault`` so the first ref for a given alias wins on
+      collision; the E-format key remains the primary identity for that
+      ref.
+
+    Both keys point at the SAME LogicalIdentity object — there's only one
+    identity per upstream entity; the alias is purely a lookup convenience.
+
+    Without the alias keys, LLM format drift between documents (one batch
+    emits ``E001``, the next emits ``RADAR_SYSTEM:Fan Song``) causes the
+    schema-format batches to reject with UNKNOWN_REF_ID even though the
+    referenced entity is in the catalog (bug #59 secondary failure mode).
+
+    Used by both ``_execute_pass_attempt`` (live request path) and
+    ``_rehydrate_pass_result`` (merge-time rehydrate path) so both produce
+    identical upstream_refs.
+    """
+    from app.services.extraction_merge import logical_identity_from_dict
+
+    result: dict = {}
+    for ref_id, ref in selected_refs.items():
+        identity = logical_identity_from_dict(
+            ref.entity_type,
+            ref.identity_values or {},
+            ontology,
+            document_id,
+        )
+        if identity is None:
+            continue
+        result[ref_id] = identity
+        display = getattr(ref, "display_label", None)
+        if display:
+            alias = f"{ref.entity_type}:{display}"
+            result.setdefault(alias, identity)
+    return result
 
 
 def _select_upstream_refs_for_pass(
@@ -7653,6 +7693,7 @@ def _assert_stage_run_pass_output_consistency(db, run_id) -> None:
 
 def _rehydrate_pass_result(
     row: "PipelinePassOutput", manifest, ontology, document_id: str,
+    db=None,
 ):
     """Rebuild a PassResult from a persisted pipeline_pass_outputs row.
 
@@ -7660,6 +7701,20 @@ def _rehydrate_pass_result(
     rehydrated PassResult is structurally identical to one built in-process.
     Then attaches pre_merge_walk via _build_pre_merge_walk_summary so
     classify_yield and merge_and_resolve work as if the pass had just run.
+
+    For ``document_plus_entity_refs`` passes (system_links et al.),
+    ``upstream_refs`` MUST be rehydrated so merge_and_resolve can resolve
+    ``from_ref_id`` / ``to_ref_id`` against ``PassResult.upstream_refs``.
+    Without this, every cross-pass relationship rejects with UNKNOWN_REF_ID
+    (bug #59 — silently dropped every system_links commit from at least
+    2026-05-23 onward). When ``db`` is provided, this function calls
+    ``_rehydrate_upstream_refs_from_persisted_passes`` + the same
+    ``_build_upstream_refs_for_pass_result`` helper that
+    ``_execute_pass_attempt`` uses, producing identical upstream_refs on
+    both the live-request and rehydrate paths.
+
+    Pass ``db=None`` when the caller knows the pass is document_only or
+    when wiring is being tested without a live session.
 
     If _parse_pass_response raises PassTerminal (corrupt persisted JSON), let
     it propagate — the merge task's outer except handler catches it before
@@ -7670,12 +7725,17 @@ def _rehydrate_pass_result(
     pass_result.pre_merge_walk = _build_pre_merge_walk_summary(
         pass_result, pass_def, ontology, document_id,
     )
-    # Note: for document_plus_entity_refs passes, upstream_refs is intentionally
-    # not re-attached here — merge_and_resolve does not require it (it resolves
-    # refs by identity_dict / ref_id lookup against pass_result entities). If a
-    # future merge path needs upstream_refs to be present on rehydrated PassResults,
-    # rehydrate them via _select_upstream_refs_for_pass + logical_identity_from_dict
-    # the same way _execute_pass_attempt does.
+    if (
+        db is not None
+        and getattr(pass_def, "input_mode", None) == "document_plus_entity_refs"
+    ):
+        upstream_refs_raw = _rehydrate_upstream_refs_from_persisted_passes(
+            db, str(row.pipeline_run_id), pass_def, manifest, ontology, document_id,
+        )
+        selected = _select_upstream_refs_for_pass(pass_def, upstream_refs_raw, ontology)
+        pass_result.upstream_refs = _build_upstream_refs_for_pass_result(
+            pass_def, selected, ontology, document_id,
+        )
     return pass_result
 
 
@@ -7727,7 +7787,9 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
 
         completed_outputs = load_completed_pass_outputs(db, run_id)
         rehydrated = {
-            row.pass_name: _rehydrate_pass_result(row, manifest, ontology, document_id)
+            row.pass_name: _rehydrate_pass_result(
+                row, manifest, ontology, document_id, db=db,
+            )
             for row in completed_outputs.values()
         }
 

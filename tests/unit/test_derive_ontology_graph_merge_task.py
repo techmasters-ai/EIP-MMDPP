@@ -398,6 +398,257 @@ class TestRehydratePassResult:
 
 
 # ---------------------------------------------------------------------------
+# Bug #59 — system_links relationships never commit to ArcadeDB
+# ---------------------------------------------------------------------------
+# Root cause: _rehydrate_pass_result skipped upstream_refs for
+# document_plus_entity_refs passes, so merge_and_resolve saw
+# pass_result.upstream_refs={} and rejected every from_ref_id/to_ref_id with
+# UNKNOWN_REF_ID. Secondary issue: LLM sometimes emits "TYPE:display_label"
+# format (from schema examples) instead of "E001" format (from prompt REF=
+# anchors). Both must resolve.
+# ---------------------------------------------------------------------------
+
+
+class TestBuildUpstreamRefsForPassResult:
+    """Helper that converts the SimpleNamespace upstream_refs dict into the
+    LogicalIdentity dict attached to PassResult.upstream_refs.
+
+    Must produce BOTH key formats so the merge resolver finds refs whether
+    the LLM emitted the prompt's REF= anchor (E001) or the schema example's
+    typed-label (RADAR_SYSTEM:Fan Song).
+    """
+
+    @staticmethod
+    def _ref(pass_origin, entity_type, identity_values, display_label, aliases=()):
+        return SimpleNamespace(
+            pass_origin=pass_origin,
+            entity_type=entity_type,
+            identity_values=identity_values,
+            display_label=display_label,
+            aliases=list(aliases),
+            properties=None,
+        )
+
+    def test_emits_both_e_format_and_typed_label_keys(self):
+        from app.workers.pipeline import _build_upstream_refs_for_pass_result
+
+        selected_refs = {
+            "E001": self._ref(
+                "radar_identity", "RADAR_SYSTEM",
+                {"system_name": "Fan Song"}, "Fan Song",
+            ),
+            "E002": self._ref(
+                "missile_identity", "MISSILE_SYSTEM",
+                {"system_name": "SA-2"}, "SA-2 Guideline",
+            ),
+        }
+        ontology = {
+            "entity_types": [
+                {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
+                {"name": "MISSILE_SYSTEM", "identity_fields": ["system_name"]},
+            ],
+        }
+        pass_def = _fake_pass_def(
+            name="system_links", input_mode="document_plus_entity_refs",
+        )
+
+        result = _build_upstream_refs_for_pass_result(
+            pass_def, selected_refs, ontology, document_id="doc-1",
+        )
+
+        assert "E001" in result, "E-format key missing"
+        assert "E002" in result, "E-format key missing"
+        assert "RADAR_SYSTEM:Fan Song" in result, "typed-label alias missing"
+        assert "MISSILE_SYSTEM:SA-2 Guideline" in result, "typed-label alias missing"
+        # Same identity object behind both key formats.
+        assert result["E001"] is result["RADAR_SYSTEM:Fan Song"]
+        assert result["E002"] is result["MISSILE_SYSTEM:SA-2 Guideline"]
+
+    def test_skips_alias_when_display_label_missing(self):
+        from app.workers.pipeline import _build_upstream_refs_for_pass_result
+
+        selected_refs = {
+            "E001": self._ref(
+                "radar_identity", "RADAR_SYSTEM",
+                {"system_name": "Fan Song"}, None,  # no display_label
+            ),
+        }
+        ontology = {
+            "entity_types": [
+                {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
+            ],
+        }
+        pass_def = _fake_pass_def(
+            name="system_links", input_mode="document_plus_entity_refs",
+        )
+
+        result = _build_upstream_refs_for_pass_result(
+            pass_def, selected_refs, ontology, document_id="doc-1",
+        )
+
+        assert "E001" in result
+        # No alias key when display_label is missing
+        assert len(result) == 1
+
+    def test_alias_collision_keeps_first(self):
+        """Two refs with the same TYPE:display_label collide on the alias.
+        The first allocated wins (setdefault semantics) — preserves the
+        E-format key's identity as primary."""
+        from app.workers.pipeline import _build_upstream_refs_for_pass_result
+
+        selected_refs = {
+            "E001": self._ref(
+                "radar_identity", "RADAR_SYSTEM",
+                {"system_name": "Fan Song A"}, "Fan Song",
+            ),
+            "E002": self._ref(
+                "radar_power_rf", "RADAR_SYSTEM",
+                {"system_name": "Fan Song B"}, "Fan Song",  # same display
+            ),
+        }
+        ontology = {
+            "entity_types": [
+                {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
+            ],
+        }
+        pass_def = _fake_pass_def(
+            name="system_links", input_mode="document_plus_entity_refs",
+        )
+
+        result = _build_upstream_refs_for_pass_result(
+            pass_def, selected_refs, ontology, document_id="doc-1",
+        )
+
+        assert "E001" in result and "E002" in result
+        # Alias points to first-allocated (E001)
+        assert result["RADAR_SYSTEM:Fan Song"] is result["E001"]
+        assert result["RADAR_SYSTEM:Fan Song"] is not result["E002"]
+
+
+class TestRehydratePassResultUpstreamRefs:
+    """_rehydrate_pass_result must populate pass_result.upstream_refs for
+    document_plus_entity_refs passes so the merge resolver can resolve
+    from_ref_id / to_ref_id. Otherwise every system_links-style relationship
+    silently rejects with UNKNOWN_REF_ID (bug #59)."""
+
+    @staticmethod
+    def _ref(pass_origin, entity_type, identity_values, display_label):
+        return SimpleNamespace(
+            pass_origin=pass_origin,
+            entity_type=entity_type,
+            identity_values=identity_values,
+            display_label=display_label,
+            aliases=[],
+            properties=None,
+        )
+
+    def test_document_plus_entity_refs_pass_gets_upstream_refs_rehydrated(self):
+        """For input_mode=document_plus_entity_refs, _rehydrate_pass_result
+        rebuilds upstream_refs by calling _rehydrate_upstream_refs_from_persisted_passes
+        and converting to LogicalIdentity dict (with TYPE:label aliases)."""
+        # Fake row + fake pass_result (the in-memory output of _parse_pass_response)
+        fake_row = SimpleNamespace(
+            pass_name="system_links",
+            pipeline_run_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            extract_pass_response_json={"pass_output": {"relationships": []}},
+        )
+        fake_pass_result = SimpleNamespace(
+            template_instance=SimpleNamespace(relationships=[]),
+            upstream_refs=None,  # ← bug surface: rehydration must set this
+        )
+        pass_def = _fake_pass_def(
+            name="system_links",
+            input_mode="document_plus_entity_refs",
+            depends_on=["radar_identity", "missile_identity"],
+        )
+        manifest = _fake_manifest(passes=[pass_def])
+        ontology = {
+            "entity_types": [
+                {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
+                {"name": "MISSILE_SYSTEM", "identity_fields": ["system_name"]},
+            ],
+        }
+
+        # Stub: _rehydrate_upstream_refs_from_persisted_passes returns refs
+        # that would have come from radar_identity + missile_identity.
+        fake_upstream = {
+            "E001": self._ref("radar_identity", "RADAR_SYSTEM",
+                              {"system_name": "Fan Song"}, "Fan Song"),
+            "E002": self._ref("missile_identity", "MISSILE_SYSTEM",
+                              {"system_name": "SA-2"}, "SA-2 Guideline"),
+        }
+
+        with patch(
+            "app.workers.pipeline._parse_pass_response",
+            return_value=fake_pass_result,
+        ), patch(
+            "app.workers.pipeline._build_pre_merge_walk_summary",
+            return_value=SimpleNamespace(entities=[], raw_edge_count=0),
+        ), patch(
+            "app.workers.pipeline._rehydrate_upstream_refs_from_persisted_passes",
+            return_value=fake_upstream,
+        ), patch(
+            "app.workers.pipeline._select_upstream_refs_for_pass",
+            return_value=fake_upstream,  # pass through both refs
+        ):
+            fake_db = MagicMock()
+            pass_result = _rehydrate_pass_result(
+                fake_row, manifest, ontology=ontology,
+                document_id="doc-1", db=fake_db,
+            )
+
+        # The bug: pass_result.upstream_refs stayed None.
+        # The fix: must be a populated dict with both key formats.
+        assert pass_result.upstream_refs is not None, (
+            "BUG #59: rehydration left upstream_refs=None — merge resolver "
+            "will reject every from_ref_id/to_ref_id as UNKNOWN_REF_ID"
+        )
+        assert "E001" in pass_result.upstream_refs
+        assert "E002" in pass_result.upstream_refs
+        # Fix B: typed-label aliases for LLM-format-drift tolerance
+        assert "RADAR_SYSTEM:Fan Song" in pass_result.upstream_refs
+        assert "MISSILE_SYSTEM:SA-2 Guideline" in pass_result.upstream_refs
+
+    def test_document_only_pass_does_not_touch_upstream_refs(self):
+        """For input_mode=document_only (e.g., radar_identity), rehydration
+        must NOT attempt to populate upstream_refs — those passes don't
+        consume them and rehydration would be wasted work."""
+        fake_row = SimpleNamespace(
+            pass_name="radar_identity",
+            pipeline_run_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            extract_pass_response_json={"pass_output": {}},
+        )
+        fake_pass_result = SimpleNamespace(
+            template_instance=SimpleNamespace(),
+            upstream_refs=None,
+        )
+        pass_def = _fake_pass_def(
+            name="radar_identity", input_mode="document_only", depends_on=[],
+        )
+        manifest = _fake_manifest(passes=[pass_def])
+
+        with patch(
+            "app.workers.pipeline._parse_pass_response",
+            return_value=fake_pass_result,
+        ), patch(
+            "app.workers.pipeline._build_pre_merge_walk_summary",
+            return_value=SimpleNamespace(entities=[], raw_edge_count=0),
+        ), patch(
+            "app.workers.pipeline._rehydrate_upstream_refs_from_persisted_passes",
+        ) as mock_rehydrate:
+            fake_db = MagicMock()
+            pass_result = _rehydrate_pass_result(
+                fake_row, manifest, ontology={}, document_id="doc-1", db=fake_db,
+            )
+
+        # document_only passes don't need upstream_refs rehydration — skip
+        # the DB hit entirely.
+        mock_rehydrate.assert_not_called()
+        # upstream_refs stays as None (the rehydrate code path didn't fire).
+        assert pass_result.upstream_refs is None
+
+
+# ---------------------------------------------------------------------------
 # Cancel / skip
 # ---------------------------------------------------------------------------
 
