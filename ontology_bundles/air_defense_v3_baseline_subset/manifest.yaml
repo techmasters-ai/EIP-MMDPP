@@ -35,9 +35,9 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.35
-      top_n_candidates: 50
-      top_k: 30
+      min_similarity: 0.25
+      top_n_candidates: 500
+      top_k: 500
       fallback_to_full: true
 
   - name: missile_identity
@@ -64,9 +64,9 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.35
-      top_n_candidates: 50
-      top_k: 30
+      min_similarity: 0.25
+      top_n_candidates: 500
+      top_k: 500
       fallback_to_full: true
 
   - name: system_links

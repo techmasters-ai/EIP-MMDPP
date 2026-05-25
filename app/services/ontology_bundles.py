@@ -93,13 +93,13 @@ class RetrievalProfile(BaseModel):
     top_n_candidates: int = Field(
         default=50,
         gt=0,
-        le=500,
+        le=2000,
         description="Number of candidates retrieved pre-rerank.",
     )
     top_k: int = Field(
         default=20,
         gt=0,
-        le=200,
+        le=2000,
         description="Final ChunkScope size post-rerank.",
     )
     fallback_to_full: bool = Field(
