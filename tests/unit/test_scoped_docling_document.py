@@ -777,8 +777,145 @@ def test_scoped_doc_with_group_parented_text_validates_as_docling_document():
     DoclingDocument(**result)
 
 
-def test_scoped_doc_rewrites_retained_element_parent_to_body():
-    """Retained text/table/picture elements must have parent rewritten to #/body."""
+def test_scoped_doc_rewrites_retained_non_list_item_parent_to_body():
+    """Retained NON-list_item elements with a group parent must have parent rewritten to #/body.
+
+    Note: list_items are handled differently (see test_scoped_doc_keeps_list_group_parent_for_list_item)
+    because docling-core's ``validate_misplaced_list_items`` runs on construction and re-groups
+    any ListItem whose parent isn't a ListGroup — the re-grouping delete+re-add cycle produces
+    duplicate self_refs in texts[] when items unreachable from body.children aren't reindexed.
+    For non-list_item labels (paragraph, text, code, ...), no such validator exists, so reparent
+    to #/body remains the simple/correct behavior.
+    """
+    doc = _docling_doc_envelope(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "paragraph",
+                "prov": [],
+                "orig": "X",
+                "text": "X",
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/texts/0"}],
+                "content_layer": "body",
+                "name": "wrapper",
+                "label": "unspecified",
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+    )
+
+    result = apply_chunk_scope(doc, {"mode": "selected_refs", "self_refs": ["#/texts/0"]})
+
+    parent = result["texts"][0].get("parent")
+    assert isinstance(parent, dict)
+    parent_ref = parent.get("cref") or parent.get("$ref") or parent.get("$cref")
+    assert parent_ref == "#/body", (
+        f"Retained non-list_item element's parent must be rewritten to #/body; got {parent_ref!r}"
+    )
+    # And the original doc must not be mutated.
+    original_parent_ref = doc["texts"][0]["parent"].get("cref")
+    assert original_parent_ref == "#/groups/0", (
+        "Input doc_json must not be mutated by apply_chunk_scope"
+    )
+
+
+def test_scoped_doc_clears_reparented_non_list_item_refs_from_group_children():
+    """Groups must not claim a non-list_item text whose parent was rewritten to #/body."""
+    doc = _docling_doc_envelope(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "paragraph",
+                "prov": [],
+                "orig": "X",
+                "text": "X",
+            },
+            {
+                "self_ref": "#/texts/1",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "paragraph",
+                "prov": [],
+                "orig": "Y",
+                "text": "Y",
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/texts/0"}, {"cref": "#/texts/1"}],
+                "content_layer": "body",
+                "name": "wrapper",
+                "label": "unspecified",
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+    )
+
+    result = apply_chunk_scope(doc, {"mode": "selected_refs", "self_refs": ["#/texts/0"]})
+
+    grp_children = result["groups"][0].get("children") or []
+    crefs = [c.get("cref") or c.get("$ref") or c.get("$cref") for c in grp_children]
+    assert "#/texts/0" not in crefs, (
+        "Reparented text must be removed from its former group's children"
+    )
+    # Unselected sibling stays in the group's children list (group still owns it).
+    assert "#/texts/1" in crefs, "Unselected sibling must remain in group.children"
+    # Original input untouched.
+    assert {c.get("cref") for c in doc["groups"][0]["children"]} == {"#/texts/0", "#/texts/1"}
+
+
+# ---------------------------------------------------------------------------
+# C.7r — Duplicate ref bug: ListItems reparented to #/body trigger docling's
+# ``validate_misplaced_list_items`` model-validator, whose delete+re-add cycle
+# produces DUPLICATE self_refs in texts[] when items unreachable from
+# body.children (e.g. picture-children texts) aren't covered by the
+# breadth-first reindex.
+#
+# Fix: for retained list_items whose original parent was a ListGroup
+# (group.label in {"list", "ordered_list"}), KEEP the group parent and
+# include the group in body.children with the retained list_item in its
+# children. Non-list_items in the same group still reparent to #/body.
+# ---------------------------------------------------------------------------
+
+
+def test_scoped_doc_keeps_list_group_parent_for_list_item():
+    """A retained list_item with a ListGroup parent must keep that parent.
+
+    Rationale: docling-core's ``validate_misplaced_list_items`` model_validator
+    fires when a ListItem's parent isn't a ListGroup. Its delete+re-add cycle
+    mis-indexes texts that are unreachable from body.children, producing
+    duplicate self_refs that fail ``_validate_unique_refs`` later when the
+    HybridChunker wraps the doc in ``ChunkingDocSerializer``.
+    """
     doc = _docling_doc_envelope(
         texts=[
             {
@@ -788,8 +925,10 @@ def test_scoped_doc_rewrites_retained_element_parent_to_body():
                 "content_layer": "body",
                 "label": "list_item",
                 "prov": [],
-                "orig": "X",
-                "text": "X",
+                "orig": "Item A",
+                "text": "Item A",
+                "enumerated": False,
+                "marker": "-",
             },
         ],
         groups=[
@@ -817,18 +956,141 @@ def test_scoped_doc_rewrites_retained_element_parent_to_body():
     parent = result["texts"][0].get("parent")
     assert isinstance(parent, dict)
     parent_ref = parent.get("cref") or parent.get("$ref") or parent.get("$cref")
-    assert parent_ref == "#/body", (
-        f"Retained element's parent must be rewritten to #/body; got {parent_ref!r}"
+    assert parent_ref == "#/groups/0", (
+        f"Retained list_item must keep its ListGroup parent; got {parent_ref!r}"
     )
-    # And the original doc must not be mutated.
-    original_parent_ref = doc["texts"][0]["parent"].get("cref")
-    assert original_parent_ref == "#/groups/0", (
-        "Input doc_json must not be mutated by apply_chunk_scope"
+
+    # Group stays in body.children (and the list_item does NOT appear directly there).
+    body_refs = [
+        c.get("cref") or c.get("$ref") or c.get("$cref")
+        for c in result["body"]["children"]
+    ]
+    assert "#/groups/0" in body_refs, (
+        "Retained ListGroup must appear in body.children when it owns a retained list_item"
+    )
+    assert "#/texts/0" not in body_refs, (
+        "Retained list_item must NOT appear directly in body.children — its group represents it"
+    )
+
+    # Group's children still includes the retained list_item.
+    grp_children = result["groups"][0].get("children") or []
+    crefs = [c.get("cref") or c.get("$ref") or c.get("$cref") for c in grp_children]
+    assert "#/texts/0" in crefs, (
+        "Retained list_item must remain in its ListGroup's children"
     )
 
 
-def test_scoped_doc_clears_reparented_refs_from_group_children():
-    """Groups must not claim a text whose parent was rewritten to #/body."""
+def test_scoped_doc_with_list_item_in_list_group_validates_after_chunker_wrap():
+    """End-to-end repro of the C.7r ``Duplicate ref`` bug.
+
+    BEFORE the fix:
+      - apply_chunk_scope reparents the list_item to #/body.
+      - DoclingDocument(**result) constructs OK (initial _validate_unique_refs passes).
+      - validate_misplaced_list_items runs on construction, creates a new ListGroup,
+        deletes the misplaced list_items, and re-adds new ones. The breadth-first
+        reindex only updates self_refs of items REACHABLE from body.children;
+        picture-children texts (parent=#/pictures/N, not in body.children) keep
+        their old self_refs.
+      - When ChunkingDocSerializer(doc=dl_doc) wraps the instance,
+        _validate_unique_refs re-fires and detects the duplicate.
+
+    AFTER the fix:
+      - List_items keep their ListGroup parent, validate_misplaced_list_items
+        finds no misplaced items, no delete/re-add cycle runs, no duplicates.
+    """
+    from docling_core.types.doc import DoclingDocument
+    from docling_core.transforms.chunker.hierarchical_chunker import ChunkingDocSerializer
+
+    # 5 consecutive list_items in one ListGroup; selected via chunk_scope.
+    # Plus a separate text element with parent=#/pictures/0 to mimic the
+    # picture-children-reindex gap that surfaces the bug in the SA-2 doc.
+    texts = []
+    for i in range(5):
+        texts.append({
+            "self_ref": f"#/texts/{i}",
+            "parent": {"cref": "#/groups/0"},
+            "children": [],
+            "content_layer": "body",
+            "label": "list_item",
+            "prov": [],
+            "orig": f"Item {i}",
+            "text": f"Item {i}",
+            "enumerated": False,
+            "marker": "-",
+        })
+    # Picture-child text — parent is the picture, NOT in body.children directly.
+    # Index 5 picks any number > N-1 so it shifts when items 0-4 are "deleted".
+    texts.append({
+        "self_ref": "#/texts/5",
+        "parent": {"cref": "#/pictures/0"},
+        "children": [],
+        "content_layer": "body",
+        "label": "text",
+        "prov": [],
+        "orig": "caption",
+        "text": "caption",
+    })
+
+    doc = _docling_doc_envelope(
+        texts=texts,
+        pictures=[
+            {
+                "self_ref": "#/pictures/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/texts/5"}],
+                "captions": [{"cref": "#/texts/5"}],
+                "content_layer": "body",
+                "label": "picture",
+                "prov": [],
+                "footnotes": [],
+                "image": None,
+                "annotations": [],
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": f"#/texts/{i}"} for i in range(5)],
+                "content_layer": "body",
+                "name": "list-0",
+                "label": "list",
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}, {"cref": "#/pictures/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
+    )
+
+    # Sanity: the full unscoped doc itself must validate first.
+    DoclingDocument(**doc)
+
+    # Scope: select all list_items (the bug surfaces with multiple consecutive
+    # misplaced list_items + an unreachable picture-child text).
+    chunk_scope = {"mode": "selected_refs", "self_refs": [f"#/texts/{i}" for i in range(5)]}
+
+    result = apply_chunk_scope(doc, chunk_scope)
+
+    # Construct DoclingDocument — both _validate_unique_refs AND
+    # validate_misplaced_list_items run here.
+    dl_doc = DoclingDocument(**result)
+
+    # Wrap in ChunkingDocSerializer — _validate_unique_refs re-fires on the
+    # mutated instance. THIS is the assertion that protects against the bug.
+    ChunkingDocSerializer(doc=dl_doc)
+
+
+def test_scoped_doc_non_list_item_in_list_group_still_reparents_to_body():
+    """A retained NON-list_item child of a ListGroup must still reparent to #/body.
+
+    Only list_items get the special-case treatment (because they trigger
+    validate_misplaced_list_items). Other labels reparent as before.
+    """
     doc = _docling_doc_envelope(
         texts=[
             {
@@ -838,18 +1100,20 @@ def test_scoped_doc_clears_reparented_refs_from_group_children():
                 "content_layer": "body",
                 "label": "list_item",
                 "prov": [],
-                "orig": "X",
-                "text": "X",
+                "orig": "Item A",
+                "text": "Item A",
+                "enumerated": False,
+                "marker": "-",
             },
             {
                 "self_ref": "#/texts/1",
                 "parent": {"cref": "#/groups/0"},
                 "children": [],
                 "content_layer": "body",
-                "label": "list_item",
+                "label": "paragraph",
                 "prov": [],
-                "orig": "Y",
-                "text": "Y",
+                "orig": "Paragraph in same group",
+                "text": "Paragraph in same group",
             },
         ],
         groups=[
@@ -872,14 +1136,73 @@ def test_scoped_doc_clears_reparented_refs_from_group_children():
         },
     )
 
-    result = apply_chunk_scope(doc, {"mode": "selected_refs", "self_refs": ["#/texts/0"]})
+    result = apply_chunk_scope(
+        doc, {"mode": "selected_refs", "self_refs": ["#/texts/0", "#/texts/1"]}
+    )
 
+    # The list_item keeps its group parent.
+    p0 = result["texts"][0]["parent"]
+    p0_ref = p0.get("cref") or p0.get("$ref") or p0.get("$cref")
+    assert p0_ref == "#/groups/0", f"list_item parent must stay as group; got {p0_ref!r}"
+
+    # The paragraph reparents to #/body.
+    p1 = result["texts"][1]["parent"]
+    p1_ref = p1.get("cref") or p1.get("$ref") or p1.get("$cref")
+    assert p1_ref == "#/body", f"paragraph parent must rewrite to #/body; got {p1_ref!r}"
+
+    # Group's children: list_item stays (its parent is still group); paragraph removed.
     grp_children = result["groups"][0].get("children") or []
     crefs = [c.get("cref") or c.get("$ref") or c.get("$cref") for c in grp_children]
-    assert "#/texts/0" not in crefs, (
-        "Reparented text must be removed from its former group's children"
+    assert "#/texts/0" in crefs, "list_item still in group's children"
+    assert "#/texts/1" not in crefs, "paragraph was reparented; must drop from group's children"
+
+
+def test_scoped_doc_list_item_not_in_list_group_still_reparents_to_body():
+    """A list_item whose original parent is NOT a ListGroup gets reparented as before.
+
+    The misplaced-list-items rescue logic only triggers for items whose parent
+    isn't a ListGroup, so this case never had the duplicate-ref problem and the
+    behavior should match the non-list_item path.
+    """
+    doc = _docling_doc_envelope(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "parent": {"cref": "#/groups/0"},
+                "children": [],
+                "content_layer": "body",
+                "label": "list_item",
+                "prov": [],
+                "orig": "X",
+                "text": "X",
+                "enumerated": False,
+                "marker": "-",
+            },
+        ],
+        groups=[
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"cref": "#/body"},
+                "children": [{"cref": "#/texts/0"}],
+                "content_layer": "body",
+                "name": "wrapper",
+                "label": "unspecified",  # NOT a ListGroup
+            },
+        ],
+        body={
+            "self_ref": "#/body",
+            "parent": None,
+            "children": [{"cref": "#/groups/0"}],
+            "content_layer": "body",
+            "name": "_root_",
+            "label": "unspecified",
+        },
     )
-    # Unselected sibling stays in the group's children list (group still owns it).
-    assert "#/texts/1" in crefs, "Unselected sibling must remain in group.children"
-    # Original input untouched.
-    assert {c.get("cref") for c in doc["groups"][0]["children"]} == {"#/texts/0", "#/texts/1"}
+
+    result = apply_chunk_scope(doc, {"mode": "selected_refs", "self_refs": ["#/texts/0"]})
+
+    p = result["texts"][0]["parent"]
+    p_ref = p.get("cref") or p.get("$ref") or p.get("$cref")
+    assert p_ref == "#/body", (
+        f"list_item with non-ListGroup parent must still reparent to #/body; got {p_ref!r}"
+    )
