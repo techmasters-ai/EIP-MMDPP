@@ -29,7 +29,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -46,7 +46,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -63,7 +63,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -80,7 +80,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -109,7 +109,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -126,7 +126,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -143,7 +143,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -160,7 +160,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
@@ -177,7 +177,7 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.45
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 20
       fallback_to_full: true
