@@ -413,9 +413,10 @@ class TestBuildUpstreamRefsForPassResult:
     """Helper that converts the SimpleNamespace upstream_refs dict into the
     LogicalIdentity dict attached to PassResult.upstream_refs.
 
-    Must produce BOTH key formats so the merge resolver finds refs whether
-    the LLM emitted the prompt's REF= anchor (E001) or the schema example's
-    typed-label (RADAR_SYSTEM:Fan Song).
+    Output is keyed by the original ref_id (E001 etc.). Cross-pass
+    canonicalization that rewrites identities during merge is handled by
+    the identity_aliases mechanism in extraction_merge.merge_and_resolve
+    (not by adding alias keys here).
     """
 
     @staticmethod
@@ -429,7 +430,7 @@ class TestBuildUpstreamRefsForPassResult:
             properties=None,
         )
 
-    def test_emits_both_e_format_and_typed_label_keys(self):
+    def test_emits_e_format_keys_only(self):
         from app.workers.pipeline import _build_upstream_refs_for_pass_result
 
         selected_refs = {
@@ -456,21 +457,21 @@ class TestBuildUpstreamRefsForPassResult:
             pass_def, selected_refs, ontology, document_id="doc-1",
         )
 
-        assert "E001" in result, "E-format key missing"
-        assert "E002" in result, "E-format key missing"
-        assert "RADAR_SYSTEM:Fan Song" in result, "typed-label alias missing"
-        assert "MISSILE_SYSTEM:SA-2 Guideline" in result, "typed-label alias missing"
-        # Same identity object behind both key formats.
-        assert result["E001"] is result["RADAR_SYSTEM:Fan Song"]
-        assert result["E002"] is result["MISSILE_SYSTEM:SA-2 Guideline"]
+        assert set(result.keys()) == {"E001", "E002"}
 
-    def test_skips_alias_when_display_label_missing(self):
+    def test_skips_refs_with_unresolvable_identity(self):
+        """logical_identity_from_dict can return None for invalid identities;
+        those refs should be excluded from the output dict."""
         from app.workers.pipeline import _build_upstream_refs_for_pass_result
 
         selected_refs = {
             "E001": self._ref(
                 "radar_identity", "RADAR_SYSTEM",
-                {"system_name": "Fan Song"}, None,  # no display_label
+                {"system_name": "Fan Song"}, "Fan Song",
+            ),
+            "E002": self._ref(
+                "radar_identity", "UNKNOWN_TYPE",  # not in ontology
+                {"name": "x"}, "x",
             ),
         }
         ontology = {
@@ -487,42 +488,7 @@ class TestBuildUpstreamRefsForPassResult:
         )
 
         assert "E001" in result
-        # No alias key when display_label is missing
-        assert len(result) == 1
-
-    def test_alias_collision_keeps_first(self):
-        """Two refs with the same TYPE:display_label collide on the alias.
-        The first allocated wins (setdefault semantics) — preserves the
-        E-format key's identity as primary."""
-        from app.workers.pipeline import _build_upstream_refs_for_pass_result
-
-        selected_refs = {
-            "E001": self._ref(
-                "radar_identity", "RADAR_SYSTEM",
-                {"system_name": "Fan Song A"}, "Fan Song",
-            ),
-            "E002": self._ref(
-                "radar_power_rf", "RADAR_SYSTEM",
-                {"system_name": "Fan Song B"}, "Fan Song",  # same display
-            ),
-        }
-        ontology = {
-            "entity_types": [
-                {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"]},
-            ],
-        }
-        pass_def = _fake_pass_def(
-            name="system_links", input_mode="document_plus_entity_refs",
-        )
-
-        result = _build_upstream_refs_for_pass_result(
-            pass_def, selected_refs, ontology, document_id="doc-1",
-        )
-
-        assert "E001" in result and "E002" in result
-        # Alias points to first-allocated (E001)
-        assert result["RADAR_SYSTEM:Fan Song"] is result["E001"]
-        assert result["RADAR_SYSTEM:Fan Song"] is not result["E002"]
+        assert "E002" not in result
 
 
 class TestRehydratePassResultUpstreamRefs:
@@ -603,11 +569,7 @@ class TestRehydratePassResultUpstreamRefs:
             "BUG #59: rehydration left upstream_refs=None — merge resolver "
             "will reject every from_ref_id/to_ref_id as UNKNOWN_REF_ID"
         )
-        assert "E001" in pass_result.upstream_refs
-        assert "E002" in pass_result.upstream_refs
-        # Fix B: typed-label aliases for LLM-format-drift tolerance
-        assert "RADAR_SYSTEM:Fan Song" in pass_result.upstream_refs
-        assert "MISSILE_SYSTEM:SA-2 Guideline" in pass_result.upstream_refs
+        assert set(pass_result.upstream_refs.keys()) == {"E001", "E002"}
 
     def test_document_only_pass_does_not_touch_upstream_refs(self):
         """For input_mode=document_only (e.g., radar_identity), rehydration

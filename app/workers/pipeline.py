@@ -4168,24 +4168,11 @@ def _build_upstream_refs_for_pass_result(
 ) -> dict:
     """Build the LogicalIdentity dict for ``PassResult.upstream_refs``.
 
-    Output keys cover BOTH formats so the merge resolver
-    (``extraction_merge._resolve_relationship``) succeeds regardless of
-    which the LLM emitted:
-    - The original ``ref_id`` (e.g. ``E001``) — matches what the prompt's
-      ``REF=E001`` anchors told the LLM.
-    - A ``"<entity_type>:<display_label>"`` alias (e.g.
-      ``"RADAR_SYSTEM:Fan Song"``) — matches the schema's example format.
-      Set via ``setdefault`` so the first ref for a given alias wins on
-      collision; the E-format key remains the primary identity for that
-      ref.
-
-    Both keys point at the SAME LogicalIdentity object — there's only one
-    identity per upstream entity; the alias is purely a lookup convenience.
-
-    Without the alias keys, LLM format drift between documents (one batch
-    emits ``E001``, the next emits ``RADAR_SYSTEM:Fan Song``) causes the
-    schema-format batches to reject with UNKNOWN_REF_ID even though the
-    referenced entity is in the catalog (bug #59 secondary failure mode).
+    Keyed by the original ``ref_id`` (e.g. ``E001``) — matches what the
+    prompt's ``REF=E001`` anchors told the LLM. The merge resolver then
+    translates these pre-merge identities to their post-canonicalization
+    identities via the ``identity_aliases`` map built in
+    ``merge_and_resolve`` (handles cross-pass identity rewriting cleanly).
 
     Used by both ``_execute_pass_attempt`` (live request path) and
     ``_rehydrate_pass_result`` (merge-time rehydrate path) so both produce
@@ -4201,13 +4188,8 @@ def _build_upstream_refs_for_pass_result(
             ontology,
             document_id,
         )
-        if identity is None:
-            continue
-        result[ref_id] = identity
-        display = getattr(ref, "display_label", None)
-        if display:
-            alias = f"{ref.entity_type}:{display}"
-            result.setdefault(alias, identity)
+        if identity is not None:
+            result[ref_id] = identity
     return result
 
 
@@ -7693,7 +7675,9 @@ def _assert_stage_run_pass_output_consistency(db, run_id) -> None:
 
 def _rehydrate_pass_result(
     row: "PipelinePassOutput", manifest, ontology, document_id: str,
+    *,
     db=None,
+    run_id: str | None = None,
 ):
     """Rebuild a PassResult from a persisted pipeline_pass_outputs row.
 
@@ -7729,8 +7713,9 @@ def _rehydrate_pass_result(
         db is not None
         and getattr(pass_def, "input_mode", None) == "document_plus_entity_refs"
     ):
+        effective_run_id = run_id or str(row.pipeline_run_id)
         upstream_refs_raw = _rehydrate_upstream_refs_from_persisted_passes(
-            db, str(row.pipeline_run_id), pass_def, manifest, ontology, document_id,
+            db, effective_run_id, pass_def, manifest, ontology, document_id,
         )
         selected = _select_upstream_refs_for_pass(pass_def, upstream_refs_raw, ontology)
         pass_result.upstream_refs = _build_upstream_refs_for_pass_result(
@@ -7788,7 +7773,7 @@ def derive_ontology_graph_merge(self, document_id: str, run_id: str) -> dict:
         completed_outputs = load_completed_pass_outputs(db, run_id)
         rehydrated = {
             row.pass_name: _rehydrate_pass_result(
-                row, manifest, ontology, document_id, db=db,
+                row, manifest, ontology, document_id, db=db, run_id=run_id,
             )
             for row in completed_outputs.values()
         }

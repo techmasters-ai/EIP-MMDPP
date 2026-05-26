@@ -603,23 +603,16 @@ class TestPassResultUpstreamRefsAttachment:
 
         # Both refs attached as LogicalIdentity (both pass the shared
         # validity rule AND are valid endpoints for ASSOCIATED_WITH).
-        # Bug #59 fix: each ref produces TWO keys — the original ref_id
-        # (E001) and a "<entity_type>:<display_label>" alias for LLM
-        # format-drift tolerance. Same LogicalIdentity behind both keys.
+        # Bug #59 fix: keyed by ref_id only; cross-pass canonicalization
+        # is handled by identity_aliases inside merge_and_resolve.
         assert result.upstream_refs is not None
-        assert set(result.upstream_refs.keys()) == {
-            "E001", "E002",
-            "RADAR_SYSTEM:Fan Song", "MISSILE_SYSTEM:SA-2",
-        }
+        assert set(result.upstream_refs.keys()) == {"E001", "E002"}
         assert all(
             isinstance(v, LogicalIdentity)
             for v in result.upstream_refs.values()
         )
         assert result.upstream_refs["E001"].entity_type == "RADAR_SYSTEM"
         assert result.upstream_refs["E002"].entity_type == "MISSILE_SYSTEM"
-        # Alias keys point at the SAME LogicalIdentity as the E-format key.
-        assert result.upstream_refs["RADAR_SYSTEM:Fan Song"] is result.upstream_refs["E001"]
-        assert result.upstream_refs["MISSILE_SYSTEM:SA-2"] is result.upstream_refs["E002"]
 
     def test_document_only_pass_does_not_attach_upstream_refs(self):
         """radar_domain is document_only — pass_result.upstream_refs must

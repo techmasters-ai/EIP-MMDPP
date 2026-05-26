@@ -821,3 +821,94 @@ def test_build_extract_pass_request_omits_aliases_when_empty_or_missing():
     )
     for entry in body["upstream_entities"]:
         assert "aliases" not in entry
+
+
+def test_rehydrate_pass_result_attaches_upstream_refs_for_system_links():
+    """Persisted system_links output must regain upstream_refs at merge time."""
+    from unittest.mock import patch
+
+    from app.services.extraction_merge import (
+        ExtractionMetadata,
+        LogicalIdentity,
+        PassResult,
+    )
+    from app.workers.pipeline import _rehydrate_pass_result
+
+    fake_row = SimpleNamespace(
+        pass_name="system_links",
+        extract_pass_response_json={"pass_output": {"relationships": []}},
+    )
+    pass_result = PassResult(
+        pass_name="system_links",
+        template_instance=SimpleNamespace(relationships=[]),
+        metadata=ExtractionMetadata(
+            schema_size_chars=1000,
+            structured_output_mode="strict",
+        ),
+        pre_merge_rejections=[],
+    )
+    radar_pass = SimpleNamespace(
+        name="radar_identity",
+        depends_on=[],
+        input_mode="document_only",
+        kind="entities_and_relationships",
+        primary_entity_types=["RADAR_SYSTEM"],
+        bridge_entity_types=[],
+        extracted_relationship_types=[],
+        module="extraction_schemas.radar_identity",
+        template_class="RadarIdentityPass",
+    )
+    system_links_pass = SimpleNamespace(
+        name="system_links",
+        depends_on=["radar_identity"],
+        input_mode="document_plus_entity_refs",
+        kind="relationships_only",
+        primary_entity_types=[],
+        bridge_entity_types=[],
+        extracted_relationship_types=[],
+        module="extraction_schemas.system_links",
+        template_class="SystemLinksPass",
+    )
+    manifest = SimpleNamespace(
+        bundle_key="air_defense_v3",
+        passes=[radar_pass, system_links_pass],
+    )
+    ontology = {
+        "entity_types": [
+            {"name": "RADAR_SYSTEM", "identity_fields": ["system_name"],
+             "identity_scope": "global"},
+        ],
+        "validation_matrix": [],
+    }
+    upstream_ref = SimpleNamespace(
+        pass_origin="radar_identity",
+        entity_type="RADAR_SYSTEM",
+        identity_values={"system_name": "Fan Song"},
+        display_label="Fan Song",
+    )
+
+    with patch(
+        "app.workers.pipeline._parse_pass_response",
+        return_value=pass_result,
+    ), patch(
+        "app.workers.pipeline._rehydrate_upstream_refs_from_persisted_passes",
+        return_value={"E040": upstream_ref},
+    ):
+        rehydrated = _rehydrate_pass_result(
+            fake_row,
+            manifest,
+            ontology,
+            document_id="doc-1",
+            db=object(),
+            run_id="run-1",
+        )
+
+    assert rehydrated.upstream_refs == {
+        "E040": LogicalIdentity(
+            entity_type="RADAR_SYSTEM",
+            identity_field_names=("system_name",),
+            identity_tuple=("Fan Song",),
+            scope="global",
+            document_id=None,
+        ),
+    }

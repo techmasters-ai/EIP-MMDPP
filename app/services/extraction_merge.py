@@ -648,6 +648,67 @@ def logical_identity_from_dict(
     )
 
 
+def _snapshot_entity_identities(
+    pass_results: dict[str, "PassResult"],
+    ontology: dict,
+    document_id: str,
+) -> dict[int, LogicalIdentity]:
+    """Capture each live entity instance's current LogicalIdentity.
+
+    ``system_links`` stores ref-id endpoints before merge-time identity
+    canonicalization runs. Capturing object-id keyed identities before and
+    after canonicalization lets the resolver translate those stable ref IDs
+    onto the final entity_index identities.
+    """
+    snapshot: dict[int, LogicalIdentity] = {}
+    for entity_def in ontology.get("entity_types", []):
+        entity_type = entity_def["name"]
+        for pass_name, pass_result in pass_results.items():
+            try:
+                instances = list(pass_result.iter_entities_of_type(entity_type))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "identity snapshot failed for pass=%s entity_type=%s: %s",
+                    pass_name, entity_type, exc,
+                )
+                continue
+            for instance in instances:
+                identity = _build_logical_identity(
+                    entity_type, instance, ontology, document_id,
+                )
+                if identity is not None:
+                    snapshot[id(instance)] = identity
+    return snapshot
+
+
+def _build_identity_aliases(
+    before: dict[int, LogicalIdentity],
+    after: dict[int, LogicalIdentity],
+) -> dict[LogicalIdentity, LogicalIdentity]:
+    """Return ``old_identity -> final_identity`` for rewritten instances."""
+    aliases: dict[LogicalIdentity, LogicalIdentity] = {}
+    for object_id, old_identity in before.items():
+        new_identity = after.get(object_id)
+        if new_identity is not None and new_identity != old_identity:
+            aliases[old_identity] = new_identity
+    return aliases
+
+
+def _resolve_identity_alias(
+    identity: LogicalIdentity,
+    identity_aliases: dict[LogicalIdentity, LogicalIdentity] | None,
+) -> LogicalIdentity:
+    """Map a pre-canonicalization identity onto its final merge identity."""
+    if not identity_aliases:
+        return identity
+    current = identity
+    seen: set[LogicalIdentity] = set()
+    while current in identity_aliases and current not in seen:
+        seen.add(current)
+        current = identity_aliases[current]
+    return current
+
+
 def _to_merged_entity_record(
     model: BaseModel,
     ontology: dict,
@@ -878,6 +939,7 @@ def _resolve_relationship(
     entity_index: dict[LogicalIdentity, MergedEntityRecord],
     ontology: dict,
     document_id: str,
+    identity_aliases: dict[LogicalIdentity, LogicalIdentity] | None = None,
 ) -> MergedEdgeRecord | RelationshipRejectionReason:
     """Return either a MergedEdgeRecord or a rejection reason.
 
@@ -917,6 +979,9 @@ def _resolve_relationship(
 
         if from_identity is None or to_identity is None:
             return RelationshipRejectionReason.INVALID_IDENTITY_PAYLOAD
+
+    from_identity = _resolve_identity_alias(from_identity, identity_aliases)
+    to_identity = _resolve_identity_alias(to_identity, identity_aliases)
 
     if from_identity not in entity_index:
         return RelationshipRejectionReason.FROM_ENDPOINT_NOT_FOUND
@@ -1213,6 +1278,9 @@ def merge_and_resolve(
     # orchestrator call below should be threaded into that dispatcher
     # at the same point — between identity canonicalization and entity
     # merge. Spec §5.5.
+    pre_canonical_identity_snapshot = _snapshot_entity_identities(
+        pass_results, ontology, document_id,
+    )
     from app.services.table_overlay import apply_table_overlay_phases
     apply_table_overlay_phases(
         pass_results,
@@ -1220,6 +1288,17 @@ def merge_and_resolve(
         document_id=document_id,
         canonicalize_fn=canonicalize_cross_pass_identities,
     )
+    post_canonical_identity_snapshot = _snapshot_entity_identities(
+        pass_results, ontology, document_id,
+    )
+    identity_aliases = _build_identity_aliases(
+        pre_canonical_identity_snapshot, post_canonical_identity_snapshot,
+    )
+    if identity_aliases:
+        logger.info(
+            "merge_and_resolve: identity_aliases=%d from canonicalization",
+            len(identity_aliases),
+        )
     # ---------- end Mechanism A1 ----------
 
     # --- Pass 1: merge entities ---
@@ -1306,6 +1385,7 @@ def merge_and_resolve(
                     prov.instance_id, prov.ontology_name, pass_name,
                 )
                 continue
+            identity = _resolve_identity_alias(identity, identity_aliases)
             record = entity_index.get(identity)
             if record is None:
                 logger.warning(
@@ -1401,7 +1481,7 @@ def merge_and_resolve(
             attempted += 1
             result = _resolve_relationship(
                 rel, pass_name, pass_result,
-                entity_index, ontology, document_id,
+                entity_index, ontology, document_id, identity_aliases,
             )
             if isinstance(result, MergedEdgeRecord):
                 edges.append(result)
