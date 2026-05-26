@@ -31,14 +31,20 @@ def _vec(*xs: float) -> list[float]:
 
 
 def _row(self_ref: str, embedding: list[float] | None, **extra) -> dict:
+    """Build a fake ArcadeDB row matching the projection the direct path uses.
+
+    Matches `SELECT @rid AS node_id, vertex_id, self_ref, chunk_text,
+    embedding, page_number, modality, pipeline_run_id FROM ExtractionChunk`.
+    """
     return {
+        "node_id": extra.pop("node_id", f"#170:{self_ref}"),  # @rid AS node_id
+        "vertex_id": extra.pop("vertex_id", f"run-A:{self_ref}"),  # synthetic PK
         "self_ref": self_ref,
         "chunk_text": extra.pop("chunk_text", f"text for {self_ref}"),
         "embedding": embedding,
         "page_number": extra.pop("page_number", None),
         "modality": extra.pop("modality", "text"),
         "pipeline_run_id": extra.pop("pipeline_run_id", "run-A"),
-        "@rid": extra.pop("@rid", f"#100:{self_ref}"),
         **extra,
     }
 
@@ -174,6 +180,10 @@ async def test_direct_filters_by_pipeline_run_id_via_sql():
     params = pos_args[3]
     assert "WHERE pipeline_run_id = :run_id" in sql
     assert params == {"run_id": "run-XYZ"}
+    # Projection must expose @rid AS node_id so GraphEntityResult.node_id
+    # mirrors the HNSW return shape (per Codex review finding 1 on Path B).
+    assert "@rid AS node_id" in sql
+    assert "vertex_id" in sql
 
 
 @pytest.mark.asyncio
@@ -196,7 +206,12 @@ async def test_direct_return_shape_matches_hnsw_path():
     assert len(results) == 1
     r = results[0]
     assert isinstance(r, GraphEntityResult)
-    assert r.node_id  # non-empty string
+    # node_id should come from the @rid AS node_id alias — not the self_ref fallback
+    assert r.node_id == "#170:a", (
+        f"Expected @rid alias to populate node_id; got {r.node_id!r}. "
+        f"Cascade should NOT fall back to self_ref when the SQL projection "
+        f"included @rid AS node_id."
+    )
     assert r.name == "a"
     assert r.entity_type == "ExtractionChunk"
     assert r.score is not None

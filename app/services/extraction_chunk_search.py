@@ -69,33 +69,48 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ChunkSearchDiagnostics:
-    """Diagnostic counters from a search_extraction_chunks() call.
+    """Diagnostic counters from a ``search_extraction_chunks()`` call.
 
     Ready to merge into the VR router diagnostics block:
       ``pipeline_pass_outputs.diagnostics_json.router.search``
 
+    Field semantics differ slightly between the two retrieval paths
+    selected by ``settings.vector_router_retrieval_mode``:
+
+    - ``"hnsw"`` (overfetch + post-filter): the legacy path.
+    - ``"direct"`` (Path B, 2026-05-26): per-run SQL pull + numpy cosine.
+
     Fields
     ------
     ann_top_k_requested:
-        The top_k value passed to the unfiltered ``vector_search`` call
-        (initial attempt; if retry fired, the retry value is recorded
-        instead as ``ann_top_k_requested`` will equal the larger cap).
-        NOTE: if retry fired, the field captures the *larger* retry cap
-        so diagnostics always reflect the largest ANN call made.
+        HNSW: the top_k value passed to the unfiltered ``vector_search``
+        call (initial attempt; if retry fired, the *retry* value — the
+        larger cap).
+        DIRECT: total number of rows pulled for the pipeline_run_id (the
+        candidate pool size; not an ANN cap).
     post_filter_candidate_count:
-        How many results survived the ``pipeline_run_id`` post-filter.
-        May be < ``desired_top_n`` if the overfetch cap was too small
-        (short-fetch case).
+        HNSW: rows surviving the ``pipeline_run_id`` post-filter.
+        DIRECT: rows surviving the optional ``score_threshold`` filter,
+        BEFORE the final ``desired_top_n`` slice.
+        Both paths: may be < ``desired_top_n`` (signals ``short_fetch``
+        for HNSW; signals "not enough matches" for direct).
     post_filter_retry_count:
-        0 if the initial overfetch yielded >= desired_top_n survivors;
-        1 if the retry at top_k=2000 was needed.
+        HNSW: 0 if initial overfetch had enough survivors; 1 if the
+        retry at top_k=2000 was needed.
+        DIRECT: always 0 (direct retrieval doesn't retry — it's exact).
     filter_strategy:
-        Always ``"overfetch_post_filter"`` for this implementation.
-        Future: ``"filtered_traversal"`` if ArcadeDB ships filterable HNSW
-        (tracked upstream as P1 gap — see module docstring).
+        ``"overfetch_post_filter"`` (HNSW) or ``"direct_cosine"``
+        (DIRECT). A future ``"filtered_traversal"`` would land if
+        ArcadeDB ships filterable HNSW (P1 gap — see module docstring).
     short_fetch:
-        True if post_filter_candidate_count < desired_top_n even after
-        retry. Signals to the caller that the result may be incomplete.
+        HNSW: True if even the retry didn't yield enough survivors —
+        the result may be INCOMPLETE (more matching chunks may exist
+        in the global index that HNSW didn't surface).
+        DIRECT: True if the run has fewer matching chunks than
+        ``desired_top_n`` — the result is EXACT (no more matches exist),
+        not incomplete. Callers reading this field for fallback logic
+        should branch on ``filter_strategy`` if they care about the
+        distinction.
     """
 
     ann_top_k_requested: int
@@ -289,12 +304,16 @@ async def search_extraction_chunks_direct(
     # --- 1. Pull every chunk for this run via SQL (B-tree-indexed). --------
     # ORDER BY self_ref ASC gives a stable iteration order for tiebreaking
     # on identical cosine scores (see step 3).
+    # `@rid AS node_id` exposes ArcadeDB's internal vertex id under a
+    # numpy/JSON-friendly key — keeps GraphEntityResult.node_id aligned with
+    # what the HNSW path returns. `vertex_id` is the synthetic PK kept as
+    # secondary fallback for environments where @rid isn't materialized.
     rows = await store._client.query(
         store._database,
         "sql",
         (
-            "SELECT self_ref, chunk_text, embedding, page_number, modality, "
-            "pipeline_run_id "
+            "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
+            "embedding, page_number, modality, pipeline_run_id "
             "FROM ExtractionChunk "
             "WHERE pipeline_run_id = :run_id "
             "ORDER BY self_ref ASC"
@@ -365,12 +384,21 @@ async def search_extraction_chunks_direct(
     selected_scores = kept_scores[order].tolist()
 
     # --- 4. Materialize as GraphEntityResult to match the HNSW return shape.
-    # GraphEntityResult requires node_id + name + entity_type; ExtractionChunk
-    # vertices have @rid (ArcadeDB) or vertex_id (synthetic PK) — prefer @rid
-    # when present, fall back to vertex_id, finally self_ref as a string id.
+    # GraphEntityResult requires node_id + name + entity_type. The SQL above
+    # exposes ArcadeDB's @rid under `node_id` (canonical) and the synthetic
+    # vertex_id (PK) as fallback. Cascade order:
+    #   @rid (raw, unaliased — defensive for adapter/driver variation)
+    #   → node_id (the SELECT alias — the expected path)
+    #   → vertex_id (synthetic PK)
+    #   → self_ref (string-id last resort)
     results = [
         GraphEntityResult(
-            node_id=str(row.get("@rid", row.get("vertex_id", row["self_ref"]))),
+            node_id=str(
+                row.get("@rid")
+                or row.get("node_id")
+                or row.get("vertex_id")
+                or row["self_ref"]
+            ),
             name=row["self_ref"],
             entity_type="ExtractionChunk",
             extraction_confidence=score,

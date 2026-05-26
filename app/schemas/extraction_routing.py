@@ -53,14 +53,26 @@ class ChunkScopeDiagnostics(BaseModel):
     vector_search_ms: int
     rerank_ms: int
 
-    # Over-fetch diagnostics (from ChunkSearchDiagnostics in extraction_chunk_search)
+    # Retrieval-stage diagnostics (from ChunkSearchDiagnostics).
+    # Field semantics depend on filter_strategy:
+    #   "overfetch_post_filter" — HNSW + Python post-filter (legacy path).
+    #   "direct_cosine"          — Path B (2026-05-26): per-run SQL pull +
+    #                              numpy cosine. ann_top_k_requested is the
+    #                              candidate pool size, post_filter_retry_count
+    #                              is always 0, short_fetch means "not enough
+    #                              matches in this run" (exact, not incomplete).
+    # See app/services/extraction_chunk_search.py:ChunkSearchDiagnostics for
+    # the full per-field semantics.
     ann_top_k_requested: int
     post_filter_candidate_count: int
     post_filter_retry_count: int
-    filter_strategy: str  # "overfetch_post_filter"
+    filter_strategy: str  # "overfetch_post_filter" or "direct_cosine"
 
     # Short-fetch flag (rev 16 Important #2): propagated from ChunkSearchDiagnostics.
-    # True if post_filter_candidate_count < desired_top_n even after retry at 2000.
+    # HNSW: True if post_filter_candidate_count < desired_top_n even after retry —
+    # the result MAY be incomplete.
+    # DIRECT: True if the run has fewer matching chunks than desired_top_n —
+    # the result IS exact, just not enough matches exist.
     # mode stays selected_refs when short_fetch=True — diagnostic-only for v1.
     # Callers MUST inspect this field; future work can promote it to a fail-open
     # trigger if production data shows incomplete retrieval causes quality regressions.
