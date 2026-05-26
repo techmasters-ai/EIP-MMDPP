@@ -581,9 +581,10 @@ class Settings(BaseSettings):
     # direct: SQL pull of all chunks for the run + numpy cosine. Exact,
     #         deterministic, no starvation. ~50,000× faster at retrieval
     #         stage; end-to-end depends on reranker candidate count.
-    # Default 'hnsw' for safe rollback; flip to 'direct' after A/B verifies
-    # quality + latency parity (Path B handoff, 2026-05-26).
-    vector_router_retrieval_mode: Literal["hnsw", "direct"] = "hnsw"
+    # Default flipped to 'direct' 2026-05-26 (commit after f25e096) after Path
+    # B implementation + Codex review + live smoke. Revert to 'hnsw' by
+    # reverting just this commit if the C.7g A/B exposes regressions.
+    vector_router_retrieval_mode: Literal["hnsw", "direct"] = "direct"
 
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)
