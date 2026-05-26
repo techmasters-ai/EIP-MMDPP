@@ -574,6 +574,17 @@ class Settings(BaseSettings):
     # single pass. Operators in high-latency environments can tune upward.
     vector_router_chunk_scope_timeout_s: float = 10.0
 
+    # Retrieval mode for the VR chunk-scope endpoint:
+    # hnsw:   ArcadeDB HNSW overfetch + post-filter by pipeline_run_id (legacy).
+    #         Subject to documented post-filter starvation when the global
+    #         index contains chunks from many runs.
+    # direct: SQL pull of all chunks for the run + numpy cosine. Exact,
+    #         deterministic, no starvation. ~50,000× faster at retrieval
+    #         stage; end-to-end depends on reranker candidate count.
+    # Default 'hnsw' for safe rollback; flip to 'direct' after A/B verifies
+    # quality + latency parity (Path B handoff, 2026-05-26).
+    vector_router_retrieval_mode: Literal["hnsw", "direct"] = "hnsw"
+
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)
 

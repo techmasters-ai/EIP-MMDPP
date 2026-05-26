@@ -338,7 +338,15 @@ class TestOverFetchPostFilterStrategy:
         """search_extraction_chunks() returns all 5 right-run chunks against adversarial dataset."""
         import asyncio
 
-        from app.services.extraction_chunk_search import search_extraction_chunks
+        # Path B (2026-05-26): call the HNSW variant directly. The public
+        # ``search_extraction_chunks`` is now a dispatcher that routes to either
+        # ``_hnsw`` or ``_direct`` based on settings.vector_router_retrieval_mode.
+        # This test specifically exercises HNSW overfetch + post-filter behavior,
+        # so call ``_hnsw`` directly to remain meaningful regardless of the
+        # default mode.
+        from app.services.extraction_chunk_search import (
+            search_extraction_chunks_hnsw as search_extraction_chunks,
+        )
 
         rng = random.Random(99)  # different seed from starvation test — still deterministic
         run_suffix = uuid.uuid4().hex[:8]
@@ -484,7 +492,15 @@ class TestOverFetchRetryAndShortFetch:
         only 3 right-run chunks exist but desired_top_n=10 is requested."""
         import asyncio
 
-        from app.services.extraction_chunk_search import search_extraction_chunks
+        # Path B (2026-05-26): call the HNSW variant directly. The public
+        # ``search_extraction_chunks`` is now a dispatcher that routes to either
+        # ``_hnsw`` or ``_direct`` based on settings.vector_router_retrieval_mode.
+        # This test specifically exercises HNSW overfetch + post-filter behavior,
+        # so call ``_hnsw`` directly to remain meaningful regardless of the
+        # default mode.
+        from app.services.extraction_chunk_search import (
+            search_extraction_chunks_hnsw as search_extraction_chunks,
+        )
 
         rng = random.Random(77)  # deterministic seed, distinct from sibling tests
         run_suffix = uuid.uuid4().hex[:8]
