@@ -5,9 +5,9 @@ smaller LLM call boundaries. Group fields: system_name, antenna_photo,
 gain_dbi, antenna_dim_az_m, antenna_dim_el_m, beamwidth_az_deg,
 beamwidth_el_deg, spoiled, coverage_limits_el_deg.
 
-Field descriptions are sanitized at copy time per spec §4.4: numeric
-fields reference DELTA_SYSTEM_PROMPT's Unit Policy block instead of
-inlining conversion rules. The byte-equal description-parity check in
+Field descriptions are written as dual-use retrieval and prompt text:
+use document-facing anchor terms while preserving extraction constraints. The
+byte-equal description-parity check in
 test_extraction_views_subset_of_canonical_with_validator_parity was
 loosened in commit 20b1a8d to allow this divergence.
 """
@@ -26,7 +26,7 @@ _FIELDS = RADAR_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exist
 
 
 class RadarAntennaRecord(BaseModel):
-    """Subset of RadarSystemEntity covering antenna geometry + beam shape."""
+    """Radar antenna and beam characteristics: antenna photo, gain, aperture dimensions, beamwidth, spoiled beam, and elevation coverage."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -52,61 +52,73 @@ class RadarAntennaRecord(BaseModel):
     antenna_photo: Optional[bool] = Field(
         default=None,
         description=(
-            "Whether an antenna photograph is included in the record. "
+            "Whether an antenna photograph or image is included in the "
+            "record. Relevant source labels include 'photo', 'photograph', "
+            "'image', 'figure', 'antenna photo', or 'radar antenna image'. "
             "Use null when not stated."
         ),
     )
     gain_dbi: Optional[float] = Field(
         default=None,
         description=(
-            "Peak antenna gain in dBi. Source labels such as 'Gain' or "
-            "'Antenna Gain' map here. See Unit Policy in DELTA_SYSTEM_PROMPT for "
-            "dB-domain conversions."
+            "Peak antenna gain in dBi. Relevant source labels include "
+            "'Gain', 'Antenna Gain', 'Peak Gain', 'main beam gain', "
+            "'array gain', 'dish gain', 'dBi', or 'dB gain'. Use antenna "
+            "gain, not transmitter power or ERP/EIRP."
         ),
     )
     antenna_dim_az_m: Optional[float] = Field(
         default=None,
         description=(
-            "Antenna aperture width (azimuth dimension) in meters. Source labels "
-            "such as 'Antenna Width', 'Azimuth Aperture', 'Horizontal "
-            "Aperture', or width-like dimensions map here."
+            "Antenna aperture width or azimuth dimension in meters. Relevant "
+            "source labels include 'Antenna Width', 'Azimuth Aperture', "
+            "'Horizontal Aperture', 'array width', 'dish width', "
+            "'aperture size', or width-like antenna dimensions."
         ),
     )
     antenna_dim_el_m: Optional[float] = Field(
         default=None,
         description=(
-            "Antenna aperture height (elevation dimension) in meters. Source "
-            "labels such as 'Antenna Height', 'Elevation Aperture', "
-            "'Vertical Aperture', or height-like dimensions map here."
+            "Antenna aperture height or elevation dimension in meters. Relevant "
+            "source labels include 'Antenna Height', 'Elevation Aperture', "
+            "'Vertical Aperture', 'array height', 'dish height', "
+            "'aperture size', or height-like antenna dimensions."
         ),
     )
     beamwidth_az_deg: Optional[float] = Field(
         default=None,
         description=(
-            "Main-beam 3 dB azimuth beamwidth in degrees. Source labels such as "
-            "'Azimuth Beamwidth' or 'Horizontal Beamwidth' map here."
+            "Main-beam 3 dB azimuth beamwidth in degrees. Relevant source "
+            "labels include 'Azimuth Beamwidth', 'Horizontal Beamwidth', "
+            "'az beam width', 'half-power beamwidth', 'HPBW azimuth', "
+            "'3 dB beamwidth', or 'main lobe width'."
         ),
     )
     beamwidth_el_deg: Optional[float] = Field(
         default=None,
         description=(
-            "Main-beam 3 dB elevation beamwidth in degrees. Source labels such "
-            "as 'Elevation Beamwidth' or 'Vertical Beamwidth' map here."
+            "Main-beam 3 dB elevation beamwidth in degrees. Relevant source "
+            "labels include 'Elevation Beamwidth', 'Vertical Beamwidth', "
+            "'el beam width', 'half-power beamwidth', 'HPBW elevation', "
+            "'3 dB beamwidth', or 'main lobe height'."
         ),
     )
     spoiled: Optional[bool] = Field(
         default=None,
         description=(
-            "Whether the beam is spoiled (deliberately broadened). Use "
-            "null when not stated."
+            "Whether the beam is spoiled or deliberately broadened. Relevant "
+            "source labels include 'spoiled beam', 'beam spoiling', "
+            "'broadened beam', 'fan beam', 'cosecant beam', or "
+            "'elevation spoiled'. Use null when not stated."
         ),
     )
     coverage_limits_el_deg: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum elevation coverage angle in degrees. Source labels such as "
-            "'Elevation Coverage', 'Elevation Limit', or 'Elevation "
-            "Coverage Limits' map here."
+            "Maximum elevation coverage angle in degrees. Relevant source "
+            "labels include 'Elevation Coverage', 'Elevation Limit', "
+            "'Elevation Coverage Limits', 'elevation scan limit', "
+            "'vertical coverage', 'maximum elevation', or 'elevation sector'."
         ),
     )
 

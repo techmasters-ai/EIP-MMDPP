@@ -18,7 +18,7 @@ _FIELDS = MISSILE_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exi
 
 
 class MissileGuidanceRecord(BaseModel):
-    """Subset of MissileSystemEntity covering guidance + seeker."""
+    """Missile guidance and seeker characteristics: command guidance, homing mode, terminal seeker, and missile photo flag."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -98,7 +98,9 @@ class MissileGuidanceRecord(BaseModel):
     missile_photo: Optional[bool] = Field(
         default=None,
         description=(
-            "Whether a missile photograph is included in the record. "
+            "Whether a missile photograph or image is included in the "
+            "record. Relevant source labels include 'photo', 'photograph', "
+            "'image', 'figure', 'missile photo', or 'weapon photo'. "
             "Use null when not stated."
         ),
     )

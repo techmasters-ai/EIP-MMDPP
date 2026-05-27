@@ -3,12 +3,12 @@
 Spec §4.4. Group fields: system_name, erp_dbw, tx_peak_power_kw,
 nominal_rf_mhz.
 
-Field descriptions are sanitized at copy time per spec §4.4: numeric
-fields reference DELTA_SYSTEM_PROMPT's Unit Policy block instead of
-inlining cross-unit conversion rules. The byte-equal description-
-parity check in test_extraction_views_subset_of_canonical_with_validator_parity
-was loosened in commit 20b1a8d to allow this divergence; type /
-validator / graph_id_fields parity remain enforced.
+Field descriptions are written as dual-use retrieval and prompt text:
+use document-facing anchor terms while preserving extraction constraints. The
+byte-equal description-parity check in
+test_extraction_views_subset_of_canonical_with_validator_parity was loosened
+in commit 20b1a8d to allow this divergence; type / validator /
+graph_id_fields parity remain enforced.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _FIELDS = RADAR_FIELD_GROUPS[_GROUP_NAME]
 
 
 class RadarPowerRfRecord(BaseModel):
-    """Subset of RadarSystemEntity covering RF carrier + transmit power."""
+    """Radar RF power and carrier-frequency characteristics: ERP, peak transmitter power, operating frequency, and radar band."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -47,29 +47,33 @@ class RadarPowerRfRecord(BaseModel):
     erp_dbw: Optional[float] = Field(
         default=None,
         description=(
-            "Effective Radiated Power in dBW. Source labels such as "
-            "'ERP' or 'Effective Radiated Power' map here only when the "
-            "source unit is dBW/dBm. Emit only when the source states "
-            "the value with units; otherwise null. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "Effective Radiated Power in dBW. Relevant source labels include "
+            "'ERP', 'EIRP', 'Effective Radiated Power', 'effective radiated "
+            "power', 'radiated power', 'effective power', 'dBW', or 'dBm'. "
+            "Use only effective radiated power or EIRP values stated with "
+            "dBW/dBm units; otherwise null."
         ),
     )
     tx_peak_power_kw: Optional[float] = Field(
         default=None,
         description=(
-            "Transmitter peak power in kilowatts. Source labels such as "
-            "'Peak Power', 'Transmitter Power', 'Tx Power', or 'Pulse "
-            "Power' map here when they describe peak transmitter power. See Unit "
-            "Policy in DELTA_SYSTEM_PROMPT for conversions."
+            "Transmitter peak power in kilowatts. Relevant source labels include "
+            "'Peak Power', 'peak transmitter power', 'Transmitter Power', "
+            "'transmitter output power', 'Tx Power', 'Pulse Power', "
+            "'peak pulse power', 'magnetron output', or 'klystron output'. "
+            "Use peak transmitter or pulse output power, not ERP/EIRP or "
+            "average power."
         ),
     )
     nominal_rf_mhz: Optional[float] = Field(
         default=None,
         description=(
-            "Nominal carrier frequency in MHz. Source labels such as "
-            "'Frequency', 'Operating Frequency', 'Carrier Frequency', "
-            "or 'RF' map here when they describe the radar carrier. See Unit "
-            "Policy in DELTA_SYSTEM_PROMPT for conversions."
+            "Nominal RF carrier or operating frequency in MHz. Relevant source "
+            "labels include 'Frequency', 'Operating Frequency', 'Carrier "
+            "Frequency', 'RF', 'frequency range', 'waveband', 'radar band', "
+            "'MHz', 'GHz', 'VHF', 'UHF', 'L-band', 'S-band', 'C-band', "
+            "'X-band', or 'Ku-band'. Use radar carrier frequency, not "
+            "PRF/PRI or modulation bandwidth."
         ),
     )
 

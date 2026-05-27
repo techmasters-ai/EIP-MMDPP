@@ -4,9 +4,9 @@ Spec §4.4. One of 5 sub-passes splitting the legacy radar_domain into
 smaller LLM call boundaries. Group fields: system_name, intra_pulse_mop,
 inter_pulse, frequency_excursion_mhz, num_bits_in_code, pulses_per_dwell.
 
-Field descriptions are sanitized at copy time per spec §4.4: numeric
-fields reference DELTA_SYSTEM_PROMPT's Unit Policy block instead of
-inlining conversion rules. The byte-equal description-parity check in
+Field descriptions are written as dual-use retrieval and prompt text:
+use document-facing anchor terms while preserving extraction constraints. The
+byte-equal description-parity check in
 test_extraction_views_subset_of_canonical_with_validator_parity was
 loosened in commit 20b1a8d to allow this divergence.
 """
@@ -25,7 +25,7 @@ _FIELDS = RADAR_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exist
 
 
 class RadarModulationRecord(BaseModel):
-    """Subset of RadarSystemEntity covering pulse modulation + coding."""
+    """Radar waveform modulation and coding: intra-pulse modulation, inter-pulse PRI behavior, chirp bandwidth, code length, and pulses per dwell."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -77,28 +77,32 @@ class RadarModulationRecord(BaseModel):
     frequency_excursion_mhz: Optional[float] = Field(
         default=None,
         description=(
-            "Frequency excursion (chirp bandwidth) in MHz. Source labels such "
-            "as 'Frequency Excursion', 'Chirp Bandwidth', 'Sweep Width', "
-            "or 'Modulation Bandwidth' map here. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "Frequency excursion or chirp bandwidth in MHz. Relevant source "
+            "labels include 'Frequency Excursion', 'Chirp Bandwidth', "
+            "'Sweep Width', 'sweep bandwidth', 'FM sweep', 'LFM "
+            "bandwidth', 'Modulation Bandwidth', 'frequency deviation', "
+            "'MHz', or 'kHz'. Use modulation/chirp bandwidth, not RF "
+            "carrier frequency."
         ),
     )
     num_bits_in_code: Optional[int] = Field(
         default=None,
         description=(
-            "Number of chips/bits in the phase-code sequence. Source "
-            "labels such as 'Code Length', 'Chips', 'Bits', or 'Number "
-            "of Bits' map here. Integer count; emit only when the source "
-            "states it."
+            "Number of chips or bits in the phase-code sequence. Relevant "
+            "source labels include 'Code Length', 'Chips', 'chip count', "
+            "'Bits', 'Number of Bits', 'Barker length', 'polyphase "
+            "code length', or 'phase-code length'. Integer count; emit "
+            "only when the source states it."
         ),
     )
     pulses_per_dwell: Optional[int] = Field(
         default=None,
         description=(
-            "Pulses integrated per beam-position dwell. Source labels "
-            "such as 'Pulses per Dwell', 'Pulses/Dwell', or 'Integrated "
-            "Pulses' map here. Integer count; emit only when the source "
-            "states it."
+            "Pulses integrated per beam-position dwell. Relevant source "
+            "labels include 'Pulses per Dwell', 'Pulses/Dwell', "
+            "'Integrated Pulses', 'pulses integrated', 'pulse count per "
+            "look', or 'pulses per look'. Integer count; emit only when "
+            "the source states it."
         ),
     )
 

@@ -20,7 +20,7 @@ _FIELDS = MISSILE_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exi
 
 
 class MissileSpeedTimingRecord(BaseModel):
-    """Subset of MissileSystemEntity covering speed + flight/burn timing."""
+    """Missile performance timing: average speed, maximum speed, Mach, flyout time, flight time, coast time, salvo interval, and burn time."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -52,61 +52,78 @@ class MissileSpeedTimingRecord(BaseModel):
     average_speed_mps: Optional[float] = Field(
         default=None,
         description=(
-            "Average flight speed in meters per second. Source labels such as "
-            "'Average Speed' or 'average velocity' map here. See Unit "
-            "Policy in DELTA_SYSTEM_PROMPT for conversions."
+            "Average flight speed in meters per second. Relevant source "
+            "labels include 'Average Speed', 'average velocity', "
+            "'mean speed', 'cruise speed', 'typical speed', "
+            "'average Mach', or 'velocity average'. Use average or "
+            "nominal flight speed, not peak speed."
         ),
     )
     max_speed_mps: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum flight speed in meters per second. Source labels "
-            "such as 'Speed', 'Velocity', 'Maximum Speed', or 'Maximum "
-            "Velocity' map here only when the source implies a maximum. "
+            "Maximum flight speed in meters per second. Relevant source "
+            "labels include 'Speed', 'Velocity', 'Maximum Speed', "
+            "'Max Speed', 'top speed', 'peak speed', 'Maximum "
+            "Velocity', 'Mach', or 'maximum Mach'. Use only when the "
+            "source states or clearly implies a maximum or peak value."
         ),
     )
     max_flyout_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum flyout time in seconds. Source labels such as 'maximum "
-            "flyout time', 'max time of flight', or 'maximum flight "
-            "time' map here."
+            "Maximum flyout time in seconds. Relevant source labels include "
+            "'maximum flyout time', 'max flyout time', 'max time of "
+            "flight', 'maximum flight time', 'flight duration limit', "
+            "'maximum intercept time', or 'self-destruct time'."
         ),
     )
     flight_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Total flight time in seconds. Source labels such as 'Time "
-            "of Flight', 'Flight Time', or 'Flyout Time' map here when "
-            "they do not explicitly describe a maximum. "
+            "Total or nominal flight time in seconds. Relevant source "
+            "labels include 'Time of Flight', 'Flight Time', 'Flyout "
+            "Time', 'time to intercept', 'intercept time', or "
+            "'flight duration'. Use this only when the source does not "
+            "explicitly describe a maximum."
         ),
     )
     coast_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Coast time (post-burn) in seconds. "
+            "Coast time, post-burn time, or unpowered flight duration in "
+            "seconds. Relevant source labels include 'coast time', "
+            "'coasting time', 'post-burn coast', 'unpowered flight', "
+            "or 'ballistic coast'."
         ),
     )
     intra_salvo_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Intra-salvo time (between launches in a salvo) in seconds. "
+            "Intra-salvo time between launches in seconds. Relevant source "
+            "labels include 'intra-salvo time', 'salvo interval', "
+            "'launch interval', 'ripple interval', 'ripple-fire time', "
+            "'time between launches', or 'reload between shots'."
         ),
     )
     total_burn_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Total motor burn time in seconds. Source labels such as "
-            "'Burn Time' or 'Motor Burn Time' map here only when they "
-            "describe the full missile motor burn. If the source is "
-            "under a booster/ejector/sustainer stage label, use the "
-            "stage-specific field in missile_propulsion instead. "
+            "Total motor burn time in seconds. Relevant source labels "
+            "include 'Burn Time', 'Motor Burn Time', 'total burn time', "
+            "'powered flight time', 'propulsion time', or 'rocket "
+            "motor duration'. Use only full missile motor burn; if the "
+            "source is under a booster, ejector, or sustainer label, use "
+            "the stage-specific field in missile_propulsion instead."
         ),
     )
     ejector_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Ejector burn duration in seconds. "
+            "Ejector burn duration in seconds. Relevant source labels "
+            "include 'ejector time', 'ejector burn time', 'ejection "
+            "time', 'cold launch ejector', 'launch eject motor', "
+            "'gas generator time', or 'soft-launch impulse duration'."
         ),
     )
 

@@ -9,11 +9,10 @@ Group fields: system_name, nomenclature, elnot, dieqp, emitter_function,
 system_status, asrd, responsible_agency, review_cycle, next_review_date,
 scan_type.
 
-Field descriptions are sanitized at copy time per spec §4.4 (FORBIDDEN-
-values block stripped from system_name; "typical X" enumeration prose
-dropped) so the LLM-facing schema stays focused. Forbidden-system
-filtering still happens — deterministically, via make_root_sanitizer.
-The byte-equal description-parity check in
+Field descriptions are written as dual-use retrieval and prompt text:
+use document-facing anchor terms while preserving extraction constraints.
+Forbidden-system filtering still happens deterministically via
+make_root_sanitizer. The byte-equal description-parity check in
 test_extraction_views_subset_of_canonical_with_validator_parity was
 deliberately loosened to allow this divergence; type / validator /
 graph_id_fields parity remain enforced.
@@ -33,7 +32,7 @@ _FIELDS = RADAR_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exist
 
 
 class RadarIdentityRecord(BaseModel):
-    """Subset of RadarSystemEntity covering identity + admin fields."""
+    """Radar identity and administrative metadata: common radar name, NATO reporting name, formal designation, ELNOT, DIEQP, role, status, agency, review dates, and scan type."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -62,23 +61,29 @@ class RadarIdentityRecord(BaseModel):
     nomenclature: Optional[str] = Field(
         default=None,
         description=(
-            "Official military nomenclature — formal alphanumeric "
-            "designation (JETDS / AN-style for US, GRAU index for "
-            "Russian/Soviet). Distinct from system_name."
+            "Official military nomenclature or formal alphanumeric "
+            "designation. Relevant source labels include 'nomenclature', "
+            "'designation', 'military designation', 'model', 'type', "
+            "'variant', 'JETDS', 'AN/', 'GRAU index', '5N', or '30N'. "
+            "Keep distinct from system_name."
         ),
     )
     elnot: Optional[str] = Field(
         default=None,
         description=(
-            "ELINT Notation — community-unique alphabetic code from "
-            "intelligence databases. Emit verbatim; do not infer."
+            "ELINT Notation: community-unique alphabetic emitter code. "
+            "Relevant source labels include 'ELNOT', 'ELINT notation', "
+            "'emitter notation', 'signal code', or 'emitter code'. Emit "
+            "verbatim; do not infer."
         ),
     )
     dieqp: Optional[str] = Field(
         default=None,
         description=(
             "Digital Intelligence Equipment Parameters identifier. "
-            "Emit verbatim; do not infer."
+            "Relevant source labels include 'DIEQP', 'Digital Intelligence "
+            "Equipment Parameters', 'equipment parameter id', or "
+            "'MDE identifier'. Emit verbatim; do not infer."
         ),
     )
     emitter_function: Optional[str] = Field(
@@ -136,26 +141,35 @@ class RadarIdentityRecord(BaseModel):
         default=None,
         description=(
             "ASRD identifier from the All-Source Reference Document. "
-            "Emit verbatim when stated."
+            "Relevant source labels include 'ASRD', 'All-Source Reference "
+            "Document', or 'source reference id'. Emit verbatim when "
+            "stated."
         ),
     )
     responsible_agency: Optional[str] = Field(
         default=None,
         description=(
-            "Organization responsible for the MDE record. 3-letter IC "
-            "acronym (IWC, NASIC, ONI, NGIC)."
+            "Organization responsible for the MDE record. Relevant "
+            "source labels include 'responsible agency', 'agency', "
+            "'OPR', 'office of primary responsibility', 'custodian', "
+            "or 3-letter IC acronyms such as IWC, NASIC, ONI, NGIC, or MSIC."
         ),
     )
     review_cycle: Optional[str] = Field(
         default=None,
         description=(
-            "Scheduled review cadence. Free-text; emit verbatim."
+            "Scheduled review cadence. Relevant source labels include "
+            "'review cycle', 'review cadence', 'update cycle', "
+            "'review interval', 'annual', 'biennial', or 'triennial'. "
+            "Free-text; emit verbatim."
         ),
     )
     next_review_date: Optional[str] = Field(
         default=None,
         description=(
-            "Next scheduled MDE review date. ISO 8601 preferred."
+            "Next scheduled MDE review date. Relevant source labels "
+            "include 'next review date', 'review date', 'next update', "
+            "'due date', or 'scheduled review'. ISO 8601 preferred."
         ),
     )
     scan_type: Optional[str] = Field(

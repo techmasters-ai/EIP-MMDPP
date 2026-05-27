@@ -4,9 +4,8 @@ Spec §4.4. One of 6 sub-passes splitting the legacy missile_domain.
 Group fields: system_name, min_intercept_km, max_intercept_km,
 min_altitude_km, max_altitude_km, max_launch_angle_deg.
 
-Field descriptions are sanitized at copy time per spec §4.4: numeric
-fields reference DELTA_SYSTEM_PROMPT's Unit Policy block instead of
-inlining conversion rules.
+Field descriptions are written as dual-use retrieval and prompt text:
+use document-facing anchor terms while preserving extraction constraints.
 """
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ _FIELDS = MISSILE_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exi
 
 
 class MissileKinematicsRecord(BaseModel):
-    """Subset of MissileSystemEntity covering engagement envelope."""
+    """Surface-to-air missile engagement envelope: range, altitude, ceiling, floor, and launch-angle limits."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -55,42 +54,50 @@ class MissileKinematicsRecord(BaseModel):
     min_intercept_km: Optional[float] = Field(
         default=None,
         description=(
-            "Minimum intercept range in kilometers. Source labels such as "
-            "'Min Range' or 'minimum range' map here when they describe "
-            "the missile variant. See Unit Policy in DELTA_SYSTEM_PROMPT "
-            "for conversions."
+            "Minimum intercept range in kilometers. Relevant source labels include "
+            "'minimum effective range', 'minimum range', 'Min Range', "
+            "'minimum intercept range', 'inner range', 'range floor', "
+            "'near limit', or 'kill zone minimum'. Use missile engagement "
+            "envelope limits, not radar range or launcher spacing."
         ),
     )
     max_intercept_km: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum intercept range in kilometers. Source labels such as "
-            "'Range', 'Max Range', 'maximum range', 'effective range', "
-            "or 'engagement range' map here when they describe the "
-            "missile variant. See Unit Policy in DELTA_SYSTEM_PROMPT for "
-            "conversions."
+            "Maximum intercept range in kilometers. Relevant source labels include "
+            "'maximum effective range', 'maximum range', 'Max Range', "
+            "'Range', 'effective range', 'engagement range', "
+            "'intercept range', 'range against targets', 'range limit', "
+            "or 'kill zone range'. Use missile engagement envelope limits, "
+            "not radar range or launcher spacing."
         ),
     )
     min_altitude_km: Optional[float] = Field(
         default=None,
         description=(
-            "Minimum engagement altitude in kilometers. Source labels such as "
-            "'Min Altitude', 'Min Alt', 'minimum altitude', or 'floor' map here."
+            "Minimum engagement altitude in kilometers. Relevant source labels include "
+            "'minimum effective altitude', 'minimum altitude', 'Min Altitude', "
+            "'Min Alt', 'altitude floor', 'lower altitude limit', "
+            "'minimum intercept altitude', or 'kill zone floor'."
         ),
     )
     max_altitude_km: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum engagement altitude in kilometers. Source labels such as "
-            "'Altitude', 'Max Altitude', 'Max Alt', 'ceiling', or "
-            "'engagement altitude' map here when they describe the missile "
-            "variant."
+            "Maximum engagement altitude in kilometers. Relevant source labels include "
+            "'maximum effective altitude', 'maximum altitude', 'Max Altitude', "
+            "'Max Alt', 'Altitude', 'altitude ceiling', 'ceiling', "
+            "'intercept ceiling', 'engagement altitude', 'launch ceiling', "
+            "or 'kill zone ceiling'."
         ),
     )
     max_launch_angle_deg: Optional[float] = Field(
         default=None,
         description=(
-            "Maximum launch angle in degrees. "
+            "Maximum launch angle in degrees. Relevant source labels include "
+            "'maximum launch angle', 'launch angle', 'elevation launch angle', "
+            "'off-boresight launch angle', 'firing angle', or "
+            "'canister elevation angle'."
         ),
     )
 

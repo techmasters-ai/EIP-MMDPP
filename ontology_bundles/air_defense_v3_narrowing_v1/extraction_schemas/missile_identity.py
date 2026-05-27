@@ -8,9 +8,9 @@ sibling sub-passes onto one vertex.
 Group fields: system_name, nomenclature, dieqp, name, emitter_function,
 system_status, asrd, responsible_agency, review_cycle, next_review_date.
 
-Field descriptions are sanitized at copy time per spec §4.4 (FORBIDDEN-
-values block stripped from system_name; "typical X" enumeration prose
-dropped). The byte-equal description-parity check in
+Field descriptions are written as dual-use retrieval and prompt text:
+use document-facing anchor terms while preserving extraction constraints. The
+byte-equal description-parity check in
 test_extraction_views_subset_of_canonical_with_validator_parity was
 loosened in commit 20b1a8d (radar Task 4 unblock) to allow this.
 """
@@ -29,7 +29,7 @@ _FIELDS = MISSILE_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exi
 
 
 class MissileIdentityRecord(BaseModel):
-    """Subset of MissileSystemEntity covering identity + admin fields."""
+    """Missile identity and administrative metadata: designation, NATO/common name, DIEQP, role, status, agency, and review dates."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -61,15 +61,20 @@ class MissileIdentityRecord(BaseModel):
     nomenclature: Optional[str] = Field(
         default=None,
         description=(
-            "Official military nomenclature — formal alphanumeric "
-            "designation. Distinct from system_name."
+            "Official military nomenclature or formal alphanumeric "
+            "designation. Relevant source labels include 'nomenclature', "
+            "'designation', 'military designation', 'model', 'type', "
+            "'variant', 'GRAU index', 'MIM', 'RIM', or '9M'. "
+            "Keep distinct from system_name."
         ),
     )
     dieqp: Optional[str] = Field(
         default=None,
         description=(
             "Digital Intelligence Equipment Parameters identifier. "
-            "Emit verbatim; do not infer."
+            "Relevant source labels include 'DIEQP', 'Digital Intelligence "
+            "Equipment Parameters', 'equipment parameter id', or "
+            "'MDE identifier'. Emit verbatim; do not infer."
         ),
     )
     name: Optional[str] = Field(
@@ -87,7 +92,10 @@ class MissileIdentityRecord(BaseModel):
     emitter_function: Optional[str] = Field(
         default=None,
         description=(
-            "Operational role of the missile. Emit only when the "
+            "Operational role of the missile or interceptor. Relevant "
+            "source labels include 'role', 'function', 'mission', "
+            "'surface-to-air missile', 'SAM', 'interceptor', "
+            "'anti-ballistic missile', or 'ABM'. Emit only when the "
             "document explicitly assigns the role."
         ),
     )
@@ -121,26 +129,35 @@ class MissileIdentityRecord(BaseModel):
         default=None,
         description=(
             "ASRD identifier from the All-Source Reference Document. "
-            "Emit verbatim when stated."
+            "Relevant source labels include 'ASRD', 'All-Source Reference "
+            "Document', or 'source reference id'. Emit verbatim when "
+            "stated."
         ),
     )
     responsible_agency: Optional[str] = Field(
         default=None,
         description=(
-            "Organization responsible for the MDE record. 3-letter IC "
-            "acronym (IWC, NASIC, ONI, NGIC)."
+            "Organization responsible for the MDE record. Relevant "
+            "source labels include 'responsible agency', 'agency', "
+            "'OPR', 'office of primary responsibility', 'custodian', "
+            "or 3-letter IC acronyms such as IWC, NASIC, ONI, NGIC, or MSIC."
         ),
     )
     review_cycle: Optional[str] = Field(
         default=None,
         description=(
-            "Scheduled review cadence. Free-text; emit verbatim."
+            "Scheduled review cadence. Relevant source labels include "
+            "'review cycle', 'review cadence', 'update cycle', "
+            "'review interval', 'annual', 'biennial', or 'triennial'. "
+            "Free-text; emit verbatim."
         ),
     )
     next_review_date: Optional[str] = Field(
         default=None,
         description=(
-            "Next scheduled MDE review date. ISO 8601 preferred."
+            "Next scheduled MDE review date. Relevant source labels "
+            "include 'next review date', 'review date', 'next update', "
+            "'due date', or 'scheduled review'. ISO 8601 preferred."
         ),
     )
 

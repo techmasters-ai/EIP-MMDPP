@@ -25,7 +25,7 @@ _FIELDS = MISSILE_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exi
 
 
 class MissilePropulsionRecord(BaseModel):
-    """Subset of MissileSystemEntity covering staged-motor parameters."""
+    """Missile propulsion stages: ejector, booster, and sustainer thrust, mass, burn time, impulse, and stage separation parameters."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -57,75 +57,87 @@ class MissilePropulsionRecord(BaseModel):
     ejector_thrust: Optional[str] = Field(
         default=None,
         description=(
-            "Ejector-stage thrust description (the cold-launch / "
-            "soft-launch impulse before the main motor ignites). "
-            "Free-text — preserve the source's units. Examples: "
-            "'5 kN initial impulse', '1500 lbf', '20 kg·s impulse', "
-            "'cold-gas ejector'. Emit verbatim from the source when "
-            "stated explicitly."
+            "Ejector-stage thrust or impulse description for cold-launch "
+            "or soft-launch before the main motor ignites. Relevant source "
+            "labels include 'ejector thrust', 'ejection impulse', "
+            "'launch ejector', 'gas generator', 'cold-gas ejector', "
+            "'soft launch', or 'initial impulse'. Free-text; preserve "
+            "source units such as kN, lbf, N-s, or kg-s and emit verbatim "
+            "when stated explicitly."
         ),
     )
     ejector_mass_kg: Optional[float] = Field(
         default=None,
         description=(
-            "Ejector-stage mass in kilograms. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "Ejector-stage mass in kilograms. Relevant source labels "
+            "include 'ejector mass', 'ejector weight', 'launch ejector "
+            "mass', 'gas generator mass', 'cold-launch motor mass', or "
+            "'soft-launch charge weight'. Use ejector-stage mass only, "
+            "not total missile mass."
         ),
     )
     booster_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Booster-stage burn time in seconds. Source labels such as "
-            "'Burn Time' or 'Time' map here only under a '1st Stage', "
-            "'Booster', or equivalent section/row label. "
+            "Booster-stage burn time in seconds. Relevant source labels "
+            "include 'booster burn time', 'boost time', 'first-stage "
+            "burn', '1st Stage Burn Time', 'Booster Time', 'Burn "
+            "Time', or 'Time' under a booster or first-stage section."
         ),
     )
     booster_thrust: Optional[str] = Field(
         default=None,
         description=(
-            "Booster-stage thrust description (the high-impulse first "
-            "stage that accelerates the missile off the rail/launcher). "
-            "Free-text — preserve the source's units. Examples: "
-            "'100 kN', '290 kN over a 6-second burn', '50,000 lbf', "
-            "'225 kN peak'. Emit verbatim from the source when stated "
-            "explicitly."
+            "Booster-stage thrust description for the high-impulse first "
+            "stage that accelerates the missile off the rail or launcher. "
+            "Relevant source labels include 'booster thrust', 'boost "
+            "thrust', 'first-stage thrust', '1st Stage Thrust', "
+            "'launch motor thrust', 'peak thrust', or 'initial thrust'. "
+            "Free-text; preserve source units such as kN, lbf, or N and "
+            "emit verbatim when stated explicitly."
         ),
     )
     booster_mass_kg: Optional[float] = Field(
         default=None,
         description=(
-            "Booster-stage mass in kilograms. Source labels such as "
-            "'Weight' or 'Mass' map here only under a '1st Stage', "
-            "'Booster', or equivalent section/row label. Never copy "
-            "this value to total_mass_kg. "
+            "Booster-stage mass in kilograms. Relevant source labels "
+            "include 'booster mass', 'booster weight', 'first-stage "
+            "mass', '1st Stage Weight', 'boost motor weight', "
+            "'stage mass', 'Weight', or 'Mass' under a booster or "
+            "first-stage section. Never copy this value to total_mass_kg."
         ),
     )
     sustain_time_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Sustainer-stage burn time in seconds. Source labels such "
-            "as 'Burn Time' or 'Time' map here only under a '2nd Stage', "
-            "'Sustainer', 'Sustain', or equivalent section/row label. "
+            "Sustainer-stage burn time in seconds. Relevant source labels "
+            "include 'sustainer burn time', 'sustain time', "
+            "'second-stage burn', '2nd Stage Burn Time', 'Sustainer "
+            "Time', 'Burn Time', or 'Time' under a sustainer, sustain, "
+            "or second-stage section."
         ),
     )
     sustain_thrust: Optional[str] = Field(
         default=None,
         description=(
-            "Sustainer-stage thrust description (the lower-impulse "
-            "second stage that maintains cruise speed after booster "
-            "burnout). Free-text — preserve the source's units. "
-            "Examples: '20 kN sustained', '5,000 lbf cruise thrust', "
-            "'dual-pulse Mark 104 sustainer', '40 kN extended-cruise'. "
-            "Emit verbatim from the source when stated explicitly."
+            "Sustainer-stage thrust description for the second-stage or "
+            "cruise motor after booster burnout. Relevant source labels "
+            "include 'sustainer thrust', 'sustain thrust', 'second-stage "
+            "thrust', '2nd Stage Thrust', 'cruise thrust', 'march "
+            "motor thrust', or 'dual-pulse sustainer'. Free-text; "
+            "preserve source units such as kN, lbf, or N and emit verbatim "
+            "when stated explicitly."
         ),
     )
     sustain_mass_kg: Optional[float] = Field(
         default=None,
         description=(
-            "Sustainer-stage mass in kilograms. Source labels such as "
-            "'Weight' or 'Mass' map here only under a '2nd Stage', "
-            "'Sustainer', 'Sustain', or equivalent section/row label. "
-            "Never copy this value to total_mass_kg. "
+            "Sustainer-stage mass in kilograms. Relevant source labels "
+            "include 'sustainer mass', 'sustainer weight', "
+            "'second-stage mass', '2nd Stage Weight', 'march motor "
+            "weight', 'stage mass', 'Weight', or 'Mass' under a "
+            "sustainer, sustain, or second-stage section. Never copy this "
+            "value to total_mass_kg."
         ),
     )
 

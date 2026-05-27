@@ -4,9 +4,9 @@ Spec §4.4. One of 5 sub-passes splitting the legacy radar_domain into
 smaller LLM call boundaries. Group fields: system_name, nominal_pri_usec,
 nominal_pd_usec, scan_period_sec, dwell_time.
 
-Field descriptions are sanitized at copy time per spec §4.4: numeric
-fields reference DELTA_SYSTEM_PROMPT's Unit Policy block instead of
-inlining conversion rules. The byte-equal description-parity check in
+Field descriptions are written as dual-use retrieval and prompt text:
+use document-facing anchor terms while preserving extraction constraints. The
+byte-equal description-parity check in
 test_extraction_views_subset_of_canonical_with_validator_parity was
 loosened in commit 20b1a8d to allow this divergence.
 """
@@ -25,7 +25,7 @@ _FIELDS = RADAR_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exist
 
 
 class RadarTimingRecord(BaseModel):
-    """Subset of RadarSystemEntity covering pulse + scan timing."""
+    """Radar pulse and scan timing: PRI, PRF interval, pulse width, scan period, rotation time, and dwell time."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -47,35 +47,40 @@ class RadarTimingRecord(BaseModel):
     nominal_pri_usec: Optional[float] = Field(
         default=None,
         description=(
-            "Nominal Pulse Repetition Interval in microseconds. Source labels "
-            "such as 'PRI', 'Pulse Repetition Interval', or 'Pulse "
-            "Interval' map here. See Unit Policy in DELTA_SYSTEM_PROMPT "
-            "for conversions."
+            "Nominal Pulse Repetition Interval in microseconds. Relevant "
+            "source labels include 'PRI', 'Pulse Repetition Interval', "
+            "'Pulse Interval', 'interpulse period', 'pulse spacing', "
+            "'repetition interval', or 'microseconds'. Use interval time, "
+            "not pulse repetition frequency in Hz unless the source gives "
+            "or implies the interval."
         ),
     )
     nominal_pd_usec: Optional[float] = Field(
         default=None,
         description=(
-            "Nominal Pulse Duration in microseconds. Source labels such as 'Pulse "
-            "Width', 'Pulse Duration', 'Pulse Length', or 'PW' map here. "
-            "See Unit Policy in DELTA_SYSTEM_PROMPT for conversions."
+            "Nominal pulse duration or pulse width in microseconds. Relevant "
+            "source labels include 'Pulse Width', 'Pulse Duration', "
+            "'Pulse Length', 'PW', 'pulsewidth', 'transmitted pulse "
+            "duration', or 'microseconds'. Use pulse width, not PRI/PRF."
         ),
     )
     scan_period_sec: Optional[float] = Field(
         default=None,
         description=(
-            "Time to complete one full scan in seconds. Source labels "
-            "such as 'Scan Period', 'Scan Time', or 'Rotation Period' "
-            "map here. "
+            "Time to complete one full scan in seconds. Relevant source "
+            "labels include 'Scan Period', 'Scan Time', 'Rotation Period', "
+            "'antenna rotation time', 'scan cycle', 'revisit period', "
+            "'rpm', or 'seconds per revolution'."
         ),
     )
     dwell_time: Optional[str] = Field(
         default=None,
         description=(
-            "Time spent at a single beam position. Free-text — preserve "
-            "the source's units. Examples: '10 ms', '1 second', '500 "
-            "microseconds', '50 µs', '0.1 sec'. Emit verbatim from the "
-            "source when stated explicitly."
+            "Time spent at a single beam position. Relevant source labels "
+            "include 'dwell time', 'beam dwell', 'look time', 'time on "
+            "target', 'illumination time', or 'track dwell'. Free-text; "
+            "preserve source units such as ms, seconds, microseconds, or "
+            "µs and emit verbatim when stated explicitly."
         ),
     )
 

@@ -18,7 +18,7 @@ _FIELDS = MISSILE_FIELD_GROUPS[_GROUP_NAME]   # implicit assertion the group exi
 
 
 class MissileAirframeRecord(BaseModel):
-    """Subset of MissileSystemEntity covering body geometry + mass."""
+    """Missile airframe physical characteristics: body length, diameter, caliber, launch mass, and all-up round weight."""
 
     model_config = ConfigDict(
         extra="ignore",
@@ -50,28 +50,32 @@ class MissileAirframeRecord(BaseModel):
     body_length_m: Optional[float] = Field(
         default=None,
         description=(
-            "Missile body length in meters. Source labels such as "
-            "'Length', 'Overall Length', or 'Missile Length' map here "
-            "when they describe the missile variant. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions."
+            "Missile body length in meters. Relevant source labels include "
+            "'Length', 'Overall Length', 'Missile Length', 'body length', "
+            "'airframe length', 'weapon length', or 'length overall'. "
+            "Use missile or round length, not launcher, rail, or canister "
+            "dimensions."
         ),
     )
     body_diameter_m: Optional[float] = Field(
         default=None,
         description=(
-            "Missile body diameter in meters. Source labels such as "
-            "'Diameter', 'Body Diameter', 'Calibre', or 'Caliber' map "
-            "here when they describe the missile variant. "
+            "Missile body diameter in meters. Relevant source labels include "
+            "'Diameter', 'Missile Diameter', 'Body Diameter', "
+            "'airframe diameter', 'round diameter', 'Calibre', or "
+            "'Caliber'. Use missile body diameter, not warhead diameter or "
+            "launcher tube diameter."
         ),
     )
     total_mass_kg: Optional[float] = Field(
         default=None,
         description=(
-            "Total whole-missile mass at launch in kilograms. Source "
-            "labels such as 'Weight', 'Mass', 'Launch Weight', or "
-            "'Launch Mass' map here only when they describe the whole "
-            "missile. Do not use booster/sustainer stage weights. See Unit "
-            "Policy in DELTA_SYSTEM_PROMPT for conversions."
+            "Total whole-missile mass at launch in kilograms. Relevant "
+            "source labels include 'Weight', 'Mass', 'Launch Weight', "
+            "'Launch Mass', 'missile weight', 'all-up round weight', "
+            "'round mass', or 'firing weight'. Use only whole-missile "
+            "or all-up-round mass; do not use booster, sustainer, ejector, "
+            "warhead, or launcher weights."
         ),
     )
 
