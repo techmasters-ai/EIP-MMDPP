@@ -622,8 +622,13 @@ def build_extraction_index(
         # 4. Normalize stripped for residue check + dedup key.
         stripped_normalized = _normalize_for_dedup(stripped)
 
-        # 5. Drop if residue too short to be useful evidence.
-        if len(stripped_normalized) < _MIN_RESIDUAL_CHARS:
+        # 5. Drop if residue too short — only when chrome was actually
+        #    stripped. Short non-chrome content (e.g. spec-table fragments
+        #    like "Length:" rendered with a short heading prefix) is preserved
+        #    here so its self_ref enters the index and can be picked up by the
+        #    vector router for narrowed passes. Mirrors the Layer-1 gate in
+        #    filter_docling_document (gate_after_strip_on_chrome=True).
+        if had_chrome_stripped and len(stripped_normalized) < _MIN_RESIDUAL_CHARS:
             chunks_skipped += 1
             chunks_skipped_after_strip += 1
             _add_example(
