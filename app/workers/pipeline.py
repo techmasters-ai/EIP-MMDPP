@@ -8564,7 +8564,32 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
         if settings.vector_router_mode != "disabled":
             try:
                 from app.services.extraction_chunk_index import build_extraction_index
+                from app.services.scoped_docling_document import filter_docling_document
                 doc_json_for_index = _build_docling_document_json(document_id)
+                try:
+                    doc_json_for_index, filter_diag_idx = filter_docling_document(doc_json_for_index)
+                    logger.info(
+                        "VR: filter_docling_document (index path) run=%s texts_in=%d blanked=%d "
+                        "(short=%d dedup=%d after_strip=%d) stripped_in_place=%d protected_captions=%d",
+                        run_id,
+                        filter_diag_idx.texts_in,
+                        filter_diag_idx.blanked_short + filter_diag_idx.blanked_dedup + filter_diag_idx.blanked_after_strip,
+                        filter_diag_idx.blanked_short,
+                        filter_diag_idx.blanked_dedup,
+                        filter_diag_idx.blanked_after_strip,
+                        filter_diag_idx.stripped_in_place,
+                        filter_diag_idx.protected_captions,
+                    )
+                except Exception as exc:
+                    # Fail-open: a malformed doc must not terminalize the pipeline_run.
+                    # Proceed to build_extraction_index with the unfiltered doc; the
+                    # existing in-loop filter inside build_extraction_index will still
+                    # apply its texts[]-level filter as a second layer.
+                    logger.warning(
+                        "VR: filter_docling_document (index path) FAILED run=%s: %r "
+                        "— proceeding with unfiltered doc",
+                        run_id, exc,
+                    )
                 store_for_index = get_graph_store()
                 build_diag = build_extraction_index(
                     doc_json=doc_json_for_index,
