@@ -116,6 +116,8 @@ chunker_config = {
 
 ### Task 0b: Sanitize-skip + chunker-skip when `selected_chunks` is provided
 
+(See Glossary for `selected_chunks` / `chunk_index` / `source_refs` semantics.)
+
 **Files:**
 - Modify: `docker/docling-graph/app/main.py:638-657` (extract handler) — add a guard that skips `_sanitize_docling_document` and `DocumentChunker.chunk_document` when the new optional `selected_chunks` field is present in the request.
 - Modify: docling-graph request schema (`docker/docling-graph/app/schemas.py`) — add optional `selected_chunks: list[SelectedChunkInput] | None = None` field.
@@ -138,7 +140,7 @@ else:
     batch_provenance = [c.source_refs for c in chunks]  # or per-element refs
 ```
 
-- [ ] **Step 1: Extend request schema** with optional `selected_chunks` field + `SelectedChunkInput` model. Receiver-side fields: `chunk_index` (int), `text` (str), `source_refs` (list[str]), `token_count` (int). **`chunk_key` is OMITTED on the receiver side** — docling-graph iterates `selected_chunks` by list order, doesn't index by key, so the field would be unused noise. Keep it only on the worker-side `SelectedChunk` (Task 6) for log correlation if needed.
+- [ ] **Step 1: Extend request schema** with optional `selected_chunks` field + `SelectedChunkInput` model. Receiver-side fields: `chunk_index` (int), `text` (str), `source_refs` (list[str]), `token_count` (int). **`chunk_key` is OMITTED on the receiver side** — docling-graph iterates `selected_chunks` by list order, doesn't index by key, so the field would be unused noise. `SelectedChunkInput` declares `model_config = ConfigDict(extra="ignore")` so a naive `worker_selected_chunk.model_dump()` POST that includes `chunk_key` silently drops the field server-side. Worker-side Task 11 does NOT need to strip `chunk_key` before POSTing.
 - [ ] **Step 2: Add the guard branch** at `main.py:638-657`.
 - [ ] **Step 3: Bypass** the `many_to_one.py:66` ValueError when `selected_chunks` is set.
 - [ ] **Step 4: Integration test** that POSTs to `/extract-pass` with `selected_chunks` and asserts: (a) `_sanitize_docling_document` not called (mock + assert); (b) `DocumentChunker.chunk_document` not called; (c) LLM batches submitted are exactly `selected_chunks[*].text` byte-equal.
@@ -218,21 +220,54 @@ def test_read_chunk_source_refs_handles_legacy_rows():
     assert read_chunk_source_refs(legacy) == []
 ```
 
-- [ ] **Step 2a: Add the column declarations** to `arcadedb_schema.py:38` block with defaults (`chunk_index = -1`, `source_refs = []` or `source_refs_json = "[]"`, `token_count = 0`).
-- [ ] **Step 2b: Implement schema migration** — `ALTER TYPE ExtractionChunk ADD PROPERTY chunk_index INTEGER DEFAULT -1`, etc. ArcadeDB does NOT auto-fill columns added later, so this step also runs an explicit **backfill UPDATE** for legacy rows:
+- [ ] **Step 2a: Add the column declarations** to `arcadedb_schema.py:38` block using the codebase idiom (no `DEFAULT` clause — defaults applied application-side via accessors). Existing pattern at `arcadedb_schema.py:217-291` uses `CREATE PROPERTY <T>.<p> IF NOT EXISTS <type>` exclusively:
 
-      UPDATE ExtractionChunk SET chunk_index = -1
-        WHERE chunk_index IS NULL;
-      UPDATE ExtractionChunk SET source_refs = []
-        WHERE source_refs IS NULL;
-      UPDATE ExtractionChunk SET token_count = 0
-        WHERE token_count IS NULL;
+  ```sql
+  CREATE PROPERTY ExtractionChunk.chunk_index IF NOT EXISTS INTEGER;
+  CREATE PROPERTY ExtractionChunk.source_refs IF NOT EXISTS LIST;
+  CREATE PROPERTY ExtractionChunk.token_count IF NOT EXISTS INTEGER;
+  ```
 
-  Without this, post-Task-5 `read_chunk_source_refs` returns `[]` (safe via the accessor) BUT `chunk_row["token_count"]` is `None` and Task 6's `sum(c["token_count"] for c in selected)` raises `TypeError`. Belt-and-suspenders: also have a `read_chunk_token_count(row) -> int` helper that coalesces None → 0; document the rule that callers go through accessors, never raw dict access on these columns.
+  If LIST-type fails for `source_refs` (pre-flight verification), substitute `STRING` with the column renamed to `source_refs_json`. The accessor (Step 4) handles either storage transparently.
 
-- [ ] **Step 2c: Verify against running DB** — `DESCRIBE TYPE ExtractionChunk` shows all three new columns; `SELECT count(*) FROM ExtractionChunk WHERE chunk_index IS NULL` returns 0. Lock the verification in CI via an idempotent migration test.
+- [ ] **Step 2b: Run explicit backfill UPDATE** for legacy rows. ArcadeDB does not auto-fill columns added later. Branch by chosen storage path for `source_refs`:
+
+  ```sql
+  -- Always:
+  UPDATE ExtractionChunk SET chunk_index = -1 WHERE chunk_index IS NULL;
+  UPDATE ExtractionChunk SET token_count = 0  WHERE token_count IS NULL;
+  -- If source_refs is LIST:
+  UPDATE ExtractionChunk SET source_refs = [] WHERE source_refs IS NULL;
+  -- If source_refs_json fallback:
+  UPDATE ExtractionChunk SET source_refs_json = '[]' WHERE source_refs_json IS NULL;
+  ```
+
+  Performance note: at production scale, if `SELECT count(*) FROM ExtractionChunk` exceeds **100k**, run the backfill in chunks of `LIMIT 10000` (commit between batches) instead of one full-table UPDATE. The periodic janitor at `app/workers/celery_app.py:107-114` bounds legacy row count to ~24h of completed runs, so this is typically fine but worth gating on row-count.
+
+  Without this backfill, Task 6's `sum(c["token_count"] for c in selected)` would raise `TypeError` on legacy rows whose `token_count` is `None`. The accessor pair from Step 4 is belt-and-suspenders, but the canonical fix is to write valid defaults.
+
+- [ ] **Step 2c: Verify migration** with two assertions executed by an integration test:
+  1. `SELECT count(*) FROM ExtractionChunk WHERE chunk_index IS NULL` returns `0`.
+  2. `SELECT count(*) FROM ExtractionChunk WHERE token_count IS NULL` returns `0`.
+
+  These checks do NOT require a `DESCRIBE TYPE` accessor (no such accessor exists in `tests/unit/test_extraction_chunk_schema.py` today). `SELECT count(*)` already works through the existing `graph_store` query path. If a `DESCRIBE TYPE` harness is added later it can complement these checks but is not required for the migration gate.
+
 - [ ] **Step 3: Update inline INSERT SQL** at `extraction_chunk_index.py:749-760` (per-element path still uses the existing vertex_id format; merged-mode path uses the new format — branched by Task 4 flag).
-- [ ] **Step 4: Implement `read_chunk_source_refs` (and `read_chunk_token_count`) accessors** with the storage-agnostic, None-coalescing semantics above.
+
+- [ ] **Step 4: Implement the three accessor functions** with None-coalescing semantics. All three live in `app/services/extraction_chunk_index.py`:
+
+  ```python
+  def read_chunk_source_refs(row: dict | object) -> list[str]:
+      """Returns [] for legacy/missing; never None."""
+
+  def read_chunk_token_count(row: dict | object) -> int:
+      """Returns 0 for legacy/missing; never None."""
+
+  def read_chunk_index(row: dict | object) -> int:
+      """Returns -1 for legacy/missing; never None."""
+  ```
+
+  **Belt-and-suspenders rule**: all merged-mode column reads go through these accessors. NEVER `row["chunk_index"]` directly. Task 6's example code is updated accordingly.
 - [ ] **Step 5: Run integration test**. Expected: PASS.
 - [ ] **Step 6: Commit** `feat(extraction-chunk): add chunk_index + source_refs + token_count columns + accessors + backfill migration`.
 
@@ -361,6 +396,8 @@ def _resolve_first_page_no(chunk) -> str | None:
 
 ### Task 3: New indexer — `build_extraction_index_hybrid`
 
+(See Glossary for `chunk_index` / `source_refs` / `vertex_id` semantics.)
+
 **Files:**
 - Modify: `app/services/extraction_chunk_index.py`
 - Test: `tests/unit/test_extraction_chunk_index_hybrid.py`
@@ -472,7 +509,9 @@ else:
 
 ### Task 5: Extend direct-cosine SQL projection for merged-mode columns
 
-**Dependency**: Task 5 must land before Task 6. Task 6 reads `chunk_row["chunk_index"]` / `chunk_row["token_count"]` / source_refs from the dict returned by `search_extraction_chunks_direct`. Without Task 5's extended projection, those keys are absent → `KeyError`. Do NOT parallelize 5 and 6.
+(See Glossary for `chunk_index` / `source_refs` / `token_count` semantics.)
+
+**Dependency**: Task 5 must land before Task 6. Task 6 reads `chunk_index` / `token_count` / `source_refs` from the dict returned by `search_extraction_chunks_direct` (via the new accessors from Task 1 Step 4). Without Task 5's extended projection, those keys are absent and the accessors return safe defaults — but Task 6's logic depends on the real values, not the defaults. Do NOT parallelize 5 and 6.
 
 **Files:**
 - Modify: `app/services/extraction_chunk_search.py:262-434` — `search_extraction_chunks_direct` SQL SELECT (around line 315-320) and result projection.
@@ -501,6 +540,8 @@ SELECT chunk_text, embedding, page_number, modality, pipeline_run_id,
 
 ### Task 6: Chunk-scope endpoint expands `source_refs` and rides merged chunk text on `SelectedChunk.text`
 
+(See Glossary for `self_refs` vs `source_refs`, `chunk_key`, `text_by_ref` semantics.)
+
 **Files (verified):**
 - Modify: `app/api/v1/extraction_routing.py:168-407` (`chunk_scope` endpoint)
 - Modify: `app/schemas/extraction_routing.py:82-99` (`ChunkScopeResponse` + `ChunkScopeDiagnostics`)
@@ -522,16 +563,18 @@ selected_chunks: list[SelectedChunk] = []
 # diagnostics + Phase 2 dispatch.
 for chunk_row in selected:    # iteration order = bge-m3+reranker top-K order
     refs_for_chunk = read_chunk_source_refs(chunk_row)
+    chunk_idx = read_chunk_index(chunk_row)
+    tok_count = read_chunk_token_count(chunk_row)
     for ref in refs_for_chunk:
         if ref not in seen:
             seen.add(ref)
             expanded_refs.append(ref)
     selected_chunks.append(SelectedChunk(
-        chunk_index=chunk_row["chunk_index"],
-        chunk_key=f"chunk_{chunk_row['chunk_index']}",
-        text=chunk_row["chunk_text"],           # merged chunk text rides here
+        chunk_index=chunk_idx,
+        chunk_key=f"chunk_{chunk_idx}",
+        text=chunk_row["chunk_text"],           # merged chunk text — column name is fixed
         source_refs=refs_for_chunk,
-        token_count=chunk_row["token_count"],
+        token_count=tok_count,
     ))
 
 return ChunkScopeResponse(
@@ -550,10 +593,9 @@ return ChunkScopeResponse(
 )
 ```
 
-**Legacy `selected_token_estimate` semantics in merged mode** (resolves rev-2 gap): the existing `ChunkScopeDiagnostics.selected_token_estimate` field at `app/schemas/extraction_routing.py:46` was defined for per-element mode as "sum of token estimates across selected per-element chunks." In merged mode, it MUST equal `selected_chunk_token_estimate` so existing dashboards keep working. Two implementation options:
+**Legacy `selected_token_estimate` semantics in merged mode**: the existing `ChunkScopeDiagnostics.selected_token_estimate` field at `app/schemas/extraction_routing.py:46` was defined for per-element mode as "sum of token estimates across selected per-element chunks." In merged mode, it MUST equal `selected_chunk_token_estimate` so existing dashboards keep working.
 
-- **Preferred — `@computed_field`**: rewrite `selected_token_estimate` as a pydantic `@computed_field` that returns `selected_chunk_token_estimate` when `index_mode == "merged"` and the existing per-element computation otherwise. Single source of truth; no "two fields with the same value" smell.
-- **Fallback — populate both identically** with a `Field(description=...)` on the legacy field explaining the merged-mode equivalence inline. Acceptable but smell-prone.
+**Implementation**: populate both fields with the same value at construction time. Add a `Field(description="In merged-mode runs, equals selected_chunk_token_estimate; preserved for dashboard compatibility.")` to the existing `selected_token_estimate` field. Do NOT convert to `@computed_field` — the existing field is set as a constructor kwarg at 7 call sites in `app/api/v1/extraction_routing.py` (`:208, :245, :309, :369, :417, :434-437, :478`), and `@computed_field` instances cannot be set via constructor. Refactoring all 7 call sites + adding a new `index_mode` field to `ChunkScopeDiagnostics` (which doesn't exist today) would be a separate refactor with no recall benefit. Belt-and-suspenders rule: if two fields drift, the snapshot test in Step 4 catches it.
 
 **Zero-retrieval edge case**: the existing empty-retrieval path at `extraction_routing.py:297-310` already sets `selected_token_estimate = 0` when no chunks are returned, regardless of mode. The merged-mode population path MUST NOT overwrite or double-set this when the candidate list is empty — verify in Step 4's snapshot test.
 
@@ -701,7 +743,7 @@ Flow:
 - [ ] **Step 1: Failing test** mocking the chunk-scope response with merged `selected_chunks` and the docling-graph endpoint:
   - asserts the POSTed `selected_chunks[*].text` is byte-equal to `chunk_scope_response.selected_chunks[i].text`
   - asserts no ArcadeDB read for chunk text between chunk-scope and docling-graph dispatch
-- [ ] **Step 2: Implement** the forward path in `derive_ontology_graph_pass` (gated on `settings.extraction_index_mode == "merged"`).
+- [ ] **Step 2: Implement** the forward path in `derive_ontology_graph_pass` (gated on `settings.extraction_index_mode == "merged"`). Worker can `model_dump()` `SelectedChunk` directly and include the result in the POST body — the receiver-side `SelectedChunkInput` declares `extra="ignore"` per Task 0b, so the worker-side-only `chunk_key` is silently dropped server-side. No worker-side strip needed.
 - [ ] **Step 3: Sanity check** on a Dvina run — extracted entities' `evidence_units` carry `source_refs` from the producing merged chunk.
 - [ ] **Step 4: Commit** `feat(worker): narrowed passes forward chunk text byte-identically to docling-graph`.
 
@@ -739,17 +781,22 @@ The `extraction_index_mode` flag and the entire per-element path (`build_extract
 
 1. Phase 1 A/B passes (Task 10 gates) on Dvina + SA-2.
 2. Phase 2 A/B passes (Task 12 gates) on Dvina + SA-2.
-3. **2 consecutive weeks** of `EXTRACTION_INDEX_MODE=merged` as production default. "No regression" is validated by **manual review of routine traffic** comparing entity/relationship counts and wall-time per pass against the Phase 1 baseline diagnostic capture; this is NOT a scheduled job. If a recurring eval harness is built later it supersedes the manual check.
-4. No open bug citing the per-element path.
+3. **2 consecutive weeks** of `EXTRACTION_INDEX_MODE=merged` as production default with **no open bug citing the per-element path** during that window. This is an objective trigger that needs no owner or scheduled review — the bug tracker IS the evidence. If a recurring eval harness is built later, its results can be added as an additional gate but are not required for retirement.
 
-Retirement task list (one PR):
+Retirement is **two PRs** (the code-delete PR is reversible; the schema-tightening PR is a one-way migration, separable for safer rollback):
+
+**PR A — code deletes** (reversible via `git revert`):
 - Delete `build_extraction_index` + `_walk_docling_elements` + `_render_text_chunk` from `app/services/extraction_chunk_index.py`.
 - Delete `extraction_index_mode` Settings field from `app/config.py` and `.env*` entries.
 - Remove per-element branches from Task 4 (worker dispatch) and Task 6 (chunk-scope endpoint) wires.
 - Drop the `vertex_id_format` parameter on `store.insert_extraction_chunk` (always merged-mode key).
-- Drop schema column defaults — `chunk_index`/`source_refs`/`token_count` become non-nullable; backfill UPDATE from Task 1 Step 2b is no longer needed since no per-element rows can exist.
-- Remove `read_chunk_source_refs`'s legacy-row branch (was: returns `[]` for `chunk_index = -1`).
+- Remove the legacy-row branch from accessors `read_chunk_source_refs`, `read_chunk_token_count`, `read_chunk_index` (was: return safe defaults for `chunk_index == -1`).
 - Drop the parity test's per-element-mode snapshot column.
+
+**PR B — schema tightening** (one-way; do NOT merge until PR A has been in production for ≥1 week without rollback):
+- `chunk_index`, `source_refs`, `token_count` become `MANDATORY`/non-nullable on `ExtractionChunk`.
+- Drop the application-side default-coalescing logic in accessors (defaults now guaranteed by schema).
+- Backfill UPDATE from Task 1 Step 2b is no longer needed since no per-element rows can exist.
 
 ---
 
@@ -767,7 +814,16 @@ Retirement task list (one PR):
 
 6. **Reranker truncation outcome**: gated by pre-flight measurement. Default decision: keep `max_tokens=512`.
 
-(Closed in rev 4: the `EXTRACTION_INDEX_MODE` naming question. Reviewer suggested `EXTRACTION_CHUNK_GRANULARITY=element|hybrid_merged`. **Decision: keep `EXTRACTION_INDEX_MODE` with values `per_element|merged`.** Rationale: pairs with `vector_router_mode` and `vector_router_retrieval_mode` in `app/config.py`; the subsystem prefix `EXTRACTION_INDEX_*` clearly anchors it to the ExtractionChunk index. `CHUNK_GRANULARITY` would be flatter but loses the subsystem anchor.)
+---
+
+## Decisions (closed)
+
+| Decision | Resolution | Rationale |
+|---|---|---|
+| `EXTRACTION_INDEX_MODE` vs `EXTRACTION_CHUNK_GRANULARITY` (rev 4) | Keep `EXTRACTION_INDEX_MODE` with values `per_element|merged` | Pairs with `vector_router_mode` and `vector_router_retrieval_mode` in `app/config.py`; subsystem prefix anchors it to the ExtractionChunk index. |
+| `@computed_field` vs populate-both for `selected_token_estimate` (rev 5) | Populate both identically + `Field(description=...)` | `@computed_field` would break 7 existing constructor-kwarg call sites and requires a new `index_mode` field; no recall benefit for the refactor. |
+| `text_by_ref` reuse for merged text (rev 3) | Leave `text_by_ref` as self_ref-keyed; ride merged text on `SelectedChunk.text` | `apply_chunk_scope` reads `text_by_ref` by self_ref and would silently drop chunk-keyed entries. |
+| ALTER TYPE DEFAULT vs CREATE PROPERTY IF NOT EXISTS (rev 5) | Use `CREATE PROPERTY <T>.<p> IF NOT EXISTS <type>` + explicit UPDATE backfill | Matches the existing codebase idiom at `arcadedb_schema.py:217-291`; no DEFAULT clauses in the file today. |
 
 ---
 
@@ -816,6 +872,22 @@ Keep `selected_ref_count` + `selected_token_estimate` populated so existing dash
 ---
 
 ## Revision log
+
+### Rev 5 (2026-05-27) — fourth-pass reviewer findings absorbed
+
+Three reversals + smaller items from the rev-4 review:
+
+- **R1**: `@computed_field` recommendation for `selected_token_estimate` was wrong. Existing field is settable as constructor kwarg at 7 call sites in `app/api/v1/extraction_routing.py`; `@computed_field` would break all of them AND requires a non-existent `index_mode` field on `ChunkScopeDiagnostics`. **Reversal**: populate both fields identically + `Field(description=...)` documenting the merged-mode equivalence. Snapshot test catches drift.
+- **R2**: `ALTER TYPE ... DEFAULT -1` is not the codebase idiom. The schema-sync file uses `CREATE PROPERTY <T>.<p> IF NOT EXISTS <type>` exclusively (no DEFAULT clauses). **Reversal**: Task 1 Step 2a uses `CREATE PROPERTY IF NOT EXISTS`; Step 2b runs explicit UPDATE backfill (branched LIST vs JSON storage); Step 2c verifies via `SELECT count(*) WHERE col IS NULL == 0` (no DESCRIBE TYPE harness required since none exists today).
+- **R3**: Task 11 `chunk_key` POST handling clarified. `SelectedChunkInput` declares `model_config = ConfigDict(extra="ignore")` so a `model_dump()` of worker-side `SelectedChunk` POSTs cleanly without server-side rejection of the extra `chunk_key` field. No worker-side strip needed.
+
+Smaller items:
+- New `read_chunk_index` accessor added for symmetry (3-of-3 accessors); Task 6 example code updated to use accessors throughout.
+- Task 1 Step 2b includes performance guidance: chunked UPDATEs (LIMIT 10000 per batch + commit between) if `count(*) > 100k`. Periodic janitor bounds typical row count.
+- Q3 removal trigger weakened: "no open bug citing per-element path during the 2-week window" — bug tracker IS the evidence; no owner or scheduled review needed.
+- N3: closed naming decision moved out of `Open questions` into a new top-level "Decisions" table alongside three other resolved decisions.
+- N5: retirement task list split into PR A (code deletes, reversible) and PR B (schema tightening, one-way, gated on ≥1 week of PR A in production).
+- Glossary cross-references added on first task mentions in Tasks 0b, 3, 5, 6 (rev 4 only had Tasks 1 + 11).
 
 ### Rev 4 (2026-05-27) — third-pass reviewer findings absorbed
 
