@@ -1,0 +1,97 @@
+bundle_key: air_defense_v3_narrowing_v1
+manifest_schema_version: "1.0.0"
+ontology_name: "EIP Military Equipment Ontology"
+ontology_version: "3.0.0"
+extraction_profile_version: "1.0.0"
+
+# C.9b: clone of air_defense_v3_baseline_subset with calibrated narrowing
+# (top_n=300, top_k=50/60) on the two field_group passes. Same 5-pass set;
+# identity + system_links passes unchanged so the next run answers one
+# question: does calibrated narrowing preserve recall while reducing LLM
+# batches. Sweep evidence: docs/handoffs/2026-05-27-c9a-sweep-v2-results.md.
+
+passes:
+  - name: radar_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_identity
+    template_class: RadarIdentityPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_power_rf
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_power_rf
+    template_class: RadarPowerRfPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      # C.9b: top_n knee at 300 (97% GT cov), top_k=50 (2.3K selected tokens
+      # — 5.7× reduction from baseline_subset's 500/500). Sweep evidence:
+      # docs/handoffs/2026-05-27-c9a-sweep-v2-results.md
+      min_similarity: 0.25
+      top_n_candidates: 300
+      top_k: 50
+      fallback_to_full: true
+
+  - name: missile_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_identity
+    template_class: MissileIdentityPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_kinematics
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_kinematics
+    template_class: MissileKinematicsPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      # C.9b: top_n knee at 300 (93% GT cov), top_k=60 (3.0K selected tokens
+      # — 4.3× reduction from baseline_subset's 500/500). Sweep evidence:
+      # docs/handoffs/2026-05-27-c9a-sweep-v2-results.md
+      min_similarity: 0.25
+      top_n_candidates: 300
+      top_k: 60
+      fallback_to_full: true
+
+  - name: system_links
+    phase: relationship
+    required: true
+    kind: relationships_only
+    input_mode: document_plus_entity_refs
+    module: extraction_schemas.system_links
+    template_class: SystemLinksPass
+    primary_entity_types: []
+    bridge_entity_types: []
+    extracted_relationship_types: [ASSOCIATED_WITH, CUES, VARIANT_OF]
+    depends_on:
+      - radar_identity
+      - radar_power_rf
+      - missile_identity
+      - missile_kinematics
+    skip_if_no_upstream_endpoints: true
+    skip_justification: >
+      When none of the upstream domain passes produce any linkable system
+      entities, there is nothing for system_links to link. Skipping is
+      preferable to dispatching an LLM call that can only fail.
