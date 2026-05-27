@@ -1085,7 +1085,11 @@ This task adds the first canonical filter invocation — before the ExtractionCh
 
 - [ ] **Step 1: Read the current call site**
 
-Open `app/workers/pipeline.py` near line 8567 (inside `derive_ontology_graph`). The current shape is:
+Open `app/workers/pipeline.py` near line 8567 (inside `derive_ontology_graph`).
+
+**Note:** the block you're editing is **already inside an outer `try/except`** (starts ~line 8564, ends ~line 8590) that wraps `build_extraction_index` and sets `_build_index_failed = True` on any exception. Your edits add a NESTED try around `filter_docling_document` — preserve the outer wrapper unchanged.
+
+The current shape inside the outer try is:
 
 ```python
 from app.services.extraction_chunk_index import build_extraction_index
@@ -1489,7 +1493,7 @@ done
 Compare against the **Task 0 baseline file `/tmp/pre_refactor_baseline.txt`**, NOT against any externally-named run UUID. The baseline captured in Task 0 is the canonical reference for this validation; that file records the state immediately before this refactor began.
 
 Acceptance criteria (against the Task 0 baseline):
-- Per-pass entity counts within ±10% of baseline OR within ±1 entity if baseline count ≤ 10
+- Per-pass entity counts within ±10% of baseline OR within ±1 entity if baseline count is in 2-10, **with the stricter rule that if baseline = 1 we require count ≥ 1 (no regression to 0)**. The "±1" wildcard does NOT apply when baseline = 1, because that would let a regression to 0 silently pass.
 - Identity-pass (radar_identity, missile_identity) field density per entity should be ≥ baseline. If it drops, captions or page-header context may have been over-filtered — investigate.
 - radar_power_rf may still be FAILED (Dvina has no RF data — known invariant from prior investigation, NOT caused by this refactor)
 - system_links: COMPLETE; relationships_extracted within ±1 of baseline
