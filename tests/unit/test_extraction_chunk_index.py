@@ -168,9 +168,9 @@ def _make_mixed_doc() -> dict:
       Total: 5 inserts, 1 skip
     """
     texts = [
-        _make_text_elem(0, "Radar tracking parameters and specifications."),
-        _make_text_elem(1, "Maximum engagement altitude is 30 km."),
-        _make_text_elem(2, "Minimum slant range 500 m."),
+        _make_text_elem(0, "Radar tracking parameters and specifications used by the system."),
+        _make_text_elem(1, "Maximum engagement altitude is 30 km in standard configuration."),
+        _make_text_elem(2, "Minimum slant range is 500 m with normal operating conditions."),
     ]
     tables = [
         _make_table_elem(
@@ -180,14 +180,14 @@ def _make_mixed_doc() -> dict:
         )
     ]
     pictures = [
-        _make_picture_elem(0, caption_text="Fan Song E radar front view"),
+        _make_picture_elem(0, caption_text="Fan Song E radar front view photograph with annotations."),
         _make_picture_elem(1, caption_text=None),  # no caption → skip
     ]
     return _make_doc_json(
         texts, tables, pictures,
         extra_texts={
             "#/texts/9000": "Table 1 — SA-2 Guidance Parameters",
-            "#/texts/8000": "Fan Song E radar front view",
+            "#/texts/8000": "Fan Song E radar front view photograph with annotations.",
         },
     )
 
@@ -345,8 +345,8 @@ class TestBuildIdempotentDeleteThenInsert:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, "Radar specifications and parameters."),
-            _make_text_elem(1, "Altitude range parameters defined."),
+            _make_text_elem(0, "Radar specifications and parameters documented in the system manual."),
+            _make_text_elem(1, "Altitude range parameters defined within the operational envelope."),
         ]
         doc_json = _make_doc_json(texts, [], [])
         fake_embeddings = [[0.1] * 1024, [0.2] * 1024]
@@ -680,8 +680,8 @@ class TestSelfRefFormat:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(3, "Content A with descriptive detail here."),
-            _make_text_elem(7, "Content B with descriptive detail here."),
+            _make_text_elem(3, "Content A with descriptive detail here and more substantive text."),
+            _make_text_elem(7, "Content B with descriptive detail here and more substantive text."),
         ]
         tables = [_make_table_elem(2, "Caption with substantive descriptive text.", cells=[["X", "Y"]])]
         pictures = [_make_picture_elem(5, "A picture caption with descriptive content.")]
@@ -755,10 +755,10 @@ class TestEmbeddingBatchCount:
         texts = [
             _make_text_elem(0, f"Text element number {i} with substantive content.") for i in range(8)
         ]
-        tables = [_make_table_elem(0, "Cap", cells=[["A", "B"]])]
+        tables = [_make_table_elem(0, "Caption with substantive descriptive text.", cells=[["A", "B"]])]
         doc_json = _make_doc_json(
             texts, tables, [],
-            extra_texts={"#/texts/9000": "Cap"},
+            extra_texts={"#/texts/9000": "Caption with substantive descriptive text."},
         )
         store = _make_mock_store()
 
@@ -1052,9 +1052,14 @@ class TestRealDoclingFixtureHeadingContext:
         tbl_count = len(interleaved_doc.get("tables", []))
         total = non_heading_count + pic_count + tbl_count
 
+        # Disable v2 residue filter for this test — fixture has fixed-length
+        # texts that may fall under the production 40-char threshold, but this
+        # test is exercising heading prefix propagation, not quality filtering.
         with patch(
             "app.services.extraction_chunk_index.embed_texts",
             return_value=[[0.1] * 128] * total,
+        ), patch(
+            "app.services.extraction_chunk_index._MIN_RESIDUAL_CHARS", 0,
         ):
             diag = build_extraction_index(
                 interleaved_doc,
@@ -1220,9 +1225,9 @@ class TestEmbedLengthMismatch:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, "Alpha paragraph content with details."),
-            _make_text_elem(1, "Beta paragraph content with details."),
-            _make_text_elem(2, "Gamma paragraph content with details."),
+            _make_text_elem(0, "Alpha paragraph content with substantive details here."),
+            _make_text_elem(1, "Beta paragraph content with substantive details here."),
+            _make_text_elem(2, "Gamma paragraph content with substantive details here."),
         ]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
@@ -1263,7 +1268,7 @@ class TestEmbedLengthMismatch:
         """Correct 1:1 count between pending and embeddings must NOT raise."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "Exactly one section here with content.")]
+        texts = [_make_text_elem(0, "Exactly one section here with substantive content.")]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
 
@@ -1449,10 +1454,10 @@ class TestChunkQualityFilter:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, "Repeated boilerplate sentence here."),
-            _make_text_elem(1, "Repeated boilerplate sentence here."),
-            _make_text_elem(2, "REPEATED BOILERPLATE SENTENCE HERE."),
-            _make_text_elem(3, "Different content paragraph for variety."),
+            _make_text_elem(0, "Repeated boilerplate sentence here for dedup testing purposes."),
+            _make_text_elem(1, "Repeated boilerplate sentence here for dedup testing purposes."),
+            _make_text_elem(2, "REPEATED BOILERPLATE SENTENCE HERE FOR DEDUP TESTING PURPOSES."),
+            _make_text_elem(3, "Different content paragraph for variety with extra words."),
         ]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
@@ -1464,8 +1469,8 @@ class TestChunkQualityFilter:
         assert diag.chunks_inserted == 2
         assert diag.chunks_skipped_duplicate == 2
 
-    def test_web_chrome_only_chunks_dropped(self):
-        """Chunks whose substantive content is purely page-export chrome are dropped."""
+    def test_chrome_only_chunks_dropped_after_strip(self):
+        """v2: chunks whose body is purely chrome get stripped to empty and dropped."""
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
@@ -1481,13 +1486,16 @@ class TestChunkQualityFilter:
         ):
             diag = build_extraction_index(doc_json, "run-chrome", "doc-c", store=store)
         assert diag.chunks_inserted == 1
-        # The "SUBSCRIBE NOW" chunk is shorter than 20 chars after normalization;
-        # it is classified as short, not web-chrome (order of checks matters).
-        assert diag.chunks_skipped_web_chrome == 1
+        # "SUBSCRIBE NOW" (13 chars) is killed by the < 20 short filter
+        # BEFORE the strip transform runs.
         assert diag.chunks_skipped_short == 1
+        # The all-chrome chunk is stripped to empty residue, dropped.
+        assert diag.chunks_skipped_after_strip == 1
+        # v1 counter deprecated in v2 — always 0.
+        assert diag.chunks_skipped_web_chrome == 0
 
     def test_real_paragraph_with_embedded_chrome_word_kept(self):
-        """A real paragraph that happens to mention 'subscribe now' is NOT dropped."""
+        """A real paragraph that mentions 'subscribe now' inside its body is NOT stripped."""
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
@@ -1505,4 +1513,142 @@ class TestChunkQualityFilter:
         ):
             diag = build_extraction_index(doc_json, "run-real", "doc-r", store=store)
         assert diag.chunks_inserted == 1
-        assert diag.chunks_skipped_web_chrome == 0
+        # The chrome phrase is mid-line, not on its own line — strip is a no-op.
+        assert diag.chunks_stripped_web_chrome == 0
+        assert diag.chunks_skipped_after_strip == 0
+
+
+class TestStripThenResidue:
+    """C.9d-v2: strip leading/trailing chrome, keep middle, dedup on stripped text,
+    insert stripped text (not original)."""
+
+    def test_failure_shape_leading_chrome_real_residue_inserted_stripped(self):
+        """The exact Dvina failure shape.
+
+        Input: "Audio Coming Soon\n\nSponsored Donald Trump's Golf...\n\nS-75 Dvina article text..."
+
+        Expected:
+          - leading chrome line "Audio Coming Soon" removed
+          - useful article residue kept (Sponsored Donald... + S-75 Dvina article text...)
+          - INSERTED chunk_text is the STRIPPED residue, NOT the original
+        """
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        original = (
+            "Audio Coming Soon\n\n"
+            "Sponsored Donald Trump's Golf Footage Sparks Curiosity\n\n"
+            "S-75 Dvina article text with substantive radar information here."
+        )
+        texts = [_make_text_elem(0, original)]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+
+        inserted_chunk_text: list[str] = []
+        def capture(db, lang, sql, params=None):
+            if params and "chunk_text" in params:
+                inserted_chunk_text.append(params["chunk_text"])
+            return [{"count": 0}]
+        store._client.command_sync.side_effect = capture
+
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 1024] * 1,
+        ):
+            diag = build_extraction_index(doc_json, "run-strip", "doc-s", store=store)
+
+        assert diag.chunks_inserted == 1
+        assert diag.chunks_stripped_web_chrome == 1
+        assert diag.chunks_skipped_after_strip == 0
+        assert diag.chunks_skipped_short == 0
+
+        # Inserted text is the stripped residue, NOT the original chrome-prefixed text.
+        assert len(inserted_chunk_text) == 1, inserted_chunk_text
+        inserted = inserted_chunk_text[0]
+        assert "Audio Coming Soon" not in inserted, (
+            f"leading chrome must be stripped from inserted text; got: {inserted!r}"
+        )
+        assert "Sponsored Donald Trump" in inserted, (
+            f"ad-bait residue must be kept (it's not a whole-line chrome match); got: {inserted!r}"
+        )
+        assert "S-75 Dvina article text" in inserted, (
+            f"real article body must be kept; got: {inserted!r}"
+        )
+
+    def test_all_chrome_chunk_dropped_after_strip(self):
+        """A chunk made entirely of chrome lines is dropped, not inserted."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [_make_text_elem(0, "Audio Coming Soon\nSponsored\nSubscribe Now")]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[],
+        ):
+            diag = build_extraction_index(doc_json, "run-allchrome", "doc-a", store=store)
+        assert diag.chunks_inserted == 0
+        assert diag.chunks_skipped_after_strip == 1
+
+    def test_middle_chrome_not_stripped(self):
+        """Chrome lines sandwiched between real text are preserved (only ends are stripped)."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [_make_text_elem(
+            0,
+            "Real radar paragraph one with substantive specifications.\n"
+            "Audio Coming Soon\n"
+            "Real radar paragraph two continuing the article body.",
+        )]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        inserted_chunk_text: list[str] = []
+        def capture(db, lang, sql, params=None):
+            if params and "chunk_text" in params:
+                inserted_chunk_text.append(params["chunk_text"])
+            return [{"count": 0}]
+        store._client.command_sync.side_effect = capture
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 1024] * 1,
+        ):
+            diag = build_extraction_index(doc_json, "run-middle", "doc-m", store=store)
+        assert diag.chunks_inserted == 1
+        assert diag.chunks_stripped_web_chrome == 0  # no leading/trailing strip
+        assert len(inserted_chunk_text) == 1
+        # The middle chrome line is preserved.
+        assert "Audio Coming Soon" in inserted_chunk_text[0]
+
+    def test_dedup_after_strip_collapses_different_prefixes(self):
+        """Two chunks with different leading chrome but identical body dedup as one."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [
+            _make_text_elem(0, "Audio Coming Soon\n\nIdentical body paragraph for dedup test here."),
+            _make_text_elem(1, "SUBSCRIBE NOW\n\nIdentical body paragraph for dedup test here."),
+            _make_text_elem(2, "Sponsored\n\nIdentical body paragraph for dedup test here."),
+        ]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 1024] * 1,
+        ):
+            diag = build_extraction_index(doc_json, "run-dedup", "doc-d2", store=store)
+        assert diag.chunks_inserted == 1  # only the first survives; the other 2 dedup
+        assert diag.chunks_skipped_duplicate == 2
+
+    def test_residue_too_short_after_strip_dropped(self):
+        """A chunk where the stripped residue is < 40 chars is dropped."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        # 21 chars of body -> passes < 20 short filter, but < 40 after-strip threshold.
+        texts = [_make_text_elem(0, "Audio Coming Soon\n\nShort residue body.")]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[],
+        ):
+            diag = build_extraction_index(doc_json, "run-shortres", "doc-sr", store=store)
+        assert diag.chunks_inserted == 0
+        assert diag.chunks_skipped_after_strip == 1

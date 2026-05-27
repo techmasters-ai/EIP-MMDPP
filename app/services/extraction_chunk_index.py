@@ -49,19 +49,25 @@ except Exception:  # pragma: no cover
 _HEADING_LABELS = frozenset({"section_header", "section-header", "title"})
 
 # ---------------------------------------------------------------------------
-# C.9d: Pre-index quality filters
+# C.9d-v2: Pre-index quality filters
 # ---------------------------------------------------------------------------
-# Minimum normalized length below which a chunk is dropped. Catches single
-# symbols ("™", "11"), nav fragments ("Log in"), and similar noise that
-# survives docling export but carries no extractable evidence.
+# Minimum normalized length BEFORE stripping. Catches obviously useless chunks
+# ("™", "11", "Log in") so we don't waste cycles on chrome-stripping them.
 _MIN_CHUNK_TEXT_CHARS = 20
 
-# Web-page-chrome phrases. Indexing drops a chunk if, after removing all
-# occurrences of these phrases and re-collapsing whitespace, the remaining
-# substantive content is below _MIN_CHUNK_TEXT_CHARS. Real paragraphs that
-# happen to contain "subscribe now" inside their body keep > 20 chars after
-# the phrase is removed and are NOT dropped. Keep this list narrow — every
-# entry must be a near-pure-chrome marker, not domain language.
+# Minimum residual length AFTER stripping leading/trailing chrome lines. A
+# chunk that survives the < _MIN_CHUNK_TEXT_CHARS check but whose body is
+# mostly chrome (residue < 40 chars after strip) is dropped.
+_MIN_RESIDUAL_CHARS = 40
+
+# Web-page-chrome phrases. A LINE is treated as chrome when its normalized
+# form matches one of these phrases exactly (whole-line match). Middle lines
+# are NEVER stripped — only leading/trailing — so a real paragraph that
+# embeds "subscribe now" mid-body keeps the paragraph intact.
+#
+# Keep this list narrow — every entry must be a near-pure-chrome marker, not
+# domain language. Substring contains is too aggressive; whole-line equality
+# is the safe primitive.
 _WEB_CHROME_PHRASES: tuple[str, ...] = (
     "audio coming soon",
     "subscribe now",
@@ -81,6 +87,7 @@ _WEB_CHROME_PHRASES: tuple[str, ...] = (
     "mla",
     "chicago",
 )
+_WEB_CHROME_PHRASES_SET: frozenset[str] = frozenset(_WEB_CHROME_PHRASES)
 
 
 def _normalize_for_dedup(text: str) -> str:
@@ -88,18 +95,45 @@ def _normalize_for_dedup(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
-def _is_web_chrome_only(normalized: str) -> bool:
-    """True if the chunk's substantive content (after stripping known chrome
-    phrases) is shorter than the minimum useful length.
+def _is_chrome_line(line: str) -> bool:
+    """True if `line` is whitespace-only OR exactly matches a chrome phrase.
 
-    Conservative by design: a real paragraph that happens to include
-    "subscribe now" stays long after the phrase is removed and is kept.
+    Whitespace-only lines are treated as chrome so they get pulled along
+    when they sit between/adjacent to genuine chrome lines (a typical PDF
+    chrome block is "Audio Coming Soon\\n\\nSponsored Donald Trump's Golf..."
+    — the blank line between chrome and content must be strippable too).
     """
-    remaining = normalized
-    for phrase in _WEB_CHROME_PHRASES:
-        remaining = remaining.replace(phrase, " ")
-    remaining = re.sub(r"\s+", " ", remaining).strip()
-    return len(remaining) < _MIN_CHUNK_TEXT_CHARS
+    norm = re.sub(r"\s+", " ", line.lower()).strip()
+    if not norm:
+        return True
+    return norm in _WEB_CHROME_PHRASES_SET
+
+
+def _strip_chrome_lines(text: str) -> tuple[str, int, int]:
+    """Strip leading and trailing chrome (or empty) lines from `text`.
+
+    Middle chrome lines are NEVER stripped — preserves real article body
+    where boilerplate is embedded between paragraphs of useful text.
+
+    Returns (stripped_text, leading_removed, trailing_removed).
+    When the entire chunk is chrome/empty, returns ("", n, 0).
+    """
+    lines = text.split("\n")
+    n = len(lines)
+
+    leading = 0
+    while leading < n and _is_chrome_line(lines[leading]):
+        leading += 1
+    if leading == n:
+        return "", n, 0
+
+    trailing = 0
+    # Stop at the first non-chrome line counting from the end. Strictly > leading
+    # guards against removing the only kept line in single-line residues.
+    while (n - 1 - trailing) > leading and _is_chrome_line(lines[n - 1 - trailing]):
+        trailing += 1
+
+    return "\n".join(lines[leading:n - trailing]), leading, trailing
 
 # NOTE: walker policy (rev 14 code-quality review Important #1):
 #   _walk_docling_elements indexes EVERY texts[]/tables[]/pictures[] element
@@ -144,10 +178,20 @@ class BuildIndexDiagnostics:
     embed_ms: int
     insert_ms: int
     modality_counts: dict[str, int] = field(default_factory=dict)
-    # C.9d: quality-filter counts (subset of chunks_skipped).
+    # C.9d / C.9d-v2: quality-filter counts (subset of chunks_skipped).
+    #
+    #   chunks_skipped_short:        before-strip; rendered text < _MIN_CHUNK_TEXT_CHARS.
+    #   chunks_stripped_web_chrome:  v2 — chunk was KEPT but leading/trailing
+    #                                chrome lines were stripped before insert.
+    #   chunks_skipped_after_strip:  v2 — chunk DROPPED because residue < _MIN_RESIDUAL_CHARS.
+    #   chunks_skipped_duplicate:    v2 — dedup operates on POST-STRIP normalized text
+    #                                (so different chrome prefixes collapse to the same key).
+    #   chunks_skipped_web_chrome:   DEPRECATED — v1 conservative drop. Always 0 in v2.
     chunks_skipped_short: int = 0
     chunks_skipped_duplicate: int = 0
     chunks_skipped_web_chrome: int = 0
+    chunks_stripped_web_chrome: int = 0
+    chunks_skipped_after_strip: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -598,16 +642,29 @@ def build_extraction_index(
     chunks_skipped = 0
     chunks_skipped_short = 0
     chunks_skipped_duplicate = 0
-    chunks_skipped_web_chrome = 0
+    chunks_stripped_web_chrome = 0
+    chunks_skipped_after_strip = 0
     seen_norms: set[str] = set()
-    # C.9d: keep a few examples per skip category for debug visibility.
+    # C.9d-v2: per-category examples. Each entry is a dict with self_ref,
+    # original (first 120 chars), stripped (first 120 chars), reason.
+    examples_leading_chrome: list[dict] = []
+    examples_trailing_chrome: list[dict] = []
+    examples_residual_too_short: list[dict] = []
+    examples_duplicate_after_strip: list[dict] = []
     short_examples: list[str] = []
-    duplicate_examples: list[str] = []
-    web_chrome_examples: list[str] = []
     modality_counts: dict[str, int] = {}
 
+    def _add_example(bucket: list[dict], self_ref: str, original: str, stripped: str, reason: str) -> None:
+        if len(bucket) < 5:
+            bucket.append({
+                "self_ref": self_ref,
+                "original": original[:120],
+                "stripped": stripped[:120],
+                "reason": reason,
+            })
+
     for self_ref, modality, elem in _walk_docling_elements(doc_json):
-        # Render
+        # 1. Render
         if modality == "text":
             rendered = _render_text_chunk(
                 elem, doc_json,
@@ -625,37 +682,60 @@ def build_extraction_index(
             chunks_skipped += 1
             continue
 
-        # C.9d quality filters. Order matters:
-        #   1. min-length — kills single symbols / nav fragments first
-        #   2. exact-dedup within run — kills repeated boilerplate
-        #   3. web-chrome strip — kills page-export ad/nav blocks where the
-        #      substantive content is dominated by the chrome phrase
-        # All three skip categories ALSO increment chunks_skipped so the
-        # legacy counter remains an upper bound on dropped chunks.
-        normalized = _normalize_for_dedup(rendered)
-
-        if len(normalized) < _MIN_CHUNK_TEXT_CHARS:
+        # 2. Quick reject — obviously useless before bothering with strip.
+        #    Catches "™", "11", single nav fragments.
+        rendered_normalized = _normalize_for_dedup(rendered)
+        if len(rendered_normalized) < _MIN_CHUNK_TEXT_CHARS:
             chunks_skipped += 1
             chunks_skipped_short += 1
             if len(short_examples) < 5:
                 short_examples.append(rendered[:60])
             continue
 
-        if normalized in seen_norms:
+        # 3. Strip leading/trailing chrome lines. Middle lines preserved.
+        stripped, leading_removed, trailing_removed = _strip_chrome_lines(rendered)
+        had_chrome_stripped = (leading_removed > 0) or (trailing_removed > 0)
+
+        # 4. Normalize stripped for residue check + dedup key.
+        stripped_normalized = _normalize_for_dedup(stripped)
+
+        # 5. Drop if residue too short to be useful evidence.
+        if len(stripped_normalized) < _MIN_RESIDUAL_CHARS:
+            chunks_skipped += 1
+            chunks_skipped_after_strip += 1
+            _add_example(
+                examples_residual_too_short, self_ref, rendered, stripped,
+                "residual_too_short",
+            )
+            continue
+
+        # 6. Dedup on STRIPPED normalized text. Two chunks like
+        #    "Audio Coming Soon\n\nDonald Trump's Golf" and
+        #    "SUBSCRIBE NOW\n\nDonald Trump's Golf" both reduce to
+        #    "Donald Trump's Golf" and dedup as identical.
+        if stripped_normalized in seen_norms:
             chunks_skipped += 1
             chunks_skipped_duplicate += 1
-            if len(duplicate_examples) < 5:
-                duplicate_examples.append(rendered[:60])
+            _add_example(
+                examples_duplicate_after_strip, self_ref, rendered, stripped,
+                "duplicate_after_strip",
+            )
             continue
+        seen_norms.add(stripped_normalized)
 
-        if _is_web_chrome_only(normalized):
-            chunks_skipped += 1
-            chunks_skipped_web_chrome += 1
-            if len(web_chrome_examples) < 5:
-                web_chrome_examples.append(rendered[:60])
-            continue
-
-        seen_norms.add(normalized)
+        # 7. Record stripping diagnostics (kept-and-stripped chunks).
+        if had_chrome_stripped:
+            chunks_stripped_web_chrome += 1
+            if leading_removed > 0:
+                _add_example(
+                    examples_leading_chrome, self_ref, rendered, stripped,
+                    "leading_chrome",
+                )
+            if trailing_removed > 0:
+                _add_example(
+                    examples_trailing_chrome, self_ref, rendered, stripped,
+                    "trailing_chrome",
+                )
 
         # Page number (first prov entry)
         page_no: str | None = None
@@ -665,16 +745,29 @@ def build_extraction_index(
             if isinstance(pn, int):
                 page_no = str(pn)
 
-        pending.append((self_ref, modality, page_no, rendered))
+        # 8. Insert the STRIPPED text (NOT the original). The reranker and the
+        #    LLM both see the chrome-free version, so chrome can't poison
+        #    reranker scores and can't waste downstream LLM context.
+        pending.append((self_ref, modality, page_no, stripped))
         modality_counts[modality] = modality_counts.get(modality, 0) + 1
 
-    if chunks_skipped_short or chunks_skipped_duplicate or chunks_skipped_web_chrome:
+    any_quality_filter_hit = (
+        chunks_skipped_short
+        or chunks_skipped_duplicate
+        or chunks_stripped_web_chrome
+        or chunks_skipped_after_strip
+    )
+    if any_quality_filter_hit:
         logger.debug(
             "build_extraction_index quality filter: short=%d (e.g. %s) "
-            "duplicate=%d (e.g. %s) web_chrome=%d (e.g. %s)",
+            "stripped=%d (leading e.g. %s; trailing e.g. %s) "
+            "after_strip=%d (e.g. %s) "
+            "duplicate_after_strip=%d (e.g. %s)",
             chunks_skipped_short, short_examples,
-            chunks_skipped_duplicate, duplicate_examples,
-            chunks_skipped_web_chrome, web_chrome_examples,
+            chunks_stripped_web_chrome,
+            examples_leading_chrome, examples_trailing_chrome,
+            chunks_skipped_after_strip, examples_residual_too_short,
+            chunks_skipped_duplicate, examples_duplicate_after_strip,
         )
 
     if not pending:
@@ -687,7 +780,9 @@ def build_extraction_index(
             modality_counts=modality_counts,
             chunks_skipped_short=chunks_skipped_short,
             chunks_skipped_duplicate=chunks_skipped_duplicate,
-            chunks_skipped_web_chrome=chunks_skipped_web_chrome,
+            chunks_skipped_web_chrome=0,  # deprecated in v2
+            chunks_stripped_web_chrome=chunks_stripped_web_chrome,
+            chunks_skipped_after_strip=chunks_skipped_after_strip,
         )
 
     # ------------------------------------------------------------------
@@ -765,11 +860,12 @@ def build_extraction_index(
 
     logger.info(
         "build_extraction_index: pipeline_run_id=%r document_id=%r "
-        "inserted=%d skipped=%d (short=%d dup=%d web_chrome=%d) "
-        "embed_ms=%d insert_ms=%d modalities=%s",
+        "inserted=%d skipped=%d (short=%d dup_after_strip=%d after_strip=%d) "
+        "stripped=%d embed_ms=%d insert_ms=%d modalities=%s",
         pipeline_run_id, document_id,
         chunks_inserted, chunks_skipped,
-        chunks_skipped_short, chunks_skipped_duplicate, chunks_skipped_web_chrome,
+        chunks_skipped_short, chunks_skipped_duplicate, chunks_skipped_after_strip,
+        chunks_stripped_web_chrome,
         embed_ms, insert_ms, modality_counts,
     )
 
@@ -782,7 +878,9 @@ def build_extraction_index(
         modality_counts=modality_counts,
         chunks_skipped_short=chunks_skipped_short,
         chunks_skipped_duplicate=chunks_skipped_duplicate,
-        chunks_skipped_web_chrome=chunks_skipped_web_chrome,
+        chunks_skipped_web_chrome=0,  # deprecated in v2
+        chunks_stripped_web_chrome=chunks_stripped_web_chrome,
+        chunks_skipped_after_strip=chunks_skipped_after_strip,
     )
 
 
