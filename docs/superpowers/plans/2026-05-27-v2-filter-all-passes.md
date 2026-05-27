@@ -6,6 +6,8 @@
 
 **Architecture:** Pull v2 filter primitives out of `app/services/extraction_chunk_index.py` into a new `app/services/chunk_quality.py` module. Add a doc-level mutator `filter_docling_document()` in `app/services/scoped_docling_document.py` that blanks dropped texts in place (text="", orig="", hyperlink=None) — preserves array indices and `$ref` validity. Wire the filter into the worker at two call sites (the ExtractionChunk index build and the per-pass doc load) so every pass sees an already-filtered doc. The TextChunk embedding phase is untouched.
 
+**Layering with the existing in-loop filter:** `filter_docling_document` operates on `texts[]` only (and protects `label=="caption"` from dedup/blank). The in-loop filter inside `build_extraction_index` is **NOT** removed — it stays as a second layer that catches rendered table-cell markdown and any rendering-time content that doesn't have a `texts[]` source. Identity passes get the texts[]-level filter (via the worker boundary); narrowed passes get both layers; the layers are idempotent so the double-pass is a no-op on already-clean text.
+
 **Tech Stack:** Python 3.11, pydantic v2, ArcadeDB (via existing `graph_store`), pytest, docling-core. No new runtime dependencies.
 
 ---
@@ -20,6 +22,14 @@
   ```
 
   Status must be `COMPLETE`, `FAILED`, or `PARTIAL_COMPLETE` before starting.
+
+- **No stale background processes.** The `/tmp/c9d_v2_watcher.sh` script from earlier session work may still be running. Verify it has exited:
+
+  ```bash
+  ps -ef | grep -v grep | grep -E "c9d_v2_watcher|c9c_dvina|c9d.*watcher" || echo "no watchers running"
+  ```
+
+  Expected: `no watchers running`. If any process exists, kill it (`pkill -f c9d_v2_watcher`) before proceeding.
 
 - **Current test suite green.** Verify before refactor begins:
 
@@ -520,7 +530,7 @@ docker run --rm \
   python -m pytest tests/unit/test_chunk_quality.py -v
 ```
 
-Expected: all green, ~17 tests pass.
+Expected: all green, 22 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -602,7 +612,8 @@ Expected: green, 66 tests pass (no count change from Task 0).
 
 ```bash
 git add app/services/extraction_chunk_index.py
-git commit -m "refactor(extraction-chunk-index): import v2 filter primitives from chunk_quality
+git commit -m "$(cat <<'EOF'
+refactor(extraction-chunk-index): import v2 filter primitives from chunk_quality
 
 Mechanical move — no behavior change. Local constants and helpers
 are now thin re-exports of the canonical definitions in
@@ -814,6 +825,65 @@ class TestTextChunksAreNotConsulted:
         filtered, _ = filter_docling_document(doc)
         # If we got here without exceptions, no I/O was attempted.
         assert isinstance(filtered, dict)
+
+
+class TestCaptionProtection:
+    """label="caption" entries are protected from blanking + dedup. docling-graph's
+    own sanitizer (main.py:482) uses the same protection — match its semantics."""
+
+    def test_short_caption_is_not_blanked(self):
+        from app.services.scoped_docling_document import filter_docling_document
+        # 8 chars — would normally be blanked as "short"
+        elem = _make_text(0, "Fig. 1.", label="caption")
+        doc = _make_doc([elem])
+        filtered, diag = filter_docling_document(doc)
+        assert filtered["texts"][0]["text"] == "Fig. 1."  # untouched
+        assert diag.blanked_short == 0
+
+    def test_duplicate_captions_both_kept(self):
+        """Two real captions with identical text — both must be preserved."""
+        from app.services.scoped_docling_document import filter_docling_document
+        c1 = _make_text(0, "Figure: SA-2 launcher schematic.", label="caption")
+        c2 = _make_text(1, "Figure: SA-2 launcher schematic.", label="caption")
+        doc = _make_doc([c1, c2])
+        filtered, diag = filter_docling_document(doc)
+        assert filtered["texts"][0]["text"] == "Figure: SA-2 launcher schematic."
+        assert filtered["texts"][1]["text"] == "Figure: SA-2 launcher schematic."
+        assert diag.blanked_dedup == 0
+
+
+class TestDefensiveEdgeCases:
+    """Malformed docs must not crash the filter. The worker wraps the call in
+    try/except but the function itself should also fail-safe for the most common
+    shapes."""
+
+    def test_missing_texts_key(self):
+        from app.services.scoped_docling_document import filter_docling_document
+        filtered, diag = filter_docling_document({"body": {"children": []}})
+        assert diag.texts_in == 0
+
+    def test_texts_is_empty_list(self):
+        from app.services.scoped_docling_document import filter_docling_document
+        filtered, diag = filter_docling_document({"texts": []})
+        assert diag.texts_in == 0
+
+    def test_text_element_is_not_a_dict(self):
+        from app.services.scoped_docling_document import filter_docling_document
+        doc = {"texts": ["not-a-dict", _make_text(0, "Real article content for indexing.")]}
+        filtered, diag = filter_docling_document(doc)
+        # Non-dict skipped; real dict processed
+        assert filtered["texts"][0] == "not-a-dict"  # untouched
+        assert filtered["texts"][1]["text"] == "Real article content for indexing."
+
+    def test_text_field_is_none(self):
+        from app.services.scoped_docling_document import filter_docling_document
+        elem = _make_text(0, "")
+        elem["text"] = None  # docling has been observed to emit None
+        elem["orig"] = None
+        doc = _make_doc([elem])
+        # Must not raise on None
+        filtered, diag = filter_docling_document(doc)
+        assert isinstance(filtered, dict)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -832,16 +902,25 @@ Expected: FAIL with `ImportError: cannot import name 'filter_docling_document'`.
 
 - [ ] **Step 3: Implement filter_docling_document**
 
-Open `app/services/scoped_docling_document.py`. Find the end of the file (after `apply_chunk_scope` and its helpers). Append:
+Open `app/services/scoped_docling_document.py`. Add the `dataclass` and `classify_chunk` imports at the **top of the file** alongside existing imports (PEP 8 placement). At the end of the file, append the new function:
 
 ```python
+# At top of file, add to the existing import block:
+from dataclasses import dataclass
+from app.services.chunk_quality import classify_chunk
+
+# At end of file, append:
+
 # ---------------------------------------------------------------------------
 # C.10: filter_docling_document — worker-side v2 quality filter for ALL passes
 # ---------------------------------------------------------------------------
 
 
-from dataclasses import dataclass
-from app.services.chunk_quality import classify_chunk
+#: Label values whose text content is protected from blanking and dedup.
+#: Matches docling-graph's own sanitizer (docker/docling-graph/app/main.py:482):
+#: image captions carry intentional repetition (figure numbers, "see also" notes)
+#: that an aggressive dedup would silently destroy.
+_PROTECTED_LABELS: frozenset[str] = frozenset({"caption"})
 
 
 @dataclass
@@ -856,12 +935,16 @@ class FilterDiagnostics:
     blanked_dedup: int = 0
     blanked_after_strip: int = 0
     stripped_in_place: int = 0
+    protected_captions: int = 0
 
 
 def filter_docling_document(doc_json: dict) -> tuple[dict, FilterDiagnostics]:
     """Apply v2 quality filter to a DoclingDocument JSON in place.
 
     For each entry in ``doc_json["texts"]``:
+      * Entries with ``label`` in ``_PROTECTED_LABELS`` (e.g. ``"caption"``)
+        are NEVER blanked or deduped. The filter records them in
+        ``diag.protected_captions`` and moves on.
       * Dropped entries (short / dedup / after_strip) have their ``text`` and
         ``orig`` blanked and ``hyperlink`` cleared. The entry stays in the
         array so $refs from body.children / pictures.children / tables.children
@@ -875,18 +958,39 @@ def filter_docling_document(doc_json: dict) -> tuple[dict, FilterDiagnostics]:
 
     Idempotent: running it twice on the same doc produces zero new blanks
     or strips on the second pass.
+
+    Defensive: missing/None/non-list texts and non-dict elements are skipped
+    without raising. The worker still wraps the call in try/except for
+    catastrophic shapes (see Task 4 / Task 5), but the most common malformed
+    cases must not crash this function.
     """
     diag = FilterDiagnostics()
     texts = doc_json.get("texts") or []
+    if not isinstance(texts, list):
+        return doc_json, diag
     diag.texts_in = len(texts)
 
     seen_norms: set[str] = set()
     for i, t in enumerate(texts):
         if not isinstance(t, dict):
             continue
-        rendered = (t.get("text") or t.get("orig") or "").strip()
+
+        # Caption protection: docling-graph sanitizer parallel (main.py:482).
+        # Image-description captions must survive even when their text is
+        # short or duplicate across figures.
+        label = (t.get("label") or "").lower()
+        if label in _PROTECTED_LABELS:
+            diag.protected_captions += 1
+            continue
+
+        # Defensive: text/orig can be None per observed docling output.
+        rendered_raw = t.get("text") if t.get("text") is not None else t.get("orig")
+        if rendered_raw is None:
+            continue
+        rendered = str(rendered_raw).strip()
         if not rendered:
             continue
+
         decision = classify_chunk(rendered, seen_norms)
         if not decision.keep:
             new_t = dict(t)
@@ -927,7 +1031,7 @@ docker run --rm \
   python -m pytest tests/unit/test_filter_docling_document.py -v
 ```
 
-Expected: all green, ~13 tests pass.
+Expected: all green, 17 tests pass.
 
 - [ ] **Step 5: Run the broader test suite to confirm no regression**
 
@@ -995,7 +1099,7 @@ build_diag = build_extraction_index(
 )
 ```
 
-- [ ] **Step 2: Insert the filter call**
+- [ ] **Step 2: Insert the filter call (with defensive try/except)**
 
 Modify to:
 
@@ -1003,18 +1107,30 @@ Modify to:
 from app.services.extraction_chunk_index import build_extraction_index
 from app.services.scoped_docling_document import filter_docling_document
 doc_json_for_index = _build_docling_document_json(document_id)
-doc_json_for_index, filter_diag_idx = filter_docling_document(doc_json_for_index)
-logger.info(
-    "VR: filter_docling_document (index path) run=%s texts_in=%d blanked=%d "
-    "(short=%d dedup=%d after_strip=%d) stripped_in_place=%d",
-    run_id,
-    filter_diag_idx.texts_in,
-    filter_diag_idx.blanked_short + filter_diag_idx.blanked_dedup + filter_diag_idx.blanked_after_strip,
-    filter_diag_idx.blanked_short,
-    filter_diag_idx.blanked_dedup,
-    filter_diag_idx.blanked_after_strip,
-    filter_diag_idx.stripped_in_place,
-)
+try:
+    doc_json_for_index, filter_diag_idx = filter_docling_document(doc_json_for_index)
+    logger.info(
+        "VR: filter_docling_document (index path) run=%s texts_in=%d blanked=%d "
+        "(short=%d dedup=%d after_strip=%d) stripped_in_place=%d protected_captions=%d",
+        run_id,
+        filter_diag_idx.texts_in,
+        filter_diag_idx.blanked_short + filter_diag_idx.blanked_dedup + filter_diag_idx.blanked_after_strip,
+        filter_diag_idx.blanked_short,
+        filter_diag_idx.blanked_dedup,
+        filter_diag_idx.blanked_after_strip,
+        filter_diag_idx.stripped_in_place,
+        filter_diag_idx.protected_captions,
+    )
+except Exception as exc:
+    # Fail-open: a malformed doc must not terminalize the pipeline_run.
+    # Proceed to build_extraction_index with the unfiltered doc; the
+    # existing in-loop filter inside build_extraction_index will still
+    # apply its texts[]-level filter as a second layer.
+    logger.warning(
+        "VR: filter_docling_document (index path) FAILED run=%s: %r "
+        "— proceeding with unfiltered doc",
+        run_id, exc,
+    )
 store_for_index = get_graph_store()
 build_diag = build_extraction_index(
     doc_json=doc_json_for_index,
@@ -1071,9 +1187,13 @@ EOF
 ### Task 5: Wire filter at the per-pass doc-load site
 
 **Files:**
-- Modify: `app/workers/pipeline.py` (around line 7491, inside `_execute_pass_attempt`)
+- Modify: `app/workers/pipeline.py` (around line 7491, inside the Celery wrapper task `derive_ontology_graph_pass`)
 
 This is the call site that runs once per pass — narrowed and non-narrowed alike. With this in place, identity passes and system_links finally see the same filtered doc the indexed-narrowing path already saw.
+
+**Important — function identity:** The call site is the Celery wrapper task `derive_ontology_graph_pass` (which calls `_execute_pass_attempt` later in its body around line 7526). Some earlier scoping language in this plan referred to `_execute_pass_attempt`; the actual edit happens BEFORE that call, in the wrapper task body.
+
+**Important — execution order:** The full sequence after this edit is `_build_docling_document_json` → `filter_docling_document` → (optional) `apply_chunk_scope` (with `text_by_ref` override from chunk-scope endpoint). The `text_by_ref` override sources its content from `ExtractionChunk.chunk_text`, which was built from the **already-filtered** doc (Task 4). So the override re-injects the same stripped text the per-pass filter would have produced — the override and filter are coherent, not in conflict.
 
 - [ ] **Step 1: Read the current per-pass load site**
 
@@ -1091,7 +1211,7 @@ if chunk_scope is not None and chunk_scope.get("mode") == "selected_refs":
         ...
 ```
 
-- [ ] **Step 2: Insert the filter call between load and apply_chunk_scope**
+- [ ] **Step 2: Insert the filter call between load and apply_chunk_scope (with defensive try/except + log)**
 
 Modify to:
 
@@ -1105,22 +1225,48 @@ _doc_json_load_ms = (time.perf_counter() - _doc_load_t0) * 1000.0
 # the same doc shape that was already filtered at index build time;
 # non-narrowed passes see the filter for the first time here.
 from app.services.scoped_docling_document import filter_docling_document
-doc_json, _filter_diag = filter_docling_document(doc_json)
-if router_diagnostics is not None:
-    router_diagnostics = dict(router_diagnostics)
-    router_diagnostics["doc_filter"] = {
-        "texts_in": _filter_diag.texts_in,
-        "blanked_short": _filter_diag.blanked_short,
-        "blanked_dedup": _filter_diag.blanked_dedup,
-        "blanked_after_strip": _filter_diag.blanked_after_strip,
-        "stripped_in_place": _filter_diag.stripped_in_place,
-    }
+try:
+    doc_json, _filter_diag = filter_docling_document(doc_json)
+    logger.info(
+        "VR: filter_docling_document (per-pass) run=%s pass=%s texts_in=%d "
+        "blanked=%d (short=%d dedup=%d after_strip=%d) stripped_in_place=%d "
+        "protected_captions=%d",
+        run_id, pass_name,
+        _filter_diag.texts_in,
+        _filter_diag.blanked_short + _filter_diag.blanked_dedup + _filter_diag.blanked_after_strip,
+        _filter_diag.blanked_short,
+        _filter_diag.blanked_dedup,
+        _filter_diag.blanked_after_strip,
+        _filter_diag.stripped_in_place,
+        _filter_diag.protected_captions,
+    )
+    if router_diagnostics is not None:
+        router_diagnostics = dict(router_diagnostics)
+        router_diagnostics["doc_filter"] = {
+            "texts_in": _filter_diag.texts_in,
+            "blanked_short": _filter_diag.blanked_short,
+            "blanked_dedup": _filter_diag.blanked_dedup,
+            "blanked_after_strip": _filter_diag.blanked_after_strip,
+            "stripped_in_place": _filter_diag.stripped_in_place,
+            "protected_captions": _filter_diag.protected_captions,
+        }
+except Exception as exc:
+    # Fail-open: a malformed doc must not terminalize the pass.
+    # Proceed with the unfiltered doc.
+    logger.warning(
+        "VR: filter_docling_document (per-pass) FAILED run=%s pass=%s: %r "
+        "— proceeding with unfiltered doc",
+        run_id, pass_name, exc,
+    )
+    if router_diagnostics is not None:
+        router_diagnostics = dict(router_diagnostics)
+        router_diagnostics["doc_filter"] = {"error": str(exc)}
 
 if chunk_scope is not None and chunk_scope.get("mode") == "selected_refs":
     ...
 ```
 
-(Leave the `apply_chunk_scope` block unchanged — it runs after the filter and is unaffected.)
+(Leave the `apply_chunk_scope` block unchanged — it runs after the filter. The `text_by_ref` override inside `apply_chunk_scope` re-injects the stripped chunk text from ExtractionChunk — which was indexed from the already-filtered doc in Task 4 — so the override is consistent with what the per-pass filter produced.)
 
 - [ ] **Step 3: Confirm worker still imports cleanly**
 
@@ -1172,59 +1318,33 @@ EOF
 
 ---
 
-### Task 6: Simplify `build_extraction_index` — drop the now-redundant in-loop filter
+### Task 6: Keep the in-loop filter as a defense-in-depth second layer (no removal)
 
-**Files:**
-- Modify: `app/services/extraction_chunk_index.py`
-- Modify: `tests/unit/test_extraction_chunk_index.py` (update affected assertions)
+**Files:** (none — no code edits)
 
-With the doc pre-filtered at the worker boundary, the filter branches inside `build_extraction_index`'s walk loop are dead code on already-blanked texts (the `if not rendered.strip(): continue` check at the top of the loop catches them). Removing them simplifies the function and the diagnostics.
+The original plan called for deleting the in-loop filter in `build_extraction_index`. The gap-analysis review caught a real issue: `filter_docling_document` operates on `texts[]` only. The walker inside `build_extraction_index` also yields **table** and **picture_caption** chunks whose rendered text comes from sources outside `texts[]` (table cells rendered via `_render_table_chunk`, picture caption resolution through `_resolve_caption_ref`).
 
-- [ ] **Step 1: Identify the filter branches to remove**
+If we delete the in-loop filter:
+- Tables: cell-markdown rendered chunks bypass the v2 filter entirely (tables[].data.grid is not in texts[]).
+- Picture captions: text resolved from texts[] WOULD be filtered (because filter_docling_document hits texts[]), but the rendered picture chunk text concatenates the resolved caption with other metadata — there's no guarantee the in-loop filter's text-level rules would still apply.
 
-In `build_extraction_index`, locate the per-element block that currently calls `_normalize_for_dedup`, checks `_MIN_CHUNK_TEXT_CHARS`, calls `_strip_chrome_lines`, checks `_MIN_RESIDUAL_CHARS`, and updates `seen_norms`. This is the v1+v2 filter block — around lines 678-735 (line numbers approximate). The leading `if not rendered.strip(): continue` check stays.
+**Decision: keep the in-loop filter unchanged.** The two layers are intentionally redundant:
 
-- [ ] **Step 2: Remove the filter block**
+| Layer | Scope | Applies to |
+|---|---|---|
+| `filter_docling_document` (worker) | `texts[]` entries | All passes (identity + narrowed + system_links) |
+| In-loop filter (build_extraction_index) | Rendered chunk text (any modality) | Narrowed passes only (via ExtractionChunk pool) |
 
-Replace the filter block with a single comment:
+The double-pass is operationally cheap (the in-loop filter sees already-blanked text and short-circuits at the existing `if not rendered.strip(): continue` check for blanked text-modality chunks; it does real work for table-modality and picture-caption chunks).
 
-```python
-# C.10: v2 quality filtering now runs upstream in
-# filter_docling_document (called from the worker before this function).
-# By the time we get here, dropped texts have been blanked
-# (text="", orig="") and are skipped by the `if not rendered.strip()`
-# check at the top of the walk loop. No per-element filtering needed.
-```
+- [ ] **Step 1: Verify both layers coexist cleanly**
 
-- [ ] **Step 3: Update `BuildIndexDiagnostics`**
+Read `app/services/extraction_chunk_index.py` and confirm:
+- The `_normalize_for_dedup`, `_strip_chrome_lines` aliases imported from `chunk_quality` in Task 2 are still wired correctly.
+- The walk loop's existing `if not rendered.strip(): continue` (skips already-blanked text chunks) is still in place.
+- The v2 filter branches (short / after-strip / dedup) inside the walk loop are unchanged from the current code.
 
-Remove the v2-specific counters from `BuildIndexDiagnostics`: `chunks_skipped_short`, `chunks_skipped_duplicate`, `chunks_skipped_web_chrome`, `chunks_stripped_web_chrome`, `chunks_skipped_after_strip`. Keep `chunks_inserted`, `chunks_skipped` (now only counts blank-rendered), `embed_calls`, `embed_ms`, `insert_ms`, `modality_counts`.
-
-- [ ] **Step 4: Update the log line in build_extraction_index**
-
-Find the `logger.info("build_extraction_index: ...")` line that reports the per-category counts. Simplify to:
-
-```python
-logger.info(
-    "build_extraction_index: pipeline_run_id=%r document_id=%r "
-    "inserted=%d skipped=%d embed_ms=%d insert_ms=%d modalities=%s",
-    pipeline_run_id, document_id,
-    chunks_inserted, chunks_skipped,
-    embed_ms, insert_ms, modality_counts,
-)
-```
-
-- [ ] **Step 5: Update tests that asserted v2 counters**
-
-In `tests/unit/test_extraction_chunk_index.py`, find `class TestChunkQualityFilter` and `class TestStripThenResidue`. These tests asserted properties of the in-loop filter. Either:
-
-(a) **Delete them** (recommended). The behavior they exercise is now owned by `filter_docling_document` and is covered by `tests/unit/test_filter_docling_document.py`.
-
-(b) **Re-purpose them** as integration tests for the new flow: call `filter_docling_document` first, then `build_extraction_index`, assert end-to-end behavior. More work, marginal value.
-
-Go with (a). Delete the two classes. Also delete any test fixtures that exist only to support them.
-
-- [ ] **Step 6: Verify the remaining tests still pass**
+- [ ] **Step 2: Run the test suite as a smoke check**
 
 ```bash
 docker run --rm \
@@ -1233,72 +1353,41 @@ docker run --rm \
   -v "$(pwd)/ontology_bundles:/app/ontology_bundles" \
   -v "$(pwd)/pyproject.toml:/app/pyproject.toml" \
   -w /app eip-mmdpp-api:latest \
-  python -m pytest tests/unit/test_extraction_chunk_index.py -q
+  python -m pytest tests/unit/test_extraction_chunk_index.py \
+                   tests/unit/test_filter_docling_document.py \
+                   tests/unit/test_chunk_quality.py -q
 ```
 
-Expected: ~57 tests pass (66 minus the deleted v2-specific 9). Lower count is fine — the deleted tests now live in test_filter_docling_document.py.
+Expected: all green. No test files modified in this task.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 3: No commit (no code changes)**
 
-```bash
-git add app/services/extraction_chunk_index.py tests/unit/test_extraction_chunk_index.py
-git commit -m "$(cat <<'EOF'
-refactor(extraction-chunk-index): drop in-loop v2 filter (now upstream)
-
-filter_docling_document runs at the worker boundary before
-build_extraction_index, so dropped texts arrive already-blanked and
-get skipped by the existing `if not rendered.strip(): continue`
-check. The per-element filter branches are dead code; removed.
-
-BuildIndexDiagnostics loses the v2-specific counters. Equivalent
-counters live on FilterDiagnostics from filter_docling_document.
-
-In-loop filter tests deleted; equivalent coverage exists in
-tests/unit/test_filter_docling_document.py.
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-EOF
-)"
-```
+This task is documentation-only — it codifies the layering decision. Move on to Task 7.
 
 ---
 
-### Task 7: Audit downstream consumers of `BuildIndexDiagnostics`
+### Task 7: Audit + cross-reference test fixtures (no schema changes)
 
-**Files:**
-- (audit only — may modify call sites that read removed fields)
+**Files:** (audit only)
 
-Removing fields from `BuildIndexDiagnostics` could break callers that read them. This task is an audit + minimal fix to any consumer.
+Since Task 6 keeps the in-loop filter, `BuildIndexDiagnostics`'s v2 fields stay. This task becomes a lightweight verification that the two filter layers don't double-count in ways that confuse operators reading logs.
 
-- [ ] **Step 1: Grep for consumers of removed fields**
+- [ ] **Step 1: Spot-check no double-counted blanks**
 
-```bash
-grep -rn "chunks_skipped_short\|chunks_skipped_duplicate\|chunks_skipped_web_chrome\|chunks_stripped_web_chrome\|chunks_skipped_after_strip" \
-  app/ docker/ 2>/dev/null | grep -v __pycache__ | grep -v "tests/" | grep -v ".md"
-```
+Manually trace one chunk through both layers for confidence:
+- Input: a duplicate page-header chunk like `"S-75 / Combat Imagery / / 10/6/25"`
+- `filter_docling_document` (worker, Task 4) sees it via texts[], blanks it (text=""), increments `diag.blanked_dedup`
+- `build_extraction_index` (Task 6 — unchanged) walks the chunk, calls `_render_text_chunk` which returns "", hits `if not rendered.strip(): continue`, increments `chunks_skipped` BUT not `chunks_skipped_duplicate` (because the explicit dedup branch never executes — empty rendered text bails first)
 
-Expected: zero hits in production code (those fields were only set + read inside `extraction_chunk_index.py`). If any hits exist, follow up with targeted edits.
+So `diag.blanked_dedup` (from filter_docling_document) and `chunks_skipped_duplicate` (from build_extraction_index) count DIFFERENT things: the former is the worker-boundary dedup; the latter is the index-time dedup that only fires for non-text-modality chunks (table/picture-caption rendered text that wasn't pre-filtered). No double-counting.
 
-- [ ] **Step 2: Spot-check the build_extraction_index log consumers**
+- [ ] **Step 2: Verify the documented behavior in the build_extraction_index log**
 
-Any operator notebooks or scripts that grep these counter names? Reasonable to grep:
+Read the existing `logger.info("build_extraction_index: ...")` line. Confirm the counters it reports describe the in-loop layer only (it doesn't reach into FilterDiagnostics from filter_docling_document). Both log lines emit independently — operators see two filtering signals per pass.
 
-```bash
-grep -rn "chunks_skipped_short\|build_extraction_index quality filter" \
-  /home/josh/development/EIP-MMDPP/.worktrees/walltime-c0-telemetry 2>/dev/null \
-  | grep -v __pycache__ | grep -v ".pyc"
-```
+- [ ] **Step 3: No commit (no code changes)**
 
-If hits exist outside tests, document the breaking change in a brief follow-up note.
-
-- [ ] **Step 3: Commit (if any fixes made), or skip**
-
-If Steps 1-2 found no consumers, no commit needed. If any production code referenced the removed fields, fix it and commit:
-
-```bash
-git add <fixed-files>
-git commit -m "fix: drop references to removed BuildIndexDiagnostics v2 fields"
-```
+Document-only.
 
 ---
 
@@ -1368,7 +1457,7 @@ Expected:
 - 1 build_extraction_index log line WITHOUT the old `(short=X dup=Y web_chrome=Z)` suffix.
 - Each pass's `router_diagnostics.doc_filter` populated with non-zero counters (the per-pass filter is in addition to the index-path filter — they should produce similar numbers).
 
-- [ ] **Step 5: Compare entity counts to baseline (no regression)**
+- [ ] **Step 5: Compare entity counts AND field density to baseline (no regression)**
 
 ```bash
 docker exec eip-mmdpp-postgres-1 psql -U eip -d eip -tA -F'|' -c "
@@ -1376,16 +1465,28 @@ docker exec eip-mmdpp-postgres-1 psql -U eip -d eip -tA -F'|' -c "
   FROM ingest.pipeline_pass_outputs
   WHERE pipeline_run_id='$RUN_ID'
   ORDER BY pass_name;"
+
+echo --- Field density per entity for narrowed passes ---
+# Dump pass_output JSON and tally non-null spec fields per entity
+for PASS in radar_identity radar_power_rf missile_identity missile_kinematics; do
+  docker exec eip-mmdpp-postgres-1 psql -U eip -d eip -tA -c "
+    SELECT jsonb_pretty(extract_pass_response_json->'pass_output')
+    FROM ingest.pipeline_pass_outputs
+    WHERE pipeline_run_id='$RUN_ID' AND pass_name='$PASS'
+    ORDER BY attempt DESC LIMIT 1;" > "/tmp/c10_${PASS}.json"
+  echo "  $PASS: $(wc -l < /tmp/c10_${PASS}.json) lines"
+done
 ```
 
-Acceptance criteria:
-- radar_identity entity count within ±1 of the prior run (`1ced34e0` had 1 entity)
-- missile_identity entity count within ±1 of the prior run (1 entity)
-- missile_kinematics entity count within ±1 of the prior run (1 entity)
-- radar_power_rf may still be FAILED (Dvina has no RF data — see prior investigation)
-- system_links: COMPLETE, relationships_extracted non-zero or zero per prior
+Compare against the **Task 0 baseline file `/tmp/pre_refactor_baseline.txt`**, NOT against any externally-named run UUID. The baseline captured in Task 0 is the canonical reference for this validation; that file records the state immediately before this refactor began.
 
-Big regressions (e.g. all passes returning 0) mean the filter is too aggressive on the doc-level path; rollback to investigate.
+Acceptance criteria (against the Task 0 baseline):
+- Per-pass entity counts within ±10% of baseline OR within ±1 entity if baseline count ≤ 10
+- Identity-pass (radar_identity, missile_identity) field density per entity should be ≥ baseline. If it drops, captions or page-header context may have been over-filtered — investigate.
+- radar_power_rf may still be FAILED (Dvina has no RF data — known invariant from prior investigation, NOT caused by this refactor)
+- system_links: COMPLETE; relationships_extracted within ±1 of baseline
+
+Big regressions (e.g. all passes returning 0) mean the filter is too aggressive on the doc-level path; rollback per the "Rollback runbook" section below.
 
 ---
 
@@ -1476,3 +1577,87 @@ Expected: roughly 6-7 commits from this plan, all with clear conventional-commit
 - **No test for the docling-graph integration is required here.** The two end-to-end smokes (Tasks 8 and 9) exercise the full chain.
 
 - **Idempotency matters operationally** because narrowed passes' doc_json was filtered at index build (Task 4) AND again at per-pass load (Task 5). The unit tests for filter_docling_document explicitly assert idempotency.
+
+---
+
+## Task dependencies
+
+For subagent-driven execution, set `blockedBy` relationships:
+
+| Task | Depends on (blockedBy) |
+|---|---|
+| Task 0: Pre-flight | — |
+| Task 1: Create chunk_quality.py | Task 0 |
+| Task 2: Refactor extraction_chunk_index to import | Task 1 |
+| Task 3: Add filter_docling_document | Task 1 |
+| Task 4: Wire filter at build_extraction_index | Task 3 |
+| Task 5: Wire filter at per-pass doc load | Task 3 |
+| Task 6: Verify in-loop filter layering (no-op task) | Tasks 4, 5 |
+| Task 7: Counter audit (no-op task) | Task 6 |
+| Task 8: Dvina smoke | Tasks 4, 5, 6 |
+| Task 9: SA-2 validation (optional) | Task 8 |
+| Task 10: Final test sweep | Task 9 (or Task 8 if Task 9 skipped) |
+
+---
+
+## Rollback runbook
+
+If Task 8 or Task 9 shows quality regression beyond the acceptance criteria — for example, identity-pass entity counts drop by >10%, field density per entity drops noticeably, or downstream stages fail unexpectedly — follow these exact steps:
+
+1. **Stop any in-flight reingest.** Check for active runs first; do NOT use the `/cancel` endpoint (it hard-deletes; see `[[cancel-endpoint-hard-deletes]]`).
+   ```bash
+   docker exec eip-mmdpp-postgres-1 psql -U eip -d eip -tA -F'|' -c \
+     "SELECT id, status FROM ingest.pipeline_runs WHERE status='PROCESSING' AND started_at >= NOW() - INTERVAL '1 hour';"
+   ```
+   Wait for any active run to terminalize naturally.
+
+2. **Reset the worktree to the pre-C.10 commit.**
+   ```bash
+   git status               # confirm no uncommitted work to save
+   git reset --hard 0290748
+   ```
+   Commit `0290748` was created as the explicit rollback target before any C.10 work began.
+
+3. **Rebuild + force-recreate the services that load the rolled-back code.**
+   The worker-graph + api services bind-mount `app/`; the docling-graph service builds via COPY. Filter changes here do not touch docling-graph, so only the bind-mount services need recreation:
+   ```bash
+   COMPOSE_PROJECT_NAME=eip-mmdpp docker compose up -d --force-recreate api worker-graph
+   ```
+
+4. **Purge stale ExtractionChunks from failed runs.**
+   ```bash
+   FAILED_RUN_ID=<the regression run UUID from Task 8 or 9>
+   docker exec eip-mmdpp-api-1 python -c "
+   import asyncio
+   from app.db.session import get_graph_store
+   from app.services.extraction_chunk_index import cleanup_extraction_index
+   async def m():
+       store = get_graph_store()
+       cleanup_extraction_index('$FAILED_RUN_ID', store)
+   asyncio.run(m())
+   "
+   ```
+
+5. **Confirm rollback worked.**
+   ```bash
+   git log --oneline -3            # latest commit should be 0290748
+   docker run --rm \
+     -v "$(pwd)/app:/app/app" \
+     -v "$(pwd)/tests:/app/tests" \
+     -v "$(pwd)/ontology_bundles:/app/ontology_bundles" \
+     -v "$(pwd)/pyproject.toml:/app/pyproject.toml" \
+     -w /app eip-mmdpp-api:latest \
+     python -m pytest tests/unit/test_extraction_chunk_index.py -q
+   ```
+   Expected: 66/66 (pre-refactor count). If tests fail, the rollback didn't take — investigate before re-attempting.
+
+6. **Trigger a baseline reingest to verify rolled-back behavior.**
+   ```bash
+   DVINA_DOC="9c8e09c7-e39f-4359-92c0-46330158c73c"
+   curl -sX POST "http://localhost:8005/v1/documents/$DVINA_DOC/reingest" \
+     -H "Content-Type: application/json" \
+     -d '{"mode":"graph_only","ontology_bundle_key":"air_defense_v3_narrowing_v1"}'
+   ```
+   Wait for it to terminalize. Confirm entity counts match the Task 0 baseline.
+
+If the rollback step fails or leaves the system in an inconsistent state, the operator should escalate rather than attempting destructive operations (`/cancel`, `git reset --hard` to deeper commits, manual ArcadeDB DELETE, etc.).
