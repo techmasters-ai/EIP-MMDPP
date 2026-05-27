@@ -45,6 +45,9 @@ list_items. Non-list_item retained refs in the same group still reparent to
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+
+from app.services.chunk_quality import classify_chunk
 
 logger = logging.getLogger(__name__)
 
@@ -577,3 +580,120 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
     )
 
     return {**doc_json, **doc_overlay, "body": new_body}
+
+
+# ---------------------------------------------------------------------------
+# C.10: filter_docling_document — worker-side v2 quality filter for ALL passes
+# ---------------------------------------------------------------------------
+
+
+#: Label values whose text content is protected from blanking and dedup.
+#: Matches docling-graph's own sanitizer (docker/docling-graph/app/main.py:482):
+#: image captions carry intentional repetition (figure numbers, "see also" notes)
+#: that an aggressive dedup would silently destroy.
+_PROTECTED_LABELS: frozenset[str] = frozenset({"caption"})
+
+
+@dataclass
+class FilterDiagnostics:
+    """Per-call counters from filter_docling_document.
+
+    texts_in counts every entry processed (including ones unchanged or skipped
+    as non-dict). The four mutation counters are mutually exclusive — any single
+    entry contributes to at most one of:
+
+      - blanked_short:        entry was blanked because rendered text < MIN_CHUNK_TEXT_CHARS
+      - blanked_dedup:        entry was blanked because its stripped form was already seen
+      - blanked_after_strip:  entry was blanked because residue < MIN_RESIDUAL_CHARS after strip
+      - stripped_in_place:    entry was KEPT but its text was overwritten with the stripped form
+
+    protected_captions counts label=="caption" entries that bypassed all mutation
+    checks (never blanked, never stripped, never deduped).
+    """
+    texts_in: int = 0
+    blanked_short: int = 0
+    blanked_dedup: int = 0
+    blanked_after_strip: int = 0
+    stripped_in_place: int = 0
+    protected_captions: int = 0
+
+
+def filter_docling_document(doc_json: dict) -> tuple[dict, FilterDiagnostics]:
+    """Apply v2 quality filter to a DoclingDocument JSON in place.
+
+    For each entry in ``doc_json["texts"]``:
+      * Entries with ``label`` in ``_PROTECTED_LABELS`` (e.g. ``"caption"``)
+        are NEVER blanked or deduped. The filter records them in
+        ``diag.protected_captions`` and moves on.
+      * Dropped entries (short / dedup / after_strip) have their ``text`` and
+        ``orig`` blanked and ``hyperlink`` cleared. The entry stays in the
+        array so $refs from body.children / pictures.children / tables.children
+        remain valid.
+      * Kept-with-strip entries have their ``text`` and ``orig`` overridden
+        with the post-strip residue and their ``hyperlink`` cleared (the
+        hyperlink may have pointed at chrome-only context).
+      * Kept-as-is entries are untouched.
+
+    The function mutates ``doc_json`` and returns it for chained-call ergonomics.
+
+    Idempotent: running it twice on the same doc produces zero new blanks
+    or strips on the second pass.
+
+    Defensive: missing/None/non-list texts and non-dict elements are skipped
+    without raising. The worker still wraps the call in try/except for
+    catastrophic shapes (see Task 4 / Task 5), but the most common malformed
+    cases must not crash this function.
+    """
+    diag = FilterDiagnostics()
+    texts = doc_json.get("texts") or []
+    if not isinstance(texts, list):
+        return doc_json, diag
+    diag.texts_in = len(texts)
+
+    seen_norms: set[str] = set()
+    for i, t in enumerate(texts):
+        if not isinstance(t, dict):
+            continue
+
+        # Caption protection: docling-graph sanitizer parallel (main.py:482).
+        # Image-description captions must survive even when their text is
+        # short or duplicate across figures.
+        label = (t.get("label") or "").lower()
+        if label in _PROTECTED_LABELS:
+            diag.protected_captions += 1
+            continue
+
+        # Defensive: text/orig can be None per observed docling output.
+        rendered_raw = t.get("text") if t.get("text") is not None else t.get("orig")
+        if rendered_raw is None:
+            continue
+        rendered = str(rendered_raw).strip()
+        if not rendered:
+            continue
+
+        decision = classify_chunk(rendered, seen_norms)
+        if not decision.keep:
+            new_t = dict(t)
+            new_t["text"] = ""
+            new_t["orig"] = ""
+            if "hyperlink" in new_t:
+                new_t["hyperlink"] = None
+            texts[i] = new_t
+            if decision.reason == "short":
+                diag.blanked_short += 1
+            elif decision.reason == "after_strip":
+                diag.blanked_after_strip += 1
+            elif decision.reason == "dedup":
+                diag.blanked_dedup += 1
+            continue
+        if decision.stripped_text is not None:
+            new_t = dict(t)
+            new_t["text"] = decision.stripped_text
+            new_t["orig"] = decision.stripped_text
+            if "hyperlink" in new_t:
+                new_t["hyperlink"] = None
+            texts[i] = new_t
+            diag.stripped_in_place += 1
+
+    doc_json["texts"] = texts
+    return doc_json, diag
