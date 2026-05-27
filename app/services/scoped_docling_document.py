@@ -686,7 +686,7 @@ def filter_docling_document(doc_json: dict) -> tuple[dict, FilterDiagnostics]:
         if not rendered:
             continue
 
-        decision = classify_chunk(rendered, seen_norms)
+        decision = classify_chunk(rendered, seen_norms, skip_short_reject=True)
         if not decision.keep:
             new_t = dict(t)
             new_t["text"] = ""

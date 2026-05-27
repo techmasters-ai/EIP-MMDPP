@@ -130,11 +130,17 @@ class FilterDecision:
     reason: str
 
 
-def classify_chunk(rendered: str, seen_norms: set[str]) -> FilterDecision:
+def classify_chunk(
+    rendered: str,
+    seen_norms: set[str],
+    *,
+    skip_short_reject: bool = False,
+) -> FilterDecision:
     """Apply the v2 quality rules to a single rendered chunk.
 
     Order matches the contract documented in the C.9d-v2 commit:
     1. Quick reject: normalized < MIN_CHUNK_TEXT_CHARS -> "short"
+       (skipped when ``skip_short_reject=True``)
     2. Strip leading/trailing chrome lines
     3. Drop if stripped-normalized < MIN_RESIDUAL_CHARS -> "after_strip"
     4. Dedup against ``seen_norms`` (set of post-strip normalized keys);
@@ -151,9 +157,14 @@ def classify_chunk(rendered: str, seen_norms: set[str]) -> FilterDecision:
     seen_norms:
         Caller-managed set of already-seen post-strip normalized keys.
         Mutated when a chunk is kept.
+    skip_short_reject:
+        When True, Rule 1 (< MIN_CHUNK_TEXT_CHARS) is not applied. Used by
+        Layer-1 (``filter_docling_document``) where the chunker downstream
+        (HybridChunker in docling-graph) merges peer siblings under a heading
+        and short individual entries gain meaning only post-merge.
     """
     normalized = normalize_for_dedup(rendered)
-    if len(normalized) < MIN_CHUNK_TEXT_CHARS:
+    if not skip_short_reject and len(normalized) < MIN_CHUNK_TEXT_CHARS:
         return FilterDecision(keep=False, stripped_text=None, reason="short")
 
     stripped, leading, trailing = strip_chrome_lines(rendered)
