@@ -216,6 +216,7 @@ def build_pipeline_config(
     think_override: bool | str | None = None,
     chunk_max_tokens_override: int | None = None,
     max_tokens_override: int | None = None,
+    pre_built_chunks: list[dict[str, Any]] | None = None,
 ) -> Any:
     """Build a PipelineConfig from environment variables.
 
@@ -368,5 +369,11 @@ def build_pipeline_config(
     if debug_dir is not None:
         config_kwargs["debug"] = True
         config_kwargs["output_dir"] = debug_dir
+
+    # Plan 2026-05-27-merged-chunk-routing.md Task 0b: pass pre-built merged
+    # chunks through to PipelineConfig. The library's ManyToOneStrategy
+    # bypasses DocumentChunker when this is non-empty.
+    if pre_built_chunks:
+        config_kwargs["pre_built_chunks"] = pre_built_chunks
 
     return PipelineConfig(**config_kwargs)

@@ -587,6 +587,7 @@ def run_extraction_pass(
     think: bool | str | None = None,
     chunk_max_tokens: int | None = None,
     max_tokens: int | None = None,
+    pre_built_chunks: list[dict[str, Any]] | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -643,10 +644,27 @@ def run_extraction_pass(
     # count is recorded in diagnostics so an operator can verify the
     # heuristic isn't too aggressive (surfaced in the notebook outcome
     # tracker's `sanit` column).
+    #
+    # Plan 2026-05-27-merged-chunk-routing.md Task 0b: when the caller
+    # supplied ``pre_built_chunks``, the worker has ALREADY filtered the
+    # doc (Layer-1 worker filter) and merged-chunked it (HybridChunker
+    # against bge-m3). Running sanitize on top would alter the doc in
+    # ways the chunked path can't account for — and the chunks themselves
+    # never touch ``docling_document_json`` from here on, so any sanitize
+    # change is wasted work. Skip both transforms when ``pre_built_chunks``
+    # rides the call.
     sanitize_stats: dict[str, int] = {"texts_in": 0, "texts_dropped": 0}
     _settings_for_sanitize = DoclingGraphSettings()
+    _chunked_mode = bool(pre_built_chunks)
     with PhaseTimer(_phase_timings, "sanitize_ms"):
-        if getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
+        if _chunked_mode:
+            logger.info(
+                "GRAPH_EXTRACTION_CHUNKED_MODE pass=%s chunks=%d "
+                "(skip sanitize + DocumentChunker; worker-supplied chunks "
+                "are LLM batches)",
+                pass_name, len(pre_built_chunks),
+            )
+        elif getattr(_settings_for_sanitize, "docling_graph_sanitize_input", True):
             docling_document_json = _sanitize_docling_document(
                 docling_document_json, sanitize_stats
             )
@@ -693,7 +711,10 @@ def run_extraction_pass(
     # both-flags / norm-only-and-not-skipped / experimental / both-off). Long
     # block — inline perf_counter avoids re-indenting 140+ lines.
     _norm_t0 = time.perf_counter()
-    _norm_skipped_for_pass = pass_name == "system_links"
+    # Plan 2026-05-27-merged-chunk-routing.md Task 0b: chunked-mode also
+    # bypasses table normalization — the worker-supplied chunks ARE the
+    # LLM batches, no further doc rewriting matters downstream.
+    _norm_skipped_for_pass = pass_name == "system_links" or _chunked_mode
     if _norm_on and _norm_skipped_for_pass:
         logger.info(
             "table_normalization: skipping for pass=%s (relationship-only "
@@ -936,6 +957,10 @@ def run_extraction_pass(
             think_override=think,
             chunk_max_tokens_override=chunk_max_tokens,
             max_tokens_override=max_tokens,
+            # Plan 2026-05-27-merged-chunk-routing.md Task 0b: chunked-mode
+            # routing. None on the legacy path; populated when the worker
+            # supplied pre-built merged chunks.
+            pre_built_chunks=pre_built_chunks,
         )
 
         # Capture the library's print() + logging output to stdout/stderr during
@@ -1550,6 +1575,16 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     try:
         async with semaphore:
             try:
+                # Plan 2026-05-27-merged-chunk-routing.md Task 0b: thread the
+                # worker-supplied merged chunks through to ``run_extraction_pass``
+                # as a plain list-of-dict (kept JSON-friendly so the inner
+                # function can pass it to ``build_pipeline_config`` without
+                # re-importing the schema class).
+                _selected_chunks_payload = (
+                    [c.model_dump() for c in body.selected_chunks]
+                    if body.selected_chunks
+                    else None
+                )
                 context = await asyncio.to_thread(
                     run_extraction_pass,
                     body.docling_document_json,
@@ -1562,6 +1597,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.think,
                     body.chunk_max_tokens,
                     body.max_tokens,
+                    _selected_chunks_payload,
                 )
             except Exception as exc:
                 logger.exception(

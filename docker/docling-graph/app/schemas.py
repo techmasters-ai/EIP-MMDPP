@@ -69,6 +69,57 @@ class EntityRef(BaseModel):
     )
 
 
+class SelectedChunkInput(BaseModel):
+    """One pre-built merged chunk supplied by the worker for chunked-mode
+    extraction. Receiver side of the merged-chunk routing wire contract
+    (Phase 0 Task 0b, plan 2026-05-27-merged-chunk-routing.md).
+
+    When ``ExtractPassRequest.selected_chunks`` is populated, docling-graph
+    SKIPS both ``_sanitize_docling_document`` and ``DocumentChunker`` —
+    these chunks ARE the LLM batches. Provenance flows back through
+    ``source_refs`` (DoclingDocument element self_refs covered by the
+    merged chunk).
+
+    ``model_config = ConfigDict(extra="ignore")``: pydantic v2 nested
+    config does NOT inherit, so this opt-out is local to the per-chunk
+    item. It exists so the worker can serialize its own ``SelectedChunk``
+    model (which carries an extra ``chunk_key`` field for forward-compat
+    payload pre-staging) directly without a per-callsite ``.exclude=``
+    strip. The parent ``ExtractPassRequest.extra='forbid'`` contract
+    above is unaffected.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    chunk_index: int = Field(
+        ..., description="Position of the chunk in HybridChunker output (0-indexed)."
+    )
+    text: str = Field(
+        ...,
+        description=(
+            "The merged chunk text (output of ``chunker.contextualize()``). "
+            "Used verbatim as the LLM batch input — no re-chunking, no "
+            "sanitize, no normalization downstream."
+        ),
+    )
+    source_refs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "DoclingDocument element self_refs covered by this merged "
+            "chunk (e.g. ``['#/texts/35', '#/texts/36']``). Preserved "
+            "for downstream provenance — every extracted entity's "
+            "``evidence_units`` resolves back through these refs."
+        ),
+    )
+    token_count: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Token count of ``text`` per the worker-side tokenizer "
+            "(bge-m3). Diagnostic only — receiver does not enforce."
+        ),
+    )
+
+
 class ExtractPassRequest(BaseModel):
     """Request body for POST /extract-pass. Spec §5.9 wire contract."""
 
@@ -78,6 +129,12 @@ class ExtractPassRequest(BaseModel):
     # they overrode it. Worker-produced requests are already protected by the
     # manifest-side ExecutionProfile validator; this closes the same gap at the
     # HTTP boundary for non-worker callers.
+    #
+    # NOTE: pydantic v2 nested-model ``model_config`` does NOT inherit. The
+    # nested ``SelectedChunkInput`` declares ``extra='ignore'`` locally so a
+    # worker-side ``SelectedChunk.model_dump()`` (which includes ``chunk_key``
+    # for forward-compat payload pre-staging) round-trips without rejection.
+    # This top-level forbid is preserved.
     model_config = ConfigDict(extra="forbid")
 
     bundle_key: str = Field(..., description="Bundle identifier, e.g. 'air_defense_v3'")
@@ -166,6 +223,21 @@ class ExtractPassRequest(BaseModel):
             "reaches the actual outbound HTTP call, not just PipelineConfig. "
             "Sourced from pass_def.execution.max_tokens when the manifest "
             "declares an execution block; otherwise omitted."
+        ),
+    )
+    # Plan 2026-05-27-merged-chunk-routing.md Phase 0 Task 0b: chunked-mode
+    # routing. When populated, docling-graph SKIPS both
+    # ``_sanitize_docling_document`` and the internal ``DocumentChunker``;
+    # the chunks ride straight to the LLM batch loop. Absent / None keeps
+    # the existing per-element behavior.
+    selected_chunks: Optional[list[SelectedChunkInput]] = Field(
+        default=None,
+        description=(
+            "Pre-built merged chunks supplied by the worker. When set, "
+            "docling-graph treats these as the LLM batch inputs directly: "
+            "sanitize is skipped, the internal DocumentChunker is skipped, "
+            "and ``source_refs`` are preserved for downstream provenance. "
+            "Absent / null keeps the legacy per-element chunked path."
         ),
     )
 
@@ -433,3 +505,5 @@ ExtractPassResponse.model_rebuild()
 TableFact.model_rebuild()
 CrossEntityHint.model_rebuild()
 TableOverlay.model_rebuild()
+SelectedChunkInput.model_rebuild()
+ExtractPassRequest.model_rebuild()
