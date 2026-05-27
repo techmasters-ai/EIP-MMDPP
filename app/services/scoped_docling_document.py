@@ -588,10 +588,25 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
 
 
 #: Label values whose text content is protected from blanking and dedup.
-#: Matches docling-graph's own sanitizer (docker/docling-graph/app/main.py:482):
-#: image captions carry intentional repetition (figure numbers, "see also" notes)
-#: that an aggressive dedup would silently destroy.
-_PROTECTED_LABELS: frozenset[str] = frozenset({"caption"})
+#:
+#: - ``"caption"``: matches docling-graph's own sanitizer (main.py:482). Image
+#:   captions carry intentional repetition (figure numbers, "see also" notes)
+#:   that an aggressive dedup would silently destroy.
+#:
+#: - ``"section_header"`` / ``"section-header"`` / ``"title"``: heading labels.
+#:   The chunker uses these as parent-heading context for adjacent text chunks
+#:   (e.g. ``_resolve_parent_section_heading`` reads the heading's ``text``
+#:   field). Blanking them leaves downstream chunks without their section
+#:   prefix, degrading LLM context. Mirrors the ``_HEADING_LABELS`` exclusion
+#:   in ``app/services/extraction_chunk_index.py`` (those labels are also
+#:   already skipped from indexing, so protecting them here is a no-op for
+#:   the indexed-chunk pool but load-bearing for parent-heading resolution).
+_PROTECTED_LABELS: frozenset[str] = frozenset({
+    "caption",
+    "section_header",
+    "section-header",
+    "title",
+})
 
 
 @dataclass
@@ -607,7 +622,7 @@ class FilterDiagnostics:
       - blanked_after_strip:  entry was blanked because residue < MIN_RESIDUAL_CHARS after strip
       - stripped_in_place:    entry was KEPT but its text was overwritten with the stripped form
 
-    protected_captions counts label=="caption" entries that bypassed all mutation
+    protected_labels counts label=="caption" entries that bypassed all mutation
     checks (never blanked, never stripped, never deduped).
     """
     texts_in: int = 0
@@ -615,7 +630,7 @@ class FilterDiagnostics:
     blanked_dedup: int = 0
     blanked_after_strip: int = 0
     stripped_in_place: int = 0
-    protected_captions: int = 0
+    protected_labels: int = 0
 
 
 def filter_docling_document(doc_json: dict) -> tuple[dict, FilterDiagnostics]:
@@ -624,7 +639,7 @@ def filter_docling_document(doc_json: dict) -> tuple[dict, FilterDiagnostics]:
     For each entry in ``doc_json["texts"]``:
       * Entries with ``label`` in ``_PROTECTED_LABELS`` (e.g. ``"caption"``)
         are NEVER blanked or deduped. The filter records them in
-        ``diag.protected_captions`` and moves on.
+        ``diag.protected_labels`` and moves on.
       * Dropped entries (short / dedup / after_strip) have their ``text`` and
         ``orig`` blanked and ``hyperlink`` cleared. The entry stays in the
         array so $refs from body.children / pictures.children / tables.children
@@ -660,7 +675,7 @@ def filter_docling_document(doc_json: dict) -> tuple[dict, FilterDiagnostics]:
         # short or duplicate across figures.
         label = (t.get("label") or "").lower()
         if label in _PROTECTED_LABELS:
-            diag.protected_captions += 1
+            diag.protected_labels += 1
             continue
 
         # Defensive: text/orig can be None per observed docling output.

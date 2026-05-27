@@ -7501,7 +7501,7 @@ def derive_ontology_graph_pass(
             logger.info(
                 "VR: filter_docling_document (per-pass) run=%s pass=%s texts_in=%d "
                 "blanked=%d (short=%d dedup=%d after_strip=%d) stripped_in_place=%d "
-                "protected_captions=%d",
+                "protected_labels=%d",
                 run_id, pass_name,
                 _filter_diag.texts_in,
                 _filter_diag.blanked_short + _filter_diag.blanked_dedup + _filter_diag.blanked_after_strip,
@@ -7509,7 +7509,7 @@ def derive_ontology_graph_pass(
                 _filter_diag.blanked_dedup,
                 _filter_diag.blanked_after_strip,
                 _filter_diag.stripped_in_place,
-                _filter_diag.protected_captions,
+                _filter_diag.protected_labels,
             )
             # Initialize router_diagnostics to {} if currently None so doc_filter
             # always lands in DB diagnostics — identity and other non-narrowed
@@ -7525,7 +7525,7 @@ def derive_ontology_graph_pass(
                 "blanked_dedup": _filter_diag.blanked_dedup,
                 "blanked_after_strip": _filter_diag.blanked_after_strip,
                 "stripped_in_place": _filter_diag.stripped_in_place,
-                "protected_captions": _filter_diag.protected_captions,
+                "protected_labels": _filter_diag.protected_labels,
             }
         except Exception as exc:
             # Fail-open: a malformed doc must not terminalize the pass.
@@ -8620,7 +8620,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                     doc_json_for_index, filter_diag_idx = filter_docling_document(doc_json_for_index)
                     logger.info(
                         "VR: filter_docling_document (index path) run=%s texts_in=%d blanked=%d "
-                        "(short=%d dedup=%d after_strip=%d) stripped_in_place=%d protected_captions=%d",
+                        "(short=%d dedup=%d after_strip=%d) stripped_in_place=%d protected_labels=%d",
                         run_id,
                         filter_diag_idx.texts_in,
                         filter_diag_idx.blanked_short + filter_diag_idx.blanked_dedup + filter_diag_idx.blanked_after_strip,
@@ -8628,7 +8628,7 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                         filter_diag_idx.blanked_dedup,
                         filter_diag_idx.blanked_after_strip,
                         filter_diag_idx.stripped_in_place,
-                        filter_diag_idx.protected_captions,
+                        filter_diag_idx.protected_labels,
                     )
                 except Exception as exc:
                     # Fail-open: a malformed doc must not terminalize the pipeline_run.

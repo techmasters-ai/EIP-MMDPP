@@ -209,6 +209,70 @@ class TestCaptionProtection:
         assert diag.blanked_dedup == 0
 
 
+class TestHeadingLabelProtection:
+    """label values "section_header" / "section-header" / "title" are protected
+    from blanking — the chunker uses them as parent-heading context for
+    adjacent text chunks. Mirrors _HEADING_LABELS in extraction_chunk_index.py."""
+
+    def test_short_section_header_is_not_blanked(self):
+        """A 10-char section heading like 'S-75 DVINA' would normally be
+        blanked as short (< 20 chars). With label protection it survives so
+        downstream chunks can prefix it as ## S-75 DVINA."""
+        from app.services.scoped_docling_document import filter_docling_document
+        elem = _make_text(0, "S-75 DVINA", label="section_header")
+        doc = _make_doc([elem])
+        filtered, diag = filter_docling_document(doc)
+        assert filtered["texts"][0]["text"] == "S-75 DVINA"
+        assert diag.blanked_short == 0
+        assert diag.protected_labels == 1
+
+    def test_hyphenated_section_header_variant_is_also_protected(self):
+        """Docling has emitted both 'section_header' and 'section-header' —
+        both spellings must be protected to match _HEADING_LABELS in
+        extraction_chunk_index.py."""
+        from app.services.scoped_docling_document import filter_docling_document
+        elem = _make_text(0, "Variants", label="section-header")
+        doc = _make_doc([elem])
+        filtered, diag = filter_docling_document(doc)
+        assert filtered["texts"][0]["text"] == "Variants"
+        assert diag.protected_labels == 1
+
+    def test_title_label_is_protected(self):
+        """label='title' is the doc-level title and must survive even though
+        it's typically short."""
+        from app.services.scoped_docling_document import filter_docling_document
+        elem = _make_text(0, "SA-2", label="title")
+        doc = _make_doc([elem])
+        filtered, diag = filter_docling_document(doc)
+        assert filtered["texts"][0]["text"] == "SA-2"
+        assert diag.protected_labels == 1
+
+    def test_repeated_section_headers_both_kept(self):
+        """Two real 'Variants' section headers in different parts of the doc
+        — dedup must NOT collapse them away."""
+        from app.services.scoped_docling_document import filter_docling_document
+        h1 = _make_text(0, "Variants discussion section heading here.", label="section_header")
+        h2 = _make_text(1, "Variants discussion section heading here.", label="section_header")
+        doc = _make_doc([h1, h2])
+        filtered, diag = filter_docling_document(doc)
+        assert filtered["texts"][0]["text"] == "Variants discussion section heading here."
+        assert filtered["texts"][1]["text"] == "Variants discussion section heading here."
+        assert diag.blanked_dedup == 0
+        assert diag.protected_labels == 2
+
+    def test_page_header_label_is_NOT_protected(self):
+        """page_header is webpage-export chrome (date stamps, breadcrumbs)
+        and must NOT be in the protected set — it should still be blanked
+        when short. Only true heading labels are protected."""
+        from app.services.scoped_docling_document import filter_docling_document
+        elem = _make_text(0, "10/6/25, 8:33 PM", label="page_header")
+        doc = _make_doc([elem])
+        filtered, diag = filter_docling_document(doc)
+        assert filtered["texts"][0]["text"] == ""  # blanked
+        assert diag.blanked_short == 1
+        assert diag.protected_labels == 0
+
+
 class TestDefensiveEdgeCases:
     """Malformed docs must not crash the filter. The worker wraps the call in
     try/except but the function itself should also fail-safe for the most common
