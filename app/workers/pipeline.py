@@ -7491,6 +7491,56 @@ def derive_ontology_graph_pass(
         doc_json = _build_docling_document_json(document_id)
         _doc_json_load_ms = (time.perf_counter() - _doc_load_t0) * 1000.0
 
+        # C.10: apply v2 quality filter to ALL passes (identity, field_group,
+        # system_links). The filter is idempotent — narrowed passes pre-process
+        # the same doc shape that was already filtered at index build time;
+        # non-narrowed passes see the filter for the first time here.
+        try:
+            from app.services.scoped_docling_document import filter_docling_document
+            doc_json, _filter_diag = filter_docling_document(doc_json)
+            logger.info(
+                "VR: filter_docling_document (per-pass) run=%s pass=%s texts_in=%d "
+                "blanked=%d (short=%d dedup=%d after_strip=%d) stripped_in_place=%d "
+                "protected_captions=%d",
+                run_id, pass_name,
+                _filter_diag.texts_in,
+                _filter_diag.blanked_short + _filter_diag.blanked_dedup + _filter_diag.blanked_after_strip,
+                _filter_diag.blanked_short,
+                _filter_diag.blanked_dedup,
+                _filter_diag.blanked_after_strip,
+                _filter_diag.stripped_in_place,
+                _filter_diag.protected_captions,
+            )
+            # Initialize router_diagnostics to {} if currently None so doc_filter
+            # always lands in DB diagnostics — identity and other non-narrowed
+            # passes have router_diagnostics=None by default (line 7354) and
+            # would otherwise lose this signal silently.
+            if router_diagnostics is None:
+                router_diagnostics = {}
+            else:
+                router_diagnostics = dict(router_diagnostics)
+            router_diagnostics["doc_filter"] = {
+                "texts_in": _filter_diag.texts_in,
+                "blanked_short": _filter_diag.blanked_short,
+                "blanked_dedup": _filter_diag.blanked_dedup,
+                "blanked_after_strip": _filter_diag.blanked_after_strip,
+                "stripped_in_place": _filter_diag.stripped_in_place,
+                "protected_captions": _filter_diag.protected_captions,
+            }
+        except Exception as exc:
+            # Fail-open: a malformed doc must not terminalize the pass.
+            # Proceed with the unfiltered doc.
+            logger.warning(
+                "VR: filter_docling_document (per-pass) FAILED run=%s pass=%s: %r "
+                "— proceeding with unfiltered doc",
+                run_id, pass_name, exc,
+            )
+            if router_diagnostics is None:
+                router_diagnostics = {}
+            else:
+                router_diagnostics = dict(router_diagnostics)
+            router_diagnostics["doc_filter"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         # VR C.4 rev 9 H1 + rev 10 H2: apply chunk scope INSIDE the per-pass
         # task body, AFTER loading the full doc from MinIO.  The scoped doc is
         # built worker-side; only the small chunk_scope dict (kilobytes) crosses
