@@ -102,15 +102,12 @@ def _rerank_score_range(
 def _estimate_tokens_from_chars(total_chars: int) -> int:
     """Char-count to token estimate without allocating an intermediate string.
 
-    Rev 16 Minor #5: avoids allocating " " * total_chars (~600KB for large docs).
-    Uses char-count directly with the same ratio as the pre-rev-16 heuristic.
+    Uses 3 chars/token for technical text — empirically measured on SA-2's
+    C.7g run: 39445 chars / 12839 bge-m3 tokens = 3.07 chars/token. The prior
+    chars//4 ratio undercounted by ~30%, producing ratios >100% when compared
+    against the bge-m3-counted selected_token_estimate.
     """
-    return max(1, total_chars // 4) if total_chars > 0 else 0
-    # NOTE: bge-m3's actual ratio for technical text is ~2-3 chars/token rather
-    # than ~4, so this heuristic undercounts by ~30-50%.  For selected_text we
-    # use count_bge_m3_tokens() instead (see usage below), which is accurate.
-    # This helper is kept only for the full-doc token estimate where we don't
-    # have the actual chunk text available after the zero-vector probe aggregation.
+    return max(1, total_chars // 3) if total_chars > 0 else 0
 
 
 # ---------------------------------------------------------------------------
@@ -134,13 +131,13 @@ async def _async_full_doc_token_estimate(
     narrowing-ineffective warning for that call).
     """
     try:
-        # Direct SELECT SUM(LENGTH(chunk_text)) by the indexed pipeline_run_id
+        # Direct SELECT sum(chunk_text.size()) by the indexed pipeline_run_id
         # property — no vector search involved.  ArcadeDB returns all matching
         # ExtractionChunk vertices for this run without a top_k cap.
         rows = await store._client.query(
             store._database,
             "sql",
-            "SELECT SUM(LENGTH(chunk_text)) AS total_chars "
+            "SELECT sum(chunk_text.size()) AS total_chars "
             "FROM ExtractionChunk WHERE pipeline_run_id = :run_id",
             {"run_id": pipeline_run_id},
         )

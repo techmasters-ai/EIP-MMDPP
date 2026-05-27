@@ -939,7 +939,7 @@ class TestNonVectorTokenEstimate:
         """_async_full_doc_token_estimate must use direct SQL (not HNSW vector_search).
 
         Rev 17 LOW: switched from zero-vector probe (filter-starvation risk, same
-        shape as C.1 bug) to SELECT SUM(LENGTH(chunk_text)) by pipeline_run_id.
+        shape as C.1 bug) to SELECT sum(chunk_text.size()) by pipeline_run_id.
 
         This test mocks store._client.query and asserts it's called with an SQL
         SELECT statement — NOT a vector_search call.  Also asserts the token
@@ -950,9 +950,9 @@ class TestNonVectorTokenEstimate:
 
         pipeline_run_id = "test-run-123"
 
-        # Simulate ArcadeDB returning total_chars = 4000 (→ ~1000 tokens via //4)
+        # Simulate ArcadeDB returning total_chars = 4002 (→ 1334 tokens via //3)
         mock_client = MagicMock()
-        mock_client.query = AsyncMock(return_value=[{"total_chars": 4000}])
+        mock_client.query = AsyncMock(return_value=[{"total_chars": 4002}])
 
         mock_store = MagicMock()
         mock_store._client = mock_client
@@ -978,8 +978,8 @@ class TestNonVectorTokenEstimate:
             f"Expected run_id parameter in SQL call; call_args={call_args}"
         )
 
-        # Token estimate: 4000 chars // 4 = 1000 tokens
-        assert result == 1000, f"Expected token estimate 1000 (4000 chars // 4), got {result}"
+        # Token estimate: 4002 chars // 3 = 1334 tokens (technical-text ratio)
+        assert result == 1334, f"Expected token estimate 1334 (4002 chars // 3), got {result}"
 
     @pytest.mark.asyncio
     async def test_full_doc_token_estimate_returns_zero_on_empty_result(self):
@@ -1014,3 +1014,31 @@ class TestNonVectorTokenEstimate:
 
         result = await _async_full_doc_token_estimate("some-run", mock_store)
         assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_full_doc_token_estimate_uses_arcadedb_native_string_size(self):
+        """SQL must use ArcadeDB-native `chunk_text.size()`, not SQL `LENGTH()`.
+
+        Regression for the bug where the shipped query used LENGTH(chunk_text)
+        which ArcadeDB rejects as "Unknown function name 'LENGTH'", the except
+        clause swallowed the error, and the function silently returned 0 — which
+        in turn disabled the narrowing-ineffective WARNING for every pass.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+        from app.api.v1.extraction_routing import _async_full_doc_token_estimate
+
+        mock_client = MagicMock()
+        mock_client.query = AsyncMock(return_value=[{"total_chars": 4000}])
+        mock_store = MagicMock()
+        mock_store._client = mock_client
+        mock_store._database = "testdb"
+
+        await _async_full_doc_token_estimate("any-run", mock_store)
+
+        sql_cmd = mock_client.query.call_args.args[2]
+        assert "LENGTH(" not in sql_cmd.upper(), (
+            f"SQL must not use LENGTH() — ArcadeDB does not implement it; got: {sql_cmd!r}"
+        )
+        assert ".size()" in sql_cmd, (
+            f"SQL must use ArcadeDB-native chunk_text.size(); got: {sql_cmd!r}"
+        )
