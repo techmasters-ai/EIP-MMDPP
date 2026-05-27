@@ -25,7 +25,6 @@ CHUNK RENDERING CONTRACT (rev 8 M9 + rev 10):
 from __future__ import annotations
 
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterator
@@ -49,91 +48,15 @@ except Exception:  # pragma: no cover
 _HEADING_LABELS = frozenset({"section_header", "section-header", "title"})
 
 # ---------------------------------------------------------------------------
-# C.9d-v2: Pre-index quality filters
+# C.10: v2 quality-filter primitives moved to app.services.chunk_quality.
+# Re-exported with leading-underscore aliases for internal call-site stability.
 # ---------------------------------------------------------------------------
-# Minimum normalized length BEFORE stripping. Catches obviously useless chunks
-# ("™", "11", "Log in") so we don't waste cycles on chrome-stripping them.
-_MIN_CHUNK_TEXT_CHARS = 20
-
-# Minimum residual length AFTER stripping leading/trailing chrome lines. A
-# chunk that survives the < _MIN_CHUNK_TEXT_CHARS check but whose body is
-# mostly chrome (residue < 40 chars after strip) is dropped.
-_MIN_RESIDUAL_CHARS = 40
-
-# Web-page-chrome phrases. A LINE is treated as chrome when its normalized
-# form matches one of these phrases exactly (whole-line match). Middle lines
-# are NEVER stripped — only leading/trailing — so a real paragraph that
-# embeds "subscribe now" mid-body keeps the paragraph intact.
-#
-# Keep this list narrow — every entry must be a near-pure-chrome marker, not
-# domain language. Substring contains is too aggressive; whole-line equality
-# is the safe primitive.
-_WEB_CHROME_PHRASES: tuple[str, ...] = (
-    "audio coming soon",
-    "subscribe now",
-    "sponsored",
-    "advertisement",
-    "log in",
-    "share this article",
-    "historynet",
-    "recommended for you",
-    "related stories",
-    "sign me up",
-    "advertise with us",
-    "meet our staff",
-    "privacy policy terms of service",
-    "stay curious",
-    "apa",
-    "mla",
-    "chicago",
+from app.services.chunk_quality import (
+    MIN_CHUNK_TEXT_CHARS as _MIN_CHUNK_TEXT_CHARS,
+    MIN_RESIDUAL_CHARS as _MIN_RESIDUAL_CHARS,
+    normalize_for_dedup as _normalize_for_dedup,
+    strip_chrome_lines as _strip_chrome_lines,
 )
-_WEB_CHROME_PHRASES_SET: frozenset[str] = frozenset(_WEB_CHROME_PHRASES)
-
-
-def _normalize_for_dedup(text: str) -> str:
-    """Lowercase + collapse whitespace. Returns the dedup key."""
-    return re.sub(r"\s+", " ", text.lower()).strip()
-
-
-def _is_chrome_line(line: str) -> bool:
-    """True if `line` is whitespace-only OR exactly matches a chrome phrase.
-
-    Whitespace-only lines are treated as chrome so they get pulled along
-    when they sit between/adjacent to genuine chrome lines (a typical PDF
-    chrome block is "Audio Coming Soon\\n\\nSponsored Donald Trump's Golf..."
-    — the blank line between chrome and content must be strippable too).
-    """
-    norm = re.sub(r"\s+", " ", line.lower()).strip()
-    if not norm:
-        return True
-    return norm in _WEB_CHROME_PHRASES_SET
-
-
-def _strip_chrome_lines(text: str) -> tuple[str, int, int]:
-    """Strip leading and trailing chrome (or empty) lines from `text`.
-
-    Middle chrome lines are NEVER stripped — preserves real article body
-    where boilerplate is embedded between paragraphs of useful text.
-
-    Returns (stripped_text, leading_removed, trailing_removed).
-    When the entire chunk is chrome/empty, returns ("", n, 0).
-    """
-    lines = text.split("\n")
-    n = len(lines)
-
-    leading = 0
-    while leading < n and _is_chrome_line(lines[leading]):
-        leading += 1
-    if leading == n:
-        return "", n, 0
-
-    trailing = 0
-    # Stop at the first non-chrome line counting from the end. Strictly > leading
-    # guards against removing the only kept line in single-line residues.
-    while (n - 1 - trailing) > leading and _is_chrome_line(lines[n - 1 - trailing]):
-        trailing += 1
-
-    return "\n".join(lines[leading:n - trailing]), leading, trailing
 
 # NOTE: walker policy (rev 14 code-quality review Important #1):
 #   _walk_docling_elements indexes EVERY texts[]/tables[]/pictures[] element
