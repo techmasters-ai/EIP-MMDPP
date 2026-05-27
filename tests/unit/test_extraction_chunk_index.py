@@ -268,7 +268,7 @@ class TestBuildSkipsEmptyTextElements:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, "Real content here."),
+            _make_text_elem(0, "Real content for the extraction index here."),
             _make_text_elem(1, ""),       # blank
             _make_text_elem(2, "   "),    # whitespace only
         ]
@@ -320,7 +320,7 @@ class TestBuildIdempotentDeleteThenInsert:
         """DELETE for pipeline_run_id is called before any INSERT."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "Some content.")]
+        texts = [_make_text_elem(0, "Some substantive content here for indexing.")]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
 
@@ -345,8 +345,8 @@ class TestBuildIdempotentDeleteThenInsert:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, "Radar specs."),
-            _make_text_elem(1, "Altitude range."),
+            _make_text_elem(0, "Radar specifications and parameters."),
+            _make_text_elem(1, "Altitude range parameters defined."),
         ]
         doc_json = _make_doc_json(texts, [], [])
         fake_embeddings = [[0.1] * 1024, [0.2] * 1024]
@@ -366,7 +366,7 @@ class TestBuildIdempotentDeleteThenInsert:
         """DELETE WHERE pipeline_run_id = :run_id uses the correct value."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "Content.")]
+        texts = [_make_text_elem(0, "Content section with enough length here.")]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
 
@@ -568,14 +568,14 @@ class TestTextRenderingWithHeading:
         """Text elem with no parent → renders raw text, no heading prefix."""
         from app.services.extraction_chunk_index import _render_text_chunk
 
-        text_elem = _make_text_elem(0, "Standalone text.")
+        text_elem = _make_text_elem(0, "Standalone text content area for indexing.")
         doc_json = _make_doc_json([text_elem], [], [])
 
         rendered = _render_text_chunk(
             text_elem, doc_json, include_parent_section_heading=True
         )
 
-        assert "Standalone text." in rendered
+        assert "Standalone text content area for indexing." in rendered
 
     def test_build_passes_heading_flag_to_text_render(self):
         """build_extraction_index include_parent_section_heading=False → no heading."""
@@ -680,16 +680,16 @@ class TestSelfRefFormat:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(3, "Content A."),
-            _make_text_elem(7, "Content B."),
+            _make_text_elem(3, "Content A with descriptive detail here."),
+            _make_text_elem(7, "Content B with descriptive detail here."),
         ]
-        tables = [_make_table_elem(2, "Cap", cells=[["X", "Y"]])]
-        pictures = [_make_picture_elem(5, "A picture caption")]
+        tables = [_make_table_elem(2, "Caption with substantive descriptive text.", cells=[["X", "Y"]])]
+        pictures = [_make_picture_elem(5, "A picture caption with descriptive content.")]
         doc_json = _make_doc_json(
             texts, tables, pictures,
             extra_texts={
-                "#/texts/9002": "Cap",
-                "#/texts/8005": "A picture caption",
+                "#/texts/9002": "Caption with substantive descriptive text.",
+                "#/texts/8005": "A picture caption with descriptive content.",
             },
         )
         store = _make_mock_store()
@@ -718,7 +718,7 @@ class TestSelfRefFormat:
         """vertex_id must be f'{pipeline_run_id}:{self_ref}'."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "A text element.")]
+        texts = [_make_text_elem(0, "A text element with substance and length.")]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
 
@@ -753,7 +753,7 @@ class TestEmbeddingBatchCount:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, f"Text element {i}.") for i in range(8)
+            _make_text_elem(0, f"Text element number {i} with substantive content.") for i in range(8)
         ]
         tables = [_make_table_elem(0, "Cap", cells=[["A", "B"]])]
         doc_json = _make_doc_json(
@@ -778,9 +778,9 @@ class TestEmbeddingBatchCount:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, "Alpha."),
+            _make_text_elem(0, "Alpha section content here for indexing."),
             _make_text_elem(1, ""),       # skip
-            _make_text_elem(2, "Gamma."),
+            _make_text_elem(2, "Gamma section content here for indexing."),
         ]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
@@ -823,7 +823,7 @@ class TestEmbeddingBatchCount:
         """diag.embed_calls == 1 when a single batch is embedded."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(i, f"Element {i}.") for i in range(5)]
+        texts = [_make_text_elem(i, f"Element {i} with substantive descriptive content.") for i in range(5)]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
 
@@ -848,7 +848,7 @@ class TestWalkDoclingElements:
         """All three modalities are yielded."""
         from app.services.extraction_chunk_index import _walk_docling_elements
 
-        texts = [_make_text_elem(0, "T0"), _make_text_elem(1, "T1")]
+        texts = [_make_text_elem(0, "T0 element content for indexing here."), _make_text_elem(1, "T1 element content for indexing here.")]
         tables = [_make_table_elem(0, None, cells=[["A", "B"]])]
         pictures = [_make_picture_elem(0, "A picture")]
         doc_json = _make_doc_json(texts, tables, pictures)
@@ -869,7 +869,7 @@ class TestWalkDoclingElements:
         """self_refs follow '#/section/N' convention."""
         from app.services.extraction_chunk_index import _walk_docling_elements
 
-        texts = [_make_text_elem(5, "Five")]
+        texts = [_make_text_elem(5, "Five element with substantive content here.")]
         tables = [_make_table_elem(3, None, cells=[["X"]])]
         pictures = [_make_picture_elem(7, "P")]
         doc_json = _make_doc_json(texts, tables, pictures)
@@ -1220,9 +1220,9 @@ class TestEmbedLengthMismatch:
         from app.services.extraction_chunk_index import build_extraction_index
 
         texts = [
-            _make_text_elem(0, "Alpha content."),
-            _make_text_elem(1, "Beta content."),
-            _make_text_elem(2, "Gamma content."),
+            _make_text_elem(0, "Alpha paragraph content with details."),
+            _make_text_elem(1, "Beta paragraph content with details."),
+            _make_text_elem(2, "Gamma paragraph content with details."),
         ]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
@@ -1247,7 +1247,7 @@ class TestEmbedLengthMismatch:
         """embed_texts returning MORE vectors than pending also raises."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "One item.")]
+        texts = [_make_text_elem(0, "One item with substantive descriptive content.")]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
 
@@ -1263,7 +1263,7 @@ class TestEmbedLengthMismatch:
         """Correct 1:1 count between pending and embeddings must NOT raise."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "Exactly one.")]
+        texts = [_make_text_elem(0, "Exactly one section here with content.")]
         doc_json = _make_doc_json(texts, [], [])
         store = _make_mock_store()
 
@@ -1292,7 +1292,7 @@ class TestStrictDeleteBehavior:
         propagates out of build_extraction_index. C.4 catches and falls back."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "Some content.")]
+        texts = [_make_text_elem(0, "Some substantive content here for indexing.")]
         doc_json = _make_doc_json(texts, [], [])
 
         store = MagicMock()
@@ -1320,7 +1320,7 @@ class TestStrictDeleteBehavior:
         (build must abort before embedding on DELETE failure)."""
         from app.services.extraction_chunk_index import build_extraction_index
 
-        texts = [_make_text_elem(0, "Content.")]
+        texts = [_make_text_elem(0, "Content section with enough length here.")]
         doc_json = _make_doc_json(texts, [], [])
 
         store = MagicMock()
@@ -1412,3 +1412,97 @@ class TestRealDoclingGroupParentedTexts:
         # Should resolve to 'Outer Heading' (set in groups[0] before nested groups).
         heading = _resolve_parent_section_heading("#/texts/1", nested_doc)
         assert heading == "Outer Heading"
+
+
+# ---------------------------------------------------------------------------
+# C.9d: Pre-index quality filters (short / dedup / web-chrome)
+# ---------------------------------------------------------------------------
+
+
+class TestChunkQualityFilter:
+    """C.9d: drop short, duplicate, and web-chrome-only chunks at index time."""
+
+    def test_short_chunks_dropped_and_counted(self):
+        """Normalized text < 20 chars is skipped and counted as short."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [
+            _make_text_elem(0, "Real radar paragraph with substantive content."),
+            _make_text_elem(1, "™"),                # single symbol
+            _make_text_elem(2, "Log in"),           # very short nav fragment
+            _make_text_elem(3, "11"),               # numeric stub
+        ]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 1024] * 1,
+        ):
+            diag = build_extraction_index(doc_json, "run-short", "doc-s", store=store)
+        assert diag.chunks_inserted == 1
+        assert diag.chunks_skipped_short == 3
+        assert diag.chunks_skipped_duplicate == 0
+        assert diag.chunks_skipped_web_chrome == 0
+
+    def test_exact_dupes_dropped_after_first(self):
+        """Identical chunk_text (after whitespace+case normalization) → dedup."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [
+            _make_text_elem(0, "Repeated boilerplate sentence here."),
+            _make_text_elem(1, "Repeated boilerplate sentence here."),
+            _make_text_elem(2, "REPEATED BOILERPLATE SENTENCE HERE."),
+            _make_text_elem(3, "Different content paragraph for variety."),
+        ]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 1024] * 2,
+        ):
+            diag = build_extraction_index(doc_json, "run-dup", "doc-d", store=store)
+        assert diag.chunks_inserted == 2
+        assert diag.chunks_skipped_duplicate == 2
+
+    def test_web_chrome_only_chunks_dropped(self):
+        """Chunks whose substantive content is purely page-export chrome are dropped."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [
+            _make_text_elem(0, "Audio Coming Soon\n\nSponsored\n\nAdvertisement"),
+            _make_text_elem(1, "SUBSCRIBE NOW"),
+            _make_text_elem(2, "Real article paragraph with substantive radar specifications and frequency data."),
+        ]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 1024] * 1,
+        ):
+            diag = build_extraction_index(doc_json, "run-chrome", "doc-c", store=store)
+        assert diag.chunks_inserted == 1
+        # The "SUBSCRIBE NOW" chunk is shorter than 20 chars after normalization;
+        # it is classified as short, not web-chrome (order of checks matters).
+        assert diag.chunks_skipped_web_chrome == 1
+        assert diag.chunks_skipped_short == 1
+
+    def test_real_paragraph_with_embedded_chrome_word_kept(self):
+        """A real paragraph that happens to mention 'subscribe now' is NOT dropped."""
+        from app.services.extraction_chunk_index import build_extraction_index
+
+        texts = [
+            _make_text_elem(
+                0,
+                "The S-75 radar system is documented in detail throughout this article. "
+                "Subscribe now to receive future updates on military equipment specifications.",
+            ),
+        ]
+        doc_json = _make_doc_json(texts, [], [])
+        store = _make_mock_store()
+        with patch(
+            "app.services.extraction_chunk_index.embed_texts",
+            return_value=[[0.1] * 1024] * 1,
+        ):
+            diag = build_extraction_index(doc_json, "run-real", "doc-r", store=store)
+        assert diag.chunks_inserted == 1
+        assert diag.chunks_skipped_web_chrome == 0

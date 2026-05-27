@@ -25,6 +25,7 @@ CHUNK RENDERING CONTRACT (rev 8 M9 + rev 10):
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterator
@@ -46,6 +47,59 @@ except Exception:  # pragma: no cover
 # These are NOT indexed as extraction chunks themselves — they provide context
 # to adjacent text elements via include_parent_section_heading expansion.
 _HEADING_LABELS = frozenset({"section_header", "section-header", "title"})
+
+# ---------------------------------------------------------------------------
+# C.9d: Pre-index quality filters
+# ---------------------------------------------------------------------------
+# Minimum normalized length below which a chunk is dropped. Catches single
+# symbols ("™", "11"), nav fragments ("Log in"), and similar noise that
+# survives docling export but carries no extractable evidence.
+_MIN_CHUNK_TEXT_CHARS = 20
+
+# Web-page-chrome phrases. Indexing drops a chunk if, after removing all
+# occurrences of these phrases and re-collapsing whitespace, the remaining
+# substantive content is below _MIN_CHUNK_TEXT_CHARS. Real paragraphs that
+# happen to contain "subscribe now" inside their body keep > 20 chars after
+# the phrase is removed and are NOT dropped. Keep this list narrow — every
+# entry must be a near-pure-chrome marker, not domain language.
+_WEB_CHROME_PHRASES: tuple[str, ...] = (
+    "audio coming soon",
+    "subscribe now",
+    "sponsored",
+    "advertisement",
+    "log in",
+    "share this article",
+    "historynet",
+    "recommended for you",
+    "related stories",
+    "sign me up",
+    "advertise with us",
+    "meet our staff",
+    "privacy policy terms of service",
+    "stay curious",
+    "apa",
+    "mla",
+    "chicago",
+)
+
+
+def _normalize_for_dedup(text: str) -> str:
+    """Lowercase + collapse whitespace. Returns the dedup key."""
+    return re.sub(r"\s+", " ", text.lower()).strip()
+
+
+def _is_web_chrome_only(normalized: str) -> bool:
+    """True if the chunk's substantive content (after stripping known chrome
+    phrases) is shorter than the minimum useful length.
+
+    Conservative by design: a real paragraph that happens to include
+    "subscribe now" stays long after the phrase is removed and is kept.
+    """
+    remaining = normalized
+    for phrase in _WEB_CHROME_PHRASES:
+        remaining = remaining.replace(phrase, " ")
+    remaining = re.sub(r"\s+", " ", remaining).strip()
+    return len(remaining) < _MIN_CHUNK_TEXT_CHARS
 
 # NOTE: walker policy (rev 14 code-quality review Important #1):
 #   _walk_docling_elements indexes EVERY texts[]/tables[]/pictures[] element
@@ -90,6 +144,10 @@ class BuildIndexDiagnostics:
     embed_ms: int
     insert_ms: int
     modality_counts: dict[str, int] = field(default_factory=dict)
+    # C.9d: quality-filter counts (subset of chunks_skipped).
+    chunks_skipped_short: int = 0
+    chunks_skipped_duplicate: int = 0
+    chunks_skipped_web_chrome: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +596,14 @@ def build_extraction_index(
     # Each tuple: (self_ref, modality, page_number_or_None, rendered_text)
 
     chunks_skipped = 0
+    chunks_skipped_short = 0
+    chunks_skipped_duplicate = 0
+    chunks_skipped_web_chrome = 0
+    seen_norms: set[str] = set()
+    # C.9d: keep a few examples per skip category for debug visibility.
+    short_examples: list[str] = []
+    duplicate_examples: list[str] = []
+    web_chrome_examples: list[str] = []
     modality_counts: dict[str, int] = {}
 
     for self_ref, modality, elem in _walk_docling_elements(doc_json):
@@ -559,6 +625,38 @@ def build_extraction_index(
             chunks_skipped += 1
             continue
 
+        # C.9d quality filters. Order matters:
+        #   1. min-length — kills single symbols / nav fragments first
+        #   2. exact-dedup within run — kills repeated boilerplate
+        #   3. web-chrome strip — kills page-export ad/nav blocks where the
+        #      substantive content is dominated by the chrome phrase
+        # All three skip categories ALSO increment chunks_skipped so the
+        # legacy counter remains an upper bound on dropped chunks.
+        normalized = _normalize_for_dedup(rendered)
+
+        if len(normalized) < _MIN_CHUNK_TEXT_CHARS:
+            chunks_skipped += 1
+            chunks_skipped_short += 1
+            if len(short_examples) < 5:
+                short_examples.append(rendered[:60])
+            continue
+
+        if normalized in seen_norms:
+            chunks_skipped += 1
+            chunks_skipped_duplicate += 1
+            if len(duplicate_examples) < 5:
+                duplicate_examples.append(rendered[:60])
+            continue
+
+        if _is_web_chrome_only(normalized):
+            chunks_skipped += 1
+            chunks_skipped_web_chrome += 1
+            if len(web_chrome_examples) < 5:
+                web_chrome_examples.append(rendered[:60])
+            continue
+
+        seen_norms.add(normalized)
+
         # Page number (first prov entry)
         page_no: str | None = None
         prov_list = elem.get("prov") or []
@@ -570,6 +668,15 @@ def build_extraction_index(
         pending.append((self_ref, modality, page_no, rendered))
         modality_counts[modality] = modality_counts.get(modality, 0) + 1
 
+    if chunks_skipped_short or chunks_skipped_duplicate or chunks_skipped_web_chrome:
+        logger.debug(
+            "build_extraction_index quality filter: short=%d (e.g. %s) "
+            "duplicate=%d (e.g. %s) web_chrome=%d (e.g. %s)",
+            chunks_skipped_short, short_examples,
+            chunks_skipped_duplicate, duplicate_examples,
+            chunks_skipped_web_chrome, web_chrome_examples,
+        )
+
     if not pending:
         return BuildIndexDiagnostics(
             chunks_inserted=0,
@@ -578,6 +685,9 @@ def build_extraction_index(
             embed_ms=0,
             insert_ms=0,
             modality_counts=modality_counts,
+            chunks_skipped_short=chunks_skipped_short,
+            chunks_skipped_duplicate=chunks_skipped_duplicate,
+            chunks_skipped_web_chrome=chunks_skipped_web_chrome,
         )
 
     # ------------------------------------------------------------------
@@ -655,9 +765,11 @@ def build_extraction_index(
 
     logger.info(
         "build_extraction_index: pipeline_run_id=%r document_id=%r "
-        "inserted=%d skipped=%d embed_ms=%d insert_ms=%d modalities=%s",
+        "inserted=%d skipped=%d (short=%d dup=%d web_chrome=%d) "
+        "embed_ms=%d insert_ms=%d modalities=%s",
         pipeline_run_id, document_id,
         chunks_inserted, chunks_skipped,
+        chunks_skipped_short, chunks_skipped_duplicate, chunks_skipped_web_chrome,
         embed_ms, insert_ms, modality_counts,
     )
 
@@ -668,6 +780,9 @@ def build_extraction_index(
         embed_ms=embed_ms,
         insert_ms=insert_ms,
         modality_counts=modality_counts,
+        chunks_skipped_short=chunks_skipped_short,
+        chunks_skipped_duplicate=chunks_skipped_duplicate,
+        chunks_skipped_web_chrome=chunks_skipped_web_chrome,
     )
 
 
