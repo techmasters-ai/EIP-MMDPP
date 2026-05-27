@@ -1365,6 +1365,19 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
     if semaphore is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
 
+    # Plan 2026-05-27-merged-chunk-routing.md Task 0b (M1): an empty
+    # selected_chunks list is ambiguous — bool([]) is False, so the
+    # chunked-mode branch in run_extraction_pass would silently fall back to
+    # the legacy sanitize + DocumentChunker path. Callers that intend to
+    # bypass chunking must omit the field entirely (None) or supply >=1
+    # chunk; reject [] up-front so the mismatch surfaces loudly.
+    if body.selected_chunks is not None and len(body.selected_chunks) == 0:
+        raise HTTPException(status_code=422, detail=(
+            "selected_chunks must be either omitted (None) or contain at least one chunk. "
+            "An empty list is not allowed because it could silently revert chunked-mode "
+            "callers to the legacy sanitize+chunker path."
+        ))
+
     # C0 telemetry (walltime-reduction Phase 0): per-phase wall captured into
     # this sink and merged into response.diagnostics. The 3 keys recorded
     # here — table_overlay_ms, postprocess_ms, field_provenance_ms — live in

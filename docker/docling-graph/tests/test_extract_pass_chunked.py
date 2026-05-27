@@ -92,6 +92,29 @@ def test_extract_pass_selected_chunks_silently_drops_extra_fields(client):
     assert resp.status_code == 200, resp.text
 
 
+def test_extract_pass_rejects_empty_selected_chunks_list(client):
+    """M1 (code-review fix-up): an empty ``selected_chunks`` list is
+    ambiguous — ``bool([])`` is False, so the chunked-mode flag inside
+    run_extraction_pass would silently fall back to the legacy
+    sanitize + DocumentChunker path. The handler must reject ``[]`` at
+    the boundary so a chunked-mode caller can never be silently demoted.
+    """
+    resp = client.post("/extract-pass", json={
+        "bundle_key": "air_defense_v3",
+        "pass_name": "radar_identity",
+        "docling_document_json": {"name": "test"},
+        "selected_chunks": [],
+    })
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    # Surface the explicit reason in the response body — operators
+    # debugging a 422 should see why [] is not allowed.
+    detail = str(body.get("detail", ""))
+    assert "empty list" in detail.lower() or "at least one chunk" in detail.lower(), (
+        f"422 detail should explain why [] is rejected; got {detail!r}"
+    )
+
+
 def test_extract_pass_top_level_still_rejects_unknown_fields(client):
     """Parent ``ExtractPassRequest`` retains ``extra='forbid'`` — nested
     ``SelectedChunkInput.extra='ignore'`` must NOT leak into the parent
