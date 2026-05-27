@@ -1240,16 +1240,22 @@ try:
         _filter_diag.stripped_in_place,
         _filter_diag.protected_captions,
     )
-    if router_diagnostics is not None:
+    # Initialize router_diagnostics to {} if currently None so doc_filter
+    # always lands in DB diagnostics — identity and other non-narrowed
+    # passes have router_diagnostics=None by default (line 7354) and
+    # would otherwise lose this signal silently.
+    if router_diagnostics is None:
+        router_diagnostics = {}
+    else:
         router_diagnostics = dict(router_diagnostics)
-        router_diagnostics["doc_filter"] = {
-            "texts_in": _filter_diag.texts_in,
-            "blanked_short": _filter_diag.blanked_short,
-            "blanked_dedup": _filter_diag.blanked_dedup,
-            "blanked_after_strip": _filter_diag.blanked_after_strip,
-            "stripped_in_place": _filter_diag.stripped_in_place,
-            "protected_captions": _filter_diag.protected_captions,
-        }
+    router_diagnostics["doc_filter"] = {
+        "texts_in": _filter_diag.texts_in,
+        "blanked_short": _filter_diag.blanked_short,
+        "blanked_dedup": _filter_diag.blanked_dedup,
+        "blanked_after_strip": _filter_diag.blanked_after_strip,
+        "stripped_in_place": _filter_diag.stripped_in_place,
+        "protected_captions": _filter_diag.protected_captions,
+    }
 except Exception as exc:
     # Fail-open: a malformed doc must not terminalize the pass.
     # Proceed with the unfiltered doc.
@@ -1258,9 +1264,11 @@ except Exception as exc:
         "— proceeding with unfiltered doc",
         run_id, pass_name, exc,
     )
-    if router_diagnostics is not None:
+    if router_diagnostics is None:
+        router_diagnostics = {}
+    else:
         router_diagnostics = dict(router_diagnostics)
-        router_diagnostics["doc_filter"] = {"error": str(exc)}
+    router_diagnostics["doc_filter"] = {"error": str(exc)}
 
 if chunk_scope is not None and chunk_scope.get("mode") == "selected_refs":
     ...
@@ -1444,9 +1452,9 @@ docker logs eip-mmdpp-worker-graph-1 --since 30m 2>&1 | grep -E "filter_docling_
 echo "--- Build extraction index log line (simplified) ---"
 docker logs eip-mmdpp-worker-graph-1 --since 30m 2>&1 | grep "build_extraction_index" | tail -2
 
-echo "--- Per-pass router_diagnostics.doc_filter ---"
+echo "--- Per-pass router.doc_filter (worker writes router_diagnostics under the 'router' key) ---"
 docker exec eip-mmdpp-postgres-1 psql -U eip -d eip -tA -c "
-  SELECT pass_name, diagnostics_json->'router_diagnostics'->'doc_filter'
+  SELECT pass_name, jsonb_pretty(diagnostics_json->'router'->'doc_filter')
   FROM ingest.pipeline_pass_outputs
   WHERE pipeline_run_id='$RUN_ID'
   ORDER BY pass_name;"
@@ -1578,6 +1586,10 @@ Expected: roughly 6-7 commits from this plan, all with clear conventional-commit
 
 - **Idempotency matters operationally** because narrowed passes' doc_json was filtered at index build (Task 4) AND again at per-pass load (Task 5). The unit tests for filter_docling_document explicitly assert idempotency.
 
+- **Interaction with the chunked-batches patch.** docling-graph's `docker/docling-graph/patches/0002-stages-chunked-batches-for-docling-document-input.patch` routes delta-contract docs through a chunker that consumes the rendered markdown. After C.10, that chunker sees a DoclingDocument with some `texts[]` entries blanked (text="", orig="", hyperlink=None). The existing `_sanitize_docling_document` in docling-graph already produces this exact shape (it has been blanking nav/tracking texts the same way for months), so the chunked-batches path is already known to tolerate it. No code change required, but the implementer should be aware that the patched path runs over an already-blanked doc when DOCLING_GRAPH_SANITIZE_INPUT=true (default).
+
+- **The index-path filter (Task 4) writes to logs only.** Unlike the per-pass site (Task 5), there's no `router_diagnostics` channel into `pipeline_pass_outputs` at the index-build call site — the index is built once per run, before any pass executes. A future plan could persist the index-path FilterDiagnostics under `pipeline_runs.metrics.doc_filter_index` for postmortem visibility; not in scope here.
+
 ---
 
 ## Task dependencies
@@ -1611,12 +1623,13 @@ If Task 8 or Task 9 shows quality regression beyond the acceptance criteria — 
    ```
    Wait for any active run to terminalize naturally.
 
-2. **Reset the worktree to the pre-C.10 commit.**
+2. **Reset the worktree to the pre-C.10 commit (with safety branch).**
    ```bash
-   git status               # confirm no uncommitted work to save
+   git status                              # confirm no uncommitted work to save
+   git branch c10-rollback-snapshot        # snapshot current HEAD before destroying it
    git reset --hard 0290748
    ```
-   Commit `0290748` was created as the explicit rollback target before any C.10 work began.
+   The snapshot branch `c10-rollback-snapshot` preserves the failed-C.10 commits in case any artifact from them (e.g. an investigation script, a partial test) is worth recovering later. Commit `0290748` was created as the explicit rollback target before any C.10 work began.
 
 3. **Rebuild + force-recreate the services that load the rolled-back code.**
    The worker-graph + api services bind-mount `app/`; the docling-graph service builds via COPY. Filter changes here do not touch docling-graph, so only the bind-mount services need recreation:
@@ -1625,16 +1638,15 @@ If Task 8 or Task 9 shows quality regression beyond the acceptance criteria — 
    ```
 
 4. **Purge stale ExtractionChunks from failed runs.**
+   `cleanup_extraction_index(run_id, store)` is defined at `app/services/extraction_chunk_index.py:943` and is synchronous (no asyncio).
    ```bash
    FAILED_RUN_ID=<the regression run UUID from Task 8 or 9>
    docker exec eip-mmdpp-api-1 python -c "
-   import asyncio
    from app.db.session import get_graph_store
    from app.services.extraction_chunk_index import cleanup_extraction_index
-   async def m():
-       store = get_graph_store()
-       cleanup_extraction_index('$FAILED_RUN_ID', store)
-   asyncio.run(m())
+   store = get_graph_store()
+   deleted = cleanup_extraction_index('$FAILED_RUN_ID', store=store)
+   print(f'Deleted {deleted} ExtractionChunk rows for run $FAILED_RUN_ID')
    "
    ```
 
