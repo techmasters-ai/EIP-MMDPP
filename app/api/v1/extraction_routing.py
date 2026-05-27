@@ -384,6 +384,12 @@ async def chunk_scope(
     # profile.top_k changed between the rerank call and here.
     top_k_results = reranked[: profile.top_k]
     selected_refs = [c["self_ref"] for c in top_k_results if c.get("self_ref")]
+    text_by_ref: dict[str, str] = {}
+    for c in top_k_results:
+        self_ref = c.get("self_ref")
+        content_text = c.get("content_text")
+        if isinstance(self_ref, str) and isinstance(content_text, str) and content_text.strip():
+            text_by_ref.setdefault(self_ref, content_text)
 
     # Rev 17 MED: guard against contract-invalid mode=selected_refs with empty
     # self_refs list.  This can occur when rerank returns candidates that all
@@ -459,6 +465,7 @@ async def chunk_scope(
     return ChunkScopeResponse(
         mode="selected_refs",
         self_refs=selected_refs,
+        text_by_ref=text_by_ref,
         diagnostics=ChunkScopeDiagnostics(
             mode="selected_refs",
             fallback_reason=_reranker_fallback_reason,  # Minor #6 (rev 16)

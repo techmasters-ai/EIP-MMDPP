@@ -7276,6 +7276,12 @@ def _compute_effective_chunk_scope(
     diag = dict(router_response.get("diagnostics") or {})
     resp_mode = router_response.get("mode", "full")
     self_refs = router_response.get("self_refs") or []
+    raw_text_by_ref = router_response.get("text_by_ref") or {}
+    text_by_ref = (
+        {k: v for k, v in raw_text_by_ref.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_text_by_ref, dict)
+        else {}
+    )
 
     if mode == "disabled":
         effective_chunk_scope = None
@@ -7289,6 +7295,12 @@ def _compute_effective_chunk_scope(
                 "mode": "selected_refs",
                 "self_refs": self_refs,
             }
+            if text_by_ref:
+                effective_chunk_scope["text_by_ref"] = {
+                    ref: text_by_ref[ref]
+                    for ref in self_refs
+                    if ref in text_by_ref
+                }
         else:
             effective_chunk_scope = None
             if resp_mode == "would_skip":

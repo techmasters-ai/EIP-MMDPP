@@ -178,6 +178,10 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
     chunk_scope must have:
         mode: "selected_refs"   — any other mode raises ValueError.
         self_refs: list[str]    — the docling self_refs to include in scope.
+        text_by_ref: dict[str, str] (optional) — post-filter chunk text
+            keyed by selected text self_ref. When present, retained TextItems
+            are rendered from this text so live extraction sees the same
+            evidence string that retrieval/rerank selected.
 
     Strategy
     --------
@@ -215,6 +219,12 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
 
     self_refs: list[str] = list(chunk_scope.get("self_refs") or [])
     selected_set: set[str] = set(self_refs)
+    raw_text_by_ref = chunk_scope.get("text_by_ref") or {}
+    text_by_ref: dict[str, str] = (
+        {k: v for k, v in raw_text_by_ref.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_text_by_ref, dict)
+        else {}
+    )
 
     # Validate all refs are resolvable before building the scoped doc.
     _validate_self_refs(doc_json, self_refs)
@@ -505,9 +515,22 @@ def apply_chunk_scope(doc_json: dict, chunk_scope: dict) -> dict:
         for i, elem in enumerate(new_arr):
             if not isinstance(elem, dict):
                 continue
-            if elem.get("self_ref") in reparent_to_body_set:
-                new_arr[i] = _rewrite_parent_to_body(elem)
+            elem_ref = elem.get("self_ref")
+            new_elem = elem
+            if elem_ref in reparent_to_body_set:
+                new_elem = _rewrite_parent_to_body(new_elem)
                 mutated = True
+            if array_key == "texts" and elem_ref in text_by_ref:
+                override_text = text_by_ref[elem_ref].strip()
+                if override_text:
+                    new_elem = dict(new_elem)
+                    new_elem["text"] = override_text
+                    new_elem["orig"] = override_text
+                    if "hyperlink" in new_elem:
+                        new_elem["hyperlink"] = None
+                    mutated = True
+            if new_elem is not elem:
+                new_arr[i] = new_elem
         if mutated:
             doc_overlay[array_key] = new_arr
 

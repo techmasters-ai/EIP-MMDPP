@@ -1206,3 +1206,40 @@ def test_scoped_doc_list_item_not_in_list_group_still_reparents_to_body():
     assert p_ref == "#/body", (
         f"list_item with non-ListGroup parent must still reparent to #/body; got {p_ref!r}"
     )
+
+
+def test_apply_chunk_scope_uses_text_by_ref_for_selected_text_items():
+    """Selected TextItems should carry the exact post-filter chunk text."""
+    doc = _make_doc(
+        texts=[
+            {
+                "self_ref": "#/texts/0",
+                "text": "Audio Coming Soon\n\nFan Song radar operates in E/F band.\n\nSubscribe Now",
+                "orig": "Audio Coming Soon\n\nFan Song radar operates in E/F band.\n\nSubscribe Now",
+                "label": "paragraph",
+                "hyperlink": "https://tracker.example/x",
+            },
+            {
+                "self_ref": "#/texts/1",
+                "text": "Unselected original text",
+                "orig": "Unselected original text",
+                "label": "paragraph",
+            },
+        ],
+        body_children=[_ref("#/texts/0"), _ref("#/texts/1")],
+    )
+
+    result = apply_chunk_scope(
+        doc,
+        {
+            "mode": "selected_refs",
+            "self_refs": ["#/texts/0"],
+            "text_by_ref": {"#/texts/0": "Fan Song radar operates in E/F band."},
+        },
+    )
+
+    assert result["texts"][0]["text"] == "Fan Song radar operates in E/F band."
+    assert result["texts"][0]["orig"] == "Fan Song radar operates in E/F band."
+    assert result["texts"][0]["hyperlink"] is None
+    assert doc["texts"][0]["text"].startswith("Audio Coming Soon")
+    assert result["texts"][1]["text"] == "Unselected original text"

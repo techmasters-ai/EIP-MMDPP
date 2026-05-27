@@ -88,4 +88,12 @@ class ChunkScopeResponse(BaseModel):
             "populated only when mode=selected_refs"
         ),
     )
+    text_by_ref: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Post-filter ExtractionChunk.chunk_text keyed by self_ref for the "
+            "selected refs. The worker uses this to make scoped DoclingDocument "
+            "content match the retrieval/rerank evidence text."
+        ),
+    )
     diagnostics: ChunkScopeDiagnostics

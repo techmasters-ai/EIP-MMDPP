@@ -101,6 +101,22 @@ class TestComputeEffectiveChunkScope:
             "HTTP error must be captured in diagnostics"
         )
 
+    def test_narrow_only_threads_text_by_ref_for_selected_refs(self):
+        """Selected chunk text must cross the worker boundary with self_refs."""
+        router_response = self._make_response(
+            "selected_refs",
+            self_refs=["#/texts/3", "#/texts/4"],
+        )
+        router_response["text_by_ref"] = {
+            "#/texts/3": "post-filter radar evidence",
+            "#/texts/999": "not selected",
+        }
+
+        eff, _diag = _compute_effective_chunk_scope(router_response, "narrow_only")
+
+        assert eff is not None
+        assert eff["text_by_ref"] == {"#/texts/3": "post-filter radar evidence"}
+
     def test_narrow_only_empty_self_refs_returns_none(self):
         """mode=narrow_only + router returns selected_refs with empty self_refs
         → effective_chunk_scope=None (no valid refs to narrow on).

@@ -489,6 +489,11 @@ class TestSelectedRefs:
         assert data["self_refs"][0] == "#/texts/4"
         assert data["self_refs"][1] == "#/texts/3"
         assert data["self_refs"][2] == "#/texts/2"
+        assert data["text_by_ref"] == {
+            "#/texts/4": "chunk text 4",
+            "#/texts/3": "chunk text 3",
+            "#/texts/2": "chunk text 2",
+        }
 
 
 # ---------------------------------------------------------------------------
