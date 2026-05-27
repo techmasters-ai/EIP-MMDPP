@@ -135,6 +135,7 @@ def classify_chunk(
     seen_norms: set[str],
     *,
     skip_short_reject: bool = False,
+    gate_after_strip_on_chrome: bool = False,
 ) -> FilterDecision:
     """Apply the v2 quality rules to a single rendered chunk.
 
@@ -143,6 +144,9 @@ def classify_chunk(
        (skipped when ``skip_short_reject=True``)
     2. Strip leading/trailing chrome lines
     3. Drop if stripped-normalized < MIN_RESIDUAL_CHARS -> "after_strip"
+       (when ``gate_after_strip_on_chrome=True`` this only fires if leading
+       or trailing chrome was actually stripped; otherwise short legitimate
+       content is preserved for downstream merging)
     4. Dedup against ``seen_norms`` (set of post-strip normalized keys);
        returns "dedup" if already present
     5. Otherwise: kept (or "stripped" if chrome was removed)
@@ -162,6 +166,13 @@ def classify_chunk(
         Layer-1 (``filter_docling_document``) where the chunker downstream
         (HybridChunker in docling-graph) merges peer siblings under a heading
         and short individual entries gain meaning only post-merge.
+    gate_after_strip_on_chrome:
+        When True, Rule 2 only fires when chrome was actually stripped
+        (``leading + trailing > 0``). Used by Layer-1 to avoid blanking
+        legitimate short content that has no chrome to strip — these
+        fragments gain meaning post-merge in HybridChunker. Pure-chrome
+        entries still get blanked because their residue is empty AND chrome
+        was stripped.
     """
     normalized = normalize_for_dedup(rendered)
     if not skip_short_reject and len(normalized) < MIN_CHUNK_TEXT_CHARS:
@@ -169,7 +180,9 @@ def classify_chunk(
 
     stripped, leading, trailing = strip_chrome_lines(rendered)
     stripped_normalized = normalize_for_dedup(stripped)
-    if len(stripped_normalized) < MIN_RESIDUAL_CHARS:
+    chrome_was_stripped = (leading + trailing) > 0
+    after_strip_applies = chrome_was_stripped if gate_after_strip_on_chrome else True
+    if after_strip_applies and len(stripped_normalized) < MIN_RESIDUAL_CHARS:
         return FilterDecision(keep=False, stripped_text=None, reason="after_strip")
 
     if stripped_normalized in seen_norms:
