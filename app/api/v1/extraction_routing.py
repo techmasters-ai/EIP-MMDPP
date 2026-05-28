@@ -403,7 +403,18 @@ async def chunk_scope(
     for c in top_k_results:
         self_ref = c.get("self_ref")
         content_text = c.get("content_text")
-        if isinstance(self_ref, str) and isinstance(content_text, str) and content_text.strip():
+        # Only docling element refs (``#/...``) belong in ``text_by_ref`` —
+        # it is consumed by ``apply_chunk_scope`` to override per-element
+        # text on real DoclingDocument elements. Merged-mode rows carry
+        # ``self_ref = f"chunk_{idx}"`` (Task 8 cleanup); their text
+        # rides on ``SelectedChunk.text`` instead, so they must be
+        # filtered out here to avoid polluting the override map.
+        if (
+            isinstance(self_ref, str)
+            and self_ref.startswith("#/")
+            and isinstance(content_text, str)
+            and content_text.strip()
+        ):
             text_by_ref.setdefault(self_ref, content_text)
 
     # Rev 17 MED: guard against contract-invalid mode=selected_refs with empty

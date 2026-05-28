@@ -382,12 +382,16 @@ async def search_extraction_chunks_direct(
             short_fetch=(desired_top_n > 0),
         )
 
-    # Stable sort: primary key = -score (descending), secondary = self_ref
-    # ASC (already enforced by SQL ORDER BY but explicit here is cheap +
-    # documents the intent for future maintainers). numpy.lexsort uses the
-    # LAST key as the primary sort key, so order is (secondary, primary).
-    self_refs = np.asarray([r["self_ref"] for r in kept_rows])
-    order = np.lexsort((self_refs, -kept_scores))[:desired_top_n]
+    # Stable sort: primary key = -score (descending), secondary = vertex_id
+    # ASC. vertex_id is the schema's UNIQUE column, so it provides
+    # deterministic tie-breaking in BOTH modes — legacy
+    # ``{run_id}:{self_ref}`` and merged ``{run_id}:chunk_{idx}``. Using
+    # self_ref here was unsafe because merged-mode rows can share a
+    # self_ref value (the column was populated from ``source_refs[0]``
+    # pre-Task-8 cleanup). numpy.lexsort uses the LAST key as the primary
+    # sort key, so order is (secondary, primary).
+    vertex_ids = np.asarray([r["vertex_id"] for r in kept_rows])
+    order = np.lexsort((vertex_ids, -kept_scores))[:desired_top_n]
     selected_rows = [kept_rows[i] for i in order.tolist()]
     selected_scores = kept_scores[order].tolist()
 

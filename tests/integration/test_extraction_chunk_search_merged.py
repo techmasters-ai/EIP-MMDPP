@@ -83,9 +83,10 @@ def _insert_merged_row(
 
     Uses the merged vertex_id format ``f"{run_id}:chunk_{chunk_index}"`` so
     we exercise the same INSERT shape ``build_extraction_index_hybrid``
-    would write in production.
+    would write in production. ``self_ref`` mirrors the production helper
+    (``f"chunk_{chunk_index}"``) so the column stays unique-per-row.
     """
-    self_ref = source_refs[0] if source_refs else ""
+    self_ref = f"chunk_{chunk_index}"
     store._client.command_sync(
         store._database,
         "sql",
@@ -356,8 +357,10 @@ class TestMixedResultSet:
                 )
 
             # Per-row spot checks — group by self_ref to be index-order-agnostic.
+            # Merged rows write self_ref = f"chunk_{idx}" (Task 8 cleanup);
+            # legacy rows keep their docling element ref.
             by_ref = {r.properties["self_ref"]: r.properties for r in results}
-            merged = by_ref["#/texts/0"]
+            merged = by_ref["chunk_0"]
             legacy = by_ref["#/texts/2"]
             assert merged["chunk_index"] == 0
             assert merged["source_refs"] == ["#/texts/0", "#/texts/1"]
@@ -423,9 +426,11 @@ class TestAccessorsReadProjectedFields:
             )
 
             assert len(results) == 2
+            # Merged rows write self_ref = f"chunk_{idx}" (Task 8 cleanup);
+            # legacy rows keep their docling element ref.
             by_ref = {r.properties["self_ref"]: r.properties for r in results}
 
-            merged_props = by_ref["#/texts/100"]
+            merged_props = by_ref["chunk_7"]
             assert read_chunk_index(merged_props) == 7
             assert read_chunk_source_refs(merged_props) == ["#/texts/100"]
             assert read_chunk_token_count(merged_props) == 64

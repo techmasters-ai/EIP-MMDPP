@@ -450,3 +450,65 @@ def test_merged_vertex_id_format_is_pipeline_run_id_colon_chunk_index() -> None:
             f"vertex_id format drifted: got {row.get('vertex_id')!r}, "
             f"expected f'run-merged-vid:chunk_{idx}'"
         )
+
+
+# ---------------------------------------------------------------------------
+# Self-ref uniqueness — guards the post-Task-8 cleanup fix
+# ---------------------------------------------------------------------------
+
+
+def test_merged_self_ref_is_chunk_index_and_unique_per_row() -> None:
+    """Merged rows write ``self_ref = f"chunk_{chunk_index}"`` so the column
+    is unique-per-row across a single pipeline_run_id.
+
+    Background: pre-fix, ``self_ref`` was set to ``source_refs[0]`` for
+    legacy-consumer compatibility. Because two merged chunks can share the
+    same first source_ref (e.g. both contain ``#/texts/0`` as their first
+    element after the chunker's contextualization step), this made the
+    column NON-UNIQUE — silently breaking the lexsort tiebreaker in
+    ``search_extraction_chunks_direct`` (Task 8 calibration finding).
+
+    The unique-key index in the schema is on ``vertex_id`` so INSERTs
+    don't fail; this test guards against regression by asserting both
+    the value shape AND uniqueness.
+    """
+    from app.services.extraction_chunk_index import (
+        build_extraction_index_hybrid,
+        read_chunk_index,
+    )
+    from app.services.hybrid_chunking import build_hybrid_chunks_for_extraction
+
+    doc_json = _build_dvina_like_doc_json()
+    n = len(build_hybrid_chunks_for_extraction(doc_json))
+    assert n >= 2, "fixture must yield >=2 chunks to exercise uniqueness"
+    fake_embeddings = [[0.1] * 1024] * n
+    store = _make_mock_store()
+
+    with patch(
+        "app.services.extraction_chunk_index.embed_texts",
+        return_value=fake_embeddings,
+    ):
+        build_extraction_index_hybrid(
+            doc_json,
+            pipeline_run_id="run-self-ref-uniq",
+            document_id="doc-self-ref-uniq",
+            store=store,
+        )
+
+    rows = _captured_insert_params(store)
+    assert rows
+
+    self_refs = [row.get("self_ref") for row in rows]
+
+    # Value shape: each self_ref == f"chunk_{chunk_index}".
+    for row in rows:
+        idx = read_chunk_index(row)
+        assert row.get("self_ref") == f"chunk_{idx}", (
+            f"self_ref drift on merged row: got {row.get('self_ref')!r}, "
+            f"expected f'chunk_{idx}'"
+        )
+
+    # Uniqueness: no two merged rows share a self_ref within a run.
+    assert len(set(self_refs)) == len(self_refs), (
+        f"self_ref values are non-unique across merged rows: {self_refs!r}"
+    )

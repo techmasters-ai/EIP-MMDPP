@@ -964,9 +964,14 @@ def build_extraction_index(
 #      (and the schema-sync backfill coalesces those to their defaults
 #      per the Task 1 contract).
 #
-# ``self_ref`` is set to the first entry in ``source_refs`` for
-# backwards compatibility with downstream consumers that still read it
-# as a single-element string (the field stays NOT NULL on the schema).
+# ``self_ref`` is set to ``f"chunk_{chunk_index}"`` so the column is
+# unique-per-row within a pipeline_run_id (``chunk_index`` is dense per
+# run). Originally we wrote ``source_refs[0]`` here to preserve the
+# legacy single-element-string shape for downstream consumers, but two
+# merged chunks can share the same first source_ref (e.g. after the
+# chunker's contextualization step), which made the column non-unique
+# and silently broke the lexsort tiebreaker in
+# ``search_extraction_chunks_direct`` (Task 8 calibration finding).
 # The authoritative element list for a merged row is ``source_refs``.
 # ``modality`` is hard-coded to ``"merged"`` so dashboards can filter
 # the two modes cleanly.
@@ -1011,11 +1016,12 @@ def _insert_merged_chunk_row(
     the caller — ``build_extraction_index_hybrid`` does NOT catch it, so
     the C.4 dispatcher's try/except falls back to RUN_FULL.
     """
-    # self_ref column is NOT NULL on the schema; pick the first source_ref
-    # so legacy consumers reading ``self_ref`` still see a real element ref.
-    # If source_refs is empty (defensive — shouldn't happen for merged rows),
-    # fall back to the vertex_id so the NOT NULL constraint still holds.
-    first_self_ref = source_refs[0] if source_refs else vertex_id
+    # self_ref column is NOT NULL on the schema; write a unique-per-row
+    # value derived from chunk_index (dense per pipeline_run_id) so the
+    # column is safe to use as a deterministic secondary sort key. The
+    # legacy per-element ``_insert_chunk_row`` path is UNCHANGED — those
+    # rows keep their real element refs (e.g. ``"#/texts/3"``).
+    merged_self_ref = f"chunk_{chunk_index}"
     store._client.command_sync(
         store._database,
         "sql",
@@ -1024,7 +1030,7 @@ def _insert_merged_chunk_row(
             "vertex_id": vertex_id,
             "pipeline_run_id": pipeline_run_id,
             "document_id": document_id,
-            "self_ref": first_self_ref,
+            "self_ref": merged_self_ref,
             "chunk_text": chunk_text,
             "embedding": embedding,
             "page_number": page_number,

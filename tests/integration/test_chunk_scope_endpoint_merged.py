@@ -149,7 +149,9 @@ def _insert_merged_rows(
     chunk_texts = [c["chunk_text"] for c in _MERGED_CHUNKS]
     embeddings = _fake_embed(chunk_texts)
     for chunk, emb in zip(_MERGED_CHUNKS, embeddings):
-        self_ref = chunk["source_refs"][0]
+        # Mirror production: merged rows use ``f"chunk_{chunk_index}"`` for
+        # self_ref so the column is unique-per-row (Task 8 cleanup).
+        self_ref = f"chunk_{chunk['chunk_index']}"
         store._client.command_sync(
             store._database,
             "sql",

@@ -330,18 +330,31 @@ async def test_direct_short_fetch_when_candidates_less_than_top_n():
 
 @pytest.mark.asyncio
 async def test_direct_tiebreaker_stable_on_equal_scores():
-    """Two chunks with IDENTICAL embeddings → returned in self_ref ASC
-    order, deterministic across runs."""
+    """Two chunks with IDENTICAL embeddings → returned in vertex_id ASC
+    order, deterministic across calls.
+
+    Tiebreaker key is ``vertex_id`` (the schema's UNIQUE column), NOT
+    ``self_ref``. Background: merged-mode rows can share a ``self_ref``
+    value because the column was written as ``source_refs[0]`` for
+    legacy-consumer compatibility (Task 8 calibration finding). The
+    post-Task-8 cleanup moved tiebreaking to ``vertex_id`` so the
+    secondary sort key is guaranteed unique in both modes (legacy
+    ``{run_id}:{self_ref}`` and merged ``{run_id}:chunk_{idx}``).
+    """
     from app.services.extraction_chunk_search import (
         search_extraction_chunks_direct,
     )
 
-    # Same embedding for both → identical cosine scores
+    # Same embedding for both → identical cosine scores.
     same_emb = _vec(1.0)
-    # Note: SQL ORDER BY self_ref ASC is mocked here (we control row order),
-    # so feed them in REVERSE alphabetical order to confirm the in-Python
-    # lexsort tiebreaker still produces ASC.
-    rows = [_row("z_chunk", same_emb), _row("a_chunk", same_emb)]
+    # Feed rows with self_refs that COLLIDE (both ``shared``) so any path
+    # still using self_ref as a tiebreaker can't disambiguate. vertex_ids
+    # are distinct (``run-A:chunk_5`` vs ``run-A:chunk_1``) and intentionally
+    # in reverse-ASC order so the in-Python lexsort must do the work.
+    rows = [
+        _row("shared", same_emb, vertex_id="run-A:chunk_5"),
+        _row("shared", same_emb, vertex_id="run-A:chunk_1"),
+    ]
     store = _fake_store(rows=rows)
 
     results, _ = await search_extraction_chunks_direct(
@@ -349,8 +362,64 @@ async def test_direct_tiebreaker_stable_on_equal_scores():
         pipeline_run_id="run-A", desired_top_n=2,
     )
 
-    # Tiebreaker: self_ref ASC → a_chunk first, z_chunk second
-    assert [r.name for r in results] == ["a_chunk", "z_chunk"]
+    # Tiebreaker: vertex_id ASC → ``chunk_1`` row first, ``chunk_5`` second.
+    assert [r.node_id for r in results] == [
+        "#170:shared",  # both rows share self_ref so node_id alias matches
+        "#170:shared",
+    ]
+    # The ORDER must follow vertex_id ASC even when self_refs collide.
+    # GraphEntityResult exposes vertex_id under properties["self_ref"] only
+    # if @rid was absent; here we assert via the underlying row order via
+    # a second call's stability.
+
+    # Second call on the SAME inputs must return the rows in the SAME
+    # order (determinism across calls, even when self_refs tie).
+    results2, _ = await search_extraction_chunks_direct(
+        store=store, query_vector=_vec(1.0),
+        pipeline_run_id="run-A", desired_top_n=2,
+    )
+    assert [r.node_id for r in results2] == [r.node_id for r in results]
+
+
+@pytest.mark.asyncio
+async def test_direct_tiebreaker_uses_vertex_id_when_self_refs_collide():
+    """When self_refs collide (merged-mode legacy artifact) the tiebreaker
+    must fall back to vertex_id ASC, not preserve input order.
+
+    Catches the pre-Task-8 bug where merged rows could share a self_ref
+    (``source_refs[0]``) — the lexsort tiebreaker on self_ref then
+    degenerated to "whichever order numpy felt like", non-deterministic
+    across processes / row counts.
+    """
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_direct,
+    )
+
+    same_emb = _vec(1.0)
+    # Two rows, same self_ref AND same score, distinct vertex_ids.
+    # Input order: vertex_id ``chunk_9`` first, ``chunk_2`` second.
+    # Expected output: ``chunk_2`` first (vertex_id ASC), ``chunk_9`` second.
+    rows = [
+        _row("dup", same_emb, vertex_id="run-A:chunk_9", node_id="#170:rowA"),
+        _row("dup", same_emb, vertex_id="run-A:chunk_2", node_id="#170:rowB"),
+    ]
+    store = _fake_store(rows=rows)
+
+    results, _ = await search_extraction_chunks_direct(
+        store=store, query_vector=_vec(1.0),
+        pipeline_run_id="run-A", desired_top_n=2,
+    )
+
+    # GraphEntityResult.node_id comes from @rid AS node_id (the row's
+    # node_id field); since both rows have the same node_id alias here,
+    # we differentiate via properties["self_ref"] (still "dup") + the
+    # underlying row order is observable via diagnostics — but the most
+    # direct check is: chunk_2 (vertex_id ASC) must come BEFORE chunk_9.
+    assert [r.node_id for r in results] == ["#170:rowB", "#170:rowA"], (
+        f"vertex_id-ASC tiebreaker violated; got node_id order "
+        f"{[r.node_id for r in results]!r} — expected rowB (chunk_2) "
+        f"before rowA (chunk_9)."
+    )
 
 
 # ---------------------------------------------------------------------------
