@@ -1,14 +1,14 @@
-bundle_key: air_defense_v3_narrowing_v1
+bundle_key: air_defense_v3_baseline_subset
 manifest_schema_version: "1.0.0"
 ontology_name: "EIP Military Equipment Ontology"
 ontology_version: "3.0.0"
 extraction_profile_version: "1.0.0"
 
-# C.9b: clone of air_defense_v3_baseline_subset with calibrated narrowing
-# (top_n=300, top_k=50/60) on the two field_group passes. Same 5-pass set;
-# identity + system_links passes unchanged so the next run answers one
-# question: does calibrated narrowing preserve recall while reducing LLM
-# batches. Sweep evidence: docs/handoffs/2026-05-27-c9a-sweep-v2-results.md.
+# Test-only bundle: matches the bdde417 regression baseline by running ONLY
+# the 5 passes the baseline measured (radar_identity, radar_power_rf,
+# missile_identity, missile_kinematics, system_links). Sibling of
+# air_defense_v3 — all referenced extraction schemas live there and are
+# shared by module import path. Production ingest must use air_defense_v3.
 
 passes:
   - name: radar_identity
@@ -35,13 +35,9 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
-      # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
-      # the C.9b per-element knee (0.25/300/50). Evidence:
-      # docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md
-      min_similarity: 0.35
-      top_n_candidates: 50
-      top_k: 15
+      min_similarity: 0.25
+      top_n_candidates: 500
+      top_k: 500
       fallback_to_full: true
 
   - name: missile_identity
@@ -68,13 +64,9 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
-      # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
-      # the C.9b per-element knee (0.25/300/60). Evidence:
-      # docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md
-      min_similarity: 0.35
-      top_n_candidates: 50
-      top_k: 15
+      min_similarity: 0.25
+      top_n_candidates: 500
+      top_k: 500
       fallback_to_full: true
 
   - name: system_links

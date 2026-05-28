@@ -35,13 +35,12 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
-      # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
-      # the C.9b per-element knee (0.25/300/50). Evidence:
-      # docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md
-      min_similarity: 0.35
-      top_n_candidates: 50
-      top_k: 15
+      # C.9b: top_n knee at 300 (97% GT cov), top_k=50 (2.3K selected tokens
+      # — 5.7× reduction from baseline_subset's 500/500). Sweep evidence:
+      # docs/handoffs/2026-05-27-c9a-sweep-v2-results.md
+      min_similarity: 0.25
+      top_n_candidates: 300
+      top_k: 50
       fallback_to_full: true
 
   - name: missile_identity
@@ -68,13 +67,12 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
-      # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
-      # the C.9b per-element knee (0.25/300/60). Evidence:
-      # docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md
-      min_similarity: 0.35
-      top_n_candidates: 50
-      top_k: 15
+      # C.9b: top_n knee at 300 (93% GT cov), top_k=60 (3.0K selected tokens
+      # — 4.3× reduction from baseline_subset's 500/500). Sweep evidence:
+      # docs/handoffs/2026-05-27-c9a-sweep-v2-results.md
+      min_similarity: 0.25
+      top_n_candidates: 300
+      top_k: 60
       fallback_to_full: true
 
   - name: system_links

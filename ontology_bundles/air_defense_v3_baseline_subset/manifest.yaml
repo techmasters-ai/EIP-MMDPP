@@ -35,9 +35,13 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.25
-      top_n_candidates: 500
-      top_k: 500
+      # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
+      # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
+      # the C.7d threshold-only config (0.25/500/500). Evidence:
+      # docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
       fallback_to_full: true
 
   - name: missile_identity
@@ -64,9 +68,13 @@ passes:
     extracted_relationship_types: []
     depends_on: []
     retrieval:
-      min_similarity: 0.25
-      top_n_candidates: 500
-      top_k: 500
+      # Task 10.5 propagation 2026-05-28: uniform merged-mode knee
+      # (min_sim=0.35, top_n=50, top_k=15, fallback=true). Was previously
+      # the C.7d threshold-only config (0.25/500/500). Evidence:
+      # docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md
+      min_similarity: 0.35
+      top_n_candidates: 50
+      top_k: 15
       fallback_to_full: true
 
   - name: system_links

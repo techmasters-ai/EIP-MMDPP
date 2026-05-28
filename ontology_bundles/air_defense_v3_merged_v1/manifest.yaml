@@ -43,7 +43,7 @@ passes:
       # top_k=15) across all 9 narrowed passes; achieves 100% pseudo-GT
       # coverage on both Dvina + SA-2. Evidence:
       # docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md
-      min_similarity: 0.30
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
@@ -75,7 +75,7 @@ passes:
       # C.10 Task 8 merged-chunk knee — same uniform config as
       # radar_power_rf. Evidence:
       # docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md
-      min_similarity: 0.30
+      min_similarity: 0.35
       top_n_candidates: 50
       top_k: 15
       fallback_to_full: true
