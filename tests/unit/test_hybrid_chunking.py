@@ -33,6 +33,7 @@ from docling_core.types.doc import DoclingDocument
 from app.services.hybrid_chunking import (
     HybridChunkConfig,
     MergedChunk,
+    _get_tokenizer,
     build_hybrid_chunks_for_extraction,
 )
 
@@ -94,6 +95,80 @@ def _build_empty_doc_json() -> dict:
     """A DoclingDocument with no texts/tables/pictures."""
     doc = DoclingDocument(name="empty_synthetic")
     return doc.export_to_dict()
+
+
+def _build_dvina_like_doc_with_prov_json() -> dict:
+    """Same shape as ``_build_dvina_like_doc_json`` but every text item carries
+    a real ``ProvenanceItem`` with ``page_no``.
+
+    This exercises ``_resolve_first_page_no`` on the worker side — the
+    no-prov fixture above can't.  Pages are spread across 1..3 so the
+    test can assert a non-trivial mapping (not just a constant).
+    """
+    from docling_core.types.doc.document import BoundingBox, ProvenanceItem
+
+    def _prov(page: int) -> ProvenanceItem:
+        return ProvenanceItem(
+            page_no=page,
+            bbox=BoundingBox(l=0, t=0, r=100, b=100),
+            charspan=(0, 0),
+        )
+
+    doc = DoclingDocument(name="dvina_like_prov_synthetic")
+    doc.add_title("S-75 Dvina System Manual", prov=_prov(1))
+    doc.add_heading("Chapter 1: Overview", level=1, prov=_prov(1))
+    doc.add_text(
+        label="text",
+        text=(
+            "The S-75 Dvina is a Soviet-era surface-to-air missile system. "
+            "It entered service with the Soviet armed forces in 1957 and "
+            "remained the backbone of the Soviet Air Defence Forces."
+        ),
+        prov=_prov(1),
+    )
+    doc.add_heading("Chapter 2: Kinematics", level=1, prov=_prov(2))
+    doc.add_text(
+        label="text",
+        text=(
+            "Maximum engagement range is approximately 43 kilometres. "
+            "Minimum engagement range is 8 kilometres. The missile reaches "
+            "Mach 3.5 at altitude. Operational weight is 2300 kilograms."
+        ),
+        prov=_prov(2),
+    )
+    doc.add_heading("Section 2.1: Tracking", level=2, prov=_prov(2))
+    doc.add_text(
+        label="text",
+        text=(
+            "Radar tracking accuracy is plus or minus 5 metres at 50 "
+            "kilometre range under standard atmospheric conditions."
+        ),
+        prov=_prov(2),
+    )
+    doc.add_heading("Chapter 3: Components", level=1, prov=_prov(3))
+    doc.add_text(
+        label="text",
+        text=(
+            "The system comprises the Fan Song radar, the SM-90 launcher, "
+            "and the PR-11 transporter/transloader. Each launcher carries "
+            "one V-750 missile."
+        ),
+        prov=_prov(3),
+    )
+    return doc.export_to_dict()
+
+
+def _heading_terms_in(chunk_text: str, heading: str) -> bool:
+    """True iff every space-separated term in ``heading`` appears (case-
+    insensitively) in ``chunk_text``.
+
+    Used by the heading-prefix assertion so that docling-side formatting
+    drift (e.g. wrapping a title in ``**bold**``) does NOT break the
+    semantic invariant: the heading words are still present in the
+    contextualized chunk text.
+    """
+    normalized = chunk_text.lower()
+    return all(term.lower() in normalized for term in heading.split() if term)
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +267,20 @@ def test_chunk_text_contains_parent_heading() -> None:
         for body_fragment, heading in expected_heading_per_text.items():
             if body_fragment in c.text:
                 matched[body_fragment] = c.text
-                assert heading in c.text, (
-                    f"chunk containing {body_fragment!r} did not contain "
-                    f"expected heading {heading!r}; text was:\n{c.text!r}"
+                # Use term-set containment (case-insensitive) instead of
+                # verbatim substring — tolerant of docling formatting
+                # variations (markdown bold, NBSP, casing).  The semantic
+                # invariant is "heading words are present", not "heading
+                # appears as an exact substring".
+                assert _heading_terms_in(c.text, heading), (
+                    f"chunk containing {body_fragment!r} is missing heading "
+                    f"terms from {heading!r}; text was:\n{c.text!r}"
                 )
-                # The title should also appear (HybridChunker prepends it).
-                assert "S-75 Dvina System Manual" in c.text
+                # Title terms should also appear (HybridChunker prepends it).
+                assert _heading_terms_in(c.text, "S-75 Dvina System Manual"), (
+                    f"chunk containing {body_fragment!r} is missing title "
+                    f"terms; text was:\n{c.text!r}"
+                )
 
     assert matched, (
         "No chunk matched any expected body fragment — HybridChunker output "
@@ -301,4 +384,86 @@ def test_page_no_is_none_for_doc_without_prov() -> None:
     assert chunks
     assert all(c.page_no is None for c in chunks), (
         "Doc has no prov entries; every page_no must be None"
+    )
+
+
+# ---------------------------------------------------------------------------
+# M2 — page_no resolves from the first doc_item's prov entry
+# ---------------------------------------------------------------------------
+
+
+def test_page_no_resolved_from_first_prov() -> None:
+    """When the underlying doc items carry ``prov[0].page_no``, every
+    emitted ``MergedChunk.page_no`` must be the string form of an integer
+    page number (matching the column type in ``ExtractionChunk``).
+
+    Without this test, ``_resolve_first_page_no`` is exercised only on
+    the no-prov path (always returns ``None``).  This fixture flushes
+    out regressions in the prov-walk chain
+    (``chunk.meta.doc_items[0].prov[0].page_no``).
+    """
+    doc_json = _build_dvina_like_doc_with_prov_json()
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    assert chunks, "prov-bearing doc must produce >=1 chunk"
+
+    # Every chunk's first doc_item carries a prov page_no in 1..3.
+    seen_pages: set[str] = set()
+    for c in chunks:
+        assert c.page_no is not None, (
+            f"chunk_index={c.chunk_index} page_no is None even though every "
+            f"doc item in the fixture carries prov[0].page_no"
+        )
+        assert isinstance(c.page_no, str), (
+            f"chunk_index={c.chunk_index} page_no must be str, got "
+            f"{type(c.page_no).__name__}"
+        )
+        # str of an int between 1 and 3 inclusive
+        assert c.page_no.isdigit(), (
+            f"chunk_index={c.chunk_index} page_no={c.page_no!r} is not a "
+            "decimal-digit string"
+        )
+        assert 1 <= int(c.page_no) <= 3, (
+            f"chunk_index={c.chunk_index} page_no={c.page_no!r} outside the "
+            "fixture's 1..3 page range"
+        )
+        seen_pages.add(c.page_no)
+
+    # We spread items across multiple pages — non-trivial mapping check.
+    assert len(seen_pages) >= 2, (
+        f"Expected chunks spread across >=2 pages from the fixture; got "
+        f"only {sorted(seen_pages)} — possible HybridChunker merge that "
+        "collapsed every cross-page chunk into a single page bucket."
+    )
+
+
+# ---------------------------------------------------------------------------
+# M1 — tokenizer caching: same (model, max_tokens) returns SAME instance
+# ---------------------------------------------------------------------------
+
+
+def test_get_tokenizer_returns_cached_instance_for_same_key() -> None:
+    """``_get_tokenizer(model_name, max_tokens)`` must return the SAME
+    ``HuggingFaceTokenizer`` instance on repeated calls with the same
+    args — identity check, not equality.
+
+    This locks the @lru_cache contract on the private helper so Task 3's
+    once-per-pipeline-run invocation pattern doesn't degrade into a
+    once-per-call ``AutoTokenizer.from_pretrained`` storm.
+    """
+    t1 = _get_tokenizer("BAAI/bge-m3", 512)
+    t2 = _get_tokenizer("BAAI/bge-m3", 512)
+    assert t1 is t2, (
+        "Tokenizer must be cached by (model_name, max_tokens) — got two "
+        "different HuggingFaceTokenizer instances for the same key."
+    )
+
+
+def test_get_tokenizer_distinct_for_different_max_tokens() -> None:
+    """Different ``max_tokens`` keys must yield distinct cached
+    instances — the cache key isn't degenerate to ``model_name`` only.
+    """
+    t1 = _get_tokenizer("BAAI/bge-m3", 512)
+    t2 = _get_tokenizer("BAAI/bge-m3", 256)
+    assert t1 is not t2, (
+        "Tokenizers with different max_tokens must NOT share a cache slot"
     )

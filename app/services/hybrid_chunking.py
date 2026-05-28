@@ -34,6 +34,7 @@ Failure semantics (fail-loud):
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +52,32 @@ from docling_core.types.doc import DoclingDocument
 # chunker encodes a merged chunk that legitimately exceeds chunk_max_tokens
 # (HybridChunker's structure-preserving emit can produce slight overshoots).
 _TOKENIZER_COUNTING_MAX_LENGTH = 1_000_000
+
+
+@functools.lru_cache(maxsize=4)
+def _get_tokenizer(model_name: str, max_tokens: int) -> HuggingFaceTokenizer:
+    """Return a cached ``HuggingFaceTokenizer`` keyed by ``(model_name, max_tokens)``.
+
+    Without this cache, every call to ``build_hybrid_chunks_for_extraction``
+    paid the ``AutoTokenizer.from_pretrained`` cost — fine for a one-shot
+    smoke test, but a hot-path perf regression once Task 3 calls this
+    helper once per pipeline run.  Cold first call still hits the HF
+    disk cache; subsequent calls return the SAME wrapper instance.
+
+    ``maxsize=4`` is generous — we expect at most one or two distinct
+    (model_name, max_tokens) keys in practice, but allow headroom for
+    A/B testing of tokenizer overrides without evicting the production
+    entry.
+
+    The cached tokenizer goes through ``_raise_tokenizer_max_length``
+    exactly once (here, on the cache miss).  Mutating ``model_max_length``
+    on a shared instance is safe because the helper only ever RAISES the
+    limit and never lowers it — concurrent callers see a monotonically
+    growing budget.
+    """
+    raw_tok = AutoTokenizer.from_pretrained(model_name)
+    _raise_tokenizer_max_length(raw_tok, max_tokens)
+    return HuggingFaceTokenizer(tokenizer=raw_tok, max_tokens=max_tokens)
 
 
 def _raise_tokenizer_max_length(
@@ -154,9 +181,10 @@ def build_hybrid_chunks_for_extraction(
     """
     cfg = config or HybridChunkConfig()
 
-    raw_tok = AutoTokenizer.from_pretrained(cfg.tokenizer_model_name)
-    _raise_tokenizer_max_length(raw_tok, cfg.max_tokens)
-    tokenizer = HuggingFaceTokenizer(tokenizer=raw_tok, max_tokens=cfg.max_tokens)
+    # Cached per (model_name, max_tokens) — see ``_get_tokenizer`` docstring.
+    # The wrap-via-AutoTokenizer pattern is preserved; only the per-call
+    # ``from_pretrained`` + wrap cost is eliminated.
+    tokenizer = _get_tokenizer(cfg.tokenizer_model_name, cfg.max_tokens)
 
     # HybridChunker takes its token budget from ``tokenizer.get_max_tokens()``
     # — no ``chunk_max_tokens`` kwarg.  ``repeat_table_header``,
