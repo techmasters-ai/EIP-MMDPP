@@ -117,6 +117,28 @@ class BuildIndexDiagnostics:
     chunks_stripped_web_chrome: int = 0
     chunks_skipped_after_strip: int = 0
 
+    # ------------------------------------------------------------------
+    # Merged-chunk routing (Phase 1 Task 3 — merged-chunk routing plan)
+    # ------------------------------------------------------------------
+    #
+    # These two fields are populated only by ``build_extraction_index_hybrid``
+    # (the merged-mode indexer). The legacy per-element ``build_extraction_index``
+    # leaves them at their defaults so existing callers and dashboards continue
+    # to work unchanged.
+    #
+    # mean_token_count:
+    #   ``int(mean([c.token_count for c in merged_chunks]))`` — useful for the
+    #   "did the chunker merge effectively?" check at the C.4 diagnostics
+    #   wiring (Task 7). 0 in per-element mode and on empty-doc paths.
+    # chunks_inserted_zero_reason:
+    #   When ``chunks_inserted == 0``, this records the upstream cause so
+    #   the C.4 dispatcher can distinguish "doc was empty" from "chunker
+    #   ran but emitted nothing" from "DELETE/embed/insert exception"
+    #   (the exception paths never reach the return statement). Currently
+    #   the only emitted value is ``"empty_chunker_output"``.
+    mean_token_count: int = 0
+    chunks_inserted_zero_reason: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Merged-chunk row accessors (Phase 1 Task 1 — merged-chunk routing)
@@ -922,6 +944,252 @@ def build_extraction_index(
         chunks_skipped_web_chrome=0,  # deprecated in v2
         chunks_stripped_web_chrome=chunks_stripped_web_chrome,
         chunks_skipped_after_strip=chunks_skipped_after_strip,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API: merged-chunk indexer (Phase 1 Task 3 — merged-chunk routing)
+# ---------------------------------------------------------------------------
+
+# INSERT SQL for the merged-mode indexer.  Branches from ``_INSERT_SQL``
+# in two ways:
+#
+#   1. vertex_id format is ``f"{pipeline_run_id}:chunk_{chunk_index}"``
+#      (constructed by the caller and bound as a single param), NOT the
+#      legacy ``{run_id}:{self_ref}`` form. The unique-key index on
+#      vertex_id remains the same; only the value shape differs.
+#   2. Three additional columns are bound: ``chunk_index``, ``source_refs``,
+#      ``token_count``. These are the columns added by Task 1 to
+#      ``ExtractionChunk``; legacy per-element INSERTs leave them NULL
+#      (and the schema-sync backfill coalesces those to their defaults
+#      per the Task 1 contract).
+#
+# ``self_ref`` is set to the first entry in ``source_refs`` for
+# backwards compatibility with downstream consumers that still read it
+# as a single-element string (the field stays NOT NULL on the schema).
+# The authoritative element list for a merged row is ``source_refs``.
+# ``modality`` is hard-coded to ``"merged"`` so dashboards can filter
+# the two modes cleanly.
+_INSERT_MERGED_SQL = (
+    "INSERT INTO ExtractionChunk SET "
+    "vertex_id = :vertex_id, "
+    "pipeline_run_id = :pipeline_run_id, "
+    "document_id = :document_id, "
+    "self_ref = :self_ref, "
+    "chunk_text = :chunk_text, "
+    "embedding = :embedding, "
+    "page_number = :page_number, "
+    "modality = :modality, "
+    "chunk_index = :chunk_index, "
+    "source_refs = :source_refs, "
+    "token_count = :token_count, "
+    "created_at = sysdate()"
+)
+
+
+def _insert_merged_chunk_row(
+    store: "ArcadeDBGraphStore",
+    *,
+    vertex_id: str,
+    pipeline_run_id: str,
+    document_id: str,
+    chunk_index: int,
+    source_refs: list[str],
+    chunk_text: str,
+    embedding: list[float],
+    page_number: int | None,
+    token_count: int,
+) -> None:
+    """Insert one merged-mode ``ExtractionChunk`` vertex.
+
+    This is the merged counterpart of the inline INSERT inside
+    ``build_extraction_index``. Kept as a small private helper (NOT a
+    refactor of the legacy path) so the per-element INSERT stays exactly
+    as it was for Task 1's backwards-compat guarantee.
+
+    Failure semantics: any exception from ``command_sync`` propagates to
+    the caller — ``build_extraction_index_hybrid`` does NOT catch it, so
+    the C.4 dispatcher's try/except falls back to RUN_FULL.
+    """
+    # self_ref column is NOT NULL on the schema; pick the first source_ref
+    # so legacy consumers reading ``self_ref`` still see a real element ref.
+    # If source_refs is empty (defensive — shouldn't happen for merged rows),
+    # fall back to the vertex_id so the NOT NULL constraint still holds.
+    first_self_ref = source_refs[0] if source_refs else vertex_id
+    store._client.command_sync(
+        store._database,
+        "sql",
+        _INSERT_MERGED_SQL,
+        {
+            "vertex_id": vertex_id,
+            "pipeline_run_id": pipeline_run_id,
+            "document_id": document_id,
+            "self_ref": first_self_ref,
+            "chunk_text": chunk_text,
+            "embedding": embedding,
+            "page_number": page_number,
+            "modality": "merged",
+            "chunk_index": chunk_index,
+            "source_refs": list(source_refs),
+            "token_count": token_count,
+        },
+    )
+
+
+def build_extraction_index_hybrid(
+    doc_json: dict,
+    pipeline_run_id: str,
+    document_id: str,
+    *,
+    store: "ArcadeDBGraphStore",
+) -> BuildIndexDiagnostics:
+    """Index merged chunks via the shared HybridChunker helper.
+
+    Mirrors the failure-mode contract of ``build_extraction_index``
+    (strict DELETE, ValueError propagation on bad doc shape, RuntimeError
+    on partial embed response). The caller (C.4 dispatcher, post-Task 4)
+    catches any exception and falls back to RUN_FULL.
+
+    Parameters
+    ----------
+    doc_json:
+        JSON-parsed DoclingDocument dict (NOT a pydantic instance).
+    pipeline_run_id:
+        Pipeline run UUID. Used as the primary filter dimension for the VR
+        vector queries and as the prefix of the merged ``vertex_id``.
+    document_id:
+        Document UUID. Stored on each vertex for provenance.
+    store:
+        ``ArcadeDBGraphStore`` instance.
+
+    Returns
+    -------
+    BuildIndexDiagnostics
+        ``chunks_inserted`` + ``mean_token_count`` populated on success.
+        ``chunks_inserted=0`` with ``chunks_inserted_zero_reason=
+        "empty_chunker_output"`` when the chunker emits nothing.
+
+    Raises
+    ------
+    ValueError
+        On malformed ``doc_json`` (pydantic ``ValidationError`` is a
+        ``ValueError`` subclass) — propagated from the shared helper.
+    RuntimeError
+        When ``embed_texts`` returns a vector count != chunk count.
+    Exception
+        Any DELETE / INSERT exception from the ArcadeDB driver propagates
+        to the caller. Mirrors the strict=True semantics of the legacy
+        function (see ``extraction_chunk_index.py:524-744``).
+    """
+    # Lazy import — the helper is also used by docling-graph (different
+    # process), and importing it at module scope would force every legacy
+    # caller of this module to pay the import cost even when they never
+    # use the merged path. Local import keeps Phase 0/1 risk minimal.
+    from statistics import mean
+
+    from app.services.hybrid_chunking import build_hybrid_chunks_for_extraction
+
+    # Use the module-level embed_texts (imported at top; tests patch that name).
+    _embed = embed_texts
+
+    # ------------------------------------------------------------------
+    # Step 1: Idempotent delete — clear any existing chunks for this run.
+    # strict=True mirrors build_extraction_index. The C.4 dispatcher's
+    # try/except handles the propagated exception by falling back to
+    # RUN_FULL mode.
+    # ------------------------------------------------------------------
+    _delete_by_run_id(store, pipeline_run_id, strict=True)
+
+    # ------------------------------------------------------------------
+    # Step 2: Chunk. ``build_hybrid_chunks_for_extraction`` raises
+    # ValueError on bad doc shape (pydantic validation); that propagates.
+    # ------------------------------------------------------------------
+    chunks = build_hybrid_chunks_for_extraction(doc_json)
+    if not chunks:
+        logger.info(
+            "build_extraction_index_hybrid: pipeline_run_id=%r document_id=%r "
+            "HybridChunker emitted zero chunks — returning empty diagnostics "
+            "(zero_reason='empty_chunker_output').",
+            pipeline_run_id, document_id,
+        )
+        return BuildIndexDiagnostics(
+            chunks_inserted=0,
+            chunks_skipped=0,
+            embed_calls=0,
+            embed_ms=0,
+            insert_ms=0,
+            chunks_inserted_zero_reason="empty_chunker_output",
+        )
+
+    # ------------------------------------------------------------------
+    # Step 3: Embed all chunk texts as a SINGLE batch.
+    # ------------------------------------------------------------------
+    rendered_texts = [c.text for c in chunks]
+
+    embed_t0 = time.monotonic()
+    embeddings = _embed(rendered_texts, query=False)
+    embed_ms = int((time.monotonic() - embed_t0) * 1000)
+    embed_calls = 1
+
+    # Length guard mirrors the legacy function's contract. zip() would
+    # silently truncate; raise so C.4 catches and falls back to RUN_FULL.
+    if len(embeddings) != len(chunks):
+        raise RuntimeError(
+            f"build_extraction_index_hybrid: embed_texts returned "
+            f"{len(embeddings)} vectors but expected {len(chunks)} "
+            f"(pipeline_run_id={pipeline_run_id!r}). This indicates a "
+            f"partial embedding response; the C.4 dispatcher must catch "
+            f"this exception and fall back to RUN_FULL."
+        )
+
+    # ------------------------------------------------------------------
+    # Step 4: INSERT one ExtractionChunk vertex per merged chunk.
+    # vertex_id format is the new merged form:
+    #     f"{pipeline_run_id}:chunk_{chunk_index}"
+    # constructed here (option (b) per the Task 3 design note) so the
+    # legacy INSERT path stays untouched.
+    # ------------------------------------------------------------------
+    insert_t0 = time.monotonic()
+    for c, embedding in zip(chunks, embeddings):
+        vertex_id = f"{pipeline_run_id}:chunk_{c.chunk_index}"
+        page_no_int: int | None = None
+        if c.page_no is not None:
+            try:
+                page_no_int = int(c.page_no)
+            except (TypeError, ValueError):
+                page_no_int = None
+        _insert_merged_chunk_row(
+            store,
+            vertex_id=vertex_id,
+            pipeline_run_id=pipeline_run_id,
+            document_id=document_id,
+            chunk_index=c.chunk_index,
+            source_refs=c.source_refs,
+            chunk_text=c.text,
+            embedding=embedding,
+            page_number=page_no_int,
+            token_count=c.token_count,
+        )
+    insert_ms = int((time.monotonic() - insert_t0) * 1000)
+
+    chunks_inserted = len(chunks)
+    mean_token_count = int(mean([c.token_count for c in chunks]))
+
+    logger.info(
+        "build_extraction_index_hybrid: pipeline_run_id=%r document_id=%r "
+        "inserted=%d mean_token_count=%d embed_ms=%d insert_ms=%d",
+        pipeline_run_id, document_id,
+        chunks_inserted, mean_token_count, embed_ms, insert_ms,
+    )
+
+    return BuildIndexDiagnostics(
+        chunks_inserted=chunks_inserted,
+        chunks_skipped=0,
+        embed_calls=embed_calls,
+        embed_ms=embed_ms,
+        insert_ms=insert_ms,
+        modality_counts={"merged": chunks_inserted},
+        mean_token_count=mean_token_count,
     )
 
 
