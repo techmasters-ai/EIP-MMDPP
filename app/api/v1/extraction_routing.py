@@ -28,10 +28,16 @@ from app.schemas.extraction_routing import (
     ChunkScopeDiagnostics,
     ChunkScopeRequest,
     ChunkScopeResponse,
+    SelectedChunk,
 )
 from app.db.session import get_graph_store
 from app.config import get_settings
 from app.services.embedding import embed_texts
+from app.services.extraction_chunk_index import (
+    read_chunk_index,
+    read_chunk_source_refs,
+    read_chunk_token_count,
+)
 from app.services.extraction_chunk_search import search_extraction_chunks
 from app.services.extraction_query_builder import build_retrieval_query
 from app.services.ontology_bundles import load_bundle_manifest
@@ -320,11 +326,20 @@ async def chunk_scope(
         )
 
     # 6. Rerank — chunk_text → content_text mapping (rev 9 M2)
+    # Phase 1 Task 6: also carry chunk_index / source_refs / token_count
+    # so the merged-mode return path can expand source_refs without an
+    # extra DB round-trip. The reranker passes unknown keys through
+    # (see app/services/reranker.py:rerank — it does dict(candidate)).
     candidates_for_rerank = [
         {
             "content_text": r.properties.get("chunk_text", ""),
             "self_ref": r.properties.get("self_ref"),
             "vector_score": r.score if r.score is not None else None,
+            # Merged-mode fields — Task 1 accessors coalesce legacy/missing
+            # to safe defaults (-1, [], 0).
+            "chunk_index": read_chunk_index(r.properties),
+            "source_refs": read_chunk_source_refs(r.properties),
+            "token_count": read_chunk_token_count(r.properties),
         }
         for r in results
     ]
@@ -462,10 +477,76 @@ async def chunk_scope(
             search_diag.post_filter_candidate_count, profile.top_n_candidates,
         )
 
+    # ---------------------------------------------------------------
+    # Phase 1 Task 6: merged-mode expansion path.
+    # Gated on ``settings.extraction_index_mode == "merged"`` so per_element
+    # mode (the default) stays byte-identical to the pre-Task-6 response.
+    # ---------------------------------------------------------------
+    selected_chunks_out: list[SelectedChunk] | None = None
+    selected_chunk_count = 0
+    expanded_ref_count = 0
+    selected_chunk_token_estimate = 0
+    final_self_refs = selected_refs
+    final_selected_ref_count = len(selected_refs)
+    final_selected_token_estimate = selected_token_estimate
+
+    if get_settings().extraction_index_mode == "merged":
+        # Expand the per-chunk source_refs into a deduplicated list in
+        # chunk-encounter order (rerank rank order — do NOT lex-sort;
+        # '#/texts/100' would otherwise precede '#/texts/35').
+        expanded_refs: list[str] = []
+        seen: set[str] = set()
+        sc_list: list[SelectedChunk] = []
+        for chunk_row in top_k_results:
+            refs_for_chunk = chunk_row.get("source_refs") or []
+            if not isinstance(refs_for_chunk, list):
+                refs_for_chunk = []
+            chunk_idx = chunk_row.get("chunk_index", -1)
+            if not isinstance(chunk_idx, int):
+                try:
+                    chunk_idx = int(chunk_idx)
+                except (TypeError, ValueError):
+                    chunk_idx = -1
+            tok_count = chunk_row.get("token_count", 0)
+            if not isinstance(tok_count, int):
+                try:
+                    tok_count = int(tok_count)
+                except (TypeError, ValueError):
+                    tok_count = 0
+            for ref in refs_for_chunk:
+                if isinstance(ref, str) and ref not in seen:
+                    seen.add(ref)
+                    expanded_refs.append(ref)
+            # ``content_text`` was sourced from the carve-out column
+            # ``chunk_text`` (always non-null on every ExtractionChunk row)
+            # so the byte-identity contract is preserved.
+            sc_list.append(
+                SelectedChunk(
+                    chunk_index=chunk_idx,
+                    chunk_key=f"chunk_{chunk_idx}",
+                    text=chunk_row.get("content_text", ""),
+                    source_refs=[str(r) for r in refs_for_chunk if isinstance(r, str)],
+                    token_count=tok_count,
+                )
+            )
+
+        selected_chunks_out = sc_list
+        selected_chunk_count = len(sc_list)
+        expanded_ref_count = len(expanded_refs)
+        selected_chunk_token_estimate = sum(sc.token_count for sc in sc_list)
+        # text_by_ref stays UNCHANGED — still self_ref-keyed for
+        # apply_chunk_scope. Merged chunk text rides on SelectedChunk.text.
+        final_self_refs = expanded_refs
+        final_selected_ref_count = expanded_ref_count
+        # Legacy field mirrors the chunk-based estimate so existing
+        # dashboards keep working (plan rev 5 Task 6 backward-compat).
+        final_selected_token_estimate = selected_chunk_token_estimate
+
     return ChunkScopeResponse(
         mode="selected_refs",
-        self_refs=selected_refs,
+        self_refs=final_self_refs,
         text_by_ref=text_by_ref,
+        selected_chunks=selected_chunks_out,
         diagnostics=ChunkScopeDiagnostics(
             mode="selected_refs",
             fallback_reason=_reranker_fallback_reason,  # Minor #6 (rev 16)
@@ -474,8 +555,8 @@ async def chunk_scope(
             vector_score_range=_score_range(results),
             candidate_count=len(results),
             rerank_score_range=_rerank_score_range(reranked),
-            selected_ref_count=len(selected_refs),
-            selected_token_estimate=selected_token_estimate,
+            selected_ref_count=final_selected_ref_count,
+            selected_token_estimate=final_selected_token_estimate,
             full_doc_token_estimate=full_doc_token_estimate,
             would_skip_if_fallback_disabled=False,
             vector_search_ms=vector_search_ms,
@@ -485,5 +566,9 @@ async def chunk_scope(
             post_filter_retry_count=search_diag.post_filter_retry_count,
             filter_strategy=search_diag.filter_strategy,
             short_fetch=search_diag.short_fetch,  # Important #2 (rev 16)
+            # Task 6 merged-mode diagnostics (0 in per_element mode).
+            selected_chunk_count=selected_chunk_count,
+            expanded_ref_count=expanded_ref_count,
+            selected_chunk_token_estimate=selected_chunk_token_estimate,
         ),
     )

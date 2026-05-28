@@ -43,8 +43,22 @@ class ChunkScopeDiagnostics(BaseModel):
 
     # Final selection
     selected_ref_count: int
-    selected_token_estimate: int
+    selected_token_estimate: int = Field(
+        description=(
+            "Sum of bge-m3 token counts across selected per-element chunk texts "
+            "in per_element mode. In merged-mode runs, equals "
+            "selected_chunk_token_estimate; preserved for dashboard "
+            "compatibility (Phase 1 Task 6)."
+        ),
+    )
     full_doc_token_estimate: int
+
+    # Merged-mode diagnostics (Phase 1 Task 6). Default 0 keeps per_element-mode
+    # responses byte-identical to the pre-Task-6 shape modulo the new field's
+    # presence.
+    selected_chunk_count: int = 0
+    expanded_ref_count: int = 0
+    selected_chunk_token_estimate: int = 0
 
     # Counterfactual (rev 10 M6) — what mode would have returned if fallback_to_full=false
     would_skip_if_fallback_disabled: bool
@@ -79,6 +93,40 @@ class ChunkScopeDiagnostics(BaseModel):
     short_fetch: bool = False
 
 
+class SelectedChunk(BaseModel):
+    """Router-selected merged chunk (Phase 1 Task 6).
+
+    Populated only when ``settings.extraction_index_mode == "merged"``.
+    Phase 2 worker reads ``.text`` directly and forwards to docling-graph
+    via the chunked-extract path (``selected_chunks=[...]``).
+
+    ``chunk_key`` has no Phase-1 consumer — ``apply_chunk_scope`` does not
+    read it and the Phase-1 LLM-batch path goes through the existing
+    self_ref-keyed pipeline. It is populated strictly as forward-compat
+    payload pre-staging for Phase 2's ``/extract-pass`` chunked-mode
+    dispatch (see plan rev 5 Task 6 + Glossary).
+    """
+
+    chunk_index: int = Field(
+        description="Dense int per pipeline_run_id (see plan Glossary)."
+    )
+    chunk_key: str = Field(
+        description=(
+            "``f'chunk_{chunk_index}'``; Phase-2 payload pre-staging only — "
+            "no Phase-1 consumer."
+        ),
+    )
+    text: str = Field(
+        description="Merged chunk text (``chunker.contextualize`` output)."
+    )
+    source_refs: list[str] = Field(
+        description="Element self_refs covered by this merged chunk."
+    )
+    token_count: int = Field(
+        description="``tokenizer.count_tokens(text)`` for this chunk."
+    )
+
+
 class ChunkScopeResponse(BaseModel):
     mode: Literal["selected_refs", "full", "would_skip"]
     self_refs: list[str] = Field(
@@ -93,7 +141,21 @@ class ChunkScopeResponse(BaseModel):
         description=(
             "Post-filter ExtractionChunk.chunk_text keyed by self_ref for the "
             "selected refs. The worker uses this to make scoped DoclingDocument "
-            "content match the retrieval/rerank evidence text."
+            "content match the retrieval/rerank evidence text. "
+            "UNCHANGED in merged mode — merged chunk text rides on "
+            "``selected_chunks[*].text``, not here."
+        ),
+    )
+    selected_chunks: list[SelectedChunk] | None = Field(
+        default=None,
+        description=(
+            "Populated only when ``settings.extraction_index_mode == 'merged'`` "
+            "AND ``mode == 'selected_refs'``. ``None`` otherwise. "
+            "Each entry corresponds to one merged HybridChunker chunk "
+            "selected by the rerank top-K; order is chunk-encounter order "
+            "(bge-m3 + reranker rank), NOT lex-sorted by chunk_index. "
+            "Phase-2 worker dispatch consumes ``selected_chunks[*].text`` "
+            "as pre-built LLM batches."
         ),
     )
     diagnostics: ChunkScopeDiagnostics
