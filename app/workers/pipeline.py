@@ -611,6 +611,7 @@ def _execute_pass_attempt(
     upstream_refs: dict,
     document_id: str,
     caller_worker_diag: dict | None = None,
+    chunk_scope: dict | None = None,
 ) -> "PassAttemptOutcome":
     """One attempt at one pass.  Does NOT retry — the caller decides retry.
     Does NOT write StageRun or pipeline_pass_outputs — the caller persists.
@@ -653,12 +654,20 @@ def _execute_pass_attempt(
     )
 
     # 3. Build request + call HTTP
+    # Phase 2 Task 11: forward router's selected_chunks when present so
+    # docling-graph uses them byte-identically (skips its own re-chunking).
+    forwarded_selected_chunks: list[dict] | None = None
+    if chunk_scope is not None:
+        _raw = chunk_scope.get("selected_chunks")
+        if isinstance(_raw, list) and _raw:
+            forwarded_selected_chunks = _raw
     request_body = _build_extract_pass_request(
         bundle_key=bundle_key,
         pass_def=pass_def,
         doc_json=doc_json,
         upstream_refs=selected_refs,
         document_id=document_id,
+        selected_chunks=forwarded_selected_chunks,
     )
     # C0 telemetry: measure request size + HTTP wall + pass wall. perf_counter
     # is the wall-clock workhorse (monotonic, ns resolution); negligible cost
@@ -3467,6 +3476,7 @@ def _write_stage_run(
 def _build_extract_pass_request(
     *, bundle_key: str, pass_def, doc_json: dict,
     upstream_refs: dict | None, document_id: str,
+    selected_chunks: list[dict] | None = None,
 ) -> dict:
     """Assemble the POST body for /extract-pass.
 
@@ -3479,6 +3489,13 @@ def _build_extract_pass_request(
     Fields that are None in the execution block are omitted, leaving the
     service to fall back to its env-var defaults (spec Q3: no top-level
     default in the manifest).
+
+    Phase 2 Task 11: when ``selected_chunks`` is non-empty, forward it as
+    a first-class field so docling-graph bypasses its own HybridChunker
+    and uses the router-selected chunk text byte-identically (Task 0b
+    receiver-side wired this branch). docling-graph's SelectedChunkInput
+    declares ``extra="ignore"`` so any worker-only fields (e.g. chunk_key)
+    are silently dropped server-side; no worker-side strip required.
     """
     body: dict = {
         "bundle_key": bundle_key,
@@ -3486,6 +3503,9 @@ def _build_extract_pass_request(
         "document_id": document_id,
         "docling_document_json": doc_json,
     }
+
+    if selected_chunks:
+        body["selected_chunks"] = selected_chunks
 
     # C2: plumb per-pass execution profile onto the request body.
     execution = getattr(pass_def, "execution", None)
@@ -7301,6 +7321,20 @@ def _compute_effective_chunk_scope(
                     for ref in self_refs
                     if ref in text_by_ref
                 }
+            # Phase 2 Task 11: forward router's merged chunks verbatim when
+            # merged-mode is active and the router returned them. docling-graph
+            # bypasses its own chunker when selected_chunks is present in the
+            # request (Task 0b receiver-side), giving byte-identical chunk text
+            # from index → router → LLM.
+            if settings.extraction_index_mode == "merged":
+                resp_selected_chunks = router_response.get("selected_chunks")
+                if isinstance(resp_selected_chunks, list) and resp_selected_chunks:
+                    effective_chunk_scope["selected_chunks"] = resp_selected_chunks
+                    diag["selected_chunks_forwarded"] = True
+                    diag["selected_chunks_forwarded_count"] = len(resp_selected_chunks)
+                else:
+                    diag["selected_chunks_forwarded"] = False
+                    diag["selected_chunks_forwarded_count"] = 0
         else:
             effective_chunk_scope = None
             if resp_mode == "would_skip":
@@ -7583,6 +7617,7 @@ def derive_ontology_graph_pass(
             upstream_refs=upstream_refs,
             document_id=document_id,
             caller_worker_diag={"doc_json_load_ms": _doc_json_load_ms},
+            chunk_scope=chunk_scope,  # Phase 2 Task 11: forward router's selected_chunks
         )
 
         # 5. ALWAYS write StageRun (per-attempt audit; matches existing shape).
