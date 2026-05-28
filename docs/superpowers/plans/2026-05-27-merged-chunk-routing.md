@@ -738,12 +738,86 @@ Decision matrix:
   - Narrowed-pass recall: kinematics + at least one other narrowed pass shows ≥+50% entity count
   - Wall time: ≤120% of baseline (Phase 1 alone is allowed to be slightly slower; Phase 2 closes the gap)
   - Diagnostic delta: `selected_chunk_count` materially lower than baseline `sel_refs` (merged chunks denser)
-- [ ] **Step 4: Promote `EXTRACTION_INDEX_MODE=merged`** as default if gates pass.
+- [ ] **Step 4: If gates pass, execute Task 10.5** (bundle propagation + merged-mode default). Do NOT flip the production default in this task — Task 10.5 owns the full propagation including bundle manifest updates so the merged-mode flag and retrieval calibration are consistent across every bundle.
+
+### Task 10.5: Bundle propagation + merged-mode default
+
+**Gated on**: Task 10's A/B passes both gates (recall ≥+50% on `radar_power_rf` + `missile_kinematics`; wall ≤120%). If either gate fails, this task does NOT run — revert `.env`'s `EXTRACTION_INDEX_MODE` back to `per_element` and investigate.
+
+**Why this exists**: Task 10 alone only proves merged-mode works on the 5-pass `_merged_v1` subset. For "any bundle works with merged mode" to be true in production, the merged-mode retrieval calibration (`min_sim=0.30, top_n=50, top_k=15`) must propagate to every bundle's `retrieval:` blocks. Otherwise a run that picks `bundle=air_defense_v3` with `EXTRACTION_INDEX_MODE=merged` would build a merged index but query it with per-element-tuned thresholds — poor recall, defeats the calibration.
+
+**Files to modify**:
+- `ontology_bundles/air_defense_v3/manifest.yaml` — apply merged calibration to all 9 narrowed passes (`radar_power_rf`, `radar_antenna`, `radar_timing`, `radar_modulation`, `missile_airframe`, `missile_kinematics`, `missile_propulsion`, `missile_speed_timing`, `missile_guidance`)
+- `ontology_bundles/air_defense_v3_baseline_subset/manifest.yaml` — apply merged calibration to 2 narrowed passes (`radar_power_rf`, `missile_kinematics`)
+- `ontology_bundles/air_defense_v3_narrowing_v1/manifest.yaml` — apply merged calibration to 2 narrowed passes
+- Create `ontology_bundles/_archive/per_element_pre_phase1/` with copies of the 3 pre-propagation manifests (recoverable history)
+- `.env.example` — change default to `EXTRACTION_INDEX_MODE=merged`
+- New handoff doc at `docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md`
+
+**Calibration values to apply** (from Task 8's `docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md`):
+
+```yaml
+retrieval:
+  min_similarity: 0.30
+  top_n_candidates: 50
+  top_k: 15
+  fallback_to_full: true
+```
+
+Apply uniformly to every narrowed pass across all three bundles. Identity passes + `system_links` keep `retrieval:` block omitted (unchanged).
+
+**Execution sequence**:
+
+- [ ] **Step 1: Sanity-check Task 8's uniform knee against all 9 narrowed passes**. Re-read `scripts/c10_phase1_sweep.csv`. Confirm the uniform `(0.30, 50, 15)` winner holds for the 7 narrowed passes that the Task 10 A/B didn't directly exercise (`radar_antenna`, `radar_timing`, `radar_modulation`, `missile_airframe`, `missile_propulsion`, `missile_speed_timing`, `missile_guidance`). If any pass shows a materially different knee, document the per-pass override before continuing.
+
+- [ ] **Step 2: Archive pre-propagation manifests**. Create `ontology_bundles/_archive/per_element_pre_phase1/` and copy:
+  - `air_defense_v3/manifest.yaml` → `_archive/per_element_pre_phase1/air_defense_v3.yaml`
+  - `air_defense_v3_baseline_subset/manifest.yaml` → `_archive/per_element_pre_phase1/air_defense_v3_baseline_subset.yaml`
+  - `air_defense_v3_narrowing_v1/manifest.yaml` → `_archive/per_element_pre_phase1/air_defense_v3_narrowing_v1.yaml`
+  - Add a README at `_archive/per_element_pre_phase1/README.md` explaining: these are the pre-Phase-1-promotion per-element-tuned manifests, preserved for future A/B comparisons against potential calibration updates. The active bundles diverged from these on `<commit-sha>`.
+
+- [ ] **Step 3: Update `air_defense_v3/manifest.yaml`**. For each of the 9 narrowed passes (verify list against the manifest), set the `retrieval:` block to the uniform merged-mode values. Identity passes + `system_links` untouched.
+
+- [ ] **Step 4: Update `_baseline_subset/manifest.yaml`** retrieval blocks on `radar_power_rf` + `missile_kinematics` to the merged-mode values.
+
+- [ ] **Step 5: Update `_narrowing_v1/manifest.yaml`** retrieval blocks on `radar_power_rf` + `missile_kinematics` to the merged-mode values.
+
+- [ ] **Step 6: Flip default in `.env.example`** — change `EXTRACTION_INDEX_MODE=per_element` to `EXTRACTION_INDEX_MODE=merged`. Update the inline comment to note the change. Add a brief reference to this Task 10.5 commit + the Task 10 A/B run IDs as evidence.
+
+- [ ] **Step 7: Sibling-allowlist sweep**. Run `grep -rn "air_defense_v3" app/ docker/ scripts/` to catch any other locations enumerating bundle keys. The known allowlist sites (`app/services/extraction_metrics.py:AIR_DEFENSE_BUNDLE_KEYS`, `docker/docling-graph/app/evidence_gate.py:_AIR_DEFENSE_BUNDLE_KEYS`) already include `_merged_v1` per Task 9. Confirm no other sites need additions.
+
+- [ ] **Step 8: Smoke-test each bundle loads cleanly**:
+  ```python
+  for bundle in ("air_defense_v3", "air_defense_v3_baseline_subset",
+                 "air_defense_v3_narrowing_v1", "air_defense_v3_merged_v1"):
+      manifest = load_bundle_manifest(bundle)
+      narrowed = [p for p in manifest.passes if p.retrieval is not None]
+      for p in narrowed:
+          assert p.retrieval.min_similarity == 0.30
+          assert p.retrieval.top_n_candidates == 50
+          assert p.retrieval.top_k == 15
+  ```
+
+- [ ] **Step 9: Confirm no integration smoke run is needed**. Tasks 1-10 already verified merged-mode end-to-end on `_merged_v1`. The other 3 bundles share the same indexer, search projection, chunk-scope endpoint, and worker dispatch code paths — structural correctness carries over. **Skip** the paid LLM smoke run on the full-12-pass `air_defense_v3` bundle (saves ~30m wall + LLM tokens). If recall on the 7 extra narrowed passes proves problematic later, file a follow-up bundle revalidation task; the structural risk is low.
+
+- [ ] **Step 10: Write handoff doc** at `docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md`:
+  - What changed (the 3 manifest updates, `.env.example` default flip, archive directory)
+  - Phase 1 A/B evidence summary (gate values + Dvina/SA-2 run IDs)
+  - 2-week clock start (per "Concrete backwards-compat removal trigger" — this commit starts the clock for per-element code retirement)
+  - How to use any bundle in merged mode now (just pass `bundle_key=...`; the merged-mode flag is process-default)
+  - How to revert if needed (restore from `_archive/per_element_pre_phase1/` + flip `.env` back)
+
+- [ ] **Step 11: Commit** in parent repo: `feat(bundles): propagate merged-mode retrieval calibration; promote EXTRACTION_INDEX_MODE=merged as default`
+
+- [ ] **Step 12: Restart workers** to pick up the new `.env.example` (operationally, the worker reads `.env` at startup; if `.env` was already set to `merged` from Task 10, the restart is a no-op confirmation). Verify with `docker exec eip-mmdpp-worker-1 python -c "from app.config import get_settings; print(get_settings().extraction_index_mode)"` → should print `merged`.
+
+**Acceptance**: each of the 4 bundles loads with merged-mode retrieval values on all narrowed passes. `.env.example` shows `merged` as the default. Handoff doc filed. The 2-week clock for backwards-compat removal (per the plan's "Concrete backwards-compat removal trigger" section) starts NOW.
 
 ### Phase 1 gate
 
-After Task 10, **discuss with user** (per [[feedback-phase-discussion-before-implementation]]):
+After Task 10 + Task 10.5, **discuss with user** (per [[feedback-phase-discussion-before-implementation]]):
 - A/B results
+- Bundle propagation outcome (all 4 bundles operational with merged mode)
 - Whether to proceed to Phase 2 or call it done
 
 ---
@@ -873,8 +947,9 @@ Retirement is **two PRs** (the code-delete PR is reversible; the schema-tighteni
 | Phase 0 (Tasks 0a, 0b) | Tokenizer pin + sanitize-skip | Both committed in docling-graph; smoke tests pass |
 | Phase 1, Tasks 1-7 | Implementation tests | All pass; flag works; response contract preserved |
 | Phase 1, Tasks 8-10 | Calibration + A/B | Recall ≥ baseline + ≥1 narrowed pass +50% ent; wall ≤ 120% baseline; `selected_chunk_token_estimate` recorded |
+| Phase 1, Task 10.5 | Bundle propagation + default flip | All 4 bundles operational with merged calibration; `.env.example` default = `merged`; per-element manifests archived; 2-week retirement clock started |
 | Phase 2, Tasks 11-12 | A/B + byte identity | Recall ≥ Phase 1; wall < Phase 1; LLM batch input byte-equal to `SelectedChunk.text` for narrowed passes |
-| Final | Production rollout | Promote `EXTRACTION_INDEX_MODE=merged`; retirement trigger above |
+| Final | Production rollout | Promote `EXTRACTION_INDEX_MODE=merged` (Task 10.5 lands this); retirement trigger above |
 
 ---
 
@@ -904,12 +979,24 @@ Keep `selected_ref_count` + `selected_token_estimate` populated so existing dash
 - Phase 0 (Tasks 0a, 0b): ~0.5 day (docling-graph changes + smoke test)
 - Phase 1 (Tasks 1-7 implementation): ~1.5 days
 - Phase 1 (Task 8 calibration + Tasks 9-10 A/B): ~1 day (mostly waiting on Dvina + SA-2 runs)
+- Phase 1 (Task 10.5 bundle propagation): ~30-45 min (mechanical YAML edits + smoke tests; no LLM runs)
 - Phase 2 (Tasks 11-12): ~1 day
 - Total: **4-6 days focused effort**, plus calibration wall-time gated on Dvina/SA-2 runs (~5 hours each).
 
 ---
 
 ## Revision log
+
+### Rev 7 (2026-05-28) — Task 10.5 added per user direction
+
+Phase 1 A/B (Task 10) was about to evaluate whether merged-mode works on the 5-pass `_merged_v1` subset. User flagged: even if Task 10 passes, "any bundle should work with merged mode" requires propagating the merged calibration (`min_sim=0.30, top_n=50, top_k=15`) to ALL bundles (`air_defense_v3`, `_baseline_subset`, `_narrowing_v1`) — otherwise a future run that selects `bundle=air_defense_v3` with `EXTRACTION_INDEX_MODE=merged` would build a merged index but query it with per-element-tuned thresholds (poor recall).
+
+**Task 10.5 added** as a formal post-A/B-pass step:
+- Gated on Task 10's gates passing (recall ≥+50% on narrowed passes; wall ≤120%)
+- 12 execution steps including sanity check of Task 8's uniform knee on the 7 narrowed passes not directly A/B'd, archive of pre-propagation manifests to `ontology_bundles/_archive/per_element_pre_phase1/`, manifest updates across all 3 bundles + `.env.example` default flip, sibling-allowlist sweep, per-bundle load smoke tests, handoff doc filed.
+- Decided: all-merged + archive (recoverable history) over historical-control bundles. Skip paid LLM smoke run on full `air_defense_v3` bundle (structural similarity to `_merged_v1` argues low risk).
+- Starts the 2-week clock for the "Concrete backwards-compat removal trigger" (per-element code retirement).
+- Acceptance criteria summary + time estimate updated.
 
 ### Rev 6 (2026-05-27) — fifth-pass reviewer findings absorbed
 
