@@ -3,7 +3,7 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import computed_field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -585,6 +585,19 @@ class Settings(BaseSettings):
     # B implementation + Codex review + live smoke. Revert to 'hnsw' by
     # reverting just this commit if the C.7g A/B exposes regressions.
     vector_router_retrieval_mode: Literal["hnsw", "direct"] = "direct"
+
+    # Granularity of ExtractionChunk index rows (merged-chunk routing Phase 1).
+    # per_element: one row per docling element (legacy, current default).
+    # merged:      one row per HybridChunker output chunk; enables Phase 2
+    #              chunk-level dispatch to docling-graph (Task 10 A/B).
+    extraction_index_mode: Literal["per_element", "merged"] = Field(
+        default="per_element",
+        description=(
+            "Granularity of ExtractionChunk index rows. 'per_element' indexes "
+            "one row per docling element (legacy). 'merged' indexes one row "
+            "per HybridChunker output chunk (Phase 1 of merged-chunk routing)."
+        ),
+    )
 
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)

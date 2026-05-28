@@ -8641,12 +8641,30 @@ def derive_ontology_graph(self, document_id: str, run_id: str | None = None) -> 
                         run_id, exc,
                     )
                 store_for_index = get_graph_store()
-                build_diag = build_extraction_index(
-                    doc_json=doc_json_for_index,
-                    pipeline_run_id=str(run_id),
-                    document_id=document_id,
-                    store=store_for_index,
-                )
+                # Merged-chunk routing Phase 1: branch on the
+                # EXTRACTION_INDEX_MODE flag. The value is read at call time
+                # (NOT at module import) so tests can flip it via
+                # monkeypatch.setattr on the worker's ``settings`` module-
+                # level binding. ``per_element`` preserves the legacy
+                # behaviour exactly; ``merged`` routes through the shared
+                # HybridChunker helper (Task 3).
+                if settings.extraction_index_mode == "merged":
+                    from app.services.extraction_chunk_index import (
+                        build_extraction_index_hybrid,
+                    )
+                    build_diag = build_extraction_index_hybrid(
+                        doc_json_for_index,
+                        str(run_id),
+                        document_id,
+                        store=store_for_index,
+                    )
+                else:
+                    build_diag = build_extraction_index(
+                        doc_json=doc_json_for_index,
+                        pipeline_run_id=str(run_id),
+                        document_id=document_id,
+                        store=store_for_index,
+                    )
                 logger.info(
                     "VR: built ExtractionChunk index for run=%s "
                     "— inserted=%d skipped=%d embed_ms=%d insert_ms=%d",
