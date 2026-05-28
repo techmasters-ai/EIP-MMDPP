@@ -1107,6 +1107,121 @@ def build_extraction_index_hybrid(
     _delete_by_run_id(store, pipeline_run_id, strict=True)
 
     # ------------------------------------------------------------------
+    # Step 1.5: Web-cruft sanitize + table normalization, upstream.
+    # Phase 2 chunked-mode forwards the merged chunks straight to the LLM,
+    # skipping docling-graph's sanitize+table-norm pipeline. Applying both
+    # here (BEFORE the HybridChunker) means the chunks indexed in
+    # ArcadeDB — and therefore everything the router selects + the LLM
+    # sees — are already cleaned and per-row-rendered.
+    #
+    # Pass-agnostic at index time: we synthesize per-row TextItems for
+    # ALL tables and append them unconditionally. docling-graph's
+    # per-pass relevance filter (is_table_relevant_for_pass) is an
+    # optimization that doesn't apply here; the router will naturally
+    # drop irrelevant synth chunks via cosine similarity at retrieval.
+    # ------------------------------------------------------------------
+    from app.services.web_cruft_sanitizer import sanitize_docling_document
+
+    _sanitize_stats: dict[str, int] = {"texts_in": 0, "texts_dropped": 0}
+    doc_json = sanitize_docling_document(doc_json, _sanitize_stats)
+    if _sanitize_stats["texts_dropped"] > 0:
+        logger.info(
+            "build_extraction_index_hybrid: sanitize pipeline_run_id=%r "
+            "texts_in=%d texts_blanked=%d (web-cruft / ad-tracking / nav-lists)",
+            pipeline_run_id,
+            _sanitize_stats["texts_in"],
+            _sanitize_stats["texts_dropped"],
+        )
+
+    _norm_synth_count = 0
+    try:
+        from app.services.table_normalization.config import (
+            is_table_normalization_enabled_graph,
+            is_suppress_raw_table_markdown_enabled,
+            table_whole_limit,
+            table_column_limit,
+        )
+        _norm_on = is_table_normalization_enabled_graph()
+    except Exception as exc:
+        logger.warning(
+            "build_extraction_index_hybrid: table_normalization config import "
+            "failed pipeline_run_id=%r: %r — proceeding without normalization",
+            pipeline_run_id, exc,
+        )
+        _norm_on = False
+
+    if _norm_on:
+        try:
+            from app.services.table_normalization import (
+                normalize_tables, render_for_graph,
+            )
+            from app.services.table_normalization._text_item import (
+                _text_item_from_chunk,
+            )
+            from app.services.table_normalization._pipeline_hooks import (
+                _suppress_raw_table_texts,
+                _replace_raw_table_refs_in_body_children,
+                detect_unit_convention,
+            )
+            from app.services.table_normalization._provenance_bridge import (
+                reset as _bridge_reset,
+            )
+
+            _bridge_reset()
+            _normalized = normalize_tables(doc_json)
+            _texts_list = doc_json.setdefault("texts", [])
+            _body = doc_json.setdefault("body", {})
+            _body_children = _body.setdefault("children", [])
+            _next_text_idx = len(_texts_list)
+            _synth_only_table_refs: dict[str, list[str]] = {}
+
+            for _nt in _normalized:
+                _table_ref = f"#/tables/{_nt.table_index}"
+                _unit_convention = detect_unit_convention(_nt.table_index, doc_json)
+                for _gtc in render_for_graph(
+                    _nt,
+                    token_limit_whole=table_whole_limit(None),
+                    token_limit_column=table_column_limit(None),
+                    unit_convention=_unit_convention,
+                    # Index-time has no pass context — emit unit hints
+                    # for numeric/spec extraction. The router can still
+                    # demote irrelevant tables at retrieval.
+                    emit_unit_hint=True,
+                ):
+                    _captured_idx = _next_text_idx
+                    _ti, _next_text_idx = _text_item_from_chunk(
+                        _gtc, next_text_idx=_next_text_idx,
+                    )
+                    _texts_list.append(_ti)
+                    _synth_ref = f"#/texts/{_captured_idx}"
+                    _synth_only_table_refs.setdefault(_table_ref, []).append(_synth_ref)
+                    _norm_synth_count += 1
+
+            if is_suppress_raw_table_markdown_enabled() and _synth_only_table_refs:
+                _suppress_raw_table_texts(doc_json, _normalized)
+                _replace_raw_table_refs_in_body_children(
+                    doc_json, _synth_only_table_refs,
+                )
+
+            logger.info(
+                "build_extraction_index_hybrid: table-norm pipeline_run_id=%r "
+                "synthesized %d TextItems from %d tables (suppress_raw=%s)",
+                pipeline_run_id,
+                _norm_synth_count,
+                len(_normalized),
+                is_suppress_raw_table_markdown_enabled(),
+            )
+        except Exception as exc:
+            # Fail-open: table normalization is best-effort. A failure
+            # here must not block the index build; the chunker still
+            # produces chunks with raw markdown table content.
+            logger.warning(
+                "build_extraction_index_hybrid: table_normalization FAILED "
+                "pipeline_run_id=%r: %r — proceeding with raw tables",
+                pipeline_run_id, exc,
+            )
+
+    # ------------------------------------------------------------------
     # Step 2: Chunk. ``build_hybrid_chunks_for_extraction`` raises
     # ValueError on bad doc shape (pydantic validation); that propagates.
     # ------------------------------------------------------------------
