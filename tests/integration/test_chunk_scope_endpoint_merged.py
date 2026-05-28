@@ -524,16 +524,26 @@ class TestLegacyTokenEstimateMirrorsChunkTokenEstimate:
 
 
 class TestResponseShapeBackwardCompat:
-    """Response keys must be a superset of the pre-Task-6 shape in BOTH modes.
-    No existing field deletions, no semantic changes to existing fields.
+    """Response keys must match the post-Task-6 shape EXACTLY in BOTH modes.
 
-    In per_element mode: ``selected_chunks`` is ``None``; ``self_refs`` is
+    No existing field deletions, no silent additions, no semantic changes to
+    existing fields. Assertions use ``==`` (bidirectional equality) so any
+    accidental new field on ``ChunkScopeResponse`` / ``SelectedChunk`` /
+    ``ChunkScopeDiagnostics`` regresses the snapshot immediately.
+
+    In per_element mode: ``selected_chunks`` is ``None`` (serialized as JSON
+    ``null`` since the schema does not set ``exclude_none``); ``self_refs`` is
     the rerank top-K (existing semantics).
     In merged mode: ``selected_chunks`` is a non-null list; ``self_refs``
     is the expanded union.
     """
 
     _PRE_TASK6_RESPONSE_KEYS = {"mode", "self_refs", "text_by_ref", "diagnostics"}
+    # Task 6 adds ``selected_chunks`` to ChunkScopeResponse. Since the schema
+    # does NOT set ``exclude_none``, the key is present in BOTH modes —
+    # ``null`` in per_element, a list in merged. Both modes therefore share
+    # the same top-level key set.
+    _POST_TASK6_RESPONSE_KEYS = _PRE_TASK6_RESPONSE_KEYS | {"selected_chunks"}
     _PRE_TASK6_DIAGNOSTICS_KEYS = {
         "mode",
         "fallback_reason",
@@ -553,6 +563,20 @@ class TestResponseShapeBackwardCompat:
         "post_filter_retry_count",
         "filter_strategy",
         "short_fetch",
+    }
+    # Task 6 adds three merged-mode counters to ChunkScopeDiagnostics; they
+    # default to 0 in per_element mode so the key set is identical across modes.
+    _POST_TASK6_DIAGNOSTICS_KEYS = _PRE_TASK6_DIAGNOSTICS_KEYS | {
+        "selected_chunk_count",
+        "expanded_ref_count",
+        "selected_chunk_token_estimate",
+    }
+    _SELECTED_CHUNK_KEYS = {
+        "chunk_index",
+        "chunk_key",
+        "text",
+        "source_refs",
+        "token_count",
     }
 
     @pytest.mark.asyncio
@@ -577,16 +601,30 @@ class TestResponseShapeBackwardCompat:
             assert resp.status_code == 200, resp.text
             data = resp.json()
 
-            # Pre-Task-6 keys present (additive only).
-            missing = self._PRE_TASK6_RESPONSE_KEYS - data.keys()
-            assert not missing, f"Missing response keys: {missing}"
+            # Bidirectional equality: any silent addition OR deletion of a
+            # top-level field surfaces here (M1 from Task 6 code-quality review).
+            assert data.keys() == self._POST_TASK6_RESPONSE_KEYS, (
+                f"Top-level response keys drifted: "
+                f"missing={self._POST_TASK6_RESPONSE_KEYS - data.keys()} "
+                f"unexpected={data.keys() - self._POST_TASK6_RESPONSE_KEYS}"
+            )
 
             diag = data["diagnostics"]
-            missing_d = self._PRE_TASK6_DIAGNOSTICS_KEYS - diag.keys()
-            assert not missing_d, f"Missing diagnostics keys: {missing_d}"
+            assert diag.keys() == self._POST_TASK6_DIAGNOSTICS_KEYS, (
+                f"Diagnostics keys drifted: "
+                f"missing={self._POST_TASK6_DIAGNOSTICS_KEYS - diag.keys()} "
+                f"unexpected={diag.keys() - self._POST_TASK6_DIAGNOSTICS_KEYS}"
+            )
 
-            # selected_chunks must be None (not an empty list) in per_element.
-            assert data.get("selected_chunks") is None, (
+            # selected_chunks must be present-and-None in per_element (the
+            # schema does NOT set exclude_none, so the JSON includes the key
+            # with value ``null``). Locking this in catches a future
+            # ``exclude_none=True`` regression.
+            assert "selected_chunks" in data, (
+                "selected_chunks key must be present (as null) in per_element "
+                "mode — schema must not set exclude_none"
+            )
+            assert data["selected_chunks"] is None, (
                 "selected_chunks must be None in per_element mode to keep "
                 "pre-Task-6 byte-identity"
             )
@@ -618,25 +656,32 @@ class TestResponseShapeBackwardCompat:
             assert resp.status_code == 200, resp.text
             data = resp.json()
 
-            missing = self._PRE_TASK6_RESPONSE_KEYS - data.keys()
-            assert not missing, f"Missing response keys: {missing}"
+            # Bidirectional equality: any silent addition OR deletion of a
+            # top-level field surfaces here (M1 from Task 6 code-quality review).
+            assert data.keys() == self._POST_TASK6_RESPONSE_KEYS, (
+                f"Top-level response keys drifted: "
+                f"missing={self._POST_TASK6_RESPONSE_KEYS - data.keys()} "
+                f"unexpected={data.keys() - self._POST_TASK6_RESPONSE_KEYS}"
+            )
 
             diag = data["diagnostics"]
-            missing_d = self._PRE_TASK6_DIAGNOSTICS_KEYS - diag.keys()
-            assert not missing_d, f"Missing diagnostics keys: {missing_d}"
+            assert diag.keys() == self._POST_TASK6_DIAGNOSTICS_KEYS, (
+                f"Diagnostics keys drifted: "
+                f"missing={self._POST_TASK6_DIAGNOSTICS_KEYS - diag.keys()} "
+                f"unexpected={diag.keys() - self._POST_TASK6_DIAGNOSTICS_KEYS}"
+            )
 
             # In merged mode + selected_refs, selected_chunks is populated.
             if data["mode"] == "selected_refs":
                 assert isinstance(data.get("selected_chunks"), list)
                 assert len(data["selected_chunks"]) > 0
-                # Per-item shape.
+                # Per-item shape — exact equality to catch silent SelectedChunk
+                # schema additions (M1 from Task 6 review).
                 for sc in data["selected_chunks"]:
-                    assert {
-                        "chunk_index",
-                        "chunk_key",
-                        "text",
-                        "source_refs",
-                        "token_count",
-                    } <= sc.keys()
+                    assert sc.keys() == self._SELECTED_CHUNK_KEYS, (
+                        f"SelectedChunk keys drifted: "
+                        f"missing={self._SELECTED_CHUNK_KEYS - sc.keys()} "
+                        f"unexpected={sc.keys() - self._SELECTED_CHUNK_KEYS}"
+                    )
         finally:
             _delete_run(arcadedb_store, run_id)
