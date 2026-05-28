@@ -1,0 +1,1552 @@
+version: 3.0.0
+entity_types:
+- name: DOCUMENT
+  label: Source Document
+  identity_fields:
+  - document_number
+  identity_scope: global
+  description: Technical manual, specification, report, drawing, or other source artifact
+  parent: DocumentResource
+  properties:
+    type: object
+    properties:
+      document_number:
+        type: string
+        description: Official document designator (TM/MIL-STD/MIL-DTL number)
+        example: TM 9-1425-386-12
+      title:
+        type: string
+        description: Full title of the document
+        example: Operator Manual for Patriot Missile System
+      document_id:
+        type: string
+        description: Internal system-assigned document identifier
+      classification:
+        type: string
+        description: Security classification level
+        example: UNCLASSIFIED
+      publication_date:
+        type: string
+        description: Publication or revision date (YYYY-MM-DD)
+        example: '2023-06-15'
+      storage_key:
+        type: string
+        description: MinIO object key for the source file in the documents bucket
+      source_type:
+        type: string
+        description: Category of the source document
+        enum:
+        - MANUAL
+        - REPORT
+        - BRIEFING
+        - NOTE
+        - SCHEMATIC
+        - DRAWING
+        - SPECIFICATION
+        - CHECKLIST
+        - SPREADSHEET
+      issuing_org:
+        type: string
+        description: Organization that published the document
+        example: U.S. Army TACOM
+      language:
+        type: string
+        description: Language of the document (ISO 639-1 code)
+        example: en
+      workbook_name:
+        type: string
+        description: Name of the spreadsheet workbook file
+        example: SA-20_MDE_Checklist.xlsx
+      sheet_name:
+        type: string
+        description: Name of the specific worksheet tab
+        example: Radar Parameters
+- name: SECTION
+  label: Document Section
+  identity_fields:
+  - section_number
+  identity_scope: document
+  description: A section or heading within a document
+  parent: DocumentResource
+  properties:
+    type: object
+    properties:
+      section_number:
+        type: string
+        description: Hierarchical section number within the document (docs:17235 R16-compliant
+          identity)
+        example: 3.2.1
+      heading:
+        type: string
+        description: Section heading or title text
+        example: 'Chapter 3: Maintenance Procedures'
+      section_path:
+        type: string
+        description: Full breadcrumb path to the section
+        example: Chapter 3 > Maintenance > Calibration
+      document_id:
+        type: string
+        description: Internal document UUID this section belongs to
+      page_start:
+        type: integer
+        description: Starting page number of the section
+        example: 42
+      page_end:
+        type: integer
+        description: Ending page number of the section
+        example: 67
+- name: FIGURE
+  label: Figure
+  identity_fields:
+  - figure_ref
+  identity_scope: document
+  description: A figure, diagram, or image within a document
+  parent: DocumentResource
+  properties:
+    type: object
+    properties:
+      figure_ref:
+        type: string
+        description: Document-scoped figure reference (docs:17235 R16-compliant identity)
+        example: Figure 3-12
+      figure_label:
+        type: string
+        description: Human-friendly figure label or short title
+        example: Antenna Feed Assembly
+      document_id:
+        type: string
+        description: Internal document UUID this figure belongs to
+      caption:
+        type: string
+        description: Figure caption text
+        example: Antenna Feed Assembly Exploded View
+      page:
+        type: integer
+        description: Page number where the figure appears
+        example: 55
+      figure_type:
+        type: string
+        description: Category of the figure
+        enum:
+        - BLOCK_DIAGRAM
+        - SCHEMATIC
+        - PHOTO
+        - SPECTRUM_PLOT
+        - WIRING_DIAGRAM
+        - FLOWCHART
+      storage_key:
+        type: string
+        description: MinIO object key for the figure image. Always null in the initial
+          change; populated once Artifact.self_ref plumbing lands.
+- name: TABLE
+  label: Table
+  identity_fields:
+  - table_ref
+  identity_scope: document
+  description: A data table within a document
+  parent: DocumentResource
+  properties:
+    type: object
+    properties:
+      table_ref:
+        type: string
+        description: Document-scoped table reference (docs:17235 R16-compliant identity)
+        example: Table 4-1
+      table_label:
+        type: string
+        description: Human-friendly table label or short title
+        example: Frequency Parameters
+      document_id:
+        type: string
+        description: Internal document UUID this table belongs to
+      caption:
+        type: string
+        description: Table caption or title
+        example: Radar System Frequency Parameters
+      page:
+        type: integer
+        description: Page number where the table appears
+        example: 78
+- name: IMAGE
+  label: Image
+  identity_fields:
+  - image_ref
+  identity_scope: document
+  description: An uncaptioned picture or embedded image within a document.
+  parent: DocumentResource
+  properties:
+    type: object
+    properties:
+      image_ref:
+        type: string
+        description: Document-scoped self_ref of the picture (docs:17235 R16-compliant
+          identity)
+        example: '#/pictures/7'
+      document_id:
+        type: string
+        description: Internal document UUID this image belongs to
+      page:
+        type: integer
+        description: Page number where the image appears
+        example: 1
+      caption:
+        type: string
+        description: Caption text when present, else None
+        example: Installation overview
+      mime_type:
+        type: string
+        description: MIME type of the backing image asset
+        example: image/png
+      storage_key:
+        type: string
+        description: MinIO object key for the picture bytes. Always null in the initial
+          change; populated once Artifact.self_ref plumbing lands.
+      bbox:
+        type: string
+        description: Bounding box dict {l, t, r, b, page, coord_origin} from Docling
+          provenance
+      image_role:
+        type: string
+        description: Role heuristic derived from page position + caption
+        enum:
+        - HEADER_LOGO
+        - INLINE_IMAGE
+        - UNCAPTIONED_FIGURE
+- name: TEXT_BLOCK
+  label: TextBlock
+  identity_fields:
+  - text_ref
+  identity_scope: document
+  description: A body-text paragraph emitted as neighbor context for FIGURE/IMAGE.
+  parent: DocumentResource
+  properties:
+    type: object
+    properties:
+      text_ref:
+        type: string
+        description: Document-scoped self_ref of the text item (docs:17235 R16-compliant
+          identity)
+        example: '#/texts/42'
+      document_id:
+        type: string
+        description: Internal document UUID this text block belongs to
+      text:
+        type: string
+        description: Rendered text content, truncated to 500 characters
+      label:
+        type: string
+        description: Docling label (TEXT, PARAGRAPH, LIST_ITEM)
+        example: TEXT
+      page:
+        type: integer
+        description: Page number where the text appears
+        example: 3
+- name: ORGANIZATION
+  label: Organization
+  identity_fields:
+  - name
+  identity_scope: global
+  description: Contractor, program office, military branch, or government agency
+  parent: MilitaryAsset
+  properties:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Full name of the organization
+        example: Raytheon Missiles & Defense
+      org_type:
+        type: string
+        description: Category of organization
+        enum:
+        - PRIME_CONTRACTOR
+        - SUBCONTRACTOR
+        - PROGRAM_OFFICE
+        - MILITARY_BRANCH
+        - GOVERNMENT_AGENCY
+      cage_code:
+        type: string
+        description: 5-character CAGE code for the organization
+        example: '58064'
+        pattern: ^[A-Z0-9]{5}$
+      country:
+        type: string
+        description: Country where the organization is headquartered
+        example: United States
+      location:
+        type: string
+        description: Primary facility location
+        example: Tucson, AZ
+- name: PLATFORM
+  label: Platform
+  identity_fields:
+  - name
+  identity_scope: global
+  description: Vehicle, vessel, aircraft, or installation that hosts military systems
+  parent: MilitaryAsset
+  properties:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Common name of the platform
+        example: SA-20 TEL
+      platform_designation:
+        type: string
+        description: Military designation of the platform
+        example: 5P85SE
+      platform_type:
+        type: string
+        description: Category of the platform
+        enum:
+        - AIRCRAFT
+        - SHIP
+        - GROUND_VEHICLE
+        - FIXED_SITE
+        - SPACE
+        - MOBILE_LAUNCHER
+        - AIR_DEFENSE_BATTERY
+      country:
+        type: string
+        description: Country of origin or primary operator
+        example: Russia
+      service_branch:
+        type: string
+        description: Military branch operating the platform
+        example: Russian Aerospace Forces
+      platform_status:
+        type: string
+        description: Current lifecycle status of the platform
+        enum:
+        - DEVELOPMENTAL
+        - OPERATIONAL
+        - RETIRED
+        - PROTOTYPE
+- name: WEAPON_SYSTEM
+  label: Weapon System
+  identity_fields:
+  - system_name
+  identity_scope: global
+  description: Generic weapon system (not radar, missile, or AAA specifically)
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      system_name:
+        type: string
+        description: Common name of the weapon system
+        example: Phalanx CIWS
+      nomenclature:
+        type: string
+        description: Military designation
+        example: Mk 15
+      weapon_type:
+        type: string
+        description: Category of weapon system
+        example: Close-In Weapon System
+- name: EQUIPMENT_SYSTEM
+  label: Equipment System
+  identity_fields:
+  - name
+  identity_scope: global
+  description: Top-level integrated weapon or defense system (generic)
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Common name or designation of the system
+        example: Patriot PAC-3
+      designation:
+        type: string
+        description: Military AN/ designation or program designation
+        example: AN/MPQ-65
+        pattern: ^AN/[A-Z]{3}-\d+
+      program_office:
+        type: string
+        description: Managing program office
+        example: PEO Missiles and Space
+      status:
+        type: string
+        description: Current lifecycle status
+        enum:
+        - DEVELOPMENTAL
+        - OPERATIONAL
+        - RETIRED
+        - PROTOTYPE
+      prime_contractor:
+        type: string
+        description: Lead contractor organization
+        example: Lockheed Martin
+      service_branch:
+        type: string
+        description: Military branch operating the system
+        example: U.S. Army
+- name: SUBSYSTEM
+  label: Subsystem
+  identity_fields:
+  - name
+  identity_scope: document
+  description: Major functional component within a military system
+  parent: MilitaryAsset
+  properties:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Name of the subsystem (document-scoped identity per spec \xA7\
+          2.2)"
+        example: Guidance Section
+      subsystem_role:
+        type: string
+        description: Functional role within the parent system
+        example: Signal processing and target tracking
+      part_number:
+        type: string
+        description: Subsystem-level part or drawing number
+        example: GS-PAC3-001
+- name: COMPONENT
+  label: Component
+  identity_fields:
+  - part_number
+  identity_scope: global
+  description: Individual physical or logical part within a subsystem or assembly
+  parent: MilitaryAsset
+  properties:
+    type: object
+    properties:
+      part_number:
+        type: string
+        description: Manufacturer-assigned part number (docs:17235 R16-compliant identity)
+        example: PN-12345-A
+        pattern: ^[A-Z0-9][A-Z0-9\-/]{2,20}$
+      name:
+        type: string
+        description: Common name of the component
+        example: Traveling Wave Tube
+      component_type:
+        type: string
+        description: Category or class of the component
+        example: Amplifier
+      nsn:
+        type: string
+        description: National Stock Number in NNNN-NN-NNN-NNNN format
+        example: 5961-01-234-5678
+        pattern: ^\d{4}-\d{2}-\d{3}-\d{4}$
+      cage_code:
+        type: string
+        description: 5-character Commercial and Government Entity code identifying
+          the manufacturer
+        example: 1ABC3
+        pattern: ^[A-Z0-9]{5}$
+      manufacturer:
+        type: string
+        description: Name of the component manufacturer
+        example: L3Harris Technologies
+      material:
+        type: string
+        description: Primary material composition of the component
+        example: Aluminum 7075-T6
+      weight_kg:
+        type: number
+        description: Weight of the component in kilograms
+        example: 2.5
+- name: RADAR_SYSTEM
+  label: Radar System
+  identity_fields:
+  - system_name
+  identity_scope: global
+  description: Active or passive radar system (search, track, fire control, SAR, AESA,
+    PESA)
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      system_name:
+        type: string
+        description: "Canonical designation of the RADAR itself. Accept canonical\
+          \ proper-noun radar names from prose when unambiguous (e.g. 'Fan Song',\
+          \ 'Spoon Rest', 'Tombstone', 'Flap Lid', 'AN/MPQ-65'). FORBIDDEN values\
+          \ \u2014 never emit any of these as system_name because they are weapon/missile\
+          \ systems, not radars: SA-2, SA-3, SA-5, SA-6, SA-10, SA-12, SA-15, SA-17,\
+          \ SA-20, SA-21, SA-22, SA-23, Patriot, PAC-2, PAC-3, PAC-3 MSE, Hawk, Nike-Hercules,\
+          \ S-75, S-125, S-200, S-300, S-350, S-400, S-500, Aegis BMD, SM-2, SM-3,\
+          \ SM-6, THAAD, Arrow, Iron Dome, David's Sling. Also FORBIDDEN: aircraft\
+          \ / platform / target names (U-2, SR-71, RF-4C, F-4, F-15, F-16, B-52, MiG-21,\
+          \ MiG-23, MiG-29, Su-27) \u2014 these are targets that radars detect, not\
+          \ radars themselves. If the text says 'the SA-2 radar', emit the radar's\
+          \ own name ('Fan Song') if stated, otherwise omit. Do NOT emit 'SA-2' here.\
+          \ Reject descriptive phrases ('the radar', 'the acquisition radar')."
+        example: Fan Song
+      nominal_rf_mhz:
+        type: number
+        description: 'Nominal operating RF (carrier frequency) in megahertz. Common
+          radar bands: L-band 1000-2000, S-band 2000-4000, C-band 4000-8000, X-band
+          8000-12000, Ku-band 12000-18000. If the source gives GHz, multiply by 1000.
+          If it gives a range, emit the center frequency.'
+        example: 3000
+      frequency_excursion_mhz:
+        type: number
+        description: "Frequency excursion (chirp bandwidth) in megahertz \u2014 for\
+          \ an LFM chirp waveform, the total swept bandwidth \u0394f across the pulse\
+          \ duration. Determines range resolution: resolution_m \u2248 150 / bandwidth_MHz.\
+          \ Only meaningful for frequency-modulated (chirped) waveforms."
+        example: 1.0
+      nominal_pri_usec:
+        type: number
+        description: "Nominal Pulse Repetition Interval (PRI) in microseconds \u2014\
+          \ the time from the start of one pulse to the start of the next. PRI = 1\
+          \ / PRF. Determines unambiguous range: unambiguous_range_km = PRI_usec \xD7\
+          \ 0.15. Typical long-range search radars: 3000-10000 \xB5s. Fire-control\
+          \ radars: 100-1000 \xB5s. If the source gives PRF in Hz, convert: PRI_usec\
+          \ = 1_000_000 / PRF_Hz."
+        example: 1000
+      nominal_pd_usec:
+        type: number
+        description: "Nominal Pulse Duration / pulse width (PD) in microseconds \u2014\
+          \ the length of a single transmitted pulse. Short pulses (0.1-1 \xB5s) give\
+          \ fine range resolution; long pulses (50-200 \xB5s) give more energy on\
+          \ target. Compressed-pulse radars specify the pre-compression PD here (the\
+          \ long pulse before matched filtering)."
+        example: 0.5
+      inter_pulse:
+        type: string
+        description: "Inter-pulse modulation \u2014 how successive pulses vary. Typical\
+          \ patterns: CONSTANT_PRI (fixed spacing between pulses), PRI_STAGGER (multi-level\
+          \ PRI that cycles between values; resolves range ambiguity), PRI_JITTER\
+          \ (random PRI variation; anti-jam / ECCM), FREQ_AGILE (pulse-to-pulse frequency\
+          \ hopping). Emit as uppercase token when possible."
+        example: CONSTANT_PRI
+      pulses_per_dwell:
+        type: integer
+        description: 'Number of pulses coherently or non-coherently integrated in
+          one beam-position dwell. More pulses = more energy on target (and better
+          Doppler resolution for coherent integration), at the cost of slower scan
+          rate. Typical values: 8-64 for modern radars.'
+        example: 16
+      dwell_time:
+        type: string
+        description: Time spent at a single beam position (dwell-and-switch scans).
+          Free-text because sources sometimes give a duration ('12 ms'), a count ('16
+          pulses'), or a descriptive phrase. Only relevant for DWELL_AND_SWITCH or
+          phased-array scan_types.
+        example: 12 ms
+      intra_pulse_mop:
+        type: string
+        description: "Intra-pulse modulation (Modulation On Pulse) \u2014 how the\
+          \ transmitted pulse is modulated for compression. Typical values: CW (continuous\
+          \ wave / unmodulated), LFM_CHIRP (linear frequency modulation / chirp),\
+          \ NLFM (non-linear FM), BARKER_CODE (binary phase-coded, Barker sequence),\
+          \ POLYPHASE (multi-level phase code, e.g. Frank / P1-P4), BIPHASE (2-level\
+          \ phase code). Free-text emission OK if the source uses different terms."
+        example: LFM_CHIRP
+      num_bits_in_code:
+        type: integer
+        description: 'Number of chips in the phase-code sequence used for pulse compression.
+          Only meaningful for phase-coded waveforms (Barker, polyphase, etc.). Common
+          Barker codes: 7, 11, 13. Longer codes (128, 256, 1024) appear in modern
+          systems. Null for CW or FM-chirp radars.'
+        example: 7
+      antenna_dim_az_m:
+        type: number
+        description: "Antenna aperture width in the azimuth (horizontal) dimension,\
+          \ in meters. For a rectangular planar array this is the long dimension of\
+          \ the face; for a parabolic dish it's the horizontal diameter. Drives azimuth\
+          \ beamwidth via beamwidth \u2248 (wavelength / aperture) \xD7 51 degrees."
+        example: 4.5
+      antenna_dim_el_m:
+        type: number
+        description: Antenna aperture height in the elevation (vertical) dimension,
+          in meters. Analogous to antenna_dim_az_m but for the elevation plane. A
+          radar with asymmetric az/el dimensions has a fan beam (narrow azimuth, broad
+          elevation) typical of 2D surveillance radars.
+        example: 2.5
+      beamwidth_az_deg:
+        type: number
+        description: 'Main-beam 3dB azimuth beamwidth, in degrees. Defines the angular
+          spread of the radar''s beam in the horizontal plane between half-power points.
+          Typical ground-based S-band / C-band radars: 1-4 degrees.'
+        example: 1.5
+      beamwidth_el_deg:
+        type: number
+        description: "Main-beam 3dB elevation beamwidth, in degrees. The vertical\
+          \ analogue of beamwidth_az_deg. Fan-beam surveillance radars have intentionally\
+          \ wide elevation beamwidths (10-40\xB0) to cover airspace with a single\
+          \ scan; pencil-beam tracking radars keep elevation beamwidth tight (1-4\xB0\
+          )."
+        example: 1.5
+      gain_dbi:
+        type: number
+        description: 'Peak antenna gain in dBi (decibels relative to an isotropic
+          radiator). Higher gain = narrower main beam. Typical dish / parabolic radar
+          antennas: 30-45 dBi. Phased arrays: 35-50 dBi.'
+        example: 38.0
+      antenna_photo:
+        type: boolean
+        description: "Whether an antenna photograph is included in the record (Y/N).\
+          \ Use null when the document does not state this \u2014 do NOT default to\
+          \ false. Emit true only when the text explicitly indicates a photograph\
+          \ is included."
+      spoiled:
+        type: boolean
+        description: "Whether the beam is spoiled (Y/N). Use null when the document\
+          \ does not state this \u2014 do NOT default to false. Emit true only when\
+          \ the text explicitly indicates a spoiled beam; emit false only when the\
+          \ text explicitly indicates an unspoiled beam."
+      coverage_limits_el_deg:
+        type: number
+        description: "Maximum elevation angle (degrees) the radar can scan or track\
+          \ to. Ground-based search radars typically cap at 30-40\xB0; fire-control\
+          \ radars can go to 80\xB0+. When the source gives a range ('0-45\xB0'),\
+          \ emit the upper limit. Null when the document doesn't state a cap."
+        example: 45.0
+      tx_peak_power_kw:
+        type: number
+        description: "Transmitter peak power output in kilowatts. This is the power\
+          \ at the transmitter's output port BEFORE the antenna \u2014 not effective\
+          \ radiated power. Typical S-band ground radars: 100-1000 kW peak. If the\
+          \ source gives power in watts, divide by 1000; if in megawatts, multiply\
+          \ by 1000."
+        example: 150
+      erp_dbw:
+        type: number
+        description: "Effective Radiated Power in dBW (decibels relative to 1 watt).\
+          \ ERP = transmitter power \xD7 antenna gain, expressed on the log scale.\
+          \ Typical combat radars: 50-90 dBW. If the source gives ERP in dBm, subtract\
+          \ 30 (1 W = 30 dBm = 0 dBW). If given in watts or kilowatts, convert: dBW\
+          \ = 10 \xD7 log10(watts)."
+        example: 72.0
+      scan_type:
+        type: string
+        description: "How the radar's beam is mechanically or electronically steered.\
+          \ Typical values: CIRCULAR (continuous 360\xB0 mechanical rotation), SECTOR\
+          \ (back-and-forth sweep over a limited arc), RASTER (2D sweep covering an\
+          \ elevation stack), ELECTRONIC (phased-array beam steering, no moving parts),\
+          \ DWELL_AND_SWITCH (mechanical slew with pause at each beam position), HELICAL\
+          \ (continuous rotation with simultaneous elevation stepping). Emit as uppercase\
+          \ when possible."
+        example: CIRCULAR
+      scan_period_sec:
+        type: number
+        description: "Time (seconds) to complete one full scan pattern \u2014 e.g.\
+          \ 360\xB0 rotation for a CIRCULAR scan, or one full raster for a RASTER\
+          \ scan. Combined with beamwidth this determines revisit rate. Typical rotating\
+          \ search radars: 4-12 s per revolution."
+        example: 4.0
+      emitter_function:
+        type: string
+        description: 'Operational role of the radar in an engagement kill-chain. Enum
+          values and their meanings: SEARCH = early-warning / acquisition radar that
+          detects targets at long range; TRACKING = radar that maintains target track
+          after acquisition but does not provide the terminal weapon-guidance function;
+          FIRE_CONTROL = terminal-guidance radar that provides the tracking signal
+          used by the weapon system''s seeker or command-guidance link. Guidance /
+          illumination radars such as Fan Song belong here; MULTI_FUNCTION = a single
+          radar that performs multiple roles (phased-array designs like AN/SPY-1 are
+          typical examples); HEIGHT_FINDER = dedicated elevation-measurement radar
+          paired with 2D search radars; NAV = navigation or weather radar (not a combat
+          emitter).'
+        example: SEARCH
+      nomenclature:
+        type: string
+        description: "Official military nomenclature \u2014 the formal alphanumeric\
+          \ designation assigned by the manufacturing country. For US radars this\
+          \ is the JETDS / AN-style designator (e.g. 'AN/MPQ-65'). For Russian / Soviet-origin\
+          \ radars it's the GRAU index or manufacturer model (e.g. '5N63S', '30N6E').\
+          \ Distinct from system_name, which is the common (often NATO reporting)\
+          \ name. Emit when the document explicitly states the formal designation\
+          \ alongside the common name."
+        example: AN/MPQ-65
+      elnot:
+        type: string
+        description: "ELINT Notation (ELNOT) \u2014 an ELINT-community unique alphabetic\
+          \ code assigned to a specific emitter signal by signals intelligence databases\
+          \ (typically a 4- or 5-letter code). Only appears in intelligence-community\
+          \ source documents. Emit verbatim from the document \u2014 do not infer."
+      dieqp:
+        type: string
+        description: "Digital Intelligence Equipment Parameters (DIEQP) identifier\
+          \ \u2014 a cross-reference ID into the DIEQP database maintained by the\
+          \ MDE (Mission Data Engineering) community. Typically a short alphanumeric\
+          \ token. Only appears in IC / MDE source documents. Emit verbatim \u2014\
+          \ do not infer."
+      asrd:
+        type: string
+        description: "ASRD identifier \u2014 a catalog code from the All-Source Reference\
+          \ Document, a classified IC catalog of emitters. Emit verbatim when explicitly\
+          \ stated in the source; do not infer or cross-reference."
+      system_status:
+        type: string
+        description: 'Lifecycle status of the radar system as described in the source.
+          Typical values: OPERATIONAL (currently deployed), DEVELOPMENTAL (prototype
+          or pre-IOC), RETIRED (withdrawn from service), UPGRADED (modified variant
+          superseding the base model), EXPORTED (sold to foreign operators only).
+          Emit only when the document explicitly states the status; do not infer OPERATIONAL
+          from historical narrative or from the fact that the radar appears in a museum
+          display.'
+        example: OPERATIONAL
+      responsible_agency:
+        type: string
+        description: Organization responsible for maintaining the MDE record for this
+          radar. Typically a 3-letter IC acronym (e.g. 'IWC' = Information Warfare
+          Center, 'NASIC' = National Air and Space Intelligence Center, 'ONI' = Office
+          of Naval Intelligence, 'NGIC' = National Ground Intelligence Center).
+        example: IWC
+      review_cycle:
+        type: string
+        description: 'Scheduled cadence at which the MDE record for this radar is
+          reviewed and re-validated. Typical values: ''annual'', ''biennial'', ''2-year'',
+          ''3-year'', or an explicit duration. Free-text; emit verbatim when stated.'
+        example: annual
+      next_review_date:
+        type: string
+        description: Date of the next scheduled MDE review. Prefer ISO 8601 (YYYY-MM-DD);
+          otherwise emit the date string verbatim as written in the source.
+        example: '2026-06-30'
+- name: MISSILE_SYSTEM
+  label: Missile System
+  identity_fields:
+  - system_name
+  identity_scope: global
+  description: Guided missile weapon system with seeker, guidance, and propulsion
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      system_name:
+        type: string
+        description: "Canonical designation of the MISSILE / WEAPON SYSTEM itself.\
+          \ Accept canonical proper-noun weapon identifiers from prose when unambiguous\
+          \ (e.g. 'SA-2', 'SA-20', 'PAC-3 MSE', '9M96'). FORBIDDEN values \u2014 never\
+          \ emit any of these as system_name because they are radars, not missile/weapon\
+          \ systems: Fan Song, Spoon Rest, Flat Face, Side Net, Flap Lid, Grave Stone,\
+          \ Big Bird, Back Trap, Tombstone, AN/MPQ-53, AN/MPQ-65, AN/SPY-1, AN/SPY-6,\
+          \ AN/TPY-2. Also FORBIDDEN: aircraft / platform / target names (U-2, SR-71,\
+          \ RF-4C, F-4, F-15, F-16, B-52, MiG-21, MiG-23, MiG-29, Su-27) \u2014 these\
+          \ are aircraft that may be engaged by a missile, but they are NOT missile\
+          \ systems. If the text says 'U-2 was shot down by SA-2', only emit the missile\
+          \ ('SA-2'). Do NOT emit 'U-2'. Reject descriptive phrases ('the missile',\
+          \ 'the interceptor')."
+        example: SA-2
+      body_length_m:
+        type: number
+        description: Overall missile body length in meters, nose-tip to tail (booster
+          included if permanently attached). Typical SAM ranges vary by class. If
+          source gives feet, multiply by 0.3048.
+      body_diameter_m:
+        type: number
+        description: Missile body diameter (airframe cross-section) in meters. If
+          source gives inches, multiply by 0.0254; if centimeters, divide by 100.
+      total_mass_kg:
+        type: number
+        description: "Total missile launch mass in kilograms (all stages + warhead\
+          \ + fuel). If source gives pounds, divide by 2.205. Note: the MDE checklist\
+          \ unit column shows 'deg' in row 20 \u2014 that's a source typo; this field\
+          \ is mass in kg."
+      missile_photo:
+        type: boolean
+        description: "Whether a missile photograph is included in the record (Y/N).\
+          \ Use null when the document does not state this \u2014 do NOT default to\
+          \ false. Emit true only when the text explicitly indicates a photograph\
+          \ is included."
+      seeker_type:
+        type: string
+        description: 'Terminal-phase seeker technology. Enum values: ACTIVE_RADAR
+          = onboard radar illuminator + receiver (PAC-3, AMRAAM); SEMI_ACTIVE_RADAR
+          = receives target echoes from a separate illuminating radar; PASSIVE_RADAR
+          = detects target''s own RF emissions (anti-radiation missiles); IR = infrared
+          / thermal guidance; DUAL_MODE = IR + radar; ARM = anti-radiation homing;
+          GPS_INS = navigation-based (no terminal seeker); COMMAND = no onboard seeker,
+          ground-uplink guidance only from an external control unit.'
+      booster_time_sec:
+        type: number
+        description: 'Booster (first-stage) motor burn duration in seconds. The booster
+          provides initial acceleration from rest to a target velocity at which the
+          sustainer can take over. Typical SAM boosters: 4-10 s.'
+        example: 6.0
+      booster_thrust:
+        type: string
+        description: Booster-stage thrust. Free-text (see ejector_thrust). Emit verbatim
+          with units as the source provides.
+        example: 220 kN
+      booster_mass_kg:
+        type: number
+        description: 'Booster stage mass (hardware + propellant) in kilograms. For
+          two-stage missiles the booster typically separates after burnout. Typical:
+          300-1000 kg for medium / long-range SAMs.'
+        example: 700.0
+      sustain_time_sec:
+        type: number
+        description: 'Sustainer (second-stage) motor burn duration in seconds. Sustains
+          the velocity gained from the booster and maintains kinetic energy through
+          the intercept geometry. Typical: 10-30 s for long-range SAMs.'
+        example: 18.0
+      sustain_thrust:
+        type: string
+        description: Sustainer-stage thrust. Free-text (see ejector_thrust). Typically
+          lower than booster thrust because the sustainer burns longer at lower pressure.
+        example: 50 kN
+      sustain_mass_kg:
+        type: number
+        description: 'Sustainer stage mass (hardware + propellant) in kilograms. For
+          single-stage missiles this is the whole motor. Typical range: 100-500 kg
+          for medium / long-range SAMs.'
+        example: 250.0
+      ejector_time_sec:
+        type: number
+        description: 'Ejector / launch-eject stage duration in seconds. The ejector
+          is a low-thrust charge that pushes the missile out of a vertical launch
+          canister before main motor ignition (cold launch). Typical: 0.5-2 s. Null
+          if the missile uses hot launch (no ejector stage).'
+        example: 1.0
+      ejector_thrust:
+        type: string
+        description: "Ejector-stage thrust. Free-text because the checklist unit column\
+          \ is blank \u2014 source may give newtons, kilonewtons, or pounds-force.\
+          \ Emit verbatim with the unit the source uses."
+        example: 12 kN
+      ejector_mass_kg:
+        type: number
+        description: 'Mass of the ejector stage + its expended propellant, in kilograms.
+          Separates from the missile and is discarded before main motor burn. Typical:
+          5-30 kg.'
+        example: 20.0
+      min_intercept_km:
+        type: number
+        description: 'Minimum effective intercept / engagement range, in kilometers.
+          Below this range the missile''s safety arm, initialization sequence, or
+          terminal-guidance lock-on cannot complete in time. Typical SAMs: 2-10 km
+          minimum. If source gives the value in miles, nautical miles, feet, or meters,
+          convert to km before emitting. Do not copy the raw source number when the
+          source unit is not already kilometers.'
+        example: 2.0
+      max_intercept_km:
+        type: number
+        description: Maximum effective intercept / engagement range, in kilometers.
+          The outer edge of the missile's engagement envelope against an assumed target
+          profile. Use the document's effective range value here. Do NOT use slant
+          range, ferry range, or maximum kinematic distance unless the document explicitly
+          says those are the effective engagement range. Convert source units to km.
+        example: 35.0
+      min_altitude_km:
+        type: number
+        description: Minimum engagement altitude, in kilometers. Below this altitude
+          the missile cannot acquire or intercept. Legacy SAMs (SA-2) have ~1 km minimum;
+          modern systems reach sea-skimming altitudes (<0.05 km). Only populate when
+          the document explicitly states a minimum altitude / floor; do not infer
+          from generic system knowledge.
+        example: 0.05
+      max_altitude_km:
+        type: number
+        description: 'Maximum engagement altitude (ceiling), in kilometers. The top
+          of the missile''s engagement envelope. Classical high-altitude SAMs (SA-2
+          / S-75): ~25 km. Exo-atmospheric interceptors (SM-3, GBI): >100 km. If the
+          source gives ceiling in feet or meters, convert to km.'
+        example: 18.0
+      max_launch_angle_deg:
+        type: number
+        description: "Maximum launch angle off vertical / elevation, in degrees. For\
+          \ vertical-launch systems this may be fixed at 0\xB0 (true vertical) or\
+          \ slightly canted. For tilt-launchers (SA-2, SA-3) it's typically 50-80\xB0\
+          . 90\xB0 means the launcher can fire horizontally."
+        example: 60.0
+      average_speed_mps:
+        type: number
+        description: "Average in-flight speed in meters per second (averaged over\
+          \ powered + coast phases). If source gives Mach, multiply by ~340 (sea-level\
+          \ Mach \u2248 340 m/s). If km/h, divide by 3.6."
+      max_speed_mps:
+        type: number
+        description: Peak in-flight speed in meters per second (typically reached
+          at end of boost phase). Same unit-conversion rules as average_speed_mps.
+      max_flyout_time_sec:
+        type: number
+        description: 'Maximum total time of flight from launch to intercept or self-destruct,
+          in seconds. Determined by fuel burn + coast dynamics + range. Typical long-range
+          SAMs: 60-120 s.'
+        example: 60.0
+      flight_time_sec:
+        type: number
+        description: Typical / nominal flight time from launch to expected intercept,
+          in seconds (for a median engagement profile). Shorter than max_flyout_time_sec,
+          which is the worst-case.
+        example: 30.0
+      coast_time_sec:
+        type: number
+        description: Duration of the unpowered (post-motor-burnout) coast phase, in
+          seconds. The missile relies on residual kinetic energy + aerodynamic control.
+          Longer-range missiles have more coast time; short-range MANPADS may have
+          near-zero coast.
+        example: 10.0
+      total_burn_time_sec:
+        type: number
+        description: 'Total powered-flight burn time across all propulsion stages
+          (boost + sustain, plus ejector if applicable), in seconds. Excludes any
+          coast phase. Typical long-range two-stage SAMs: 20-40 s total.'
+        example: 22.0
+      intra_salvo_time_sec:
+        type: number
+        description: "Time between successive missile launches in a salvo, in seconds.\
+          \ For multi-missile engagements (shoot-look-shoot or ripple-fire tactics).\
+          \ Note: the MDE checklist labels this 'Intra-Solvo Time' \u2014 source typo."
+        example: 6.0
+      guidance_type:
+        type: string
+        description: 'Primary guidance method used to drive the missile to intercept.
+          Enum values and meanings: COMMAND = ground station computes aim and uplinks
+          guidance from an external control unit; BEAM_RIDING = missile rides the
+          radar beam to target; SARH = semi-active radar homing (missile homes on
+          target-illuminated RF energy; target illumination from a separate radar);
+          ARH = active radar homing (missile carries its own seeker radar); IR = passive
+          infrared homing; TVM = track-via-missile (missile relays target data back
+          to ground, hybrid command + SARH); GPS_INS = inertial-navigation with GPS
+          updates (usually for mid-course of a longer-range missile); DUAL_MODE =
+          combines two modes (e.g. IR + radar). Many modern missiles combine phases:
+          MID_COURSE + TERMINAL.'
+      emitter_function:
+        type: string
+        description: MDE-checklist emitter-function field. For a missile weapon system
+          this is typically null (missiles don't usually have their own active emitters;
+          their radar is a separate system). Emit a value only when the source explicitly
+          assigns an emitter function to the missile itself (e.g. missile seeker listed
+          as 'ACTIVE_RADAR_HOMING').
+      nomenclature:
+        type: string
+        description: Military designation or NATO reporting name.
+        example: MIM-104F
+      name:
+        type: string
+        description: Formal NAME field from the MDE checklist, distinct from the common
+          ``system_name``. Often the full proper name (e.g. 'Patriot Advanced Capability
+          3 Missile Segment Enhancement'). Emit when the source provides a formal
+          long-form name alongside the short system_name.
+        example: Patriot Advanced Capability 3 MSE
+      dieqp:
+        type: string
+        description: "Digital Intelligence Equipment Parameters (DIEQP) identifier\
+          \ \u2014 a cross-reference ID into the DIEQP database maintained by the\
+          \ MDE (Mission Data Engineering) community. Only appears in IC / MDE source\
+          \ documents. Emit verbatim \u2014 do not infer."
+      asrd:
+        type: string
+        description: "ASRD identifier \u2014 a catalog code from the All-Source Reference\
+          \ Document, a classified IC catalog. Emit verbatim when explicitly stated;\
+          \ do not infer."
+      system_status:
+        type: string
+        description: 'Lifecycle status of the missile system. Typical values: OPERATIONAL
+          (currently deployed), DEVELOPMENTAL (prototype or pre-IOC), RETIRED (withdrawn
+          from service), UPGRADED (modified variant superseding a base model), EXPORTED
+          (sold to foreign operators only). Emit only when the document explicitly
+          states the status; do not infer it from historical or descriptive text.'
+        example: OPERATIONAL
+      responsible_agency:
+        type: string
+        description: Organization responsible for maintaining the MDE record for this
+          missile system. Typically a 3-letter IC acronym (e.g. 'IWC' = Information
+          Warfare Center, 'NASIC' = National Air and Space Intelligence Center, 'ONI'
+          = Office of Naval Intelligence, 'NGIC' = National Ground Intelligence Center,
+          'MSIC' = Missile and Space Intelligence Center).
+        example: IWC
+      review_cycle:
+        type: string
+        description: 'Scheduled cadence at which the MDE record for this missile is
+          reviewed. Typical values: ''annual'', ''biennial'', ''2-year'', ''3-year'',
+          or an explicit duration. Free-text; emit verbatim.'
+        example: annual
+      next_review_date:
+        type: string
+        description: Date of the next scheduled MDE review. Prefer ISO 8601 (YYYY-MM-DD);
+          otherwise emit the date string verbatim.
+        example: '2026-06-30'
+- name: AIR_DEFENSE_ARTILLERY_SYSTEM
+  label: Air Defense Artillery System
+  identity_fields:
+  - system_name
+  identity_scope: global
+  description: Gun-based air defense system (AAA)
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      system_name:
+        type: string
+        description: Common name of the AAA system
+        example: ZSU-23-4 Shilka
+      DIEQP:
+        type: string
+        description: Defense Intelligence Equipment identifier code
+        example: DE12345
+      caliber:
+        type: string
+        description: Gun barrel caliber
+        example: 23 mm
+      max_tactical_range:
+        type: string
+        description: Maximum tactical engagement range
+        example: 2.5 km
+      max_vertical_range:
+        type: string
+        description: Maximum vertical engagement range (ceiling)
+        example: 1.5 km
+      min_vertical_range:
+        type: string
+        description: Minimum vertical engagement range
+        example: 100 m
+      max_horizontal_range:
+        type: string
+        description: Maximum horizontal range
+        example: 2.5 km
+      min_horizontal_range:
+        type: string
+        description: Minimum horizontal range
+        example: 200 m
+      acquisition_delay:
+        type: string
+        description: Time from cue to target acquisition
+        example: 3 s
+      handoff_delay:
+        type: string
+        description: Time for target handoff between systems
+        example: 2 s
+      track_delay:
+        type: string
+        description: Time from acquisition to stable track
+        example: 1.5 s
+      muzzle_velocity:
+        type: string
+        description: Projectile muzzle velocity
+        example: 970 m/s
+      maximum_rate_of_fire:
+        type: string
+        description: Maximum cyclic rate of fire
+        example: 3400 rounds/min
+- name: ELECTRONIC_WARFARE_SYSTEM
+  label: Electronic Warfare System
+  identity_fields:
+  - system_name
+  identity_scope: global
+  description: EA, ES, or EP system (jammer, receiver, self-protection suite)
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      system_name:
+        type: string
+        description: Common name of the EW system
+        example: AN/ALQ-99
+      nomenclature:
+        type: string
+        description: Military AN/ designation
+        example: AN/ALQ-99
+      ELNOT:
+        type: string
+        description: Electronic Intelligence Notation identifier
+        example: FAN_SONG
+      ew_role:
+        type: string
+        description: Electronic warfare functional role
+        enum:
+        - EA
+        - ES
+        - EP
+        - SIGINT
+        - ELINT
+        - COMINT
+      coverage:
+        type: string
+        description: Frequency or angular coverage range
+        example: 64 MHz - 40 GHz
+      power_output:
+        type: string
+        description: Maximum effective radiated power output
+        example: 10 kW
+- name: FIRE_CONTROL_SYSTEM
+  label: Fire Control System
+  identity_fields:
+  - system_name
+  identity_scope: global
+  description: System that provides targeting and engagement control
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      system_name:
+        type: string
+        description: Common name of the fire control system
+        example: AN/MPQ-65 Radar Set
+      nomenclature:
+        type: string
+        description: Military AN/ designation
+        example: AN/MPQ-65
+- name: INTEGRATED_AIR_DEFENSE_SYSTEM
+  label: Integrated Air Defense System
+  identity_fields:
+  - name
+  identity_scope: global
+  description: System-of-systems combining radar, missile, AAA, and C2 for area defense
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Common or NATO reporting name of the IADS
+        example: S-400 Triumf
+      status:
+        type: string
+        description: Current lifecycle status
+        enum:
+        - DEVELOPMENTAL
+        - OPERATIONAL
+        - RETIRED
+      doctrine:
+        type: string
+        description: Employment doctrine or concept of operations
+        example: Layered defense with multi-range engagement
+- name: LAUNCHER_SYSTEM
+  label: Launcher System
+  identity_fields:
+  - system_name
+  identity_scope: global
+  description: Missile or rocket launcher platform
+  parent: MilitarySystem
+  properties:
+    type: object
+    properties:
+      system_name:
+        type: string
+        description: Common name of the launcher system
+        example: M903 Launching Station
+      launcher_type:
+        type: string
+        description: Category of launcher mechanism
+        example: Vertical cold-launch canister
+      capacity:
+        type: integer
+        description: Number of missiles the launcher can hold
+        example: 16
+relationship_types:
+- name: IS_A
+  label: Is A
+  description: Type hierarchy (subclass relationship)
+  source_type: null
+  target_type: null
+- name: INSTANCE_OF
+  label: Instance Of
+  description: Type-instance relationship
+  source_type: null
+  target_type: null
+- name: ALIAS_OF
+  label: Alias Of
+  description: Alternative name for the same entity
+  source_type: null
+  target_type: null
+- name: PART_OF
+  label: Part Of
+  description: Component or subsystem is part of a larger system
+  source_type: null
+  target_type: null
+  cardinality: many_to_one
+- name: CONTAINS
+  label: Contains
+  description: System or assembly contains a component or subsystem
+  source_type: null
+  target_type: null
+  cardinality: one_to_many
+- name: HAS_SUBSYSTEM
+  label: Has Subsystem
+  description: System has a major functional subsystem
+  source_type: null
+  target_type: SUBSYSTEM
+  cardinality: one_to_many
+- name: HAS_COMPONENT
+  label: Has Component
+  description: System or subsystem has a physical component
+  source_type: null
+  target_type: COMPONENT
+  cardinality: one_to_many
+- name: INSTALLED_ON
+  label: Installed On
+  description: System is installed on a platform
+  source_type: null
+  target_type: PLATFORM
+  cardinality: many_to_one
+- name: DEPLOYED_ON
+  label: Deployed On
+  description: System or unit is deployed on a platform or at a site
+  source_type: null
+  target_type: PLATFORM
+  cardinality: many_to_one
+- name: ASSOCIATED_WITH
+  label: Associated With
+  description: "System association (radar\u2194missile, radar\u2194AAA)"
+  source_type: null
+  target_type: null
+  cardinality: many_to_many
+- name: OPERATED_BY
+  label: Operated By
+  description: Platform or system is operated by an organization
+  source_type: null
+  target_type: ORGANIZATION
+  cardinality: many_to_many
+- name: MANUFACTURED_BY
+  label: Manufactured By
+  description: System or component is manufactured by an organization
+  source_type: null
+  target_type: ORGANIZATION
+  cardinality: many_to_many
+- name: CUES
+  label: Cues
+  description: "Directional handoff of target data. Valid shapes: (a) search radar\
+    \ cues fire-control / guidance radar (RADAR_SYSTEM \u2192 RADAR_SYSTEM), (b) radar\
+    \ cues missile system for engagement (RADAR_SYSTEM \u2192 MISSILE_SYSTEM)."
+  source_type: RADAR_SYSTEM
+  target_type: null
+  cardinality: many_to_many
+- name: GUIDES
+  label: Guides
+  description: System guides a missile to target
+  source_type: null
+  target_type: MISSILE_SYSTEM
+  cardinality: many_to_many
+- name: TRACKS
+  label: Tracks
+  description: System tracks a target
+  source_type: null
+  target_type: null
+  cardinality: many_to_many
+- name: ENGAGES
+  label: Engages
+  description: System engages a target
+  source_type: null
+  target_type: null
+  cardinality: many_to_many
+- name: DEFENDS
+  label: Defends
+  description: System defends a platform or area
+  source_type: null
+  target_type: PLATFORM
+  cardinality: many_to_many
+- name: DETECTS
+  label: Detects
+  description: System detects targets
+  source_type: null
+  target_type: null
+  cardinality: many_to_many
+- name: DESIGNATES
+  label: Designates
+  description: System designates targets for engagement
+  source_type: null
+  target_type: null
+  cardinality: many_to_many
+- name: LAUNCHES
+  label: Launches
+  description: Launcher launches a missile
+  source_type: LAUNCHER_SYSTEM
+  target_type: MISSILE_SYSTEM
+  cardinality: many_to_many
+- name: SUPPORTS_ENGAGEMENT_OF
+  label: Supports Engagement Of
+  description: System supports engagement of a target type
+  source_type: null
+  target_type: null
+  cardinality: many_to_many
+- name: MENTIONED_IN
+  label: Mentioned In
+  description: Entity is mentioned in a document
+  source_type: null
+  target_type: DOCUMENT
+  cardinality: many_to_many
+- name: DERIVED_FROM
+  label: Derived From
+  description: Entity or assertion is derived from another source
+  source_type: null
+  target_type: null
+  cardinality: many_to_many
+- name: REVIEWED_BY
+  label: Reviewed By
+  description: Assertion or entity was reviewed by an organization or person
+  source_type: null
+  target_type: ORGANIZATION
+  cardinality: many_to_many
+- name: SUPERSEDES
+  label: Supersedes
+  description: A newer document or standard supersedes an older one
+  source_type: null
+  target_type: null
+  cardinality: many_to_one
+- name: HAS_SECTION
+  label: Has Section
+  description: Document or parent contains a section
+  source_type: null
+  target_type: SECTION
+  cardinality: one_to_many
+- name: HAS_FIGURE
+  label: Has Figure
+  description: Document or section contains a captioned figure
+  source_type: null
+  target_type: FIGURE
+  cardinality: one_to_many
+- name: HAS_TABLE
+  label: Has Table
+  description: Document or section contains a table
+  source_type: null
+  target_type: TABLE
+  cardinality: one_to_many
+- name: CHILD_OF
+  label: Child Of
+  description: Hierarchical containment (e.g. sub-section within parent section)
+  source_type: null
+  target_type: null
+  cardinality: many_to_one
+- name: HAS_IMAGE
+  label: Has Image
+  description: Document or section contains an uncaptioned image or embedded picture
+  source_type: null
+  target_type: IMAGE
+  cardinality: one_to_many
+- name: NEAR_TEXT
+  label: Near Text
+  description: Figure or image appears near a text block in reading order
+  source_type: null
+  target_type: TEXT_BLOCK
+  cardinality: one_to_many
+- name: VARIANT_OF
+  label: Variant Of
+  description: "Variant, model, designation, or configuration belongs to a parent\
+    \ system family. Generic \u2014 applies across any product-family taxonomy where\
+    \ a child designation rolls up to a parent family entity of the same type."
+  source_type: null
+  target_type: null
+  cardinality: many_to_one
+validation_matrix:
+- source: AIR_DEFENSE_ARTILLERY_SYSTEM
+  relationship: ASSOCIATED_WITH
+  target: RADAR_SYSTEM
+- source: AIR_DEFENSE_ARTILLERY_SYSTEM
+  relationship: ENGAGES
+  target: PLATFORM
+- source: AIR_DEFENSE_ARTILLERY_SYSTEM
+  relationship: INSTALLED_ON
+  target: PLATFORM
+- source: AIR_DEFENSE_ARTILLERY_SYSTEM
+  relationship: IS_A
+  target: WEAPON_SYSTEM
+- source: COMPONENT
+  relationship: MANUFACTURED_BY
+  target: ORGANIZATION
+- source: COMPONENT
+  relationship: MENTIONED_IN
+  target: DOCUMENT
+- source: COMPONENT
+  relationship: PART_OF
+  target: SUBSYSTEM
+- source: DOCUMENT
+  relationship: DERIVED_FROM
+  target: DOCUMENT
+- source: DOCUMENT
+  relationship: HAS_FIGURE
+  target: FIGURE
+- source: DOCUMENT
+  relationship: HAS_IMAGE
+  target: IMAGE
+- source: DOCUMENT
+  relationship: HAS_SECTION
+  target: SECTION
+- source: DOCUMENT
+  relationship: HAS_TABLE
+  target: TABLE
+- source: DOCUMENT
+  relationship: REVIEWED_BY
+  target: ORGANIZATION
+- source: DOCUMENT
+  relationship: SUPERSEDES
+  target: DOCUMENT
+- source: ELECTRONIC_WARFARE_SYSTEM
+  relationship: INSTALLED_ON
+  target: PLATFORM
+- source: EQUIPMENT_SYSTEM
+  relationship: ALIAS_OF
+  target: EQUIPMENT_SYSTEM
+- source: EQUIPMENT_SYSTEM
+  relationship: CONTAINS
+  target: COMPONENT
+- source: EQUIPMENT_SYSTEM
+  relationship: HAS_COMPONENT
+  target: COMPONENT
+- source: EQUIPMENT_SYSTEM
+  relationship: HAS_SUBSYSTEM
+  target: SUBSYSTEM
+- source: EQUIPMENT_SYSTEM
+  relationship: INSTANCE_OF
+  target: EQUIPMENT_SYSTEM
+- source: EQUIPMENT_SYSTEM
+  relationship: MANUFACTURED_BY
+  target: ORGANIZATION
+- source: EQUIPMENT_SYSTEM
+  relationship: MENTIONED_IN
+  target: DOCUMENT
+- source: FIGURE
+  relationship: NEAR_TEXT
+  target: TEXT_BLOCK
+- source: FIRE_CONTROL_SYSTEM
+  relationship: CUES
+  target: MISSILE_SYSTEM
+- source: FIRE_CONTROL_SYSTEM
+  relationship: DESIGNATES
+  target: PLATFORM
+- source: FIRE_CONTROL_SYSTEM
+  relationship: GUIDES
+  target: MISSILE_SYSTEM
+- source: FIRE_CONTROL_SYSTEM
+  relationship: INSTALLED_ON
+  target: PLATFORM
+- source: FIRE_CONTROL_SYSTEM
+  relationship: TRACKS
+  target: PLATFORM
+- source: IMAGE
+  relationship: NEAR_TEXT
+  target: TEXT_BLOCK
+- source: INTEGRATED_AIR_DEFENSE_SYSTEM
+  relationship: CONTAINS
+  target: AIR_DEFENSE_ARTILLERY_SYSTEM
+- source: INTEGRATED_AIR_DEFENSE_SYSTEM
+  relationship: CONTAINS
+  target: MISSILE_SYSTEM
+- source: INTEGRATED_AIR_DEFENSE_SYSTEM
+  relationship: CONTAINS
+  target: RADAR_SYSTEM
+- source: INTEGRATED_AIR_DEFENSE_SYSTEM
+  relationship: DEPLOYED_ON
+  target: PLATFORM
+- source: INTEGRATED_AIR_DEFENSE_SYSTEM
+  relationship: SUPPORTS_ENGAGEMENT_OF
+  target: PLATFORM
+- source: LAUNCHER_SYSTEM
+  relationship: INSTALLED_ON
+  target: PLATFORM
+- source: LAUNCHER_SYSTEM
+  relationship: LAUNCHES
+  target: MISSILE_SYSTEM
+- source: MISSILE_SYSTEM
+  relationship: ALIAS_OF
+  target: MISSILE_SYSTEM
+- source: MISSILE_SYSTEM
+  relationship: ASSOCIATED_WITH
+  target: RADAR_SYSTEM
+- source: MISSILE_SYSTEM
+  relationship: DEFENDS
+  target: PLATFORM
+- source: MISSILE_SYSTEM
+  relationship: ENGAGES
+  target: PLATFORM
+- source: MISSILE_SYSTEM
+  relationship: INSTALLED_ON
+  target: PLATFORM
+- source: MISSILE_SYSTEM
+  relationship: IS_A
+  target: WEAPON_SYSTEM
+- source: MISSILE_SYSTEM
+  relationship: MENTIONED_IN
+  target: DOCUMENT
+- source: PLATFORM
+  relationship: INSTANCE_OF
+  target: PLATFORM
+- source: PLATFORM
+  relationship: MANUFACTURED_BY
+  target: ORGANIZATION
+- source: PLATFORM
+  relationship: MENTIONED_IN
+  target: DOCUMENT
+- source: PLATFORM
+  relationship: OPERATED_BY
+  target: ORGANIZATION
+- source: RADAR_SYSTEM
+  relationship: ALIAS_OF
+  target: RADAR_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: ASSOCIATED_WITH
+  target: AIR_DEFENSE_ARTILLERY_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: ASSOCIATED_WITH
+  target: ELECTRONIC_WARFARE_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: ASSOCIATED_WITH
+  target: MISSILE_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: CUES
+  target: MISSILE_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: CUES
+  target: RADAR_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: DESIGNATES
+  target: PLATFORM
+- source: RADAR_SYSTEM
+  relationship: DETECTS
+  target: PLATFORM
+- source: RADAR_SYSTEM
+  relationship: INSTALLED_ON
+  target: PLATFORM
+- source: RADAR_SYSTEM
+  relationship: IS_A
+  target: EQUIPMENT_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: MENTIONED_IN
+  target: DOCUMENT
+- source: RADAR_SYSTEM
+  relationship: SUPPORTS_ENGAGEMENT_OF
+  target: MISSILE_SYSTEM
+- source: RADAR_SYSTEM
+  relationship: TRACKS
+  target: PLATFORM
+- source: SECTION
+  relationship: CHILD_OF
+  target: SECTION
+- source: SECTION
+  relationship: HAS_FIGURE
+  target: FIGURE
+- source: SECTION
+  relationship: HAS_IMAGE
+  target: IMAGE
+- source: SECTION
+  relationship: HAS_TABLE
+  target: TABLE
+- source: SUBSYSTEM
+  relationship: HAS_COMPONENT
+  target: COMPONENT
+- source: SUBSYSTEM
+  relationship: MENTIONED_IN
+  target: DOCUMENT
+- source: SUBSYSTEM
+  relationship: PART_OF
+  target: EQUIPMENT_SYSTEM
+- source: SUBSYSTEM
+  relationship: PART_OF
+  target: MISSILE_SYSTEM
+- source: SUBSYSTEM
+  relationship: PART_OF
+  target: RADAR_SYSTEM
+- source: WEAPON_SYSTEM
+  relationship: CONTAINS
+  target: SUBSYSTEM
+- source: WEAPON_SYSTEM
+  relationship: ENGAGES
+  target: PLATFORM
+- source: WEAPON_SYSTEM
+  relationship: HAS_COMPONENT
+  target: COMPONENT
+- source: WEAPON_SYSTEM
+  relationship: HAS_SUBSYSTEM
+  target: SUBSYSTEM
+scoring_weights:
+  IS_VARIANT_OF: 0.95
+  USES_COMPONENT: 0.92
+  CONTAINS: 0.9
+  PART_OF: 0.9
+  INTERFACES_WITH: 0.85
+  OPERATES_ON: 0.85
+  RELATED_TO: 0.75
+  default: 0.7

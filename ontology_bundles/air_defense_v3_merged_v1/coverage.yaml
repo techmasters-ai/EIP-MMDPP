@@ -1,0 +1,30 @@
+bundle_key: air_defense_v3
+version: "1.0.0"
+
+entity_types:
+  extract:
+    - SECTION
+    - FIGURE
+    - TABLE
+    - RADAR_SYSTEM
+    - PLATFORM
+    - MISSILE_SYSTEM
+    - LAUNCHER_SYSTEM
+    - AIR_DEFENSE_ARTILLERY_SYSTEM
+    - ELECTRONIC_WARFARE_SYSTEM
+    - FIRE_CONTROL_SYSTEM
+    - WEAPON_SYSTEM
+    - INTEGRATED_AIR_DEFENSE_SYSTEM
+  derive: []
+
+relationship_types:
+  extract:
+    - INSTALLED_ON
+    - LAUNCHES
+    - ASSOCIATED_WITH
+    - CUES
+  derive:
+    - HAS_PROVENANCE
+    - MENTIONED_IN
+    - CONTAINS_TEXT
+    - CONTAINS_IMAGE

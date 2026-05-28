@@ -1,0 +1,102 @@
+bundle_key: air_defense_v3_merged_v1
+manifest_schema_version: "1.0.0"
+ontology_name: "EIP Military Equipment Ontology"
+ontology_version: "3.0.0"
+extraction_profile_version: "1.0.0"
+
+# Phase 1 / C.10 merged-mode A/B target. Sibling of
+# air_defense_v3_baseline_subset: same 5 passes (radar_identity,
+# radar_power_rf, missile_identity, missile_kinematics, system_links)
+# and byte-identical extraction_schemas copies. Difference vs the
+# subset baseline is the calibrated retrieval block on the two narrowed
+# passes — values derived from the merged-chunk calibration sweep in
+# docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md (Task 8).
+# Production ingest must still use air_defense_v3 until the Phase 1
+# A/B (Task 10) gates pass.
+
+passes:
+  - name: radar_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_identity
+    template_class: RadarIdentityPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: radar_power_rf
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.radar_power_rf
+    template_class: RadarPowerRfPass
+    primary_entity_types: [RADAR_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      # C.10 Task 8 merged-chunk knee: uniform (min_sim=0.30, top_n=50,
+      # top_k=15) across all 9 narrowed passes; achieves 100% pseudo-GT
+      # coverage on both Dvina + SA-2. Evidence:
+      # docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md
+      min_similarity: 0.30
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+
+  - name: missile_identity
+    phase: identity
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_identity
+    template_class: MissileIdentityPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+
+  - name: missile_kinematics
+    phase: field_group
+    required: false
+    kind: entities
+    input_mode: document_only
+    module: extraction_schemas.missile_kinematics
+    template_class: MissileKinematicsPass
+    primary_entity_types: [MISSILE_SYSTEM]
+    bridge_entity_types: []
+    extracted_relationship_types: []
+    depends_on: []
+    retrieval:
+      # C.10 Task 8 merged-chunk knee — same uniform config as
+      # radar_power_rf. Evidence:
+      # docs/handoffs/2026-05-27-phase1-merged-chunk-sweep.md
+      min_similarity: 0.30
+      top_n_candidates: 50
+      top_k: 15
+      fallback_to_full: true
+
+  - name: system_links
+    phase: relationship
+    required: true
+    kind: relationships_only
+    input_mode: document_plus_entity_refs
+    module: extraction_schemas.system_links
+    template_class: SystemLinksPass
+    primary_entity_types: []
+    bridge_entity_types: []
+    extracted_relationship_types: [ASSOCIATED_WITH, CUES, VARIANT_OF]
+    depends_on:
+      - radar_identity
+      - radar_power_rf
+      - missile_identity
+      - missile_kinematics
+    skip_if_no_upstream_endpoints: true
+    skip_justification: >
+      When none of the upstream domain passes produce any linkable system
+      entities, there is nothing for system_links to link. Skipping is
+      preferable to dispatching an LLM call that can only fail.
