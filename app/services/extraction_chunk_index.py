@@ -1134,6 +1134,15 @@ def build_extraction_index_hybrid(
         )
 
     _norm_synth_count = 0
+    # Worker-only gate (independent of docling-graph's per-pass
+    # DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED). Lets us A/B the
+    # upstream pass-agnostic normalization without disturbing the
+    # docling-graph legacy path that identity passes still use.
+    import os
+    _upstream_norm_env = os.environ.get(
+        "EXTRACTION_INDEX_UPSTREAM_TABLE_NORM", "true",
+    ).strip().lower()
+    _upstream_norm_on = _upstream_norm_env in ("true", "1", "yes")
     try:
         from app.services.table_normalization.config import (
             is_table_normalization_enabled_graph,
@@ -1141,7 +1150,10 @@ def build_extraction_index_hybrid(
             table_whole_limit,
             table_column_limit,
         )
-        _norm_on = is_table_normalization_enabled_graph()
+        # Both gates must be on: the global docling-graph flag (kept as
+        # the master switch for the whole feature) AND the worker-only
+        # upstream gate.
+        _norm_on = is_table_normalization_enabled_graph() and _upstream_norm_on
     except Exception as exc:
         logger.warning(
             "build_extraction_index_hybrid: table_normalization config import "
@@ -1149,6 +1161,14 @@ def build_extraction_index_hybrid(
             pipeline_run_id, exc,
         )
         _norm_on = False
+
+    if not _upstream_norm_on:
+        logger.info(
+            "build_extraction_index_hybrid: upstream table-norm DISABLED "
+            "(EXTRACTION_INDEX_UPSTREAM_TABLE_NORM=%s) pipeline_run_id=%r — "
+            "raw markdown tables will land in merged chunks unchanged",
+            _upstream_norm_env, pipeline_run_id,
+        )
 
     if _norm_on:
         try:
