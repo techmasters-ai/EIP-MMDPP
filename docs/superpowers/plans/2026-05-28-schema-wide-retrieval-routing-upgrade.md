@@ -30,7 +30,7 @@ A second review round confirmed all 6 blockers resolved against live code and su
 
 - **Phase C re-architecture — keyword boost is now POST-rerank.** The first revision blended keyword/dense signals *before* rerank, which meant the final top_k was chosen purely by the cross-encoder and the keyword precision signal was discarded at selection. New flow: dense (recall) → cap to `top_n_candidates` → cross-encoder rerank scores the **whole capped pool** (no internal top_k slice) → per-field keyword/pattern/section/table boost − negative penalty applied **after rerank** → re-sort → **then** take top_k. Dense = recall, rerank = semantic precision, keyword = lexical precision, each independently weighted. Rewrites C5/C6, Phase C locked decisions, and the weight config (B5: `dense_weight` retired in favor of `rerank_weight` base; `section_boost` removed as redundant with `section_weight`).
 - **§9 subset-schema extraction added as Phase F.** Send the extraction LLM only fields that had retrieval evidence (`supported_field_hints`), opt-in via `RetrievalProfile.subset_schema_extraction`, conservative (never drops an evidenced or identity/required field). BM25 and LLM field-aware reranking remain **deferred** — the post-rerank keyword boost is itself a deterministic, free field-aware rerank, and BM25 would reintroduce the per-run/global-index starvation mismatch (see Open Risks).
-- **§8 identity-anchor inert path fixed.** C8's prior prose assumed a Postgres session the `chunk_scope` endpoint does not hold. Identity names are now passed **into the chunk-scope request body** by the worker (which already has prior-pass identity results), so the channel and Phase E's `identity_anchor` level are functional rather than inert. Promoting the channel to a default-on mode change remains deferred (§8).
+- **§8 identity-anchor source corrected (opportunistic, not guaranteed).** C8's prior prose assumed a Postgres session the `chunk_scope` endpoint does not hold. The channel now reads run-scoped committed identity entities from the ArcadeDB graph store the endpoint already obtains via `get_graph_store` (worker-supplied `ChunkScopeRequest.identity_anchors` is an optional augmentation). Because **C1.6r removed identity-first serialization** (`pipeline.py:7041-7057`, concurrency cap 2), the channel is **opportunistic** — it fires when identity entities are already committed at route time and no-ops otherwise (early field-group passes under concurrent dispatch frequently route before identity commits). A guaranteed-populated channel would require reintroducing serialization (wall cost) and stays out of scope; default-on promotion remains deferred (§8).
 - **§10 deferred** (strict quality / quantity normalization / conflict diagnostics / caching) — confirmed out of scope for this slice.
 - **Re-review fixes:** (a) the runtime-reach reality is now stated — "applies to all bundles" is config-only; the new path fires only when an operator sets `EXTRACTION_INDEX_MODE=merged` + `VECTOR_ROUTER_MODE=narrow_only`, which are NOT production defaults; (b) the production-bundle wall cap is anchored to the existing **bdde417 ~303m full-bundle SA-2** baseline, not the unverifiable 274m narrowed-bundle number; (c) B6 writes **only intentional overrides** (defaults come from the B5 model) and is **add-only** (never overwrites the narrowed bundles' deliberate `0.25`/`300`/`500` base values); (d) D3 reordered test-first; (e) minor doc corrections — C8 graph/body source, `page_number` has no `read_chunk_*` accessor (use `r.properties.get`), B0 attributes the `0.35` default to `air_defense_v3`, B2 uses `(json_schema_extra or {})`, `_pipeline_hooks.py` path prefixed `app/services/table_normalization/`.
 
@@ -49,7 +49,7 @@ A second review round confirmed all 6 blockers resolved against live code and su
 7. Table-aware router chunks at index time (Phase D)
 8. Graduated fallback before full-document fallback (Phase E)
 9. **§9 — Subset-schema extraction:** send the extraction LLM only the fields that had retrieval evidence (Phase F, opt-in via `RetrievalProfile.subset_schema_extraction`)
-10. **§8 fix:** the identity-anchor channel (C8) and Phase E's `identity_anchor` level are made **functional** (identity names threaded into the chunk-scope request), not left inert
+10. **§8 fix:** the identity-anchor channel (C8) reads run-scoped identity entities from the ArcadeDB graph store (correcting the inert Postgres-session source) so it fires **opportunistically** — when identity data is committed at route time; a guaranteed-populated channel would need serialization (out of scope)
 
 **DEFERRED to follow-up plan:**
 
@@ -432,7 +432,7 @@ class RetrievalProfile(BaseModel):
 - Modify: `ontology_bundles/air_defense_v3_baseline_subset/manifest.yaml` (2 passes)
 
 **Steps:**
-- [ ] Write ONLY intentional per-bundle **overrides** under each field-group pass's `retrieval:` block — the defaults come from the B5 `RetrievalProfile` model, so do NOT re-state default values in YAML (that would create 4×N silently-divergent copies). **Add-only:** never overwrite the narrowed bundles' deliberate base values (`narrowing_v1`/`baseline_subset` use `min_similarity 0.25`, `top_n_candidates 300/500`). Touch all 9 field-group passes in `air_defense_v3`; the 2 (`radar_power_rf`, `missile_kinematics`) in each narrowed bundle. Do not add or remove passes from any bundle.
+- [ ] Write ONLY intentional per-bundle **overrides** under each field-group pass's `retrieval:` block — the defaults come from the B5 `RetrievalProfile` model, so do NOT re-state default values in YAML (that would create 4×N silently-divergent copies). **If a pass's value for a new field equals the B5 model default, OMIT it entirely — do not copy it into the pass block** (this is what prevents the 9 production passes from re-accruing N×duplication). **Add-only:** never overwrite the narrowed bundles' deliberate base values (`narrowing_v1`/`baseline_subset` use `min_similarity 0.25`, `top_n_candidates 300/500`). Touch all 9 field-group passes in `air_defense_v3`; the 2 (`radar_power_rf`, `missile_kinematics`) in each narrowed bundle. Do not add or remove passes from any bundle.
 - [ ] Comment block referencing this plan + the calibration source in each manifest.
 - [ ] Run bundle-loader smoke for all four keys **from the worktree root** (so `app`/`ontology_bundles` resolve to this worktree, not a stale install): `python -c "from app.services.ontology_bundles import load_bundle_manifest; [print(k, {p.name: bool(p.retrieval) for p in load_bundle_manifest(k).passes}) for k in ['air_defense_v3','air_defense_v3_merged_v1','air_defense_v3_narrowing_v1','air_defense_v3_baseline_subset']]"` — confirm no errors.
 
@@ -586,13 +586,13 @@ def merge_candidates(
 **Files:**
 - Modify: `app/services/extraction_candidate_scoring.py`
 
-**Context:** This runs **after** `rerank()` (see C6). Each candidate already carries a `rerank_score` (cross-encoder) plus the keyword/pattern/section/negative/table signals from C2-C4. `score_candidates` combines them into the final ordering — keyword search is precision applied on top of the reranked semantic order.
+**Context:** This runs **after** `rerank()` (see C6). Each candidate carries its cross-encoder score under the key **`reranker_score`** — that is the key `rerank()` actually writes (`reranker.py:75`; the existing endpoint reads `c["reranker_score"]` at `extraction_routing.py:99`), NOT `rerank_score`. **Unscorable candidates** (empty `content_text`) are returned by `rerank()` with NO score key — `score_candidates` must tolerate that. Each candidate also carries the keyword/pattern/section/negative/table signals from C2-C4. `score_candidates` combines them into the final ordering — keyword search is precision applied on top of the reranked semantic order.
 
 **Steps:**
-- [ ] FIRST write tests: rerank-only (no keyword signal) → final order equals rerank order; a chunk with strong alias/unit hits is promoted ABOVE a higher-rerank chunk that has none (precision boost demonstrably changes selection); only-negatives → demoted but NOT removed; all-zero keyword signal → order unchanged from rerank; sort stability.
-- [ ] Implement `score_candidates(candidates, cfg) -> list[(MergedCandidate, final_score)]` using the locked POST-rerank formula, reading ALL weights (incl. `rerank_weight`) from `cfg` — no hardcoded coefficients.
-- [ ] Normalize within the pool: `rerank_norm = minmax(rerank_score)` (or sigmoid — pick one and pin it in the test); `lexical_norm = alias_hits / max(1, max_alias_hits_in_pool)`; same for pattern, section, negative. Guard empty and all-zero pools against divide-by-zero. Add boosts, subtract the negative term, clamp `final >= 0.0`.
-- [ ] Sort by `final desc`, then `rerank_score desc`, then stable candidate key for deterministic ties.
+- [ ] FIRST write tests: rerank-only (no keyword signal) → final order equals rerank order; a chunk with strong alias/unit hits is promoted ABOVE a higher-rerank chunk that has none (precision boost demonstrably changes selection); only-negatives → demoted but NOT removed; all-zero keyword signal → order unchanged from rerank; a candidate missing `reranker_score` (unscorable) is handled, not a `KeyError`; sort stability.
+- [ ] Implement `score_candidates(candidates, cfg) -> list[(MergedCandidate, final_score)]` using the locked POST-rerank formula, reading ALL weights (incl. `rerank_weight`) from `cfg` — no hardcoded coefficients. Read the base score via `candidate.get("reranker_score", <floor>)`.
+- [ ] Normalize within the pool: `rerank_norm = minmax(reranker_score)` (or sigmoid — pick one and pin it in the test); candidates without a `reranker_score` get `rerank_norm = 0.0`. `lexical_norm = alias_hits / max(1, max_alias_hits_in_pool)`; same for pattern, section, negative. Guard empty and all-zero pools against divide-by-zero. Add boosts, subtract the negative term, clamp `final >= 0.0`.
+- [ ] Sort by `final desc`, then `reranker_score desc`, then stable candidate key for deterministic ties.
 
 **Acceptance:** With no keyword signal the order equals the reranker's. A strong exact-term/unit match can lift a chunk above a higher-rerank chunk lacking it. Negative terms demote but never hard-filter. All weights (incl. `rerank_weight`) read from `RetrievalProfile` config.
 
@@ -615,7 +615,7 @@ def merge_candidates(
       query_text = build_retrieval_query(pass_def, template_cls)
       pool, search_diag = await search_extraction_chunks(...)
   ```
-- [ ] **Rerank the ENTIRE capped pool** — call `rerank(query_text, pool, top_k=len(pool))` so every candidate keeps a `rerank_score`; do NOT let the reranker slice to the final top_k here. Preserve reranker input keys `content_text`, `self_ref`, `vector_score`, `chunk_index`, `source_refs`, `token_count`, `page_number`; carry `alias_hits`, `pattern_hits`, `negative_hits`, `section_hits`, `content_type`, `retrieval_sources`, `supported_field_hints` through as extra keys (reranker passes unknown keys through — `reranker.py:72`).
+- [ ] **Rerank the ENTIRE capped pool** — call `rerank(query_text, pool, top_k=len(pool))` so every scoreable candidate keeps its `reranker_score` (the key `rerank()` writes, `reranker.py:75`); do NOT let the reranker slice to the final top_k here. Note `rerank()` returns `scored + unscorable`, and unscorable (empty `content_text`) candidates carry NO score key — C5 must handle that. Preserve reranker input keys `content_text`, `self_ref`, `vector_score`, `chunk_index`, `source_refs`, `token_count`, `page_number`; carry `alias_hits`, `pattern_hits`, `negative_hits`, `section_hits`, `content_type`, `retrieval_sources`, `supported_field_hints` through as extra keys (reranker copies the dict and passes unknown keys through — `reranker.py:72`).
 - [ ] Apply C5 `score_candidates(reranked_pool, cfg)` (the POST-rerank keyword/pattern/table boost), re-sort by `final`, and **then** take `cfg.top_k`. Attach `score_components` to the selected candidates for diagnostics.
 
 **Acceptance:** Per-element mode unchanged. Merged mode runs through multi-channel with exactly one per-run row fetch and no HNSW call. The cross-encoder scores at most `cfg.top_n_candidates` pairs (Blocker 6 preserved). The post-rerank keyword boost is applied before the top_k cut and CAN change which chunks land in the final selection.
@@ -645,23 +645,21 @@ class ChunkScopeDiagnostics(BaseModel):
 
 **Acceptance:** Diagnostics queryable via `diagnostics_json->'router'->'channel_counts'` etc.
 
-### Task C8 — Functional identity-anchor channel (§8 inert-path fix)
+### Task C8 — Opportunistic identity-anchor channel (§8 inert-path fix)
 
 **Files:**
-- Modify: `app/schemas/extraction_routing.py` — add `identity_anchors: list[str] | None = None` to `ChunkScopeRequest`
-- Modify: `app/workers/pipeline.py` — populate `identity_anchors` from completed identity-pass results for the run when calling chunk-scope
 - Modify: `app/services/extraction_chunk_search.py` — add `identity_anchor_queries()` helper
+- Modify: `app/schemas/extraction_routing.py` — add OPTIONAL `identity_anchors: list[str] | None = None` to `ChunkScopeRequest` (an augmentation the worker MAY supply; the channel does not depend on it)
 
-**Context (corrected — this fixes the previously-inert path):** The endpoint signature is `async def chunk_scope(body: ChunkScopeRequest)` — it holds **no Postgres session**, so the earlier "read `pipeline_pass_outputs` from the endpoint" idea was inert. The robust fix (no mid-run commit assumption) is to have the **worker** — which orchestrates the run and already holds prior identity-pass entity names — pass those names into the chunk-scope request body. (Fallback only if the body channel proves impractical: query the ArcadeDB graph store the endpoint already obtains via `get_graph_store`, and only if identity entities are confirmed committed mid-run.)
+**Context (corrected — the prior source was inert, and a guaranteed channel is NOT cheaply achievable):** The endpoint is `async def chunk_scope(body: ChunkScopeRequest)` — it holds NO Postgres session (so "read `pipeline_pass_outputs` from the endpoint" was inert), but it DOES obtain the ArcadeDB graph store via `get_graph_store`. **The right source is run-scoped committed identity entities from the graph store.** Critical caveat verified in code: **C1.6r deliberately REMOVED identity-first serialization** — under concurrent dispatch (`pass_concurrency_per_document=2`, `app/config.py:319`; rationale at `app/workers/pipeline.py:7041-7057`), a field-group pass can route BEFORE its run's identity pass has committed entities. The channel is therefore necessarily **opportunistic**: it fires when identity entities are already committed/queryable at route time and no-ops otherwise (early passes frequently route before identity commits; it populates for later passes / retries as the run progresses). Do NOT reintroduce an identity-before-field-group serialization gate — that re-imposes the wall cost C1.6r removed.
 
 **Steps:**
-- [ ] FIRST write tests: with `identity_anchors=["S-75", "SA-2"]` in the request → anchor channel fires (dense + lexical anchors added, `identity_anchor_count > 0`); with `identity_anchors=None` → silently skipped (`identity_anchor_count=0`, no regression).
-- [ ] Add `identity_anchors` to `ChunkScopeRequest` (default None, backward-compatible).
-- [ ] In the worker, collect identity names from completed identity passes for the run and set `identity_anchors` on the chunk-scope request; if none available, leave None.
-- [ ] In `identity_anchor_queries()`, add the identity names as additional dense and lexical anchors with source `identity_anchor`; never block or fail the pass.
+- [ ] FIRST write tests: with run-scoped identity entities present in the (mocked) graph store → anchor channel fires (dense + lexical anchors added, `identity_anchor_count > 0`); with none present and `identity_anchors=None` → silently skipped (`identity_anchor_count=0`, no regression).
+- [ ] In `identity_anchor_queries()`, query the graph store for the run's committed identity-type entities (cheap, run-scoped); union any worker-supplied `body.identity_anchors`; add the names as additional dense and lexical anchors with source `identity_anchor`. Never block or fail the pass.
+- [ ] Add OPTIONAL `identity_anchors` to `ChunkScopeRequest` (default None) so the worker MAY pass names it cheaply has; the channel works without it via the graph store.
 - [ ] Add `identity_anchor_count` to diagnostics.
 
-**Acceptance:** The identity-anchor channel AND Phase E's `identity_anchor` fallback level are **functional** (not inert) when identity names are present; fully backward-compatible (no anchors → current behavior). Promoting the channel to a default-on mode change remains deferred (§8).
+**Acceptance:** The identity-anchor channel and Phase E's `identity_anchor` level are functional **when identity entities are committed/queryable at route time**, and silently no-op otherwise — opportunistic, never blocking, no serialization gate. Backward-compatible. **Known limitation (documented, not a defect):** under C1.6r concurrent dispatch, early field-group passes often route before identity commits, so the channel is frequently empty for them; a guaranteed-populated channel would require reintroducing serialization (wall cost) — out of scope. Promoting to a default-on mode change remains deferred (§8).
 
 ---
 
@@ -793,7 +791,7 @@ class ChunkScopeDiagnostics(BaseModel):
 ### Locked implementation decisions
 
 - Opt-in via `RetrievalProfile.subset_schema_extraction` (default `False` → full schema sent to the LLM, behavior byte-identical to today).
-- The **active field set** for a pass = fields with retrieval evidence in the selected chunks (`supported_field_hints`, i.e. any non-zero dense/lexical/pattern signal) **UNION** always-include fields (identity / required / `system_name`). Conservative: subsetting only DROPS fields with ZERO evidence anywhere in the selected chunks — it NEVER drops an evidenced or required field. This protects recall.
+- The **active field set** for a pass = fields with retrieval evidence in the selected chunks (`supported_field_hints`, i.e. any non-zero dense/lexical/pattern signal) **UNION** always-include fields — identity fields (from `template_cls.model_config['graph_id_fields']`, NOT a hardcoded name like `system_name`) and pydantic-required fields (`model_fields[name].is_required()`). Conservative: subsetting only DROPS fields with ZERO evidence anywhere in the selected chunks — it NEVER drops an evidenced or required field. This protects recall.
 - The subset is advisory metadata on the extract request; docling-graph builds the per-pass LLM schema/prompt from it. `None`/absent → full schema.
 - Rationale: this builds directly on Phase C's per-field signals (we already know which fields had evidence). It is precision/token-efficiency, not a retrieval change. BM25 and LLM field-aware reranking remain deferred (the post-rerank keyword boost already provides deterministic field-aware reranking).
 
@@ -804,7 +802,7 @@ class ChunkScopeDiagnostics(BaseModel):
 
 **Steps:**
 - [ ] FIRST write tests: a field with evidence in ≥1 selected chunk is active; a field with zero evidence anywhere is dropped; identity/required fields are ALWAYS active even with zero evidence; with `subset_schema_extraction=False` the function returns ALL fields (no-op).
-- [ ] Compute the union of `supported_field_hints` across the selected candidates, plus always-include fields (identity / required), resolved from `template_cls.model_fields`.
+- [ ] Compute the union of `supported_field_hints` across the selected candidates, plus always-include fields: identity fields from `template_cls.model_config['graph_id_fields']` and required fields via `model_fields[name].is_required()`. Do NOT hardcode any field name (e.g. `system_name`) — the guardrail requires deriving them from model metadata.
 - [ ] Return active field names in schema order.
 
 **Acceptance:** Never drops an evidenced or required field; returns the full set when the flag is off.
@@ -825,11 +823,11 @@ class ChunkScopeDiagnostics(BaseModel):
 ### Task F3 — Apply the subset in docling-graph extraction
 
 **Files:**
-- Modify: `docker/docling-graph/repo/docling_graph/core/extractors/strategies/many_to_one.py` (and/or the per-pass schema/prompt builder) — restrict the extraction schema/prompt to `field_subset` when present
+- Modify the docling-graph LLM schema build site — verified net-new: the per-pass schema is generated from the FULL template via `template.model_json_schema()` in `docker/docling-graph/repo/docling_graph/core/extractors/backends/llm_backend.py` (~lines 124/130/295) and the template threads through `strategies/many_to_one.py`. There is no field-subset hook today. Restrict to `field_subset` at this build site.
 
 **Steps:**
 - [ ] FIRST write/extend a receiver-side test: with `field_subset=[...]`, the LLM schema/prompt includes only those fields (plus required); with `None`, the full schema is used.
-- [ ] Build the LLM-facing schema subset from `field_subset`; never drop required/identity fields the record needs to validate.
+- [ ] Build the subset as a NEW schema/submodel — filter the `model_json_schema()` output or `pydantic.create_model` a sub-record. Do NOT prune the live record class, or final full-record pydantic validation will fail on the dropped fields. Never drop required/identity fields the record needs to validate.
 - [ ] Keep full-schema behavior byte-identical when `field_subset` is `None`.
 
 **Acceptance:** With a subset, the extraction prompt/schema is restricted to the active fields; without one, behavior is unchanged.
