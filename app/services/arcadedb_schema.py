@@ -36,15 +36,24 @@ _STRUCTURAL_VERTEX_TYPES = {
     # NOTE: `chunk_text` is the stored field name; callers remap to
     # "content_text" at the reranker call site ONLY — not here.
     "ExtractionChunk": [
-        ("vertex_id", "STRING"),         # synthetic PK: f"{pipeline_run_id}:{self_ref}"
+        ("vertex_id", "STRING"),         # synthetic PK: f"{pipeline_run_id}:{self_ref}" (legacy)
+                                         #            or f"{pipeline_run_id}:chunk_{chunk_index}" (merged)
         ("pipeline_run_id", "STRING"),   # filter dimension (B-tree indexed)
         ("document_id", "STRING"),
-        ("self_ref", "STRING"),          # e.g. "#/texts/12"
+        ("self_ref", "STRING"),          # e.g. "#/texts/12" (legacy per-element rows only)
         ("chunk_text", "STRING"),
         ("embedding", "ARRAY_OF_FLOATS"),  # dim=1024, cosine HNSW
         ("page_number", "INTEGER"),
         ("modality", "STRING"),          # text | table | picture_caption
         ("created_at", "TIMESTAMP"),     # DEFAULT NOW(); janitor sweep key (rev 8 M5)
+        # --- Phase 1 Task 1 (merged-chunk routing) -------------------
+        # Defaults applied APPLICATION-SIDE via read_chunk_* accessors
+        # in extraction_chunk_index.py; NO ArcadeDB DEFAULT clause.
+        # Legacy per-element rows carry: chunk_index=-1, source_refs=[],
+        # token_count=0. New merged-mode rows carry real values.
+        ("chunk_index", "INTEGER"),      # position in HybridChunker output (-1 = legacy)
+        ("source_refs", "LIST"),         # element self_refs covered by this merged chunk
+        ("token_count", "INTEGER"),      # tokenizer.count_tokens(chunk_text); diagnostics
     ],
     "TextChunk": [
         ("chunk_id", "STRING"),

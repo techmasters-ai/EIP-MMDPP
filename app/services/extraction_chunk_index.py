@@ -24,10 +24,11 @@ CHUNK RENDERING CONTRACT (rev 8 M9 + rev 10):
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     from app.services.arcadedb_graph import ArcadeDBGraphStore
@@ -115,6 +116,104 @@ class BuildIndexDiagnostics:
     chunks_skipped_web_chrome: int = 0
     chunks_stripped_web_chrome: int = 0
     chunks_skipped_after_strip: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Merged-chunk row accessors (Phase 1 Task 1 — merged-chunk routing)
+# ---------------------------------------------------------------------------
+#
+# These three helpers provide None-coalescing reads for the merged-mode
+# columns added to ``ExtractionChunk``. They MUST be used in place of
+# direct ``row["chunk_index"]`` / ``row["source_refs"]`` /
+# ``row["token_count"]`` reads, because legacy per-element rows ingested
+# before this change have those columns as ``NULL`` (or absent entirely
+# if the row was projected from a SELECT that pre-dates Task 5).
+#
+# Carve-out (per the plan's "belt-and-suspenders rule"): columns that
+# have always been mandatory on ``ExtractionChunk`` (``chunk_text``,
+# ``embedding``, ``page_number``, ``modality``, ``pipeline_run_id``,
+# ``self_ref``) are NEVER ``None`` on any row, legacy or merged — direct
+# dict access is allowed for those. The accessors below are only for the
+# three legacy-coalesced columns.
+
+
+def _row_get(row: dict | Any, key: str, default: Any = None) -> Any:
+    """Read ``key`` from a row that may be a dict or an object with attributes.
+
+    ArcadeDB HTTP responses are dicts, but some test scaffolds and lower-level
+    ORM layers expose rows as objects with attribute access. Both paths must
+    work without raising.
+    """
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def read_chunk_source_refs(row: dict | Any) -> list[str]:
+    """Return ``source_refs`` as ``list[str]`` regardless of storage shape.
+
+    Handles three storage paths:
+
+    1. native ArcadeDB ``LIST`` property (``row["source_refs"]``)
+    2. JSON-encoded string fallback (``row["source_refs_json"]``)
+    3. legacy / missing → ``[]``
+
+    NEVER returns ``None``. An empty list means "no constituent refs known"
+    — the caller decides whether that's an error or a legacy row.
+    """
+    raw = _row_get(row, "source_refs", None)
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    if raw is not None:
+        # Defensive: not a list, not None — try to coerce or fall through.
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+                if isinstance(decoded, list):
+                    return [str(x) for x in decoded]
+            except (ValueError, TypeError):
+                pass
+    # JSON-string fallback path
+    json_raw = _row_get(row, "source_refs_json", None)
+    if isinstance(json_raw, str):
+        try:
+            decoded = json.loads(json_raw)
+            if isinstance(decoded, list):
+                return [str(x) for x in decoded]
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
+def read_chunk_token_count(row: dict | Any) -> int:
+    """Return ``token_count`` as ``int``. Legacy / missing / ``None`` → ``0``.
+
+    Coerces stringified ints (``"42"``) since ArcadeDB HTTP serialisation
+    occasionally returns numeric columns as JSON strings. Garbage → ``0``.
+    """
+    raw = _row_get(row, "token_count", None)
+    if raw is None:
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def read_chunk_index(row: dict | Any) -> int:
+    """Return ``chunk_index`` as ``int``. Legacy / missing / ``None`` → ``-1``.
+
+    Note: ``chunk_index == 0`` is a valid merged-chunk position and must NOT
+    be treated as a legacy marker — the function only coalesces ``None`` /
+    absent / un-coercible values, not falsy values in general.
+    """
+    raw = _row_get(row, "chunk_index", None)
+    if raw is None:
+        return -1
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return -1
 
 
 # ---------------------------------------------------------------------------

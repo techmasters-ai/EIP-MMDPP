@@ -10,7 +10,10 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# Expected fields IN ORDER per rev 10 locked schema
+# Expected fields IN ORDER. Originally rev 10 locked the first 9; Phase 1
+# Task 1 of the merged-chunk routing plan appended three additional columns
+# (chunk_index / source_refs / token_count) with application-side defaults
+# applied via read_chunk_* accessors in extraction_chunk_index.py.
 _EXPECTED_FIELDS = [
     ("vertex_id", "STRING"),
     ("pipeline_run_id", "STRING"),
@@ -21,11 +24,14 @@ _EXPECTED_FIELDS = [
     ("page_number", "INTEGER"),
     ("modality", "STRING"),
     ("created_at", "TIMESTAMP"),
+    ("chunk_index", "INTEGER"),
+    ("source_refs", "LIST"),
+    ("token_count", "INTEGER"),
 ]
 
 
 def test_extraction_chunk_vertex_type_registered():
-    """ExtractionChunk must be present in _STRUCTURAL_VERTEX_TYPES with all 9 fields in order."""
+    """ExtractionChunk must be present in _STRUCTURAL_VERTEX_TYPES with all expected fields in order."""
     from app.services.arcadedb_schema import _STRUCTURAL_VERTEX_TYPES
 
     assert "ExtractionChunk" in _STRUCTURAL_VERTEX_TYPES, (
@@ -38,6 +44,30 @@ def test_extraction_chunk_vertex_type_registered():
         f"ExtractionChunk field list mismatch.\n"
         f"Expected: {_EXPECTED_FIELDS}\n"
         f"Got:      {fields}"
+    )
+
+
+def test_extraction_chunk_has_merged_routing_columns():
+    """Phase 1 Task 1: chunk_index / source_refs / token_count must be declared.
+
+    These columns are required by the merged-chunk routing plan
+    (`docs/superpowers/plans/2026-05-27-merged-chunk-routing.md`). Legacy
+    per-element rows carry safe defaults applied application-side via the
+    ``read_chunk_*`` accessors in extraction_chunk_index.py — NO ArcadeDB
+    DEFAULT clause is used.
+    """
+    from app.services.arcadedb_schema import _STRUCTURAL_VERTEX_TYPES
+
+    fields = dict(_STRUCTURAL_VERTEX_TYPES.get("ExtractionChunk", []))
+    assert fields.get("chunk_index") == "INTEGER", (
+        f"ExtractionChunk.chunk_index must be INTEGER, got {fields.get('chunk_index')!r}"
+    )
+    assert fields.get("source_refs") == "LIST", (
+        f"ExtractionChunk.source_refs must be LIST (matching CommunityReport.key_entities), "
+        f"got {fields.get('source_refs')!r}"
+    )
+    assert fields.get("token_count") == "INTEGER", (
+        f"ExtractionChunk.token_count must be INTEGER, got {fields.get('token_count')!r}"
     )
 
 
