@@ -204,6 +204,70 @@ async def _run_ddl_batch(
                 report.errors.append(f"{phase}: {exc}")
 
 
+async def _backfill_merged_chunk_columns(client: Any, database: str) -> None:
+    """Coalesce legacy NULLs on ExtractionChunk's merged-chunk columns to defaults.
+
+    Three columns were added in Phase 1 Task 1 of the merged-chunk routing
+    plan without ArcadeDB DEFAULT clauses (application-side coalescing via
+    the ``read_chunk_*`` accessors). Pre-existing rows ingested before that
+    change carry NULL in these columns; this helper applies the documented
+    legacy defaults:
+
+      * ``chunk_index = -1`` (legacy marker; merged rows have a real position)
+      * ``token_count = 0``  (legacy rows: no tokenizer counted them)
+      * ``source_refs = []`` (legacy rows: no constituent ref list known)
+
+    Idempotency: each statement is filtered by ``WHERE col IS NULL`` so a
+    second invocation against an already-defaulted DB updates zero rows.
+    Safe to run on every startup. Errors are logged but do NOT propagate —
+    the schema-sync caller continues so a transient backfill failure does
+    not block the rest of the schema sync.
+    """
+    backfills: list[tuple[str, str]] = [
+        (
+            "chunk_index",
+            "UPDATE ExtractionChunk SET chunk_index = -1 WHERE chunk_index IS NULL",
+        ),
+        (
+            "token_count",
+            "UPDATE ExtractionChunk SET token_count = 0 WHERE token_count IS NULL",
+        ),
+        (
+            "source_refs",
+            "UPDATE ExtractionChunk SET source_refs = [] WHERE source_refs IS NULL",
+        ),
+    ]
+
+    for col, sql in backfills:
+        try:
+            result = await client.command(database, "sql", sql)
+            # ArcadeDB UPDATE returns [{"count": N}] (per-statement) on success.
+            count = 0
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                count = int(result[0].get("count", 0))
+            if count > 0:
+                logger.info(
+                    "ExtractionChunk backfill: column=%s rows_updated=%d "
+                    "(coalesced NULL → legacy default)",
+                    col, count,
+                )
+            else:
+                logger.debug(
+                    "ExtractionChunk backfill: column=%s no NULL rows to update",
+                    col,
+                )
+        except Exception as exc:
+            # Non-fatal: the application-side accessors still coalesce on read.
+            # Most common cause early in a fresh DB lifecycle is that the
+            # ExtractionChunk vertex type was created moments earlier and the
+            # schema is still propagating — the next schema-sync will retry.
+            logger.warning(
+                "ExtractionChunk backfill failed for column=%s — %s: %s "
+                "(read-side accessors still coalesce NULLs to the default)",
+                col, type(exc).__name__, exc,
+            )
+
+
 async def sync_schema_from_ontology(
     client: Any,  # ArcadeDBClient
     database: str,
@@ -289,6 +353,20 @@ async def sync_schema_from_ontology(
         phase="structural_vertex_types", report=report,
     )
     report.types_created += len(_STRUCTURAL_VERTEX_TYPES)
+
+    # --- Phase 3b: idempotent backfill of merged-chunk legacy defaults ---
+    # M1 (Phase 1 Task 1 code-review fix): the three columns added for
+    # merged-chunk routing — chunk_index, token_count, source_refs — have
+    # NO ArcadeDB DEFAULT clause. Application-side coalescing via
+    # read_chunk_* accessors handles NULLs on read, but a fresh DB / a
+    # restore-from-snapshot would leave legacy rows with NULL until the
+    # operator re-ran the migration UPDATEs by hand. Wiring the same
+    # UPDATEs into the schema-sync helper makes the backfill automatic.
+    #
+    # Idempotency: each WHERE col IS NULL filter makes the UPDATE a no-op
+    # on a row that already carries the default — safe to re-run on every
+    # startup.
+    await _backfill_merged_chunk_columns(client, database)
 
     # --- Phase 4: structural edge types + properties ---
     struct_edge_ddl: list[str] = []

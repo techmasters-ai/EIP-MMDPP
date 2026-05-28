@@ -249,6 +249,141 @@ class TestBackfillSemantics:
 # ---------------------------------------------------------------------------
 
 
+class TestIdempotentBackfillHelper:
+    """M1 (Phase 1 Task 1 code-review fix): the schema-sync helper must
+    include an idempotent backfill step so a fresh DB or restore-from-snapshot
+    automatically populates the three merged-mode columns to their legacy
+    defaults — no operator-only migration step required.
+    """
+
+    def test_schema_sync_backfills_nulls_in_new_columns(
+        self, arcadedb_store: "ArcadeDBGraphStore"
+    ):
+        """Insert a legacy-style row (NULLs in all three new columns) by
+        bypassing the application path, then invoke the schema-sync helper
+        and assert the row has been backfilled to ``(-1, 0, [])``.
+        """
+        import asyncio
+
+        from app.services.arcadedb_schema import sync_schema_from_ontology
+        from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
+
+        run_id = f"task1-m1-{uuid.uuid4().hex[:8]}"
+        try:
+            # Direct INSERT bypassing the build_extraction_index path —
+            # leaves all three new columns NULL.
+            arcadedb_store._client.command_sync(
+                arcadedb_store._database,
+                "sql",
+                (
+                    "INSERT INTO ExtractionChunk SET "
+                    "vertex_id = :v, pipeline_run_id = :run_id, "
+                    "document_id = :doc_id, self_ref = :self_ref, "
+                    "chunk_text = :text, page_number = 1, modality = 'text'"
+                ),
+                {
+                    "v": f"{run_id}:#/texts/0",
+                    "run_id": run_id,
+                    "doc_id": "doc-task1-m1",
+                    "self_ref": "#/texts/0",
+                    "text": "legacy row needing backfill",
+                },
+            )
+
+            # Pre-state: NULLs across all three new columns for this row.
+            assert _count_nulls(arcadedb_store, run_id, "chunk_index") == 1
+            assert _count_nulls(arcadedb_store, run_id, "token_count") == 1
+            assert _count_nulls(arcadedb_store, run_id, "source_refs") == 1
+
+            # Invoke the schema-sync helper. Its in-place backfill step
+            # MUST coalesce all three columns to the documented defaults.
+            asyncio.run(
+                sync_schema_from_ontology(
+                    arcadedb_store._client,
+                    arcadedb_store._database,
+                    build_ontology_dict(),
+                )
+            )
+
+            # Post-state: 0 NULLs across all three columns for this row.
+            assert _count_nulls(arcadedb_store, run_id, "chunk_index") == 0, (
+                "schema-sync backfill did NOT zero-out chunk_index NULLs"
+            )
+            assert _count_nulls(arcadedb_store, run_id, "token_count") == 0, (
+                "schema-sync backfill did NOT zero-out token_count NULLs"
+            )
+            assert _count_nulls(arcadedb_store, run_id, "source_refs") == 0, (
+                "schema-sync backfill did NOT zero-out source_refs NULLs"
+            )
+
+            # Spot-check the actual defaults.
+            row0 = _select_row(arcadedb_store, run_id, "#/texts/0")
+            assert row0["chunk_index"] == -1
+            assert row0["token_count"] == 0
+            assert row0["source_refs"] == []
+        finally:
+            _delete_run(arcadedb_store, run_id)
+
+    def test_schema_sync_backfill_is_idempotent(
+        self, arcadedb_store: "ArcadeDBGraphStore"
+    ):
+        """A second invocation against an already-backfilled DB must be a
+        no-op (count of rows updated == 0) — guaranteed by the WHERE col IS
+        NULL filter on each UPDATE statement.
+        """
+        import asyncio
+
+        from app.services.arcadedb_schema import sync_schema_from_ontology
+        from ontology_bundles.air_defense_v3.introspect import build_ontology_dict
+
+        run_id = f"task1-m1-idem-{uuid.uuid4().hex[:8]}"
+        try:
+            arcadedb_store._client.command_sync(
+                arcadedb_store._database,
+                "sql",
+                (
+                    "INSERT INTO ExtractionChunk SET "
+                    "vertex_id = :v, pipeline_run_id = :run_id, "
+                    "document_id = :doc_id, self_ref = :self_ref, "
+                    "chunk_text = :text, page_number = 1, modality = 'text'"
+                ),
+                {
+                    "v": f"{run_id}:#/texts/0",
+                    "run_id": run_id,
+                    "doc_id": "doc-task1-m1-idem",
+                    "self_ref": "#/texts/0",
+                    "text": "legacy row for idempotency check",
+                },
+            )
+
+            # First run: should backfill the NULLs.
+            asyncio.run(
+                sync_schema_from_ontology(
+                    arcadedb_store._client,
+                    arcadedb_store._database,
+                    build_ontology_dict(),
+                )
+            )
+            assert _count_nulls(arcadedb_store, run_id, "chunk_index") == 0
+            row_after_first = _select_row(arcadedb_store, run_id, "#/texts/0")
+            assert row_after_first["chunk_index"] == -1
+
+            # Second run: a no-op for already-defaulted rows — values stay put.
+            asyncio.run(
+                sync_schema_from_ontology(
+                    arcadedb_store._client,
+                    arcadedb_store._database,
+                    build_ontology_dict(),
+                )
+            )
+            row_after_second = _select_row(arcadedb_store, run_id, "#/texts/0")
+            assert row_after_second["chunk_index"] == -1
+            assert row_after_second["token_count"] == 0
+            assert row_after_second["source_refs"] == []
+        finally:
+            _delete_run(arcadedb_store, run_id)
+
+
 class TestMergedModeRowRoundTrip:
     """Insert one merged-mode row directly + one legacy-style row, read both
     back, assert accessors return correct values for each.

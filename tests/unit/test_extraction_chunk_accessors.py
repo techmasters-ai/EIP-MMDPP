@@ -209,3 +209,95 @@ def test_accessors_accept_object_like_rows():
     assert read_chunk_index(row) == 5
     assert read_chunk_source_refs(row) == ["#/texts/7"]
     assert read_chunk_token_count(row) == 128
+
+
+# ---------------------------------------------------------------------------
+# M2 — corrupt source_refs of unexpected type should still return [],
+# but a warning must be emitted so the data-shape bug is observable.
+# ---------------------------------------------------------------------------
+
+
+def test_read_chunk_source_refs_warns_on_unexpected_type(caplog):
+    """An int (or any non-list/non-string) in source_refs is a data-shape bug.
+
+    The accessor must STILL return [] (safe), but emit a WARNING so the bug
+    is visible — silently coercing to [] masks an upstream corruption.
+    """
+    import logging
+
+    from app.services.extraction_chunk_index import read_chunk_source_refs
+
+    row = {"source_refs": 42, "chunk_index": 1}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.extraction_chunk_index"):
+        result = read_chunk_source_refs(row)
+
+    assert result == []
+    # The warning must mention the corrupting type so operators can grep
+    warning_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "source_refs" in r.getMessage()
+    ]
+    assert warning_records, (
+        "read_chunk_source_refs must emit a WARNING when source_refs is an "
+        "unexpected non-None type — silently returning [] hides upstream data bugs."
+    )
+    # Confirm the type name appears in the warning (helps grep for the bug source)
+    assert any("int" in r.getMessage() for r in warning_records), (
+        "Warning should mention the unexpected type name (e.g. 'int')."
+    )
+
+
+def test_read_chunk_source_refs_no_warning_on_legacy_none(caplog):
+    """None is the documented legacy/backfill state and must NOT warn —
+    a flood of warnings on legacy rows would drown the signal.
+    """
+    import logging
+
+    from app.services.extraction_chunk_index import read_chunk_source_refs
+
+    row = {"source_refs": None}
+    with caplog.at_level(logging.WARNING, logger="app.services.extraction_chunk_index"):
+        result = read_chunk_source_refs(row)
+    assert result == []
+    warnings_for_us = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "source_refs" in r.getMessage()
+    ]
+    assert warnings_for_us == [], (
+        "None is the documented legacy state — must not warn."
+    )
+
+
+# ---------------------------------------------------------------------------
+# M3 — source_refs accessor must filter None elements out of the list,
+# not stringify them to the literal "None".
+# ---------------------------------------------------------------------------
+
+
+def test_read_chunk_source_refs_filters_nones_from_list():
+    """A None element in the native LIST path must be dropped, not coerced
+    to the string ``"None"`` (which is almost certainly worse than dropping).
+    """
+    from app.services.extraction_chunk_index import read_chunk_source_refs
+
+    row = {"source_refs": [None, "#/texts/35", None]}
+    assert read_chunk_source_refs(row) == ["#/texts/35"]
+
+
+def test_read_chunk_source_refs_filters_nones_from_json_fallback():
+    """Same filter behaviour for the JSON-decode fallback path."""
+    from app.services.extraction_chunk_index import read_chunk_source_refs
+
+    row = {"source_refs_json": '[null, "#/texts/36"]'}
+    assert read_chunk_source_refs(row) == ["#/texts/36"]
+
+
+def test_read_chunk_source_refs_filters_nones_from_string_json_in_source_refs():
+    """When source_refs holds a JSON-string (transition state), the None
+    filter must apply to its decoded contents too.
+    """
+    from app.services.extraction_chunk_index import read_chunk_source_refs
+
+    row = {"source_refs": '[null, "#/texts/37", null, "#/texts/38"]'}
+    assert read_chunk_source_refs(row) == ["#/texts/37", "#/texts/38"]

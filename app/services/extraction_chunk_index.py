@@ -163,23 +163,37 @@ def read_chunk_source_refs(row: dict | Any) -> list[str]:
     """
     raw = _row_get(row, "source_refs", None)
     if isinstance(raw, list):
-        return [str(x) for x in raw]
+        # M3: filter Nones so a stray null element doesn't become the literal
+        # string "None" — that's almost certainly worse than dropping it.
+        return [str(x) for x in raw if x is not None]
     if raw is not None:
         # Defensive: not a list, not None — try to coerce or fall through.
         if isinstance(raw, str):
             try:
                 decoded = json.loads(raw)
                 if isinstance(decoded, list):
-                    return [str(x) for x in decoded]
+                    # M3: filter Nones in the JSON-string-in-source_refs path too.
+                    return [str(x) for x in decoded if x is not None]
             except (ValueError, TypeError):
                 pass
+        else:
+            # M2: raw is non-None and not a list/string (e.g. an int from a
+            # buggy upstream insert). Return [] (safe), but log a WARNING so
+            # the upstream data-shape bug is OBSERVABLE — silently coercing
+            # to [] masks the corruption.
+            logger.warning(
+                "read_chunk_source_refs: source_refs is unexpected type %s "
+                "for row; coercing to []",
+                type(raw).__name__,
+            )
     # JSON-string fallback path
     json_raw = _row_get(row, "source_refs_json", None)
     if isinstance(json_raw, str):
         try:
             decoded = json.loads(json_raw)
             if isinstance(decoded, list):
-                return [str(x) for x in decoded]
+                # M3: filter Nones from the JSON fallback path.
+                return [str(x) for x in decoded if x is not None]
         except (ValueError, TypeError):
             return []
     return []
