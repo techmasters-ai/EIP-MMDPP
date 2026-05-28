@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, Pydantic v2 (model_fields + json_schema_extra + ConfigDict), FastAPI router endpoint (`/v1/extraction/chunk-scope`), ArcadeDB ExtractionChunk vertices + b-tree index on `pipeline_run_id`, bge-m3 embeddings via Ollama (`embed_texts` query-prefixed), bge-reranker-v2-m3 cross-encoder (`rerank()`), gemma4:31b extraction LLM via `OllamaChatClient` pool.
 
-**Branch:** `walltime/c0-telemetry` (this worktree). Backward compatible: default `VECTOR_ROUTER_MODE=shadow` keeps current per-element path unchanged; new behavior gated on `VECTOR_ROUTER_MODE=narrow_only` and `EXTRACTION_INDEX_MODE=merged`.
+**Branch:** `walltime/c0-telemetry` (this worktree). Backward compatible: `EXTRACTION_INDEX_MODE` default is now `merged` (flipped in `48302f2`); the binding gate that keeps production behavior unchanged is `VECTOR_ROUTER_MODE=shadow` (still the `.env.example`/`config.py` default). New behavior activates on the single remaining flip `VECTOR_ROUTER_MODE=narrow_only`. (Note: this worktree's live `.env` already has `narrow_only` + `merged`, so both gates are active here.)
 
 ---
 
@@ -33,6 +33,17 @@ A second review round confirmed all 6 blockers resolved against live code and su
 - **§8 identity-anchor source corrected (opportunistic, not guaranteed).** C8's prior prose assumed a Postgres session the `chunk_scope` endpoint does not hold. The channel now reads run-scoped committed identity entities from the ArcadeDB graph store the endpoint already obtains via `get_graph_store` (worker-supplied `ChunkScopeRequest.identity_anchors` is an optional augmentation). Because **C1.6r removed identity-first serialization** (`pipeline.py:7041-7057`, concurrency cap 2), the channel is **opportunistic** — it fires when identity entities are already committed at route time and no-ops otherwise (early field-group passes under concurrent dispatch frequently route before identity commits). A guaranteed-populated channel would require reintroducing serialization (wall cost) and stays out of scope; default-on promotion remains deferred (§8).
 - **§10 deferred** (strict quality / quantity normalization / conflict diagnostics / caching) — confirmed out of scope for this slice.
 - **Re-review fixes:** (a) the runtime-reach reality is now stated — "applies to all bundles" is config-only; the new path fires only when an operator sets `EXTRACTION_INDEX_MODE=merged` + `VECTOR_ROUTER_MODE=narrow_only`, which are NOT production defaults; (b) the production-bundle wall cap is anchored to the existing **bdde417 ~303m full-bundle SA-2** baseline, not the unverifiable 274m narrowed-bundle number; (c) B6 writes **only intentional overrides** (defaults come from the B5 model) and is **add-only** (never overwrites the narrowed bundles' deliberate `0.25`/`300`/`500` base values); (d) D3 reordered test-first; (e) minor doc corrections — C8 graph/body source, `page_number` has no `read_chunk_*` accessor (use `r.properties.get`), B0 attributes the `0.35` default to `air_defense_v3`, B2 uses `(json_schema_extra or {})`, `_pipeline_hooks.py` path prefixed `app/services/table_normalization/`.
+
+### Code-sync — partial implementation landed (2026-05-28)
+
+Verified against the current branch after three feature commits. **Phase A and Phase D's table-text work are largely DONE; merged-mode is now the default index mode.** What changed and what remains:
+
+- **Phase A — largely implemented in `27a0c64`.** `_compute_effective_chunk_scope` now retains `selected_chunks` (gated on `extraction_index_mode=='merged'`), threaded through `_execute_pass_attempt(chunk_scope=...)` → `_build_extract_pass_request(selected_chunks=...)`; 6 unit tests in `tests/unit/test_phase2_selected_chunks_forwarding.py` (green, live-smoke confirmed). A1/A2/A3-threading/A4 are DONE. **REMAINING (decision: implement):** the guarded `apply_chunk_scope` skip is NOT done — the worker still calls it at `pipeline.py:7585-7586`. It is currently harmless (docling-graph ignores `docling_document_json` in chunked mode) but wastes per-pass CPU; skip it ONLY when non-empty `selected_chunks` are forwarded in merged mode, keep it on the empty/legacy path. Add the "apply_chunk_scope not invoked on merged forward" test assertion. Diagnostic field names actually emitted: `selected_chunks_forwarded` + `selected_chunks_forwarded_count` (worker `diag`); `selected_chunk_count`/`selected_chunk_token_estimate` live on the endpoint `ChunkScopeDiagnostics`, not the worker diag.
+- **Phase D — table TEXT done UPSTREAM in `ae5f501`, but the metadata column is NOT.** `build_extraction_index_hybrid` now applies `web_cruft_sanitizer.sanitize_docling_document` (always) + table normalization (`normalize_tables` + `render_for_graph`, synthesizing per-row TextItems) BEFORE HybridChunker, gated on the pre-existing default-off `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED`. This **supersedes** the plan's `hybrid_chunking.py` / `_substitute_table_chunks` approach (D1/D2) — `MergedChunk` was NOT extended. **REMAINING + REQUIRED (decision: keep `table_boost`):** D3 — table rows are now indistinguishable from prose once indexed (no `content_type` column on `ExtractionChunk`), so **Phase C's `table_boost` is currently unwired (`is_table` always false)**. D3 must add `content_type`/`table_refs` columns and set `content_type="table"` by intersecting a chunk's `source_refs` with the synth-table-ref mapping (`extraction_chunk_index.py:1176-1197`). Phase C `table_boost` is a no-op until D3 lands. Note: Phase C lexical/pattern channels now scan **sanitized** text.
+- **Config / bundles (`48302f2`).** `EXTRACTION_INDEX_MODE` default flipped to `merged` (`.env`/`.env.example`; `config.py` Field default still `per_element` — env-file-wins). Narrowed bundles were propagated to **uniform `min_similarity=0.35, top_n_candidates=50, top_k=15`**, so B6's "preserve the narrowed bundles' `0.25`/`300`/`500` base values" is **obsolete** — B6 now layers the new B5 fields onto the uniform `0.35/50/15` base (omit any new field equal to the model default). The two `DOCLING_GRAPH_*` table-norm env vars are pre-existing (not new); `NORMALIZATION_ENABLED` is default-off (the binding gate), `SUPPRESS_RAW_TABLE_MARKDOWN` is default-on. `per_element` retirement clock started 2026-05-28, earliest deletion **2026-06-11** subject to Phase 2 A/B (`docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md`).
+- **Decisions locked:** (1) implement the guarded `apply_chunk_scope` skip; (2) keep `table_boost` — D3's `content_type` column is required.
+- **Line-ref drift** (after `27a0c64`'s +35 lines): `_execute_pass_attempt`@603 (unchanged), `_build_extract_pass_request`@**3476**, `_compute_effective_chunk_scope`@**7276**, `derive_ontology_graph_pass`@**7464**, `apply_chunk_scope`@**7585-7586**.
+- **Post-sync 3-agent review folded in:** D3 now also closes the **table page-lineage hole** (synth rows carry `prov:[]` → `page_number=None`) and flags the **`SUPPRESS_RAW_TABLE_MARKDOWN` co-dependency** + the flattened-`#/texts/M`-values intersection / var-hoist; new **D6** (sanitizer recall audit + cross-tree SYNC back-pointer); new **Performance enhancements** section; B0 notes the env-dependent `test_extraction_index_mode_default_is_per_element` failure; Test-Plan diagnostic field names reconciled (`selected_chunks_forwarded_count` worker-native; `selected_chunk_count`/`_token_estimate` arrive via the envelope flatten); A3 skip scoped to `apply_chunk_scope` only.
 
 ---
 
@@ -69,7 +80,7 @@ Files modified or created, grouped by responsibility:
 - Modify: `app/workers/pipeline.py` — thread `router_response["selected_chunks"]` through `_compute_effective_chunk_scope` → Celery `chunk_scope` dict → `derive_ontology_graph_pass` → `_execute_pass_attempt` (NEW param) → `_build_extract_pass_request` (NEW param); skip `apply_chunk_scope` in merged mode
 - Verify only unless tests fail: `docker/docling-graph/app/schemas.py` and `docker/docling-graph/app/main.py` — `SelectedChunkInput`, `ExtractPassRequest.selected_chunks`, and the `main.py:1374-1376/1596-1613` handler support already exist
 - Verify only unless tests fail: `docker/docling-graph/repo/docling_graph/core/extractors/strategies/many_to_one.py` — `_pre_built_chunks` threading already exists
-- Test: `tests/integration/test_selected_chunks_forwarding.py` (NEW)
+- Test: `tests/unit/test_phase2_selected_chunks_forwarding.py` (DONE in `27a0c64`; add the `apply_chunk_scope`-skip assertion when A3's skip lands)
 
 **Structured retrieval signals + schema metadata (Phase B):**
 - Modify: `app/services/extraction_query_builder.py` — add `FieldRetrievalQuery`, `PassRetrievalSignals`, `build_retrieval_profile()`
@@ -135,11 +146,13 @@ Phase F — Subset-schema extraction (§9)
 
 **Recommended parallel ordering:** B0 first (it gates B). Then A and B and D start concurrently. C lands after B. E lands after C. F lands after C (needs field hints) and A (needs the request handoff). Final integration test exercises A+B+C+D+E+F together.
 
-**No new env vars required.** All new behavior is opt-in via existing `VECTOR_ROUTER_MODE=narrow_only` + `EXTRACTION_INDEX_MODE=merged`. New defaults live in `RetrievalProfile` config and bundle manifest YAML.
+**No new env vars required.** New behavior keys off existing `VECTOR_ROUTER_MODE` + `EXTRACTION_INDEX_MODE`; new defaults live in `RetrievalProfile` config and bundle manifest YAML. Note: the upstream table-normalization (Phase D, done) keys off the **pre-existing** `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED` / `DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN` — these are not new. `NORMALIZATION_ENABLED` is **default-off** in `.env.example` (live `.env` here is on), so a fresh checkout indexes tables as raw markdown until it is set; `SUPPRESS_RAW_TABLE_MARKDOWN` is **default-on**. So `NORMALIZATION_ENABLED` is the binding gate for table-aware indexing.
 
 ---
 
 ## Phase A — Selected-chunk worker handoff
+
+> **Status (code-sync 2026-05-28):** A1, A2, A4, and A3's threading are **DONE** in `27a0c64` (6 tests in `tests/unit/test_phase2_selected_chunks_forwarding.py`, live-smoke confirmed). **Remaining:** (i) the guarded `apply_chunk_scope` skip — A3's last step, decision: implement; and (ii) the "apply_chunk_scope not invoked on merged forward" assertion (A5). Diagnostics actually emitted are `selected_chunks_forwarded` + `selected_chunks_forwarded_count` (worker `diag`). Line refs below are corrected for current code.
 
 ### Locked implementation decisions
 
@@ -167,12 +180,12 @@ Phase F — Subset-schema extraction (§9)
 ### Task A2 — Capture router's selected_chunks in the worker scope
 
 **Files:**
-- Modify: `app/workers/pipeline.py` — `_compute_effective_chunk_scope(router_response: dict | None, mode: str)` (~line 7256)
+- Modify: `app/workers/pipeline.py` — `_compute_effective_chunk_scope(router_response: dict | None, mode: str)` (~line 7276) — **already implemented in `27a0c64`**
 
 **Context (verified):** `_compute_effective_chunk_scope` currently retains only `self_refs` and `text_by_ref` and never reads `selected_chunks`. `selected_chunks` arrives inside the endpoint's `router_response` dict — it is NOT a function parameter.
 
 **Steps:**
-- [ ] FIRST write a failing unit test in `tests/unit/test_pipeline_selected_chunks_capture.py` that builds a `router_response` dict containing `selected_chunks=[<two chunks>]` (mode `selected_refs`, non-empty `self_refs`) and asserts `_compute_effective_chunk_scope(router_response, "narrow_only")` returns a scope carrying both `self_refs` and `selected_chunks`.
+- [ ] (DONE in `27a0c64` — covered by `tests/unit/test_phase2_selected_chunks_forwarding.py`.) The original task: a failing unit test building a `router_response` dict containing `selected_chunks=[<two chunks>]` (mode `selected_refs`, non-empty `self_refs`) and asserting `_compute_effective_chunk_scope(router_response, "narrow_only")` returns a scope carrying both `self_refs` and `selected_chunks`.
 - [ ] In `_compute_effective_chunk_scope`, when `mode == "narrow_only"`, `router_response["mode"] == "selected_refs"`, `self_refs` is non-empty, and `router_response.get("selected_chunks")` is a non-empty list, retain the list on the returned `effective_chunk_scope`.
 - [ ] In `shadow`, `disabled`, `full`, `would_skip`, and empty-list cases, leave `selected_chunks` absent so legacy behavior remains byte-identical.
 - [ ] Run the focused test, confirm pass.
@@ -182,13 +195,13 @@ Phase F — Subset-schema extraction (§9)
 ### Task A3 — Forward selected_chunks through the per-pass extraction request
 
 **Files:**
-- Modify: `app/workers/pipeline.py` — thread `selected_chunks` through the full chain:
-  - `derive_ontology_graph_pass` (~line 7430; already has `chunk_scope`)
-  - `_execute_pass_attempt` (~line 603 — **add a `selected_chunks` / scope param; it has none today**)
-  - `_build_extract_pass_request` (~line 3467 — **add `selected_chunks: list[dict] | None = None`**)
-- Verify: `docker/docling-graph/app/schemas.py` — `ExtractPassRequest.selected_chunks: Optional[list[SelectedChunkInput]] = None` (already present, `schemas.py:233-242`)
+- Modify: `app/workers/pipeline.py` — the threading chain (**already wired in `27a0c64`**, verify-only):
+  - `derive_ontology_graph_pass` (~line 7464; passes `chunk_scope=`)
+  - `_execute_pass_attempt` (~line 603; now takes a `chunk_scope` kwarg → builds `forwarded_selected_chunks`)
+  - `_build_extract_pass_request` (~line 3476; now takes `selected_chunks` and serializes it)
+- Verify: `docker/docling-graph/app/schemas.py` — `ExtractPassRequest.selected_chunks: Optional[list[SelectedChunkInput]] = None` (already present)
 
-**Context (verified):** Today the worker narrows by mutating `doc_json` via `apply_chunk_scope(doc_json, chunk_scope)` (`pipeline.py:7549-7552`) BEFORE `_execute_pass_attempt` builds the request from `doc_json`. Forwarding `selected_chunks` requires bypassing that for merged mode and adding the param through all three functions.
+**Context (verified — REMAINING WORK):** The worker still calls `apply_chunk_scope(doc_json, chunk_scope)` at `pipeline.py:7585-7586` whenever `mode=="selected_refs"`, even when forwarding `selected_chunks`. This is harmless today (docling-graph ignores `docling_document_json` in chunked mode) but wastes per-pass CPU. The remaining work is to **skip** that call when non-empty `selected_chunks` are forwarded in merged mode (decision: implement), keeping it on the empty/legacy path. Scope the skip to the `apply_chunk_scope` call ONLY — do NOT skip the separate `filter_docling_document` doc-filter call just above it (~`pipeline.py:7533-7534`), which is an unrelated concern. `docling_document_json` is always populated (`_build_extract_pass_request`, ~`pipeline.py:3504`), so skipping the narrowing never drops the required field.
 
 **Steps:**
 - [ ] FIRST add a failing integration-style unit test that constructs the extraction request from a scope object carrying `selected_chunks` and asserts the request JSON includes `selected_chunks` with byte-identical text and expected `source_refs`.
@@ -207,7 +220,7 @@ Phase F — Subset-schema extraction (§9)
 
 **Steps:**
 - [ ] Set `diag["selected_chunks_forwarded"] = True` only when chunks are added to the extract-pass request; otherwise set False. This is worker-side telemetry, not a chunk-scope endpoint field.
-- [ ] Preserve endpoint diagnostics `selected_chunk_count` and `selected_chunk_token_estimate` under `diagnostics_json->router`.
+- [ ] Field names (verified): the worker emits `selected_chunks_forwarded` + `selected_chunks_forwarded_count`. The endpoint's `selected_chunk_count` / `selected_chunk_token_estimate` already reach `diagnostics_json->router` via the envelope flatten (`_compute_effective_chunk_scope` copies `router_response["diagnostics"]`) — the worker does NOT re-emit them. A test asserting a worker-native count must use `selected_chunks_forwarded_count`.
 - [ ] Add a unit test asserting router diagnostics contain these keys when merged-mode handoff fires.
 
 **Acceptance:** Diagnostics surface in `pipeline_pass_outputs` and can be queried with `diagnostics_json->'router'->>'selected_chunks_forwarded'`.
@@ -215,7 +228,7 @@ Phase F — Subset-schema extraction (§9)
 ### Task A5 — Integration test: worker → docling-graph byte-identity
 
 **Files:**
-- New: `tests/integration/test_selected_chunks_forwarding.py`
+- Existing: `tests/unit/test_phase2_selected_chunks_forwarding.py` — 6 tests from `27a0c64` already cover capture, request build, and byte-identity round-trip. **Add** the missing "`apply_chunk_scope` not invoked on merged forward" assertion here once the A3 skip lands (a separate `tests/integration/...` file is optional).
 
 **Steps:**
 - [ ] Prefer a fast integration-style worker test that mocks `_call_extract_pass` and captures the request JSON sent by the worker. Full service startup is optional, not required for this phase.
@@ -239,10 +252,11 @@ Phase F — Subset-schema extraction (§9)
 - `test_radar_power_rf_query_snapshot` / `test_missile_kinematics_query_snapshot` — stale frozen snapshots vs the edited `air_defense_v3` descriptions.
 - `test_conservative_defaults_applied` — expects `min_similarity == 0.45`; the loaded `air_defense_v3` manifest now sets `0.35` (the test loads production `air_defense_v3`, not `merged_v1`).
 - Two `RetrievalProfile` max-bound validation tests — "DID NOT RAISE".
+- **Separately (introduced by `48302f2`, not in the above 5):** `test_extraction_index_mode_default_is_per_element` now FAILS — it `monkeypatch.delenv`s the OS var but `.env` sets `EXTRACTION_INDEX_MODE=merged`, which wins (`config.py` reads `env_file=".env"`), so it resolves `merged != per_element`. Update the test to assert the env-file default (or isolate the `config.py` Field default). Fold into the green-baseline goal.
 
 **Steps:**
 - [ ] Run `pytest tests/unit/test_extraction_query_builder.py -v` and capture the 5 failures.
-- [ ] For each: determine whether it encodes a real contract or a stale expectation. Re-freeze snapshots from current builder output; update the `min_similarity` expectation to match the current manifest default; fix the max-bound validation tests (either the test or the missing validator).
+- [ ] For each: determine whether it encodes a real contract or a stale expectation. Re-freeze snapshots from current builder output; update the `min_similarity` expectation to match the current manifest default; fix the two max-bound validation tests — the `le=2000` validator EXISTS (`ontology_bundles.py:96,102`); the tests assert a tighter bound, so update the test expectations.
 - [ ] Confirm `pytest tests/unit/test_extraction_query_builder.py` is fully green BEFORE starting Phase B.
 
 **Acceptance:** Builder test file is green on the unmodified branch, establishing a trustworthy baseline for B2's parity assertions.
@@ -432,11 +446,11 @@ class RetrievalProfile(BaseModel):
 - Modify: `ontology_bundles/air_defense_v3_baseline_subset/manifest.yaml` (2 passes)
 
 **Steps:**
-- [ ] Write ONLY intentional per-bundle **overrides** under each field-group pass's `retrieval:` block — the defaults come from the B5 `RetrievalProfile` model, so do NOT re-state default values in YAML (that would create 4×N silently-divergent copies). **If a pass's value for a new field equals the B5 model default, OMIT it entirely — do not copy it into the pass block** (this is what prevents the 9 production passes from re-accruing N×duplication). **Add-only:** never overwrite the narrowed bundles' deliberate base values (`narrowing_v1`/`baseline_subset` use `min_similarity 0.25`, `top_n_candidates 300/500`). Touch all 9 field-group passes in `air_defense_v3`; the 2 (`radar_power_rf`, `missile_kinematics`) in each narrowed bundle. Do not add or remove passes from any bundle.
+- [ ] Write ONLY intentional per-bundle **overrides** for the NEW B5 fields under each field-group pass's `retrieval:` block — the defaults come from the B5 `RetrievalProfile` model, so do NOT re-state default values in YAML (that would create 4×N silently-divergent copies). **If a pass's value for a new field equals the B5 model default, OMIT it entirely.** **Base values are already uniform:** `48302f2` propagated `min_similarity=0.35, top_n_candidates=50, top_k=15, fallback_to_full=true` to all narrowed passes across all 4 bundles (the earlier `0.25`/`300`/`500` values are gone), so layer the new fields on top of that uniform base — there are no longer per-bundle base values to preserve. Touch all 9 field-group passes in `air_defense_v3`; the 2 (`radar_power_rf`, `missile_kinematics`) in each narrowed bundle. Do not add or remove passes from any bundle.
 - [ ] Comment block referencing this plan + the calibration source in each manifest.
 - [ ] Run bundle-loader smoke for all four keys **from the worktree root** (so `app`/`ontology_bundles` resolve to this worktree, not a stale install): `python -c "from app.services.ontology_bundles import load_bundle_manifest; [print(k, {p.name: bool(p.retrieval) for p in load_bundle_manifest(k).passes}) for k in ['air_defense_v3','air_defense_v3_merged_v1','air_defense_v3_narrowing_v1','air_defense_v3_baseline_subset']]"` — confirm no errors.
 
-**Acceptance:** Every field-group pass in all four bundles loads with its retrieval config (defaults from the model, overrides from YAML); the narrowed bundles' base values are preserved.
+**Acceptance:** Every field-group pass in all four bundles loads with its retrieval config (defaults from the model, overrides from YAML). Base values are already uniform `0.35/50/15` post-`48302f2`; the new B5 fields layer on top (nothing to "preserve").
 
 ### Task B7 — Propagate to sibling bundles (MANDATORY)
 
@@ -473,7 +487,7 @@ class RetrievalProfile(BaseModel):
         + cfg.lexical_weight  * lexical_hit_norm
         + cfg.pattern_weight  * pattern_hit_norm
         + cfg.section_weight  * section_hit_norm
-        + cfg.table_boost     * is_table             # flat boost when content_type == "table"
+        + cfg.table_boost     * is_table             # flat boost when content_type == "table" (requires D3's column; no-op until D3 lands)
         - cfg.negative_weight * negative_hit_norm
   ```
   Clamp `final >= 0.0`; negative terms penalize ordering but never remove a candidate. Rationale: keyword presence is a precision signal — applying it after rerank lets it influence the *selected* chunks, instead of being discarded at final top_k as a pre-rerank blend would be.
@@ -667,53 +681,49 @@ class ChunkScopeDiagnostics(BaseModel):
 
 ### Locked implementation decisions
 
-- Reuse the existing table-normalization stack (`normalize_tables`, `render_for_embedding`, `_substitute_table_chunks`, `_NormalizedTableChunkAdapter`) instead of writing a new renderer from scratch.
-- Router-visible table chunks should be self-contained and header-aware. Whole-table chunks are acceptable when under token budget; large tables are split by existing render helpers with headers carried forward.
-- Persist lightweight metadata for scoring: `content_type="table"`, `table_refs`, and section/headings where available. Use optional/nullable properties; no destructive migration.
+- **Table normalization is applied UPSTREAM in `build_extraction_index_hybrid` (DONE in `ae5f501`)**, NOT via `hybrid_chunking.py`. Before HybridChunker, the index builder runs `web_cruft_sanitizer.sanitize_docling_document` (always) then `normalize_tables` + `render_for_graph(..., emit_unit_hint=True)` (synthesizing per-row TextItems for ALL tables), gated on the pre-existing **default-off** `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED`. This **supersedes** the original `_substitute_table_chunks`/`_NormalizedTableChunkAdapter` approach — there are no adapter chunks in this path.
+- Router-visible table rows are therefore plain merged `chunk_text` (lexically discoverable) — table TEXT is DONE. What REMAINS is table METADATA (`content_type="table"`, `table_refs`) so the scorer can apply `table_boost` (D3). Use optional/nullable properties; no destructive migration.
 
-### Task D1 — Reuse table-normalization substitution before merged chunk emission
+### Task D1 — Table-normalization substitution before merged chunk emission (DONE — `ae5f501`)
 
-**Files:**
-- Modify: `app/services/hybrid_chunking.py`
+**Status: implemented.** `build_extraction_index_hybrid` (`app/services/extraction_chunk_index.py:1136-1222`) sanitizes + normalizes tables upstream of HybridChunker, synthesizing per-row TextItems via `normalize_tables` + `render_for_graph`. `MergedChunk` was intentionally NOT extended — synthesized rows flow through the chunker as ordinary text. The original plan's `hybrid_chunking.py` / `_substitute_table_chunks` / adapter-branch approach is **superseded** and not needed.
 
-**Context (verified):** The conversion loop (`hybrid_chunking.py:203-216`) calls `chunker.contextualize(chunk=chunk)` and reads `chunk.meta.doc_items`. `_NormalizedTableChunkAdapter` (`app/services/table_normalization/_pipeline_hooks.py:43-71`) ducktypes `.text` and `.meta.doc_items` but is NOT a real HybridChunker chunk — `chunker.contextualize(adapter)` may fail/misbehave.
+**Verify-only:**
+- [ ] Confirm `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED=true` in the environment under test (default-off in `.env.example`; `true` in this worktree's live `.env`).
+- [ ] Confirm synthesized table rows reach `chunk_text` (sanitize covered by `tests/unit/test_web_cruft_sanitizer.py`; add a "table rows present in merged index" assertion if absent).
 
-**Steps:**
-- [ ] FIRST write the failing test: a synthetic DoclingDocument with one qualifying table emits at least one `MergedChunk(content_type="table")`.
-- [ ] Before converting native HybridChunker chunks to `MergedChunk`, normalize tables from `doc_json` and call `_substitute_table_chunks(..., render_for_embedding, ...)` using the existing table-normalization config limits.
-- [ ] **Branch on chunk type:** for `_NormalizedTableChunkAdapter` outputs, use `adapter.text` directly (it is already the rendered table text) — do NOT call `chunker.contextualize()` on them. Only native chunks take the `contextualize` path.
-- [ ] Extend `MergedChunk` with optional metadata: `content_type: str = "text"`, `table_refs: list[str] = field(default_factory=list)`, `section_path: list[str] = field(default_factory=list)`.
-- [ ] For adapter outputs, set `content_type="table"` and `table_refs=[parent_table_ref]` from the adapter's metadata when available.
-
-**Acceptance:** Table chunks are identifiable in the merged stream without duplicating the table renderer and without calling `contextualize` on the adapter.
+**Acceptance:** Table rows are lexically discoverable in `chunk_text` (text-level table awareness). Metadata for scoring is D3.
 
 ### Task D2 — Verify table text is self-contained and header-aware
 
 **Files:**
-- Modify: `app/services/hybrid_chunking.py` only if existing `render_for_embedding` output is not sufficiently self-contained
-- Reuse: `app/services/table_normalization/` helpers first
+- Reuse: `app/services/table_normalization/` helpers — the upstream path uses `render_for_graph` (`render_graph.py`, `emit_unit_hint=True`), NOT `render_for_embedding`.
 
 **Steps:**
-- [ ] Add tests around existing normalized table render output: it must include table/header context, row labels, units, and values in each emitted chunk.
+- [ ] Add tests around the upstream normalized render output: each emitted row chunk must include table/header context, row labels, units, and values.
 - [ ] Add an explicit test that a >512-token table splits with header context carried into EVERY emitted fragment (no header-less rows).
-- [ ] If the existing render output omits required context, extend the table-normalization renderer rather than adding a parallel renderer in `hybrid_chunking.py`.
+- [ ] If the render output omits required context, extend the `render_for_graph` renderer rather than adding a parallel renderer.
 
 **Acceptance:** Rendered chunks are lexically discoverable; a search for a row label or unit-bearing column header finds the table chunk without surrounding prose; large tables split with headers on every fragment.
 
-### Task D3 — Preserve table metadata in ExtractionChunk
+### Task D3 — Preserve table metadata + page on ExtractionChunk (REQUIRED — keeps `table_boost` functional AND fixes table page-lineage)
+
+**Context (three verified gaps):**
+1. After D1, table rows reach the index as ordinary merged `chunk_text` with NO marker (no `content_type` column on `ExtractionChunk`: `arcadedb_schema.py:38-57`), so **Phase C's `table_boost` is unwired (`is_table` always false)**.
+2. **Synthesized table rows carry `prov: []`** (`app/services/table_normalization/_text_item.py:37-50`), so `_resolve_first_page_no` returns `None` (`hybrid_chunking.py:220-234`) and a table-derived merged chunk stores `page_number=None` — **table results currently have NO page (a data-lineage hole)**. This is the stronger reason for D3, beyond the boost.
+3. **Two flags gate the synth path, not one.** Synth `#/texts/M` rows are swapped into `body.children` (so HybridChunker actually chunks them) only when `DOCLING_GRAPH_SUPPRESS_RAW_TABLE_MARKDOWN=true` (`_replace_raw_table_refs_in_body_children`, run inside the suppress gate, `extraction_chunk_index.py:1200-1204`). With suppress OFF, the raw `#/tables/N` markdown is chunked instead, so a merged chunk's `source_refs` hold `#/tables/N` (a KEY of `_synth_only_table_refs`), not the `#/texts/M` values — and the intersection below misses. **D3 requires NORMALIZATION=true AND SUPPRESS=true** — SUPPRESS is already default-on, so `NORMALIZATION_ENABLED` is the binding gate to turn on.
 
 **Files:**
-- Modify: `app/services/extraction_chunk_index.py` — pass `content_type`, `table_refs`, `section_path` through to merged-row insert; add them to the explicit `ExtractionChunk` schema list (`arcadedb_schema.py`, emitted via `CREATE PROPERTY ... IF NOT EXISTS`)
-- Modify: `app/services/extraction_chunk_search.py` — add the new columns to the `search_extraction_chunks_direct` SELECT projection (the reader projects explicit columns, `extraction_chunk_search.py:322-324`)
+- Modify: `app/services/table_normalization/_text_item.py` (or the synth call site) — carry the parent table's page into the synth TextItem `prov` so table chunks resolve a real `page_number`.
+- Modify: `app/services/extraction_chunk_index.py` — **hoist `_synth_only_table_refs` to function scope** (it is currently local to the `if _norm_on:` block, ~1176-1222, and goes out of scope before the insert loop). Its shape is `{table_ref: [synth_ref, ...]}`. On a merged row, set `content_type="table"` + `table_refs=[parent #/tables/N]` by intersecting the row's `source_refs` with the **flattened `#/texts/M` values** (invert the dict to recover the parent table ref). Thread through the insert. Add `content_type`/`table_refs` to the explicit `ExtractionChunk` schema (`arcadedb_schema.py`, `CREATE PROPERTY ... IF NOT EXISTS`, NULL-backfill pattern at `arcadedb_schema.py:208-237`).
+- Modify: `app/services/extraction_chunk_search.py` — add the new columns to the `search_extraction_chunks_direct` SELECT projection (`extraction_chunk_search.py:322-324`).
 
 **Steps:**
-- [ ] FIRST write the failing test: index a synthetic table doc, query `ExtractionChunk`, assert `content_type="table"` on table chunks and that legacy rows default to `"text"`.
-- [ ] Extend merged-row insert with optional properties: `content_type`, `table_refs`, `section_path`. Existing per-element rows may omit them.
-- [ ] Add backward-compatible nullable/default properties to the `ExtractionChunk` schema dict.
-- [ ] Add the new properties to the direct-fetch SELECT so scoring actually receives them (otherwise reads silently see `None`).
-- [ ] Update row readers to default missing `content_type` to `"text"`, missing `table_refs` to `[]`, missing `section_path` to `[]`.
+- [ ] FIRST write the failing test (NORMALIZATION + SUPPRESS both on): index a synthetic table doc, query `ExtractionChunk`, assert `content_type="table"` on table-derived chunks, `page_number` is non-null, and prose/legacy rows default to `"text"`.
+- [ ] Carry parent-table page onto synth rows; hoist `_synth_only_table_refs`; set `content_type`/`table_refs` via the flattened-values intersection; extend insert SQL + schema dict + direct SELECT.
+- [ ] Add a `read_chunk_content_type` accessor defaulting to `"text"`; default missing `table_refs` to `[]`. (`section_path` deferred — section scoring uses query-time `section_hits`, not a stored column.)
 
-**Acceptance:** Multi-channel scorer can apply `table_boost` from `content_type` and section boost from `section_path` without breaking legacy rows.
+**Acceptance:** Table-derived chunks carry `content_type="table"`, `table_refs`, AND a real `page_number` (closes the lineage hole); Phase C `table_boost` (decision: kept) is functional. Works only with `NORMALIZATION=true` + `SUPPRESS=true`. Legacy rows unaffected.
 
 ### Task D4 — Re-index test docs + verify
 
@@ -721,8 +731,8 @@ class ChunkScopeDiagnostics(BaseModel):
 - (No code change — operational task)
 
 **Steps:**
-- [ ] Trigger graph_only reingest of Dvina + SA-2 with `merged_v1`.
-- [ ] Query: `SELECT count(*) FROM ExtractionChunk WHERE content_type='table' AND pipeline_run_id=<run>` — expect non-zero for SA-2 (has explicit performance tables).
+- [ ] Trigger graph_only reingest of Dvina + SA-2 with `merged_v1` and `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED=true`.
+- [ ] After D3 lands: `SELECT count(*) FROM ExtractionChunk WHERE content_type='table' AND pipeline_run_id=<run>` — expect non-zero for SA-2 (explicit performance tables). (Before D3 the column does not exist.)
 - [ ] Inspect rendered chunk_text for one table chunk — confirm row sentences are self-contained.
 
 **Acceptance:** Table chunks exist in DB; rendered text passes manual readability check.
@@ -734,11 +744,22 @@ class ChunkScopeDiagnostics(BaseModel):
 
 **Steps:**
 - [ ] Build a synthetic doc with one performance table.
-- [ ] Index via `build_extraction_index_hybrid`.
+- [ ] Index via `build_extraction_index_hybrid` with `DOCLING_GRAPH_TABLE_NORMALIZATION_ENABLED=true`.
 - [ ] Call multi-channel search with `aliases=["min range"]` and `evidence_patterns=["min range", r"re:\bmin\s+range\b"]`.
-- [ ] Assert the table chunk is in the merged candidate list with both `alias_hits > 0` and `pattern_hits > 0`.
+- [ ] Assert the table chunk is in the merged candidate list with both `alias_hits > 0` and `pattern_hits > 0`. (The `content_type=="table"` assertion requires D3.)
 
 **Acceptance:** Table chunks are findable through non-dense channels — proves Phase D + C are wired correctly.
+
+### Task D6 — Sanitizer recall audit + cross-tree sync back-pointer
+
+**Context:** `ae5f501` added `app/services/web_cruft_sanitizer.py` (a hand-fork of `docker/docling-graph/app/main.py`) and runs it on EVERY index build, blanking ~27% of texts on Dvina (49/182). Whole-item blanking triggers on any single blob-like token — a false positive would silently drop extractable content.
+
+**Steps:**
+- [ ] On a gate doc (Dvina + SA-2), dump the blanked text items and confirm none carry extractable spec values (the blanking is meant for ad/nav/tracking cruft only). Tighten the predicate if a false positive is found.
+- [ ] Add a reciprocal `# SYNC: app/services/web_cruft_sanitizer.py` back-pointer comment at `docker/docling-graph/app/main.py` (the worker copy already documents the obligation; the original does not), and correct the worker docstring's "byte-identical" → "functionally equivalent rule set" (the copies differ in imports/signatures).
+- [ ] Consider making the `web_cruft_sanitizer` import in `extraction_chunk_index.py` fail-soft (try/except like the table-norm import) so a future break degrades to raw text rather than failing the index build.
+
+**Acceptance:** No real content is silently blanked on the gate docs; the two sanitizer copies are discoverable from both sides.
 
 ---
 
@@ -764,7 +785,7 @@ class ChunkScopeDiagnostics(BaseModel):
 
 **Steps:**
 - [ ] Run normal multi-channel retrieval first (`fallback_level="none"`).
-- [ ] If under-covered, run relaxed dense retrieval with `min_similarity=max(0.0, cfg.min_similarity - cfg.fallback_similarity_relaxation)` (`fallback_level="relaxed_dense"`). Reuse the already-computed query embedding matrix — do NOT re-embed.
+- [ ] If under-covered, run relaxed dense retrieval with `min_similarity=max(0.0, cfg.min_similarity - cfg.fallback_similarity_relaxation)` (`fallback_level="relaxed_dense"`). Reuse the already-computed query embedding matrix AND the per-run chunk-embedding matrix — do NOT re-embed or re-fetch rows; relaxed dense is a threshold change over the same matrices.
 - [ ] If still under-covered, include lexical/pattern/table-only candidates even when dense score is absent (`fallback_level="lexical_table"`).
 - [ ] If identity anchors are available (C8) and coverage is still low, add them (`fallback_level="identity_anchor"`). If C8 found no identity source, this level no-ops.
 - [ ] Only after those levels fail, use existing full-document fallback when `cfg.fallback_to_full=True`; otherwise return `would_skip` as today.
@@ -869,7 +890,7 @@ class ChunkScopeDiagnostics(BaseModel):
 - All new `RetrievalProfile` fields have defaults; existing manifests load unchanged
 - `selected_chunks=None` preserves current scoped-doc fallback in docling-graph and keeps `apply_chunk_scope` on the legacy worker path
 
-**Eventual cleanup (not this slice):** the per-element retrieval path and the `build_retrieval_query` str shim are retained for compatibility. Remove them once `merged` is the default `EXTRACTION_INDEX_MODE` and all production bundles have migrated — track as a follow-up so the dual path does not become permanently load-bearing.
+**Eventual cleanup (not this slice):** the per-element retrieval path and the `build_retrieval_query` str shim are retained for compatibility. The `per_element` retirement clock already started **2026-05-28** (per `48302f2`), with earliest deletion **2026-06-11** subject to Phase 2 A/B completion (`docs/handoffs/2026-05-28-merged-mode-bundle-propagation.md`). Remove the per-element path + `build_retrieval_query` shim on/after that date once A/B confirms, so the dual path does not become permanently load-bearing.
 
 ---
 
@@ -884,13 +905,13 @@ class ChunkScopeDiagnostics(BaseModel):
 - `test_extraction_lexical_search.py` — case-insensitive substring match; per-chunk hit counts; negative terms tracked separately; NFC Cyrillic stability
 - `test_extraction_candidate_scoring.py` — merge dedup; `page_number` preserved; self_ref-collision-with-distinct-vertex_id guard; provenance preserved; **post-rerank scoring** (rerank-only order preserved when no keyword signal; a keyword/unit hit promotes a chunk above a higher-rerank chunk lacking it; negative penalty demotes but never eliminates; all-zero keyword signal leaves rerank order unchanged); sort stability; all weights incl. `rerank_weight` read from cfg; **`active_fields`** (§9: drops zero-evidence fields, keeps evidenced + identity/required, no-op when flag off)
 - `test_hybrid_chunking_tables.py` — table detection; adapter `.text` used (not `contextualize`); self-contained row rendering; header repetition across split tables
-- `test_pipeline_selected_chunks_capture.py` — worker captures `router_response["selected_chunks"]`; legacy path unchanged when criteria not met; `apply_chunk_scope` skipped only on merged forward
+- `test_phase2_selected_chunks_forwarding.py` (DONE in `27a0c64`) — worker captures `router_response["selected_chunks"]`; legacy path unchanged when criteria not met. **Add** the `apply_chunk_scope`-skipped-only-on-merged-forward assertion when the A3 skip lands.
 - `test_extraction_routing_fallback.py` — each ladder level; all-noise triggers fallback; `would_skip` survives with `fallback_to_full=False`
 - identity-anchor channel (in `extraction_chunk_search`/routing tests) — fires when `identity_anchors` present in the request; silent no-op when `None` (§8 fix)
 - subset-schema (`active_fields` + request) — `field_subset` carried only when `subset_schema_extraction` on; a field with evidence is never dropped (§9)
 
 **Integration tests:**
-- `test_selected_chunks_forwarding.py` — worker → docling-graph byte-identical handoff; `apply_chunk_scope` not invoked on merged forward (Phase A)
+- Phase A byte-identity + `apply_chunk_scope`-not-invoked coverage lives in `test_phase2_selected_chunks_forwarding.py` (byte-identity DONE in `27a0c64`; the skip assertion is added with the A3 skip). A separate `tests/integration/...` file is optional.
 - `test_chunk_scope_multi_channel.py` — multi-channel pulls more candidates than single-query alone; exactly one per-run SELECT; zero `vector_search` calls (Phase C; mirror `tests/integration/test_extraction_chunk_filter_starvation.py` guard)
 - `test_table_chunks_indexed.py` — table chunks discoverable via lexical + pattern (Phase D)
 
@@ -908,8 +929,9 @@ class ChunkScopeDiagnostics(BaseModel):
   - `diagnostics_json->router->score_components` (non-empty array for `mode=selected_refs`)
   - `diagnostics_json->router->fallback_level`
   - `diagnostics_json->router->selected_chunks_forwarded`
-  - `diagnostics_json->router->selected_chunk_count`
-  - `diagnostics_json->router->selected_chunk_token_estimate`
+  - `diagnostics_json->router->selected_chunks_forwarded_count` (worker-native)
+  - `diagnostics_json->router->selected_chunk_count` (endpoint field; reaches router via the envelope flatten)
+  - `diagnostics_json->router->selected_chunk_token_estimate` (endpoint field; via flatten)
 
 ---
 
@@ -926,7 +948,7 @@ A subagent-driven execution of this plan is **done** when all of the following h
 1. Phase B0 plus all phases (A, B, C, D, E, F) have completed all tasks with green tests.
 2. Every bundle exercised in merged mode shows **non-decreasing recall** vs its current Phase 1 baseline, measured by the **executed end-to-end entity-count gate** (not gt_coverage). Minimum named floors: Dvina missile_kinematics ≥ 2 ents, SA-2 radar_power_rf ≥ 22 ents, SA-2 missile_kinematics ≥ 16 ents, AND multi-channel ≥ single-query on both docs. If production `air_defense_v3` (all 9 passes) is run in merged mode, no live pass may regress vs its baseline.
 3. **No regression on wall** beyond 120% of the *relevant* solo baseline. Narrowed bundles: Dvina ≤ 17.5 m, SA-2 ≤ 274 m. Production `air_defense_v3` (9 field-group passes): anchor the cap to the existing **bdde417 ~303m full-bundle SA-2** baseline (and the corresponding Dvina full-bundle baseline) — re-measure on a solo run; do NOT apply the 2-pass 274m number to the 9-pass bundle (multi-channel cost amplifies ~4.5×).
-4. **Runtime-reach reality (documented, not a defect):** multi-channel fires only when `EXTRACTION_INDEX_MODE=merged` + `VECTOR_ROUTER_MODE=narrow_only`. These are NOT the production defaults (`per_element` + `shadow`), so merging this plan changes production behavior only when an operator flips both flags. The "applies to all bundles" scope is config/metadata reach, not automatic runtime activation.
+4. **Runtime-reach reality (documented, not a defect):** multi-channel fires only when `EXTRACTION_INDEX_MODE=merged` + `VECTOR_ROUTER_MODE=narrow_only`. After `48302f2`, `EXTRACTION_INDEX_MODE=merged` is now the `.env.example` default, so the **binding gate** keeping production behavior unchanged is `VECTOR_ROUTER_MODE=shadow` (still default) — merging this plan changes production only when an operator flips the single remaining gate to `narrow_only`. The "applies to all bundles" scope is config/metadata reach, not automatic runtime activation. (This worktree's live `.env` already has both gates active.)
 5. Per-pass diagnostics contain the new multi-channel, selected-chunk-forwarding, field-coverage, fallback, and subset-schema fields and round-trip through postgres correctly.
 6. Multi-channel retrieval fetches `ExtractionChunk` rows once per pass via the direct per-run SQL, batches all query embeddings, introduces no per-field database row pull, makes zero HNSW/`vector_search` calls, caps the candidate pool to `cfg.top_n_candidates` before the cross-encoder rerank, and applies the keyword/pattern boost AFTER rerank but before the top_k cut.
 7. §9 subset-schema (when `subset_schema_extraction` is enabled) never drops a field that had retrieval evidence, and subset-on extracted-entity counts are `>=` subset-off on both gate docs.
@@ -943,8 +965,22 @@ A subagent-driven execution of this plan is **done** when all of the following h
 - **Table rendering token-budget overrun** — large tables (SA-2 has tables with 20+ rows) may exceed 512 tokens. D2 tests enforce header propagation into every split fragment.
 - **HNSW post-filter starvation reintroduction** — the multi-channel path must reuse the direct per-run SQL and never call HNSW; a starvation-guard test mirrors the existing filter-starvation integration guard. (This is also why **BM25 stays deferred**: a Lucene/BM25 chunk index ranks globally then post-filters by run — the same starvation mismatch — so the curated keyword channel is used in its place.)
 - **Schema-wide rollout amplifies cost on the production bundle** — applying multi-channel to all 9 `air_defense_v3` passes (vs 2 in the narrowed bundles) multiplies the new embedding/lexical/rerank work per document by ~4.5×. The pre-rerank candidate cap (Blocker 6) and batched embedding keep this bounded, but the production-bundle wall MUST be re-baselined against bdde417 (~303m), not assumed equal to the 2-pass 274m number (acceptance #3).
-- **Runtime reach is opt-in** — production defaults (`per_element` + `shadow`) mean none of the new B/C/D/E/F runtime path fires until an operator sets `EXTRACTION_INDEX_MODE=merged` + `VECTOR_ROUTER_MODE=narrow_only`. The schema/manifest edits ship to all bundles, but the retrieval upgrade reaches production only on that flag flip (acceptance #4). Don't assume merging this plan changes production extraction.
+- **Runtime reach is opt-in** — `EXTRACTION_INDEX_MODE=merged` is now the `.env.example` default (`48302f2`), but `VECTOR_ROUTER_MODE=shadow` is still default, and `shadow` forces RUN_FULL with no narrowing/forwarding. So none of the new B/C/D/E/F runtime path fires until an operator flips the single remaining gate `VECTOR_ROUTER_MODE=narrow_only`. The schema/manifest edits ship to all bundles, but the retrieval upgrade reaches production only on that flip (acceptance #4). Don't assume merging this plan changes production extraction.
 - **Subset-schema over-pruning (§9)** — too-aggressive field subsetting could drop a field that is actually present, reducing recall. Mitigations: opt-in (`subset_schema_extraction=False` default), conservative active-set (any evidence ⇒ keep; identity/required always kept), and a recall guard (F4) requiring subset-on entity counts `>=` subset-off on the gate docs.
+- **Table synthesis inflates embedding count / index size** — `build_extraction_index_hybrid` synthesizes a per-row TextItem for every table row and embeds them in the index batch (a 20-row SA-2 table → ~20 extra chunks). Once-per-run so amortized, but it enlarges the embedding batch and ArcadeDB row count. Mitigation: log `synth_count` into index diagnostics + a per-table row cap (see Performance enhancements).
+- **`web_cruft_sanitizer` blanks ~27% of texts and is a hand-forked copy** — on Dvina it blanked 49/182 texts; whole-item blanking triggers on any single blob-like token, so a prose paragraph containing one long encoded token is dropped entirely (silent recall risk). The module is also a manual fork of `docker/docling-graph/app/main.py` that must stay in sync (the worker copy notes the obligation; the docling-graph original has no reciprocal pointer). Mitigation: D6 (blanked-text audit + reciprocal SYNC back-pointer). Note the worker import is NOT fail-soft (bare `import`), unlike the table-norm import.
+
+---
+
+## Performance enhancements (folded from review — optional, do alongside the phases)
+
+These are free or near-free wins the current code leaves on the table; none are blockers.
+
+1. **Memoize `build_retrieval_profile(pass_def, template_cls)`** per `(bundle_key, pass_name)` via `lru_cache` — it is deterministic from schema metadata but is rebuilt on every `chunk_scope` call (and every retry). Mirror the `_get_tokenizer` cache pattern (`hybrid_chunking.py:57`).
+2. **Skip the reranker ONLY when the capped pool ≤ `cfg.top_k`** (C6 fast-path) — then every candidate is selected regardless of order, so reranking changes nothing observable. Do NOT generalize to pools > `top_k`: the post-rerank `final` score has no dense term, so skipping rerank there zeroes `rerank_norm` for the whole pool and collapses ordering onto keyword boosts alone.
+3. **Reuse both matrices in the relaxed-dense fallback** (E2) — already folded in: reuse the query embedding AND the per-run chunk-embedding matrix; relaxed dense is a threshold change, no re-embed/re-fetch.
+4. **Table-synthesis embedding-count diagnostic + soft cap** — log `synth_count` into the index-build diagnostics; add a per-table row cap so a pathological 100+-row table doesn't balloon the embedding batch.
+5. **Quantify the `apply_chunk_scope`-skip win (A3)** — log `apply_chunk_scope` wall before/after the skip on one prod run so the CPU saving is on record (justifies the added skip branch).
 
 ---
 
