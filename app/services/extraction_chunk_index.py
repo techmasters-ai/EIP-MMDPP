@@ -1183,10 +1183,17 @@ def build_extraction_index_hybrid(
                     token_limit_whole=table_whole_limit(None),
                     token_limit_column=table_column_limit(None),
                     unit_convention=_unit_convention,
-                    # Index-time has no pass context — emit unit hints
-                    # for numeric/spec extraction. The router can still
-                    # demote irrelevant tables at retrieval.
-                    emit_unit_hint=True,
+                    # Index-time has no pass context, so we cannot pick a
+                    # pass-correct unit convention. A static "SI base units
+                    # (metres/kg/m-s)" preamble OVERRIDES the original
+                    # column-header units and breaks LLM extraction when
+                    # the pass schema asks for different units (e.g.
+                    # missile_kinematics.min_intercept_km expects km but
+                    # the preamble forced metres → 8000 m chunks → LLM
+                    # either skips or extracts 8000 as the km value).
+                    # Suppress the preamble; per-row sentences still
+                    # carry the original column-header units verbatim.
+                    emit_unit_hint=False,
                 ):
                     _captured_idx = _next_text_idx
                     _ti, _next_text_idx = _text_item_from_chunk(
