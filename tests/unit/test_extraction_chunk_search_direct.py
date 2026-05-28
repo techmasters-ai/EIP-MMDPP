@@ -487,3 +487,229 @@ async def test_dispatcher_respects_cleared_settings_cache(monkeypatch):
     assert diag3.filter_strategy == "overfetch_post_filter"
 
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 Task 5 — merged-mode projection extension
+# ---------------------------------------------------------------------------
+#
+# These cover the SELECT projection + GraphEntityResult.properties flattening
+# for the three new ExtractionChunk columns added in Phase 1 Task 1:
+# ``chunk_index`` (int), ``source_refs`` (list[str]), ``token_count`` (int).
+#
+# Task 6's chunk-scope endpoint reads these from the returned dict via the
+# Task 1 accessors (``read_chunk_index`` / ``read_chunk_source_refs`` /
+# ``read_chunk_token_count``). Without Task 5's projection the accessors
+# would always coalesce to the legacy defaults instead of surfacing the
+# merged-mode values.
+
+
+@pytest.mark.asyncio
+async def test_direct_projects_chunk_index_source_refs_token_count_on_merged_row():
+    """Merged-mode row inserted with chunk_index=3, source_refs=[…],
+    token_count=42 must surface those values in GraphEntityResult.properties.
+    """
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_direct,
+    )
+
+    rows = [
+        _row(
+            "#/texts/35",
+            _vec(1.0),
+            chunk_index=3,
+            source_refs=["#/texts/35", "#/texts/36"],
+            token_count=42,
+            modality="merged",
+        ),
+    ]
+    store = _fake_store(rows=rows)
+
+    results, _ = await search_extraction_chunks_direct(
+        store=store, query_vector=_vec(1.0),
+        pipeline_run_id="run-A", desired_top_n=5,
+    )
+
+    assert len(results) == 1
+    props = results[0].properties
+    assert props["chunk_index"] == 3
+    assert props["source_refs"] == ["#/texts/35", "#/texts/36"]
+    assert props["token_count"] == 42
+    # Pre-Task-5 contract preserved.
+    assert props["self_ref"] == "#/texts/35"
+    assert props["modality"] == "merged"
+    assert props["pipeline_run_id"] == "run-A"
+
+
+@pytest.mark.asyncio
+async def test_direct_projects_legacy_backfilled_defaults():
+    """Legacy per-element row with backfilled defaults (-1, [], 0) must
+    surface those defaults, NOT ``None``."""
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_direct,
+    )
+
+    rows = [
+        _row(
+            "#/texts/0",
+            _vec(1.0),
+            chunk_index=-1,
+            source_refs=[],
+            token_count=0,
+        ),
+    ]
+    store = _fake_store(rows=rows)
+
+    results, _ = await search_extraction_chunks_direct(
+        store=store, query_vector=_vec(1.0),
+        pipeline_run_id="run-A", desired_top_n=5,
+    )
+
+    assert len(results) == 1
+    props = results[0].properties
+    assert props["chunk_index"] == -1
+    assert props["source_refs"] == []
+    assert props["token_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_direct_projection_keys_snapshot_mixed_rows():
+    """Snapshot the full key set on a mixed result set (merged + legacy)
+    so any future schema drift fails this test loudly.
+    """
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_direct,
+    )
+
+    rows = [
+        _row(
+            "#/texts/0",
+            _vec(1.0),
+            chunk_index=0,
+            source_refs=["#/texts/0", "#/texts/1"],
+            token_count=128,
+            modality="merged",
+        ),
+        _row(
+            "#/texts/2",
+            _vec(1.0),
+            chunk_index=-1,
+            source_refs=[],
+            token_count=0,
+        ),
+    ]
+    store = _fake_store(rows=rows)
+
+    results, _ = await search_extraction_chunks_direct(
+        store=store, query_vector=_vec(1.0),
+        pipeline_run_id="run-A", desired_top_n=5,
+    )
+
+    assert len(results) == 2
+    expected_keys = {
+        "self_ref",
+        "chunk_text",
+        "page_number",
+        "modality",
+        "pipeline_run_id",
+        "chunk_index",
+        "source_refs",
+        "token_count",
+    }
+    for r in results:
+        missing = expected_keys - r.properties.keys()
+        assert not missing, (
+            f"GraphEntityResult.properties missing keys {missing} "
+            f"after Task 5 projection extension; full keys: "
+            f"{sorted(r.properties.keys())}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_direct_projection_compatible_with_task1_accessors():
+    """The Task 1 accessors must read the projected properties dict
+    transparently — this is the API contract Task 6 relies on."""
+    from app.services.extraction_chunk_index import (
+        read_chunk_index,
+        read_chunk_source_refs,
+        read_chunk_token_count,
+    )
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_direct,
+    )
+
+    rows = [
+        _row(
+            "#/texts/100",
+            _vec(1.0),
+            chunk_index=7,
+            source_refs=["#/texts/100"],
+            token_count=64,
+            modality="merged",
+        ),
+        _row(
+            "#/texts/200",
+            _vec(1.0),
+            chunk_index=-1,
+            source_refs=[],
+            token_count=0,
+        ),
+    ]
+    store = _fake_store(rows=rows)
+
+    results, _ = await search_extraction_chunks_direct(
+        store=store, query_vector=_vec(1.0),
+        pipeline_run_id="run-A", desired_top_n=5,
+    )
+
+    by_ref = {r.properties["self_ref"]: r.properties for r in results}
+
+    merged = by_ref["#/texts/100"]
+    assert read_chunk_index(merged) == 7
+    assert read_chunk_source_refs(merged) == ["#/texts/100"]
+    assert read_chunk_token_count(merged) == 64
+
+    legacy = by_ref["#/texts/200"]
+    assert read_chunk_index(legacy) == -1
+    assert read_chunk_source_refs(legacy) == []
+    assert read_chunk_token_count(legacy) == 0
+
+
+@pytest.mark.asyncio
+async def test_direct_projection_coalesces_null_chunk_index_via_accessor():
+    """A row with NULL chunk_index (bypassed the backfill) still surfaces
+    cleanly; the accessor coalesces to -1 without raising. Tests the
+    belt-and-suspenders contract from Task 1 Step 4."""
+    from app.services.extraction_chunk_index import (
+        read_chunk_index,
+        read_chunk_source_refs,
+        read_chunk_token_count,
+    )
+    from app.services.extraction_chunk_search import (
+        search_extraction_chunks_direct,
+    )
+
+    # Simulate a row that bypassed the backfill — all three new columns
+    # present in the projection but None-valued.
+    rows = [
+        _row(
+            "#/texts/0",
+            _vec(1.0),
+            chunk_index=None,
+            source_refs=None,
+            token_count=None,
+        ),
+    ]
+    store = _fake_store(rows=rows)
+
+    results, _ = await search_extraction_chunks_direct(
+        store=store, query_vector=_vec(1.0),
+        pipeline_run_id="run-A", desired_top_n=5,
+    )
+
+    assert len(results) == 1
+    props = results[0].properties
+    # Accessors coalesce NULL → safe defaults without raising.
+    assert read_chunk_index(props) == -1
+    assert read_chunk_source_refs(props) == []
+    assert read_chunk_token_count(props) == 0

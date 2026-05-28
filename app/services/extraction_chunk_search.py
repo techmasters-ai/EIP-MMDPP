@@ -308,12 +308,20 @@ async def search_extraction_chunks_direct(
     # numpy/JSON-friendly key — keeps GraphEntityResult.node_id aligned with
     # what the HNSW path returns. `vertex_id` is the synthetic PK kept as
     # secondary fallback for environments where @rid isn't materialized.
+    # Merged-mode columns (Phase 1 Task 1 / Task 5): ``chunk_index``,
+    # ``source_refs``, ``token_count`` are projected so Task 6's
+    # chunk-scope endpoint can read them via the Task 1 accessors
+    # (``read_chunk_index`` / ``read_chunk_source_refs`` /
+    # ``read_chunk_token_count``). The accessors coalesce missing/None
+    # values to legacy defaults (-1 / [] / 0); the projection here lets
+    # them see the REAL merged-mode values when present.
     rows = await store._client.query(
         store._database,
         "sql",
         (
             "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
-            "embedding, page_number, modality, pipeline_run_id "
+            "embedding, page_number, modality, pipeline_run_id, "
+            "chunk_index, source_refs, token_count "
             "FROM ExtractionChunk "
             "WHERE pipeline_run_id = :run_id "
             "ORDER BY self_ref ASC"
@@ -410,6 +418,12 @@ async def search_extraction_chunks_direct(
                 "page_number": row.get("page_number"),
                 "modality": row.get("modality"),
                 "pipeline_run_id": row.get("pipeline_run_id"),
+                # Phase 1 Task 5 — merged-mode projection. Pass values
+                # through as-is (may be None for rows that bypassed the
+                # Task 1 backfill); Task 1 accessors coalesce on read.
+                "chunk_index": row.get("chunk_index"),
+                "source_refs": row.get("source_refs"),
+                "token_count": row.get("token_count"),
             },
         )
         for row, score in zip(selected_rows, selected_scores)
