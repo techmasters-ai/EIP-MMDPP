@@ -39,6 +39,7 @@ from app.services.extraction_chunk_index import (
     read_chunk_token_count,
 )
 from app.services.extraction_chunk_search import (
+    identity_anchor_queries,
     search_extraction_chunks,
     search_extraction_chunks_multi_channel,
 )
@@ -299,6 +300,9 @@ async def chunk_scope(
         and _fqtk > 0
     )
 
+    # C8 identity-anchor count — set in multi-channel path; None in per-element.
+    _c8_anchor_count: "int | None" = None
+
     if _use_multi_channel:
         # ------------------------------------------------------------------
         # MERGED MODE — multi-channel retrieval (C1+C2+C3+C4 orchestrator).
@@ -309,12 +313,55 @@ async def chunk_scope(
         #   - Pool capped to profile.top_n_candidates BEFORE this call returns
         #     (Blocker 6: cap is BEFORE rerank)
         # ------------------------------------------------------------------
+
+        # ------------------------------------------------------------------
+        # C8 — identity-anchor channel (OPPORTUNISTIC, NON-BLOCKING).
+        #
+        # Derive identity_types from the bundle manifest's identity passes'
+        # primary_entity_types.  Never hardcode type names here — the manifest
+        # is the single source of truth for which types are identity-scoped.
+        # Wrap everything in try/except so ANY error is silently swallowed and
+        # the channel simply fires with empty anchors (clean no-op).
+        # ------------------------------------------------------------------
+        _c8_identity_types: list[str] = []
+        try:
+            _c8_identity_types = [
+                etype
+                for p in manifest.passes
+                if p.phase == "identity"
+                for etype in (p.primary_entity_types or [])
+                if etype
+            ]
+            # Deduplicate while preserving order
+            _seen_types: set[str] = set()
+            _c8_identity_types_dedup: list[str] = []
+            for t in _c8_identity_types:
+                if t not in _seen_types:
+                    _seen_types.add(t)
+                    _c8_identity_types_dedup.append(t)
+            _c8_identity_types = _c8_identity_types_dedup
+        except Exception as exc:
+            logger.debug(
+                "chunk-scope C8: could not derive identity_types from manifest for "
+                "pass=%s: %r — anchor channel will no-op",
+                body.pass_name, exc,
+            )
+
+        _c8_anchors: list[str] = await identity_anchor_queries(
+            store=store,
+            pipeline_run_id=body.pipeline_run_id,
+            identity_types=_c8_identity_types,
+            worker_anchors=body.identity_anchors,
+        )
+        _c8_anchor_count: int = len(_c8_anchors)
+
         vector_t0 = time.monotonic()
         pool, mc_search_diag = await search_extraction_chunks_multi_channel(
             signals,
             body.pipeline_run_id,
             profile,
             store=store,
+            identity_anchors=_c8_anchors if _c8_anchors else None,
         )
         vector_search_ms = int((time.monotonic() - vector_t0) * 1000)
 
@@ -1016,5 +1063,8 @@ async def chunk_scope(
             field_coverage=_c7_field_coverage,
             score_components=_c7_score_components,
             fallback_level=_c7_fallback_level,
+            # Task C8 identity-anchor channel count (None in per_element mode;
+            # 0 when anchor query ran but found no committed entities).
+            identity_anchor_count=_c8_anchor_count,
         ),
     )

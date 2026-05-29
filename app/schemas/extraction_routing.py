@@ -21,6 +21,16 @@ class ChunkScopeRequest(BaseModel):
         description="e.g. 'air_defense_v3' or 'air_defense_v3_baseline_subset'"
     )
     pass_name: str = Field(description="The field_group pass name")
+    identity_anchors: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional list of identity entity names the worker already knows "
+            "(e.g. from a prior identity-pass commit on the same run). "
+            "The endpoint unions these with any names it queries from the graph "
+            "store to form the full anchor set. Supplying them here is a cheap "
+            "optimisation; the channel works correctly when this is None."
+        ),
+    )
 
 
 class ChunkScopeDiagnostics(BaseModel):
@@ -111,6 +121,13 @@ class ChunkScopeDiagnostics(BaseModel):
     fallback_level: str | None = None
     # "none" on the normal multi-channel success path.
     # Phase E will populate "relaxed_dense" | "lexical_table" | "identity_anchor" | "full".
+
+    # Task C8 — identity-anchor channel diagnostics.
+    # None when the channel was not attempted (per-element mode, identity_types
+    # empty, or any error). 0 when the channel was attempted but no anchors were
+    # found (common — identity not yet committed under concurrent dispatch).
+    # > 0 when anchors were found and injected as dense + lexical signals.
+    identity_anchor_count: int | None = None
 
 
 class SelectedChunk(BaseModel):

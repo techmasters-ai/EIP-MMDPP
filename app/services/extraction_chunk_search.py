@@ -506,6 +506,96 @@ async def search_extraction_chunks(
 
 
 # ---------------------------------------------------------------------------
+# Task C8 — opportunistic, non-blocking identity-anchor channel
+# ---------------------------------------------------------------------------
+
+
+async def identity_anchor_queries(
+    *,
+    store: "ArcadeDBGraphStore",
+    pipeline_run_id: str,
+    identity_types: list[str],
+    worker_anchors: list[str] | None,
+) -> list[str]:
+    """Query the graph store for committed identity-type entity names for a run.
+
+    Unions the store results with ``worker_anchors`` (caller-supplied), dedupes,
+    and returns the combined anchor name list.
+
+    This function is OPPORTUNISTIC and NON-BLOCKING:
+    - On ANY exception (store error, type not found, timeout) it logs a debug
+      message and returns ``worker_anchors or []`` without re-raising.
+    - When ``identity_types`` is empty, no DB query is made; returns
+      ``worker_anchors or []`` immediately (clean no-op).
+    - Per-type exceptions are caught individually so one missing type does not
+      suppress results from other types that succeeded.
+
+    The anchor names are used by the C8 channel to add dense + lexical signals
+    for entity names already committed in the graph store for this run. The
+    channel ONLY fires when anchors are non-empty; empty → clean no-op.
+
+    Parameters
+    ----------
+    store:
+        An ``ArcadeDBGraphStore`` instance (provides ``_client.query`` +
+        ``_database``).
+    pipeline_run_id:
+        The pipeline run UUID. Used to scope the entity query so only entities
+        committed during this run are returned (no cross-run contamination).
+    identity_types:
+        List of entity type names (e.g. ``["RADAR_SYSTEM", "MISSILE_SYSTEM"]``)
+        derived from the bundle manifest's identity passes'
+        ``primary_entity_types``. MUST NOT contain hardcoded names — the caller
+        (extraction_routing.py) resolves these from the manifest.
+    worker_anchors:
+        Optional list of entity names the worker already knows (from
+        ``body.identity_anchors``). Unioned with store results; may be None.
+
+    Returns
+    -------
+    list[str]
+        Deduplicated anchor name list. Order: store results first (in query
+        order), then worker_anchors not already present. Empty list when no
+        anchors found and worker_anchors is None or empty.
+    """
+    seen: set[str] = set()
+    anchors: list[str] = []
+
+    # --- 1. Query the graph store for each identity type (per-type try/except). ---
+    for identity_type in identity_types:
+        try:
+            rows = await store._client.query(
+                store._database,
+                "sql",
+                (
+                    "SELECT name, entity_type "
+                    f"FROM {identity_type} "
+                    "WHERE pipeline_run_id = :run_id"
+                ),
+                {"run_id": pipeline_run_id},
+            )
+            for row in (rows or []):
+                name = row.get("name")
+                if name and isinstance(name, str) and name not in seen:
+                    seen.add(name)
+                    anchors.append(name)
+        except Exception as exc:
+            logger.debug(
+                "identity_anchor_queries: query for type=%r run=%r raised %r — skipping type",
+                identity_type, pipeline_run_id, exc,
+            )
+            # Continue to the next type; partial results from prior types are kept.
+
+    # --- 2. Union with worker_anchors (dedupe). ---
+    for name in (worker_anchors or []):
+        if name and isinstance(name, str) and name not in seen:
+            seen.add(name)
+            anchors.append(name)
+
+    return anchors
+
+
+# ---------------------------------------------------------------------------
 # Task C1 — batched dense entity + per-field multi-query retrieval
 # ---------------------------------------------------------------------------
 # Design constraints enforced here:
@@ -592,8 +682,9 @@ async def search_extraction_chunks_multi_channel(
     cfg: "RetrievalProfile",
     *,
     store: "ArcadeDBGraphStore",
+    identity_anchors: "list[str] | None" = None,
 ) -> "tuple[list, MultiChannelDiagnostics]":
-    """Multi-channel retrieval orchestrator for merged mode (Task C6).
+    """Multi-channel retrieval orchestrator for merged mode (Task C6 + C8).
 
     Implements the full C1–C4 pipeline over a single per-run SELECT with no
     HNSW / vector_search calls.
@@ -607,8 +698,26 @@ async def search_extraction_chunks_multi_channel(
     3. C2 lexical alias hits over same rows.
     4. C3 regex/pattern hits over same rows.
     5. C4 ``merge_candidates`` — section_meta={} / table_meta={} (Phase D deferred).
-    6. Order merged pool by best dense score (vector_score, descending; None last).
-    7. Cap to ``cfg.top_n_candidates``.
+    6. C8 identity-anchor channel (OPPORTUNISTIC, NON-BLOCKING):
+       When ``identity_anchors`` is non-empty:
+       a. Dense sub-channel: embed anchor names, score against chunk matrix,
+          add as ``field_dense["identity_anchor"]`` (source tag
+          ``"field:identity_anchor"`` in MergedCandidate.retrieval_sources).
+       b. Lexical sub-channel: scan merged pool for chunks whose text contains
+          any anchor name (case-insensitive); add ``"identity_anchor"`` to their
+          ``retrieval_sources`` set and increment ``alias_hits`` by the hit count.
+       When ``identity_anchors`` is empty or None: step 6 is a clean no-op;
+       the rest of the pipeline is byte-identical to the no-anchor case.
+    7. Order merged pool by best dense score (vector_score, descending; None last).
+    8. Cap to ``cfg.top_n_candidates``.
+
+    Parameters
+    ----------
+    identity_anchors:
+        Optional list of entity names (from C8 identity-anchor channel).  When
+        non-empty, adds both dense and lexical signals for the named entities.
+        When None or empty, this parameter has NO effect (byte-identical to
+        pre-C8 behaviour for all existing callers).
 
     Returns
     -------
@@ -618,6 +727,8 @@ async def search_extraction_chunks_multi_channel(
 
     MUST NOT call vector_search or any HNSW path — see module docstring.
     """
+    import unicodedata
+
     from app.services.extraction_candidate_scoring import (
         MergedCandidate,
         merge_candidates,
@@ -689,7 +800,123 @@ async def search_extraction_chunks_multi_channel(
     )
 
     # ------------------------------------------------------------------
-    # 6. Order by best dense score (vector_score desc; None last), then cap.
+    # 6. C8 identity-anchor channel (OPPORTUNISTIC, NON-BLOCKING).
+    #    Only runs when identity_anchors is non-empty.  Empty → byte-identical
+    #    to pre-C8 behaviour.
+    # ------------------------------------------------------------------
+    if identity_anchors:
+        # --- 6a. Dense sub-channel: embed anchor names, score vs chunks. ---
+        # We embed the anchor name texts and compute cosine scores against the
+        # pre-fetched rows.  Results are added to field_dense under the
+        # "_identity_anchor" key so merge_candidates tags them as
+        # "field:_identity_anchor" in retrieval_sources.
+        # (The post-merge lexical pass below additionally adds the clean
+        #  "identity_anchor" tag for chunks whose text contains anchor names.)
+        try:
+            import numpy as np
+            from app.services.graph_store import GraphEntityResult
+
+            anchor_vecs = embed_texts(identity_anchors, query=True)
+            anchor_matrix = np.asarray(anchor_vecs, dtype=np.float32)
+            anorm = np.linalg.norm(anchor_matrix, axis=1, keepdims=True)
+            anorm[anorm == 0] = 1
+            anchor_matrix = anchor_matrix / anorm
+
+            valid_rows = [r for r in rows if r.get("embedding")]
+            if valid_rows:
+                chunk_matrix = np.asarray(
+                    [r["embedding"] for r in valid_rows], dtype=np.float32
+                )
+                cnorm = np.linalg.norm(chunk_matrix, axis=1, keepdims=True)
+                cnorm[cnorm == 0] = 1
+                chunk_matrix = chunk_matrix / cnorm
+
+                # (N_chunks × N_anchors) scores
+                anchor_scores = chunk_matrix @ anchor_matrix.T
+
+                # Best anchor score per chunk
+                best_anchor_scores = anchor_scores.max(axis=1)  # (N_chunks,)
+
+                vertex_ids = np.asarray(
+                    [r.get("vertex_id", "") for r in valid_rows]
+                )
+                k = min(cfg.field_query_top_k, len(valid_rows))
+                order = np.lexsort((vertex_ids, -best_anchor_scores))[:k]
+
+                anchor_dense_results: list[GraphEntityResult] = []
+                for idx in order.tolist():
+                    row = valid_rows[idx]
+                    score = float(best_anchor_scores[idx])
+                    anchor_dense_results.append(
+                        GraphEntityResult(
+                            node_id=str(
+                                row.get("@rid")
+                                or row.get("node_id")
+                                or row.get("vertex_id")
+                                or row["self_ref"]
+                            ),
+                            name=row["self_ref"],
+                            entity_type="ExtractionChunk",
+                            extraction_confidence=score,
+                            score=score,
+                            score_type="vector",
+                            properties={
+                                "self_ref": row["self_ref"],
+                                "chunk_text": row.get("chunk_text", ""),
+                                "page_number": row.get("page_number"),
+                                "modality": row.get("modality"),
+                                "pipeline_run_id": row.get("pipeline_run_id"),
+                                "chunk_index": row.get("chunk_index"),
+                                "source_refs": row.get("source_refs"),
+                                "token_count": row.get("token_count"),
+                            },
+                        )
+                    )
+
+                if anchor_dense_results:
+                    # Re-run merge to add anchor dense channel.  Passing
+                    # field_dense with the anchor sub-channel added; lex/pat
+                    # hits unchanged. The anchor sub-channel tag in
+                    # retrieval_sources will be "field:_identity_anchor".
+                    field_dense_with_anchor = dict(field_dense)
+                    field_dense_with_anchor["_identity_anchor"] = anchor_dense_results
+                    merged_pool = merge_candidates(
+                        entity_dense=entity_dense,
+                        field_dense=field_dense_with_anchor,
+                        lexical_hits=lex_hits,
+                        pattern_hits=pat_hits,
+                        section_meta={},
+                        table_meta={},
+                    )
+        except Exception as exc:
+            logger.debug(
+                "search_extraction_chunks_multi_channel: C8 anchor dense step failed "
+                "for run=%r: %r — skipping dense anchor sub-channel",
+                pipeline_run_id, exc,
+            )
+            # merged_pool already computed from C4; continue with it unchanged.
+
+        # --- 6b. Lexical sub-channel: tag chunks containing anchor names. ---
+        # Scan merged pool; for any MergedCandidate whose chunk_text contains
+        # any anchor name (NFC casefold substring), add "identity_anchor" to
+        # retrieval_sources and increment alias_hits by the hit count.
+        # This is a precision boost (not recall) — same design as C2.
+        normalised_anchors = [
+            unicodedata.normalize("NFC", a).casefold()
+            for a in identity_anchors
+            if a
+        ]
+        for mc in merged_pool:
+            haystack = unicodedata.normalize("NFC", mc.chunk_text or "").casefold()
+            anchor_hit_count = sum(
+                1 for a in normalised_anchors if a in haystack
+            )
+            if anchor_hit_count > 0:
+                mc.retrieval_sources.add("identity_anchor")
+                mc.alias_hits += anchor_hit_count
+
+    # ------------------------------------------------------------------
+    # 7. Order by best dense score (vector_score desc; None last), then cap.
     # ------------------------------------------------------------------
     merged_pool.sort(
         key=lambda mc: (mc.vector_score is None, -(mc.vector_score or 0.0), mc.candidate_key)
