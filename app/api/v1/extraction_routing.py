@@ -44,7 +44,6 @@ from app.services.extraction_chunk_search import (
 )
 from app.services.extraction_candidate_scoring import score_candidates
 from app.services.extraction_query_builder import (
-    build_retrieval_query,
     build_retrieval_profile,
 )
 from app.services.ontology_bundles import load_bundle_manifest

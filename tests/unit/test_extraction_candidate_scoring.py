@@ -489,6 +489,122 @@ class TestProvenanceFields:
         assert mc.vector_score == pytest.approx(0.77)
 
 
+# ---------------------------------------------------------------------------
+# C4.10 — Keyword-only keys are DROPPED (keyword = precision not recall)
+# ---------------------------------------------------------------------------
+
+class TestKeywordOnlyDropped:
+    """Plan-locked rule: lexical/pattern signals BOOST dense candidates only.
+    Keys absent from entity_dense + field_dense must NOT produce MergedCandidates.
+    The recall safety net is Phase E's lexical_table fallback, not this merge.
+    """
+
+    def test_lexical_only_key_absent_from_dense_is_dropped(self):
+        """A candidate_key present ONLY in lexical_hits (not in entity_dense or
+        field_dense) must NOT appear in the merge output."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        # One real dense candidate
+        ger = _make_ger(vertex_id="run1:chunk_0", self_ref="#s0", score=0.85)
+
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={
+                "run1:chunk_0": {"alias_hits": 1, "negative_hits": 0, "supported_fields": set()},
+                "run1:chunk_LEXONLY": {"alias_hits": 5, "negative_hits": 0, "supported_fields": {"range"}},
+            },
+            pattern_hits={},
+            section_meta={},
+            table_meta={},
+        )
+
+        keys = [mc.candidate_key for mc in results]
+        assert "run1:chunk_LEXONLY" not in keys, (
+            "Lexical-only candidate (absent from dense) must be dropped, not admitted"
+        )
+        assert "run1:chunk_0" in keys, "Dense candidate must still appear"
+        assert len(results) == 1
+
+    def test_pattern_only_key_absent_from_dense_is_dropped(self):
+        """A candidate_key present ONLY in pattern_hits (not in dense) must be dropped."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = _make_ger(vertex_id="run1:chunk_0", self_ref="#s0", score=0.85)
+
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={},
+            pattern_hits={
+                "run1:chunk_0": {"pattern_hits": 1, "supported_fields": set()},
+                "run1:chunk_PATONLY": {"pattern_hits": 7, "supported_fields": {"guidance"}},
+            },
+            section_meta={},
+            table_meta={},
+        )
+
+        keys = [mc.candidate_key for mc in results]
+        assert "run1:chunk_PATONLY" not in keys, (
+            "Pattern-only candidate (absent from dense) must be dropped, not admitted"
+        )
+        assert "run1:chunk_0" in keys
+        assert len(results) == 1
+
+    def test_lexical_and_pattern_only_key_absent_from_dense_is_dropped(self):
+        """A key in BOTH lexical_hits AND pattern_hits but absent from dense is still dropped."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = _make_ger(vertex_id="run1:chunk_0", self_ref="#s0", score=0.80)
+
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={"run1:chunk_BOTH_ONLY": {"alias_hits": 3, "negative_hits": 0, "supported_fields": set()}},
+            pattern_hits={"run1:chunk_BOTH_ONLY": {"pattern_hits": 4, "supported_fields": set()}},
+            section_meta={},
+            table_meta={},
+        )
+
+        keys = [mc.candidate_key for mc in results]
+        assert "run1:chunk_BOTH_ONLY" not in keys, (
+            "Key in both lexical+pattern but absent from dense must still be dropped"
+        )
+        assert len(results) == 1
+
+    def test_dense_candidate_with_lexical_and_pattern_gets_signals_attached(self):
+        """A key present in dense that ALSO appears in lexical_hits and pattern_hits
+        must correctly receive alias_hits, pattern_hits, and retrieval_sources tags."""
+        from app.services.extraction_candidate_scoring import merge_candidates
+
+        ger = _make_ger(vertex_id="run1:chunk_5", self_ref="#s5", score=0.88)
+
+        results = merge_candidates(
+            entity_dense=[ger],
+            field_dense={},
+            lexical_hits={
+                "run1:chunk_5": {"alias_hits": 4, "negative_hits": 1, "supported_fields": {"max_range_km"}},
+            },
+            pattern_hits={
+                "run1:chunk_5": {"pattern_hits": 2, "supported_fields": {"guidance"}},
+            },
+            section_meta={},
+            table_meta={},
+        )
+
+        assert len(results) == 1
+        mc = results[0]
+        assert mc.candidate_key == "run1:chunk_5"
+        assert mc.alias_hits == 4
+        assert mc.negative_hits == 1
+        assert mc.pattern_hits == 2
+        assert "lexical" in mc.retrieval_sources
+        assert "pattern" in mc.retrieval_sources
+        assert "dense" in mc.retrieval_sources
+        assert "max_range_km" in mc.supported_field_hints
+        assert "guidance" in mc.supported_field_hints
+
+
 # ===========================================================================
 # C5 — score_candidates (post-rerank precision scoring)
 # ===========================================================================

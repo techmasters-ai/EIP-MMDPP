@@ -141,23 +141,12 @@ def merge_candidates(
                     b["field_scores"][field_name] = r.score
 
     # 3. lexical_hits — alias_hits, negative_hits, "lexical" tag, field hints
+    # Keyword search is PRECISION not recall: only boost candidates already in
+    # the dense pool. Keys absent from buckets are skipped entirely — the recall
+    # safety net for "dense missed it" is Phase E's lexical_table fallback.
     for key, lh in lexical_hits.items():
         if key not in buckets:
-            # lexical-only candidate: no GER to read chunk fields from.
-            # Create a minimal bucket; chunk fields stay at defaults.
-            buckets[key] = {
-                "candidate_key": key,
-                "chunk_index": -1,
-                "self_ref": key,
-                "chunk_text": "",
-                "source_refs": [],
-                "token_count": 0,
-                "page_number": None,
-                "vector_score": None,
-                "field_scores": {},
-                "retrieval_sources": set(),
-                "supported_field_hints": set(),
-            }
+            continue
         b = buckets[key]
         b["retrieval_sources"].add("lexical")
         # lexical_hits values: {alias_hits, negative_hits, supported_fields}
@@ -169,21 +158,10 @@ def merge_candidates(
             b["supported_field_hints"].add(f)
 
     # 4. pattern_hits — pattern_hits count, "pattern" tag, field hints
+    # Same precision-not-recall rule as lexical: skip keys absent from dense pool.
     for key, ph in pattern_hits.items():
         if key not in buckets:
-            buckets[key] = {
-                "candidate_key": key,
-                "chunk_index": -1,
-                "self_ref": key,
-                "chunk_text": "",
-                "source_refs": [],
-                "token_count": 0,
-                "page_number": None,
-                "vector_score": None,
-                "field_scores": {},
-                "retrieval_sources": set(),
-                "supported_field_hints": set(),
-            }
+            continue
         b = buckets[key]
         b["retrieval_sources"].add("pattern")
         b.setdefault("_pattern_hits", 0)

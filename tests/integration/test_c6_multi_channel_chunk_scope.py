@@ -422,122 +422,103 @@ class TestEndpointMultiChannelMergedMode:
 
 class TestC5BoostChangesSelection:
     """C5 lexical_weight boost can elevate a low-reranker-score chunk above
-    a high-reranker-score chunk when the former has more alias_hits."""
+    a high-reranker-score chunk when the former has more alias_hits.
 
-    @pytest.mark.asyncio
-    async def test_c5_boost_changes_ranking(self):
+    NOTE: This test constructs MergedCandidates directly (bypassing multi-channel)
+    because lexical/pattern signals only BOOST candidates already in the dense pool
+    (precision, not recall — plan-locked). The C5 scoring logic is agnostic to how
+    the pool was assembled; what matters is that alias_hits are attached to the
+    MergedCandidate before score_candidates is called.
+    """
+
+    def test_c5_boost_changes_ranking(self):
         """Scenario:
         - chunk_A: reranker_score=0.9, alias_hits=0
         - chunk_B: reranker_score=0.5, alias_hits=10 (lots of keyword matches)
-        With lexical_weight=1.0, C5 should elevate chunk_B above chunk_A.
+        With lexical_weight=2.0, C5 should elevate chunk_B above chunk_A.
         """
-        from app.services.extraction_chunk_search import (
-            search_extraction_chunks_multi_channel,
-        )
         from app.services.extraction_candidate_scoring import (
             MergedCandidate,
             score_candidates,
         )
-        from app.services.extraction_query_builder import FieldRetrievalQuery
-
-        run_id = "run-c5-boost"
-
-        # chunk_A: high vector score, no alias matches
-        # chunk_B: low vector score, many alias matches
-        rows = [
-            _row("chunk_0", _norm(_vec(0.99, 0.01)),
-                 pipeline_run_id=run_id, chunk_index=0,
-                 chunk_text="irrelevant text without keywords"),
-            _row("chunk_1", _norm(_vec(0.01, 0.99)),
-                 pipeline_run_id=run_id, chunk_index=1,
-                 chunk_text="radar transmitter power output watts frequency"),
-        ]
-        store = _fake_store(rows)
-
-        # field_query with aliases that match chunk_1
-        fq = FieldRetrievalQuery(
-            field_name="tx_power",
-            query_text="transmitter power watts",
-            aliases=("radar transmitter power", "watts", "frequency"),
-            negative_terms=(),
-            evidence_patterns=(),
-            likely_sections=(),
-            units=("watts",),
-        )
-        signals = _make_retrieval_signals(
-            entity_query="radar power",
-            field_queries=(fq,),
-        )
-
-        # entity_query vec + 1 field vec
-        q_entity = _norm(_vec(0.99, 0.01))   # points at chunk_0
-        q_field = _norm(_vec(0.01, 0.99))    # points at chunk_1
 
         cfg = _make_profile(
             top_n_candidates=10,
-            top_k=1,           # select only the top-1 after C5
-            field_query_top_k=5,
+            top_k=1,
             rerank_weight=1.0,
             lexical_weight=2.0,  # big boost for lexical hits
         )
 
-        with patch(
-            "app.services.extraction_chunk_search.embed_texts",
-            return_value=[q_entity, q_field],  # entity + 1 field
-        ):
-            pool, diag = await search_extraction_chunks_multi_channel(
-                signals, run_id, cfg, store=store
-            )
+        # chunk_A: high reranker score, no alias hits (dense-only)
+        mc_a = MergedCandidate(
+            candidate_key="run1:chunk_0",
+            chunk_index=0,
+            self_ref="chunk_0",
+            chunk_text="irrelevant text without keywords",
+            source_refs=[],
+            token_count=10,
+            page_number=None,
+            vector_score=0.99,
+            field_scores={},
+            alias_hits=0,
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources={"dense"},
+            supported_field_hints=set(),
+        )
+        # chunk_B: lower reranker score but many alias hits (dense + lexical signal)
+        mc_b = MergedCandidate(
+            candidate_key="run1:chunk_1",
+            chunk_index=1,
+            self_ref="chunk_1",
+            chunk_text="radar transmitter power output watts frequency",
+            source_refs=[],
+            token_count=10,
+            page_number=None,
+            vector_score=0.10,
+            field_scores={},
+            alias_hits=10,   # strong lexical signal attached via merge_candidates
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources={"dense", "field:tx_power", "lexical"},
+            supported_field_hints={"tx_power"},
+        )
 
-        # The pool may have more than 2 candidates because C2/C3 can add
-        # lexical/pattern-only candidates. We only care that BOTH chunk_0 and
-        # chunk_1 are present (they should be, since both have embeddings).
-        pool_self_refs = {mc.self_ref for mc in pool}
-        assert "chunk_0" in pool_self_refs, f"chunk_0 missing from pool: {pool_self_refs}"
-        assert "chunk_1" in pool_self_refs, f"chunk_1 missing from pool: {pool_self_refs}"
+        pool_dicts = [
+            {
+                "merged_candidate": mc_a,
+                "content_text": mc_a.chunk_text,
+                "reranker_score": 0.9,   # chunk_A wins on rerank alone
+            },
+            {
+                "merged_candidate": mc_b,
+                "content_text": mc_b.chunk_text,
+                "reranker_score": 0.5,   # chunk_B loses on rerank alone
+            },
+        ]
 
-        # Now simulate what C6 does: build dicts + rerank whole pool + C5 + top_k
-        # chunk_A gets higher reranker_score; chunk_B gets lower.
-        from app.services.extraction_candidate_scoring import score_candidates
-
-        pool_dicts = []
-        for mc in pool:
-            d = {
-                "merged_candidate": mc,
-                "content_text": mc.chunk_text,
-                "vector_score": mc.vector_score,
-                "self_ref": mc.self_ref,
-            }
-            # Simulate reranker: chunk_0 (high vector) gets 0.9, chunk_1 gets 0.5
-            if mc.self_ref == "chunk_0":
-                d["reranker_score"] = 0.9
-            else:
-                d["reranker_score"] = 0.5
-            pool_dicts.append(d)
-
-        # Apply C5 scoring
         scored = score_candidates(pool_dicts, cfg)
-        # Pool may include lexical/pattern-only entries (chunk_text="") with
-        # reranker_score=0.5 default. We only care about the ranking of the
-        # two scoreable candidates (chunk_0 and chunk_1).
-        assert len(scored) >= 2
+        assert len(scored) == 2
 
         top_candidate, top_score = scored[0]
-        # chunk_1 (or a lexical-only surrogate keyed from chunk_1's vertex_id)
-        # has alias_hits > 0. With lexical_weight=2.0, the top C5 candidate must
-        # NOT be chunk_0 (which had reranker_score=0.9 but no alias hits).
-        # Specifically: chunk_0 has self_ref="chunk_0" and its candidate_key
-        # ends with "chunk_0". chunk_1 (or a lexical surrogate from its rows)
-        # has candidate_key ending with "chunk_1".
-        assert "chunk_0" not in top_candidate.candidate_key, (
-            f"chunk_0 won despite having no alias hits — C5 lexical boost failed. "
-            f"Top candidate: {top_candidate.self_ref!r}, key={top_candidate.candidate_key!r}. "
-            f"C5 boost must be able to change selection vs rerank-only."
+        # With lexical_weight=2.0, chunk_B's alias_hits must push it above chunk_A.
+        assert top_candidate.candidate_key == "run1:chunk_1", (
+            f"chunk_B (alias_hits=10) should lead after C5 boost with lexical_weight=2.0; "
+            f"got top candidate: {top_candidate.candidate_key!r}"
         )
-        # Assert the winner actually has alias_hits > 0 (verifies C5 boosted it)
         assert top_candidate.alias_hits > 0, (
             f"C5 winner has alias_hits=0 — not actually boosted by lexical signal. "
             f"candidate: {top_candidate!r}"
+        )
+        # Verify scores numerically: chunk_B final > chunk_A final
+        scores = {mc.candidate_key: s for mc, s in scored}
+        assert scores["run1:chunk_1"] > scores["run1:chunk_0"], (
+            f"chunk_B score ({scores['run1:chunk_1']:.4f}) must exceed "
+            f"chunk_A ({scores['run1:chunk_0']:.4f}) after C5 lexical boost"
         )
 
 
@@ -614,8 +595,6 @@ class TestPerElementModeUnchanged:
                       return_value=manifest),
                 patch("app.api.v1.extraction_routing._resolve_template_class",
                       return_value=MagicMock()),
-                patch("app.api.v1.extraction_routing.build_retrieval_query",
-                      return_value="radar power rf query"),
                 patch("app.api.v1.extraction_routing.build_retrieval_profile",
                       return_value=MagicMock(entity_query="radar power rf query",
                                             field_queries=())),
