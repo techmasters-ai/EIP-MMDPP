@@ -49,6 +49,7 @@ from app.services.extraction_candidate_scoring import (
     MergedCandidate,
     enough_candidates,
     enough_field_coverage,
+    field_coverage,
     score_candidates,
 )
 from app.services.extraction_query_builder import (
@@ -153,12 +154,6 @@ def _build_lexical_table_candidates(
         Keyword-only candidates sorted by alias_hits + pattern_hits descending.
         Empty list when no keyword-only keys exist.
     """
-    from app.services.extraction_chunk_index import (
-        read_chunk_index,
-        read_chunk_source_refs,
-        read_chunk_token_count,
-    )
-
     # Collect all candidate_keys from lexical/pattern hits
     kw_keys: set[str] = set()
     for k, v in lexical_hits.items():
@@ -663,6 +658,11 @@ async def chunk_scope(
             and (not _has_field_queries or enough_field_coverage(_all_pool_mcs, profile))
         )
 
+        # E3 — capture initial (pre-escalation) pool state for diagnostics.
+        # Computed once here; never mutated by the ladder levels below.
+        _e3_candidate_count_before: int = len(_all_pool_mcs)
+        _e3_field_coverage_before: dict[str, int] = field_coverage(_all_pool_mcs)
+
         if not _enough:
             # ---------------------------------------------------------------
             # Level 1: relaxed_dense — re-run C4 merge with a larger top_n cap
@@ -857,6 +857,12 @@ async def chunk_scope(
                             # Pool is genuinely empty even after all levels
                             _e2_fallback_level = "full" if profile.fallback_to_full else "would_skip"
                             _full_mode = "full" if profile.fallback_to_full else "would_skip"
+                            # E3: after-count reflects final pool size (may be 0)
+                            _l4_after_mcs = [
+                                d["merged_candidate"]
+                                for d in reranked_pool
+                                if "merged_candidate" in d
+                            ]
                             return ChunkScopeResponse(
                                 mode=_full_mode,
                                 self_refs=[],
@@ -880,6 +886,10 @@ async def chunk_scope(
                                     filter_strategy=_mc_filter_strategy,
                                     short_fetch=False,
                                     fallback_level=_e2_fallback_level,
+                                    # E3 diagnostics on this early-return path.
+                                    field_coverage_before_fallback=_e3_field_coverage_before,
+                                    candidate_count_before_fallback=_e3_candidate_count_before,
+                                    candidate_count_after_fallback=len(_l4_after_mcs),
                                 ),
                             )
                         # If we still have some selected (coverage low but non-zero),
@@ -1344,6 +1354,13 @@ async def chunk_scope(
     _c7_score_components: list[dict] | None = None
     _c7_fallback_level: str | None = None
 
+    # Task E3 — fallback diagnostics (before/after counts + field_coverage_before).
+    # All default None; populated only on the multi-channel success path.
+    # The before-values were captured inside the ladder block above.
+    _e3_field_coverage_before_diag: dict[str, int] | None = None
+    _e3_candidate_count_before_diag: int | None = None
+    _e3_candidate_count_after_diag: int | None = None
+
     if _use_multi_channel:
         # channel_counts: one key per retrieval channel.
         # "dense" and "field:<name>" come from mc_search_diag;
@@ -1387,6 +1404,18 @@ async def chunk_scope(
         # fallback_level: set by E2 ladder ("none" on the happy path).
         _c7_fallback_level = _e2_fallback_level
 
+        # E3 — populate before/after diagnostics from the ladder.
+        # _e3_candidate_count_before and _e3_field_coverage_before were captured
+        # at the top of the ladder block (initial pool snapshot).
+        # After-count: current pool size (== before when no escalation fired).
+        _e3_field_coverage_before_diag = _e3_field_coverage_before
+        _e3_candidate_count_before_diag = _e3_candidate_count_before
+        # Pool may have grown through relaxed_dense / lexical_table / identity_anchor.
+        # Reflect the final state from reranked_pool (the last version of the pool
+        # that was fed into C5 scoring, which is the authoritative final pool).
+        _e3_after_pool_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
+        _e3_candidate_count_after_diag = len(_e3_after_pool_mcs)
+
     return ChunkScopeResponse(
         mode="selected_refs",
         self_refs=final_self_refs,
@@ -1423,5 +1452,9 @@ async def chunk_scope(
             # Task C8 identity-anchor channel count (None in per_element mode;
             # 0 when anchor query ran but found no committed entities).
             identity_anchor_count=_c8_anchor_count,
+            # Task E3 — fallback diagnostics (None in per_element mode).
+            field_coverage_before_fallback=_e3_field_coverage_before_diag,
+            candidate_count_before_fallback=_e3_candidate_count_before_diag,
+            candidate_count_after_fallback=_e3_candidate_count_after_diag,
         ),
     )

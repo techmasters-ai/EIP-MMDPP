@@ -120,7 +120,23 @@ class ChunkScopeDiagnostics(BaseModel):
 
     fallback_level: str | None = None
     # "none" on the normal multi-channel success path.
-    # Phase E will populate "relaxed_dense" | "lexical_table" | "identity_anchor" | "full".
+    # "relaxed_dense" | "lexical_table" | "identity_anchor" | "full" after escalation.
+
+    # Task E3 — fallback diagnostics (before/after escalation).
+    # All three default None; only populated on the multi-channel success path
+    # (and on the ladder exit-paths that return early after reaching level=full/would_skip).
+    # Per-element paths and all non-multichannel error/early-return paths leave these None.
+    field_coverage_before_fallback: dict[str, int] | None = None
+    # field_coverage(initial_pool) — computed on the INITIAL (pre-escalation, fallback_level="none")
+    # pool right after the first multi-channel pass. None when no escalation was attempted
+    # (i.e. when the initial pool never went through the ladder check) or on the per-element path.
+
+    candidate_count_before_fallback: int | None = None
+    # Size of the initial pool before any escalation. None outside multi-channel path.
+
+    candidate_count_after_fallback: int | None = None
+    # Final pool size after escalation completes (== candidate_count_before_fallback when
+    # no escalation fired, i.e. fallback_level="none"). None outside multi-channel path.
 
     # Task C8 — identity-anchor channel diagnostics.
     # None when the channel was not attempted (per-element mode, identity_types
