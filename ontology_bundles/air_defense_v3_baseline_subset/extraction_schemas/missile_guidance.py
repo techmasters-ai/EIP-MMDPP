@@ -71,6 +71,39 @@ class MissileGuidanceRecord(BaseModel):
             "ARH'), emit them as a single string. Do NOT infer "
             "guidance from indirect cues."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "guidance", "guidance type", "guidance method",
+                    "guidance system", "guidance mode",
+                    "command guidance", "CLOS", "command-to-line-of-sight",
+                    "semi-active radar homing", "SARH",
+                    "active radar homing", "ARH",
+                    "track-via-missile", "TVM",
+                    "inertial guidance", "inertial navigation",
+                    "beam-rider", "beam riding",
+                    "infrared homing", "IR homing",
+                    "imaging infrared", "IIR",
+                    "passive radar homing", "PRH",
+                    "home-on-jam", "HOJ",
+                ],
+                "negative_terms": [
+                    "radar tracking", "target tracking", "fire control",
+                    "launcher control", "warhead", "fuze",
+                ],
+                "evidence_patterns": [
+                    r"re:\bguidance\s+(?:type|method|system|mode)\b",
+                    r"re:\b(?:SARH|ARH|TVM|CLOS|PRH|HOJ)\b",
+                    "command guidance", "semi-active", "active radar homing",
+                    "beam-rider", "track-via-missile",
+                ],
+                "likely_sections": [
+                    "specifications", "guidance", "seeker", "performance",
+                    "missile", "navigation",
+                ],
+                "units": [],
+            }
+        },
     )
     seeker_type: Optional[str] = Field(
         default=None,
@@ -92,6 +125,37 @@ class MissileGuidanceRecord(BaseModel):
             "infer the seeker from guidance prose alone unless the "
             "document uses one of these seeker-specific phrases."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "seeker", "seeker type", "terminal seeker",
+                    "homing head", "seeker head",
+                    "SARH seeker", "ARH seeker", "active seeker",
+                    "X-band active seeker",
+                    "millimeter-wave seeker", "mmW seeker",
+                    "infrared seeker", "IR seeker",
+                    "imaging infrared seeker", "IIR seeker",
+                    "dual-mode seeker", "dual-mode IR/RF",
+                    "passive radar homing seeker",
+                    "electro-optical seeker", "EO seeker",
+                ],
+                "negative_terms": [
+                    "guidance system", "fire control radar",
+                    "target illuminator", "ground radar",
+                ],
+                "evidence_patterns": [
+                    r"re:\bseeker\s+(?:type|head)?\b",
+                    r"re:\b(?:SARH|ARH|IIR)\s+seeker\b",
+                    "homing head", "terminal seeker",
+                    "dual-mode seeker",
+                ],
+                "likely_sections": [
+                    "specifications", "seeker", "guidance", "performance",
+                    "missile", "terminal homing",
+                ],
+                "units": [],
+            }
+        },
     )
     # Optional[bool] uses Pydantic's native bool parsing — same pattern
     # as radar_antenna's antenna_photo / spoiled fields.
@@ -103,6 +167,27 @@ class MissileGuidanceRecord(BaseModel):
             "'image', 'figure', 'missile photo', or 'weapon photo'. "
             "Use null when not stated."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "photo", "photograph", "missile photo", "weapon photo",
+                    "image", "figure", "missile image", "weapon image",
+                ],
+                "negative_terms": [
+                    "radar photo", "launcher photo", "vehicle photo",
+                    "site photo", "schematic", "diagram",
+                ],
+                "evidence_patterns": [
+                    r"re:\bmissile\s+(?:photo|photograph|image)\b",
+                    r"re:\bweapon\s+(?:photo|image)\b",
+                    "missile photo", "weapon photo",
+                ],
+                "likely_sections": [
+                    "images", "photographs", "figures", "missile", "weapon",
+                ],
+                "units": [],
+            }
+        },
     )
 
     _v_system_name    = field_validator("system_name", mode="before")(validate_missile_system_name)

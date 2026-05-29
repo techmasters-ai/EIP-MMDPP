@@ -59,6 +59,35 @@ class RadarModulationRecord(BaseModel):
             "'phase-shift keying' / 'PSK' / 'BPSK' → BIPHASE. "
             "Emit as uppercase."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "intra-pulse modulation", "modulation type",
+                    "pulse modulation", "waveform modulation",
+                    "CW", "continuous wave",
+                    "LFM", "linear FM", "linear frequency modulation",
+                    "linear chirp", "chirp",
+                    "NLFM", "nonlinear FM", "nonlinear frequency modulation",
+                    "Barker code", "Barker-coded pulse",
+                    "polyphase code", "Frank code",
+                    "biphase code", "phase-shift keying", "PSK", "BPSK",
+                ],
+                "negative_terms": [
+                    "inter-pulse modulation", "PRI stagger",
+                    "frequency agile", "frequency hopping",
+                ],
+                "evidence_patterns": [
+                    r"re:(?:intra|intrapulse)\s+(?:modulation|MOP)",
+                    r"re:(?:LFM|NLFM|CW)\b",
+                    "Barker code", "polyphase code",
+                ],
+                "likely_sections": [
+                    "waveform", "modulation", "specifications", "radar",
+                    "signal processing",
+                ],
+                "units": [],
+            }
+        },
     )
     inter_pulse: Optional[str] = Field(
         default=None,
@@ -73,6 +102,31 @@ class RadarModulationRecord(BaseModel):
             "'frequency hopping' / 'frequency-agile pulse' / 'agile "
             "frequency' → FREQ_AGILE. Emit as uppercase."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "inter-pulse modulation", "PRI modulation",
+                    "constant PRI", "fixed PRI",
+                    "staggered PRI", "PRI stagger", "pulse stagger",
+                    "jittered PRI", "PRI jitter", "random PRI",
+                    "frequency-agile", "frequency hopping", "agile frequency",
+                ],
+                "negative_terms": [
+                    "intra-pulse modulation", "pulse modulation type",
+                    "LFM", "chirp", "Barker code",
+                ],
+                "evidence_patterns": [
+                    r"re:inter(?:-|\s+)pulse\s+modulation",
+                    r"re:PRI\s+(?:stagger|jitter)",
+                    "frequency-agile", "frequency hopping",
+                ],
+                "likely_sections": [
+                    "waveform", "modulation", "specifications", "radar",
+                    "timing",
+                ],
+                "units": [],
+            }
+        },
     )
     frequency_excursion_mhz: Optional[float] = Field(
         default=None,
@@ -84,6 +138,30 @@ class RadarModulationRecord(BaseModel):
             "'MHz', or 'kHz'. Use modulation/chirp bandwidth, not RF "
             "carrier frequency."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "frequency excursion", "chirp bandwidth",
+                    "sweep width", "sweep bandwidth",
+                    "FM sweep", "LFM bandwidth",
+                    "modulation bandwidth", "frequency deviation",
+                ],
+                "negative_terms": [
+                    "carrier frequency", "operating frequency",
+                    "RF frequency", "center frequency",
+                ],
+                "evidence_patterns": [
+                    r"re:(?:chirp|sweep|FM)\s+bandwidth",
+                    r"re:frequency\s+excursion",
+                    r"re:\d+(?:\.\d+)?\s*(?:MHz|kHz)\s+(?:sweep|bandwidth)",
+                ],
+                "likely_sections": [
+                    "waveform", "modulation", "specifications", "radar",
+                    "signal processing",
+                ],
+                "units": ["MHz", "kHz", "GHz"],
+            }
+        },
     )
     num_bits_in_code: Optional[int] = Field(
         default=None,
@@ -94,6 +172,30 @@ class RadarModulationRecord(BaseModel):
             "code length', or 'phase-code length'. Integer count; emit "
             "only when the source states it."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "code length", "chips", "chip count",
+                    "number of bits", "Barker length",
+                    "polyphase code length", "phase-code length",
+                    "code bits",
+                ],
+                "negative_terms": [
+                    "pulse width", "pulses per dwell",
+                    "pulse duration", "pulse count",
+                ],
+                "evidence_patterns": [
+                    r"re:(?:code|chip)\s+length",
+                    r"re:Barker\s*[-\s]*\d+",
+                    r"re:\d+\s*(?:chip|bit)\s+code",
+                ],
+                "likely_sections": [
+                    "waveform", "modulation", "specifications", "radar",
+                    "coding",
+                ],
+                "units": ["bits", "chips"],
+            }
+        },
     )
     pulses_per_dwell: Optional[int] = Field(
         default=None,
@@ -104,6 +206,29 @@ class RadarModulationRecord(BaseModel):
             "look', or 'pulses per look'. Integer count; emit only when "
             "the source states it."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "pulses per dwell", "pulses/dwell",
+                    "integrated pulses", "pulses integrated",
+                    "pulse count per look", "pulses per look",
+                    "pulses per beam position",
+                ],
+                "negative_terms": [
+                    "code length", "chip count", "num bits",
+                    "scan period", "dwell time",
+                ],
+                "evidence_patterns": [
+                    r"re:pulses?\s+per\s+(?:dwell|look)",
+                    r"re:integrated\s+pulses",
+                ],
+                "likely_sections": [
+                    "waveform", "signal processing", "specifications",
+                    "radar", "integration",
+                ],
+                "units": ["pulses"],
+            }
+        },
     )
 
     _v_system_name              = field_validator("system_name", mode="before")(validate_radar_system_name)

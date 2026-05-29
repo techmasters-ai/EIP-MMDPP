@@ -4,6 +4,14 @@ ontology_name: "EIP Military Equipment Ontology"
 ontology_version: "3.0.0"
 extraction_profile_version: "1.0.0"
 
+# B5/B6 (2026-05-28): multi-channel retrieval + post-rerank-boost fields
+# (field_query_top_k, lexical_top_k, pattern_hit_limit, fallback_*,
+# rerank/lexical/pattern/section/table_boost/negative weights,
+# subset_schema_extraction) are NOT repeated here; they take their defaults
+# from the RetrievalProfile model in app/services/ontology_bundles.py.
+# Omitting defaults prevents 4-bundle drift. See plan:
+# docs/superpowers/plans/2026-05-28-schema-wide-retrieval-routing-upgrade.md
+
 passes:
   - name: radar_identity
     phase: identity

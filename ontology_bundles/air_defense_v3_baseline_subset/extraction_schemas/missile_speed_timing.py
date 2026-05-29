@@ -58,6 +58,29 @@ class MissileSpeedTimingRecord(BaseModel):
             "'average Mach', or 'velocity average'. Use average or "
             "nominal flight speed, not peak speed."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "average speed", "average velocity", "mean speed",
+                    "cruise speed", "typical speed", "average Mach",
+                    "velocity average", "nominal speed",
+                ],
+                "negative_terms": [
+                    "maximum speed", "peak speed", "top speed",
+                    "boost speed", "terminal velocity",
+                ],
+                "evidence_patterns": [
+                    r"re:\baverage\s+(?:flight\s+)?speed\b",
+                    r"re:\bmean\s+speed\b",
+                    "cruise speed", "average Mach",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "speed", "missile",
+                    "flight performance",
+                ],
+                "units": ["m/s", "mps", "km/s", "ft/s", "Mach"],
+            }
+        },
     )
     max_speed_mps: Optional[float] = Field(
         default=None,
@@ -68,6 +91,30 @@ class MissileSpeedTimingRecord(BaseModel):
             "Velocity', 'Mach', or 'maximum Mach'. Use only when the "
             "source states or clearly implies a maximum or peak value."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "speed", "velocity", "maximum speed", "max speed",
+                    "top speed", "peak speed", "maximum velocity",
+                    "Mach", "maximum Mach", "terminal speed",
+                ],
+                "negative_terms": [
+                    "average speed", "cruise speed", "mean speed",
+                    "radar speed", "target speed",
+                ],
+                "evidence_patterns": [
+                    r"re:\bmax(?:imum)?\s+(?:flight\s+)?speed\b",
+                    r"re:\bMach\s+\d",
+                    r"re:\bpeak\s+speed\b",
+                    "Max Speed",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "speed", "missile",
+                    "flight performance",
+                ],
+                "units": ["m/s", "mps", "km/s", "ft/s", "Mach"],
+            }
+        },
     )
     max_flyout_time_sec: Optional[float] = Field(
         default=None,
@@ -77,6 +124,30 @@ class MissileSpeedTimingRecord(BaseModel):
             "flight', 'maximum flight time', 'flight duration limit', "
             "'maximum intercept time', or 'self-destruct time'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "maximum flyout time", "max flyout time",
+                    "max time of flight", "maximum flight time",
+                    "flight duration limit", "maximum intercept time",
+                    "self-destruct time", "time of flight limit",
+                ],
+                "negative_terms": [
+                    "flight time", "coast time", "burn time",
+                    "nominal flight time", "time to intercept",
+                ],
+                "evidence_patterns": [
+                    r"re:\bmax(?:imum)?\s+flyout\s+time\b",
+                    r"re:\bself-destruct\s+time\b",
+                    "max flyout", "flight duration limit",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "timing", "missile",
+                    "flight performance",
+                ],
+                "units": ["s", "sec", "seconds"],
+            }
+        },
     )
     flight_time_sec: Optional[float] = Field(
         default=None,
@@ -87,6 +158,30 @@ class MissileSpeedTimingRecord(BaseModel):
             "'flight duration'. Use this only when the source does not "
             "explicitly describe a maximum."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "time of flight", "flight time", "flyout time",
+                    "time to intercept", "intercept time",
+                    "flight duration", "time of flight (TOF)",
+                ],
+                "negative_terms": [
+                    "maximum flyout time", "coast time", "burn time",
+                    "maximum flight time", "self-destruct time",
+                ],
+                "evidence_patterns": [
+                    r"re:\btime\s+of\s+flight\b",
+                    r"re:\bflight\s+time\b",
+                    r"re:\btime\s+to\s+intercept\b",
+                    "flyout time",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "timing", "missile",
+                    "flight performance",
+                ],
+                "units": ["s", "sec", "seconds"],
+            }
+        },
     )
     coast_time_sec: Optional[float] = Field(
         default=None,
@@ -96,6 +191,29 @@ class MissileSpeedTimingRecord(BaseModel):
             "'coasting time', 'post-burn coast', 'unpowered flight', "
             "or 'ballistic coast'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "coast time", "coasting time", "post-burn coast",
+                    "unpowered flight", "ballistic coast",
+                    "glide time", "post-burnout time",
+                ],
+                "negative_terms": [
+                    "burn time", "motor burn time", "boost time",
+                    "sustainer time", "powered flight time",
+                ],
+                "evidence_patterns": [
+                    r"re:\bcoast(?:ing)?\s+time\b",
+                    r"re:\bpost-burn(?:out)?\s+(?:coast|time)\b",
+                    "unpowered flight", "ballistic coast",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "propulsion", "missile",
+                    "flight performance", "timing",
+                ],
+                "units": ["s", "sec", "seconds"],
+            }
+        },
     )
     intra_salvo_time_sec: Optional[float] = Field(
         default=None,
@@ -105,6 +223,31 @@ class MissileSpeedTimingRecord(BaseModel):
             "'launch interval', 'ripple interval', 'ripple-fire time', "
             "'time between launches', or 'reload between shots'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "intra-salvo time", "salvo interval", "launch interval",
+                    "ripple interval", "ripple-fire time",
+                    "time between launches", "reload between shots",
+                    "inter-launch interval",
+                ],
+                "negative_terms": [
+                    "flight time", "burn time", "reload time",
+                    "reaction time", "engagement time",
+                ],
+                "evidence_patterns": [
+                    r"re:\bsalvo\s+interval\b",
+                    r"re:\blaunch\s+interval\b",
+                    r"re:\bripple(?:-fire)?\s+(?:interval|time)\b",
+                    "intra-salvo",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "salvo", "missile",
+                    "launcher", "fire rate",
+                ],
+                "units": ["s", "sec", "seconds"],
+            }
+        },
     )
     total_burn_time_sec: Optional[float] = Field(
         default=None,
@@ -116,6 +259,30 @@ class MissileSpeedTimingRecord(BaseModel):
             "source is under a booster, ejector, or sustainer label, use "
             "the stage-specific field in missile_propulsion instead."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "burn time", "motor burn time", "total burn time",
+                    "powered flight time", "propulsion time",
+                    "rocket motor duration", "total motor burn",
+                ],
+                "negative_terms": [
+                    "booster burn time", "sustainer burn time",
+                    "ejector time", "coast time", "flight time",
+                ],
+                "evidence_patterns": [
+                    r"re:\b(?:total\s+)?burn\s+time\b",
+                    r"re:\bmotor\s+burn\s+time\b",
+                    r"re:\bpowered\s+flight\s+time\b",
+                    "rocket motor duration",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "propulsion", "missile",
+                    "timing", "motor",
+                ],
+                "units": ["s", "sec", "seconds"],
+            }
+        },
     )
     ejector_time_sec: Optional[float] = Field(
         default=None,
@@ -125,6 +292,31 @@ class MissileSpeedTimingRecord(BaseModel):
             "time', 'cold launch ejector', 'launch eject motor', "
             "'gas generator time', or 'soft-launch impulse duration'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "ejector time", "ejector burn time", "ejection time",
+                    "cold launch ejector time", "launch eject motor time",
+                    "gas generator time", "soft-launch impulse duration",
+                    "cold-launch time",
+                ],
+                "negative_terms": [
+                    "booster burn time", "sustainer burn time",
+                    "total burn time", "coast time", "flight time",
+                ],
+                "evidence_patterns": [
+                    r"re:\bejector\s+(?:burn\s+)?time\b",
+                    r"re:\bejection\s+time\b",
+                    r"re:\bgas\s+generator\s+time\b",
+                    "soft-launch impulse", "cold launch ejector",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "propulsion", "missile",
+                    "timing", "ejector", "launch",
+                ],
+                "units": ["s", "sec", "seconds"],
+            }
+        },
     )
 
     _v_system_name           = field_validator("system_name", mode="before")(validate_missile_system_name)

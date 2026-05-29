@@ -57,6 +57,21 @@ class RadarAntennaRecord(BaseModel):
             "'image', 'figure', 'antenna photo', or 'radar antenna image'. "
             "Use null when not stated."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "antenna photo", "antenna photograph",
+                    "radar antenna image", "antenna figure",
+                    "photo", "photograph",
+                ],
+                "negative_terms": [],
+                "evidence_patterns": [
+                    r"re:(?:antenna|radar)\s+(?:photo|photograph|image|figure)",
+                ],
+                "likely_sections": ["figures", "images", "antenna", "radar"],
+                "units": [],
+            }
+        },
     )
     gain_dbi: Optional[float] = Field(
         default=None,
@@ -66,6 +81,26 @@ class RadarAntennaRecord(BaseModel):
             "'array gain', 'dish gain', 'dBi', or 'dB gain'. Use antenna "
             "gain, not transmitter power or ERP/EIRP."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "antenna gain", "peak gain", "main beam gain",
+                    "array gain", "dish gain", "dBi gain",
+                ],
+                "negative_terms": [
+                    "ERP", "EIRP", "transmitter power",
+                    "effective radiated power",
+                ],
+                "evidence_patterns": [
+                    r"re:\d+(?:\.\d+)?\s*dBi",
+                    "antenna gain", "peak gain",
+                ],
+                "likely_sections": [
+                    "antenna", "specifications", "performance", "radar",
+                ],
+                "units": ["dBi", "dB"],
+            }
+        },
     )
     antenna_dim_az_m: Optional[float] = Field(
         default=None,
@@ -75,6 +110,27 @@ class RadarAntennaRecord(BaseModel):
             "'Horizontal Aperture', 'array width', 'dish width', "
             "'aperture size', or width-like antenna dimensions."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "antenna width", "azimuth aperture", "horizontal aperture",
+                    "array width", "dish width", "aperture width",
+                    "aperture size",
+                ],
+                "negative_terms": [
+                    "antenna height", "elevation aperture", "vertical aperture",
+                    "dish height",
+                ],
+                "evidence_patterns": [
+                    r"re:\d+(?:\.\d+)?\s*m\s+(?:wide|width|azimuth)",
+                    "antenna width", "azimuth aperture",
+                ],
+                "likely_sections": [
+                    "antenna", "specifications", "radar", "dimensions",
+                ],
+                "units": ["m", "ft", "cm"],
+            }
+        },
     )
     antenna_dim_el_m: Optional[float] = Field(
         default=None,
@@ -84,6 +140,26 @@ class RadarAntennaRecord(BaseModel):
             "'Vertical Aperture', 'array height', 'dish height', "
             "'aperture size', or height-like antenna dimensions."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "antenna height", "elevation aperture", "vertical aperture",
+                    "array height", "dish height", "aperture height",
+                ],
+                "negative_terms": [
+                    "antenna width", "azimuth aperture", "horizontal aperture",
+                    "dish width",
+                ],
+                "evidence_patterns": [
+                    r"re:\d+(?:\.\d+)?\s*m\s+(?:tall|height|elevation)",
+                    "antenna height", "elevation aperture",
+                ],
+                "likely_sections": [
+                    "antenna", "specifications", "radar", "dimensions",
+                ],
+                "units": ["m", "ft", "cm"],
+            }
+        },
     )
     beamwidth_az_deg: Optional[float] = Field(
         default=None,
@@ -93,6 +169,28 @@ class RadarAntennaRecord(BaseModel):
             "'az beam width', 'half-power beamwidth', 'HPBW azimuth', "
             "'3 dB beamwidth', or 'main lobe width'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "azimuth beamwidth", "horizontal beamwidth",
+                    "az beamwidth", "HPBW azimuth",
+                    "3 dB beamwidth azimuth", "half-power beamwidth",
+                    "main lobe width",
+                ],
+                "negative_terms": [
+                    "elevation beamwidth", "vertical beamwidth",
+                    "el beamwidth", "HPBW elevation",
+                ],
+                "evidence_patterns": [
+                    r"re:\d+(?:\.\d+)?\s*°?\s*(?:az(?:imuth)?|horizontal)\s+beam",
+                    "azimuth beamwidth", "HPBW",
+                ],
+                "likely_sections": [
+                    "antenna", "specifications", "performance", "radar", "beam",
+                ],
+                "units": ["deg", "°", "mrad"],
+            }
+        },
     )
     beamwidth_el_deg: Optional[float] = Field(
         default=None,
@@ -102,6 +200,27 @@ class RadarAntennaRecord(BaseModel):
             "'el beam width', 'half-power beamwidth', 'HPBW elevation', "
             "'3 dB beamwidth', or 'main lobe height'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "elevation beamwidth", "vertical beamwidth",
+                    "el beamwidth", "HPBW elevation",
+                    "3 dB beamwidth elevation", "main lobe height",
+                ],
+                "negative_terms": [
+                    "azimuth beamwidth", "horizontal beamwidth",
+                    "az beamwidth", "HPBW azimuth",
+                ],
+                "evidence_patterns": [
+                    r"re:\d+(?:\.\d+)?\s*°?\s*(?:el(?:evation)?|vertical)\s+beam",
+                    "elevation beamwidth", "HPBW",
+                ],
+                "likely_sections": [
+                    "antenna", "specifications", "performance", "radar", "beam",
+                ],
+                "units": ["deg", "°", "mrad"],
+            }
+        },
     )
     spoiled: Optional[bool] = Field(
         default=None,
@@ -111,6 +230,26 @@ class RadarAntennaRecord(BaseModel):
             "'broadened beam', 'fan beam', 'cosecant beam', or "
             "'elevation spoiled'. Use null when not stated."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "spoiled beam", "beam spoiling", "broadened beam",
+                    "fan beam", "cosecant beam", "elevation spoiled",
+                    "beam broadening",
+                ],
+                "negative_terms": [
+                    "pencil beam", "narrow beam", "focused beam",
+                ],
+                "evidence_patterns": [
+                    r"re:spoil(?:ed|ing)\s+beam",
+                    "fan beam", "cosecant beam",
+                ],
+                "likely_sections": [
+                    "antenna", "beam", "specifications", "radar",
+                ],
+                "units": [],
+            }
+        },
     )
     coverage_limits_el_deg: Optional[float] = Field(
         default=None,
@@ -120,6 +259,29 @@ class RadarAntennaRecord(BaseModel):
             "'Elevation Coverage Limits', 'elevation scan limit', "
             "'vertical coverage', 'maximum elevation', or 'elevation sector'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "elevation coverage", "elevation limit",
+                    "elevation scan limit", "vertical coverage",
+                    "maximum elevation", "elevation sector",
+                    "elevation coverage limits",
+                ],
+                "negative_terms": [
+                    "azimuth coverage", "azimuth sector",
+                    "azimuth scan limit", "horizontal coverage",
+                ],
+                "evidence_patterns": [
+                    r"re:elevation\s+(?:coverage|limit|sector)",
+                    r"re:\d+(?:\.\d+)?\s*°?\s*elevation",
+                ],
+                "likely_sections": [
+                    "antenna", "coverage", "specifications", "radar",
+                    "performance",
+                ],
+                "units": ["deg", "°"],
+            }
+        },
     )
 
     _v_system_name             = field_validator("system_name", mode="before")(validate_radar_system_name)

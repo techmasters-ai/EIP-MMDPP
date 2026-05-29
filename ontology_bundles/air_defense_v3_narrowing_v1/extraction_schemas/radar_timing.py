@@ -54,6 +54,29 @@ class RadarTimingRecord(BaseModel):
             "not pulse repetition frequency in Hz unless the source gives "
             "or implies the interval."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "PRI", "pulse repetition interval",
+                    "pulse interval", "interpulse period",
+                    "pulse spacing", "repetition interval",
+                ],
+                "negative_terms": [
+                    "PRF", "pulse repetition frequency",
+                    "pulse width", "pulse duration", "scan period",
+                ],
+                "evidence_patterns": [
+                    r"re:\bPRI\b",
+                    r"re:pulse\s+repetition\s+interval",
+                    r"re:interpulse\s+period",
+                ],
+                "likely_sections": [
+                    "specifications", "timing", "waveform", "radar",
+                    "performance",
+                ],
+                "units": ["µs", "us", "μs", "ms"],
+            }
+        },
     )
     nominal_pd_usec: Optional[float] = Field(
         default=None,
@@ -63,6 +86,29 @@ class RadarTimingRecord(BaseModel):
             "'Pulse Length', 'PW', 'pulsewidth', 'transmitted pulse "
             "duration', or 'microseconds'. Use pulse width, not PRI/PRF."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "pulse width", "pulse duration", "pulse length",
+                    "PW", "pulsewidth", "transmitted pulse duration",
+                    "pulse time",
+                ],
+                "negative_terms": [
+                    "PRI", "pulse repetition interval",
+                    "PRF", "pulse repetition frequency",
+                    "scan period", "dwell time",
+                ],
+                "evidence_patterns": [
+                    r"re:PW\b",
+                    r"re:pulse\s+(?:width|duration|length)",
+                ],
+                "likely_sections": [
+                    "specifications", "timing", "waveform", "radar",
+                    "transmitter",
+                ],
+                "units": ["µs", "us", "μs", "ns"],
+            }
+        },
     )
     scan_period_sec: Optional[float] = Field(
         default=None,
@@ -72,6 +118,29 @@ class RadarTimingRecord(BaseModel):
             "'antenna rotation time', 'scan cycle', 'revisit period', "
             "'rpm', or 'seconds per revolution'."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "scan period", "scan time", "rotation period",
+                    "antenna rotation time", "scan cycle",
+                    "revisit period", "antenna rotation rate",
+                    "revolution time",
+                ],
+                "negative_terms": [
+                    "pulse width", "PRI", "dwell time",
+                    "pulse repetition interval",
+                ],
+                "evidence_patterns": [
+                    r"re:scan\s+(?:period|time|rate)",
+                    r"re:rotation\s+(?:period|time|rate)",
+                    r"re:\d+\s*rpm",
+                ],
+                "likely_sections": [
+                    "antenna", "scan", "specifications", "performance", "radar",
+                ],
+                "units": ["s", "sec", "rpm"],
+            }
+        },
     )
     dwell_time: Optional[str] = Field(
         default=None,
@@ -82,6 +151,29 @@ class RadarTimingRecord(BaseModel):
             "preserve source units such as ms, seconds, microseconds, or "
             "µs and emit verbatim when stated explicitly."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "dwell time", "beam dwell", "look time",
+                    "time on target", "illumination time",
+                    "track dwell", "beam dwell time",
+                ],
+                "negative_terms": [
+                    "scan period", "rotation period",
+                    "PRI", "pulse width",
+                ],
+                "evidence_patterns": [
+                    r"re:dwell\s+time",
+                    r"re:beam\s+dwell",
+                    "time on target", "illumination time",
+                ],
+                "likely_sections": [
+                    "antenna", "timing", "specifications", "radar",
+                    "tracking",
+                ],
+                "units": ["ms", "µs", "us", "μs", "s"],
+            }
+        },
     )
 
     _v_system_name      = field_validator("system_name", mode="before")(validate_radar_system_name)
