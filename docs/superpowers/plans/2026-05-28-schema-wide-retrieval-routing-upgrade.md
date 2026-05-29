@@ -47,6 +47,96 @@ Verified against the current branch after three feature commits. **Phase A and P
 
 ---
 
+## Execution Re-Sequencing (2026-05-28 — post wire-off recall finding)
+
+**This section supersedes the order in "Sequencing + Dependencies" and the two "Decisions locked" bullets in the code-sync block above.** The per-task technical content of B0/B/C/D/E/F below is unchanged and still correct; what changes is the ORDER, the GATING, and the acceptance target — driven by an empirical finding that **Phase A (the selected-chunk wire) is the dominant SA-2 recall regression, not a finished foundation.**
+
+### The finding (confirmed in code + run matrix)
+
+The Phase 2 wire (`27a0c64`) regressed SA-2 narrowed-pass recall from baseline 22/16 (radar_power_rf / missile_kinematics) to 8-10/10. Forwarding `selected_chunks` puts docling-graph into chunked mode (`main.py:658` `_chunked_mode = bool(pre_built_chunks)`), which **skips sanitize + DocumentChunker** (660-665) **and skips pass-aware table normalization** (717: `_norm_skipped_for_pass = pass_name=="system_links" or _chunked_mode`). Index-time upstream preprocessing (Phase D / `ae5f501`) cannot replace this — it is pass-AGNOSTIC (no per-pass relevance filter, no per-pass unit hints).
+
+| Run | Wire | Bundle / top_k | radar_rf / miss_kin |
+|---|---|---|---|
+| `dd0b32db` | OFF | narrowing_v1 / 50-60 | 35 / 38 |
+| `6fc30668` | OFF | merged_v1 / **15** | **24 / 28** (≥ baseline 22/16) |
+| `d39ddfd3`, `202313c3`, `5ec247af` | ON | merged_v1 / 15 | 8-10 / 10 |
+
+**Wire OFF + merged top_k=15 already beats baseline at the target chunk count.** That is the "hold the line" foundation: keep top_k=15, recover pass-awareness, then use Phase C precision to climb 24/28 → ~35/38 without raising top_k.
+
+> **Evidence caveats (do not over-read the table):** (1) `6fc30668` ran the **pre-wire** merged path — its router diagnostics carry NO `selected_chunks_forwarded` key, so commit `27a0c64` was not live in the worker when it ran. The new kill-switch wire-off path is *functionally equivalent* (the gate only skips setting a key the pre-wire code never set; both scope by `expanded_refs`) but is **not yet measured on current code** — 24/28 is an inference pending a wire-off re-measure (confirm via `selected_chunks_forward_disabled=true` in the run's diagnostics). (2) `dd0b32db`'s 35/38 used **50-60 chunks at min_similarity 0.25**, not top_k=15/0.35 — so "climb to ~35/38 at top_k=15" is a **target Phase C must prove**, not an established datapoint; keep "raise top_k" as the fallback if precision alone falls short. (3) ≥1 wire-ON run also toggled `EXTRACTION_INDEX_UPSTREAM_TABLE_NORM`/`emit_unit_hint`, so the 22→10 drop is attributed to the wire but is **partially confounded** with the table-norm A/B. (4) These numbers were measured on the worktree base (`bdde417`), which lacks main's later recall fixes — absolute counts may not match a current-main run.
+
+### New gate (landed this session)
+
+`WORKER_FORWARD_SELECTED_CHUNKS` (config.py + `.env`/`.env.example`) gates the wire at `pipeline.py:7329` independently of `EXTRACTION_INDEX_MODE`. Default `true`; **live `.env` = `false`**. With it false: merged indexing + merged routing stay active, `self_refs` still narrow the scope, but docling-graph re-runs its pass-aware preprocessing. Diagnostic `selected_chunks_forward_disabled=true` makes the A/B state queryable in `pipeline_pass_outputs`. Covered by `tests/unit/test_phase2_selected_chunks_forwarding.py::test_compute_effective_skips_selected_chunks_when_forwarding_disabled`. **Deployment note:** the var reaches the worker only after `docker compose -p eip-mmdpp up -d --force-recreate worker worker-graph` from the worktree dir — a plain `restart` does NOT re-read `.env`, and the running stack bind-mounts `app/` from whichever dir compose was last run in. Verify with `docker exec eip-mmdpp-worker-graph-1 python -c "from app.config import get_settings; print(get_settings().worker_forward_selected_chunks)"` → must print `False` before trusting any wire-off run.
+
+### Corrected order
+
+```
+Step 0 (gate landed; DEPLOY + MEASURE PENDING) — Wire OFF gate added in CODE, but the running worker
+   │            still holds the wire ON until a compose force-recreate re-reads .env (no run with
+   │            selected_chunks_forward_disabled=true exists yet). Deploy, THEN re-baseline merged_v1
+   │            top_k=15 wire-off on SA-2 + Dvina. Target: SA-2 ≥ 24/28, Dvina ≥ per_element baseline.
+   ▼
+Phase B0 — Re-baseline the 5 red builder tests (unchanged; the true first code step).
+   ▼
+Phase B  — Structured retrieval signals + schema metadata (unchanged).
+   ▼
+Phase C  — Multi-channel + POST-rerank keyword/pattern precision boost.  ◄── THE GOAL
+   │         Validate on the WIRE-OFF scoped-doc path: top_k=15 recall climbs 24/28 → ~35/38.
+   │         C picks a better SCOPE (self_refs); docling-graph keeps pass-awareness on that scope.
+   ▼
+Phase E  — Graduated fallback (after C).
+Phase F  — Subset-schema extraction (after C) — second walltime lever (fewer fields → smaller LLM calls).
+
+[DEFERRED] Phase A re-enable (the wire): keep the code + gate, default OFF. Re-enabling is gated on
+           THREE HARD preconditions (see "Lineage is a hard gate" below): (1) per-ref evidence TEXT
+           forwarded + populated into evidence_units, (2) per-chunk PAGE numbers forwarded, (3) a post-C
+           A/B showing wire-ON does not regress recall vs wire-off. Until all three hold, the wire stays
+           OFF. Supersedes the locked "implement the guarded apply_chunk_scope skip" decision (moot while
+           the wire is off).
+[DEFERRED] Phase D upstream table-norm + D3 content_type/table_boost: with the wire OFF, docling-graph's
+           PASS-AWARE table-norm already runs, so router-side table_boost is low value. Revisit only if
+           Phase A is re-enabled. Supersedes the locked "keep table_boost / D3 content_type required."
+```
+
+### Updated acceptance gate (hold-the-line — replaces Acceptance #2/#3 framing for this slice)
+
+- **top_k stays 15** on the narrowed passes — "fewest chunks" is now a hard constraint, not a tunable.
+- Recall **non-decreasing vs the wire-off baseline** (SA-2 radar_power_rf ≥ 24, missile_kinematics ≥ 28; Dvina ≥ its wire-off baseline) and **trending toward 35/38** as C lands.
+- **Multi-channel ≥ single-query** on both docs (unchanged).
+- **Wall ≤ the wire-off baseline** on the narrowed passes — Phase C adds per-field embeds + rerank pairs, so the `top_n_candidates` cap before rerank (Blocker 6) is the control; precision work must not inflate wall past wire-off.
+
+### Walltime scope caveat (the dominant driver is out of scope)
+
+This workstream optimizes only the **field-group passes**. On the `bdde417` SA-2 baseline (~303m), the two narrowed field-group passes are ~1/3 of wall (radar_power_rf ~27m + missile_kinematics ~72m ≈ 99m); the **non-narrowed identity passes dominate** (radar_identity ~55m + missile_identity ~116m + system_links ~13m ≈ 184m ≈ 61%). Identity passes are `document_only` (no `retrieval:` block → RUN_FULL), so merged-chunk routing + Phase B/C/D **never touch them**, and the single largest pass (missile_identity) is untouched. **Implication:** "minimize walltime" is only ~1/3 addressable by this plan. If wall is a first-class goal, the real levers are on the identity passes — narrowing / subset-schema (Phase F is the only listed item that could reach them, and it is post-C) or pass-level parallelism — and belong in a separate workstream. Do not expect this plan to materially cut total SA-2 wall.
+
+### Lineage is a hard gate on re-enabling the wire (2026-05-28)
+
+Chunk lineage — exact source text + document + page + trust metadata on every result — is a hard project requirement. **The wire as currently built fails it on two axes; the wire-off path satisfies it via docling-graph's native provenance.** Verified in code:
+
+- **Wire ON (chunked mode), `many_to_one.py:_extract_delta_from_pre_built_chunks` (535-593):**
+  - `page_numbers: []` (line 568, "caller didn't supply per-chunk pages") → **no page lineage**.
+  - `evidence_units: [{"evidence_id": r, "text": ""} ...]` (580-582) → evidence_ids present but **empty text**. `docker/docling-graph/app/provenance.py` then drops empty-text units (`text = u.get("text") or ""; if not text.strip(): continue` … `if not parts: return None`, ~252-259), so **evidence_text resolves to None**. The dev TODO (575-579) states this explicitly.
+  - Net: a chunked-mode extraction carries a self_ref id but **no exact source text and no page** → violates the lineage requirement.
+- **Wire OFF (scoped-doc):** docling-graph chunks the scoped doc via the native `extract_chunks_with_metadata`, which populates evidence_units with real text + page_numbers from the elements' `prov`. Full lineage — the checklist-verified "Provenance Pipeline (Pass B)" path.
+
+So lineage is not a tie-breaker, it is a **blocker**. The wire cannot be re-enabled until the worker forwards (a) **per-ref evidence text** — it already holds it as `router_response["text_by_ref"]` (`pipeline.py:7299`) but does not transmit it into `SelectedChunkInput` — and (b) **per-chunk page numbers** (derivable from the merged `ExtractionChunk.page_number` / element prov), and `_extract_delta_from_pre_built_chunks` populates `evidence_units[].text` + `page_numbers` from them (the "Phase 2 wires per-ref text into SelectedChunkInput" TODO). **Separately**, the table page-lineage hole (synth table rows → `page_number=None`, Task D3) is itself a lineage defect to close regardless of the wire — it bites whenever `EXTRACTION_INDEX_UPSTREAM_TABLE_NORM=true`.
+
+### On the Tier 2/3 "move prep upstream / decommission docling-graph prep" proposal
+
+The instinct — pass-awareness belongs where `pass_name` is known — is correct, but two corrections:
+
+1. **Phase B/C is pass-aware *selection*, not pass-aware *prep*.** B/C decide *which* chunks/self_refs to send (per-field queries, lexical/pattern channels, post-rerank boost). They never transform chunk text. What the wire removed is table *rendering* — per-row synthesis + **pass-specific unit hints** (`emit_unit_hint`, which `258bb9a` proved must be pass-aware) — which is *transformation*, not selection. So B/C does **not** restore what the wire lost; "re-enable the wire once B/C lands, recall preserved" does not follow.
+2. **Reimplementing docling-graph's per-pass prep in the worker conflicts with native-first** ([[feedback_prefer_native_libraries]]) and adds a second recall-critical hand-fork (the plan's D6 already flags `web_cruft_sanitizer.py` as one drift hazard). docling-graph's `many_to_one`/table-norm path *is* the native prep; forking it worker-side and then deleting the native copy (Tier 3) trades a working native capability for custom code you must keep in sync — and that fork must also reproduce native provenance/lineage, which (per the lineage gate above) is the hard part.
+
+**Recommendation:** treat wire-OFF as the steady state, not a temporary stop. Phase C delivers "fewest chunks at high recall" on the wire-off path with native lineage intact. Pursue Tier 2/3 only if, after C, a measured need for byte-identical fidelity appears — and even then the native-preserving design is a docling-graph **prep-only** step (docling-graph stays the prep + lineage owner), not a worker-side fork. Tier 3 (docling-graph = pure extraction) is a valid north star but a separate, evidence-gated, lineage-carrying migration; it must not gate the near-term recall goal.
+
+### Why this serves the goal
+
+"Fewest chunks at high recall" = top_k=15 chunks that are the *right* 15. Phase C — dense (recall) → rerank (semantic precision) → post-rerank keyword/pattern (lexical precision) → top_k — is exactly that mechanism, and it works on the wire-off path: it improves which `self_refs` get scoped, and docling-graph still preprocesses that scope pass-aware. The two regressors (the wire + pass-agnostic upstream table-norm) come off the critical path instead of being built upon.
+
+---
+
 ## Scope
 
 **IN SCOPE — spec sections 1-7, plus §9 subset-schema and the §8 identity-anchor fix:**
@@ -707,6 +797,8 @@ class ChunkScopeDiagnostics(BaseModel):
 **Acceptance:** Rendered chunks are lexically discoverable; a search for a row label or unit-bearing column header finds the table chunk without surrounding prose; large tables split with headers on every fragment.
 
 ### Task D3 — Preserve table metadata + page on ExtractionChunk (REQUIRED — keeps `table_boost` functional AND fixes table page-lineage)
+
+> **[DEFERRED per "Execution Re-Sequencing"]** Phase D (incl. D3) is deferred while the wire is OFF — `table_boost` is a no-op without the wire, and docling-graph's native pass-aware table-norm runs on the scoped-doc path. Do NOT execute D3 ahead of B/C. The "REQUIRED" framing below applies only if Phase A (the wire) is later re-enabled. NOTE: the table page-lineage hole this task fixes is still a real lineage defect whenever `EXTRACTION_INDEX_UPSTREAM_TABLE_NORM=true` — track it independently.
 
 **Context (three verified gaps):**
 1. After D1, table rows reach the index as ordinary merged `chunk_text` with NO marker (no `content_type` column on `ExtractionChunk`: `arcadedb_schema.py:38-57`), so **Phase C's `table_boost` is unwired (`is_table` always false)**.
