@@ -66,7 +66,7 @@ class RadarTimingRecord(BaseModel):
                     "pulse width", "pulse duration", "scan period",
                 ],
                 "evidence_patterns": [
-                    r"re:PRI",
+                    r"re:\bPRI\b",
                     r"re:pulse\s+repetition\s+interval",
                     r"re:interpulse\s+period",
                 ],

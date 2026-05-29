@@ -501,10 +501,15 @@ class TestB2BuildRetrievalProfile:
         # entity_query must be non-empty (drives the B0 snapshot)
         assert result.entity_query, "entity_query must be non-empty"
 
-        # B3 has now populated retrieval blocks on the missile_kinematics pass.
-        # (Radar passes get theirs from B3-radar; missile gets its from B4.)
-        # Accept either populated or empty tuples here — the per-pass B3/B4 tests
-        # (TestB3FieldMetadataLoaded) enforce non-empty specifically for radar.
+        # MissileKinematics retrieval metadata stays empty until Task B4 populates
+        # the missile schemas.  This is a regression guard: if any accidental edit
+        # populates these tuples before B4, the test will catch it.
+        for fq in result.field_queries:
+            assert fq.aliases == (), f"aliases must be empty until B4: {fq.field_name}"
+            assert fq.negative_terms == ()
+            assert fq.evidence_patterns == ()
+            assert fq.likely_sections == ()
+            assert fq.units == ()
 
     def test_build_retrieval_query_shim_byte_identical(self):
         """build_retrieval_query (now a shim) must return exactly

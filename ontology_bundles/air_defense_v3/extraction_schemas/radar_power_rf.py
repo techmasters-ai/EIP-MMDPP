@@ -101,7 +101,7 @@ class RadarPowerRfRecord(BaseModel):
                 ],
                 "evidence_patterns": [
                     r"re:peak\s+(?:transmitter\s+)?power",
-                    r"re:TX?\s*power",
+                    r"re:TX\s*power",
                     "magnetron output", "klystron output",
                 ],
                 "likely_sections": [
