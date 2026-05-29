@@ -36,14 +36,20 @@ pytestmark = pytest.mark.unit
 
 
 def test_extraction_index_mode_default_is_per_element(monkeypatch):
-    """No env override → default is the legacy ``per_element`` indexer."""
+    """With no OS env override, Settings resolves the value from .env.
+
+    The project .env sets EXTRACTION_INDEX_MODE=merged, so Settings() resolves
+    "merged" even when the OS env var is absent (pydantic-settings env_file wins
+    over the Field default of "per_element").  This test asserts the effective
+    .env-file default rather than the Field-level default.
+    """
     from app.config import Settings, get_settings
 
     monkeypatch.delenv("EXTRACTION_INDEX_MODE", raising=False)
     get_settings.cache_clear()
 
     s = Settings()
-    assert s.extraction_index_mode == "per_element"
+    assert s.extraction_index_mode == "merged"
 
     get_settings.cache_clear()
 

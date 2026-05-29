@@ -45,20 +45,24 @@ class TestRadarPowerRfQuerySnapshot:
             "RadarPowerRfPass",
         )
         expected = (
-            "Subset of RadarSystemEntity covering RF carrier + transmit power.\n"
-            "Effective Radiated Power in dBW. Source labels such as "
-            "'ERP' or 'Effective Radiated Power' map here only when the "
-            "source unit is dBW/dBm. Emit only when the source states "
-            "the value with units; otherwise null. See Unit Policy in "
-            "DELTA_SYSTEM_PROMPT for conversions.\n"
-            "Transmitter peak power in kilowatts. Source labels such as "
-            "'Peak Power', 'Transmitter Power', 'Tx Power', or 'Pulse "
-            "Power' map here when they describe peak transmitter power. See Unit "
-            "Policy in DELTA_SYSTEM_PROMPT for conversions.\n"
-            "Nominal carrier frequency in MHz. Source labels such as "
-            "'Frequency', 'Operating Frequency', 'Carrier Frequency', "
-            "or 'RF' map here when they describe the radar carrier. See Unit "
-            "Policy in DELTA_SYSTEM_PROMPT for conversions."
+            "Radar RF power and carrier-frequency characteristics: ERP, peak "
+            "transmitter power, operating frequency, and radar band.\n"
+            "Effective Radiated Power in dBW. Relevant source labels include "
+            "'ERP', 'EIRP', 'Effective Radiated Power', 'effective radiated "
+            "power', 'radiated power', 'effective power', 'dBW', or 'dBm'. "
+            "Use only effective radiated power or EIRP values stated with "
+            "dBW/dBm units; otherwise null.\n"
+            "Transmitter peak power in kilowatts. Relevant source labels include "
+            "'Peak Power', 'peak transmitter power', 'Transmitter Power', "
+            "'transmitter output power', 'Tx Power', 'Pulse Power', "
+            "'peak pulse power', 'magnetron output', or 'klystron output'. "
+            "Use peak transmitter or pulse output power, not ERP/EIRP or average power.\n"
+            "Nominal RF carrier or operating frequency in MHz. Relevant source "
+            "labels include 'Frequency', 'Operating Frequency', 'Carrier "
+            "Frequency', 'RF', 'frequency range', 'waveband', 'radar band', "
+            "'MHz', 'GHz', 'VHF', 'UHF', 'L-band', 'S-band', 'C-band', "
+            "'X-band', or 'Ku-band'. Use radar carrier frequency, not PRF/PRI "
+            "or modulation bandwidth."
         )
         result = build_retrieval_query(None, RadarPowerRfPass)
         assert result == expected
@@ -83,23 +87,30 @@ class TestMissileKinematicsQuerySnapshot:
             "MissileKinematicsPass",
         )
         expected = (
-            "Subset of MissileSystemEntity covering engagement envelope.\n"
-            "Minimum intercept range in kilometers. Source labels such as "
-            "'Min Range' or 'minimum range' map here when they describe "
-            "the missile variant. See Unit Policy in DELTA_SYSTEM_PROMPT "
-            "for conversions.\n"
-            "Maximum intercept range in kilometers. Source labels such as "
-            "'Range', 'Max Range', 'maximum range', 'effective range', "
-            "or 'engagement range' map here when they describe the "
-            "missile variant. See Unit Policy in DELTA_SYSTEM_PROMPT for "
-            "conversions.\n"
-            "Minimum engagement altitude in kilometers. Source labels such as "
-            "'Min Altitude', 'Min Alt', 'minimum altitude', or 'floor' map here.\n"
-            "Maximum engagement altitude in kilometers. Source labels such as "
-            "'Altitude', 'Max Altitude', 'Max Alt', 'ceiling', or "
-            "'engagement altitude' map here when they describe the missile "
-            "variant.\n"
-            "Maximum launch angle in degrees."
+            "Surface-to-air missile engagement envelope: range, altitude, "
+            "ceiling, floor, and launch-angle limits.\n"
+            "Minimum intercept range in kilometers. Relevant source labels "
+            "include 'minimum effective range', 'minimum range', 'Min Range', "
+            "'minimum intercept range', 'inner range', 'range floor', "
+            "'near limit', or 'kill zone minimum'. Use missile engagement "
+            "envelope limits, not radar range or launcher spacing.\n"
+            "Maximum intercept range in kilometers. Relevant source labels "
+            "include 'maximum effective range', 'maximum range', 'Max Range', "
+            "'Range', 'effective range', 'engagement range', 'intercept range', "
+            "'range against targets', 'range limit', or 'kill zone range'. "
+            "Use missile engagement envelope limits, not radar range or launcher spacing.\n"
+            "Minimum engagement altitude in kilometers. Relevant source labels "
+            "include 'minimum effective altitude', 'minimum altitude', "
+            "'Min Altitude', 'Min Alt', 'altitude floor', 'lower altitude limit', "
+            "'minimum intercept altitude', or 'kill zone floor'.\n"
+            "Maximum engagement altitude in kilometers. Relevant source labels "
+            "include 'maximum effective altitude', 'maximum altitude', "
+            "'Max Altitude', 'Max Alt', 'Altitude', 'altitude ceiling', "
+            "'ceiling', 'intercept ceiling', 'engagement altitude', "
+            "'launch ceiling', or 'kill zone ceiling'.\n"
+            "Maximum launch angle in degrees. Relevant source labels include "
+            "'maximum launch angle', 'launch angle', 'elevation launch angle', "
+            "'off-boresight launch angle', 'firing angle', or 'canister elevation angle'."
         )
         result = build_retrieval_query(None, MissileKinematicsPass)
         assert result == expected
@@ -252,16 +263,19 @@ class TestManifestRetrievalBlock:
                 )
 
     def test_conservative_defaults_applied(self):
-        """Conservative rev-12-H1 defaults must be exactly as specified."""
+        """Manifest defaults for air_defense_v3 radar_power_rf must match current values.
+
+        min_similarity was uniformly set to 0.35 across all bundles in commit 48302f2.
+        """
         from app.services.ontology_bundles import load_bundle_manifest
 
         m = load_bundle_manifest("air_defense_v3")
         rp_pass = m.find_pass("radar_power_rf")
         r = rp_pass.retrieval
         assert r is not None
-        assert r.min_similarity == pytest.approx(0.45)
+        assert r.min_similarity == pytest.approx(0.35)
         assert r.top_n_candidates == 50
-        assert r.top_k == 20
+        assert r.top_k == 15
         assert r.fallback_to_full is True
 
 
@@ -303,11 +317,12 @@ class TestRetrievalProfileValidation:
             RetrievalProfile(top_n_candidates=0)
 
     def test_top_n_candidates_above_max_raises(self):
+        """top_n_candidates has le=2000; values above that must raise."""
         from app.services.ontology_bundles import RetrievalProfile
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
-            RetrievalProfile(top_n_candidates=501)
+            RetrievalProfile(top_n_candidates=2001)
 
     def test_top_k_zero_raises(self):
         from app.services.ontology_bundles import RetrievalProfile
@@ -317,11 +332,12 @@ class TestRetrievalProfileValidation:
             RetrievalProfile(top_k=0)
 
     def test_top_k_above_max_raises(self):
+        """top_k has le=2000; values above that must raise."""
         from app.services.ontology_bundles import RetrievalProfile
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
-            RetrievalProfile(top_k=201)
+            RetrievalProfile(top_k=2001)
 
     def test_misspelled_key_raises(self):
         """extra='forbid' must catch misspelled keys."""
