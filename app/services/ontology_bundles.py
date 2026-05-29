@@ -110,6 +110,101 @@ class RetrievalProfile(BaseModel):
         ),
     )
 
+    # ------------------------------------------------------------------
+    # Channel sizing / limits (B5)
+    # ------------------------------------------------------------------
+    field_query_top_k: int = Field(
+        default=8,
+        gt=0,
+        le=2000,
+        description=(
+            "Per-field dense-vector retrieval top-k fed to each field-level "
+            "sub-query before merging candidates."
+        ),
+    )
+    lexical_top_k: int = Field(
+        default=40,
+        gt=0,
+        le=2000,
+        description="Number of candidates returned from the lexical (BM25/keyword) channel.",
+    )
+    pattern_hit_limit: int = Field(
+        default=50,
+        gt=0,
+        le=2000,
+        description="Maximum chunk hits retained from the pattern-match channel.",
+    )
+    fallback_min_field_coverage: int = Field(
+        default=1,
+        gt=0,
+        description=(
+            "Minimum number of schema fields that must be covered by retrieved "
+            "chunks before the fallback-to-full path is considered."
+        ),
+    )
+    fallback_similarity_relaxation: float = Field(
+        default=0.07,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Amount by which min_similarity is relaxed on the fallback retry "
+            "pass when initial retrieval falls below fallback_min_field_coverage."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # POST-rerank precision-boost weights (B5)
+    # Applied after the cross-encoder, before the top_k cut.
+    # Final score = rerank_weight * norm_ce_score
+    #             + lexical_weight * norm_lexical_score
+    #             + pattern_weight * pattern_hit
+    #             + section_weight * section_match
+    #             + table_boost * is_table
+    #             - negative_weight * negative_signal
+    # ------------------------------------------------------------------
+    rerank_weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Base weight applied to the normalised cross-encoder score.",
+    )
+    lexical_weight: float = Field(
+        default=0.20,
+        ge=0.0,
+        description="Boost weight for lexical (BM25/keyword) channel hit score.",
+    )
+    pattern_weight: float = Field(
+        default=0.15,
+        ge=0.0,
+        description="Boost weight for pattern-match channel hit.",
+    )
+    section_weight: float = Field(
+        default=0.10,
+        ge=0.0,
+        description="Boost weight awarded when the chunk is from a matching section.",
+    )
+    table_boost: float = Field(
+        default=0.08,
+        ge=0.0,
+        description="Additive boost for table chunks (numeric evidence density).",
+    )
+    negative_weight: float = Field(
+        default=0.20,
+        ge=0.0,
+        description="Penalty weight subtracted for negative-signal indicators.",
+    )
+
+    # ------------------------------------------------------------------
+    # §9 Subset-schema extraction (opt-in; default off) (B5)
+    # ------------------------------------------------------------------
+    subset_schema_extraction: bool = Field(
+        default=False,
+        description=(
+            "When True, extract only the subset of the schema fields whose "
+            "retrieval chunks scored above min_similarity; reduces LLM payload "
+            "size. Opt-in until C.9 shadow data confirms recall parity."
+        ),
+    )
+
 
 def _infer_pass_phase(name: str, input_mode: str) -> PassPhase:
     """Infer the phase for a pass that doesn't declare one explicitly.
