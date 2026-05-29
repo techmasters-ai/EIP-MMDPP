@@ -323,3 +323,65 @@ def score_candidates(
     results.sort(key=lambda t: (-t[1], -t[2] if t[2] != _RERANK_FLOOR else math.inf, t[0].candidate_key))
 
     return [(mc, score) for mc, score, _ in results]
+
+
+# ---------------------------------------------------------------------------
+# E1 — Pure fallback-decision helpers (no DB / LLM / reranker)
+# ---------------------------------------------------------------------------
+# These helpers let the chunk_scope endpoint (E2) decide whether retrieval
+# under-covered a pass WITHOUT calling the reranker or LLM.
+#
+# "Real retrieval signal" definition (pinned for test contract):
+#   A MergedCandidate has real signal when its retrieval_sources is non-empty.
+#   retrieval_sources is only populated by the merge process when an actual
+#   retrieval channel tagged the candidate ({"dense"}, {"field:<name>"},
+#   {"lexical"}, {"pattern"}, {"identity_anchor"}, or any combination).
+#   A candidate with retrieval_sources == set() was never touched by any
+#   retrieval channel — it is a bare/noise entry and must NOT count toward the
+#   enough_candidates threshold so that fallback fires correctly.
+# ---------------------------------------------------------------------------
+
+
+def field_coverage(candidates: list[MergedCandidate]) -> dict[str, int]:
+    """Return {field_name: number of candidates whose supported_field_hints include it}.
+
+    Aggregates across the entire pool.  Empty pool → {}.
+    """
+    counts: dict[str, int] = {}
+    for mc in candidates:
+        for field in mc.supported_field_hints:
+            counts[field] = counts.get(field, 0) + 1
+    return counts
+
+
+def enough_candidates(
+    candidates: list[MergedCandidate],
+    cfg: "RetrievalProfile",
+) -> bool:
+    """True iff the number of candidates with REAL retrieval signal >= min(cfg.top_k, 10).
+
+    "Real signal" = retrieval_sources is non-empty (at least one genuine tag
+    such as "dense", "field:<name>", "lexical", "pattern", "identity_anchor").
+    An all-noise pool (every candidate has retrieval_sources == set()) returns
+    False so the caller fires the fallback path rather than suppressing it.
+
+    Does NOT inspect reranker_score or the final post-rerank score — this is a
+    pure recall-coverage decision over the merged pool before scoring.
+    """
+    threshold = min(cfg.top_k, 10)
+    real_count = sum(1 for mc in candidates if mc.retrieval_sources)
+    return real_count >= threshold
+
+
+def enough_field_coverage(
+    candidates: list[MergedCandidate],
+    cfg: "RetrievalProfile",
+) -> bool:
+    """True iff the number of schema fields covered by retrieved chunks >= cfg.fallback_min_field_coverage.
+
+    A field is "covered" when at least one candidate in the pool has that field
+    in its supported_field_hints (i.e. field_coverage count > 0).
+    """
+    cov = field_coverage(candidates)
+    covered = sum(1 for n in cov.values() if n > 0)
+    return covered >= cfg.fallback_min_field_coverage

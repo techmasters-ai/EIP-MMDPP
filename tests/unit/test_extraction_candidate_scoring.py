@@ -980,3 +980,298 @@ class TestScoreCandidatesWeightsFromCfg:
         cfg = _make_profile()
         result = score_candidates([], cfg)
         assert result == []
+
+
+# ===========================================================================
+# E1 — fallback-decision helpers (pure functions, no DB/LLM/reranker)
+# ===========================================================================
+#
+# field_coverage(candidates) -> dict[str, int]
+#   {field_name: count of candidates whose supported_field_hints include it}
+#
+# enough_candidates(candidates, cfg) -> bool
+#   count of candidates with REAL retrieval signal >= min(cfg.top_k, 10)
+#   "real signal" == non-empty retrieval_sources (at least one genuine tag).
+#   An all-noise pool (retrieval_sources == set() on every candidate) → False.
+#
+# enough_field_coverage(candidates, cfg) -> bool
+#   len([f for f, n in field_coverage(candidates).items() if n > 0])
+#     >= cfg.fallback_min_field_coverage
+# ===========================================================================
+
+
+def _make_mc(
+    candidate_key: str = "k",
+    retrieval_sources: set[str] | None = None,
+    supported_field_hints: set[str] | None = None,
+    alias_hits: int = 0,
+    pattern_hits: int = 0,
+) -> "MergedCandidate":
+    """Build a minimal MergedCandidate for E1 tests."""
+    from app.services.extraction_candidate_scoring import MergedCandidate
+
+    return MergedCandidate(
+        candidate_key=candidate_key,
+        chunk_index=0,
+        self_ref=candidate_key,
+        chunk_text="text",
+        source_refs=[],
+        token_count=50,
+        page_number=None,
+        vector_score=None,
+        field_scores={},
+        alias_hits=alias_hits,
+        pattern_hits=pattern_hits,
+        negative_hits=0,
+        section_hits=0,
+        content_type=None,
+        retrieval_sources=retrieval_sources if retrieval_sources is not None else set(),
+        supported_field_hints=supported_field_hints if supported_field_hints is not None else set(),
+    )
+
+
+def _make_e1_profile(top_k: int = 10, fallback_min_field_coverage: int = 2, **kwargs):
+    """RetrievalProfile for E1 tests — only top_k and fallback_min_field_coverage matter."""
+    return _make_profile(top_k=top_k, fallback_min_field_coverage=fallback_min_field_coverage, **kwargs)
+
+
+class TestE1Import:
+    def test_helpers_importable(self):
+        from app.services.extraction_candidate_scoring import (  # noqa: F401
+            field_coverage,
+            enough_candidates,
+            enough_field_coverage,
+        )
+
+
+class TestE1EmptyPool:
+    """Empty pool → all helpers reflect no signal."""
+
+    def test_field_coverage_empty_pool_returns_empty_dict(self):
+        from app.services.extraction_candidate_scoring import field_coverage
+
+        assert field_coverage([]) == {}
+
+    def test_enough_candidates_empty_pool_is_false(self):
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        cfg = _make_e1_profile(top_k=10)
+        assert enough_candidates([], cfg) is False
+
+    def test_enough_field_coverage_empty_pool_is_false(self):
+        from app.services.extraction_candidate_scoring import enough_field_coverage
+
+        cfg = _make_e1_profile(top_k=10, fallback_min_field_coverage=1)
+        assert enough_field_coverage([], cfg) is False
+
+
+class TestE1AllNoisePool:
+    """KEY CASE: non-empty pool with NO real retrieval signal must trigger fallback.
+
+    "Noise" candidates have retrieval_sources == set() — they were never tagged
+    by any retrieval channel.  enough_candidates must return False so that the
+    caller fires the fallback path rather than suppressing it.
+    """
+
+    def test_enough_candidates_all_noise_is_false(self):
+        """[WATCHED-FAIL] All-noise pool must NOT satisfy enough_candidates."""
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        # 15 noise candidates — more than min(top_k=10, 10) but zero real signal
+        noise_pool = [
+            _make_mc(f"noise_{i}", retrieval_sources=set())
+            for i in range(15)
+        ]
+        cfg = _make_e1_profile(top_k=10)
+        # Must be False: all-noise means no real retrieval happened
+        assert enough_candidates(noise_pool, cfg) is False
+
+    def test_enough_candidates_single_noise_candidate_is_false(self):
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        cfg = _make_e1_profile(top_k=1)
+        noise = [_make_mc("n", retrieval_sources=set())]
+        assert enough_candidates(noise, cfg) is False
+
+    def test_field_coverage_noise_candidates_with_field_hints_still_counts(self):
+        """field_coverage is purely about supported_field_hints — it counts regardless
+        of retrieval signal quality (it's a separate dimension from enough_candidates)."""
+        from app.services.extraction_candidate_scoring import field_coverage
+
+        # A noise candidate can still declare field hints (edge case)
+        noise = [_make_mc("n", retrieval_sources=set(), supported_field_hints={"range"})]
+        cov = field_coverage(noise)
+        assert cov.get("range", 0) == 1
+
+
+class TestE1SparsePool:
+    """Sparse real pool (below threshold) → False; at/above threshold → True."""
+
+    def test_sparse_pool_below_threshold_is_false(self):
+        """3 real candidates when min(top_k=10, 10)=10 → not enough."""
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        pool = [
+            _make_mc(f"c{i}", retrieval_sources={"dense"})
+            for i in range(3)
+        ]
+        cfg = _make_e1_profile(top_k=10)
+        assert enough_candidates(pool, cfg) is False
+
+    def test_pool_exactly_at_threshold_is_true(self):
+        """Exactly min(top_k=10, 10)=10 real candidates → True."""
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        pool = [
+            _make_mc(f"c{i}", retrieval_sources={"dense"})
+            for i in range(10)
+        ]
+        cfg = _make_e1_profile(top_k=10)
+        assert enough_candidates(pool, cfg) is True
+
+    def test_pool_above_threshold_is_true(self):
+        """20 real candidates when threshold is 10 → True."""
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        pool = [
+            _make_mc(f"c{i}", retrieval_sources={"field:max_range_km"})
+            for i in range(20)
+        ]
+        cfg = _make_e1_profile(top_k=20)
+        assert enough_candidates(pool, cfg) is True
+
+    def test_top_k_above_10_caps_threshold_at_10(self):
+        """min(top_k, 10) caps at 10: top_k=50 still requires only 10 real candidates."""
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        pool = [
+            _make_mc(f"c{i}", retrieval_sources={"lexical"})
+            for i in range(10)
+        ]
+        cfg = _make_e1_profile(top_k=50)
+        assert enough_candidates(pool, cfg) is True
+
+    def test_top_k_below_10_uses_top_k_as_threshold(self):
+        """When top_k < 10, threshold = top_k (not 10). 3 real with top_k=3 → True."""
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        pool = [
+            _make_mc(f"c{i}", retrieval_sources={"pattern"})
+            for i in range(3)
+        ]
+        cfg = _make_e1_profile(top_k=3)
+        assert enough_candidates(pool, cfg) is True
+
+    def test_mixed_real_and_noise_counts_only_real(self):
+        """A pool of 5 real + 10 noise candidates: only real ones count toward threshold."""
+        from app.services.extraction_candidate_scoring import enough_candidates
+
+        real_pool = [
+            _make_mc(f"real_{i}", retrieval_sources={"dense"})
+            for i in range(5)
+        ]
+        noise_pool = [
+            _make_mc(f"noise_{i}", retrieval_sources=set())
+            for i in range(10)
+        ]
+        cfg = _make_e1_profile(top_k=10)
+        # 5 real < 10 threshold → False
+        assert enough_candidates(real_pool + noise_pool, cfg) is False
+
+
+class TestE1FieldCoverage:
+    """field_coverage aggregates supported_field_hints across the pool."""
+
+    def test_single_candidate_single_field(self):
+        from app.services.extraction_candidate_scoring import field_coverage
+
+        pool = [_make_mc("c", supported_field_hints={"range"})]
+        assert field_coverage(pool) == {"range": 1}
+
+    def test_multiple_candidates_same_field(self):
+        from app.services.extraction_candidate_scoring import field_coverage
+
+        pool = [
+            _make_mc("c0", supported_field_hints={"range"}),
+            _make_mc("c1", supported_field_hints={"range"}),
+            _make_mc("c2", supported_field_hints={"range", "speed"}),
+        ]
+        cov = field_coverage(pool)
+        assert cov["range"] == 3
+        assert cov["speed"] == 1
+
+    def test_no_overlap_across_candidates(self):
+        from app.services.extraction_candidate_scoring import field_coverage
+
+        pool = [
+            _make_mc("c0", supported_field_hints={"range"}),
+            _make_mc("c1", supported_field_hints={"guidance"}),
+            _make_mc("c2", supported_field_hints={"speed"}),
+        ]
+        cov = field_coverage(pool)
+        assert cov == {"range": 1, "guidance": 1, "speed": 1}
+
+    def test_no_field_hints_returns_empty(self):
+        from app.services.extraction_candidate_scoring import field_coverage
+
+        pool = [_make_mc("c", supported_field_hints=set())]
+        assert field_coverage(pool) == {}
+
+
+class TestE1FieldCoverageEnough:
+    """enough_field_coverage checks ≥ fallback_min_field_coverage fields have n > 0."""
+
+    def test_enough_fields_covered(self):
+        from app.services.extraction_candidate_scoring import enough_field_coverage
+
+        pool = [
+            _make_mc("c0", supported_field_hints={"range", "guidance"}),
+            _make_mc("c1", supported_field_hints={"speed"}),
+        ]
+        # 3 distinct fields covered, threshold=2 → True
+        cfg = _make_e1_profile(fallback_min_field_coverage=2)
+        assert enough_field_coverage(pool, cfg) is True
+
+    def test_exactly_at_field_threshold_is_true(self):
+        from app.services.extraction_candidate_scoring import enough_field_coverage
+
+        pool = [
+            _make_mc("c0", supported_field_hints={"range"}),
+            _make_mc("c1", supported_field_hints={"guidance"}),
+        ]
+        cfg = _make_e1_profile(fallback_min_field_coverage=2)
+        assert enough_field_coverage(pool, cfg) is True
+
+    def test_below_field_threshold_is_false(self):
+        from app.services.extraction_candidate_scoring import enough_field_coverage
+
+        pool = [_make_mc("c0", supported_field_hints={"range"})]
+        cfg = _make_e1_profile(fallback_min_field_coverage=2)
+        assert enough_field_coverage(pool, cfg) is False
+
+    def test_empty_pool_field_coverage_false(self):
+        from app.services.extraction_candidate_scoring import enough_field_coverage
+
+        cfg = _make_e1_profile(fallback_min_field_coverage=1)
+        assert enough_field_coverage([], cfg) is False
+
+    def test_well_covered_pool_both_true(self):
+        """Integration: a well-covered pool satisfies both enough_candidates
+        and enough_field_coverage."""
+        from app.services.extraction_candidate_scoring import (
+            enough_candidates,
+            enough_field_coverage,
+        )
+
+        fields = ["range", "guidance", "speed", "warhead", "propulsion"]
+        pool = [
+            _make_mc(
+                f"c{i}",
+                retrieval_sources={"dense", f"field:{fields[i % len(fields)]}"},
+                supported_field_hints={fields[i % len(fields)]},
+            )
+            for i in range(12)  # 12 real candidates
+        ]
+        cfg = _make_e1_profile(top_k=10, fallback_min_field_coverage=3)
+        assert enough_candidates(pool, cfg) is True
+        assert enough_field_coverage(pool, cfg) is True
