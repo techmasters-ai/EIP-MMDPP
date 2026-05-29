@@ -95,6 +95,9 @@ def _make_pass_def(
         rp.top_n_candidates = 50
         rp.top_k = 20
         rp.fallback_to_full = True
+        # C6: set field_query_top_k=0 so existing per-element-mode tests
+        # never enter the multi-channel branch (condition requires > 0).
+        rp.field_query_top_k = 0
         pd.retrieval = rp
     else:
         pd.retrieval = retrieval
@@ -195,10 +198,20 @@ def _patch_template_class():
 
 
 def _patch_build_query(text: str = "radar power rf query"):
-    """Patch build_retrieval_query to return *text*."""
+    """Patch build_retrieval_profile to return a mock PassRetrievalSignals.
+
+    C6 wiring replaced build_retrieval_query with build_retrieval_profile;
+    query_text now comes from signals.entity_query. This helper patches the
+    new call so all per-element-mode tests continue to control the query text.
+    build_retrieval_query is no longer called in the endpoint and does not
+    need to be patched (kept for reference only).
+    """
+    signals_mock = MagicMock()
+    signals_mock.entity_query = text
+    signals_mock.field_queries = ()
     return patch(
-        "app.api.v1.extraction_routing.build_retrieval_query",
-        return_value=text,
+        "app.api.v1.extraction_routing.build_retrieval_profile",
+        return_value=signals_mock,
     )
 
 

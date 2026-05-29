@@ -193,15 +193,33 @@ async def _post_chunk_scope(
       * _resolve_template_class + build_retrieval_query → bypass schema-walk
     """
     from pydantic import BaseModel
+    from unittest.mock import MagicMock
     from app.main import create_app
+    from app.services.extraction_query_builder import PassRetrievalSignals
 
     class _FakePassCls(BaseModel):
         pass
+
+    _QUERY_TEXT = "radar power rf ERP frequency transmitter peak power"
+    _signals = PassRetrievalSignals(
+        pass_name="radar_power_rf",
+        entity_doc="",
+        entity_query=_QUERY_TEXT,
+        field_queries=(),
+        lexical_terms=(),
+        negative_terms=(),
+        likely_sections=(),
+        evidence_patterns=(),
+    )
 
     app = create_app()
     with (
         patch(
             "app.api.v1.extraction_routing.embed_texts",
+            side_effect=_fake_embed,
+        ),
+        patch(
+            "app.services.extraction_chunk_search.embed_texts",
             side_effect=_fake_embed,
         ),
         patch(
@@ -213,10 +231,15 @@ async def _post_chunk_scope(
             return_value=_FakePassCls,
         ),
         patch(
+            "app.api.v1.extraction_routing.build_retrieval_profile",
+            return_value=_signals,
+        ),
+        # build_retrieval_query is no longer called by the endpoint (C6 wiring
+        # replaced it with build_retrieval_profile); kept for safety in case
+        # of fallback paths that still reference it.
+        patch(
             "app.api.v1.extraction_routing.build_retrieval_query",
-            return_value=(
-                "radar power rf ERP frequency transmitter peak power"
-            ),
+            return_value=_QUERY_TEXT,
         ),
     ):
         async with AsyncClient(
@@ -242,6 +265,17 @@ def _force_merged_mode():
 
     settings = get_settings()
     return patch.object(settings, "extraction_index_mode", "merged")
+
+
+def _force_per_element_mode():
+    """Override ``settings.extraction_index_mode`` to ``"per_element"`` for the
+    duration of the test. Needed when EXTRACTION_INDEX_MODE=merged is set in
+    .env and the test needs the pre-C6 per-element behavior.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    return patch.object(settings, "extraction_index_mode", "per_element")
 
 
 # ---------------------------------------------------------------------------
@@ -594,11 +628,14 @@ class TestResponseShapeBackwardCompat:
             _insert_merged_rows(
                 arcadedb_store, run_id=run_id, document_id=doc_id,
             )
-            # Do NOT force merged mode — default is per_element.
-            resp = await _post_chunk_scope(
-                arcadedb_store=arcadedb_store,
-                pipeline_run_id=run_id,
-            )
+            # Explicitly force per_element mode — EXTRACTION_INDEX_MODE=merged
+            # may be set in .env (C6 production default), and the test must
+            # exercise the pre-C6 per-element behavior regardless.
+            with _force_per_element_mode():
+                resp = await _post_chunk_scope(
+                    arcadedb_store=arcadedb_store,
+                    pipeline_run_id=run_id,
+                )
 
             assert resp.status_code == 200, resp.text
             data = resp.json()

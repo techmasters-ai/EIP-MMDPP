@@ -557,6 +557,154 @@ async def fetch_extraction_chunks_for_run(
     return rows or []
 
 
+# ---------------------------------------------------------------------------
+# Task C6 — multi-channel retrieval orchestrator
+# ---------------------------------------------------------------------------
+# Design constraints enforced here:
+#   - Exactly ONE per-run SQL SELECT (via fetch_extraction_chunks_for_run)
+#   - ZERO HNSW / vector_search calls
+#   - Runs C1 (dense multi-query) + C2 (lexical) + C3 (pattern) on the same rows
+#   - C4 merge_candidates produces the unified MergedCandidate pool
+#   - Pool ordered by best dense score and CAPPED to cfg.top_n_candidates
+#   - Does NOT score (C5) or rerank — that's post-rerank in the endpoint (C6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MultiChannelDiagnostics:
+    """Diagnostics from search_extraction_chunks_multi_channel.
+
+    Carries per-channel counts and pool sizes for the router diagnostics block.
+    """
+    raw_row_count: int             # rows fetched from the per-run SELECT
+    entity_dense_count: int        # candidates from C1 entity-dense channel
+    field_dense_total_count: int   # sum of all per-field dense candidates (pre-merge)
+    lexical_hit_count: int         # chunks with at least one lexical hit (C2)
+    pattern_hit_count: int         # chunks with at least one pattern hit (C3)
+    pool_size: int                 # merged pool size AFTER cap
+    filter_strategy: str = "multi_channel"
+
+
+async def search_extraction_chunks_multi_channel(
+    retrieval_signals: "PassRetrievalSignals",
+    pipeline_run_id: str,
+    cfg: "RetrievalProfile",
+    *,
+    store: "ArcadeDBGraphStore",
+) -> "tuple[list, MultiChannelDiagnostics]":
+    """Multi-channel retrieval orchestrator for merged mode (Task C6).
+
+    Implements the full C1–C4 pipeline over a single per-run SELECT with no
+    HNSW / vector_search calls.
+
+    Strategy
+    --------
+    1. ONE SQL SELECT via ``fetch_extraction_chunks_for_run`` (B-tree-indexed
+       on pipeline_run_id; no global scan, no HNSW).
+    2. C1 dense multi-query: entity + per-field vectors in ONE ``embed_texts``
+       call (already batched inside ``search_extraction_chunks_dense_multi_query``).
+    3. C2 lexical alias hits over same rows.
+    4. C3 regex/pattern hits over same rows.
+    5. C4 ``merge_candidates`` — section_meta={} / table_meta={} (Phase D deferred).
+    6. Order merged pool by best dense score (vector_score, descending; None last).
+    7. Cap to ``cfg.top_n_candidates``.
+
+    Returns
+    -------
+    tuple[list[MergedCandidate], MultiChannelDiagnostics]
+        - Capped MergedCandidate pool, ready for rerank + C5 scoring in the endpoint.
+        - Diagnostics object with per-channel counts.
+
+    MUST NOT call vector_search or any HNSW path — see module docstring.
+    """
+    from app.services.extraction_candidate_scoring import (
+        MergedCandidate,
+        merge_candidates,
+    )
+    from app.services.extraction_lexical_search import (
+        lexical_hit_counts,
+        pattern_hit_counts,
+    )
+
+    # ------------------------------------------------------------------
+    # 1. ONE per-run SELECT — no HNSW, no vector_search.
+    # ------------------------------------------------------------------
+    rows = await fetch_extraction_chunks_for_run(
+        store=store,
+        pipeline_run_id=pipeline_run_id,
+    )
+    raw_row_count = len(rows)
+
+    if not rows:
+        return [], MultiChannelDiagnostics(
+            raw_row_count=0,
+            entity_dense_count=0,
+            field_dense_total_count=0,
+            lexical_hit_count=0,
+            pattern_hit_count=0,
+            pool_size=0,
+        )
+
+    # ------------------------------------------------------------------
+    # 2. C1 — batched dense multi-query (entity + per-field vectors).
+    #    ONE embed_texts call inside search_extraction_chunks_dense_multi_query.
+    # ------------------------------------------------------------------
+    entity_dense, field_dense = await search_extraction_chunks_dense_multi_query(
+        retrieval_signals, rows, cfg
+    )
+
+    entity_dense_count = len(entity_dense)
+    field_dense_total_count = sum(len(v) for v in field_dense.values())
+
+    # ------------------------------------------------------------------
+    # 3. C2 — lexical alias hits (pure, no DB calls).
+    # ------------------------------------------------------------------
+    field_queries = retrieval_signals.field_queries
+    lex_hits = lexical_hit_counts(rows, field_queries)
+    lexical_hit_count = sum(
+        1 for v in lex_hits.values() if v.get("alias_hits", 0) > 0
+    )
+
+    # ------------------------------------------------------------------
+    # 4. C3 — regex/pattern hits (pure, no DB calls).
+    # ------------------------------------------------------------------
+    pat_hits = pattern_hit_counts(rows, field_queries, cfg.pattern_hit_limit)
+    pattern_hit_count = sum(
+        1 for v in pat_hits.values() if v.get("pattern_hits", 0) > 0
+    )
+
+    # ------------------------------------------------------------------
+    # 5. C4 — merge all channels into a unified MergedCandidate pool.
+    #    section_meta={} and table_meta={} — Phase D deferred.
+    # ------------------------------------------------------------------
+    merged_pool: list[MergedCandidate] = merge_candidates(
+        entity_dense=entity_dense,
+        field_dense=field_dense,
+        lexical_hits=lex_hits,
+        pattern_hits=pat_hits,
+        section_meta={},
+        table_meta={},
+    )
+
+    # ------------------------------------------------------------------
+    # 6. Order by best dense score (vector_score desc; None last), then cap.
+    # ------------------------------------------------------------------
+    merged_pool.sort(
+        key=lambda mc: (mc.vector_score is None, -(mc.vector_score or 0.0), mc.candidate_key)
+    )
+    capped_pool = merged_pool[: cfg.top_n_candidates]
+
+    diag = MultiChannelDiagnostics(
+        raw_row_count=raw_row_count,
+        entity_dense_count=entity_dense_count,
+        field_dense_total_count=field_dense_total_count,
+        lexical_hit_count=lexical_hit_count,
+        pattern_hit_count=pattern_hit_count,
+        pool_size=len(capped_pool),
+    )
+    return capped_pool, diag
+
+
 async def search_extraction_chunks_dense_multi_query(
     retrieval_signals: "PassRetrievalSignals",
     rows: "list[dict]",

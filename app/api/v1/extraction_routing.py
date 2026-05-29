@@ -38,8 +38,15 @@ from app.services.extraction_chunk_index import (
     read_chunk_source_refs,
     read_chunk_token_count,
 )
-from app.services.extraction_chunk_search import search_extraction_chunks
-from app.services.extraction_query_builder import build_retrieval_query
+from app.services.extraction_chunk_search import (
+    search_extraction_chunks,
+    search_extraction_chunks_multi_channel,
+)
+from app.services.extraction_candidate_scoring import score_candidates
+from app.services.extraction_query_builder import (
+    build_retrieval_query,
+    build_retrieval_profile,
+)
 from app.services.ontology_bundles import load_bundle_manifest
 from app.services.ontology_templates import UnknownBundleError
 from app.services import reranker as rrk
@@ -229,9 +236,17 @@ async def chunk_scope(
     # Important #1 (rev 16): wrap in try/except — a bad template_class string in
     # the manifest (ImportError / AttributeError) or a build_retrieval_query
     # failure must return a structured response, not a bare 500.
+    #
+    # C6: In merged mode we also build the structured PassRetrievalSignals
+    # (via build_retrieval_profile) so the multi-channel orchestrator gets
+    # per-field queries, aliases, and evidence patterns.  Variable naming:
+    #   signals = PassRetrievalSignals  (structured; used by multi-channel path)
+    #   profile = RetrievalProfile      (config from pass_def.retrieval; UNCHANGED)
+    # NEVER name a variable "retrieval_profile" — see C6 spec naming constraint.
     try:
         template_cls = _resolve_template_class(body.bundle_key, pass_def)
-        query_text = build_retrieval_query(pass_def, template_cls)
+        signals = build_retrieval_profile(pass_def, template_cls)
+        query_text = signals.entity_query  # byte-identical to build_retrieval_query output
     except Exception as exc:
         logger.warning(
             "chunk-scope: template resolution failed for pass=%s: %r — "
@@ -261,143 +276,419 @@ async def chunk_scope(
             ),
         )
 
-    # 3. Embed the query (sync function in executor — rev 10 M3)
     loop = asyncio.get_running_loop()
-
-    def _embed() -> list[float]:
-        return embed_texts([query_text], query=True)[0]
-
-    query_vector: list[float] = await loop.run_in_executor(None, _embed)
-
-    # 4. Vector retrieval via the over-fetch helper
-    # NEVER use vector_search(filters=...) — ArcadeDB post-HNSW filter bug
-    # (see C.1 module docstring + tests/integration/test_extraction_chunk_filter_starvation.py)
     store = get_graph_store()
 
-    vector_t0 = time.monotonic()
-    results, search_diag = await search_extraction_chunks(
-        store=store,
-        query_vector=query_vector,
-        pipeline_run_id=body.pipeline_run_id,
-        desired_top_n=profile.top_n_candidates,
-        score_threshold=profile.min_similarity,
+    # -----------------------------------------------------------------------
+    # C6 BRANCH: merged mode with multi-channel retrieval (C1–C4 orchestrator)
+    # vs. per-element mode (existing single-vector path).
+    #
+    # Condition: extraction_index_mode == "merged" AND field_query_top_k > 0.
+    # When False: per-element path — byte-identical behavior to pre-C6 code.
+    # When True: multi-channel path — ONE per-run SELECT, ZERO HNSW/vector_search.
+    # -----------------------------------------------------------------------
+    settings = get_settings()
+    # Defensive: field_query_top_k may be absent on legacy or test-only profile
+    # objects that haven't been updated for C6.  RetrievalProfile always sets
+    # this as an int (ge=0 validator); only mock objects may be missing it.
+    # isinstance() check ensures we ONLY enter multi-channel for real int values
+    # (not MagicMock, which would otherwise compare truthy).
+    _fqtk = getattr(profile, "field_query_top_k", 0)
+    _use_multi_channel = (
+        settings.extraction_index_mode == "merged"
+        and isinstance(_fqtk, int)
+        and _fqtk > 0
     )
-    vector_search_ms = int((time.monotonic() - vector_t0) * 1000)
 
-    # Pre-compute full-doc token estimate (needed by several return paths)
-    full_doc_token_estimate = await _async_full_doc_token_estimate(
-        body.pipeline_run_id, store
-    )
+    if _use_multi_channel:
+        # ------------------------------------------------------------------
+        # MERGED MODE — multi-channel retrieval (C1+C2+C3+C4 orchestrator).
+        #
+        # Constraints enforced by search_extraction_chunks_multi_channel:
+        #   - Exactly ONE per-run SELECT (B-tree-indexed on pipeline_run_id)
+        #   - ZERO HNSW / vector_search calls
+        #   - Pool capped to profile.top_n_candidates BEFORE this call returns
+        #     (Blocker 6: cap is BEFORE rerank)
+        # ------------------------------------------------------------------
+        vector_t0 = time.monotonic()
+        pool, mc_search_diag = await search_extraction_chunks_multi_channel(
+            signals,
+            body.pipeline_run_id,
+            profile,
+            store=store,
+        )
+        vector_search_ms = int((time.monotonic() - vector_t0) * 1000)
 
-    # 5. Empty retrieval handling
-    if not results:
-        # Counterfactual (rev 10 M6): what WOULD have happened without fallback
-        would_skip_if_fallback_disabled = True
-        if profile.fallback_to_full:
-            mode = "full"
-            fallback_reason = "no_chunks_above_threshold"
-        else:
-            mode = "would_skip"
-            fallback_reason = "no_chunks_above_threshold"
+        # Translate MultiChannelDiagnostics → ChunkSearchDiagnostics-compatible
+        # values for the shared diagnostics fields below.
+        _mc_ann_top_k = mc_search_diag.raw_row_count
+        _mc_post_filter_count = mc_search_diag.pool_size
+        _mc_filter_strategy = mc_search_diag.filter_strategy
 
-        return ChunkScopeResponse(
-            mode=mode,
-            self_refs=[],
-            diagnostics=ChunkScopeDiagnostics(
-                mode=mode,
-                fallback_reason=fallback_reason,
-                query_text=query_text,
-                vector_threshold=profile.min_similarity,
-                vector_score_range=None,
-                candidate_count=0,
-                rerank_score_range=None,
-                selected_ref_count=0,
-                selected_token_estimate=0,
-                full_doc_token_estimate=full_doc_token_estimate,
-                would_skip_if_fallback_disabled=would_skip_if_fallback_disabled,
-                vector_search_ms=vector_search_ms,
-                rerank_ms=0,
-                ann_top_k_requested=search_diag.ann_top_k_requested,
-                post_filter_candidate_count=search_diag.post_filter_candidate_count,
-                post_filter_retry_count=search_diag.post_filter_retry_count,
-                filter_strategy=search_diag.filter_strategy,
-                short_fetch=search_diag.short_fetch,  # Important #2 (rev 16)
-            ),
+        # Pre-compute full-doc token estimate
+        full_doc_token_estimate = await _async_full_doc_token_estimate(
+            body.pipeline_run_id, store
         )
 
-    # 6. Rerank — chunk_text → content_text mapping (rev 9 M2)
-    # Phase 1 Task 6: also carry chunk_index / source_refs / token_count
-    # so the merged-mode return path can expand source_refs without an
-    # extra DB round-trip. The reranker passes unknown keys through
-    # (see app/services/reranker.py:rerank — it does dict(candidate)).
-    candidates_for_rerank = [
-        {
-            "content_text": r.properties.get("chunk_text", ""),
-            "self_ref": r.properties.get("self_ref"),
-            "vector_score": r.score if r.score is not None else None,
-            # Merged-mode fields — Task 1 accessors coalesce legacy/missing
-            # to safe defaults (-1, [], 0).
-            "chunk_index": read_chunk_index(r.properties),
-            "source_refs": read_chunk_source_refs(r.properties),
-            "token_count": read_chunk_token_count(r.properties),
-        }
-        for r in results
-    ]
-
-    # Minor #6 (rev 16): detect reranker_disabled BEFORE calling rerank so
-    # fallback_reason is always explicit.  rrk.rerank() already short-circuits
-    # when settings.reranker_enabled=False and returns candidates unchanged, but
-    # that leaves fallback_reason=None in the response — diagnostics consumers
-    # cannot distinguish a successful cross-encoder run from a disabled one.
-    _reranker_enabled = get_settings().reranker_enabled
-    _reranker_fallback_reason: str | None = None if _reranker_enabled else "reranker_disabled"
-
-    rerank_t0 = time.monotonic()
-    try:
-        def _rerank() -> list[dict]:
-            return rrk.rerank(
-                query=query_text,
-                candidates=candidates_for_rerank,
-                top_k=profile.top_k,
+        # Empty pool handling
+        if not pool:
+            would_skip_if_fallback_disabled = True
+            if profile.fallback_to_full:
+                _empty_mode = "full"
+                _empty_fallback = "no_chunks_above_threshold"
+            else:
+                _empty_mode = "would_skip"
+                _empty_fallback = "no_chunks_above_threshold"
+            return ChunkScopeResponse(
+                mode=_empty_mode,
+                self_refs=[],
+                diagnostics=ChunkScopeDiagnostics(
+                    mode=_empty_mode,
+                    fallback_reason=_empty_fallback,
+                    query_text=query_text,
+                    vector_threshold=profile.min_similarity,
+                    vector_score_range=None,
+                    candidate_count=0,
+                    rerank_score_range=None,
+                    selected_ref_count=0,
+                    selected_token_estimate=0,
+                    full_doc_token_estimate=full_doc_token_estimate,
+                    would_skip_if_fallback_disabled=would_skip_if_fallback_disabled,
+                    vector_search_ms=vector_search_ms,
+                    rerank_ms=0,
+                    ann_top_k_requested=_mc_ann_top_k,
+                    post_filter_candidate_count=_mc_post_filter_count,
+                    post_filter_retry_count=0,
+                    filter_strategy=_mc_filter_strategy,
+                    short_fetch=False,
+                ),
             )
 
-        reranked: list[dict] = await loop.run_in_executor(None, _rerank)
-        rerank_ms = int((time.monotonic() - rerank_t0) * 1000)
-    except Exception as exc:
-        # Rev 10 M6 rule: reranker error → mode=full (NOT vector-only ordering)
-        rerank_ms = int((time.monotonic() - rerank_t0) * 1000)
-        logger.warning(
-            "chunk-scope: reranker error → fail open mode=full: %r", exc
-        )
-        return ChunkScopeResponse(
-            mode="full",
-            self_refs=[],
-            diagnostics=ChunkScopeDiagnostics(
-                mode="full",
-                fallback_reason="reranker_unavailable",
-                query_text=query_text,
-                vector_threshold=profile.min_similarity,
-                vector_score_range=_score_range(results),
-                candidate_count=len(results),
-                rerank_score_range=None,
-                selected_ref_count=0,
-                selected_token_estimate=0,
-                full_doc_token_estimate=full_doc_token_estimate,
-                would_skip_if_fallback_disabled=False,
-                vector_search_ms=vector_search_ms,
-                rerank_ms=rerank_ms,
-                ann_top_k_requested=search_diag.ann_top_k_requested,
-                post_filter_candidate_count=search_diag.post_filter_candidate_count,
-                post_filter_retry_count=search_diag.post_filter_retry_count,
-                filter_strategy=search_diag.filter_strategy,
-                short_fetch=search_diag.short_fetch,  # Important #2 (rev 16)
-            ),
+        # Build rerank-input dicts from MergedCandidates.
+        # Each dict carries:
+        #   "content_text"          — chunk_text (reranker compat key, rev 9 M2)
+        #   "self_ref"              — merged chunk self_ref (e.g. "chunk_0")
+        #   "vector_score"          — best dense score from C1
+        #   "chunk_index"           — merged chunk index
+        #   "source_refs"           — constituent element refs (for expansion)
+        #   "token_count"           — for selected_token_estimate
+        #   "page_number"           — lineage
+        #   C4 signal fields        — alias_hits, pattern_hits, negative_hits,
+        #                             section_hits, content_type,
+        #                             retrieval_sources, supported_field_hints
+        #   "merged_candidate"      — back-ref for C5 score_candidates contract
+        pool_dicts: list[dict] = [
+            {
+                "content_text": mc.chunk_text,
+                "self_ref": mc.self_ref,
+                "vector_score": mc.vector_score,
+                "chunk_index": mc.chunk_index,
+                "source_refs": mc.source_refs,
+                "token_count": mc.token_count,
+                "page_number": mc.page_number,
+                "alias_hits": mc.alias_hits,
+                "pattern_hits": mc.pattern_hits,
+                "negative_hits": mc.negative_hits,
+                "section_hits": mc.section_hits,
+                "content_type": mc.content_type,
+                "retrieval_sources": mc.retrieval_sources,
+                "supported_field_hints": mc.supported_field_hints,
+                "merged_candidate": mc,
+            }
+            for mc in pool
+        ]
+
+        # Detect reranker disabled state (Minor #6 rev 16 pattern)
+        _reranker_enabled = settings.reranker_enabled
+        _reranker_fallback_reason: str | None = (
+            None if _reranker_enabled else "reranker_disabled"
         )
 
-    # 7. Top-K by reranker_score → selected_refs
-    # rerank() already returns top_k items; slice defensively in case caller
-    # profile.top_k changed between the rerank call and here.
-    top_k_results = reranked[: profile.top_k]
+        rerank_t0 = time.monotonic()
+        try:
+            # Rerank the ENTIRE capped pool — top_k=len(pool_dicts) so every
+            # scoreable candidate gets a reranker_score. The top_k cut happens
+            # AFTER C5 scoring (post-rerank boost), not here.
+            def _rerank_multi() -> list[dict]:
+                return rrk.rerank(
+                    query=query_text,
+                    candidates=pool_dicts,
+                    top_k=len(pool_dicts),
+                )
+
+            reranked_pool: list[dict] = await loop.run_in_executor(None, _rerank_multi)
+            rerank_ms = int((time.monotonic() - rerank_t0) * 1000)
+        except Exception as exc:
+            rerank_ms = int((time.monotonic() - rerank_t0) * 1000)
+            logger.warning(
+                "chunk-scope multi-channel: reranker error → fail open mode=full: %r", exc
+            )
+            return ChunkScopeResponse(
+                mode="full",
+                self_refs=[],
+                diagnostics=ChunkScopeDiagnostics(
+                    mode="full",
+                    fallback_reason="reranker_unavailable",
+                    query_text=query_text,
+                    vector_threshold=profile.min_similarity,
+                    vector_score_range=None,
+                    candidate_count=len(pool),
+                    rerank_score_range=None,
+                    selected_ref_count=0,
+                    selected_token_estimate=0,
+                    full_doc_token_estimate=full_doc_token_estimate,
+                    would_skip_if_fallback_disabled=False,
+                    vector_search_ms=vector_search_ms,
+                    rerank_ms=rerank_ms,
+                    ann_top_k_requested=_mc_ann_top_k,
+                    post_filter_candidate_count=_mc_post_filter_count,
+                    post_filter_retry_count=0,
+                    filter_strategy=_mc_filter_strategy,
+                    short_fetch=False,
+                ),
+            )
+
+        # C5 post-rerank precision boost: re-score + re-sort; then take top_k.
+        # score_candidates returns list[(MergedCandidate, final_score)] sorted
+        # by final desc → reranker_score desc → candidate_key asc.
+        c5_scored = score_candidates(reranked_pool, profile)
+        # top_k cut is HERE (after C5), not before rerank.
+        selected_mcs = c5_scored[: profile.top_k]
+
+        if not selected_mcs:
+            logger.warning(
+                "chunk-scope multi-channel: C5 scoring produced 0 selected "
+                "candidates for pass=%s run=%s — failing open to mode=full",
+                body.pass_name, body.pipeline_run_id,
+            )
+            return ChunkScopeResponse(
+                mode="full",
+                self_refs=[],
+                diagnostics=ChunkScopeDiagnostics(
+                    mode="full",
+                    fallback_reason="no_selected_refs_after_rerank",
+                    query_text=query_text,
+                    vector_threshold=profile.min_similarity,
+                    vector_score_range=None,
+                    candidate_count=len(pool),
+                    rerank_score_range=_rerank_score_range(reranked_pool),
+                    selected_ref_count=0,
+                    selected_token_estimate=0,
+                    full_doc_token_estimate=full_doc_token_estimate,
+                    would_skip_if_fallback_disabled=False,
+                    vector_search_ms=vector_search_ms,
+                    rerank_ms=rerank_ms,
+                    ann_top_k_requested=_mc_ann_top_k,
+                    post_filter_candidate_count=_mc_post_filter_count,
+                    post_filter_retry_count=0,
+                    filter_strategy=_mc_filter_strategy,
+                    short_fetch=False,
+                ),
+            )
+
+        # Attach score_components to the pool_dicts for diagnostics (matches
+        # the back-ref on each dict via "merged_candidate").
+        # Build top_k_results from the C5-selected MergedCandidates.
+        # We need the dict form (with reranker_score, source_refs, etc.) for
+        # the shared merged-mode expansion logic below. Find each dict in the
+        # reranked_pool by matching merged_candidate identity.
+        mc_to_dict: dict[int, dict] = {
+            id(d["merged_candidate"]): d
+            for d in reranked_pool
+            if "merged_candidate" in d
+        }
+        top_k_results = []
+        for mc, final_score in selected_mcs:
+            d = mc_to_dict.get(id(mc))
+            if d is not None:
+                top_k_results.append(d)
+            else:
+                # Defensive fallback: build a minimal dict from mc
+                top_k_results.append({
+                    "content_text": mc.chunk_text,
+                    "self_ref": mc.self_ref,
+                    "vector_score": mc.vector_score,
+                    "chunk_index": mc.chunk_index,
+                    "source_refs": mc.source_refs,
+                    "token_count": mc.token_count,
+                })
+
+        # The shared merged-mode expansion block below uses top_k_results with
+        # the same dict keys as the per-element path. Guard: if no valid self_refs
+        # (all merged chunks have "chunk_{n}" self_refs, not "#/..." docling refs,
+        # so the text_by_ref guard below will correctly filter them to the
+        # SelectedChunk.text path).
+        #
+        # Diagnostics for merged path (shared diagnostics block reads these)
+        _diag_search_diag_ann_top_k = _mc_ann_top_k
+        _diag_search_diag_post_filter = _mc_post_filter_count
+        _diag_search_diag_retry = 0
+        _diag_search_diag_strategy = _mc_filter_strategy
+        _diag_search_diag_short_fetch = False
+        # vector_score_range: None for multi-channel path (pool is MergedCandidate
+        # list; _score_range expects GraphEntityResult with .score attribute).
+        _vector_score_range: tuple[float, float] | None = None
+
+    else:
+        # ------------------------------------------------------------------
+        # PER-ELEMENT MODE — existing single-vector path (BYTE-IDENTICAL).
+        # No changes to this branch. All variable names and logic preserved.
+        # ------------------------------------------------------------------
+
+        # 3. Embed the query (sync function in executor — rev 10 M3)
+        def _embed() -> list[float]:
+            return embed_texts([query_text], query=True)[0]
+
+        query_vector: list[float] = await loop.run_in_executor(None, _embed)
+
+        # 4. Vector retrieval via the over-fetch helper
+        # NEVER use vector_search(filters=...) — ArcadeDB post-HNSW filter bug
+        # (see C.1 module docstring + tests/integration/test_extraction_chunk_filter_starvation.py)
+        vector_t0 = time.monotonic()
+        results, search_diag = await search_extraction_chunks(
+            store=store,
+            query_vector=query_vector,
+            pipeline_run_id=body.pipeline_run_id,
+            desired_top_n=profile.top_n_candidates,
+            score_threshold=profile.min_similarity,
+        )
+        vector_search_ms = int((time.monotonic() - vector_t0) * 1000)
+
+        # Pre-compute full-doc token estimate (needed by several return paths)
+        full_doc_token_estimate = await _async_full_doc_token_estimate(
+            body.pipeline_run_id, store
+        )
+
+        # 5. Empty retrieval handling
+        if not results:
+            # Counterfactual (rev 10 M6): what WOULD have happened without fallback
+            would_skip_if_fallback_disabled = True
+            if profile.fallback_to_full:
+                mode = "full"
+                fallback_reason = "no_chunks_above_threshold"
+            else:
+                mode = "would_skip"
+                fallback_reason = "no_chunks_above_threshold"
+
+            return ChunkScopeResponse(
+                mode=mode,
+                self_refs=[],
+                diagnostics=ChunkScopeDiagnostics(
+                    mode=mode,
+                    fallback_reason=fallback_reason,
+                    query_text=query_text,
+                    vector_threshold=profile.min_similarity,
+                    vector_score_range=None,
+                    candidate_count=0,
+                    rerank_score_range=None,
+                    selected_ref_count=0,
+                    selected_token_estimate=0,
+                    full_doc_token_estimate=full_doc_token_estimate,
+                    would_skip_if_fallback_disabled=would_skip_if_fallback_disabled,
+                    vector_search_ms=vector_search_ms,
+                    rerank_ms=0,
+                    ann_top_k_requested=search_diag.ann_top_k_requested,
+                    post_filter_candidate_count=search_diag.post_filter_candidate_count,
+                    post_filter_retry_count=search_diag.post_filter_retry_count,
+                    filter_strategy=search_diag.filter_strategy,
+                    short_fetch=search_diag.short_fetch,  # Important #2 (rev 16)
+                ),
+            )
+
+        # 6. Rerank — chunk_text → content_text mapping (rev 9 M2)
+        # Phase 1 Task 6: also carry chunk_index / source_refs / token_count
+        # so the merged-mode return path can expand source_refs without an
+        # extra DB round-trip. The reranker passes unknown keys through
+        # (see app/services/reranker.py:rerank — it does dict(candidate)).
+        candidates_for_rerank = [
+            {
+                "content_text": r.properties.get("chunk_text", ""),
+                "self_ref": r.properties.get("self_ref"),
+                "vector_score": r.score if r.score is not None else None,
+                # Merged-mode fields — Task 1 accessors coalesce legacy/missing
+                # to safe defaults (-1, [], 0).
+                "chunk_index": read_chunk_index(r.properties),
+                "source_refs": read_chunk_source_refs(r.properties),
+                "token_count": read_chunk_token_count(r.properties),
+            }
+            for r in results
+        ]
+
+        # Minor #6 (rev 16): detect reranker_disabled BEFORE calling rerank so
+        # fallback_reason is always explicit.  rrk.rerank() already short-circuits
+        # when settings.reranker_enabled=False and returns candidates unchanged, but
+        # that leaves fallback_reason=None in the response — diagnostics consumers
+        # cannot distinguish a successful cross-encoder run from a disabled one.
+        _reranker_enabled = settings.reranker_enabled
+        _reranker_fallback_reason: str | None = (
+            None if _reranker_enabled else "reranker_disabled"
+        )
+
+        rerank_t0 = time.monotonic()
+        try:
+            def _rerank() -> list[dict]:
+                return rrk.rerank(
+                    query=query_text,
+                    candidates=candidates_for_rerank,
+                    top_k=profile.top_k,
+                )
+
+            reranked: list[dict] = await loop.run_in_executor(None, _rerank)
+            rerank_ms = int((time.monotonic() - rerank_t0) * 1000)
+        except Exception as exc:
+            # Rev 10 M6 rule: reranker error → mode=full (NOT vector-only ordering)
+            rerank_ms = int((time.monotonic() - rerank_t0) * 1000)
+            logger.warning(
+                "chunk-scope: reranker error → fail open mode=full: %r", exc
+            )
+            return ChunkScopeResponse(
+                mode="full",
+                self_refs=[],
+                diagnostics=ChunkScopeDiagnostics(
+                    mode="full",
+                    fallback_reason="reranker_unavailable",
+                    query_text=query_text,
+                    vector_threshold=profile.min_similarity,
+                    vector_score_range=_score_range(results),
+                    candidate_count=len(results),
+                    rerank_score_range=None,
+                    selected_ref_count=0,
+                    selected_token_estimate=0,
+                    full_doc_token_estimate=full_doc_token_estimate,
+                    would_skip_if_fallback_disabled=False,
+                    vector_search_ms=vector_search_ms,
+                    rerank_ms=rerank_ms,
+                    ann_top_k_requested=search_diag.ann_top_k_requested,
+                    post_filter_candidate_count=search_diag.post_filter_candidate_count,
+                    post_filter_retry_count=search_diag.post_filter_retry_count,
+                    filter_strategy=search_diag.filter_strategy,
+                    short_fetch=search_diag.short_fetch,  # Important #2 (rev 16)
+                ),
+            )
+
+        # 7. Top-K by reranker_score → selected_refs
+        # rerank() already returns top_k items; slice defensively in case caller
+        # profile.top_k changed between the rerank call and here.
+        top_k_results = reranked[: profile.top_k]
+
+        # Diagnostics aliases for the shared block below.
+        _diag_search_diag_ann_top_k = search_diag.ann_top_k_requested
+        _diag_search_diag_post_filter = search_diag.post_filter_candidate_count
+        _diag_search_diag_retry = search_diag.post_filter_retry_count
+        _diag_search_diag_strategy = search_diag.filter_strategy
+        _diag_search_diag_short_fetch = search_diag.short_fetch
+        # vector_score_range: populated from the per-element GraphEntityResult list.
+        _vector_score_range = _score_range(results)
+    # -----------------------------------------------------------------------
+    # Shared post-retrieval path — used by BOTH merged and per-element branches.
+    # top_k_results: list[dict] with keys:
+    #   content_text, self_ref, vector_score, chunk_index, source_refs,
+    #   token_count (+ merged_candidate in merged mode, + reranker_score).
+    # _diag_search_diag_* variables: aliased from branch-specific diag objects.
+    # results: the raw candidate pool (GraphEntityResult list in per-element;
+    #          MergedCandidate list in merged — used only for _score_range()).
+    # -----------------------------------------------------------------------
+
     selected_refs = [c["self_ref"] for c in top_k_results if c.get("self_ref")]
     text_by_ref: dict[str, str] = {}
     for c in top_k_results:
@@ -428,6 +719,14 @@ async def chunk_scope(
             "pass=%s run=%s — failing open to mode=full",
             len(top_k_results), body.pass_name, body.pipeline_run_id,
         )
+        # Build the rerank_score_range from top_k_results (works for both branches).
+        _shared_rerank_scores = [
+            c["reranker_score"] for c in top_k_results if "reranker_score" in c
+        ]
+        _shared_rerank_range = (
+            (min(_shared_rerank_scores), max(_shared_rerank_scores))
+            if _shared_rerank_scores else None
+        )
         return ChunkScopeResponse(
             mode="full",
             self_refs=[],
@@ -436,20 +735,20 @@ async def chunk_scope(
                 fallback_reason="no_selected_refs_after_rerank",
                 query_text=query_text,
                 vector_threshold=profile.min_similarity,
-                vector_score_range=_score_range(results),
-                candidate_count=len(results),
-                rerank_score_range=_rerank_score_range(reranked),
+                vector_score_range=None,
+                candidate_count=len(top_k_results),
+                rerank_score_range=_shared_rerank_range,
                 selected_ref_count=0,
                 selected_token_estimate=0,
                 full_doc_token_estimate=full_doc_token_estimate,
                 would_skip_if_fallback_disabled=False,
                 vector_search_ms=vector_search_ms,
                 rerank_ms=rerank_ms,
-                ann_top_k_requested=search_diag.ann_top_k_requested,
-                post_filter_candidate_count=search_diag.post_filter_candidate_count,
-                post_filter_retry_count=search_diag.post_filter_retry_count,
-                filter_strategy=search_diag.filter_strategy,
-                short_fetch=search_diag.short_fetch,
+                ann_top_k_requested=_diag_search_diag_ann_top_k,
+                post_filter_candidate_count=_diag_search_diag_post_filter,
+                post_filter_retry_count=_diag_search_diag_retry,
+                filter_strategy=_diag_search_diag_strategy,
+                short_fetch=_diag_search_diag_short_fetch,
             ),
         )
 
@@ -477,21 +776,24 @@ async def chunk_scope(
             100.0 * selected_token_estimate / full_doc_token_estimate,
         )
 
-    # Important #2 (rev 16): short_fetch from search_diag must be surfaced.
+    # Important #2 (rev 16): short_fetch must be surfaced.
     # Mode stays selected_refs — short_fetch is diagnostic-only for v1.
-    if search_diag.short_fetch:
+    if _diag_search_diag_short_fetch:
         logger.warning(
             "chunk-scope: short-fetch on pass=%s run=%s "
             "(post_filter_candidate_count=%d < desired_top_n=%d); "
             "downstream may see incomplete retrieval",
             body.pass_name, body.pipeline_run_id,
-            search_diag.post_filter_candidate_count, profile.top_n_candidates,
+            _diag_search_diag_post_filter, profile.top_n_candidates,
         )
 
     # ---------------------------------------------------------------
-    # Phase 1 Task 6: merged-mode expansion path.
+    # Phase 1 Task 6 + C6: merged-mode expansion path.
     # Gated on ``settings.extraction_index_mode == "merged"`` so per_element
     # mode (the default) stays byte-identical to the pre-Task-6 response.
+    # Both the original per-element merged path and the new multi-channel
+    # merged path (C6) share this expansion block — top_k_results carries
+    # the same dict keys in both cases.
     # ---------------------------------------------------------------
     selected_chunks_out: list[SelectedChunk] | None = None
     selected_chunk_count = 0
@@ -501,10 +803,15 @@ async def chunk_scope(
     final_selected_ref_count = len(selected_refs)
     final_selected_token_estimate = selected_token_estimate
 
-    if get_settings().extraction_index_mode == "merged":
+    if _use_multi_channel:
         # Expand the per-chunk source_refs into a deduplicated list in
         # chunk-encounter order (rerank rank order — do NOT lex-sort;
         # '#/texts/100' would otherwise precede '#/texts/35').
+        # Gated on _use_multi_channel (not just extraction_index_mode) so
+        # the expansion only runs when top_k_results actually carry the
+        # multi-channel dict shape (with source_refs from MergedCandidates).
+        # Per-element dicts don't carry source_refs and must NOT go through
+        # this expansion path.
         expanded_refs: list[str] = []
         seen: set[str] = set()
         sc_list: list[SelectedChunk] = []
@@ -524,6 +831,18 @@ async def chunk_scope(
                     tok_count = int(tok_count)
                 except (TypeError, ValueError):
                     tok_count = 0
+
+            # Skip lexical/pattern-only candidates that have no real chunk data.
+            # These entries exist in the merged pool when C2/C3 hits a chunk by
+            # candidate_key (vertex_id) before the dense path sees it, and the
+            # merge_candidates bucket sets chunk_index=-1 and chunk_text="".
+            # Their content_text is "" (unscorable by reranker), and they carry
+            # no source_refs — including them in selected_chunks would produce
+            # SelectedChunk(chunk_index=-1) which breaks the response contract.
+            content = chunk_row.get("content_text") or ""
+            if chunk_idx == -1 and not refs_for_chunk and not content.strip():
+                continue
+
             for ref in refs_for_chunk:
                 if isinstance(ref, str) and ref not in seen:
                     seen.add(ref)
@@ -535,7 +854,7 @@ async def chunk_scope(
                 SelectedChunk(
                     chunk_index=chunk_idx,
                     chunk_key=f"chunk_{chunk_idx}",
-                    text=chunk_row.get("content_text", ""),
+                    text=content,
                     source_refs=[str(r) for r in refs_for_chunk if isinstance(r, str)],
                     token_count=tok_count,
                 )
@@ -553,6 +872,15 @@ async def chunk_scope(
         # dashboards keep working (plan rev 5 Task 6 backward-compat).
         final_selected_token_estimate = selected_chunk_token_estimate
 
+    # Build shared rerank_score_range from top_k_results (works for both branches).
+    _final_rerank_scores = [
+        c["reranker_score"] for c in top_k_results if "reranker_score" in c
+    ]
+    _final_rerank_range: tuple[float, float] | None = (
+        (min(_final_rerank_scores), max(_final_rerank_scores))
+        if _final_rerank_scores else None
+    )
+
     return ChunkScopeResponse(
         mode="selected_refs",
         self_refs=final_self_refs,
@@ -563,20 +891,20 @@ async def chunk_scope(
             fallback_reason=_reranker_fallback_reason,  # Minor #6 (rev 16)
             query_text=query_text,
             vector_threshold=profile.min_similarity,
-            vector_score_range=_score_range(results),
-            candidate_count=len(results),
-            rerank_score_range=_rerank_score_range(reranked),
+            vector_score_range=_vector_score_range,  # per-element: from results; merged: None
+            candidate_count=len(top_k_results),
+            rerank_score_range=_final_rerank_range,
             selected_ref_count=final_selected_ref_count,
             selected_token_estimate=final_selected_token_estimate,
             full_doc_token_estimate=full_doc_token_estimate,
             would_skip_if_fallback_disabled=False,
             vector_search_ms=vector_search_ms,
             rerank_ms=rerank_ms,
-            ann_top_k_requested=search_diag.ann_top_k_requested,
-            post_filter_candidate_count=search_diag.post_filter_candidate_count,
-            post_filter_retry_count=search_diag.post_filter_retry_count,
-            filter_strategy=search_diag.filter_strategy,
-            short_fetch=search_diag.short_fetch,  # Important #2 (rev 16)
+            ann_top_k_requested=_diag_search_diag_ann_top_k,
+            post_filter_candidate_count=_diag_search_diag_post_filter,
+            post_filter_retry_count=_diag_search_diag_retry,
+            filter_strategy=_diag_search_diag_strategy,
+            short_fetch=_diag_search_diag_short_fetch,  # Important #2 (rev 16)
             # Task 6 merged-mode diagnostics (0 in per_element mode).
             selected_chunk_count=selected_chunk_count,
             expanded_ref_count=expanded_ref_count,
