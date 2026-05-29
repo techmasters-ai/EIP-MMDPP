@@ -1,14 +1,15 @@
 """Per-pass vector-retrieval query builder.
 
 Walks a pydantic extraction-schema Record class's model_fields to produce
-natural-language query text that the C.3 embed endpoint will embed at
-retrieval time.
+natural-language query text and per-field retrieval signals.
 
-VR Phase C.2b deliverable — pure function, no side effects.
+B1+B2 deliverables: FieldRetrievalQuery, PassRetrievalSignals,
+build_retrieval_profile (structured) + build_retrieval_query shim (str).
+Pure functions, no side effects.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Type
 
 from pydantic import BaseModel
@@ -61,6 +62,32 @@ def _humanize(field_name: str) -> str:
     Example: ``tx_peak_power_kw`` → ``"tx peak power kw"``
     """
     return field_name.replace("_", " ")
+
+
+def _union(*iterables: tuple[str, ...]) -> tuple[str, ...]:
+    """Insertion-order-preserving dedup across multiple string tuples."""
+    seen: dict[str, None] = {}
+    for it in iterables:
+        for v in it:
+            seen[v] = None
+    return tuple(seen)
+
+
+def _field_query_text(field_name: str, field_info: Any) -> str | None:
+    """Return the query_text for a field, or None if the field should be skipped.
+
+    Keeps the entity_query walker and the field_queries walker synchronised —
+    both loops use this function so their skip logic can never drift.
+    """
+    if field_name in _SKIP_FIELDS:
+        return None
+    desc = field_info.description
+    if desc:
+        stripped = desc.strip()
+        if any(stripped.startswith(p) for p in _SKIP_DESC_PREFIXES):
+            return None
+        return stripped
+    return _humanize(field_name)
 
 
 def _record_cls_from_pass_cls(pass_cls: type[BaseModel]) -> type[BaseModel] | None:
@@ -132,16 +159,9 @@ def build_retrieval_profile(pass_def: Any, template_cls: type[BaseModel]) -> Pas
         entity_parts.append(entity_doc)
 
     for field_name, field_info in record_cls.model_fields.items():
-        if field_name in _SKIP_FIELDS:
-            continue
-        desc = field_info.description
-        if desc:
-            stripped = desc.strip()
-            if any(stripped.startswith(prefix) for prefix in _SKIP_DESC_PREFIXES):
-                continue
-            entity_parts.append(stripped)
-        else:
-            entity_parts.append(_humanize(field_name))
+        qt = _field_query_text(field_name, field_info)
+        if qt is not None:
+            entity_parts.append(qt)
 
     entity_query = "\n".join(entity_parts)
 
@@ -151,16 +171,9 @@ def build_retrieval_profile(pass_def: Any, template_cls: type[BaseModel]) -> Pas
     field_queries: list[FieldRetrievalQuery] = []
 
     for field_name, field_info in record_cls.model_fields.items():
-        if field_name in _SKIP_FIELDS:
+        query_text = _field_query_text(field_name, field_info)
+        if query_text is None:
             continue
-        desc = field_info.description
-        if desc:
-            stripped = desc.strip()
-            if any(stripped.startswith(prefix) for prefix in _SKIP_DESC_PREFIXES):
-                continue
-            query_text = stripped
-        else:
-            query_text = _humanize(field_name)
 
         # json_schema_extra is None until B3/B4 populate retrieval blocks.
         extra = field_info.json_schema_extra or {}
@@ -179,20 +192,13 @@ def build_retrieval_profile(pass_def: Any, template_cls: type[BaseModel]) -> Pas
     # ------------------------------------------------------------------
     # 4. Union all field-level signals (deduped, insertion-ordered)
     # ------------------------------------------------------------------
-    def _union(*iterables: tuple[str, ...]) -> tuple[str, ...]:
-        seen: dict[str, None] = {}
-        for it in iterables:
-            for v in it:
-                seen[v] = None
-        return tuple(seen)
-
     all_aliases          = _union(*(fq.aliases          for fq in field_queries))
     all_negative_terms   = _union(*(fq.negative_terms   for fq in field_queries))
     all_likely_sections  = _union(*(fq.likely_sections  for fq in field_queries))
     all_evidence_patterns = _union(*(fq.evidence_patterns for fq in field_queries))
 
-    # pass_name: derive from the Pass class name (no literal domain terms)
-    pass_name = template_cls.__name__
+    # pass_name: prefer pass_def.name when provided; fall back to class name.
+    pass_name = getattr(pass_def, "name", None) or template_cls.__name__
 
     return PassRetrievalSignals(
         pass_name=pass_name,

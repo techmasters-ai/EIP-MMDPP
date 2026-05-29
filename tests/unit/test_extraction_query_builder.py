@@ -1,4 +1,4 @@
-"""C.2b — snapshot tests for build_retrieval_query.
+"""B1+B2 — snapshot and structural tests for build_retrieval_profile / build_retrieval_query.
 
 The expected query text is FROZEN at implementation time.  If the schema
 descriptions change, these tests fail on purpose — the implementer must
