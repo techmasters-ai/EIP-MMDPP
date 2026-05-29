@@ -1,16 +1,34 @@
 """Task C4 — candidate merging into MergedCandidate.
+Task C5 — score_candidates: post-rerank precision scoring.
 
-Aggregates results from all upstream retrieval sources (entity dense,
+C4: Aggregates results from all upstream retrieval sources (entity dense,
 per-field dense, lexical, pattern, section meta, table meta) by
 stable candidate_key and produces a unified MergedCandidate per chunk.
-
 C4 ONLY MERGES — no scoring (C5), no reranking, no endpoint wiring (C6).
 content_type stays None (Phase D deferred — no table metadata column yet).
+
+C5: Runs AFTER cross-encoder rerank(). Combines normalized reranker score
+(semantic precision) with C2–C4 keyword/pattern/section/negative/table
+signals (lexical precision) into a final ordering.
+
+Candidate representation fed to score_candidates (documented here for C6):
+  Each input dict carries:
+    - "merged_candidate": MergedCandidate   (the C4 object)
+    - "content_text": str                   (chunk_text, for reranker compat)
+    - "reranker_score": float | absent       (written by rerank(); absent for
+                                              unscorable — empty content_text)
+  Signals are read directly from merged_candidate.*_hits / .content_type.
+
+Normalization choices (min-max throughout — pinned here for test contract):
+  - rerank_norm: min-max over pool; missing reranker_score → 0.0.
+  - lexical/pattern/section/negative norms: hit_count / max(1, pool_max).
+  Sort: final desc → reranker_score desc (missing = float('-inf')) → candidate_key asc.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from app.services.extraction_chunk_index import (
     read_chunk_index,
@@ -20,6 +38,7 @@ from app.services.extraction_chunk_index import (
 
 if TYPE_CHECKING:
     from app.services.graph_store import GraphEntityResult
+    from app.services.ontology_bundles import RetrievalProfile
 
 
 # ---------------------------------------------------------------------------
@@ -198,3 +217,131 @@ def merge_candidates(
         )
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# C5 — post-rerank precision scoring
+# ---------------------------------------------------------------------------
+
+_RERANK_FLOOR = float("-inf")   # sentinel for unscorable candidates in sort key
+
+
+def score_candidates(
+    candidates: list[dict[str, Any]],
+    cfg: "RetrievalProfile",
+) -> list[tuple["MergedCandidate", float]]:
+    """Score and sort candidates after cross-encoder reranking.
+
+    Input ``candidates`` is the list produced by C6 (caller), shaped as::
+
+        [
+            {
+                "merged_candidate": MergedCandidate,   # C4 object
+                "content_text":     str,               # chunk_text (reranker compat)
+                # "reranker_score": float              # present only on scorable chunks
+            },
+            ...
+        ]
+
+    Returns a list of ``(MergedCandidate, final_score)`` tuples sorted by:
+      1. ``final`` descending
+      2. ``reranker_score`` descending (missing = ``float('-inf')``)
+      3. ``candidate_key`` ascending (lexicographic, stable for equal ties)
+
+    Formula (all weights from ``cfg``)::
+
+        final = cfg.rerank_weight  * rerank_norm
+              + cfg.lexical_weight * lexical_norm
+              + cfg.pattern_weight * pattern_norm
+              + cfg.section_weight * section_norm
+              + cfg.table_boost    * is_table
+              - cfg.negative_weight * negative_norm
+        final = max(final, 0.0)
+
+    Normalisation (min-max for reranker; ratio-max for lexical/pattern signals):
+      - ``rerank_norm``: min-max over pool; missing ``reranker_score`` → 0.0.
+      - ``lexical_norm``  = alias_hits   / max(1, pool_max_alias_hits)
+      - ``pattern_norm``  = pattern_hits / max(1, pool_max_pattern_hits)
+      - ``section_norm``  = section_hits / max(1, pool_max_section_hits)
+      - ``negative_norm`` = negative_hits / max(1, pool_max_negative_hits)
+      - ``is_table``  = 1.0 if content_type == "table" else 0.0
+
+    C5 ONLY SCORES + SORTS — it does NOT apply the top_k cut (C6 does) and
+    does NOT call rerank() (C6 does) and does NOT wire the endpoint.
+    """
+    if not candidates:
+        return []
+
+    # ------------------------------------------------------------------
+    # 1. Collect raw reranker scores for min-max normalisation
+    # ------------------------------------------------------------------
+    raw_rr: list[float] = [
+        c["reranker_score"]
+        for c in candidates
+        if "reranker_score" in c
+    ]
+    if raw_rr and len(raw_rr) > 1:
+        rr_min = min(raw_rr)
+        rr_max = max(raw_rr)
+        rr_span = rr_max - rr_min
+    elif raw_rr:          # single scorable candidate
+        rr_min = raw_rr[0]
+        rr_max = raw_rr[0]
+        rr_span = 0.0
+    else:                 # all unscorable
+        rr_min = rr_max = rr_span = 0.0
+
+    # ------------------------------------------------------------------
+    # 2. Pool maxima for hit-count normalisation
+    # ------------------------------------------------------------------
+    mcs: list[MergedCandidate] = [c["merged_candidate"] for c in candidates]
+    max_alias    = max((mc.alias_hits    for mc in mcs), default=0)
+    max_pattern  = max((mc.pattern_hits  for mc in mcs), default=0)
+    max_section  = max((mc.section_hits  for mc in mcs), default=0)
+    max_negative = max((mc.negative_hits for mc in mcs), default=0)
+
+    # ------------------------------------------------------------------
+    # 3. Score each candidate
+    # ------------------------------------------------------------------
+    results: list[tuple[MergedCandidate, float, float]] = []   # (mc, final, raw_rr)
+
+    for c in candidates:
+        mc: MergedCandidate = c["merged_candidate"]
+        raw = c.get("reranker_score")  # None / absent for unscorable
+
+        # rerank_norm: 0.0 for unscorable; min-max otherwise
+        if raw is None:
+            rerank_norm = 0.0
+            sort_rr = _RERANK_FLOOR
+        else:
+            if rr_span > 0.0:
+                rerank_norm = (raw - rr_min) / rr_span
+            else:
+                # All scorable candidates have identical scores → normalise to 1.0
+                rerank_norm = 1.0 if raw_rr else 0.0
+            sort_rr = raw
+
+        lexical_norm  = mc.alias_hits    / max(1, max_alias)
+        pattern_norm  = mc.pattern_hits  / max(1, max_pattern)
+        section_norm  = mc.section_hits  / max(1, max_section)
+        negative_norm = mc.negative_hits / max(1, max_negative)
+        is_table      = 1.0 if mc.content_type == "table" else 0.0
+
+        final = (
+            cfg.rerank_weight   * rerank_norm
+            + cfg.lexical_weight  * lexical_norm
+            + cfg.pattern_weight  * pattern_norm
+            + cfg.section_weight  * section_norm
+            + cfg.table_boost     * is_table
+            - cfg.negative_weight * negative_norm
+        )
+        final = max(final, 0.0)
+
+        results.append((mc, final, sort_rr))
+
+    # ------------------------------------------------------------------
+    # 4. Sort: final desc → reranker_score desc → candidate_key asc
+    # ------------------------------------------------------------------
+    results.sort(key=lambda t: (-t[1], -t[2] if t[2] != _RERANK_FLOOR else math.inf, t[0].candidate_key))
+
+    return [(mc, score) for mc, score, _ in results]

@@ -487,3 +487,380 @@ class TestProvenanceFields:
         assert mc.token_count == 99
         assert mc.page_number == 7
         assert mc.vector_score == pytest.approx(0.77)
+
+
+# ===========================================================================
+# C5 — score_candidates (post-rerank precision scoring)
+# ===========================================================================
+#
+# Candidate representation fed to score_candidates:
+#   A list of dicts, each carrying:
+#     - "merged_candidate": MergedCandidate   (the C4 object)
+#     - "content_text": str                   (chunk_text — for reranker compat)
+#     - "reranker_score": float | absent       (written by rerank(); absent on unscorable)
+#   Signals (alias_hits, pattern_hits, negative_hits, section_hits, content_type)
+#   are read directly from the embedded MergedCandidate.
+#
+# Normalization: min-max for reranker_score (missing → 0.0); ratio-max for
+# lexical/pattern/section/negative signals (alias_hits / max(1, pool_max), etc.)
+# ===========================================================================
+
+
+def _make_profile(**kwargs):
+    """Build a RetrievalProfile with sane defaults, overridable by kwargs."""
+    from app.services.ontology_bundles import RetrievalProfile
+
+    defaults = dict(
+        rerank_weight=1.0,
+        lexical_weight=0.20,
+        pattern_weight=0.15,
+        section_weight=0.10,
+        table_boost=0.08,
+        negative_weight=0.20,
+    )
+    defaults.update(kwargs)
+    return RetrievalProfile(**defaults)
+
+
+def _make_scored_candidate(
+    candidate_key: str,
+    chunk_text: str = "some text",
+    reranker_score: float | None = None,
+    alias_hits: int = 0,
+    pattern_hits: int = 0,
+    negative_hits: int = 0,
+    section_hits: int = 0,
+    content_type: str | None = None,
+) -> dict:
+    """Build a dict in the representation score_candidates expects."""
+    from app.services.extraction_candidate_scoring import MergedCandidate
+
+    mc = MergedCandidate(
+        candidate_key=candidate_key,
+        chunk_index=0,
+        self_ref=candidate_key,
+        chunk_text=chunk_text,
+        source_refs=[],
+        token_count=50,
+        page_number=None,
+        vector_score=None,
+        field_scores={},
+        alias_hits=alias_hits,
+        pattern_hits=pattern_hits,
+        negative_hits=negative_hits,
+        section_hits=section_hits,
+        content_type=content_type,
+        retrieval_sources=set(),
+        supported_field_hints=set(),
+    )
+    d: dict = {
+        "merged_candidate": mc,
+        "content_text": chunk_text,
+    }
+    if reranker_score is not None:
+        d["reranker_score"] = reranker_score
+    return d
+
+
+class TestScoreCandidatesImport:
+    def test_score_candidates_importable(self):
+        from app.services.extraction_candidate_scoring import score_candidates  # noqa: F401
+
+
+class TestScoreCandidatesReankOnly:
+    """C5.1 — With all keyword signals zero, final order EQUALS rerank order."""
+
+    def test_rerank_order_preserved_when_no_keyword_signals(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("c1", reranker_score=0.9),
+            _make_scored_candidate("c2", reranker_score=0.5),
+            _make_scored_candidate("c3", reranker_score=0.1),
+        ]
+        result = score_candidates(cands, cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys == ["c1", "c2", "c3"], f"Expected rerank order, got {keys}"
+
+    def test_returns_list_of_mc_float_tuples(self):
+        from app.services.extraction_candidate_scoring import MergedCandidate, score_candidates
+
+        cfg = _make_profile()
+        cands = [_make_scored_candidate("c1", reranker_score=0.8)]
+        result = score_candidates(cands, cfg)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        mc, score = result[0]
+        assert isinstance(mc, MergedCandidate)
+        assert isinstance(score, float)
+
+
+class TestScoreCandidatesLexicalPromotion:
+    """C5.2 — Strong alias hits promote a candidate ABOVE a higher-rerank rival."""
+
+    def test_alias_hits_promote_above_higher_rerank(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        # c_low has a better reranker_score but zero keyword signals.
+        # c_boost has a weaker reranker_score but strong alias hits.
+        # With appropriate weights, c_boost should finish above c_low.
+        cfg = _make_profile(
+            rerank_weight=1.0,
+            lexical_weight=2.0,   # strong lexical weight
+        )
+        c_high_rerank = _make_scored_candidate("c_high_rerank", reranker_score=0.9, alias_hits=0)
+        c_boost = _make_scored_candidate("c_boost", reranker_score=0.1, alias_hits=5)
+
+        result = score_candidates([c_high_rerank, c_boost], cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys[0] == "c_boost", (
+            f"c_boost (strong alias hits) should lead after scoring; got {keys}"
+        )
+
+    def test_promotion_changes_selection_order_demonstrably(self):
+        """The promotion is observable: scores for c_boost > c_high_rerank."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=2.0)
+        c_high_rerank = _make_scored_candidate("c_high_rerank", reranker_score=0.9, alias_hits=0)
+        c_boost = _make_scored_candidate("c_boost", reranker_score=0.1, alias_hits=5)
+
+        result = score_candidates([c_high_rerank, c_boost], cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        assert scores["c_boost"] > scores["c_high_rerank"], (
+            f"c_boost score ({scores['c_boost']:.4f}) must exceed "
+            f"c_high_rerank ({scores['c_high_rerank']:.4f})"
+        )
+
+
+class TestScoreCandidatesNegativeDemote:
+    """C5.3 — negative_hits demote but do NOT remove the candidate."""
+
+    def test_only_negative_candidate_still_present(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(negative_weight=0.5)
+        cands = [
+            _make_scored_candidate("c_neg", reranker_score=0.7, negative_hits=10),
+            _make_scored_candidate("c_pos", reranker_score=0.5),
+        ]
+        result = score_candidates(cands, cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert "c_neg" in keys, "Negative candidate must not be filtered out"
+
+    def test_negative_candidate_demoted_below_clean_candidate(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        # Scenario: 3 candidates so that min-max can spread scores.
+        # c_neg: best reranker (1.0 → rerank_norm=1.0) but heavy negatives.
+        # c_clean: mid reranker (0.5 → rerank_norm=0.5), zero negatives.
+        # c_floor: worst reranker (0.0 → rerank_norm=0.0), zero negatives.
+        # negative_weight=0.9 so: c_neg final = 1.0*1.0 - 0.9*1.0 = 0.1
+        # c_clean final = 1.0*0.5 = 0.5 → should finish above c_neg.
+        cfg = _make_profile(
+            rerank_weight=1.0,
+            lexical_weight=0.0,
+            pattern_weight=0.0,
+            section_weight=0.0,
+            table_boost=0.0,
+            negative_weight=0.9,
+        )
+        c_neg = _make_scored_candidate("c_neg", reranker_score=1.0, negative_hits=3)
+        c_clean = _make_scored_candidate("c_clean", reranker_score=0.5, negative_hits=0)
+        c_floor = _make_scored_candidate("c_floor", reranker_score=0.0, negative_hits=0)
+
+        result = score_candidates([c_neg, c_clean, c_floor], cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys[0] == "c_clean", (
+            f"c_clean should lead after negative penalty demotes c_neg; got {keys}"
+        )
+
+    def test_final_score_clamped_to_zero(self):
+        """Score >= 0 even when negative penalty exceeds all positive signals."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(
+            rerank_weight=0.0,
+            lexical_weight=0.0,
+            pattern_weight=0.0,
+            section_weight=0.0,
+            table_boost=0.0,
+            negative_weight=99.0,   # absurd penalty
+        )
+        cands = [_make_scored_candidate("c", reranker_score=0.1, negative_hits=1)]
+        result = score_candidates(cands, cfg)
+        _, score = result[0]
+        assert score >= 0.0, f"Score must be clamped >= 0, got {score}"
+
+
+class TestScoreCandidatesAllZeroKeyword:
+    """C5.4 — All keyword signals zero — order unchanged from rerank."""
+
+    def test_all_zero_keyword_order_equals_rerank_order(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("a", reranker_score=0.8, alias_hits=0, pattern_hits=0),
+            _make_scored_candidate("b", reranker_score=0.6, alias_hits=0, pattern_hits=0),
+            _make_scored_candidate("c", reranker_score=0.2, alias_hits=0, pattern_hits=0),
+        ]
+        result = score_candidates(cands, cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys == ["a", "b", "c"]
+
+
+class TestScoreCandidatesUnscorableHandling:
+    """C5.5 — Candidates missing reranker_score (unscorable) — no KeyError, rerank_norm=0."""
+
+    def test_missing_reranker_score_no_keyerror(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("c_scored", reranker_score=0.7),
+            _make_scored_candidate("c_unscorable"),  # no reranker_score key
+        ]
+        # Must not raise
+        result = score_candidates(cands, cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert "c_unscorable" in keys
+
+    def test_unscorable_gets_zero_rerank_norm(self):
+        """Unscorable candidate's contribution from the rerank term is 0,
+        so it should rank below any scored candidate when rerank_weight > 0."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=1.0, lexical_weight=0.0, pattern_weight=0.0, section_weight=0.0)
+        cands = [
+            _make_scored_candidate("c_scored", reranker_score=0.7),
+            _make_scored_candidate("c_unscorable"),   # no reranker_score
+        ]
+        result = score_candidates(cands, cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys[0] == "c_scored", f"Scored candidate should rank first; got {keys}"
+
+    def test_all_unscorable_pool_handled(self):
+        """All candidates missing reranker_score — no divide-by-zero, all returned."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        cands = [
+            _make_scored_candidate("u1"),
+            _make_scored_candidate("u2"),
+        ]
+        result = score_candidates(cands, cfg)
+        assert len(result) == 2
+
+
+class TestScoreCandidatesSortStability:
+    """C5.6 — Ties broken by reranker_score desc then candidate_key (stable)."""
+
+    def test_tie_broken_by_reranker_score(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        # Same alias_hits → same lexical_norm; differ only in reranker_score
+        cfg = _make_profile(rerank_weight=0.0, lexical_weight=1.0)
+        cands = [
+            _make_scored_candidate("z_lower", reranker_score=0.3, alias_hits=2),
+            _make_scored_candidate("a_higher", reranker_score=0.8, alias_hits=2),
+        ]
+        result = score_candidates(cands, cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        # Both have identical final scores (rerank_weight=0 makes reranker_score
+        # irrelevant to final, but tiebreaker uses it); a_higher should lead
+        assert keys[0] == "a_higher"
+
+    def test_tie_broken_by_candidate_key_lexicographic(self):
+        """When final AND reranker_score are both equal (all unscorable), key order is stable."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(rerank_weight=0.0, lexical_weight=0.0)
+        cands = [
+            _make_scored_candidate("z_key"),
+            _make_scored_candidate("a_key"),
+        ]
+        result = score_candidates(cands, cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys == ["a_key", "z_key"]
+
+
+class TestScoreCandidatesWeightsFromCfg:
+    """C5.7 — All weights read from cfg; construct a RetrievalProfile with custom
+    weights and assert they take effect."""
+
+    def test_rerank_weight_zero_suppresses_rerank_contribution(self):
+        """With rerank_weight=0, reranker_score has zero contribution to final."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        # Give c_low a much better reranker but equal alias_hits.
+        # With rerank_weight=0, they should be equal on final and tiebreak decides.
+        cfg = _make_profile(rerank_weight=0.0, lexical_weight=1.0)
+        cands = [
+            _make_scored_candidate("c_low", reranker_score=0.1, alias_hits=3),
+            _make_scored_candidate("c_high", reranker_score=0.9, alias_hits=3),
+        ]
+        result = score_candidates(cands, cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        # Scores should be identical (both have equal alias_hits, rerank_weight=0)
+        assert abs(scores["c_low"] - scores["c_high"]) < 1e-9
+
+    def test_pattern_weight_takes_effect(self):
+        """pattern_weight from cfg controls pattern_norm contribution."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg_low = _make_profile(rerank_weight=1.0, pattern_weight=0.0)
+        cfg_high = _make_profile(rerank_weight=1.0, pattern_weight=5.0)
+
+        c_with_pattern = _make_scored_candidate("c_pattern", reranker_score=0.5, pattern_hits=3)
+        c_no_pattern = _make_scored_candidate("c_baseline", reranker_score=0.5, pattern_hits=0)
+
+        # Low pattern_weight: c_pattern not distinguished
+        res_low = score_candidates([c_with_pattern, c_no_pattern], cfg_low)
+        # High pattern_weight: c_pattern clearly above c_baseline
+        res_high = score_candidates([c_with_pattern, c_no_pattern], cfg_high)
+
+        keys_high = [mc.candidate_key for mc, _ in res_high]
+        assert keys_high[0] == "c_pattern", (
+            f"High pattern_weight should put c_pattern first; got {keys_high}"
+        )
+        # With pattern_weight=0, c_pattern and c_baseline have same reranker_score
+        # → equal final; order determined by tiebreak
+        scores_low = {mc.candidate_key: s for mc, s in res_low}
+        assert abs(scores_low["c_pattern"] - scores_low["c_baseline"]) < 1e-9
+
+    def test_negative_weight_zero_ignores_negative_hits(self):
+        """negative_weight=0 means negative_hits don't penalize the score."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile(negative_weight=0.0)
+        c_neg = _make_scored_candidate("c_neg", reranker_score=0.8, negative_hits=100)
+        c_pos = _make_scored_candidate("c_pos", reranker_score=0.4)
+
+        result = score_candidates([c_neg, c_pos], cfg)
+        keys = [mc.candidate_key for mc, _ in result]
+        assert keys[0] == "c_neg", "With negative_weight=0, high reranker should still lead"
+
+    def test_table_boost_applies_to_table_content_type(self):
+        """table_boost from cfg is added when content_type == 'table'."""
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        # Same reranker, no other signals. Only difference: one is a table.
+        cfg = _make_profile(rerank_weight=1.0, table_boost=1.0)
+        c_table = _make_scored_candidate("c_table", reranker_score=0.5, content_type="table")
+        c_prose = _make_scored_candidate("c_prose", reranker_score=0.5)
+
+        result = score_candidates([c_table, c_prose], cfg)
+        scores = {mc.candidate_key: s for mc, s in result}
+        assert scores["c_table"] > scores["c_prose"], (
+            f"Table boost must increase score: c_table={scores['c_table']:.4f}, "
+            f"c_prose={scores['c_prose']:.4f}"
+        )
+
+    def test_empty_pool_returns_empty(self):
+        from app.services.extraction_candidate_scoring import score_candidates
+
+        cfg = _make_profile()
+        result = score_candidates([], cfg)
+        assert result == []
