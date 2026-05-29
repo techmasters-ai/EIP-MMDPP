@@ -385,3 +385,66 @@ def enough_field_coverage(
     cov = field_coverage(candidates)
     covered = sum(1 for n in cov.values() if n > 0)
     return covered >= cfg.fallback_min_field_coverage
+
+
+# ---------------------------------------------------------------------------
+# F1 — active_fields (§9 subset-schema extraction)
+# ---------------------------------------------------------------------------
+
+
+def active_fields(
+    candidates: list[MergedCandidate],
+    template_cls: type,
+    cfg: "RetrievalProfile",
+) -> list[str]:
+    """Return the list of field names to include in the LLM extraction prompt.
+
+    Opt-in: when ``cfg.subset_schema_extraction`` is ``False`` (the default),
+    returns ALL field names of ``template_cls`` in schema order — byte-identical
+    to the current behaviour.
+
+    When ``True``, computes the active set as:
+
+        active = (union of supported_field_hints across all candidates)
+               ∪ identity fields   (from template_cls.model_config['graph_id_fields'])
+               ∪ required fields   (template_cls.model_fields[name].is_required())
+
+    Only fields with ZERO evidence that are also NOT identity and NOT required
+    are dropped.  This is deliberately conservative — it protects recall.
+
+    Returns the active field names **in schema order** (the insertion order of
+    ``template_cls.model_fields``).
+
+    Identity fields are derived from ``model_config.get('graph_id_fields', [])``
+    — no hardcoded field names.  Required fields are derived from
+    ``model_fields[name].is_required()`` — no hardcoded field names.  If
+    ``graph_id_fields`` is absent from ``model_config``, no identity protection
+    is applied and the function does not raise.
+    """
+    all_field_names: list[str] = list(template_cls.model_fields.keys())
+
+    # Opt-in guard: off → no-op, return all fields in schema order.
+    if not cfg.subset_schema_extraction:
+        return all_field_names
+
+    # Build the "always-keep" set from model metadata (no hardcoded names).
+    identity_fields: set[str] = set(
+        template_cls.model_config.get("graph_id_fields") or []
+    )
+    required_fields: set[str] = {
+        name
+        for name, fi in template_cls.model_fields.items()
+        if fi.is_required()
+    }
+    always_keep = identity_fields | required_fields
+
+    # Union of evidenced field names across all candidates.
+    evidenced: set[str] = set()
+    for mc in candidates:
+        evidenced |= mc.supported_field_hints
+
+    # Active = evidenced ∪ always_keep, filtered to fields that exist in the schema.
+    active: set[str] = (evidenced | always_keep) & set(all_field_names)
+
+    # Return in schema order.
+    return [name for name in all_field_names if name in active]

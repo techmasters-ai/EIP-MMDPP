@@ -1275,3 +1275,275 @@ class TestE1FieldCoverageEnough:
         cfg = _make_e1_profile(top_k=10, fallback_min_field_coverage=3)
         assert enough_candidates(pool, cfg) is True
         assert enough_field_coverage(pool, cfg) is True
+
+
+# ===========================================================================
+# F1 — active_fields (§9 subset-schema extraction helper)
+# ===========================================================================
+#
+# active_fields(candidates, template_cls, cfg) -> list[str]
+#
+# Locked rules:
+#   - subset_schema_extraction=False → return ALL field names of template_cls
+#     in schema order (no-op; default).
+#   - When ON: active = union(supported_field_hints across candidates)
+#       ∪ identity fields (model_config['graph_id_fields'])
+#       ∪ required fields (model_fields[name].is_required())
+#   - Only DROP fields with ZERO evidence AND not identity AND not required.
+#   - Return in schema order (order of template_cls.model_fields).
+#   - model_config may lack 'graph_id_fields' → handle gracefully (no crash).
+#   - ZERO hardcoded field names — identity from model_config, required from
+#     is_required().
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Synthetic Pydantic Record for F1 tests (no import of real schemas needed)
+# ---------------------------------------------------------------------------
+
+def _make_f1_record_cls():
+    """Build a synthetic pydantic BaseModel that mimics a Record class.
+
+    Fields (in schema order):
+      identity_field  : str = Field(...)               → identity + required
+      required_field  : str = Field(...)               → required only
+      optional_a      : str | None = Field(default=None)  → optional
+      optional_b      : str | None = Field(default=None)  → optional
+      optional_c      : str | None = Field(default=None)  → optional
+
+    graph_id_fields = ['identity_field']
+    """
+    from pydantic import BaseModel, ConfigDict, Field
+    from typing import Optional
+
+    class SyntheticRecord(BaseModel):
+        model_config = ConfigDict(
+            graph_id_fields=["identity_field"],
+        )
+        identity_field: str = Field(...)
+        required_field: str = Field(...)
+        optional_a: Optional[str] = Field(default=None)
+        optional_b: Optional[str] = Field(default=None)
+        optional_c: Optional[str] = Field(default=None)
+
+    return SyntheticRecord
+
+
+def _make_f1_record_cls_no_graph_id():
+    """Synthetic record class WITHOUT graph_id_fields in model_config."""
+    from pydantic import BaseModel, ConfigDict, Field
+    from typing import Optional
+
+    class NoGraphIdRecord(BaseModel):
+        model_config = ConfigDict()
+        required_field: str = Field(...)
+        optional_x: Optional[str] = Field(default=None)
+
+    return NoGraphIdRecord
+
+
+def _make_cfg_subset_on(**kwargs):
+    """RetrievalProfile with subset_schema_extraction=True."""
+    return _make_profile(subset_schema_extraction=True, **kwargs)
+
+
+def _make_cfg_subset_off(**kwargs):
+    """RetrievalProfile with subset_schema_extraction=False (default)."""
+    return _make_profile(subset_schema_extraction=False, **kwargs)
+
+
+class TestF1Import:
+    """[WATCHED-FAIL] Import gate — must fail before implementation."""
+
+    def test_active_fields_importable(self):
+        from app.services.extraction_candidate_scoring import active_fields  # noqa: F401
+
+
+class TestF1SubsetOff:
+    """F1.1 — subset_schema_extraction=False → ALL fields, schema order, no-op."""
+
+    def test_off_returns_all_fields(self):
+        """With subset off, active_fields returns ALL model_fields keys regardless
+        of evidence."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_off()
+
+        # Zero candidates, zero evidence — still ALL fields
+        result = active_fields([], template_cls, cfg)
+
+        all_fields = list(template_cls.model_fields.keys())
+        assert result == all_fields, (
+            f"off=no-op must return ALL fields in schema order; "
+            f"got {result}, expected {all_fields}"
+        )
+
+    def test_off_ignores_evidence_entirely(self):
+        """Even with strong evidence for some fields, off still returns ALL."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_off()
+
+        # Candidate with evidence only on optional_a
+        mc = _make_mc("k", supported_field_hints={"optional_a"})
+        result = active_fields([mc], template_cls, cfg)
+
+        all_fields = list(template_cls.model_fields.keys())
+        assert result == all_fields
+
+
+class TestF1SubsetOn:
+    """F1.2 — subset_schema_extraction=True — drop zero-evidence optional fields."""
+
+    def test_evidenced_field_is_active(self):
+        """A field in at least one candidate's supported_field_hints is active."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_on()
+
+        mc = _make_mc("k", supported_field_hints={"optional_a"})
+        result = active_fields([mc], template_cls, cfg)
+
+        assert "optional_a" in result
+
+    def test_zero_evidence_optional_field_is_dropped(self):
+        """optional_b and optional_c with zero evidence are dropped when subset on."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_on()
+
+        # Only optional_a has evidence
+        mc = _make_mc("k", supported_field_hints={"optional_a"})
+        result = active_fields([mc], template_cls, cfg)
+
+        assert "optional_b" not in result, "optional_b has zero evidence, must be dropped"
+        assert "optional_c" not in result, "optional_c has zero evidence, must be dropped"
+
+    def test_zero_evidence_but_identity_field_stays(self):
+        """[WATCHED-FAIL] Identity field with zero evidence must STILL be active.
+
+        identity_field is in graph_id_fields — must never be dropped,
+        even if no candidate mentions it.
+        """
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_on()
+
+        # No candidate mentions identity_field
+        mc = _make_mc("k", supported_field_hints={"optional_a"})
+        result = active_fields([mc], template_cls, cfg)
+
+        assert "identity_field" in result, (
+            "identity_field is in graph_id_fields and must be active even "
+            "with zero evidence"
+        )
+
+    def test_zero_evidence_but_required_field_stays(self):
+        """[WATCHED-FAIL] Required field (is_required()==True) with zero evidence
+        must STILL be active, even if not in graph_id_fields."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_on()
+
+        # No candidate mentions required_field (only optional_a has evidence)
+        mc = _make_mc("k", supported_field_hints={"optional_a"})
+        result = active_fields([mc], template_cls, cfg)
+
+        assert "required_field" in result, (
+            "required_field is_required()==True and must be active even "
+            "with zero evidence"
+        )
+
+    def test_schema_order_preserved(self):
+        """Result is in schema order (order of template_cls.model_fields), not
+        insertion/evidence order."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_on()
+
+        # Evidence on optional_c first, then optional_a — schema order must win
+        mc = _make_mc(
+            "k",
+            supported_field_hints={"optional_c", "optional_a"},
+        )
+        result = active_fields([mc], template_cls, cfg)
+
+        # The result must respect schema order: identity_field, required_field,
+        # optional_a, optional_b (dropped, zero evidence), optional_c
+        schema_order = list(template_cls.model_fields.keys())
+        result_positions = {f: schema_order.index(f) for f in result if f in schema_order}
+        sorted_by_schema = sorted(result, key=lambda f: result_positions[f])
+        assert result == sorted_by_schema, (
+            f"Result not in schema order: got {result}, "
+            f"expected {sorted_by_schema}"
+        )
+
+    def test_evidence_union_across_candidates(self):
+        """supported_field_hints is unioned across ALL candidates.
+        A field evidenced by ANY candidate is active."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_on()
+
+        mc1 = _make_mc("k1", supported_field_hints={"optional_a"})
+        mc2 = _make_mc("k2", supported_field_hints={"optional_b"})
+        result = active_fields([mc1, mc2], template_cls, cfg)
+
+        assert "optional_a" in result
+        assert "optional_b" in result
+        # optional_c has no evidence → dropped
+        assert "optional_c" not in result
+
+    def test_no_candidates_zero_evidence_optional_dropped(self):
+        """Empty candidate list → only identity + required fields survive."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls()
+        cfg = _make_cfg_subset_on()
+
+        result = active_fields([], template_cls, cfg)
+
+        # identity_field (graph_id_fields) → active
+        assert "identity_field" in result
+        # required_field (is_required) → active
+        assert "required_field" in result
+        # optional_a, optional_b, optional_c → dropped (zero evidence)
+        assert "optional_a" not in result
+        assert "optional_b" not in result
+        assert "optional_c" not in result
+
+
+class TestF1NoGraphIdFields:
+    """F1.3 — model_config without graph_id_fields must not crash."""
+
+    def test_no_graph_id_fields_does_not_crash(self):
+        """If model_config has no 'graph_id_fields', active_fields must not raise."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls_no_graph_id()
+        cfg = _make_cfg_subset_on()
+
+        mc = _make_mc("k", supported_field_hints={"optional_x"})
+        # Must not raise KeyError or AttributeError
+        result = active_fields([mc], template_cls, cfg)
+
+        assert "optional_x" in result
+        assert "required_field" in result  # still required even without graph_id_fields
+
+    def test_no_graph_id_fields_off_returns_all(self):
+        """Off mode with no graph_id_fields in model_config → still returns all."""
+        from app.services.extraction_candidate_scoring import active_fields
+
+        template_cls = _make_f1_record_cls_no_graph_id()
+        cfg = _make_cfg_subset_off()
+
+        result = active_fields([], template_cls, cfg)
+        assert result == list(template_cls.model_fields.keys())
