@@ -354,3 +354,86 @@ class TestRetrievalProfileValidation:
 
         r = RetrievalProfile(fallback_to_full=False)
         assert r.fallback_to_full is False
+
+
+# ---------------------------------------------------------------------------
+# 7. B1 — FieldRetrievalQuery + PassRetrievalSignals importable + constructable
+# ---------------------------------------------------------------------------
+
+class TestB1RetrievalSignalTypes:
+    """Sanity: both frozen dataclasses are importable and constructable."""
+
+    def test_field_retrieval_query_constructable(self):
+        from app.services.extraction_query_builder import FieldRetrievalQuery
+
+        frq = FieldRetrievalQuery(
+            field_name="some_field",
+            query_text="some query text describing the field",
+            aliases=("alias_a", "alias_b"),
+            negative_terms=("exclude_this",),
+            evidence_patterns=("Table \\d+",),
+            likely_sections=("Specifications",),
+            units=("km",),
+        )
+        assert frq.field_name == "some_field"
+        assert frq.aliases == ("alias_a", "alias_b")
+
+    def test_field_retrieval_query_is_frozen(self):
+        from app.services.extraction_query_builder import FieldRetrievalQuery
+
+        frq = FieldRetrievalQuery(
+            field_name="some_field",
+            query_text="some query",
+            aliases=(),
+            negative_terms=(),
+            evidence_patterns=(),
+            likely_sections=(),
+            units=(),
+        )
+        with pytest.raises((AttributeError, TypeError)):
+            frq.field_name = "mutated"  # type: ignore[misc]
+
+    def test_pass_retrieval_signals_constructable(self):
+        from app.services.extraction_query_builder import (
+            FieldRetrievalQuery,
+            PassRetrievalSignals,
+        )
+
+        frq = FieldRetrievalQuery(
+            field_name="numeric_field",
+            query_text="a numeric measurement field",
+            aliases=("label_x", "label_y"),
+            negative_terms=("not_this",),
+            evidence_patterns=(),
+            likely_sections=("Performance",),
+            units=("m",),
+        )
+        prs = PassRetrievalSignals(
+            pass_name="example_pass",
+            entity_doc="Entity documentation string.",
+            entity_query="entity level query text",
+            field_queries=(frq,),
+            lexical_terms=("label_x", "label_y"),
+            negative_terms=("not_this",),
+            likely_sections=("Performance",),
+            evidence_patterns=(),
+        )
+        assert prs.pass_name == "example_pass"
+        assert len(prs.field_queries) == 1
+        assert prs.field_queries[0].field_name == "numeric_field"
+
+    def test_pass_retrieval_signals_is_frozen(self):
+        from app.services.extraction_query_builder import PassRetrievalSignals
+
+        prs = PassRetrievalSignals(
+            pass_name="example_pass",
+            entity_doc="",
+            entity_query="",
+            field_queries=(),
+            lexical_terms=(),
+            negative_terms=(),
+            likely_sections=(),
+            evidence_patterns=(),
+        )
+        with pytest.raises((AttributeError, TypeError)):
+            prs.pass_name = "mutated"  # type: ignore[misc]

@@ -8,12 +8,45 @@ VR Phase C.2b deliverable — pure function, no side effects.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Type
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from app.services.ontology_bundles import PassManifest
+
+
+# ---------------------------------------------------------------------------
+# Typed retrieval-signal containers (B1)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FieldRetrievalQuery:
+    """A single field's retrieval signal — used in multi-channel candidate gen.
+    All values originate from the schema field's json_schema_extra['retrieval'];
+    this type contains NO literal domain terms."""
+    field_name: str                      # snake_case field name from the schema
+    query_text: str                      # doc + field label + description + aliases
+    aliases: tuple[str, ...]             # lexical hits
+    negative_terms: tuple[str, ...]
+    evidence_patterns: tuple[str, ...]
+    likely_sections: tuple[str, ...]
+    units: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PassRetrievalSignals:
+    """Structured retrieval signals for a pass (distinct from the pydantic
+    RetrievalProfile *config* in ontology_bundles.py)."""
+    pass_name:          str
+    entity_doc:         str
+    entity_query:       str                           # backward-compat single-string query
+    field_queries:      tuple[FieldRetrievalQuery, ...]
+    lexical_terms:      tuple[str, ...]               # union of all field aliases (dedup)
+    negative_terms:     tuple[str, ...]               # union of all field negative_terms (dedup)
+    likely_sections:    tuple[str, ...]               # union (dedup)
+    evidence_patterns:  tuple[str, ...]               # union (dedup)
 
 # Fields that are identity, not field-relevance — never included in queries.
 _SKIP_FIELDS: frozenset[str] = frozenset({"system_name"})
