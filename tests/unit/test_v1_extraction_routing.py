@@ -1091,13 +1091,29 @@ class TestMultiChannelEmptyExpandedRefsFail:
         rp.table_boost = 0.0
         rp.negative_weight = 0.0
         rp.pattern_hit_limit = 50
+        # E2 fallback ladder fields
+        rp.fallback_min_field_coverage = 1
+        rp.fallback_similarity_relaxation = 0.07
         pd = MagicMock()
         pd.name = _PASS_NAME
         pd.phase = "field_group"
         pd.module = "extraction_schemas.radar_power_rf"
         pd.template_class = "RadarPowerRfPass"
         pd.retrieval = rp
+        pd.primary_entity_types = None
         return pd
+
+    def _make_mc_state(self, pool):
+        """Build a minimal MultiChannelState for test mocks."""
+        from app.services.extraction_chunk_search import MultiChannelState
+        return MultiChannelState(
+            rows=[],
+            entity_dense=[],
+            field_dense={},
+            lex_hits={},
+            pat_hits={},
+            raw_row_count=0,
+        )
 
     def _make_merged_candidate_with_empty_source_refs(self, idx: int):
         """Build a MergedCandidate with source_refs=[] to trigger empty expansion."""
@@ -1144,6 +1160,7 @@ class TestMultiChannelEmptyExpandedRefsFail:
         mc_b = self._make_merged_candidate_with_empty_source_refs(1)
         pool = [mc_a, mc_b]
         diag = self._make_multi_channel_diag()
+        state = self._make_mc_state(pool)
 
         # score_candidates returns list[(MergedCandidate, float)]
         scored = [(mc_a, 0.9), (mc_b, 0.8)]
@@ -1175,8 +1192,10 @@ class TestMultiChannelEmptyExpandedRefsFail:
                       return_value=MagicMock()),
                 patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
                       new=AsyncMock(return_value=1000)),
-                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel",
-                      new=AsyncMock(return_value=(pool, diag))),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries",
+                      new=AsyncMock(return_value=[])),
                 patch("app.api.v1.extraction_routing.score_candidates",
                       return_value=scored),
                 patch("app.api.v1.extraction_routing.rrk.rerank",
@@ -1208,6 +1227,7 @@ class TestMultiChannelEmptyExpandedRefsFail:
         mc_a = self._make_merged_candidate_with_empty_source_refs(0)
         pool = [mc_a]
         diag = self._make_multi_channel_diag()
+        state = self._make_mc_state(pool)
         scored = [(mc_a, 0.9)]
 
         def _fake_rerank(query, candidates, top_k):
@@ -1236,8 +1256,10 @@ class TestMultiChannelEmptyExpandedRefsFail:
                       return_value=MagicMock()),
                 patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
                       new=AsyncMock(return_value=1000)),
-                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel",
-                      new=AsyncMock(return_value=(pool, diag))),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel_full",
+                      new=AsyncMock(return_value=(pool, diag, state))),
+                patch("app.api.v1.extraction_routing.identity_anchor_queries",
+                      new=AsyncMock(return_value=[])),
                 patch("app.api.v1.extraction_routing.score_candidates",
                       return_value=scored),
                 patch("app.api.v1.extraction_routing.rrk.rerank",

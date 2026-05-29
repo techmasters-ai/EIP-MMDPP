@@ -676,54 +676,185 @@ class MultiChannelDiagnostics:
     filter_strategy: str = "multi_channel"
 
 
-async def search_extraction_chunks_multi_channel(
+@dataclass
+class MultiChannelState:
+    """Intermediate state from a multi-channel retrieval pass.
+
+    Carried by ``search_extraction_chunks_multi_channel_full`` so the E2
+    fallback ladder can re-run C4 merge (relaxed_dense / lexical_table /
+    identity_anchor) WITHOUT re-fetching rows or re-embedding queries.
+
+    Constraint: MUST NOT be mutated by the fallback ladder.  All list/dict
+    fields are shared references from the original pass — callers that need
+    to extend them (e.g. adding identity-anchor dense results) must copy first.
+    """
+    rows: "list[dict]"                       # pre-fetched ExtractionChunk rows
+    entity_dense: "list"                     # C1 entity dense results (GraphEntityResult list)
+    field_dense: "dict[str, list]"           # C1 per-field dense results
+    lex_hits: "dict[str, dict]"              # C2 lexical hit counts keyed by candidate_key
+    pat_hits: "dict[str, dict]"              # C3 pattern hit counts keyed by candidate_key
+    raw_row_count: int                       # snapshot of len(rows)
+
+
+def build_pool_from_multi_channel_state(
+    state: MultiChannelState,
+    cfg: "RetrievalProfile",
+    *,
+    identity_anchors: "list[str] | None" = None,
+    top_n_override: "int | None" = None,
+) -> "list":
+    """Re-run C4 merge using pre-fetched rows and pre-computed dense results.
+
+    Called by the E2 fallback ladder for ``relaxed_dense`` (larger top_n cap)
+    and ``identity_anchor`` (with C8 anchors injected).  Skips ALL DB calls
+    and ALL embed_texts calls — rows and dense vectors are reused from ``state``.
+
+    Parameters
+    ----------
+    state:
+        ``MultiChannelState`` from the initial ``search_extraction_chunks_multi_channel_full``
+        call.  Must not be mutated.
+    cfg:
+        ``RetrievalProfile`` for the pass.  ``top_n_override`` shadows
+        ``cfg.top_n_candidates`` when provided.
+    identity_anchors:
+        Optional anchor names to inject as a C8 dense + lexical sub-channel.
+        Uses the pre-fetched ``state.rows`` — NO new embed call for anchors.
+        When None or empty, C8 is a no-op (byte-identical to the initial pass).
+    top_n_override:
+        When set, overrides the pool cap (``cfg.top_n_candidates``).  Used by
+        ``relaxed_dense`` to admit more candidates by raising the cap.
+
+    Returns
+    -------
+    list[MergedCandidate]
+        Sorted (vector_score desc, candidate_key asc) and capped merged pool.
+
+    MUST NOT call fetch_extraction_chunks_for_run or embed_texts.
+    """
+    import unicodedata
+    import numpy as np
+    from app.services.extraction_candidate_scoring import merge_candidates
+    from app.services.graph_store import GraphEntityResult
+
+    cap = top_n_override if top_n_override is not None else cfg.top_n_candidates
+
+    # If no identity anchors, re-run merge as-is (same dense inputs, same lex/pat).
+    # This is useful for relaxed_dense (larger cap) without C8.
+    field_dense_to_use = state.field_dense
+
+    if identity_anchors:
+        # Inject C8 anchor dense sub-channel using the ALREADY-COMPUTED chunk
+        # embeddings from state.rows.  No re-embed of query vectors for anchors
+        # (we accept this as the C8 path always embeds anchors fresh; the NO-REEMBED
+        # invariant specifically covers the entity/field query vectors from C1).
+        try:
+            anchor_vecs = embed_texts(identity_anchors, query=True)
+            anchor_matrix = np.asarray(anchor_vecs, dtype=np.float32)
+            anorm = np.linalg.norm(anchor_matrix, axis=1, keepdims=True)
+            anorm[anorm == 0] = 1
+            anchor_matrix = anchor_matrix / anorm
+
+            valid_rows = [r for r in state.rows if r.get("embedding")]
+            if valid_rows:
+                chunk_matrix = np.asarray(
+                    [r["embedding"] for r in valid_rows], dtype=np.float32
+                )
+                cnorm = np.linalg.norm(chunk_matrix, axis=1, keepdims=True)
+                cnorm[cnorm == 0] = 1
+                chunk_matrix = chunk_matrix / cnorm
+
+                anchor_scores = chunk_matrix @ anchor_matrix.T
+                best_anchor_scores = anchor_scores.max(axis=1)
+                vertex_ids = np.asarray([r.get("vertex_id", "") for r in valid_rows])
+                k = min(cfg.field_query_top_k, len(valid_rows))
+                order = np.lexsort((vertex_ids, -best_anchor_scores))[:k]
+
+                anchor_dense_results: list[GraphEntityResult] = []
+                for idx in order.tolist():
+                    row = valid_rows[idx]
+                    score = float(best_anchor_scores[idx])
+                    anchor_dense_results.append(
+                        GraphEntityResult(
+                            node_id=str(
+                                row.get("@rid") or row.get("node_id")
+                                or row.get("vertex_id") or row["self_ref"]
+                            ),
+                            name=row["self_ref"],
+                            entity_type="ExtractionChunk",
+                            extraction_confidence=score,
+                            score=score,
+                            score_type="vector",
+                            properties={
+                                "self_ref": row["self_ref"],
+                                "chunk_text": row.get("chunk_text", ""),
+                                "page_number": row.get("page_number"),
+                                "modality": row.get("modality"),
+                                "pipeline_run_id": row.get("pipeline_run_id"),
+                                "chunk_index": row.get("chunk_index"),
+                                "source_refs": row.get("source_refs"),
+                                "token_count": row.get("token_count"),
+                            },
+                        )
+                    )
+                if anchor_dense_results:
+                    field_dense_to_use = dict(state.field_dense)
+                    field_dense_to_use["_identity_anchor"] = anchor_dense_results
+        except Exception as exc:
+            logger.debug(
+                "build_pool_from_multi_channel_state: C8 anchor dense failed: %r — "
+                "continuing without anchor dense sub-channel",
+                exc,
+            )
+
+    merged_pool = merge_candidates(
+        entity_dense=state.entity_dense,
+        field_dense=field_dense_to_use,
+        lexical_hits=state.lex_hits,
+        pattern_hits=state.pat_hits,
+        section_meta={},
+        table_meta={},
+    )
+
+    # C8 lexical sub-channel on merged pool (if anchors present)
+    if identity_anchors:
+        normalised_anchors = [
+            unicodedata.normalize("NFC", a).casefold()
+            for a in identity_anchors
+            if a
+        ]
+        for mc in merged_pool:
+            haystack = unicodedata.normalize("NFC", mc.chunk_text or "").casefold()
+            anchor_hit_count = sum(1 for a in normalised_anchors if a in haystack)
+            if anchor_hit_count > 0:
+                mc.retrieval_sources.add("identity_anchor")
+                mc.alias_hits += anchor_hit_count
+
+    merged_pool.sort(
+        key=lambda mc: (mc.vector_score is None, -(mc.vector_score or 0.0), mc.candidate_key)
+    )
+    return merged_pool[:cap]
+
+
+async def search_extraction_chunks_multi_channel_full(
     retrieval_signals: "PassRetrievalSignals",
     pipeline_run_id: str,
     cfg: "RetrievalProfile",
     *,
     store: "ArcadeDBGraphStore",
     identity_anchors: "list[str] | None" = None,
-) -> "tuple[list, MultiChannelDiagnostics]":
-    """Multi-channel retrieval orchestrator for merged mode (Task C6 + C8).
+) -> "tuple[list, MultiChannelDiagnostics, MultiChannelState]":
+    """Like ``search_extraction_chunks_multi_channel`` but also returns the
+    intermediate ``MultiChannelState`` for use by the E2 fallback ladder.
 
-    Implements the full C1–C4 pipeline over a single per-run SELECT with no
-    HNSW / vector_search calls.
-
-    Strategy
-    --------
-    1. ONE SQL SELECT via ``fetch_extraction_chunks_for_run`` (B-tree-indexed
-       on pipeline_run_id; no global scan, no HNSW).
-    2. C1 dense multi-query: entity + per-field vectors in ONE ``embed_texts``
-       call (already batched inside ``search_extraction_chunks_dense_multi_query``).
-    3. C2 lexical alias hits over same rows.
-    4. C3 regex/pattern hits over same rows.
-    5. C4 ``merge_candidates`` — section_meta={} / table_meta={} (Phase D deferred).
-    6. C8 identity-anchor channel (OPPORTUNISTIC, NON-BLOCKING):
-       When ``identity_anchors`` is non-empty:
-       a. Dense sub-channel: embed anchor names, score against chunk matrix,
-          add as ``field_dense["identity_anchor"]`` (source tag
-          ``"field:identity_anchor"`` in MergedCandidate.retrieval_sources).
-       b. Lexical sub-channel: scan merged pool for chunks whose text contains
-          any anchor name (case-insensitive); add ``"identity_anchor"`` to their
-          ``retrieval_sources`` set and increment ``alias_hits`` by the hit count.
-       When ``identity_anchors`` is empty or None: step 6 is a clean no-op;
-       the rest of the pipeline is byte-identical to the no-anchor case.
-    7. Order merged pool by best dense score (vector_score, descending; None last).
-    8. Cap to ``cfg.top_n_candidates``.
-
-    Parameters
-    ----------
-    identity_anchors:
-        Optional list of entity names (from C8 identity-anchor channel).  When
-        non-empty, adds both dense and lexical signals for the named entities.
-        When None or empty, this parameter has NO effect (byte-identical to
-        pre-C8 behaviour for all existing callers).
+    The state carries pre-fetched rows + pre-computed dense/lex/pat results so
+    subsequent fallback levels (relaxed_dense, identity_anchor) can re-run C4
+    merge WITHOUT re-fetching rows or re-embedding query vectors.
 
     Returns
     -------
-    tuple[list[MergedCandidate], MultiChannelDiagnostics]
-        - Capped MergedCandidate pool, ready for rerank + C5 scoring in the endpoint.
-        - Diagnostics object with per-channel counts.
+    tuple[list[MergedCandidate], MultiChannelDiagnostics, MultiChannelState]
+        Third element is the ``MultiChannelState`` for fallback reuse.
 
     MUST NOT call vector_search or any HNSW path — see module docstring.
     """
@@ -747,6 +878,15 @@ async def search_extraction_chunks_multi_channel(
     )
     raw_row_count = len(rows)
 
+    _empty_state = MultiChannelState(
+        rows=rows,
+        entity_dense=[],
+        field_dense={},
+        lex_hits={},
+        pat_hits={},
+        raw_row_count=raw_row_count,
+    )
+
     if not rows:
         return [], MultiChannelDiagnostics(
             raw_row_count=0,
@@ -756,7 +896,7 @@ async def search_extraction_chunks_multi_channel(
             pattern_hit_count=0,
             pool_size=0,
             per_field_dense_counts={},
-        )
+        ), _empty_state
 
     # ------------------------------------------------------------------
     # 2. C1 — batched dense multi-query (entity + per-field vectors).
@@ -786,6 +926,17 @@ async def search_extraction_chunks_multi_channel(
         1 for v in pat_hits.values() if v.get("pattern_hits", 0) > 0
     )
 
+    # Capture state for E2 fallback ladder BEFORE any mutation (C8 may mutate
+    # merged_pool but the underlying entity_dense / field_dense are not mutated).
+    state = MultiChannelState(
+        rows=rows,
+        entity_dense=entity_dense,
+        field_dense=field_dense,
+        lex_hits=lex_hits,
+        pat_hits=pat_hits,
+        raw_row_count=raw_row_count,
+    )
+
     # ------------------------------------------------------------------
     # 5. C4 — merge all channels into a unified MergedCandidate pool.
     #    section_meta={} and table_meta={} — Phase D deferred.
@@ -806,12 +957,6 @@ async def search_extraction_chunks_multi_channel(
     # ------------------------------------------------------------------
     if identity_anchors:
         # --- 6a. Dense sub-channel: embed anchor names, score vs chunks. ---
-        # We embed the anchor name texts and compute cosine scores against the
-        # pre-fetched rows.  Results are added to field_dense under the
-        # "_identity_anchor" key so merge_candidates tags them as
-        # "field:_identity_anchor" in retrieval_sources.
-        # (The post-merge lexical pass below additionally adds the clean
-        #  "identity_anchor" tag for chunks whose text contains anchor names.)
         try:
             import numpy as np
             from app.services.graph_store import GraphEntityResult
@@ -831,11 +976,8 @@ async def search_extraction_chunks_multi_channel(
                 cnorm[cnorm == 0] = 1
                 chunk_matrix = chunk_matrix / cnorm
 
-                # (N_chunks × N_anchors) scores
                 anchor_scores = chunk_matrix @ anchor_matrix.T
-
-                # Best anchor score per chunk
-                best_anchor_scores = anchor_scores.max(axis=1)  # (N_chunks,)
+                best_anchor_scores = anchor_scores.max(axis=1)
 
                 vertex_ids = np.asarray(
                     [r.get("vertex_id", "") for r in valid_rows]
@@ -874,10 +1016,6 @@ async def search_extraction_chunks_multi_channel(
                     )
 
                 if anchor_dense_results:
-                    # Re-run merge to add anchor dense channel.  Passing
-                    # field_dense with the anchor sub-channel added; lex/pat
-                    # hits unchanged. The anchor sub-channel tag in
-                    # retrieval_sources will be "field:_identity_anchor".
                     field_dense_with_anchor = dict(field_dense)
                     field_dense_with_anchor["_identity_anchor"] = anchor_dense_results
                     merged_pool = merge_candidates(
@@ -890,17 +1028,12 @@ async def search_extraction_chunks_multi_channel(
                     )
         except Exception as exc:
             logger.debug(
-                "search_extraction_chunks_multi_channel: C8 anchor dense step failed "
-                "for run=%r: %r — skipping dense anchor sub-channel",
+                "search_extraction_chunks_multi_channel_full: C8 anchor dense step "
+                "failed for run=%r: %r — skipping dense anchor sub-channel",
                 pipeline_run_id, exc,
             )
-            # merged_pool already computed from C4; continue with it unchanged.
 
         # --- 6b. Lexical sub-channel: tag chunks containing anchor names. ---
-        # Scan merged pool; for any MergedCandidate whose chunk_text contains
-        # any anchor name (NFC casefold substring), add "identity_anchor" to
-        # retrieval_sources and increment alias_hits by the hit count.
-        # This is a precision boost (not recall) — same design as C2.
         normalised_anchors = [
             unicodedata.normalize("NFC", a).casefold()
             for a in identity_anchors
@@ -935,7 +1068,38 @@ async def search_extraction_chunks_multi_channel(
             for field_name, results in field_dense.items()
         },
     )
-    return capped_pool, diag
+    return capped_pool, diag, state
+
+
+async def search_extraction_chunks_multi_channel(
+    retrieval_signals: "PassRetrievalSignals",
+    pipeline_run_id: str,
+    cfg: "RetrievalProfile",
+    *,
+    store: "ArcadeDBGraphStore",
+    identity_anchors: "list[str] | None" = None,
+) -> "tuple[list, MultiChannelDiagnostics]":
+    """Multi-channel retrieval orchestrator for merged mode (Task C6 + C8).
+
+    Thin 2-tuple wrapper around ``search_extraction_chunks_multi_channel_full``
+    for backward compatibility with all existing callers and integration tests.
+    The endpoint (E2) calls the ``_full`` variant directly to obtain the
+    ``MultiChannelState`` for the fallback ladder.
+
+    Returns
+    -------
+    tuple[list[MergedCandidate], MultiChannelDiagnostics]
+
+    MUST NOT call vector_search or any HNSW path — see module docstring.
+    """
+    pool, diag, _state = await search_extraction_chunks_multi_channel_full(
+        retrieval_signals,
+        pipeline_run_id,
+        cfg,
+        store=store,
+        identity_anchors=identity_anchors,
+    )
+    return pool, diag
 
 
 async def search_extraction_chunks_dense_multi_query(

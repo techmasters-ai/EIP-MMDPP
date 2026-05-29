@@ -39,11 +39,18 @@ from app.services.extraction_chunk_index import (
     read_chunk_token_count,
 )
 from app.services.extraction_chunk_search import (
+    build_pool_from_multi_channel_state,
     identity_anchor_queries,
     search_extraction_chunks,
-    search_extraction_chunks_multi_channel,
+    search_extraction_chunks_multi_channel,  # kept for backward-compat patches in tests
+    search_extraction_chunks_multi_channel_full,
 )
-from app.services.extraction_candidate_scoring import score_candidates
+from app.services.extraction_candidate_scoring import (
+    MergedCandidate,
+    enough_candidates,
+    enough_field_coverage,
+    score_candidates,
+)
 from app.services.extraction_query_builder import (
     build_retrieval_profile,
 )
@@ -110,6 +117,103 @@ def _rerank_score_range(
     if not scores:
         return None
     return (min(scores), max(scores))
+
+
+def _build_lexical_table_candidates(
+    pool_keys: "set[str]",
+    lexical_hits: "dict[str, dict]",
+    pattern_hits: "dict[str, dict]",
+    rows_by_key: "dict[str, dict]",
+) -> "list[MergedCandidate]":
+    """Build MergedCandidate objects for keys that have lexical/pattern hits but
+    are ABSENT from the dense merged pool (keyword-only recall net).
+
+    This is the ``lexical_table`` fallback level (E2).  C4's primary
+    ``merge_candidates`` deliberately drops keyword-only hits because keyword
+    search is precision-not-recall.  This helper ONLY fires when the E2 ladder
+    decides coverage is insufficient after relaxed_dense.
+
+    Parameters
+    ----------
+    pool_keys:
+        Set of candidate_keys already present in the dense pool.  Keys in this
+        set are skipped — they already have a MergedCandidate and must not be
+        duplicated.
+    lexical_hits:
+        C2 lexical hit counts keyed by candidate_key.
+    pattern_hits:
+        C3 pattern hit counts keyed by candidate_key.
+    rows_by_key:
+        Raw ExtractionChunk row dicts keyed by candidate_key (vertex_id or self_ref).
+        Used to populate MergedCandidate fields.
+
+    Returns
+    -------
+    list[MergedCandidate]
+        Keyword-only candidates sorted by alias_hits + pattern_hits descending.
+        Empty list when no keyword-only keys exist.
+    """
+    from app.services.extraction_chunk_index import (
+        read_chunk_index,
+        read_chunk_source_refs,
+        read_chunk_token_count,
+    )
+
+    # Collect all candidate_keys from lexical/pattern hits
+    kw_keys: set[str] = set()
+    for k, v in lexical_hits.items():
+        if v.get("alias_hits", 0) > 0 and k not in pool_keys:
+            kw_keys.add(k)
+    for k, v in pattern_hits.items():
+        if v.get("pattern_hits", 0) > 0 and k not in pool_keys:
+            kw_keys.add(k)
+
+    result: list[MergedCandidate] = []
+    for key in kw_keys:
+        row = rows_by_key.get(key)
+        if row is None:
+            # No row data available — skip (cannot build a valid MergedCandidate)
+            continue
+
+        lh = lexical_hits.get(key, {})
+        ph = pattern_hits.get(key, {})
+        alias_hits = lh.get("alias_hits", 0)
+        negative_hits = lh.get("negative_hits", 0)
+        pattern_hit_count = ph.get("pattern_hits", 0)
+        supported_fields: set[str] = set()
+        supported_fields.update(lh.get("supported_fields", set()))
+        supported_fields.update(ph.get("supported_fields", set()))
+
+        retrieval_sources: set[str] = set()
+        if alias_hits > 0:
+            retrieval_sources.add("lexical")
+        if pattern_hit_count > 0:
+            retrieval_sources.add("pattern")
+
+        result.append(
+            MergedCandidate(
+                candidate_key=key,
+                chunk_index=read_chunk_index(row),
+                self_ref=row.get("self_ref", ""),
+                chunk_text=row.get("chunk_text", ""),
+                source_refs=read_chunk_source_refs(row),
+                token_count=read_chunk_token_count(row),
+                page_number=row.get("page_number"),
+                vector_score=None,
+                field_scores={},
+                alias_hits=alias_hits,
+                pattern_hits=pattern_hit_count,
+                negative_hits=negative_hits,
+                section_hits=0,
+                content_type=None,
+                retrieval_sources=retrieval_sources,
+                supported_field_hints=supported_fields,
+            )
+        )
+
+    # Sort by total lexical+pattern signal descending (best keyword hits first)
+    result.sort(key=lambda mc: -(mc.alias_hits + mc.pattern_hits))
+    return result
 
 
 def _estimate_tokens_from_chars(total_chars: int) -> int:
@@ -356,7 +460,7 @@ async def chunk_scope(
         _c8_anchor_count: int = len(_c8_anchors)
 
         vector_t0 = time.monotonic()
-        pool, mc_search_diag = await search_extraction_chunks_multi_channel(
+        pool, mc_search_diag, _mc_state = await search_extraction_chunks_multi_channel_full(
             signals,
             body.pipeline_run_id,
             profile,
@@ -531,6 +635,260 @@ async def chunk_scope(
                     short_fetch=False,
                 ),
             )
+
+        # -------------------------------------------------------------------
+        # E2 FALLBACK LADDER — graduated escalation when coverage is low.
+        #
+        # Check coverage using E1 helpers AFTER C5 scoring.  If sufficient,
+        # skip the ladder (happy path — fallback_level stays "none").
+        # If under-covered, escalate IN ORDER stopping when sufficient:
+        #   1. relaxed_dense  — re-merge with larger top_n cap (no re-fetch, no re-embed)
+        #   2. lexical_table  — admit keyword-only candidates absent from dense pool
+        #   3. identity_anchor — include C8 anchors if available (no-op when none)
+        #   4. full           — use existing full-document fallback
+        #
+        # "Coverage" is defined by E1 helpers applied to the MERGED POOL (not
+        # just the top_k slice) to reflect the full retrieval signal.
+        # -------------------------------------------------------------------
+        _e2_fallback_level = "none"
+
+        # E1 coverage check on the full merged pool (before top_k slice).
+        # Field coverage is only meaningful when the pass has field queries.
+        # Passes with no field queries (entity-only) skip the field-coverage
+        # check — their coverage is judged by enough_candidates alone.
+        _all_pool_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
+        _has_field_queries = bool(getattr(signals, "field_queries", ()))
+        _enough = (
+            enough_candidates(_all_pool_mcs, profile)
+            and (not _has_field_queries or enough_field_coverage(_all_pool_mcs, profile))
+        )
+
+        if not _enough:
+            # ---------------------------------------------------------------
+            # Level 1: relaxed_dense — re-run C4 merge with a larger top_n cap
+            # (2× top_n_candidates) to admit lower-scoring candidates already
+            # in entity_dense/field_dense.  NO re-fetch, NO re-embed: uses
+            # _mc_state from the initial pass.
+            # ---------------------------------------------------------------
+            _relaxed_top_n = profile.top_n_candidates * 2
+            _relaxed_pool: list = build_pool_from_multi_channel_state(
+                _mc_state,
+                profile,
+                top_n_override=_relaxed_top_n,
+            )
+
+            if _relaxed_pool:
+                _e2_fallback_level = "relaxed_dense"
+                pool = _relaxed_pool
+
+                _relaxed_pool_dicts = [
+                    {
+                        "content_text": mc.chunk_text,
+                        "self_ref": mc.self_ref,
+                        "vector_score": mc.vector_score,
+                        "chunk_index": mc.chunk_index,
+                        "source_refs": mc.source_refs,
+                        "token_count": mc.token_count,
+                        "page_number": mc.page_number,
+                        "alias_hits": mc.alias_hits,
+                        "pattern_hits": mc.pattern_hits,
+                        "negative_hits": mc.negative_hits,
+                        "section_hits": mc.section_hits,
+                        "content_type": mc.content_type,
+                        "retrieval_sources": mc.retrieval_sources,
+                        "supported_field_hints": mc.supported_field_hints,
+                        "merged_candidate": mc,
+                    }
+                    for mc in _relaxed_pool
+                ]
+
+                try:
+                    def _rerank_relaxed() -> list[dict]:
+                        return rrk.rerank(
+                            query=query_text,
+                            candidates=_relaxed_pool_dicts,
+                            top_k=len(_relaxed_pool_dicts),
+                        )
+                    reranked_pool = await loop.run_in_executor(None, _rerank_relaxed)
+                except Exception:
+                    reranked_pool = _relaxed_pool_dicts  # reranker fail-open
+
+                c5_scored = score_candidates(reranked_pool, profile)
+                selected_mcs = c5_scored[: profile.top_k]
+                pool_dicts = _relaxed_pool_dicts
+
+                # Re-check coverage
+                _relaxed_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
+                _enough = (
+                    enough_candidates(_relaxed_mcs, profile)
+                    and (not _has_field_queries or enough_field_coverage(_relaxed_mcs, profile))
+                )
+
+            if not _enough:
+                # ---------------------------------------------------------------
+                # Level 2: lexical_table — admit keyword-only candidates (those
+                # with lexical/pattern hits absent from the dense pool).
+                # Build rows_by_key for lookup; do NOT change C4 primary path.
+                # ---------------------------------------------------------------
+                _pool_keys = {mc.candidate_key for mc in pool}
+                _rows_by_key = {
+                    (row.get("vertex_id") or row.get("self_ref", "")): row
+                    for row in _mc_state.rows
+                }
+                _kw_candidates = _build_lexical_table_candidates(
+                    pool_keys=_pool_keys,
+                    lexical_hits=_mc_state.lex_hits,
+                    pattern_hits=_mc_state.pat_hits,
+                    rows_by_key=_rows_by_key,
+                )
+
+                if _kw_candidates:
+                    _e2_fallback_level = "lexical_table"
+                    # Extend the pool with keyword-only candidates.
+                    # Re-run rerank + C5 over the extended pool.
+                    _combined_pool = list(pool) + _kw_candidates
+                    _combined_dicts = list(pool_dicts) + [
+                        {
+                            "content_text": mc.chunk_text,
+                            "self_ref": mc.self_ref,
+                            "vector_score": mc.vector_score,
+                            "chunk_index": mc.chunk_index,
+                            "source_refs": mc.source_refs,
+                            "token_count": mc.token_count,
+                            "page_number": mc.page_number,
+                            "alias_hits": mc.alias_hits,
+                            "pattern_hits": mc.pattern_hits,
+                            "negative_hits": mc.negative_hits,
+                            "section_hits": mc.section_hits,
+                            "content_type": mc.content_type,
+                            "retrieval_sources": mc.retrieval_sources,
+                            "supported_field_hints": mc.supported_field_hints,
+                            "merged_candidate": mc,
+                        }
+                        for mc in _kw_candidates
+                    ]
+                    pool = _combined_pool
+
+                    try:
+                        def _rerank_kw() -> list[dict]:
+                            return rrk.rerank(
+                                query=query_text,
+                                candidates=_combined_dicts,
+                                top_k=len(_combined_dicts),
+                            )
+                        reranked_pool = await loop.run_in_executor(None, _rerank_kw)
+                    except Exception:
+                        reranked_pool = _combined_dicts
+
+                    c5_scored = score_candidates(reranked_pool, profile)
+                    selected_mcs = c5_scored[: profile.top_k]
+                    pool_dicts = _combined_dicts
+
+                    _kw_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
+                    _enough = (
+                        enough_candidates(_kw_mcs, profile)
+                        and (not _has_field_queries or enough_field_coverage(_kw_mcs, profile))
+                    )
+
+                if not _enough:
+                    # -----------------------------------------------------------
+                    # Level 3: identity_anchor — re-merge with C8 anchors injected
+                    # (no-op when _c8_anchors is empty; skipped automatically).
+                    # Uses build_pool_from_multi_channel_state (no re-fetch/embed).
+                    # -----------------------------------------------------------
+                    if _c8_anchors:
+                        _anchor_pool: list = build_pool_from_multi_channel_state(
+                            _mc_state,
+                            profile,
+                            identity_anchors=_c8_anchors,
+                            top_n_override=_relaxed_top_n,
+                        )
+                        if _anchor_pool:
+                            _e2_fallback_level = "identity_anchor"
+                            pool = _anchor_pool
+                            _anchor_dicts = [
+                                {
+                                    "content_text": mc.chunk_text,
+                                    "self_ref": mc.self_ref,
+                                    "vector_score": mc.vector_score,
+                                    "chunk_index": mc.chunk_index,
+                                    "source_refs": mc.source_refs,
+                                    "token_count": mc.token_count,
+                                    "page_number": mc.page_number,
+                                    "alias_hits": mc.alias_hits,
+                                    "pattern_hits": mc.pattern_hits,
+                                    "negative_hits": mc.negative_hits,
+                                    "section_hits": mc.section_hits,
+                                    "content_type": mc.content_type,
+                                    "retrieval_sources": mc.retrieval_sources,
+                                    "supported_field_hints": mc.supported_field_hints,
+                                    "merged_candidate": mc,
+                                }
+                                for mc in _anchor_pool
+                            ]
+
+                            try:
+                                def _rerank_anchor() -> list[dict]:
+                                    return rrk.rerank(
+                                        query=query_text,
+                                        candidates=_anchor_dicts,
+                                        top_k=len(_anchor_dicts),
+                                    )
+                                reranked_pool = await loop.run_in_executor(None, _rerank_anchor)
+                            except Exception:
+                                reranked_pool = _anchor_dicts
+
+                            c5_scored = score_candidates(reranked_pool, profile)
+                            selected_mcs = c5_scored[: profile.top_k]
+                            pool_dicts = _anchor_dicts
+
+                            _anc_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
+                            _enough = (
+                                enough_candidates(_anc_mcs, profile)
+                                and (not _has_field_queries or enough_field_coverage(_anc_mcs, profile))
+                            )
+
+                    if not _enough:
+                        # -------------------------------------------------------
+                        # Level 4: full — only after all cheaper levels fail.
+                        # Respects fallback_to_full flag; would_skip when False.
+                        # -------------------------------------------------------
+                        if not selected_mcs:
+                            # Pool is genuinely empty even after all levels
+                            _e2_fallback_level = "full" if profile.fallback_to_full else "would_skip"
+                            _full_mode = "full" if profile.fallback_to_full else "would_skip"
+                            return ChunkScopeResponse(
+                                mode=_full_mode,
+                                self_refs=[],
+                                diagnostics=ChunkScopeDiagnostics(
+                                    mode=_full_mode,
+                                    fallback_reason="coverage_insufficient_after_all_fallback_levels",
+                                    query_text=query_text,
+                                    vector_threshold=profile.min_similarity,
+                                    vector_score_range=None,
+                                    candidate_count=len(pool),
+                                    rerank_score_range=_rerank_score_range(reranked_pool),
+                                    selected_ref_count=0,
+                                    selected_token_estimate=0,
+                                    full_doc_token_estimate=full_doc_token_estimate,
+                                    would_skip_if_fallback_disabled=not profile.fallback_to_full,
+                                    vector_search_ms=vector_search_ms,
+                                    rerank_ms=rerank_ms,
+                                    ann_top_k_requested=_mc_ann_top_k,
+                                    post_filter_candidate_count=_mc_post_filter_count,
+                                    post_filter_retry_count=0,
+                                    filter_strategy=_mc_filter_strategy,
+                                    short_fetch=False,
+                                    fallback_level=_e2_fallback_level,
+                                ),
+                            )
+                        # If we still have some selected (coverage low but non-zero),
+                        # proceed with what we have rather than failing to full.
+                        _e2_fallback_level = "full" if profile.fallback_to_full else "would_skip"
+
+        # -------------------------------------------------------------------
+        # END E2 FALLBACK LADDER
+        # -------------------------------------------------------------------
 
         # Attach score_components to the pool_dicts for diagnostics (matches
         # the back-ref on each dict via "merged_candidate").
@@ -1026,9 +1384,8 @@ async def chunk_scope(
             })
         _c7_score_components = _sc_list[: profile.top_k]
 
-        # fallback_level: "none" on the normal multi-channel success path.
-        # Phase E will populate other levels (relaxed_dense, lexical_table, etc.).
-        _c7_fallback_level = "none"
+        # fallback_level: set by E2 ladder ("none" on the happy path).
+        _c7_fallback_level = _e2_fallback_level
 
     return ChunkScopeResponse(
         mode="selected_refs",
