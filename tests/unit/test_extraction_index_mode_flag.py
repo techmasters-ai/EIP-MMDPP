@@ -4,7 +4,10 @@ Phase 1 Task 4 of ``docs/superpowers/plans/2026-05-27-merged-chunk-routing.md``.
 
 Five cases:
 
-1. Default value (no env override) is ``"per_element"``.
+1. Effective default (env-file wins) is ``"merged"``.  The project ``.env``
+   sets ``EXTRACTION_INDEX_MODE=merged``, so ``Settings(env_file=".env")``
+   resolves ``"merged"`` even when the OS env var is absent — the env-file
+   value takes precedence over the ``Field(default="per_element")`` fallback.
 2. ``EXTRACTION_INDEX_MODE=merged`` env var produces ``settings.extraction_index_mode == "merged"``
    when ``Settings()`` is re-instantiated.
 3. Invalid Literal value (e.g. ``"foo"``) raises ``pydantic.ValidationError`` at
@@ -35,7 +38,7 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def test_extraction_index_mode_default_is_per_element(monkeypatch):
+def test_extraction_index_mode_env_file_default_is_merged(monkeypatch):
     """With no OS env override, Settings resolves the value from .env.
 
     The project .env sets EXTRACTION_INDEX_MODE=merged, so Settings() resolves

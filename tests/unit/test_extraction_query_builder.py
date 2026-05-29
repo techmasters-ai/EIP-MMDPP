@@ -34,8 +34,8 @@ class TestRadarPowerRfQuerySnapshot:
     def test_radar_power_rf_query_snapshot(self):
         """Snapshot: radar_power_rf query text must match exactly.
 
-        Expected text frozen from RadarPowerRfPass / RadarPowerRfRecord at
-        commit bdde417 field shapes. Update this string only if you intend to
+        Expected text frozen from the current RadarPowerRfPass / RadarPowerRfRecord
+        schema (re-baselined 2026-05-29). Update this string only if you intend to
         change retrieval query content.
         """
         from app.services.extraction_query_builder import build_retrieval_query
@@ -77,8 +77,9 @@ class TestMissileKinematicsQuerySnapshot:
     def test_missile_kinematics_query_snapshot(self):
         """Snapshot: missile_kinematics query text must match exactly.
 
-        Expected text frozen from MissileKinematicsPass / MissileKinematicsRecord
-        at commit bdde417 field shapes.
+        Expected text frozen from the current MissileKinematicsPass / MissileKinematicsRecord
+        schema (re-baselined 2026-05-29). Update this string only if you intend to
+        change retrieval query content.
         """
         from app.services.extraction_query_builder import build_retrieval_query
 
@@ -290,7 +291,7 @@ class TestRetrievalProfileValidation:
         from app.services.ontology_bundles import RetrievalProfile
 
         r = RetrievalProfile()
-        assert r.min_similarity == pytest.approx(0.45)
+        assert r.min_similarity == pytest.approx(0.45)  # Field-level defaults (no manifest override) — manifest sets 0.35/15
         assert r.top_n_candidates == 50
         assert r.top_k == 20
         assert r.fallback_to_full is True
