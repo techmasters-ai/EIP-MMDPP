@@ -661,6 +661,13 @@ def _execute_pass_attempt(
         _raw = chunk_scope.get("selected_chunks")
         if isinstance(_raw, list) and _raw:
             forwarded_selected_chunks = _raw
+    # Tasks F2+F4: forward field_subset from chunk_scope when present.
+    # Not gated by WORKER_FORWARD_SELECTED_CHUNKS — separate feature.
+    forwarded_field_subset: list[str] | None = None
+    if chunk_scope is not None:
+        _raw_fs = chunk_scope.get("field_subset")
+        if isinstance(_raw_fs, list) and _raw_fs:
+            forwarded_field_subset = _raw_fs
     request_body = _build_extract_pass_request(
         bundle_key=bundle_key,
         pass_def=pass_def,
@@ -668,6 +675,7 @@ def _execute_pass_attempt(
         upstream_refs=selected_refs,
         document_id=document_id,
         selected_chunks=forwarded_selected_chunks,
+        field_subset=forwarded_field_subset,
     )
     # C0 telemetry: measure request size + HTTP wall + pass wall. perf_counter
     # is the wall-clock workhorse (monotonic, ns resolution); negligible cost
@@ -3477,6 +3485,7 @@ def _build_extract_pass_request(
     *, bundle_key: str, pass_def, doc_json: dict,
     upstream_refs: dict | None, document_id: str,
     selected_chunks: list[dict] | None = None,
+    field_subset: list[str] | None = None,
 ) -> dict:
     """Assemble the POST body for /extract-pass.
 
@@ -3506,6 +3515,11 @@ def _build_extract_pass_request(
 
     if selected_chunks:
         body["selected_chunks"] = selected_chunks
+
+    # Tasks F2+F4: include field_subset only when non-empty so the request
+    # body shape is byte-identical to today when the feature is off (default).
+    if field_subset:
+        body["field_subset"] = field_subset
 
     # C2: plumb per-pass execution profile onto the request body.
     execution = getattr(pass_def, "execution", None)
@@ -7346,6 +7360,14 @@ def _compute_effective_chunk_scope(
                     else:
                         diag["selected_chunks_forwarded"] = False
                         diag["selected_chunks_forwarded_count"] = 0
+
+            # Tasks F2+F4: forward field_subset from the router response.
+            # NOT gated by WORKER_FORWARD_SELECTED_CHUNKS — this is a separate
+            # feature. Forward whenever the response carries a non-empty list.
+            # When None or empty → omit from chunk_scope (no-op default).
+            _resp_field_subset = router_response.get("field_subset")
+            if isinstance(_resp_field_subset, list) and _resp_field_subset:
+                effective_chunk_scope["field_subset"] = _resp_field_subset
         else:
             effective_chunk_scope = None
             if resp_mode == "would_skip":

@@ -240,6 +240,16 @@ class ExtractPassRequest(BaseModel):
             "Absent / null keeps the legacy per-element chunked path."
         ),
     )
+    field_subset: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Tasks F2+F4 (§9 subset-schema extraction): the active field names "
+            "to include in the LLM extraction prompt, forwarded from the worker's "
+            "chunk-scope router response. When None (the default), docling-graph "
+            "includes all schema fields — byte-identical to today's behavior. "
+            "F3 (applying the subset inside docling-graph) is a separate later task."
+        ),
+    )
 
 
 class ExtractionProvenance(BaseModel):

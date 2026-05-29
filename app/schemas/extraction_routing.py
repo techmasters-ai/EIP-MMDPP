@@ -145,6 +145,13 @@ class ChunkScopeDiagnostics(BaseModel):
     # > 0 when anchors were found and injected as dense + lexical signals.
     identity_anchor_count: int | None = None
 
+    # Tasks F2+F4 — subset-schema field diagnostics.
+    # None when subset_schema_extraction=False (the default) or on the
+    # per-element path. Populated only on the multi-channel success path when
+    # the retrieval profile has subset_schema_extraction=True.
+    active_field_count: int | None = None
+    dropped_field_count: int | None = None
+
 
 class SelectedChunk(BaseModel):
     """Router-selected merged chunk (Phase 1 Task 6).
@@ -209,6 +216,17 @@ class ChunkScopeResponse(BaseModel):
             "(bge-m3 + reranker rank), NOT lex-sorted by chunk_index. "
             "Phase-2 worker dispatch consumes ``selected_chunks[*].text`` "
             "as pre-built LLM batches."
+        ),
+    )
+    field_subset: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tasks F2+F4: the active field names to include in the LLM extraction "
+            "prompt, computed when ``profile.subset_schema_extraction=True`` on the "
+            "multi-channel success path. ``None`` when the feature is off (the "
+            "default) or on the per-element path. Worker threads this as "
+            "``field_subset`` into the docling-graph /extract-pass request body; "
+            "absent when None → request shape byte-identical to today."
         ),
     )
     diagnostics: ChunkScopeDiagnostics

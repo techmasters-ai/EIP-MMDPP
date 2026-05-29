@@ -30,6 +30,7 @@ from app.schemas.extraction_routing import (
     ChunkScopeResponse,
     SelectedChunk,
 )
+from app.services.extraction_candidate_scoring import active_fields as _active_fields
 from app.db.session import get_graph_store
 from app.config import get_settings
 from app.services.embedding import embed_texts
@@ -1361,6 +1362,12 @@ async def chunk_scope(
     _e3_candidate_count_before_diag: int | None = None
     _e3_candidate_count_after_diag: int | None = None
 
+    # Tasks F2+F4 — subset-schema field subset + diagnostics.
+    # None when subset_schema_extraction=False (default) or per-element path.
+    _f2_field_subset: list[str] | None = None
+    _f4_active_field_count: int | None = None
+    _f4_dropped_field_count: int | None = None
+
     if _use_multi_channel:
         # channel_counts: one key per retrieval channel.
         # "dense" and "field:<name>" come from mc_search_diag;
@@ -1416,11 +1423,27 @@ async def chunk_scope(
         _e3_after_pool_mcs = [d["merged_candidate"] for d in reranked_pool if "merged_candidate" in d]
         _e3_candidate_count_after_diag = len(_e3_after_pool_mcs)
 
+        # Tasks F2+F4 — subset-schema field subset computation.
+        # selected_mcs is the C5-scored top_k list: [(MergedCandidate, score), ...].
+        # active_fields() is opt-in: when subset_schema_extraction=False (default),
+        # it returns ALL fields (no-op). When True, it computes the evidence-based
+        # active subset. We pass ALL selected candidates (not just top_k) so the
+        # full evidence set informs the subset, but use selected_mcs for the
+        # MergedCandidate objects since those carry supported_field_hints.
+        _f2_selected_mcs_only = [mc for mc, _ in selected_mcs]
+        _f2_all_fields = list(template_cls.model_fields.keys())
+        _f2_active = _active_fields(_f2_selected_mcs_only, template_cls, profile)
+        if profile.subset_schema_extraction:
+            _f2_field_subset = _f2_active
+            _f4_active_field_count = len(_f2_active)
+            _f4_dropped_field_count = len(_f2_all_fields) - len(_f2_active)
+
     return ChunkScopeResponse(
         mode="selected_refs",
         self_refs=final_self_refs,
         text_by_ref=text_by_ref,
         selected_chunks=selected_chunks_out,
+        field_subset=_f2_field_subset,
         diagnostics=ChunkScopeDiagnostics(
             mode="selected_refs",
             fallback_reason=_reranker_fallback_reason,  # Minor #6 (rev 16)
@@ -1456,5 +1479,8 @@ async def chunk_scope(
             field_coverage_before_fallback=_e3_field_coverage_before_diag,
             candidate_count_before_fallback=_e3_candidate_count_before_diag,
             candidate_count_after_fallback=_e3_candidate_count_after_diag,
+            # Tasks F2+F4 — subset-schema diagnostics (None when off/per-element).
+            active_field_count=_f4_active_field_count,
+            dropped_field_count=_f4_dropped_field_count,
         ),
     )
