@@ -582,6 +582,7 @@ class MultiChannelDiagnostics:
     lexical_hit_count: int         # chunks with at least one lexical hit (C2)
     pattern_hit_count: int         # chunks with at least one pattern hit (C3)
     pool_size: int                 # merged pool size AFTER cap
+    per_field_dense_counts: dict   # {field_name: int} — per-field candidate counts (C7)
     filter_strategy: str = "multi_channel"
 
 
@@ -643,6 +644,7 @@ async def search_extraction_chunks_multi_channel(
             lexical_hit_count=0,
             pattern_hit_count=0,
             pool_size=0,
+            per_field_dense_counts={},
         )
 
     # ------------------------------------------------------------------
@@ -701,6 +703,10 @@ async def search_extraction_chunks_multi_channel(
         lexical_hit_count=lexical_hit_count,
         pattern_hit_count=pattern_hit_count,
         pool_size=len(capped_pool),
+        per_field_dense_counts={
+            field_name: len(results)
+            for field_name, results in field_dense.items()
+        },
     )
     return capped_pool, diag
 

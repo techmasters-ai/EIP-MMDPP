@@ -92,6 +92,26 @@ class ChunkScopeDiagnostics(BaseModel):
     # trigger if production data shows incomplete retrieval causes quality regressions.
     short_fetch: bool = False
 
+    # Task C7 — multi-channel diagnostics.
+    # All default None; only populated on the multi-channel success path.
+    # Per-element paths and all error/early-return paths leave these None.
+    channel_counts: dict[str, int] | None = None
+    # {"dense": N, "field:<field_name>": M, "lexical": L, "pattern": P}
+    # Counts from the MultiChannelDiagnostics per-channel fields.
+
+    field_coverage: dict[str, int] | None = None
+    # {field_name: # candidates with evidence for that field}
+    # Derived from the merged pool's supported_field_hints.
+
+    score_components: list[dict] | None = None
+    # One dict per SELECTED candidate (capped at top_k).
+    # Keys: candidate_key, reranker_score (or null), alias_hits, pattern_hits,
+    #       negative_hits, section_hits, retrieval_sources (sorted list), final_score.
+
+    fallback_level: str | None = None
+    # "none" on the normal multi-channel success path.
+    # Phase E will populate "relaxed_dense" | "lexical_table" | "identity_anchor" | "full".
+
 
 class SelectedChunk(BaseModel):
     """Router-selected merged chunk (Phase 1 Task 6).

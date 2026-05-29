@@ -929,6 +929,60 @@ async def chunk_scope(
         if _final_rerank_scores else None
     )
 
+    # -----------------------------------------------------------------------
+    # Task C7 — multi-channel diagnostics (populated on success path only).
+    # All four fields default None; set only when _use_multi_channel is True.
+    # Per-element path and all error/early-return paths leave them None.
+    # -----------------------------------------------------------------------
+    _c7_channel_counts: dict[str, int] | None = None
+    _c7_field_coverage: dict[str, int] | None = None
+    _c7_score_components: list[dict] | None = None
+    _c7_fallback_level: str | None = None
+
+    if _use_multi_channel:
+        # channel_counts: one key per retrieval channel.
+        # "dense" and "field:<name>" come from mc_search_diag;
+        # "lexical" and "pattern" are chunk-level hit counts from mc_search_diag.
+        _cc: dict[str, int] = {"dense": mc_search_diag.entity_dense_count}
+        for field_name, count in mc_search_diag.per_field_dense_counts.items():
+            _cc[f"field:{field_name}"] = count
+        _cc["lexical"] = mc_search_diag.lexical_hit_count
+        _cc["pattern"] = mc_search_diag.pattern_hit_count
+        _c7_channel_counts = _cc
+
+        # field_coverage: count of SELECTED candidates with evidence for each field.
+        # Derived from the supported_field_hints on the MergedCandidates in top_k_results.
+        _fc: dict[str, int] = {}
+        for c7_d in top_k_results:
+            mc_obj = c7_d.get("merged_candidate")
+            if mc_obj is not None:
+                for hint in getattr(mc_obj, "supported_field_hints", set()):
+                    _fc[hint] = _fc.get(hint, 0) + 1
+        _c7_field_coverage = _fc
+
+        # score_components: one dict per selected (top_k) candidate.
+        # Sourced from selected_mcs (list[(MergedCandidate, final_score)]).
+        # mc_to_dict is already built above — reuse it to get reranker_score.
+        _sc_list: list[dict] = []
+        for mc_obj, final_score in selected_mcs:
+            mc_dict = mc_to_dict.get(id(mc_obj))
+            reranker_score = mc_dict.get("reranker_score") if mc_dict else None
+            _sc_list.append({
+                "candidate_key": mc_obj.candidate_key,
+                "reranker_score": reranker_score,
+                "alias_hits": mc_obj.alias_hits,
+                "pattern_hits": mc_obj.pattern_hits,
+                "negative_hits": mc_obj.negative_hits,
+                "section_hits": mc_obj.section_hits,
+                "retrieval_sources": sorted(mc_obj.retrieval_sources),
+                "final_score": final_score,
+            })
+        _c7_score_components = _sc_list[: profile.top_k]
+
+        # fallback_level: "none" on the normal multi-channel success path.
+        # Phase E will populate other levels (relaxed_dense, lexical_table, etc.).
+        _c7_fallback_level = "none"
+
     return ChunkScopeResponse(
         mode="selected_refs",
         self_refs=final_self_refs,
@@ -957,5 +1011,10 @@ async def chunk_scope(
             selected_chunk_count=selected_chunk_count,
             expanded_ref_count=expanded_ref_count,
             selected_chunk_token_estimate=selected_chunk_token_estimate,
+            # Task C7 multi-channel diagnostics (None in per_element mode).
+            channel_counts=_c7_channel_counts,
+            field_coverage=_c7_field_coverage,
+            score_components=_c7_score_components,
+            fallback_level=_c7_fallback_level,
         ),
     )

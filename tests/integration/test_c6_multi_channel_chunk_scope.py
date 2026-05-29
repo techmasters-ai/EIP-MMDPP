@@ -776,3 +776,283 @@ class TestReranksEntirePool:
             f"Reranker top_k={top_k_sent}; expected {n_rows} (rerank full pool). "
             f"profile.top_k={top_k} is the POST-C5 cut, not the rerank limit."
         )
+
+
+# ---------------------------------------------------------------------------
+# 9. Task C7 — multi-channel diagnostics (channel_counts, field_coverage,
+#    score_components, fallback_level) populated on multi-channel success path
+# ---------------------------------------------------------------------------
+
+class TestC7MultiChannelDiagnostics:
+    """After a successful multi-channel chunk_scope call, the diagnostics block
+    must include populated channel_counts, field_coverage, score_components,
+    and fallback_level == "none".
+
+    Also asserts that per-element mode leaves all four new fields as None.
+    """
+
+    def _make_pass_def(self, top_n_candidates: int = 6, top_k: int = 2):
+        pd = MagicMock()
+        pd.name = "radar_power_rf"
+        pd.phase = "field_group"
+        pd.module = "extraction_schemas.radar_power_rf"
+        pd.template_class = "RadarPowerRfPass"
+
+        profile = MagicMock()
+        profile.min_similarity = 0.0
+        profile.top_n_candidates = top_n_candidates
+        profile.top_k = top_k
+        profile.field_query_top_k = 5
+        profile.fallback_to_full = True
+        profile.pattern_hit_limit = 50
+        profile.rerank_weight = 1.0
+        profile.lexical_weight = 0.0
+        profile.pattern_weight = 0.0
+        profile.section_weight = 0.0
+        profile.table_boost = 0.0
+        profile.negative_weight = 0.0
+        pd.retrieval = profile
+
+        return pd
+
+    @pytest.mark.asyncio
+    async def test_c7_diagnostics_populated_on_multichannel_success(self):
+        """Multi-channel success path: channel_counts, field_coverage,
+        score_components (non-empty), fallback_level == 'none' all present."""
+        run_id = str(uuid.uuid4())
+        bundle_key = "air_defense_v3_baseline_subset"
+        pass_name = "radar_power_rf"
+
+        rows = [
+            _row(
+                f"chunk_{i}",
+                _norm(_vec(float(i + 1), 0)),
+                pipeline_run_id=run_id,
+                chunk_index=i,
+                chunk_text=f"Radar power chunk {i}: technical data",
+                source_refs=[f"#/texts/{i}"],
+            )
+            for i in range(4)
+        ]
+
+        query_mock = AsyncMock(return_value=rows)
+        store = SimpleNamespace(
+            _database="eip_knowledge_graph",
+            _client=SimpleNamespace(query=query_mock),
+        )
+
+        pass_def = self._make_pass_def(top_n_candidates=6, top_k=2)
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        q_vec = _norm(_vec(1, 0))
+        signals_mock = MagicMock()
+        signals_mock.entity_query = "radar power rf query"
+        signals_mock.field_queries = ()
+
+        def _fake_rerank(query, candidates, top_k):
+            scored = []
+            for i, c in enumerate(candidates):
+                c2 = dict(c)
+                c2["reranker_score"] = float(len(candidates) - i)
+                scored.append(c2)
+            return scored
+
+        from app.main import create_app
+        from httpx import ASGITransport, AsyncClient
+
+        app = create_app()
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.embed_texts",
+                      return_value=[q_vec]),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=store),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=500)),
+                patch("app.services.extraction_chunk_search.embed_texts",
+                      return_value=[q_vec]),
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings") as mock_settings,
+            ):
+                settings = MagicMock()
+                settings.extraction_index_mode = "merged"
+                settings.reranker_enabled = True
+                settings.vector_router_retrieval_mode = "direct"
+                mock_settings.return_value = settings
+
+                resp = await ac.post(
+                    "/v1/extraction/chunk-scope",
+                    json={
+                        "pipeline_run_id": run_id,
+                        "bundle_key": bundle_key,
+                        "pass_name": pass_name,
+                    },
+                )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        diag = body["diagnostics"]
+
+        # --- channel_counts: must be a dict with at least "dense" key -------
+        assert diag.get("channel_counts") is not None, (
+            "channel_counts must be populated on multi-channel success path"
+        )
+        cc = diag["channel_counts"]
+        assert isinstance(cc, dict), f"channel_counts must be a dict; got {type(cc)}"
+        assert "dense" in cc, f"channel_counts must include 'dense' key; got {cc}"
+        assert isinstance(cc["dense"], int), (
+            f"channel_counts['dense'] must be an int; got {type(cc['dense'])}"
+        )
+
+        # --- field_coverage: must be a dict (may be empty with 0 field queries) ---
+        assert diag.get("field_coverage") is not None or diag["field_coverage"] == {}, (
+            "field_coverage must be a dict (possibly empty) on multi-channel success path"
+        )
+        fc = diag["field_coverage"]
+        assert isinstance(fc, dict), f"field_coverage must be a dict; got {type(fc)}"
+
+        # --- score_components: must be non-empty list with expected keys -----
+        assert diag.get("score_components") is not None, (
+            "score_components must be populated on multi-channel success path"
+        )
+        sc = diag["score_components"]
+        assert isinstance(sc, list), f"score_components must be a list; got {type(sc)}"
+        assert len(sc) > 0, "score_components must be non-empty when candidates are selected"
+        assert len(sc) <= pass_def.retrieval.top_k, (
+            f"score_components length {len(sc)} exceeds top_k={pass_def.retrieval.top_k}"
+        )
+
+        first = sc[0]
+        assert isinstance(first, dict), f"score_components entries must be dicts; got {type(first)}"
+        # Must carry at minimum the key signals
+        for key in ("final_score", "retrieval_sources"):
+            assert key in first, (
+                f"score_components entry missing '{key}'; keys present: {list(first.keys())}"
+            )
+
+        # --- fallback_level: must be "none" on normal multi-channel success ---
+        assert diag.get("fallback_level") == "none", (
+            f"fallback_level must be 'none' on normal multi-channel path; "
+            f"got {diag.get('fallback_level')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_c7_new_fields_none_in_per_element_mode(self):
+        """Per-element mode: channel_counts, field_coverage, score_components,
+        fallback_level must all be None (new fields default None)."""
+        run_id = str(uuid.uuid4())
+        bundle_key = "air_defense_v3_baseline_subset"
+        pass_name = "radar_power_rf"
+
+        from dataclasses import dataclass, field as dc_field
+
+        @dataclass
+        class _FakeResult:
+            node_id: str = "rid:0"
+            name: str = "chunk"
+            entity_type: str = "ExtractionChunk"
+            score: float = 0.75
+            properties: dict = dc_field(default_factory=lambda: {
+                "self_ref": "#/texts/0",
+                "chunk_text": "some text",
+                "pipeline_run_id": run_id,
+            })
+
+        @dataclass
+        class _FakeDiag:
+            ann_top_k_requested: int = 500
+            post_filter_candidate_count: int = 1
+            post_filter_retry_count: int = 0
+            filter_strategy: str = "overfetch_post_filter"
+            short_fetch: bool = False
+
+        fake_results = [_FakeResult()]
+        fake_diag = _FakeDiag()
+
+        pass_def = MagicMock()
+        pass_def.name = pass_name
+        pass_def.phase = "field_group"
+        pass_def.module = "extraction_schemas.radar_power_rf"
+        pass_def.template_class = "RadarPowerRfPass"
+        profile = MagicMock()
+        profile.min_similarity = 0.45
+        profile.top_n_candidates = 10
+        profile.top_k = 3
+        # field_query_top_k = 0 → per-element path (C6 branch condition)
+        profile.field_query_top_k = 0
+        profile.fallback_to_full = True
+        pass_def.retrieval = profile
+
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        q_vec = [0.1] * 384
+
+        from app.main import create_app
+        from httpx import ASGITransport, AsyncClient
+
+        app = create_app()
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=MagicMock(entity_query="radar query", field_queries=())),
+                patch("app.api.v1.extraction_routing.embed_texts",
+                      return_value=[q_vec]),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=500)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks",
+                      new=AsyncMock(return_value=(fake_results, fake_diag))),
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      return_value=[{
+                          "content_text": "some text",
+                          "self_ref": "#/texts/0",
+                          "vector_score": 0.75,
+                          "reranker_score": 0.8,
+                      }]),
+                patch("app.api.v1.extraction_routing.get_settings") as mock_settings,
+            ):
+                settings = MagicMock()
+                settings.extraction_index_mode = "per_element"
+                settings.reranker_enabled = True
+                settings.vector_router_retrieval_mode = "direct"
+                mock_settings.return_value = settings
+
+                resp = await ac.post(
+                    "/v1/extraction/chunk-scope",
+                    json={
+                        "pipeline_run_id": run_id,
+                        "bundle_key": bundle_key,
+                        "pass_name": pass_name,
+                    },
+                )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        diag = body["diagnostics"]
+
+        # All four new C7 fields must be absent or None in per-element mode
+        for field_name in ("channel_counts", "field_coverage", "score_components", "fallback_level"):
+            value = diag.get(field_name)
+            assert value is None, (
+                f"Per-element mode: {field_name} must be None; got {value!r}"
+            )
