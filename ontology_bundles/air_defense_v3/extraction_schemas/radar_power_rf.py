@@ -53,6 +53,28 @@ class RadarPowerRfRecord(BaseModel):
             "Use only effective radiated power or EIRP values stated with "
             "dBW/dBm units; otherwise null."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "ERP", "EIRP", "effective radiated power",
+                    "effective isotropic radiated power",
+                    "radiated power", "effective power",
+                ],
+                "negative_terms": [
+                    "peak power", "transmitter power", "average power",
+                    "generator power", "pulse power",
+                ],
+                "evidence_patterns": [
+                    "ERP", "EIRP",
+                    r"re:e(?:ffective)?\s+radiated\s+power",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "transmitter",
+                    "electromagnetic", "radar",
+                ],
+                "units": ["dBW", "dBm", "W", "kW"],
+            }
+        },
     )
     tx_peak_power_kw: Optional[float] = Field(
         default=None,
@@ -64,6 +86,30 @@ class RadarPowerRfRecord(BaseModel):
             "Use peak transmitter or pulse output power, not ERP/EIRP or "
             "average power."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "peak power", "peak transmitter power", "transmitter power",
+                    "Tx power", "TX power", "transmit power",
+                    "pulse power", "peak pulse power",
+                    "magnetron output", "klystron output",
+                    "transmitter output power",
+                ],
+                "negative_terms": [
+                    "effective radiated power", "ERP", "EIRP",
+                    "average power", "generator power",
+                ],
+                "evidence_patterns": [
+                    r"re:peak\s+(?:transmitter\s+)?power",
+                    r"re:TX?\s*power",
+                    "magnetron output", "klystron output",
+                ],
+                "likely_sections": [
+                    "specifications", "transmitter", "performance", "radar",
+                ],
+                "units": ["kW", "W", "MW", "dBW"],
+            }
+        },
     )
     nominal_rf_mhz: Optional[float] = Field(
         default=None,
@@ -75,6 +121,30 @@ class RadarPowerRfRecord(BaseModel):
             "'X-band', or 'Ku-band'. Use radar carrier frequency, not "
             "PRF/PRI or modulation bandwidth."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "operating frequency", "carrier frequency", "RF frequency",
+                    "frequency range", "waveband", "radar band",
+                    "L-band", "S-band", "C-band", "X-band", "Ku-band",
+                    "VHF", "UHF",
+                ],
+                "negative_terms": [
+                    "PRF", "pulse repetition frequency",
+                    "modulation bandwidth", "chirp bandwidth",
+                    "doppler frequency",
+                ],
+                "evidence_patterns": [
+                    r"re:\d+(?:\.\d+)?\s*(?:MHz|GHz)",
+                    "operating frequency", "carrier frequency",
+                ],
+                "likely_sections": [
+                    "specifications", "performance", "radar", "frequency",
+                    "waveband",
+                ],
+                "units": ["MHz", "GHz", "kHz"],
+            }
+        },
     )
 
     _v_system_name      = field_validator("system_name", mode="before")(validate_radar_system_name)

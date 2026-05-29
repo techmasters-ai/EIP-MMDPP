@@ -501,14 +501,10 @@ class TestB2BuildRetrievalProfile:
         # entity_query must be non-empty (drives the B0 snapshot)
         assert result.entity_query, "entity_query must be non-empty"
 
-        # With no json_schema_extra retrieval blocks yet (B3/B4 populate them),
-        # all tuple fields on each FieldRetrievalQuery must be empty tuples.
-        for fq in result.field_queries:
-            assert fq.aliases == (), f"aliases must be empty until B3/B4: {fq.field_name}"
-            assert fq.negative_terms == ()
-            assert fq.evidence_patterns == ()
-            assert fq.likely_sections == ()
-            assert fq.units == ()
+        # B3 has now populated retrieval blocks on the missile_kinematics pass.
+        # (Radar passes get theirs from B3-radar; missile gets its from B4.)
+        # Accept either populated or empty tuples here — the per-pass B3/B4 tests
+        # (TestB3FieldMetadataLoaded) enforce non-empty specifically for radar.
 
     def test_build_retrieval_query_shim_byte_identical(self):
         """build_retrieval_query (now a shim) must return exactly
@@ -540,3 +536,169 @@ class TestB2BuildRetrievalProfile:
                 f"  shim:    {shim_result!r}\n"
                 f"  profile: {profile.entity_query!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 9. B3 — radar field-group passes have rich retrieval metadata
+# ---------------------------------------------------------------------------
+
+class TestB3FieldMetadataLoaded:
+    """B3 acceptance: all 4 radar field-group passes have populated retrieval blocks.
+
+    For every non-identity field on every radar Record class:
+      - fq.aliases is non-empty
+      - PassRetrievalSignals.lexical_terms is non-empty (union of all aliases)
+    Also confirms per-pass field counts so schema additions are caught early.
+    """
+
+    _RADAR_PASSES = [
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_power_rf",
+            "RadarPowerRfPass",
+            # non-identity fields expected
+            {"erp_dbw", "tx_peak_power_kw", "nominal_rf_mhz"},
+        ),
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_antenna",
+            "RadarAntennaPass",
+            {
+                "antenna_photo", "gain_dbi",
+                "antenna_dim_az_m", "antenna_dim_el_m",
+                "beamwidth_az_deg", "beamwidth_el_deg",
+                "spoiled", "coverage_limits_el_deg",
+            },
+        ),
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_timing",
+            "RadarTimingPass",
+            {"nominal_pri_usec", "nominal_pd_usec", "scan_period_sec", "dwell_time"},
+        ),
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_modulation",
+            "RadarModulationPass",
+            {
+                "intra_pulse_mop", "inter_pulse",
+                "frequency_excursion_mhz", "num_bits_in_code", "pulses_per_dwell",
+            },
+        ),
+    ]
+
+    def test_lexical_terms_non_empty_for_all_radar_passes(self):
+        """PassRetrievalSignals.lexical_terms must be non-empty for every radar pass."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        for mod_path, cls_name, _ in self._RADAR_PASSES:
+            cls = _load_pass_cls(mod_path, cls_name)
+            profile = build_retrieval_profile(None, cls)
+            assert len(profile.lexical_terms) > 0, (
+                f"{cls_name}: lexical_terms is empty — retrieval blocks missing or not loaded"
+            )
+
+    def test_all_non_identity_fields_have_aliases(self):
+        """Every non-identity field on every radar pass must have at least one alias."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        for mod_path, cls_name, expected_fields in self._RADAR_PASSES:
+            cls = _load_pass_cls(mod_path, cls_name)
+            profile = build_retrieval_profile(None, cls)
+
+            field_query_map = {fq.field_name: fq for fq in profile.field_queries}
+
+            # All expected fields must be present in field_queries
+            missing = expected_fields - field_query_map.keys()
+            assert not missing, (
+                f"{cls_name}: missing FieldRetrievalQuery for fields: {missing}"
+            )
+
+            # system_name must be excluded
+            assert "system_name" not in field_query_map, (
+                f"{cls_name}: system_name (identity field) must not appear in field_queries"
+            )
+
+            # Every expected field must have non-empty aliases
+            for field_name in expected_fields:
+                fq = field_query_map[field_name]
+                assert len(fq.aliases) > 0, (
+                    f"{cls_name}.{field_name}: aliases is empty — "
+                    f"json_schema_extra retrieval block missing or malformed"
+                )
+
+    def test_radar_power_rf_aliases_spot_check(self):
+        """Spot-check: radar_power_rf erp_dbw has 'ERP' and 'EIRP' aliases;
+        tx_peak_power_kw has 'peak power'; nominal_rf_mhz has 'operating frequency'."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        RadarPowerRfPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_power_rf",
+            "RadarPowerRfPass",
+        )
+        profile = build_retrieval_profile(None, RadarPowerRfPass)
+        fq_map = {fq.field_name: fq for fq in profile.field_queries}
+
+        erp = fq_map["erp_dbw"]
+        assert "ERP" in erp.aliases, f"ERP not found in erp_dbw aliases: {erp.aliases}"
+        assert "EIRP" in erp.aliases, f"EIRP not found in erp_dbw aliases: {erp.aliases}"
+
+        tx = fq_map["tx_peak_power_kw"]
+        assert "peak power" in tx.aliases, (
+            f"'peak power' not in tx_peak_power_kw aliases: {tx.aliases}"
+        )
+
+        rf = fq_map["nominal_rf_mhz"]
+        assert "operating frequency" in rf.aliases, (
+            f"'operating frequency' not in nominal_rf_mhz aliases: {rf.aliases}"
+        )
+
+    def test_radar_timing_aliases_spot_check(self):
+        """Spot-check: nominal_pri_usec has 'PRI'; nominal_pd_usec has 'pulse width';
+        scan_period_sec has 'scan period'; dwell_time has 'dwell time'."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        RadarTimingPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_timing",
+            "RadarTimingPass",
+        )
+        profile = build_retrieval_profile(None, RadarTimingPass)
+        fq_map = {fq.field_name: fq for fq in profile.field_queries}
+
+        assert "PRI" in fq_map["nominal_pri_usec"].aliases
+        assert "pulse width" in fq_map["nominal_pd_usec"].aliases
+        assert "scan period" in fq_map["scan_period_sec"].aliases
+        assert "dwell time" in fq_map["dwell_time"].aliases
+
+    def test_radar_modulation_aliases_spot_check(self):
+        """Spot-check: intra_pulse_mop has 'LFM' and 'chirp'; inter_pulse has
+        'frequency hopping'; frequency_excursion_mhz has 'chirp bandwidth';
+        num_bits_in_code has 'code length'; pulses_per_dwell has 'pulses per dwell'."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        RadarModulationPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_modulation",
+            "RadarModulationPass",
+        )
+        profile = build_retrieval_profile(None, RadarModulationPass)
+        fq_map = {fq.field_name: fq for fq in profile.field_queries}
+
+        assert "LFM" in fq_map["intra_pulse_mop"].aliases
+        assert "chirp" in fq_map["intra_pulse_mop"].aliases
+        assert "frequency hopping" in fq_map["inter_pulse"].aliases
+        assert "chirp bandwidth" in fq_map["frequency_excursion_mhz"].aliases
+        assert "code length" in fq_map["num_bits_in_code"].aliases
+        assert "pulses per dwell" in fq_map["pulses_per_dwell"].aliases
+
+    def test_radar_antenna_aliases_spot_check(self):
+        """Spot-check: gain_dbi has 'antenna gain'; beamwidth_az_deg has 'HPBW azimuth';
+        spoiled has 'fan beam'; coverage_limits_el_deg has 'elevation coverage'."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        RadarAntennaPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_antenna",
+            "RadarAntennaPass",
+        )
+        profile = build_retrieval_profile(None, RadarAntennaPass)
+        fq_map = {fq.field_name: fq for fq in profile.field_queries}
+
+        assert "antenna gain" in fq_map["gain_dbi"].aliases
+        assert "HPBW azimuth" in fq_map["beamwidth_az_deg"].aliases
+        assert "fan beam" in fq_map["spoiled"].aliases
+        assert "elevation coverage" in fq_map["coverage_limits_el_deg"].aliases
