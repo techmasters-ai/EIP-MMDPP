@@ -1060,3 +1060,201 @@ class TestNonVectorTokenEstimate:
         assert ".size()" in sql_cmd, (
             f"SQL must use ArcadeDB-native chunk_text.size(); got: {sql_cmd!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 18. Fix 1 (rev 18) — multi-channel: empty expanded_refs → fail open
+# ---------------------------------------------------------------------------
+
+class TestMultiChannelEmptyExpandedRefsFail:
+    """When multi-channel expansion produces no source_refs (all selected
+    MergedCandidates have source_refs=[]), the endpoint must fail open to
+    mode=full (or mode=would_skip when fallback_to_full=False) rather than
+    returning the contract-invalid mode=selected_refs with self_refs=[].
+
+    Fix 1 guard: added after the expansion loop sets final_self_refs.
+    """
+
+    def _make_mc_pass_def(self, fallback_to_full: bool = True):
+        """Build a pass def that triggers the multi-channel path."""
+        rp = MagicMock()
+        rp.min_similarity = 0.45
+        rp.top_n_candidates = 10
+        rp.top_k = 5
+        rp.fallback_to_full = fallback_to_full
+        # field_query_top_k > 0 triggers multi-channel path
+        rp.field_query_top_k = 3
+        rp.rerank_weight = 1.0
+        rp.lexical_weight = 0.0
+        rp.pattern_weight = 0.0
+        rp.section_weight = 0.0
+        rp.table_boost = 0.0
+        rp.negative_weight = 0.0
+        rp.pattern_hit_limit = 50
+        pd = MagicMock()
+        pd.name = _PASS_NAME
+        pd.phase = "field_group"
+        pd.module = "extraction_schemas.radar_power_rf"
+        pd.template_class = "RadarPowerRfPass"
+        pd.retrieval = rp
+        return pd
+
+    def _make_merged_candidate_with_empty_source_refs(self, idx: int):
+        """Build a MergedCandidate with source_refs=[] to trigger empty expansion."""
+        from app.services.extraction_candidate_scoring import MergedCandidate
+        return MergedCandidate(
+            candidate_key=f"run-test:chunk_{idx}",
+            chunk_index=idx,
+            self_ref=f"chunk_{idx}",
+            chunk_text=f"some chunk text {idx}",
+            source_refs=[],   # <-- the pathological case: no source refs
+            token_count=20,
+            page_number=1,
+            vector_score=0.8,
+            field_scores={},
+            alias_hits=0,
+            pattern_hits=0,
+            negative_hits=0,
+            section_hits=0,
+            content_type=None,
+            retrieval_sources={"dense"},
+            supported_field_hints=set(),
+        )
+
+    def _make_multi_channel_diag(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            raw_row_count=5,
+            entity_dense_count=5,
+            field_dense_total_count=0,
+            lexical_hit_count=0,
+            pattern_hit_count=0,
+            pool_size=2,
+            filter_strategy="multi_channel",
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_expanded_refs_fails_open_to_full(self, app):
+        """All selected candidates have source_refs=[] → mode=full (fallback_to_full=True)."""
+        pass_def = self._make_mc_pass_def(fallback_to_full=True)
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        mc_a = self._make_merged_candidate_with_empty_source_refs(0)
+        mc_b = self._make_merged_candidate_with_empty_source_refs(1)
+        pool = [mc_a, mc_b]
+        diag = self._make_multi_channel_diag()
+
+        # score_candidates returns list[(MergedCandidate, float)]
+        scored = [(mc_a, 0.9), (mc_b, 0.8)]
+
+        # reranker returns pool_dicts with reranker_score added
+        def _fake_rerank(query, candidates, top_k):
+            return [dict(c, reranker_score=0.85) for c in candidates]
+
+        signals_mock = MagicMock()
+        signals_mock.entity_query = "radar power rf query"
+        signals_mock.field_queries = ()
+
+        settings_mock = MagicMock()
+        settings_mock.extraction_index_mode = "merged"
+        settings_mock.reranker_enabled = True
+        settings_mock.vector_router_retrieval_mode = "direct"
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=1000)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel",
+                      new=AsyncMock(return_value=(pool, diag))),
+                patch("app.api.v1.extraction_routing.score_candidates",
+                      return_value=scored),
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings",
+                      return_value=settings_mock),
+            ):
+                resp = await ac.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["mode"] == "full", (
+            f"Expected mode=full when all multi-channel candidates have empty source_refs; "
+            f"got mode={data['mode']!r}"
+        )
+        assert data["diagnostics"]["fallback_reason"] == "no_expanded_refs_after_multichannel", (
+            f"Expected fallback_reason='no_expanded_refs_after_multichannel', "
+            f"got {data['diagnostics']['fallback_reason']!r}"
+        )
+        assert data["self_refs"] == []
+
+    @pytest.mark.asyncio
+    async def test_empty_expanded_refs_fails_open_to_would_skip_when_no_fallback(self, app):
+        """All selected candidates have source_refs=[] → mode=would_skip (fallback_to_full=False)."""
+        pass_def = self._make_mc_pass_def(fallback_to_full=False)
+        manifest = MagicMock()
+        manifest.passes = [pass_def]
+
+        mc_a = self._make_merged_candidate_with_empty_source_refs(0)
+        pool = [mc_a]
+        diag = self._make_multi_channel_diag()
+        scored = [(mc_a, 0.9)]
+
+        def _fake_rerank(query, candidates, top_k):
+            return [dict(c, reranker_score=0.85) for c in candidates]
+
+        signals_mock = MagicMock()
+        signals_mock.entity_query = "radar power rf query"
+        signals_mock.field_queries = ()
+
+        settings_mock = MagicMock()
+        settings_mock.extraction_index_mode = "merged"
+        settings_mock.reranker_enabled = True
+        settings_mock.vector_router_retrieval_mode = "direct"
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as ac:
+            with (
+                patch("app.api.v1.extraction_routing.load_bundle_manifest",
+                      return_value=manifest),
+                patch("app.api.v1.extraction_routing._resolve_template_class",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing.build_retrieval_profile",
+                      return_value=signals_mock),
+                patch("app.api.v1.extraction_routing.get_graph_store",
+                      return_value=MagicMock()),
+                patch("app.api.v1.extraction_routing._async_full_doc_token_estimate",
+                      new=AsyncMock(return_value=1000)),
+                patch("app.api.v1.extraction_routing.search_extraction_chunks_multi_channel",
+                      new=AsyncMock(return_value=(pool, diag))),
+                patch("app.api.v1.extraction_routing.score_candidates",
+                      return_value=scored),
+                patch("app.api.v1.extraction_routing.rrk.rerank",
+                      side_effect=_fake_rerank),
+                patch("app.api.v1.extraction_routing.get_settings",
+                      return_value=settings_mock),
+            ):
+                resp = await ac.post("/v1/extraction/chunk-scope", json=_VALID_BODY)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["mode"] == "would_skip", (
+            f"Expected mode=would_skip (fallback_to_full=False) when all candidates have "
+            f"empty source_refs; got mode={data['mode']!r}"
+        )
+        assert data["diagnostics"]["fallback_reason"] == "no_expanded_refs_after_multichannel", (
+            f"Expected fallback_reason='no_expanded_refs_after_multichannel', "
+            f"got {data['diagnostics']['fallback_reason']!r}"
+        )
+        assert data["self_refs"] == []

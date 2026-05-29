@@ -831,13 +831,14 @@ async def chunk_scope(
                 except (TypeError, ValueError):
                     tok_count = 0
 
-            # Skip lexical/pattern-only candidates that have no real chunk data.
-            # These entries exist in the merged pool when C2/C3 hits a chunk by
-            # candidate_key (vertex_id) before the dense path sees it, and the
-            # merge_candidates bucket sets chunk_index=-1 and chunk_text="".
-            # Their content_text is "" (unscorable by reranker), and they carry
-            # no source_refs — including them in selected_chunks would produce
-            # SelectedChunk(chunk_index=-1) which breaks the response contract.
+            # Belt-and-suspenders guard: skip rows where chunk_index=-1 AND
+            # source_refs is empty AND content_text is blank.  The (removed)
+            # C4 keyword-only-bucket pattern that originally created these rows
+            # (merge_candidates setting chunk_index=-1) was fixed in commit
+            # d0e4e03; this guard is retained as a defensive check against
+            # unexpected data shapes (e.g. future schema changes or test stubs).
+            # Including such a row would produce SelectedChunk(chunk_index=-1),
+            # which breaks the response contract.
             content = chunk_row.get("content_text") or ""
             if chunk_idx == -1 and not refs_for_chunk and not content.strip():
                 continue
@@ -870,6 +871,54 @@ async def chunk_scope(
         # Legacy field mirrors the chunk-based estimate so existing
         # dashboards keep working (plan rev 5 Task 6 backward-compat).
         final_selected_token_estimate = selected_chunk_token_estimate
+
+        # Fix 1 (rev 18): fail-open guard — multi-channel expansion produced
+        # no source_refs.  This is pathological (a non-empty top_k_results pool
+        # where every selected MergedCandidate has an empty source_refs list),
+        # but must not silently return mode=selected_refs with self_refs=[],
+        # which violates the Rev 17 MED contract.  Mirror the existing shared
+        # guard at ~line 715 (same fallback_to_full → full vs would_skip logic).
+        if not expanded_refs:
+            logger.warning(
+                "chunk-scope multi-channel: expansion produced 0 source_refs from "
+                "%d top_k candidates for pass=%s run=%s — failing open",
+                len(top_k_results), body.pass_name, body.pipeline_run_id,
+            )
+            _exp_rerank_scores = [
+                c["reranker_score"] for c in top_k_results if "reranker_score" in c
+            ]
+            _exp_rerank_range = (
+                (min(_exp_rerank_scores), max(_exp_rerank_scores))
+                if _exp_rerank_scores else None
+            )
+            _exp_mode = "full" if profile.fallback_to_full else "would_skip"
+            return ChunkScopeResponse(
+                mode=_exp_mode,
+                self_refs=[],
+                diagnostics=ChunkScopeDiagnostics(
+                    mode=_exp_mode,
+                    fallback_reason="no_expanded_refs_after_multichannel",
+                    query_text=query_text,
+                    vector_threshold=profile.min_similarity,
+                    vector_score_range=None,
+                    candidate_count=len(top_k_results),
+                    rerank_score_range=_exp_rerank_range,
+                    selected_ref_count=0,
+                    selected_token_estimate=0,
+                    full_doc_token_estimate=full_doc_token_estimate,
+                    would_skip_if_fallback_disabled=not profile.fallback_to_full,
+                    vector_search_ms=vector_search_ms,
+                    rerank_ms=rerank_ms,
+                    ann_top_k_requested=_diag_search_diag_ann_top_k,
+                    post_filter_candidate_count=_diag_search_diag_post_filter,
+                    post_filter_retry_count=_diag_search_diag_retry,
+                    filter_strategy=_diag_search_diag_strategy,
+                    short_fetch=_diag_search_diag_short_fetch,
+                    selected_chunk_count=selected_chunk_count,
+                    expanded_ref_count=0,
+                    selected_chunk_token_estimate=selected_chunk_token_estimate,
+                ),
+            )
 
     # Build shared rerank_score_range from top_k_results (works for both branches).
     _final_rerank_scores = [

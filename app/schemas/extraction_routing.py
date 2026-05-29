@@ -36,7 +36,7 @@ class ChunkScopeDiagnostics(BaseModel):
     # Vector retrieval stage
     vector_threshold: float
     vector_score_range: tuple[float, float] | None = None
-    candidate_count: int  # post-vector, pre-rerank
+    candidate_count: int  # semantics vary by exit path: capped pool size in multi-channel error/early paths; post-C5 top_k slice in the multi-channel success path; raw vector-result count in per-element mode
 
     # Rerank stage
     rerank_score_range: tuple[float, float] | None = None
