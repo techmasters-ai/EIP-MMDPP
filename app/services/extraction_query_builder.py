@@ -85,39 +85,32 @@ def _record_cls_from_pass_cls(pass_cls: type[BaseModel]) -> type[BaseModel] | No
     return None
 
 
-def build_retrieval_query(pass_def: Any, template_cls: type[BaseModel]) -> str:
-    """Build the per-pass retrieval query from the pydantic extraction schema.
+def build_retrieval_profile(pass_def: Any, template_cls: type[BaseModel]) -> PassRetrievalSignals:
+    """Build structured retrieval signals from the pydantic extraction schema.
 
     Strategy:
-      1. Resolve the Record class from the Pass class (e.g. RadarPowerRfRecord
-         from RadarPowerRfPass).  If template_cls IS the record class (is_entity
-         is true and graph_id_fields is non-empty), use it directly.
-      2. Use the Record class's ``__doc__`` (if present) as a prefix.
-      3. For each model_field in model_fields, append its description (or
-         a humanized version of the field name if no description).
-      4. Skip ``system_name`` (identity field, not field-relevance).
-      5. Skip fields whose description starts with an INTERNAL marker.
-      6. Join with newlines as natural-language text.
+      1. Resolve the Record class (existing logic). Tolerates pass_def=None.
+      2. Build entity_query via the existing walker (= prior build_retrieval_query output).
+      3. For each non-skipped, non-INTERNAL field with a description:
+         - Read (model_fields[name].json_schema_extra or {}).get("retrieval", {}).
+           json_schema_extra is None until B3/B4 populate it, so the ``or {}``
+           guard is required.
+         - Construct a FieldRetrievalQuery from description + retrieval block.
+      4. Union all field-level aliases/negative_terms/etc. into the top-level tuples.
 
-    Returns a string that will be embedded by the C.3 endpoint at retrieval
-    time.  Pure function — no side effects.
-
-    Example output for radar_power_rf:
-      "Subset of RadarSystemEntity covering RF carrier + transmit power.
-      Effective Radiated Power in dBW. ...
-      Transmitter peak power in kilowatts. ...
-      Nominal carrier frequency in MHz. ..."
+    Returns a PassRetrievalSignals with entity_query byte-identical to the
+    prior build_retrieval_query output (backward-compat contract).  Pure
+    function — no side effects, no literal domain terms.
 
     Args:
-        pass_def:      PassManifest instance (or any object; unused beyond
-                       type annotation — the query is derived entirely from
-                       the schema class).
-        template_cls:  The Pass-level pydantic class (e.g. RadarPowerRfPass).
-                       The builder resolves the Record class from this.
-                       If template_cls itself is an entity record class, it is
-                       used directly.
+        pass_def:      PassManifest instance or None. Tolerated but unused;
+                       all signals are derived entirely from the schema class.
+        template_cls:  The Pass-level pydantic class (e.g. RadarPowerRfPass),
+                       or the Record class directly (is_entity + graph_id_fields).
     """
-    # Determine record class
+    # ------------------------------------------------------------------
+    # 1. Resolve Record class (mirrors the pre-existing walker logic)
+    # ------------------------------------------------------------------
     cfg = getattr(template_cls, "model_config", {}) or {}
     is_record = cfg.get("is_entity") and cfg.get("graph_id_fields")
 
@@ -126,17 +119,18 @@ def build_retrieval_query(pass_def: Any, template_cls: type[BaseModel]) -> str:
     else:
         record_cls = _record_cls_from_pass_cls(template_cls)
         if record_cls is None:
-            # Fallback: use template_cls fields directly
             record_cls = template_cls
 
-    parts: list[str] = []
+    # ------------------------------------------------------------------
+    # 2. Build entity_query (exact same logic as the old walker)
+    # ------------------------------------------------------------------
+    entity_parts: list[str] = []
 
-    # 1. Class docstring as topic prefix.
     doc = record_cls.__doc__
-    if doc and doc.strip():
-        parts.append(doc.strip())
+    entity_doc = doc.strip() if (doc and doc.strip()) else ""
+    if entity_doc:
+        entity_parts.append(entity_doc)
 
-    # 2. Walk fields.
     for field_name, field_info in record_cls.model_fields.items():
         if field_name in _SKIP_FIELDS:
             continue
@@ -145,8 +139,78 @@ def build_retrieval_query(pass_def: Any, template_cls: type[BaseModel]) -> str:
             stripped = desc.strip()
             if any(stripped.startswith(prefix) for prefix in _SKIP_DESC_PREFIXES):
                 continue
-            parts.append(stripped)
+            entity_parts.append(stripped)
         else:
-            parts.append(_humanize(field_name))
+            entity_parts.append(_humanize(field_name))
 
-    return "\n".join(parts)
+    entity_query = "\n".join(entity_parts)
+
+    # ------------------------------------------------------------------
+    # 3. Build per-field FieldRetrievalQuery objects
+    # ------------------------------------------------------------------
+    field_queries: list[FieldRetrievalQuery] = []
+
+    for field_name, field_info in record_cls.model_fields.items():
+        if field_name in _SKIP_FIELDS:
+            continue
+        desc = field_info.description
+        if desc:
+            stripped = desc.strip()
+            if any(stripped.startswith(prefix) for prefix in _SKIP_DESC_PREFIXES):
+                continue
+            query_text = stripped
+        else:
+            query_text = _humanize(field_name)
+
+        # json_schema_extra is None until B3/B4 populate retrieval blocks.
+        extra = field_info.json_schema_extra or {}
+        retrieval = extra.get("retrieval", {}) if isinstance(extra, dict) else {}
+
+        field_queries.append(FieldRetrievalQuery(
+            field_name=field_name,
+            query_text=query_text,
+            aliases=tuple(retrieval.get("aliases", ())),
+            negative_terms=tuple(retrieval.get("negative_terms", ())),
+            evidence_patterns=tuple(retrieval.get("evidence_patterns", ())),
+            likely_sections=tuple(retrieval.get("likely_sections", ())),
+            units=tuple(retrieval.get("units", ())),
+        ))
+
+    # ------------------------------------------------------------------
+    # 4. Union all field-level signals (deduped, insertion-ordered)
+    # ------------------------------------------------------------------
+    def _union(*iterables: tuple[str, ...]) -> tuple[str, ...]:
+        seen: dict[str, None] = {}
+        for it in iterables:
+            for v in it:
+                seen[v] = None
+        return tuple(seen)
+
+    all_aliases          = _union(*(fq.aliases          for fq in field_queries))
+    all_negative_terms   = _union(*(fq.negative_terms   for fq in field_queries))
+    all_likely_sections  = _union(*(fq.likely_sections  for fq in field_queries))
+    all_evidence_patterns = _union(*(fq.evidence_patterns for fq in field_queries))
+
+    # pass_name: derive from the Pass class name (no literal domain terms)
+    pass_name = template_cls.__name__
+
+    return PassRetrievalSignals(
+        pass_name=pass_name,
+        entity_doc=entity_doc,
+        entity_query=entity_query,
+        field_queries=tuple(field_queries),
+        lexical_terms=all_aliases,
+        negative_terms=all_negative_terms,
+        likely_sections=all_likely_sections,
+        evidence_patterns=all_evidence_patterns,
+    )
+
+
+def build_retrieval_query(pass_def: Any, template_cls: type[BaseModel]) -> str:
+    """Backward-compat shim — returns PassRetrievalSignals.entity_query (str).
+
+    All callers that previously depended on the raw string continue to work
+    without change.  The full structured profile is available via
+    build_retrieval_profile().
+    """
+    return build_retrieval_profile(pass_def, template_cls).entity_query

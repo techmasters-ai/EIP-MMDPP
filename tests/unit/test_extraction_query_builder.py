@@ -437,3 +437,106 @@ class TestB1RetrievalSignalTypes:
         )
         with pytest.raises((AttributeError, TypeError)):
             prs.pass_name = "mutated"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# 8. B2 — build_retrieval_profile() returns per-field FieldRetrievalQuery objects
+# ---------------------------------------------------------------------------
+
+class TestB2BuildRetrievalProfile:
+
+    def test_build_retrieval_profile_returns_field_queries(self):
+        """build_retrieval_profile must return a PassRetrievalSignals with at
+        least one FieldRetrievalQuery per non-identity field on
+        MissileKinematicsRecord.
+
+        Non-identity fields (system_name is skipped): min_intercept_km,
+        max_intercept_km, min_altitude_km, max_altitude_km,
+        max_launch_angle_deg.
+        """
+        from app.services.extraction_query_builder import (
+            build_retrieval_profile,
+            FieldRetrievalQuery,
+            PassRetrievalSignals,
+        )
+
+        MissileKinematicsPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_kinematics",
+            "MissileKinematicsPass",
+        )
+
+        result = build_retrieval_profile(None, MissileKinematicsPass)
+
+        # Must return the right container type
+        assert isinstance(result, PassRetrievalSignals)
+
+        # Must have field_queries
+        assert len(result.field_queries) > 0, "Expected at least one FieldRetrievalQuery"
+
+        # All elements must be FieldRetrievalQuery instances
+        for fq in result.field_queries:
+            assert isinstance(fq, FieldRetrievalQuery), (
+                f"Expected FieldRetrievalQuery, got {type(fq)}"
+            )
+
+        # Non-identity fields that must each have a FieldRetrievalQuery
+        expected_fields = {
+            "min_intercept_km",
+            "max_intercept_km",
+            "min_altitude_km",
+            "max_altitude_km",
+            "max_launch_angle_deg",
+        }
+        field_names_in_result = {fq.field_name for fq in result.field_queries}
+        missing = expected_fields - field_names_in_result
+        assert not missing, (
+            f"Missing FieldRetrievalQuery for fields: {missing}"
+        )
+
+        # system_name must NOT appear (identity field — in _SKIP_FIELDS)
+        assert "system_name" not in field_names_in_result, (
+            "system_name must be excluded from field_queries"
+        )
+
+        # entity_query must be non-empty (drives the B0 snapshot)
+        assert result.entity_query, "entity_query must be non-empty"
+
+        # With no json_schema_extra retrieval blocks yet (B3/B4 populate them),
+        # all tuple fields on each FieldRetrievalQuery must be empty tuples.
+        for fq in result.field_queries:
+            assert fq.aliases == (), f"aliases must be empty until B3/B4: {fq.field_name}"
+            assert fq.negative_terms == ()
+            assert fq.evidence_patterns == ()
+            assert fq.likely_sections == ()
+            assert fq.units == ()
+
+    def test_build_retrieval_query_shim_byte_identical(self):
+        """build_retrieval_query (now a shim) must return exactly
+        PassRetrievalSignals.entity_query — byte-for-byte equal to the
+        B0-re-baselined snapshots that TestRadarPowerRfQuerySnapshot and
+        TestMissileKinematicsQuerySnapshot already assert.
+
+        This test proves the shim refactor changed nothing.
+        """
+        from app.services.extraction_query_builder import (
+            build_retrieval_profile,
+            build_retrieval_query,
+        )
+
+        RadarPowerRfPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.radar_power_rf",
+            "RadarPowerRfPass",
+        )
+        MissileKinematicsPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_kinematics",
+            "MissileKinematicsPass",
+        )
+
+        for cls in (RadarPowerRfPass, MissileKinematicsPass):
+            profile = build_retrieval_profile(None, cls)
+            shim_result = build_retrieval_query(None, cls)
+            assert shim_result == profile.entity_query, (
+                f"Shim result differs from profile.entity_query for {cls.__name__}:\n"
+                f"  shim:    {shim_result!r}\n"
+                f"  profile: {profile.entity_query!r}"
+            )
