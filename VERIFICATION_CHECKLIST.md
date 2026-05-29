@@ -550,6 +550,7 @@ Run against all 30 Known Fragile Features listed above.
 | `DEFAULT_ONTOLOGY_BUNDLE_KEY` | `air_defense_v3` | Bundle resolution falls back to system default; wrong value = unknown bundle error |
 | `PASS_MAX_RETRIES` | `3` | Per-pass retry budget; exhausted = IngestFailed for required passes |
 | `STRUCTURED_OUTPUT_THRESHOLD_CHARS` | `8000` | Schema size ceiling for structured LLM output; exceeded = fallback to JSON mode |
+| `WORKER_FORWARD_SELECTED_CHUNKS` | `true` | Phase 2 merged-mode wire. `true` on table-heavy docs forwards verbatim merged chunks → docling-graph enters chunked mode and BYPASSES pass-aware sanitize/table-norm/re-chunk → narrowed-pass recall regresses (SA-2 radar_power_rf 22→10, missile_kinematics 16→10). `false` = scoped-doc path keeps pass-aware preprocessing (pre-wire merged path measured 24/28 at top_k=15 in run 6fc30668; current wire-off path pending re-measure). Reaches the worker only after compose `--force-recreate` (not `restart`). |
 
 ---
 

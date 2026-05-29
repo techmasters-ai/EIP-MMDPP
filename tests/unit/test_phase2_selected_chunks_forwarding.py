@@ -75,8 +75,13 @@ def test_compute_effective_preserves_selected_chunks_in_merged_mode(monkeypatch)
     per-pass celery task can forward them to docling-graph."""
     from app.workers import pipeline
 
-    # Pin merged mode via settings
+    # Pin merged mode + forward-enabled via settings. The settings singleton
+    # reads .env at import, and the live .env sets WORKER_FORWARD_SELECTED_CHUNKS
+    # =false, so this path must pin the flag True to stay deterministic
+    # regardless of the ambient .env value.
     monkeypatch.setattr(pipeline.settings, "extraction_index_mode", "merged",
+                        raising=False)
+    monkeypatch.setattr(pipeline.settings, "worker_forward_selected_chunks", True,
                         raising=False)
 
     response = _sample_router_response_with_selected_chunks()
@@ -118,6 +123,8 @@ def test_compute_effective_records_no_forward_when_router_omits_chunks(monkeypat
 
     monkeypatch.setattr(pipeline.settings, "extraction_index_mode", "merged",
                         raising=False)
+    monkeypatch.setattr(pipeline.settings, "worker_forward_selected_chunks", True,
+                        raising=False)
 
     response = _sample_router_response_with_selected_chunks()
     response["selected_chunks"] = []  # router returned empty list
@@ -127,6 +134,35 @@ def test_compute_effective_records_no_forward_when_router_omits_chunks(monkeypat
     assert "selected_chunks" not in scope
     assert diag["selected_chunks_forwarded"] is False
     assert diag["selected_chunks_forwarded_count"] == 0
+
+
+def test_compute_effective_skips_selected_chunks_when_forwarding_disabled(monkeypatch):
+    """Kill-switch: with worker_forward_selected_chunks=False, merged mode must
+    NOT forward selected_chunks. The worker falls back to the scoped-document
+    path so docling-graph runs its pass-aware sanitize + table-normalization +
+    re-chunking (recovers recall on table-heavy docs). self_refs still narrow
+    the scope; only the verbatim merged-chunk handoff is suppressed. The
+    explicit `selected_chunks_forward_disabled` diagnostic makes an A/B run
+    verifiable in pipeline_pass_outputs."""
+    from app.workers import pipeline
+
+    monkeypatch.setattr(pipeline.settings, "extraction_index_mode", "merged",
+                        raising=False)
+    monkeypatch.setattr(pipeline.settings, "worker_forward_selected_chunks", False,
+                        raising=False)
+
+    response = _sample_router_response_with_selected_chunks()
+    scope, diag = pipeline._compute_effective_chunk_scope(response, "narrow_only")
+
+    assert scope is not None
+    assert scope["mode"] == "selected_refs"
+    # scope still narrows by element refs (scoped-doc path), so recall-bearing
+    # self_refs survive — only the verbatim merged-chunk forward is suppressed.
+    assert scope["self_refs"] == ["#/texts/12", "#/texts/45"]
+    assert "selected_chunks" not in scope
+    assert diag["selected_chunks_forwarded"] is False
+    assert diag["selected_chunks_forwarded_count"] == 0
+    assert diag["selected_chunks_forward_disabled"] is True
 
 
 # ---------------------------------------------------------------------------

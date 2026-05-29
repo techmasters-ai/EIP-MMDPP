@@ -7327,14 +7327,25 @@ def _compute_effective_chunk_scope(
             # request (Task 0b receiver-side), giving byte-identical chunk text
             # from index → router → LLM.
             if settings.extraction_index_mode == "merged":
-                resp_selected_chunks = router_response.get("selected_chunks")
-                if isinstance(resp_selected_chunks, list) and resp_selected_chunks:
-                    effective_chunk_scope["selected_chunks"] = resp_selected_chunks
-                    diag["selected_chunks_forwarded"] = True
-                    diag["selected_chunks_forwarded_count"] = len(resp_selected_chunks)
-                else:
+                if not settings.worker_forward_selected_chunks:
+                    # Phase 2 kill-switch (worker_forward_selected_chunks=False):
+                    # do NOT forward verbatim merged chunks. The worker falls
+                    # back to the scoped-document path so docling-graph runs its
+                    # pass-aware sanitize + table-normalization + re-chunking
+                    # (main.py:658/717) — recovers recall on table-heavy docs.
+                    # self_refs above still narrow the scope.
                     diag["selected_chunks_forwarded"] = False
                     diag["selected_chunks_forwarded_count"] = 0
+                    diag["selected_chunks_forward_disabled"] = True
+                else:
+                    resp_selected_chunks = router_response.get("selected_chunks")
+                    if isinstance(resp_selected_chunks, list) and resp_selected_chunks:
+                        effective_chunk_scope["selected_chunks"] = resp_selected_chunks
+                        diag["selected_chunks_forwarded"] = True
+                        diag["selected_chunks_forwarded_count"] = len(resp_selected_chunks)
+                    else:
+                        diag["selected_chunks_forwarded"] = False
+                        diag["selected_chunks_forwarded_count"] = 0
         else:
             effective_chunk_scope = None
             if resp_mode == "would_skip":

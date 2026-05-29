@@ -599,6 +599,25 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Phase 2 kill-switch for the merged-mode selected-chunk handoff.
+    # When True (default), narrow_only + merged mode forwards the router's
+    # verbatim merged chunks to docling-graph, which then BYPASSES its own
+    # pass-aware sanitize + table-normalization + re-chunking (chunked mode,
+    # docling-graph main.py:658/717). When False, selected_chunks are NOT
+    # forwarded: the worker falls back to the scoped-document path
+    # (apply_chunk_scope over self_refs) so docling-graph runs its per-pass
+    # preprocessing. Set False to recover pass-aware table handling on
+    # table-heavy docs (e.g. SA-2) while keeping merged indexing + routing.
+    worker_forward_selected_chunks: bool = Field(
+        default=True,
+        description=(
+            "Forward the router's merged selected_chunks to docling-graph in "
+            "narrow_only+merged mode. False falls back to the scoped-document "
+            "path (docling-graph re-runs pass-aware sanitize + table-norm + "
+            "chunking). Kill-switch for the Phase 2 wire."
+        ),
+    )
+
     def get_doc_analysis_llm_think(self) -> str | bool | None:
         return self._resolve_ollama_think(self.doc_analysis_llm_think, self.doc_analysis_llm_model)
 
