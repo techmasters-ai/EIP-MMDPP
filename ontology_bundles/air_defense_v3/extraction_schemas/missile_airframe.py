@@ -56,6 +56,29 @@ class MissileAirframeRecord(BaseModel):
             "Use missile or round length, not launcher, rail, or canister "
             "dimensions."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "length", "overall length", "missile length",
+                    "body length", "airframe length", "weapon length",
+                    "length overall", "round length", "total length",
+                ],
+                "negative_terms": [
+                    "launcher length", "rail length", "canister length",
+                    "tube length", "barrel length", "wingspan",
+                ],
+                "evidence_patterns": [
+                    r"re:\b(?:missile|body|airframe|weapon)\s+length\b",
+                    r"re:\blength[:\s]+\d",
+                    "overall length", "length overall",
+                ],
+                "likely_sections": [
+                    "specifications", "dimensions", "physical characteristics",
+                    "missile", "airframe",
+                ],
+                "units": ["m", "cm", "mm", "ft", "in"],
+            }
+        },
     )
     body_diameter_m: Optional[float] = Field(
         default=None,
@@ -66,6 +89,29 @@ class MissileAirframeRecord(BaseModel):
             "'Caliber'. Use missile body diameter, not warhead diameter or "
             "launcher tube diameter."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "diameter", "missile diameter", "body diameter",
+                    "airframe diameter", "round diameter",
+                    "calibre", "caliber", "body width",
+                ],
+                "negative_terms": [
+                    "warhead diameter", "launcher tube diameter",
+                    "nozzle diameter", "fin span", "wingspan",
+                ],
+                "evidence_patterns": [
+                    r"re:\b(?:missile|body|airframe)\s+diameter\b",
+                    r"re:\bdiameter[:\s]+\d",
+                    r"re:\bcali(?:bre|ber)\b",
+                ],
+                "likely_sections": [
+                    "specifications", "dimensions", "physical characteristics",
+                    "missile", "airframe",
+                ],
+                "units": ["m", "cm", "mm", "in"],
+            }
+        },
     )
     total_mass_kg: Optional[float] = Field(
         default=None,
@@ -77,6 +123,31 @@ class MissileAirframeRecord(BaseModel):
             "or all-up-round mass; do not use booster, sustainer, ejector, "
             "warhead, or launcher weights."
         ),
+        json_schema_extra={
+            "retrieval": {
+                "aliases": [
+                    "weight", "mass", "launch weight", "launch mass",
+                    "missile weight", "all-up round weight",
+                    "round mass", "firing weight", "gross weight",
+                    "total weight", "missile mass",
+                ],
+                "negative_terms": [
+                    "booster weight", "ejector weight", "warhead weight",
+                    "payload weight", "launcher weight", "stage weight",
+                    "sustainer weight",
+                ],
+                "evidence_patterns": [
+                    r"re:\b(?:launch|missile|all-up|firing)\s+(?:weight|mass)\b",
+                    r"re:\bweight[:\s]+\d",
+                    "all-up round", "launch weight",
+                ],
+                "likely_sections": [
+                    "specifications", "dimensions", "physical characteristics",
+                    "missile", "weight", "mass",
+                ],
+                "units": ["kg", "lb", "lbs", "t", "ton"],
+            }
+        },
     )
 
     _v_system_name      = field_validator("system_name", mode="before")(validate_missile_system_name)

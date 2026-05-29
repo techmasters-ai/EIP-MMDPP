@@ -501,15 +501,16 @@ class TestB2BuildRetrievalProfile:
         # entity_query must be non-empty (drives the B0 snapshot)
         assert result.entity_query, "entity_query must be non-empty"
 
-        # MissileKinematics retrieval metadata stays empty until Task B4 populates
-        # the missile schemas.  This is a regression guard: if any accidental edit
-        # populates these tuples before B4, the test will catch it.
+        # Task B4 populated retrieval metadata for all MissileKinematics fields.
+        # This guard now asserts non-empty tuples — any regression that clears
+        # retrieval blocks will be caught here.
         for fq in result.field_queries:
-            assert fq.aliases == (), f"aliases must be empty until B4: {fq.field_name}"
-            assert fq.negative_terms == ()
-            assert fq.evidence_patterns == ()
-            assert fq.likely_sections == ()
-            assert fq.units == ()
+            assert len(fq.aliases) > 0, (
+                f"aliases must be non-empty after B4: {fq.field_name}"
+            )
+            assert len(fq.likely_sections) > 0, (
+                f"likely_sections must be non-empty after B4: {fq.field_name}"
+            )
 
     def test_build_retrieval_query_shim_byte_identical(self):
         """build_retrieval_query (now a shim) must return exactly
@@ -707,3 +708,150 @@ class TestB3FieldMetadataLoaded:
         assert "HPBW azimuth" in fq_map["beamwidth_az_deg"].aliases
         assert "fan beam" in fq_map["spoiled"].aliases
         assert "elevation coverage" in fq_map["coverage_limits_el_deg"].aliases
+
+
+# ---------------------------------------------------------------------------
+# 10. B4 — missile field-group passes have rich retrieval metadata
+# ---------------------------------------------------------------------------
+
+class TestB4FieldMetadataLoaded:
+    """B4 acceptance: all 5 missile field-group passes have populated retrieval blocks.
+
+    For every non-identity field on every missile Record class:
+      - fq.aliases is non-empty
+      - PassRetrievalSignals.lexical_terms is non-empty (union of all aliases)
+    Also confirms per-pass field counts so schema additions are caught early.
+    """
+
+    _MISSILE_PASSES = [
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_kinematics",
+            "MissileKinematicsPass",
+            # non-identity fields expected
+            {
+                "min_intercept_km", "max_intercept_km",
+                "min_altitude_km", "max_altitude_km",
+                "max_launch_angle_deg",
+            },
+        ),
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_guidance",
+            "MissileGuidancePass",
+            {"guidance_type", "seeker_type", "missile_photo"},
+        ),
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_airframe",
+            "MissileAirframePass",
+            {"body_length_m", "body_diameter_m", "total_mass_kg"},
+        ),
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_speed_timing",
+            "MissileSpeedTimingPass",
+            {
+                "average_speed_mps", "max_speed_mps", "max_flyout_time_sec",
+                "flight_time_sec", "coast_time_sec", "intra_salvo_time_sec",
+                "total_burn_time_sec", "ejector_time_sec",
+            },
+        ),
+        (
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_propulsion",
+            "MissilePropulsionPass",
+            {
+                "ejector_thrust", "ejector_mass_kg",
+                "booster_time_sec", "booster_thrust", "booster_mass_kg",
+                "sustain_time_sec", "sustain_thrust", "sustain_mass_kg",
+            },
+        ),
+    ]
+
+    def test_lexical_terms_non_empty_for_all_missile_passes(self):
+        """PassRetrievalSignals.lexical_terms must be non-empty for every missile pass."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        for mod_path, cls_name, _ in self._MISSILE_PASSES:
+            cls = _load_pass_cls(mod_path, cls_name)
+            profile = build_retrieval_profile(None, cls)
+            assert len(profile.lexical_terms) > 0, (
+                f"{cls_name}: lexical_terms is empty — retrieval blocks missing or not loaded"
+            )
+
+    def test_all_non_identity_fields_have_aliases(self):
+        """Every non-identity field on every missile pass must have at least one alias."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        for mod_path, cls_name, expected_fields in self._MISSILE_PASSES:
+            cls = _load_pass_cls(mod_path, cls_name)
+            profile = build_retrieval_profile(None, cls)
+
+            field_query_map = {fq.field_name: fq for fq in profile.field_queries}
+
+            # All expected fields must be present in field_queries
+            missing = expected_fields - field_query_map.keys()
+            assert not missing, (
+                f"{cls_name}: missing FieldRetrievalQuery for fields: {missing}"
+            )
+
+            # system_name must be excluded
+            assert "system_name" not in field_query_map, (
+                f"{cls_name}: system_name (identity field) must not appear in field_queries"
+            )
+
+            # Every expected field must have non-empty aliases
+            for field_name in expected_fields:
+                fq = field_query_map[field_name]
+                assert len(fq.aliases) > 0, (
+                    f"{cls_name}.{field_name}: aliases is empty — "
+                    f"json_schema_extra retrieval block missing or malformed"
+                )
+
+    def test_missile_kinematics_aliases_spot_check(self):
+        """Spot-check: min_intercept_km has 'minimum range'; max_intercept_km has
+        'engagement range'; min_altitude_km has 'altitude floor';
+        max_altitude_km has 'ceiling'; max_launch_angle_deg has 'launch angle'."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        MissileKinematicsPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_kinematics",
+            "MissileKinematicsPass",
+        )
+        profile = build_retrieval_profile(None, MissileKinematicsPass)
+        fq_map = {fq.field_name: fq for fq in profile.field_queries}
+
+        assert "minimum range" in fq_map["min_intercept_km"].aliases
+        assert "engagement range" in fq_map["max_intercept_km"].aliases
+        assert "altitude floor" in fq_map["min_altitude_km"].aliases
+        assert "ceiling" in fq_map["max_altitude_km"].aliases
+        assert "launch angle" in fq_map["max_launch_angle_deg"].aliases
+
+    def test_missile_guidance_aliases_spot_check(self):
+        """Spot-check: guidance_type has 'SARH' and 'command guidance';
+        seeker_type has 'homing head'; missile_photo has 'photo'."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        MissileGuidancePass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_guidance",
+            "MissileGuidancePass",
+        )
+        profile = build_retrieval_profile(None, MissileGuidancePass)
+        fq_map = {fq.field_name: fq for fq in profile.field_queries}
+
+        assert "SARH" in fq_map["guidance_type"].aliases
+        assert "command guidance" in fq_map["guidance_type"].aliases
+        assert "homing head" in fq_map["seeker_type"].aliases
+        assert "photo" in fq_map["missile_photo"].aliases
+
+    def test_missile_propulsion_aliases_spot_check(self):
+        """Spot-check: booster_thrust has 'peak thrust'; sustain_thrust has
+        'cruise thrust'; ejector_thrust has 'gas generator'."""
+        from app.services.extraction_query_builder import build_retrieval_profile
+
+        MissilePropulsionPass = _load_pass_cls(
+            "ontology_bundles.air_defense_v3.extraction_schemas.missile_propulsion",
+            "MissilePropulsionPass",
+        )
+        profile = build_retrieval_profile(None, MissilePropulsionPass)
+        fq_map = {fq.field_name: fq for fq in profile.field_queries}
+
+        assert "peak thrust" in fq_map["booster_thrust"].aliases
+        assert "cruise thrust" in fq_map["sustain_thrust"].aliases
+        assert "gas generator" in fq_map["ejector_thrust"].aliases
