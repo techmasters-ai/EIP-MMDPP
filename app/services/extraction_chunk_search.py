@@ -59,6 +59,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.services.arcadedb_graph import ArcadeDBGraphStore
     from app.services.graph_store import GraphEntityResult
+    from app.services.extraction_query_builder import PassRetrievalSignals
+    from app.services.ontology_bundles import RetrievalProfile
+
+# Module-level import so tests can patch app.services.extraction_chunk_search.embed_texts
+# without needing to intercept a local import inside the function body.
+# (patch() replaces the name in the target module's namespace; a local
+#  `from ... import embed_texts` inside the function creates a fresh binding
+#  each call, bypassing the patch.)
+from app.services.embedding import embed_texts  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -494,3 +503,208 @@ async def search_extraction_chunks(
         desired_top_n=desired_top_n,
         score_threshold=score_threshold,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task C1 — batched dense entity + per-field multi-query retrieval
+# ---------------------------------------------------------------------------
+# Design constraints enforced here:
+#   - ONE per-run SELECT (B-tree on pipeline_run_id; no global table scan)
+#   - ZERO HNSW / vector_search calls (eliminates post-filter starvation)
+#   - ONE embed_texts call for all queries (entity + all fields batched)
+#   - Pure scoring function (fetch separated for testability)
+# ---------------------------------------------------------------------------
+
+
+async def fetch_extraction_chunks_for_run(
+    *,
+    store: "ArcadeDBGraphStore",
+    pipeline_run_id: str,
+) -> "list[dict]":
+    """Fetch ALL ExtractionChunk rows for a pipeline_run_id via one SQL query.
+
+    Uses the same B-tree-indexed per-run SQL as
+    ``search_extraction_chunks_direct``. Returns the raw row dicts so the
+    caller (``search_extraction_chunks_dense_multi_query``) can operate on
+    them as a pure in-Python scoring function without any further DB calls.
+
+    Columns projected (mirrors the direct-path SELECT):
+      @rid AS node_id, vertex_id, self_ref, chunk_text, embedding,
+      page_number, modality, pipeline_run_id,
+      chunk_index, source_refs, token_count
+
+    Returns
+    -------
+    list[dict]
+        All rows for the run, ordered by self_ref ASC for stable iteration.
+        Empty list when no chunks exist for the run.
+
+    MUST NOT call vector_search or any HNSW path — see module docstring.
+    """
+    rows = await store._client.query(
+        store._database,
+        "sql",
+        (
+            "SELECT @rid AS node_id, vertex_id, self_ref, chunk_text, "
+            "embedding, page_number, modality, pipeline_run_id, "
+            "chunk_index, source_refs, token_count "
+            "FROM ExtractionChunk "
+            "WHERE pipeline_run_id = :run_id "
+            "ORDER BY self_ref ASC"
+        ),
+        {"run_id": pipeline_run_id},
+    )
+    return rows or []
+
+
+async def search_extraction_chunks_dense_multi_query(
+    retrieval_signals: "PassRetrievalSignals",
+    rows: "list[dict]",
+    cfg: "RetrievalProfile",
+) -> "tuple[list[GraphEntityResult], dict[str, list[GraphEntityResult]]]":
+    """Batched dense entity + per-field cosine scoring over pre-fetched rows.
+
+    Pure scoring function — takes pre-fetched ``rows`` (from
+    ``fetch_extraction_chunks_for_run``) so the DB layer is fully separated
+    from scoring.  No DB calls are made here; no HNSW path is touched.
+
+    Strategy
+    --------
+    1. Build the full query-text list:
+         [retrieval_signals.entity_query] + [fq.query_text for fq in field_queries]
+    2. ONE ``embed_texts(..., query=True)`` call → (1 + N_fields) vectors.
+    3. Filter ``rows`` to those with a valid embedding; build a
+       (N_chunks × dim) matrix.
+    4. ONE ``chunk_matrix @ query_matrix.T`` → (N_chunks × N_queries) scores.
+    5. Slice column 0 for entity candidates (top ``cfg.top_n_candidates``).
+    6. Slice column i+1 for each field (top ``cfg.field_query_top_k``).
+    7. Return (entity_results, {field_name: [GraphEntityResult, ...]}).
+
+    Parameters
+    ----------
+    retrieval_signals:
+        A ``PassRetrievalSignals`` — ``entity_query`` str + ``field_queries``
+        tuple of ``FieldRetrievalQuery``. ``field_queries`` must already
+        exclude identity / INTERNAL fields (``build_retrieval_profile``
+        enforces this).
+    rows:
+        Pre-fetched ExtractionChunk row dicts from
+        ``fetch_extraction_chunks_for_run``.  May be empty.
+    cfg:
+        A ``RetrievalProfile`` (or any object with ``top_n_candidates: int``
+        and ``field_query_top_k: int``).
+
+    Returns
+    -------
+    tuple[list[GraphEntityResult], dict[str, list[GraphEntityResult]]]
+        - entity_results: top ``cfg.top_n_candidates`` chunks by entity-query
+          cosine, sorted descending.
+        - field_results: mapping field_name → top ``cfg.field_query_top_k``
+          chunks by per-field cosine, sorted descending. Keys match
+          ``retrieval_signals.field_queries[*].field_name`` exactly.
+    """
+    import numpy as np
+    from app.services.graph_store import GraphEntityResult
+
+    field_queries = retrieval_signals.field_queries
+
+    # ------------------------------------------------------------------
+    # 1. Build query text list — entity first, then per-field.
+    # ------------------------------------------------------------------
+    query_texts: list[str] = [retrieval_signals.entity_query] + [
+        fq.query_text for fq in field_queries
+    ]
+
+    # ------------------------------------------------------------------
+    # 2. ONE embed_texts call (batched; query=True uses BGE query prefix).
+    # ------------------------------------------------------------------
+    # embed_texts already L2-normalizes its output.
+    query_vecs = embed_texts(query_texts, query=True)
+    query_matrix = np.asarray(query_vecs, dtype=np.float32)
+    # Defensive re-normalize in case of writer-side drift.
+    norms = np.linalg.norm(query_matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1
+    query_matrix = query_matrix / norms
+
+    # ------------------------------------------------------------------
+    # 3. Filter rows to those with valid embeddings; build chunk matrix.
+    # ------------------------------------------------------------------
+    valid_rows = [r for r in rows if r.get("embedding")]
+
+    if not valid_rows:
+        # No scorable chunks — return empties preserving field key set.
+        entity_results: list[GraphEntityResult] = []
+        field_results: dict[str, list[GraphEntityResult]] = {
+            fq.field_name: [] for fq in field_queries
+        }
+        return entity_results, field_results
+
+    chunk_matrix = np.asarray(
+        [r["embedding"] for r in valid_rows], dtype=np.float32
+    )
+    # Defensive normalize chunk embeddings (bge-m3 emits normalized vectors;
+    # protects against writer-side drift).
+    chunk_norms = np.linalg.norm(chunk_matrix, axis=1, keepdims=True)
+    chunk_norms[chunk_norms == 0] = 1
+    chunk_matrix = chunk_matrix / chunk_norms
+
+    # ------------------------------------------------------------------
+    # 4. ONE matrix multiply → (N_chunks × N_queries) cosine scores.
+    # ------------------------------------------------------------------
+    # chunk_matrix: (N_chunks × dim), query_matrix: (N_queries × dim)
+    # scores[i, j] = cosine(chunk_i, query_j)
+    scores = chunk_matrix @ query_matrix.T  # shape: (N_chunks, N_queries)
+
+    # ------------------------------------------------------------------
+    # 5. Helper: top-k from one score column as GraphEntityResult list.
+    # ------------------------------------------------------------------
+    def _top_k_results(col_idx: int, k: int) -> list[GraphEntityResult]:
+        col_scores = scores[:, col_idx]  # (N_chunks,)
+        # Stable sort: primary = -score (descending), secondary = vertex_id ASC.
+        vertex_ids = np.asarray([r.get("vertex_id", "") for r in valid_rows])
+        order = np.lexsort((vertex_ids, -col_scores))[:k]
+        results: list[GraphEntityResult] = []
+        for idx in order.tolist():
+            row = valid_rows[idx]
+            score = float(col_scores[idx])
+            results.append(
+                GraphEntityResult(
+                    node_id=str(
+                        row.get("@rid")
+                        or row.get("node_id")
+                        or row.get("vertex_id")
+                        or row["self_ref"]
+                    ),
+                    name=row["self_ref"],
+                    entity_type="ExtractionChunk",
+                    extraction_confidence=score,
+                    score=score,
+                    score_type="vector",
+                    properties={
+                        "self_ref": row["self_ref"],
+                        "chunk_text": row.get("chunk_text", ""),
+                        "page_number": row.get("page_number"),
+                        "modality": row.get("modality"),
+                        "pipeline_run_id": row.get("pipeline_run_id"),
+                        "chunk_index": row.get("chunk_index"),
+                        "source_refs": row.get("source_refs"),
+                        "token_count": row.get("token_count"),
+                    },
+                )
+            )
+        return results
+
+    # ------------------------------------------------------------------
+    # 6. Entity candidates (column 0).
+    # ------------------------------------------------------------------
+    entity_results = _top_k_results(0, cfg.top_n_candidates)
+
+    # ------------------------------------------------------------------
+    # 7. Per-field candidates (columns 1 … N_fields).
+    # ------------------------------------------------------------------
+    field_results = {
+        fq.field_name: _top_k_results(i + 1, cfg.field_query_top_k)
+        for i, fq in enumerate(field_queries)
+    }
+
+    return entity_results, field_results
