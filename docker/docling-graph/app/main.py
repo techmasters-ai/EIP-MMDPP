@@ -142,6 +142,16 @@ import docling_graph.core.extractors.contracts.delta.orchestrator as _dg_delta_o
 
 _pass_orchestrator_overrides = _threading_for_dg_orch_patch.local()
 
+# Task F3 (§9 subset-schema extraction): thread-local bridge between the
+# /extract-pass handler and LlmBackend.extract_from_markdown.  Set before
+# run_pipeline() and reset in the finally block so it never leaks across passes
+# on the same worker thread.  LlmBackend reads it via:
+#   from docling_graph.core.extractors.backends.llm_backend import _llm_backend_overrides
+#   field_subset = getattr(_llm_backend_overrides, "field_subset", None)
+from docling_graph.core.extractors.backends.llm_backend import (
+    _llm_backend_overrides as _pass_llm_schema_overrides,
+)
+
 _orig_dg_delta_orchestrator_init = _dg_delta_orchestrator.DeltaOrchestrator.__init__
 
 
@@ -588,6 +598,7 @@ def run_extraction_pass(
     chunk_max_tokens: int | None = None,
     max_tokens: int | None = None,
     pre_built_chunks: list[dict[str, Any]] | None = None,
+    field_subset: list[str] | None = None,
 ) -> Any:
     """Run docling-graph pipeline for a SINGLE fixed-template pass.
 
@@ -1008,6 +1019,18 @@ def run_extraction_pass(
             _pass_orchestrator_overrides.global_context_max_chars = (
                 len(preamble) + 1024
             )
+        # Task F3 (§9): wire the field_subset advisory into LlmBackend via the
+        # thread-local.  LlmBackend.extract_from_markdown reads this and builds
+        # a restricted prompt schema when non-None.  field_subset=None (default)
+        # is the opt-out path — byte-identical full-schema behavior.
+        if field_subset is not None:
+            _pass_llm_schema_overrides.field_subset = field_subset
+            logger.info(
+                "GRAPH_EXTRACTION_FIELD_SUBSET pass=%s fields=%d subset=%s",
+                pass_name,
+                len(field_subset),
+                field_subset[:10],  # log first 10 to keep lines short
+            )
         try:
             context = run_pipeline(config)
         except Exception as exc:
@@ -1051,6 +1074,9 @@ def run_extraction_pass(
             # Reset the per-pass orchestrator override so the next call
             # on this worker thread doesn't inherit our cap.
             _pass_orchestrator_overrides.global_context_max_chars = None
+            # Task F3: reset field_subset thread-local to prevent cross-pass
+            # leakage on the same worker thread.
+            _pass_llm_schema_overrides.field_subset = None
 
         # docling-graph's stages don't set ``context.template_instance``
         # — they populate ``extracted_models``. Promote the single
@@ -1611,6 +1637,7 @@ async def extract_pass(request: Request, body: ExtractPassRequest):
                     body.chunk_max_tokens,
                     body.max_tokens,
                     _selected_chunks_payload,
+                    body.field_subset,
                 )
             except Exception as exc:
                 logger.exception(
