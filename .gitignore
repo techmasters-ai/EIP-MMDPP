@@ -37,12 +37,20 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test / coverage reports
+reports/
 htmlcov/
 .tox/
 .nox/
 .coverage
 .coverage.*
 .cache
+
+# Operational data-collection artifacts (gate_monitor.py + chunk-scope/coverage probes)
+gate_monitor.csv
+gate_monitor.log
+gate_monitor_truncations.log
+.gate_monitor_seen
+gate_monitor.sh
 nosetests.xml
 coverage.xml
 *.cover
